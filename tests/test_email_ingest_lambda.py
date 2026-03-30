@@ -1,0 +1,303 @@
+import io
+import json
+import sys
+from email.message import EmailMessage
+from pathlib import Path
+
+import boto3
+import pytest
+from botocore.stub import Stubber
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from services import email_ingest_lambda as ingest
+
+
+def _build_email(subject="PROC-WF-ABC123DEF456", body="Quote 1200", **headers):
+    message = EmailMessage()
+    message["Subject"] = subject
+    for key, value in headers.items():
+        message[key] = value
+    message.set_content(body)
+    return message.as_bytes()
+
+
+_ACTIVE_STUBBERS = []
+
+
+def _prepare_s3_stub(email_bytes, bucket, key, *, unique_id="PROC-WF-ABC123DEF456", unmatched=False):
+    client = boto3.client("s3", region_name="eu-west-1")
+    stub = Stubber(client)
+
+    stub.add_response(
+        "get_object",
+        {"Body": io.BytesIO(email_bytes)},
+        {"Bucket": bucket, "Key": key},
+    )
+
+    if unmatched:
+        dest_key = f"emails/_unmatched/{key.split('/')[-1]}"
+        stub.add_response(
+            "copy_object",
+            {},
+            {
+                "Bucket": bucket,
+                "CopySource": {"Bucket": bucket, "Key": key},
+                "Key": dest_key,
+                "TaggingDirective": "REPLACE",
+                "Tagging": "needs-review=true",
+            },
+        )
+    else:
+        stub.add_response(
+            "put_object_tagging",
+            {},
+            {
+                "Bucket": bucket,
+                "Key": key,
+                "Tagging": {"TagSet": [{"Key": "unique-id", "Value": unique_id}]},
+            },
+        )
+        dest_key = f"emails/{unique_id}/ingest/{key.split('/')[-1]}"
+        stub.add_response(
+            "copy_object",
+            {},
+            {
+                "Bucket": bucket,
+                "CopySource": {"Bucket": bucket, "Key": key},
+                "Key": dest_key,
+                "TaggingDirective": "REPLACE",
+                "Tagging": f"unique-id={unique_id}",
+            },
+        )
+
+    stub.activate()
+    _ACTIVE_STUBBERS.append(stub)
+    ingest._S3_CLIENT = client
+    return client, stub
+
+
+@pytest.fixture(autouse=True)
+def stub_upsert(monkeypatch):
+    calls = []
+
+    def fake_upsert(unique_id, metadata):
+        calls.append((unique_id, metadata))
+
+    monkeypatch.setattr(ingest, "_upsert_supplier_reply", fake_upsert)
+    yield calls
+    calls.clear()
+
+
+class _NullCursor:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, *args, **kwargs):
+        return None
+
+    def fetchone(self):
+        return None
+
+
+class _NullConnection:
+    def cursor(self):
+        return _NullCursor()
+
+
+@pytest.fixture(autouse=True)
+def stub_thread_mapping(monkeypatch):
+    mapping = {}
+    connection = _NullConnection()
+
+    def fake_get_db_connection():
+        return connection
+
+    def fake_lookup(conn, table_name, keys, logger=None):
+        for key in keys:
+            if key in mapping:
+                value = mapping[key]
+                if isinstance(value, tuple):
+                    return value
+                return value, None
+        return None
+
+    def fake_ensure_table(conn, table_name, logger=None):
+        return None
+
+    monkeypatch.setattr(ingest, "_get_db_connection", fake_get_db_connection)
+    monkeypatch.setattr(ingest, "lookup_thread_metadata", fake_lookup)
+    monkeypatch.setattr(ingest, "ensure_thread_table", fake_ensure_table)
+    ingest._THREAD_TABLE_READY = True
+
+    yield mapping
+
+    mapping.clear()
+    ingest._THREAD_TABLE_READY = False
+
+
+def test_process_record_tags_and_copies_object(monkeypatch, stub_upsert):
+    bucket = "procwisemvp"
+    key = "emails/random-object"
+    unique_id = "PROC-WF-ABCDEF123456"
+    email_bytes = _build_email(
+        subject=f"Re: Pricing Update {unique_id}", body="Price 1200"
+    )
+
+    _prepare_s3_stub(email_bytes, bucket, key, unique_id=unique_id)
+
+    record = {"s3": {"bucket": {"name": bucket}, "object": {"key": key}}}
+    result = ingest.process_record(record)
+
+    assert result["unique_id"] == unique_id
+    assert result["rfq_id"] == unique_id
+    assert result["s3_key"] == f"emails/{unique_id}/ingest/random-object"
+    assert result["status"] == "ok"
+    assert unique_id in result["metadata"]["subject"]
+    assert stub_upsert and stub_upsert[0][0] == unique_id
+
+
+def test_process_record_uses_thread_lookup(monkeypatch, stub_upsert, stub_thread_mapping):
+    bucket = "procwisemvp"
+    key = "emails/random-object-2"
+    email_bytes = _build_email(subject="Re: Quote", body="No RFQ", **{"In-Reply-To": "<thread-123>"})
+
+    unique_id = "PROC-WF-THREAD1234"
+    _prepare_s3_stub(email_bytes, bucket, key, unique_id=unique_id)
+    stub_thread_mapping["<thread-123>"] = unique_id
+
+    record = {"s3": {"bucket": {"name": bucket}, "object": {"key": key}}}
+    result = ingest.process_record(record)
+
+    assert result["unique_id"] == unique_id
+    assert result["status"] == "ok"
+    assert result["s3_key"].endswith("random-object-2")
+    assert stub_upsert and stub_upsert[0][0] == unique_id
+
+
+def test_process_record_moves_to_unmatched_when_missing_unique_id(stub_upsert):
+    bucket = "procwisemvp"
+    key = "emails/random-object-3"
+    email_bytes = _build_email(subject="Quote", body="No identifier present")
+
+    _prepare_s3_stub(email_bytes, bucket, key, unmatched=True)
+
+    record = {"s3": {"bucket": {"name": bucket}, "object": {"key": key}}}
+    result = ingest.process_record(record)
+
+    assert result["unique_id"] is None
+    assert result["rfq_id"] is None
+    assert result["s3_key"] == "emails/_unmatched/random-object-3"
+
+
+
+
+def test_lambda_handler_processes_sqs_envelope(monkeypatch, stub_upsert):
+    bucket = "procwisemvp"
+    key = "emails/random-object-4"
+    unique_id = "PROC-WF-BEEFCAFE1234"
+    email_bytes = _build_email(
+        subject=f"Re: Follow-up {unique_id}", body="Confirming order"
+    )
+
+    _prepare_s3_stub(email_bytes, bucket, key, unique_id=unique_id)
+
+    s3_record = {
+        "eventSource": "aws:s3",
+        "s3": {"bucket": {"name": bucket}, "object": {"key": key}},
+    }
+    sqs_event = {
+        "Records": [
+            {
+                "body": json.dumps({"Records": [s3_record]}),
+            }
+        ]
+    }
+
+    response = ingest.lambda_handler(sqs_event, context=None)
+
+    assert response["processed"][0]["unique_id"] == unique_id
+    assert response["processed"][0]["rfq_id"] == unique_id
+    assert stub_upsert and stub_upsert[0][0] == unique_id
+
+
+def test_process_record_persists_metadata(monkeypatch, stub_upsert):
+    bucket = "procwisemvp"
+    key = "emails/random-object-5"
+    unique_id = "PROC-WF-DEADBEEF1234"
+    email_bytes = _build_email(
+        subject=f"Re: RFQ context {unique_id}",
+        body="Please find quote attached",
+        **{
+            "From": "Supplier <supplier@example.com>",
+            "To": "ProcWise <supplierconnect@procwise.co.uk>",
+            "Date": "Mon, 03 Feb 2025 10:00:00 +0000",
+            "Message-ID": "<deadbeef@example.com>",
+        },
+    )
+
+    _prepare_s3_stub(email_bytes, bucket, key, unique_id=unique_id)
+
+    record = {"s3": {"bucket": {"name": bucket}, "object": {"key": key}}}
+    result = ingest.process_record(record)
+
+    assert result["metadata"]["mailbox"].lower().startswith("procwise")
+    assert result["metadata"]["message_id"] == "<deadbeef@example.com>"
+    rfq_id, metadata = stub_upsert[0]
+    assert rfq_id == unique_id
+    assert metadata["s3_key"].endswith("random-object-5")
+    assert metadata["received_at"].isoformat().startswith("2025-02-03T10:00:00")
+
+
+def test_process_record_skips_known_objects(monkeypatch):
+    bucket = "procwisemvp"
+    key = "emails/duplicate-object"
+
+    class _FailingClient:
+        def get_object(self, *args, **kwargs):  # pragma: no cover - should not run
+            raise AssertionError("get_object should not be invoked for duplicates")
+
+    ingest._S3_CLIENT = _FailingClient()
+
+    def fake_lookup(connection, bucket_name, object_key, etag):
+        assert bucket_name == bucket
+        assert object_key == key
+        assert etag == "abc123"
+        return {
+            "rfq_id": "PROC-WF-ABC12345DEF6",
+            "unique_id": "PROC-WF-ABC12345DEF6",
+            "message_id": "<id@example>",
+        }
+
+    monkeypatch.setattr(ingest, "_lookup_processed_object", fake_lookup)
+
+    record = {
+        "s3": {
+            "bucket": {"name": bucket},
+            "object": {"key": key, "eTag": "\"abc123\""},
+        }
+    }
+
+    result = ingest.process_record(record)
+
+    assert result["status"] == "duplicate"
+    assert result["unique_id"] == "PROC-WF-ABC12345DEF6"
+    assert result["rfq_id"] == "PROC-WF-ABC12345DEF6"
+    assert result["metadata"]["message_id"] == "<id@example>"
+
+
+@pytest.fixture(autouse=True)
+def reset_clients():
+    yield
+    ingest._S3_CLIENT = None
+    ingest._THREAD_TABLE_READY = False
+    ingest._DB_CONNECTION = None
+    ingest._SUPPLIER_TABLE_INITIALISED = False
+    ingest._SUPPLIER_OBJECT_TABLE_INITIALISED = False
+    while _ACTIVE_STUBBERS:
+        stub = _ACTIVE_STUBBERS.pop()
+        stub.deactivate()
+

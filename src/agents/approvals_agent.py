@@ -1,0 +1,119 @@
+import logging
+from typing import Dict
+
+from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
+from utils.gpu import configure_gpu
+
+logger = logging.getLogger(__name__)
+
+
+class ApprovalsAgent(BaseAgent):
+    """Determine approval decisions based on simple thresholds."""
+
+    AGENTIC_PLAN_STEPS = (
+        "Review the approval request, supplier context, and monetary amount.",
+        "Check threshold and policy data from the approvals store and supporting embeddings.",
+        "Return the approval decision with rationale and any routing recommendations.",
+    )
+
+    def __init__(self, agent_nick):
+        super().__init__(agent_nick)
+        self.device = configure_gpu()
+
+    def run(self, context: AgentContext) -> AgentOutput:
+        best = context.input_data.get("best_quote")
+        rfq_id = context.input_data.get("rfq_id")
+        if best and rfq_id:
+            price = best.get("price")
+            threshold = float(
+                getattr(self.agent_nick.settings, "approval_threshold", 10000)
+            )
+            approved = price is not None and float(price) <= threshold
+            self._store_approval(rfq_id, best, approved)
+            return self._with_plan(
+                context,
+                AgentOutput(
+                    status=AgentStatus.SUCCESS,
+                    data={"approved": approved, "best_quote": best},
+                    next_agents=[],
+                ),
+            )
+
+        amount = context.input_data.get("amount")
+        supplier_id = context.input_data.get("supplier_id")
+        if amount is None:
+            return self._with_plan(
+                context,
+                AgentOutput(
+                    status=AgentStatus.FAILED, data={}, error="amount not provided"
+                ),
+            )
+
+        # Retrieve approval threshold from Postgres
+        threshold = context.input_data.get("threshold", 1000)
+        try:
+            with self.agent_nick.get_db_connection() as conn:  # pragma: no cover - network
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT threshold FROM approval_policies WHERE supplier_id = %s",
+                        (supplier_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        threshold = row[0]
+        except Exception:  # pragma: no cover - best effort
+            logger.exception("failed to fetch approval policy")
+
+        decision = "approve" if amount <= threshold else "escalate"
+        log = f"Amount {amount} {'within' if amount <= threshold else 'above'} threshold {threshold}"
+
+        # Query Qdrant for supporting evidence
+        references: list[str] = []
+        try:
+            vector = self.agent_nick.embedding_model.encode(str(amount)).tolist()
+            _qp_result = self.agent_nick.qdrant_client.query_points(
+                collection_name=self.settings.qdrant_collection_name,
+                query=vector,
+                limit=1,
+            )
+            _points = getattr(_qp_result, "points", _qp_result) or []
+            references = [h.payload.get("document_type") for h in _points]
+        except Exception:  # pragma: no cover - external dependency
+            logger.exception("qdrant search failed")
+
+        return self._with_plan(
+            context,
+            AgentOutput(
+                status=AgentStatus.SUCCESS,
+                data={
+                    "amount": amount,
+                    "threshold": threshold,
+                    "decision": decision,
+                    "decision_log": log,
+                    "references": references,
+                },
+                next_agents=[],
+            ),
+        )
+
+    def _store_approval(self, rfq_id: str, best: Dict, approved: bool) -> None:
+        if not rfq_id:
+            return
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO proc.approvals (rfq_id, supplier_id, price, approved, created_on)
+                        VALUES (%s, %s, %s, %s, NOW())
+                        """,
+                        (
+                            rfq_id,
+                            best.get("supplier_id"),
+                            best.get("price"),
+                            approved,
+                        ),
+                    )
+                conn.commit()
+        except Exception:  # pragma: no cover - best effort
+            logger.exception("failed to store approval")

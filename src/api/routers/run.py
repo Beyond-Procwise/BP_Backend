@@ -1,0 +1,123 @@
+import os
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from typing import Any, Dict, Optional
+import threading
+import asyncio
+import inspect
+from orchestration.orchestrator import Orchestrator
+from utils.gpu import configure_gpu
+
+# Ensure GPU-related environment variables are set
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+os.environ.setdefault("OLLAMA_USE_GPU", "1")
+os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
+os.environ.setdefault("OMP_NUM_THREADS", "8")
+configure_gpu()
+
+router = APIRouter(tags=["Run"], prefix="")
+
+logger = logging.getLogger(__name__)
+
+
+class RunRequest(BaseModel):
+    """Request schema for the ``/run`` endpoint."""
+
+    process_id: int
+    payload: Optional[Dict[str, Any]] = None
+
+
+def get_orchestrator(request: Request) -> Orchestrator:
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if not orchestrator:
+        raise HTTPException(
+            status_code=503, detail="Orchestrator service is not available."
+        )
+    return orchestrator
+
+
+@router.post("/run")
+def run_agents(
+    req: RunRequest,
+    orchestrator: Orchestrator = Depends(get_orchestrator),
+):
+    """Execute an agent flow fetched from the routing table."""
+    prs = getattr(orchestrator.agent_nick, "process_routing_service", None)
+    if not prs:
+        raise HTTPException(
+            status_code=503, detail="Process routing service is not available."
+        )
+
+    # Fetch raw ``process_details`` so that the original agent list structure
+    # is preserved in the routing table.  The returned object is converted to a
+    # runnable flow only for in-memory execution.
+    details = prs.get_process_details(req.process_id, raw=True)
+    if details is None:
+        raise HTTPException(status_code=404, detail="Process not found")
+    flow = prs.convert_agents_to_flow(details)
+    agent_defs, prompt_map, policy_map = prs._load_agent_links()
+    prs._enrich_node(flow, agent_defs, prompt_map, policy_map)
+
+    # Persist the initial details so that callers can poll for updates while
+    # the workflow executes. The top-level status remains ``saved`` until the
+    # entire flow succeeds or fails.
+    try:
+        prs.update_process_details(req.process_id, details)
+    except Exception:
+        logger.exception(
+            "Failed to mark process %s as started", req.process_id
+        )
+
+    # Run the long-running execution in background
+
+    def _background_run(flow_obj, payload, process_id):
+        logger.info("Starting background run for process %s", process_id)
+        try:
+            result = orchestrator.execute_agent_flow(
+                flow_obj, payload, process_id=process_id, prs=prs
+            )
+            if inspect.iscoroutine(result):
+                result = asyncio.run(result)
+            logger.debug("Execution result for process %s: %s", process_id, result)
+            if isinstance(result, dict):
+                final = result.get("status")
+            else:
+                final = 0
+            numeric_status, status_label, _ = prs.classify_completion_status(final)
+            prs.update_process_status(process_id, numeric_status)
+            logger.info(
+                "Completed process %s with final status %s (mapped to %s)",
+                process_id,
+                final,
+                status_label,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Process %s raised an exception during execution", process_id
+            )
+            try:
+                # Preserve the existing ``process_details`` structure while
+                # marking the workflow as failed so agent metadata remains
+                # intact for debugging or retries.
+                existing = prs.get_process_details(process_id, raw=True) or {}
+                existing["status"] = "failed"
+                prs.update_process_details(process_id, existing)
+
+            except Exception:
+                logger.exception(
+                    "Failed to persist failure details for process %s", process_id
+                )
+            try:
+                prs.update_process_status(process_id, -1)
+            except Exception:
+                logger.exception(
+                    "Failed to update process %s to failed status", process_id
+                )
+
+    t = threading.Thread(target=_background_run, args=(flow, req.payload or {}, req.process_id), daemon=True)
+    t.start()
+
+    return {"status": "started"}
+
+
