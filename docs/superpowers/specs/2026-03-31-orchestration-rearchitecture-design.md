@@ -189,7 +189,7 @@ Redis Streams consumer groups provide **at-least-once** delivery. If a worker cr
 
 **Idempotency guard:** Before executing `agent.execute()`, each worker checks `proc.node_execution` for an existing completed result matching the `task_id`. If found, the worker ACKs the message without re-executing. This prevents duplicate email dispatches, duplicate database writes, and duplicate LLM calls on retry.
 
-For agents with external side effects (EmailDispatchAgent, NegotiationAgent), the `task_id` is also written to `proc.dispatch_chain` or `proc.negotiation_sessions` as a deduplication key.
+For agents with external side effects (EmailDispatchAgent, NegotiationAgent), the `task_id` is also written to `proc.email_dispatch_chains` or `proc.negotiation_sessions` as a deduplication key.
 
 ### Why Redis Streams
 
@@ -551,7 +551,7 @@ Component -> Redis Stream (real-time) -> Event Persister -> PostgreSQL
 | Column | Type | Purpose |
 |--------|------|---------|
 | event_id | PK | |
-| workflow_id | FK | |
+| workflow_id | TEXT (indexed) | Matches workflow_execution.workflow_id by convention, not FK |
 | node_name | TEXT (nullable) | |
 | event_type | TEXT | workflow:started, node:dispatched, node:completed, etc. |
 | agent_type | TEXT (nullable) | |
