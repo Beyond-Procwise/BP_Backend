@@ -239,6 +239,7 @@ class Settings(BaseSettings):
 
     # LLM Router
     ollama_cloud_base_url: Optional[str] = Field(default=None, env="OLLAMA_CLOUD_BASE_URL")
+    ollama_cloud_api_key: Optional[str] = Field(default=None, env="OLLAMA_CLOUD_API_KEY")
     llm_router_queue_depth_threshold: int = Field(
         default=8, env="LLM_ROUTER_QUEUE_DEPTH_THRESHOLD"
     )
