@@ -121,6 +121,38 @@ class Orchestrator:
             self._workflow_engine = None
             self._workflow_registry = {}
 
+    def _get_dag_scheduler(self):
+        """Lazy-initialize DAG Scheduler (singleton per Orchestrator instance)."""
+        if not hasattr(self, '_dag_scheduler'):
+            from orchestration.dag_scheduler import DAGScheduler
+            from orchestration.state_manager import StateManager
+            from orchestration.task_dispatcher import TaskDispatcher
+            import redis
+
+            redis_client = redis.from_url(
+                self.settings.redis_streams_url or self.settings.redis_url
+            )
+            # Support both WorkerContext (get_connection) and full agent_nick
+            # (get_db_connection) so the scheduler works in all deployment modes.
+            if callable(getattr(self.agent_nick, 'get_connection', None)):
+                _get_conn = self.agent_nick.get_connection
+            elif callable(getattr(self.agent_nick, 'get_db_connection', None)):
+                _get_conn = self.agent_nick.get_db_connection
+            else:
+                _get_conn = None
+            state_mgr = StateManager(get_connection=_get_conn)
+            dispatcher = TaskDispatcher(
+                redis_client=redis_client,
+                max_stream_len=getattr(self.settings, 'worker_max_stream_len', 10000),
+            )
+            self._dag_scheduler = DAGScheduler(
+                state_manager=state_mgr,
+                task_dispatcher=dispatcher,
+                agent_registry=self.agents,
+                manifest_service=getattr(self, 'manifest_service', None),
+            )
+        return self._dag_scheduler
+
     def execute_ranking_flow(self, query: str) -> Dict:
         """Public wrapper for the supplier ranking workflow.
 
@@ -222,6 +254,25 @@ class Orchestrator:
                 }
 
             workflow_config = enriched_input.get("workflow_configuration")
+
+            # --- New DAG Scheduler path (Phase 3 migration) ---
+            if getattr(self.settings, 'use_dag_scheduler', False) and workflow_name in self._workflow_registry:
+                from orchestration.workflow_definitions import get_workflow
+                scheduler = self._get_dag_scheduler()
+                graph = get_workflow(workflow_name)
+                execution_id = scheduler.start_workflow(
+                    graph=graph,
+                    input_data=enriched_input,
+                    workflow_id=workflow_id,
+                    user_id=user_id,
+                )
+                return {
+                    "workflow_id": workflow_id,
+                    "execution_id": execution_id,
+                    "status": "running",
+                    "execution_mode": "dag_scheduler",
+                }
+
             # Prefer the declarative workflow engine when available
             # (12-Factor #8: own your control flow)
             use_engine = (
