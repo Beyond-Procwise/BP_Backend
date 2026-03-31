@@ -72,6 +72,8 @@ from services.document_extractor import (
     RAW_TABLE_MAPPING as DOC_EXTRACTOR_RAW_TABLES,
 )
 from services.semantic_chunker import SemanticChunker
+from services.validation_gate import ValidationGate
+from services.remediation_service import RemediationService
 
 
 logger = logging.getLogger(__name__)
@@ -1791,6 +1793,39 @@ class DataExtractionAgent(BaseAgent):
                     table_name=header_table,
                     trace_metadata=traceability,
                 )
+
+            # --- Validation Gate ---
+            gate = ValidationGate()
+            field_confidences = header.get("_field_confidence", {})
+            decision = gate.evaluate(
+                doc_type=doc_type,
+                extracted_fields=header,
+                field_confidences=field_confidences,
+            )
+
+            confidence_score = decision.confidence_score
+            needs_review = False
+
+            if decision.needs_remediation:
+                remediation = RemediationService()
+                remediation_result = remediation.remediate_fields(
+                    low_confidence_fields=decision.low_confidence_fields,
+                    document_text=text,
+                    doc_type=doc_type,
+                    existing_fields=header,
+                )
+                if remediation_result.improved_fields:
+                    header.update(remediation_result.improved_fields)
+                    field_confidences.update(remediation_result.improved_confidences)
+                    decision = gate.evaluate(doc_type, header, field_confidences)
+                    confidence_score = decision.confidence_score
+
+                if not decision.passed:
+                    needs_review = True
+
+            header["confidence_score"] = confidence_score
+            header["needs_review"] = needs_review
+            # --- End Validation Gate ---
 
             self._persist_to_postgres(header, line_items, doc_type, pk_value)
             self._vectorize_structured_data(header, line_items, doc_type, pk_value, product_type)
