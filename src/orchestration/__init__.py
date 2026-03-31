@@ -53,4 +53,18 @@ def __getattr__(name: str) -> Any:  # pragma: no cover - import shim
         module = import_module("orchestration.procurement_workflow")
         return getattr(module, name)
 
+    # Lazy-load new orchestration modules
+    module_map = {
+        "dag_scheduler": "orchestration.dag_scheduler",
+        "task_dispatcher": "orchestration.task_dispatcher",
+        "result_collector": "orchestration.result_collector",
+        "state_manager": "orchestration.state_manager",
+        "worker": "orchestration.worker",
+        "worker_context": "orchestration.worker_context",
+        "message_protocol": "orchestration.message_protocol",
+    }
+    if name in module_map:
+        module = import_module(module_map[name])
+        return module
+
     raise AttributeError(f"module 'orchestration' has no attribute {name!r}")
