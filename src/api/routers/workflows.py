@@ -1459,3 +1459,58 @@ def get_agent_types():
         raise HTTPException(status_code=404, detail="agent_definitions.json not found")
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=500, detail=f"Invalid agent definitions: {exc}")
+
+
+# ── Observability Endpoints ─────────────────────────────────────
+
+@router.get("/workflows/{workflow_id}/status")
+def get_workflow_status(workflow_id: str, request: Request):
+    """Get current workflow state and all node statuses."""
+    from orchestration.state_manager import StateManager
+    orchestrator = get_orchestrator(request)
+    sm = StateManager(get_connection=orchestrator.agent_nick.get_db_connection)
+    conn = orchestrator.agent_nick.get_db_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT execution_id, workflow_name, status, shared_data,
+                      current_round, created_at, updated_at, completed_at
+               FROM proc.workflow_execution
+               WHERE workflow_id = %s
+               ORDER BY created_at DESC LIMIT 1""",
+            (workflow_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        execution_id = row[0]
+        node_statuses = sm.get_node_statuses(execution_id, row[4])
+        return {
+            "workflow_id": workflow_id,
+            "execution_id": execution_id,
+            "workflow_name": row[1],
+            "status": row[2],
+            "current_round": row[4],
+            "created_at": str(row[5]),
+            "updated_at": str(row[6]),
+            "completed_at": str(row[7]) if row[7] else None,
+            "nodes": node_statuses,
+        }
+
+
+@router.get("/workflows/{workflow_id}/events")
+def get_workflow_events(workflow_id: str, request: Request, limit: int = 100):
+    """Get event timeline for a workflow."""
+    from orchestration.state_manager import StateManager
+    orchestrator = get_orchestrator(request)
+    sm = StateManager(get_connection=orchestrator.agent_nick.get_db_connection)
+    events = sm.get_events(workflow_id, limit=limit)
+    return {"workflow_id": workflow_id, "events": events}
+
+
+@router.get("/system/workflows/active")
+def get_active_workflows(request: Request):
+    """List all running/paused workflows."""
+    from orchestration.state_manager import StateManager
+    orchestrator = get_orchestrator(request)
+    sm = StateManager(get_connection=orchestrator.agent_nick.get_db_connection)
+    return {"workflows": sm.get_active_workflows()}
