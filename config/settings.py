@@ -237,6 +237,34 @@ class Settings(BaseSettings):
     )
     ollama_timeout: int = Field(default=120, env="OLLAMA_TIMEOUT")
 
+    # LLM Router
+    ollama_cloud_base_url: Optional[str] = Field(default=None, env="OLLAMA_CLOUD_BASE_URL")
+    llm_router_queue_depth_threshold: int = Field(
+        default=8, env="LLM_ROUTER_QUEUE_DEPTH_THRESHOLD"
+    )
+    local_primary_model: str = Field(
+        default="qwen2.5:32b", env="LOCAL_PRIMARY_MODEL"
+    )
+    local_fallback_model: str = Field(
+        default="qwen2.5:7b", env="LOCAL_FALLBACK_MODEL"
+    )
+
+    # LoRA Adapter Paths
+    extraction_adapter_path: Optional[str] = Field(
+        default=None, env="EXTRACTION_ADAPTER_PATH"
+    )
+    negotiation_adapter_path: Optional[str] = Field(
+        default=None, env="NEGOTIATION_ADAPTER_PATH"
+    )
+    general_adapter_path: Optional[str] = Field(
+        default=None, env="GENERAL_ADAPTER_PATH"
+    )
+
+    # Training Data Collection
+    training_data_output_dir: str = Field(
+        default="data/training", env="TRAINING_DATA_OUTPUT_DIR"
+    )
+
     ses_inbound_role_arn: Optional[str] = Field(default=None, env="SES_INBOUND_ROLE_ARN")
     ses_region: Optional[str] = Field(default="eu-west-1", env="SES_REGION")
     ses_secret_role_arn: Optional[str] = Field(
