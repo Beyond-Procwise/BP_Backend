@@ -117,3 +117,68 @@ def test_cloud_only_mode_when_no_local():
     )
     tier = router.route(task_type="extraction")
     assert tier == Tier.CLOUD  # Falls back to cloud when no local
+
+
+@patch("services.llm_router.ollama_lib", create=True)
+def test_get_client_cloud_passes_api_key(mock_ollama):
+    from services.llm_router import LLMRouter, Tier
+    import importlib
+    import services.llm_router as router_mod
+
+    mock_client = MagicMock()
+    # Patch the ollama import inside the module
+    with patch.dict("sys.modules", {"ollama": MagicMock(Client=MagicMock(return_value=mock_client))}):
+        router = LLMRouter(
+            local_base_url="http://localhost:11434",
+            cloud_base_url="https://api.ollama.com",
+            cloud_api_key="test-api-key-123",
+        )
+        client = router.get_client(Tier.CLOUD)
+        assert client is not None
+
+
+def test_call_routes_and_returns_response():
+    from services.llm_router import LLMRouter, Tier
+
+    mock_client = MagicMock()
+    mock_client.generate.return_value = {"response": "Invoice #INV-001"}
+
+    router = LLMRouter(
+        local_base_url="http://localhost:11434",
+        cloud_base_url="https://api.ollama.com",
+        cloud_api_key="test-key",
+    )
+    # Inject mock clients directly
+    router._local_client = mock_client
+    router._cloud_client = MagicMock()
+
+    result = router.call(
+        task_type="extraction",
+        prompt="Extract invoice number",
+    )
+    assert result["response"] == "Invoice #INV-001"
+    mock_client.generate.assert_called_once()
+
+
+def test_call_cloud_task_uses_cloud_client():
+    from services.llm_router import LLMRouter, Tier
+
+    local_client = MagicMock()
+    cloud_client = MagicMock()
+    cloud_client.generate.return_value = {"response": "Invoice type"}
+
+    router = LLMRouter(
+        local_base_url="http://localhost:11434",
+        cloud_base_url="https://api.ollama.com",
+        cloud_api_key="test-key",
+    )
+    router._local_client = local_client
+    router._cloud_client = cloud_client
+
+    result = router.call(
+        task_type="classification",
+        prompt="Classify this document",
+    )
+    assert result["response"] == "Invoice type"
+    cloud_client.generate.assert_called_once()
+    local_client.generate.assert_not_called()
