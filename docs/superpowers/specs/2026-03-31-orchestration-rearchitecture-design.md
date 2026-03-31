@@ -96,12 +96,24 @@ API Layer (unchanged routers)
 
 ### What Stays the Same
 
-- `WorkflowGraph`, `WorkflowNode`, edge conditions — reused as-is
+- `WorkflowGraph`, `WorkflowNode`, edge condition data structures — reused as graph definitions
 - `AgentContext`, `AgentOutput` — unchanged dataclasses
-- `BaseAgent.execute()` — untouched
+- `BaseAgent.execute()` — signature and agent-facing behavior unchanged (see Section 9 for worker bootstrap)
 - All 13 agent internals — completely untouched
 - `AgentContract` — reused for input validation before dispatch
 - `AgentFactory` / `AgentRegistry` — reused inside workers
+
+### What Gets Replaced
+
+- `WorkflowEngine` — replaced by the DAG Scheduler. The engine's sequential topological loop is incompatible with parallel dispatch. The `WorkflowGraph` data structures it consumes are reused; the execution engine is not.
+- `Orchestrator` class (2,971 lines) — decomposed into DAG Scheduler + Task Dispatcher + Result Collector + State Manager
+- `EventBus` (synchronous pub/sub) — replaced by Redis Streams event protocol
+- Model references (Phi4 fallback chains) — updated to Qwen2.5-32B/7B (see Section 8)
+
+### What Gets Modified
+
+- `IMAPSupplierResponseWatcher` — gains Redis Stream publishing capability to emit `reply_received` events (see Section 5). IMAP polling internals unchanged.
+- `WorkflowGraph.entry_node` — the DAG Scheduler computes zero-in-degree nodes from graph edges rather than relying on the single `entry_node` field. The field remains for backwards compatibility but is not authoritative.
 
 ---
 
@@ -171,13 +183,22 @@ Lifecycle events for tracing and API polling:
 }
 ```
 
+### Delivery Semantics & Idempotency
+
+Redis Streams consumer groups provide **at-least-once** delivery. If a worker crashes between reading and ACKing a message, the message is re-delivered to another worker via XCLAIM. This means agents must be idempotent.
+
+**Idempotency guard:** Before executing `agent.execute()`, each worker checks `proc.node_execution` for an existing completed result matching the `task_id`. If found, the worker ACKs the message without re-executing. This prevents duplicate email dispatches, duplicate database writes, and duplicate LLM calls on retry.
+
+For agents with external side effects (EmailDispatchAgent, NegotiationAgent), the `task_id` is also written to `proc.dispatch_chain` or `proc.negotiation_sessions` as a deduplication key.
+
 ### Why Redis Streams
 
 - Already in the stack
-- Consumer groups provide exactly-once delivery semantics
+- Consumer groups provide at-least-once delivery with XCLAIM for dead letter recovery
 - Persistent (survives restarts, unlike Pub/Sub)
 - Lightweight (no broker infrastructure like RabbitMQ)
 - XPENDING + XCLAIM provide dead letter handling for free
+- Backpressure: streams configured with MAXLEN to cap unbounded growth; dispatcher checks pending message count before publishing
 
 ---
 
@@ -245,10 +266,11 @@ Two paths based on whether quotes exist:
 The DAG is acyclic. Cycles are modeled as workflow re-entry:
 
 1. Negotiation agent output includes `next_round: true`
-2. Scheduler increments round counter on WorkflowState
-3. Re-queues the email_drafting -> dispatch -> watcher -> negotiation subgraph as a new execution pass
-4. Carries forward cumulative state (all prior rounds in shared_data)
-5. Stops when `next_round: false` or max rounds reached
+2. Scheduler increments `current_round` on `proc.workflow_execution`
+3. New `proc.node_execution` rows are inserted for the next round's subgraph (email_drafting, dispatch, watcher, negotiation) with `round = N+1`. Previous round's nodes remain as completed historical records.
+4. The DAG Scheduler only considers nodes matching the current round when evaluating readiness — this prevents confusion between round N and round N+1 nodes with the same `node_name`.
+5. Carries forward cumulative state (all prior rounds in `shared_data`)
+6. Stops when `next_round: false` or max rounds reached
 
 ### Failure Propagation
 
@@ -306,6 +328,29 @@ procwise-worker --agents data_extraction --concurrency 4
 - **Timeout enforcement:** Per-task timeout_seconds. Guard cancels execution and publishes FAILED result if exceeded.
 - **Stateless:** No inter-task state. Agent instances created fresh or pooled per worker.
 
+### Worker Bootstrap & Dependency Injection
+
+The current codebase bundles all dependencies into `agent_nick` — a god-object carrying settings, database connections, all agent instances, policy engine, query engine, and routing engine. Workers cannot import this wholesale.
+
+Each worker process initializes a **lightweight worker context**:
+
+```
+WorkerContext
+├── settings (Pydantic Settings — same as current)
+├── db_pool (psycopg2 connection pool — per-worker, not shared)
+├── redis_client (for stream operations)
+├── ollama_client (for LLM calls)
+├── agent_instances (only the agent types this worker serves)
+└── process_routing_service (for audit logging to proc.routing)
+```
+
+**Key differences from `agent_nick`:**
+- Only instantiates agents this worker is configured to run (not all 13)
+- Own connection pool (not shared across process boundary)
+- No policy engine or query engine preloaded — these are fetched per-task from the AgentContext which carries policy_context and knowledge_base already populated by the DAG Scheduler before dispatch
+
+The `BaseAgent.execute()` method continues to access services via `self.agent_nick`. In workers, `agent_nick` is replaced by `WorkerContext` which implements the same interface for the subset of services agents actually call during execution.
+
 ---
 
 ## Section 5: PostgreSQL State Management
@@ -324,8 +369,8 @@ procwise-worker --agents data_extraction --concurrency 4
 
 | Column | Type | Purpose |
 |--------|------|---------|
-| execution_id | PK | Unique execution identifier |
-| workflow_id | FK, unique active | Links to workflow definition |
+| execution_id | PK (SERIAL) | Unique execution identifier |
+| workflow_id | TEXT, unique per active | Caller-provided workflow identifier (same convention as existing `proc.routing.workflow_id`). Unique constraint scoped to non-terminal statuses to prevent duplicate active executions. |
 | workflow_name | TEXT | Workflow type |
 | user_id | TEXT | Triggering user |
 | status | TEXT | pending, running, paused, completed, failed, cancelled |
@@ -352,7 +397,12 @@ procwise-worker --agents data_extraction --concurrency 4
 | dispatched_at | TIMESTAMP | |
 | completed_at | TIMESTAMP | |
 | duration_ms | INTEGER | |
-| round | INTEGER | Negotiation round |
+| round | INTEGER | Negotiation round (0 for non-negotiation nodes) |
+
+**Indexes:**
+- `(execution_id, status)` — find all running/pending nodes for a workflow
+- `(status, dispatched_at)` — find timed-out or stale nodes across all workflows
+- `(execution_id, node_name, round)` — unique constraint preventing duplicate node entries per round
 
 ### Email Watcher as Event Source
 
@@ -412,6 +462,18 @@ Three extractors run in parallel, ensemble the results:
 - **Strategy C:** NER-based (entity recognition)
 
 Each strategy produces per-field confidence scores. The ensemble selects the highest-confidence value per field.
+
+**Confidence scoring per strategy:**
+
+| Strategy | Confidence signal |
+|----------|-------------------|
+| Layout-based (PDFPlumber) | Spatial heuristics: field found in expected region = high; ambiguous position = low. Binary thresholds (0.9 if spatially anchored, 0.4 if not). |
+| LLM-based (Qwen2.5-32B) | LLM returns confidence as part of structured output schema. Calibrated via validation set during fine-tuning. |
+| NER-based | Entity recognition probability from the NER model (native output). |
+
+**Ensemble algorithm:** Per field, select the value from the strategy with the highest confidence. If the top two strategies agree on a value, boost overall confidence by 0.1 (agreement bonus). If all three disagree, flag the field as low-confidence regardless of individual scores.
+
+**Performance budget:** Strategies A and C are fast (< 1s). Strategy B (LLM) is the bottleneck (~5-15s per document). All three run in parallel via the DAG scheduler's worker model — A and C complete while B is still running. Total extraction latency is bounded by Strategy B.
 
 The existing DataExtractionAgent becomes one strategy within the ensemble. It is wrapped, not rewritten.
 
@@ -564,7 +626,18 @@ Routes requests to the appropriate tier and adapter:
 | Quick summarization | Cloud | base |
 | Entity normalization | Cloud | base |
 
-Fallback: if local GPU is busy, queue or degrade to cloud for non-critical tasks.
+### GPU Concurrency & Request Queuing
+
+**Concurrent capacity:** Ollama natively queues requests to the same model. With `OLLAMA_NUM_PARALLEL=4` (current setting), up to 4 requests share the loaded model's KV cache. At Q4 quantization, Qwen2.5-32B uses ~18GB for weights + ~3-4GB for KV cache at 4K context across 4 parallel slots, totaling ~21-22GB — within the 23GB A10G budget.
+
+**Qwen2.5-7B is not co-resident.** It loads only when the 32B model is explicitly unloaded (e.g., during fine-tuning). In normal operation, only one model is in VRAM at a time.
+
+**When GPU is busy (all 4 slots occupied):**
+1. Ollama's internal queue holds the request (default behavior)
+2. The LLM Router checks queue depth before routing. If queue depth > 8, non-critical tasks (classification, summarization) are routed to Ollama Cloud instead
+3. Critical tasks (extraction, negotiation) always wait for local GPU — they are never degraded to cloud
+
+**During fine-tuning:** Fine-tuning runs during non-business hours via BackendScheduler. The 32B model is unloaded, the 7B fallback model is loaded for any requests that arrive during the training window. Fine-tuning uses the same GPU (~16GB for QLoRA on 32B). After training, the updated adapter is hot-reloaded and the 32B model resumes serving.
 
 ### Fine-Tuning Strategy
 
@@ -609,15 +682,88 @@ Base weights stay in VRAM. Only small LoRA layers swap per request.
 
 ---
 
+---
+
+## Section 9: Migration Strategy
+
+### Phased Rollout
+
+The current `Orchestrator.execute_workflow()` already has a `use_workflow_engine` toggle (line 232) that switches between the new WorkflowEngine and legacy execution paths. This is the natural migration seam.
+
+**Phase 1: Foundation (no behavior change)**
+- Create new PostgreSQL tables (`workflow_execution`, `node_execution`, `workflow_events`)
+- Build WorkerContext as a lightweight alternative to `agent_nick`
+- Build the DAG Scheduler and State Manager as standalone modules
+- Wire them behind a new feature flag: `use_dag_scheduler` (extends existing toggle pattern)
+- Existing orchestrator continues to serve all traffic
+
+**Phase 2: Shadow mode**
+- DAG Scheduler runs in parallel with existing orchestrator on the same workflows
+- Results are written to new tables but not used for routing
+- Compare outputs between old and new paths to validate correctness
+- No user-facing behavior change
+
+**Phase 3: Incremental cutover**
+- Switch individual workflow types to the new DAG Scheduler one at a time
+- Start with the simplest (document_extraction — linear, no loops)
+- Progress to supplier_ranking (parallel branches)
+- End with supplier_interaction (negotiation loops, email pausing)
+- Rollback per workflow type via the feature flag
+
+**Phase 4: Extraction pipeline**
+- Deploy the adaptive OCR + ensemble extraction as new DAG nodes
+- Run alongside existing DataExtractionAgent
+- Compare extraction accuracy before replacing
+- Self-improving loop begins collecting training data
+
+**Phase 5: LLM migration**
+- Switch from Phi4 to Qwen2.5-32B
+- Update model references in settings and fallback chains
+- Deploy LoRA adapters incrementally (extraction first, then negotiation, then general)
+
+**Phase 6: Decommission**
+- Remove old `Orchestrator` class, `WorkflowEngine`, synchronous `EventBus`
+- Remove `use_workflow_engine` and `use_dag_scheduler` flags
+- Clean up Phi4 model references
+
+### Handling In-Flight Workflows During Deployment
+
+Workflows already running when a new version deploys continue on the old path. The feature flag is checked at workflow start time, not per-node. New workflows pick up the new path. This prevents mid-workflow execution model switches.
+
+---
+
+## Section 10: Security & Operational Concerns
+
+### Redis Stream Security
+
+- Redis instance requires AUTH (password authentication)
+- TLS enabled for Redis connections (already supported by redis-py)
+- AgentContext messages contain `user_id` and `input_data` which may include procurement amounts and supplier names — Redis should not be exposed to public networks
+- Stream MAXLEN configured per stream to prevent unbounded memory growth
+
+### Redis Unavailability
+
+If Redis goes down:
+- DAG Scheduler pauses workflow dispatch (no new tasks published)
+- Workers in-progress finish their current task and write results directly to PostgreSQL (fallback path)
+- Result Collector stops consuming but State Manager continues to accept direct writes
+- On Redis recovery, scheduler resumes from PostgreSQL state (source of truth)
+
+### Database Connection Management
+
+Each worker process maintains its own connection pool (not shared across process boundaries). Pool size scales with worker concurrency: `min_connections = 2`, `max_connections = concurrency + 2`.
+
+---
+
 ## Components Unchanged
 
 - All 13 agent internals (business logic untouched)
-- `BaseAgent.execute()` method
+- `BaseAgent.execute()` method (signature unchanged; worker bootstrap provides compatible context — see Section 4)
 - `AgentContext` and `AgentOutput` dataclasses
 - `AgentContract` definitions
 - `AgentFactory` and `AgentRegistry`
-- `WorkflowGraph`, `WorkflowNode`, edge condition definitions
+- `WorkflowGraph`, `WorkflowNode`, edge condition data structures (execution engine replaced — see Section 1)
 - Existing `proc.routing` table (continues as audit layer)
-- FastAPI API routers (interface unchanged, wiring updated)
-- Email dispatch / IMAP monitoring internals
+- FastAPI API routers (interface unchanged, wiring updated internally)
+- IMAP polling internals (watcher gains Redis publishing — see Section 1)
 - Existing QLoRA + Unsloth fine-tuning pipeline
