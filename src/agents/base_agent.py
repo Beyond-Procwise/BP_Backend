@@ -44,24 +44,17 @@ except Exception:  # pragma: no cover - optional dependency failures handled gra
 logger = logging.getLogger(__name__)
 
 
-def _build_phi4_fallback_models() -> Tuple[str, ...]:
-    """Return fallback model identifiers that keep Joshi on phi4."""
-
-    configured = getattr(settings, "rag_model", None)
+def _build_fallback_models() -> Tuple[str, ...]:
+    """Return fallback model chain preferring Qwen2.5."""
+    configured = getattr(settings, "local_primary_model", None)
+    fallback = getattr(settings, "local_fallback_model", None)
     candidates: List[str] = []
-    for name in (configured, "phi4:latest", "phi4"):
-        if not name:
-            continue
-        if "phi4" not in name.lower():
-            continue
-        if name not in candidates:
+    for name in (configured, fallback, "qwen2.5:32b", "qwen2.5:7b", "phi4:latest"):
+        if name and name not in candidates:
             candidates.append(name)
-    if not candidates:
-        candidates.append("phi4:latest")
-    return tuple(candidates)
+    return tuple(candidates) if candidates else ("qwen2.5:32b",)
 
-
-_OLLAMA_FALLBACK_MODELS: Tuple[str, ...] = _build_phi4_fallback_models()
+_OLLAMA_FALLBACK_MODELS: Tuple[str, ...] = _build_fallback_models()
 
 
 def _slugify_agent_name(value: Any) -> str:
