@@ -205,6 +205,23 @@ class Settings(BaseSettings):
         default=256, env="CHAT_HISTORY_CACHE_MAX_ENTRIES"
     )
 
+    # Orchestration DAG Scheduler
+    use_dag_scheduler: bool = Field(
+        default=False, env="USE_DAG_SCHEDULER"
+    )
+    redis_streams_url: Optional[str] = Field(
+        default=None, env="REDIS_STREAMS_URL"
+    )
+    worker_heartbeat_interval: int = Field(
+        default=30, env="WORKER_HEARTBEAT_INTERVAL"
+    )
+    worker_task_timeout: int = Field(
+        default=300, env="WORKER_TASK_TIMEOUT"
+    )
+    worker_max_stream_len: int = Field(
+        default=10000, env="WORKER_MAX_STREAM_LEN"
+    )
+
     neo4j_uri: str = Field(default="bolt://localhost:7687", env="NEO4J_URI")
     neo4j_username: str = Field(default="neo4j", env="NEO4J_USERNAME")
     neo4j_password: str = Field(default="neo4j", env="NEO4J_PASSWORD")
