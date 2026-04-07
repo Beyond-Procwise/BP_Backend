@@ -74,6 +74,12 @@ from services.document_extractor import (
 from services.semantic_chunker import SemanticChunker
 from services.validation_gate import ValidationGate
 from services.remediation_service import RemediationService
+from agents.extraction_engine import (
+    set_db_connection_func as _set_extraction_db_func,
+    run_data_extraction as _run_new_extraction,
+    detect_document_type as _detect_doc_type_new,
+    resolve_supplier_name as _resolve_supplier,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -744,6 +750,13 @@ class DataExtractionAgent(BaseAgent):
         except Exception as exc:
             logger.warning("ML extraction pipeline init failed, using legacy extraction: %s", exc)
             self._ml_pipeline = None
+
+        # Initialize new extraction engine with DB connection for supplier lookups
+        try:
+            _set_extraction_db_func(self.agent_nick.get_db_connection)
+            logger.info("New extraction engine initialized with DB connection")
+        except Exception as exc:
+            logger.warning("Failed to set extraction engine DB connection: %s", exc)
 
     @staticmethod
     def _json_default(value: Any) -> Any:
@@ -4759,6 +4772,96 @@ class DataExtractionAgent(BaseAgent):
 
         return header_df, line_df, cleaned_notes
 
+    def _run_new_extraction_engine(
+        self,
+        file_bytes: bytes,
+        doc_type: str,
+        source_hint: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Run the new extraction engine on file bytes.
+
+        Saves bytes to a temp file, runs the extraction engine, and returns
+        the structured result dict with document_type, header data, and line items.
+        Returns None if the new engine fails (caller should fall back to legacy).
+        """
+        suffix = ".pdf"
+        if source_hint:
+            ext = os.path.splitext(source_hint)[1].lower()
+            if ext in (".docx", ".pdf"):
+                suffix = ext
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+
+            result = _run_new_extraction(tmp_path)
+            if result and not result.get("error"):
+                logger.info(
+                    "New extraction engine succeeded: doc_type=%s, keys=%s",
+                    result.get("document_type"),
+                    list(result.keys()),
+                )
+                return result
+            else:
+                logger.warning("New extraction engine returned error: %s", result.get("error") if result else "None")
+                return None
+        except Exception as exc:
+            logger.warning("New extraction engine failed, falling back to legacy: %s", exc)
+            return None
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    def _map_new_engine_result_to_structured(
+        self,
+        new_result: Dict[str, Any],
+        doc_type: str,
+        text: str,
+    ) -> StructuredExtractionResult:
+        """Map new extraction engine output to StructuredExtractionResult."""
+        doc_type_key = new_result.get("document_type", "")
+        header: Dict[str, Any] = {}
+        line_items: List[Dict[str, Any]] = []
+
+        if doc_type_key == "invoice":
+            header = dict(new_result.get("invoice_data", {}))
+            line_items = list(new_result.get("line_items", []))
+            # Map new engine field names to existing schema field names
+            header.setdefault("vendor_name", header.get("supplier_name", ""))
+            header.setdefault("invoice_id", header.get("invoice_id", ""))
+        elif doc_type_key == "po":
+            header = dict(new_result.get("po_data", {}))
+            line_items = list(new_result.get("line_items", []))
+            header.setdefault("vendor_name", header.get("supplier_name", ""))
+        elif doc_type_key == "quote":
+            header = dict(new_result.get("quote_data", {}))
+            line_items = list(new_result.get("line_items", []))
+            header.setdefault("vendor_name", header.get("supplier_id", ""))
+
+        # Build DataFrames
+        header_df = pd.DataFrame([header]) if header else pd.DataFrame()
+        line_df = pd.DataFrame(line_items) if line_items else pd.DataFrame()
+
+        report = {
+            "extraction_method": "new_extraction_engine",
+            "document_type_detected": doc_type_key,
+            "header_fields_extracted": len([v for v in header.values() if v]),
+            "line_items_extracted": len(line_items),
+        }
+
+        return StructuredExtractionResult(
+            header=header,
+            line_items=line_items,
+            header_df=header_df,
+            line_df=line_df,
+            report=report,
+        )
+
     def _extract_structured_data(
         self,
         text: str,
@@ -4767,14 +4870,15 @@ class DataExtractionAgent(BaseAgent):
         source_hint: Optional[str] = None,
     ) -> StructuredExtractionResult:
         """
-        Enhanced structured extraction using ML/DL ensemble pipeline.
+        Enhanced structured extraction using new extraction engine as primary,
+        with ML/DL ensemble pipeline as fallback.
 
-        Extraction strategy (ensemble approach for maximum accuracy):
-        1. ML Pipeline ensemble (layout-spatial + NER + semantic + regex + LLM)
-           - All methods run in parallel, results merged via confidence-weighted voting
-           - Cross-validation bonus when multiple methods agree on a value
-        2. Legacy extraction methods as fallback supplements
-        3. Validation and reconciliation
+        Extraction strategy:
+        1. New extraction engine (NuExtract + spaCy + layout analysis + regex + OCR)
+           - Runs as primary extraction with confidence-scored candidate selection
+        2. ML Pipeline ensemble as fallback if new engine fails
+        3. Legacy extraction methods as final fallback
+        4. Validation and reconciliation
 
         Returns:
             StructuredExtractionResult with header, line items, and validation report
@@ -4783,6 +4887,25 @@ class DataExtractionAgent(BaseAgent):
         import time
 
         start_time = time.time()
+
+        # Phase 0: Try new extraction engine first (primary)
+        if file_bytes:
+            new_result = self._run_new_extraction_engine(file_bytes, doc_type, source_hint)
+            if new_result:
+                structured = self._map_new_engine_result_to_structured(new_result, doc_type, text)
+                # If the new engine got reasonable results, use them
+                filled_fields = len([v for v in structured.header.values() if v])
+                if filled_fields >= 3:
+                    elapsed = time.time() - start_time
+                    logger.info(
+                        "New extraction engine: %d header fields, %d line items in %.1fs",
+                        filled_fields, len(structured.line_items), elapsed,
+                    )
+                    return structured
+                logger.info(
+                    "New engine got only %d fields, supplementing with ML pipeline",
+                    filled_fields,
+                )
 
         logger.info(f"Starting ML ensemble extraction for {doc_type}")
 
@@ -6626,9 +6749,24 @@ class DataExtractionAgent(BaseAgent):
         return candidate[:32]
 
     def _infer_vendor_name(self, text: str, object_key: str | None = None) -> str:
+        # Try new extraction engine's supplier resolution first (Postgres + AI)
+        try:
+            resolved = _resolve_supplier("", text)
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         for line in lines[:5]:
             if not re.search(r"(invoice|purchase order|quote|bill|statement)", line, re.I):
+                # Try matching against Postgres supplier table
+                try:
+                    matched = _resolve_supplier(line, "")
+                    if matched:
+                        return matched
+                except Exception:
+                    pass
                 return line
         if object_key:
             base = object_key.split("/")[-1].rsplit(".", 1)[0]
