@@ -1,5 +1,10 @@
 # ProcWise/agents/base_agent.py
 
+import os as _os
+_os.environ.setdefault("HF_HUB_OFFLINE", "1")
+_os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+_os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+
 import boto3
 from botocore.config import Config
 import json
@@ -1326,7 +1331,7 @@ class AgentNick:
         self.settings = settings
         logger.info("Initializing shared clients...")
         self.device = configure_gpu()
-        os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
+        os.environ.setdefault("OLLAMA_NUM_PARALLEL", "8")
         os.environ.setdefault("OMP_NUM_THREADS", "8")
         self._db_engine = None
         self.qdrant_client = QdrantClient(url=self.settings.qdrant_url, api_key=self.settings.qdrant_api_key)
@@ -1366,6 +1371,7 @@ class AgentNick:
 
         self.agents = {}
         self._initialize_qdrant_collection()
+        self._preload_ollama_model()
         logger.info("AgentNick is ready.")
 
     def _initialise_static_policy_corpus(self) -> None:
@@ -1547,6 +1553,24 @@ class AgentNick:
             user=self.settings.db_user, password=self.settings.db_password,
             port=self.settings.db_port
         )
+
+    def _preload_ollama_model(self) -> None:
+        """Preload the primary LLM model into Ollama's VRAM with keep_alive.
+
+        Sends a minimal request so the model is loaded and stays resident,
+        avoiding cold-start latency on the first real agent request.
+        """
+        model = getattr(self.settings, "extraction_model", None) or "qwen2.5:32b"
+        try:
+            import requests as _req
+            _req.post(
+                "http://localhost:11434/api/generate",
+                json={"model": model, "prompt": "", "keep_alive": "24h"},
+                timeout=30,
+            )
+            logger.info("Preloaded Ollama model '%s' with 24h keep_alive", model)
+        except Exception as exc:
+            logger.warning("Ollama model preload failed (non-critical): %s", exc)
 
     def _initialize_qdrant_collection(self):
         collection_name = self.settings.qdrant_collection_name
