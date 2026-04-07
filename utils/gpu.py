@@ -19,6 +19,12 @@ import logging
 import os
 from typing import Optional, Any
 
+# Force HuggingFace libraries to use local cache only - no HTTP calls.
+# Must be set before any HF import (sentence_transformers, transformers).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+
 try:  # ``torch`` is optional at import time for some environments
     import torch  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
