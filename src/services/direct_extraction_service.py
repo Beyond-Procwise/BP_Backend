@@ -517,8 +517,15 @@ DOCUMENT TEXT:
                 continue
             payload[col] = self._coerce_value(val, columns[col])
 
-        # Add audit columns
-        payload.update(audit)
+        # Add audit columns (already datetime objects from caller)
+        for k, v in audit.items():
+            if v is not None:
+                payload[k] = v
+
+        # Final sanitization: convert any remaining empty strings to None
+        for k, v in list(payload.items()):
+            if isinstance(v, str) and not v.strip():
+                payload[k] = None
 
         try:
             conn = self._agent_nick.get_db_connection()
@@ -603,7 +610,15 @@ DOCUMENT TEXT:
                     if line_pk and line_pk not in payload:
                         payload[line_pk] = f"{pk_value}-{idx}"
 
-                    payload.update(audit)
+                    # Add audit columns
+                    for k, v in audit.items():
+                        if v is not None:
+                            payload[k] = v
+
+                    # Final sanitization
+                    for k, v in list(payload.items()):
+                        if isinstance(v, str) and not v.strip():
+                            payload[k] = None
 
                     col_names = list(payload.keys())
                     placeholders = ["%s"] * len(col_names)
@@ -631,6 +646,12 @@ DOCUMENT TEXT:
     def _coerce_value(val: Any, col_type: str) -> Any:
         """Coerce a value to the target column type."""
         if val is None:
+            return None
+
+        # Empty strings should be NULL for non-text types
+        if isinstance(val, str) and not val.strip():
+            if col_type in ("text", "varchar", "character varying"):
+                return None
             return None
 
         if col_type in ("numeric", "integer", "smallint"):
@@ -683,5 +704,22 @@ DOCUMENT TEXT:
                     return None
             return val
 
-        # Text types — just convert to string
-        return str(val).strip() if val is not None else None
+        if col_type in ("timestamp", "timestamp without time zone"):
+            if isinstance(val, datetime):
+                return val
+            if isinstance(val, str):
+                text = val.strip()
+                if not text:
+                    return None
+                try:
+                    from dateutil import parser
+                    return parser.parse(text)
+                except Exception:
+                    return None
+            return val
+
+        # Text types — just convert to string, empty → None
+        if val is not None:
+            s = str(val).strip()
+            return s if s else None
+        return None

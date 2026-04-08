@@ -241,6 +241,16 @@ class AgentNickOrchestrator:
                 header = dict(result.get("quote_data", {}))
                 line_items = list(result.get("line_items", []))
 
+            # Sanitize: strip empty strings to None
+            header = {
+                k: (v if v != "" else None)
+                for k, v in header.items()
+            }
+            line_items = [
+                {k: (v if v != "" else None) for k, v in item.items()}
+                for item in line_items
+            ]
+
             return {
                 "header": header,
                 "line_items": line_items,
