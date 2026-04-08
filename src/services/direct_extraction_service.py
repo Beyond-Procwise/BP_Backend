@@ -267,25 +267,88 @@ class DirectExtractionService:
         # Fallback: try canonical S3 path if empty
         if not text.strip() and file_path.startswith("documents/"):
             canonical_map = {
-                "documents/invoice/": "Invoice/",
-                "documents/po/": "Purchase_Order/",
-                "documents/quote/": "Invoice/",
+                "documents/invoice/": ["Invoice/", "PO_Invoice/"],
+                "documents/po/": ["Purchase_Order/", "PO_Invoice/"],
+                "documents/quote/": ["Invoice/", "PO_Invoice/"],
             }
-            for prefix, s3_prefix in canonical_map.items():
+            for prefix, s3_prefixes in canonical_map.items():
                 if file_path.startswith(prefix):
                     filename = file_path[len(prefix):]
-                    alt_bytes = self._download_s3(s3_prefix + filename)
-                    if alt_bytes:
-                        alt_text = self._extract_text_from_bytes(alt_bytes, ext)
-                        if alt_text.strip():
-                            logger.info(
-                                "Canonical fallback '%s%s' succeeded (%d chars)",
-                                s3_prefix, filename, len(alt_text),
-                            )
+                    for s3_prefix in s3_prefixes:
+                        # Try exact filename first
+                        alt_bytes = self._download_s3(s3_prefix + filename)
+                        if alt_bytes:
+                            alt_text = self._extract_text_from_bytes(alt_bytes, ext)
+                            if alt_text.strip():
+                                logger.info(
+                                    "Canonical fallback '%s%s' succeeded (%d chars)",
+                                    s3_prefix, filename, len(alt_text),
+                                )
+                                return alt_text, alt_bytes
+
+                        # Try fuzzy match: search S3 prefix for similar filename
+                        alt_text, alt_bytes = self._search_s3_fuzzy(
+                            s3_prefix, filename, ext
+                        )
+                        if alt_text:
                             return alt_text, alt_bytes
                     break
 
         return text, file_bytes
+
+    def _search_s3_fuzzy(
+        self, s3_prefix: str, filename: str, ext: str
+    ) -> tuple[str, bytes]:
+        """Search S3 prefix for a file matching the key identifiers in filename."""
+        # Extract key identifiers: supplier name and document number
+        # e.g., "GOMEZ, GOOD ETC PO507269 for QUT104683 .pdf" → search for "GOMEZ" + "PO507269"
+        name_part = os.path.splitext(filename)[0].strip()
+        # Extract the document ID (PO/INV/QUT number)
+        import re
+        doc_id_match = re.search(
+            r"((?:PO|INV|QUT|INV-)\s*[\d\-]+)", name_part, re.IGNORECASE
+        )
+        doc_id = doc_id_match.group(1).replace(" ", "") if doc_id_match else ""
+        # Extract supplier name (first word group before the doc ID)
+        supplier_hint = name_part.split()[0] if name_part.split() else ""
+
+        if not doc_id and not supplier_hint:
+            return "", b""
+
+        try:
+            s3 = self._agent_nick.reserve_s3_connection().__enter__()
+            result = s3.list_objects_v2(
+                Bucket=self._s3_bucket, Prefix=s3_prefix, MaxKeys=200
+            )
+            for obj in result.get("Contents", []):
+                key = obj["Key"]
+                key_upper = key.upper()
+                # Match by document ID (most specific)
+                if doc_id and doc_id.upper() in key_upper:
+                    alt_bytes = self._download_s3(key)
+                    if alt_bytes:
+                        alt_text = self._extract_text_from_bytes(alt_bytes, ext)
+                        if alt_text.strip():
+                            logger.info(
+                                "Fuzzy S3 fallback matched '%s' via doc_id '%s' (%d chars)",
+                                key, doc_id, len(alt_text),
+                            )
+                            return alt_text, alt_bytes
+                # Match by supplier name
+                elif supplier_hint and supplier_hint.upper() in key_upper:
+                    alt_bytes = self._download_s3(key)
+                    if alt_bytes:
+                        alt_text = self._extract_text_from_bytes(alt_bytes, ext)
+                        if alt_text.strip():
+                            logger.info(
+                                "Fuzzy S3 fallback matched '%s' via supplier '%s' (%d chars)",
+                                key, supplier_hint, len(alt_text),
+                            )
+                            return alt_text, alt_bytes
+        except Exception:
+            logger.debug("Fuzzy S3 search failed for %s%s", s3_prefix, filename)
+
+        return "", b""
 
     def _download_s3(self, key: str) -> Optional[bytes]:
         """Download a file from S3."""
