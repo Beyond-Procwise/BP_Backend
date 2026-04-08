@@ -1510,38 +1510,40 @@ class DataExtractionAgent(BaseAgent):
         context: AgentContext | None = None,
     ) -> Dict:
         results: List[Dict[str, str]] = []
-        prefixes = [s3_prefix] if s3_prefix else self.settings.s3_prefixes
         key_map: OrderedDict[str, None] = OrderedDict()
         workflow_id = getattr(context, "workflow_id", None) if context else None
         agent_name = getattr(context, "agent_id", None) if context else None
 
-        for prefix in prefixes:
-            if s3_object_key and s3_object_key.startswith(prefix):
-                key_map.setdefault(s3_object_key, None)
-                continue
-            prefix_keys: List[str] = []
-            with self._borrow_s3_client() as s3_client:
-                try:
-                    prefix_keys = self._iter_s3_keys(s3_client, prefix)
-                except Exception as exc:
-                    self._log_workflow_event(
-                        event="s3_scan_error",
-                        workflow_id=workflow_id,
-                        agent_name=agent_name,
-                        level="warning",
-                        prefix=prefix,
-                        error=str(exc),
-                    )
-                    continue
-            for key in prefix_keys:
-                key_map.setdefault(key, None)
-            self._log_workflow_event(
-                event="s3_scan",
-                workflow_id=workflow_id,
-                agent_name=agent_name,
-                prefix=prefix,
-                discovered=len(prefix_keys),
-            )
+        if s3_object_key:
+            # Direct key provided (e.g., from process_monitor) — process only this file
+            key_map.setdefault(s3_object_key, None)
+        else:
+            # No specific key — scan S3 prefixes for all documents
+            prefixes = [s3_prefix] if s3_prefix else self.settings.s3_prefixes
+            for prefix in prefixes:
+                prefix_keys: List[str] = []
+                with self._borrow_s3_client() as s3_client:
+                    try:
+                        prefix_keys = self._iter_s3_keys(s3_client, prefix)
+                    except Exception as exc:
+                        self._log_workflow_event(
+                            event="s3_scan_error",
+                            workflow_id=workflow_id,
+                            agent_name=agent_name,
+                            level="warning",
+                            prefix=prefix,
+                            error=str(exc),
+                        )
+                        continue
+                for key in prefix_keys:
+                    key_map.setdefault(key, None)
+                self._log_workflow_event(
+                    event="s3_scan",
+                    workflow_id=workflow_id,
+                    agent_name=agent_name,
+                    prefix=prefix,
+                    discovered=len(prefix_keys),
+                )
 
         supported_exts = {".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".xls"}
         keys = [
