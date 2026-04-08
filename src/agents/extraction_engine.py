@@ -473,7 +473,7 @@ def _call_nuextract_invoice(text: str) -> dict:
                 "num_gpu": 0,
             },
         },
-        timeout=120,
+        timeout=300,
     )
     response.raise_for_status()
 
@@ -572,7 +572,7 @@ def _call_nuextract_po(text: str) -> dict:
                 "num_gpu": 0,
             },
         },
-        timeout=120,
+        timeout=300,
     )
     response.raise_for_status()
 
@@ -4200,7 +4200,7 @@ def _ai_identify_supplier(text: str, extracted_name: str = "") -> str:
             f"{OLLAMA_BASE_URL}/api/generate",
             json={"model": NUEXTRACT_MODEL, "prompt": prompt, "stream": False,
                   "options": {"temperature": 0, "num_predict": 100, "num_gpu": 0}},
-            timeout=60,
+            timeout=180,
         )
         response.raise_for_status()
         result = response.json().get("response", "").strip()
@@ -4756,7 +4756,7 @@ def _call_nuextract_quote(text: str) -> dict:
                 "num_gpu": 0,
             },
         },
-        timeout=120,
+        timeout=300,
     )
     response.raise_for_status()
     raw_output = response.json().get("response", "").strip()
