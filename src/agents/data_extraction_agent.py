@@ -1962,6 +1962,23 @@ class DataExtractionAgent(BaseAgent):
                 if not decision.passed:
                     needs_review = True
 
+            # --- Improved currency detection ---
+            if not header.get("currency"):
+                try:
+                    from services.field_accuracy import detect_currency
+                    vendor_currency = ""
+                    if vendor_profile and vendor_profile.currency_hint:
+                        vendor_currency = vendor_profile.currency_hint
+                    detected = detect_currency(
+                        text,
+                        country=header.get("country", ""),
+                        vendor_currency_hint=vendor_currency,
+                    )
+                    if detected:
+                        header["currency"] = detected
+                except Exception:
+                    pass
+
             header["confidence_score"] = confidence_score
             header["needs_review"] = needs_review
             # --- End Validation Gate ---
@@ -6318,53 +6335,45 @@ class DataExtractionAgent(BaseAgent):
         ]
 
     # ============================ NORMALIZE / VALIDATE ====================
-    def _clean_numeric(self, value: str | int | float) -> Optional[float]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        value_str = str(value).strip()
-        if not value_str:
-            return None
-        if not any(ch.isdigit() for ch in value_str):
-            return None
-        trimmed = value_str.strip()
-        is_negative = trimmed.startswith("(") and trimmed.endswith(")")
-        value_str = value_str.replace(",", "")
-        numbers = re.findall(r"\d*\.\d+|\d+", value_str)
-        if not numbers:
-            logger.debug("Unable to parse numeric value '%s'", value)
-            return None
-        num_str = numbers[0] if "%" in value_str else numbers[-1]
+    def _clean_numeric(self, raw: Any) -> Optional[float]:
+        """Clean and parse a numeric value handling international formats."""
         try:
-            num = float(num_str)
-            return -num if is_negative else num
-        except ValueError:
-            logger.debug("Unable to parse numeric value '%s'", value)
-            return None
-
-    def _clean_date(self, value: str) -> Optional[datetime.date]:
-        try:
-            value_str = str(value).strip()
-            if not value_str:
-                return None
-            value_str = re.sub(r"[^\w\s:/\-.]", " ", value_str)
-            if not any(ch.isdigit() for ch in value_str) and not re.search(
-                r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b", value_str, re.I,
-            ):
-                return None
-            match_sub = re.search(r"(\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4}|\d{4}-\d{2}-\d{2})", value_str)
-            if match_sub:
-                value_str = match_sub.group(1)
-            value_str = re.sub(r"([A-Za-z])\.\b", r"\1", value_str)
-            match = re.match(r"(.+?)\s*\+\s*(\d+)\s*days", value_str, re.I)
-            if match:
-                base = parser.parse(match.group(1), fuzzy=True)
-                offset = int(match.group(2))
-                return (base + timedelta(days=offset)).date()
-            return parser.parse(value_str, fuzzy=True).date()
+            from services.field_accuracy import clean_numeric
+            return clean_numeric(raw)
         except Exception:
-            logger.debug("Unable to parse date value '%s'", value)
+            pass
+        # Fallback to basic cleaning
+        if raw is None:
+            return None
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        text = str(raw).strip()
+        text = re.sub(r"[£$€¥₹,\s]", "", text)
+        match = re.search(r"-?\d*\.?\d+", text)
+        return float(match.group()) if match else None
+
+    def _clean_date(self, raw: Any) -> Optional[str]:
+        """Clean and parse a date value using locale-aware parsing."""
+        if raw is None:
+            return None
+        if isinstance(raw, (datetime, date)):
+            return raw.strftime("%Y-%m-%d")
+        text = str(raw).strip()
+        if not text:
+            return None
+        try:
+            from services.field_accuracy import parse_date
+            parsed = parse_date(text, dayfirst=True)
+            if parsed:
+                return parsed.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        # Fallback to dateutil
+        try:
+            from dateutil import parser as dateutil_parser
+            dt = dateutil_parser.parse(text, dayfirst=True, fuzzy=True)
+            return dt.date().strftime("%Y-%m-%d")
+        except Exception:
             return None
 
     def _clean_text(self, value: str) -> str:
