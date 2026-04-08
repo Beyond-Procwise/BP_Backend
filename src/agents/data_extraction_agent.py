@@ -6837,10 +6837,10 @@ class DataExtractionAgent(BaseAgent):
 
     def _persist_header_to_postgres(self, header: Dict[str, str], doc_type: str, conn=None) -> bool:
         table_map = {
-            "Invoice": ("proc", "invoice_agent", "invoice_id"),
-            "Purchase_Order": ("proc", "purchase_order_agent", "po_id"),
-            "Quote": ("proc", "quote_agent", "quote_id"),
-            "Contract": ("proc", "contracts", "contract_id"),
+            "Invoice": ("proc", "bp_invoice", "invoice_id"),
+            "Purchase_Order": ("proc", "bp_purchase_order", "po_id"),
+            "Quote": ("proc", "bp_quote", "quote_id"),
+            "Contract": ("proc", "bp_contracts", "contract_id"),
         }
         target = table_map.get(doc_type)
         if not target:

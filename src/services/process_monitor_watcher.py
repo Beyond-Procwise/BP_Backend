@@ -347,7 +347,7 @@ class ProcessMonitorWatcher:
                     UPDATE proc.process_monitor
                     SET status = 'Completed', start_ts = NULL
                     WHERE status = 'Extracting'
-                      AND start_ts < NOW() - INTERVAL '10 minutes'
+                      AND start_ts < NOW() - INTERVAL '30 minutes'
                     RETURNING id
                     """
                 )
