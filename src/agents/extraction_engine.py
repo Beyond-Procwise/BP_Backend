@@ -40,7 +40,7 @@ OCR_BINARIZE_C = 10
 
 SPACY_MODEL = "en_core_web_sm"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-NUEXTRACT_MODEL = "nuextract:3.8b"
+NUEXTRACT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:latest")
 
 LINE_ITEM_ROW_Y_TOLERANCE = 8
 LINE_ITEM_COL_X_GAP = 40

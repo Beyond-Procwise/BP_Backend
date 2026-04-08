@@ -1089,7 +1089,7 @@ class MLExtractionPipeline:
         self,
         embedding_model: Any = None,
         ollama_caller: Any = None,
-        extraction_model: str = "llama3.2",
+        extraction_model: str = "BeyondProcwise/AgentNick:latest",
     ) -> None:
         self._layout_extractor = LayoutSpatialExtractor()
         self._ner_extractor = TransformerNERExtractor()

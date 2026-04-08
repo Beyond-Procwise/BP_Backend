@@ -314,7 +314,7 @@ class Settings(BaseSettings):
     imap_mailbox: str = Field(default="INBOX", env="IMAP_MAILBOX")
     imap_search_criteria: str = Field(default="ALL", env="IMAP_SEARCH_CRITERIA")
 
-    extraction_model: str = "gpt-oss:20b"
+    extraction_model: str = "BeyondProcwise/AgentNick:latest"
     llm_backend: str = Field(default="ollama", env="LLM_BACKEND")
     langchain_provider: str = Field(default="ollama", env="LANGCHAIN_PROVIDER")
     langchain_model: Optional[str] = Field(
@@ -340,7 +340,7 @@ class Settings(BaseSettings):
         default=False, env="LANGGRAPH_TRACING_ENABLED"
     )
     document_extraction_model: str = Field(
-        default="llama3.2", env="DOCUMENT_EXTRACTION_MODEL"
+        default="BeyondProcwise/AgentNick:latest", env="DOCUMENT_EXTRACTION_MODEL"
     )
     rag_model: str = Field(default="qwen3:30b", env="RAG_LLM_MODEL")
     # ``BAAI/bge-large-en-v1.5`` provides state-of-the-art dense retrieval

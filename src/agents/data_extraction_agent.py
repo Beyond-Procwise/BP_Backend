@@ -804,7 +804,7 @@ class DataExtractionAgent(BaseAgent):
     # Regex-based header extraction
     # --------------------------------------------------------------------
     def _select_fast_extraction_model(self) -> str:
-        preferred_models: Tuple[str, ...] = ("llama3.2:latest", "phi4:latest")
+        preferred_models: Tuple[str, ...] = ("BeyondProcwise/AgentNick:latest", "qwen2.5:32b", "qwen3:30b", "nuextract:3.8b")
 
         override_model: Optional[str] = None
         resolver = getattr(self.agent_nick, "get_agent_model", None)
