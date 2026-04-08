@@ -49,6 +49,8 @@ TABLE_SCHEMAS = {
             "invoice_total_incl_tax": "numeric", "exchange_rate_to_usd": "numeric",
             "converted_amount_usd": "numeric", "country": "text", "region": "text",
             "invoice_status": "text",
+            "created_date": "timestamp", "created_by": "text",
+            "last_modified_by": "text", "last_modified_date": "timestamp",
         },
         "line_columns": {
             "invoice_line_id": "text", "invoice_id": "text", "line_no": "integer",
@@ -58,6 +60,8 @@ TABLE_SCHEMAS = {
             "tax_amount": "numeric", "total_amount_incl_tax": "numeric",
             "po_id": "text", "delivery_date": "date", "country": "text",
             "region": "text",
+            "created_date": "timestamp", "created_by": "text",
+            "last_modified_by": "text", "last_modified_date": "timestamp",
         },
     },
     "Purchase_Order": {
@@ -78,6 +82,8 @@ TABLE_SCHEMAS = {
             "delivery_address_line2": "text", "delivery_city": "text",
             "postal_code": "text", "payment_terms": "varchar",
             "po_status": "varchar", "contract_id": "text",
+            "created_date": "timestamp", "created_by": "text",
+            "last_modified_by": "text", "last_modified_date": "timestamp",
         },
         "line_columns": {
             "po_line_id": "text", "po_id": "text", "line_number": "integer",
@@ -86,6 +92,8 @@ TABLE_SCHEMAS = {
             "unit_of_measue": "text", "currency": "varchar",
             "line_total": "numeric", "tax_percent": "smallint",
             "tax_amount": "numeric", "total_amount": "numeric",
+            "created_date": "timestamp", "created_by": "text",
+            "last_modified_by": "text", "last_modified_date": "timestamp",
         },
     },
     "Quote": {
@@ -103,6 +111,8 @@ TABLE_SCHEMAS = {
             "total_amount": "numeric", "tax_percent": "numeric",
             "tax_amount": "numeric", "total_amount_incl_tax": "numeric",
             "po_id": "text", "country": "text", "region": "text",
+            "created_date": "timestamp", "created_by": "text",
+            "last_modified_by": "text", "last_modified_date": "timestamp",
         },
         "line_columns": {
             "quote_line_id": "text", "quote_id": "text",
@@ -112,6 +122,8 @@ TABLE_SCHEMAS = {
             "line_total": "numeric", "tax_percent": "numeric",
             "tax_amount": "numeric", "total_amount": "numeric",
             "currency": "varchar",
+            "created_date": "timestamp", "created_by": "text",
+            "last_modified_by": "text", "last_modified_date": "timestamp",
         },
     },
     "Contract": {
@@ -131,6 +143,8 @@ TABLE_SCHEMAS = {
             "is_amendment": "text", "parent_contract_id": "text",
             "auto_renew_flag": "text", "renewal_term": "text",
             "contract_lifecycle_status": "text",
+            "created_date": "timestamp", "created_by": "text",
+            "last_modified_by": "text", "last_modified_date": "timestamp",
         },
         "line_columns": {},
     },
@@ -550,7 +564,12 @@ DOCUMENT TEXT:
                 has_pk = cur.fetchone() is not None
 
                 if has_pk:
-                    update_cols = [c for c in col_names if c != pk_col]
+                    # On update: preserve created_date/created_by, update last_modified
+                    preserve_on_update = {"created_date", "created_by"}
+                    update_cols = [
+                        c for c in col_names
+                        if c != pk_col and c not in preserve_on_update
+                    ]
                     if update_cols:
                         update_clause = ", ".join(
                             f"{c} = EXCLUDED.{c}" for c in update_cols
