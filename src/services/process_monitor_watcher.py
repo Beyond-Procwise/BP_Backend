@@ -235,6 +235,8 @@ class ProcessMonitorWatcher:
         record_id = record["id"]
         file_path = record.get("file_path", "")
         category = record.get("category", "")
+        document_type = record.get("document_type", "")
+        user_id = record.get("user_id")
         logger.info(
             "Starting extraction for record %s: file_path=%s category=%s",
             record_id,
@@ -247,6 +249,9 @@ class ProcessMonitorWatcher:
                 raise RuntimeError("Orchestrator not available")
             result = orchestrator.execute_extraction_flow(
                 s3_object_key=file_path,
+                category=category,
+                document_type=document_type,
+                user_id=str(user_id) if user_id is not None else None,
             )
             status = "error"
             if isinstance(result, dict):
