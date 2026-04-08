@@ -1543,7 +1543,7 @@ class DataExtractionAgent(BaseAgent):
                 discovered=len(prefix_keys),
             )
 
-        supported_exts = {".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg"}
+        supported_exts = {".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".xls"}
         keys = [
             key
             for key in key_map.keys()
@@ -1629,6 +1629,16 @@ class DataExtractionAgent(BaseAgent):
                 error=str(exc),
             )
             return None
+
+        # --- Tabular file fast path ---
+        ext = os.path.splitext(object_key)[1].lower()
+        if ext in (".csv", ".xlsx", ".xls"):
+            category = ""
+            if context and hasattr(context, "input_data") and isinstance(context.input_data, dict):
+                category = context.input_data.get("category", "")
+            return self._process_tabular_document(
+                file_bytes, object_key, category=category, context=context
+            )
 
         force_ocr_vendors = set(
             vendor.lower() for vendor in getattr(self.settings, "force_ocr_vendors", [])
@@ -1877,6 +1887,226 @@ class DataExtractionAgent(BaseAgent):
             errors=errors,
         )
         return result
+
+    # ============================ TABULAR PROCESSING ======================
+    def _process_tabular_document(
+        self,
+        file_bytes: bytes,
+        object_key: str,
+        *,
+        category: str = "",
+        context: AgentContext | None = None,
+    ) -> Optional[Dict[str, str]]:
+        """Process CSV/Excel files: map columns to schema, persist to DB or KG."""
+        from utils.procurement_schema import (
+            normalize_category,
+            map_columns_to_schema,
+            DOC_TYPE_TO_TABLE,
+            PROCUREMENT_SCHEMAS,
+        )
+
+        workflow_id = getattr(context, "workflow_id", None) if context else None
+        ext = os.path.splitext(object_key)[1].lower()
+
+        # --- Read into DataFrame(s) ---
+        sheets: Dict[str, pd.DataFrame] = {}
+        try:
+            if ext == ".csv":
+                for encoding in ("utf-8", "latin-1", "cp1252"):
+                    try:
+                        df = pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+                        sheets["default"] = df
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                if not sheets:
+                    logger.error("Failed to decode CSV %s with any encoding", object_key)
+                    return {"object_key": object_key, "status": "error", "error": "encoding_failure"}
+            elif ext in (".xlsx", ".xls"):
+                try:
+                    xls = pd.ExcelFile(BytesIO(file_bytes))
+                    for sheet_name in xls.sheet_names:
+                        sheets[sheet_name] = xls.parse(sheet_name)
+                except Exception as exc:
+                    logger.error("Failed to read Excel %s: %s", object_key, exc)
+                    return {"object_key": object_key, "status": "error", "error": str(exc)}
+        except Exception as exc:
+            logger.error("Failed to read tabular file %s: %s", object_key, exc)
+            return {"object_key": object_key, "status": "error", "error": str(exc)}
+
+        # --- Resolve target schema ---
+        doc_type = normalize_category(category)
+        total_rows = 0
+        total_mapped = 0
+
+        for sheet_name, df in sheets.items():
+            if df.empty:
+                logger.warning("Empty sheet '%s' in %s", sheet_name, object_key)
+                continue
+
+            # Check if sheet name hints at a doc type
+            sheet_doc_type = doc_type or normalize_category(sheet_name)
+
+            if sheet_doc_type:
+                # --- Known category: map to DB ---
+                table_info = DOC_TYPE_TO_TABLE.get(sheet_doc_type)
+                if not table_info:
+                    logger.warning("No table mapping for doc_type '%s'", sheet_doc_type)
+                    self._ingest_to_kg(df, category or sheet_name, object_key, context=context)
+                    continue
+
+                header_table = table_info[0]
+                column_mapping = map_columns_to_schema(
+                    list(df.columns), header_table
+                )
+
+                if not column_mapping:
+                    logger.warning(
+                        "No columns matched schema for %s (category=%s). "
+                        "Columns: %s. Falling back to KG.",
+                        object_key, category, list(df.columns),
+                    )
+                    self._ingest_to_kg(df, category or sheet_name, object_key, context=context)
+                    continue
+
+                unmapped = [c for c in df.columns if c not in column_mapping]
+                if unmapped:
+                    logger.info(
+                        "Unmapped columns for %s: %s", object_key, unmapped
+                    )
+
+                logger.info(
+                    "Processing tabular file %s: sheet=%s rows=%d matched=%d/%d",
+                    object_key, sheet_name, len(df), len(column_mapping), len(df.columns),
+                )
+
+                # Persist rows via staging pattern
+                schema_name, table_name = header_table.split(".", 1)
+                row_count = self._persist_tabular_rows(
+                    df, column_mapping, schema_name, table_name
+                )
+                total_rows += row_count
+                total_mapped += len(column_mapping)
+            else:
+                # --- Unknown category: push to Neo4j KG ---
+                logger.info(
+                    "Unrecognized category '%s' for %s — ingesting to KG",
+                    category, object_key,
+                )
+                self._ingest_to_kg(df, category or sheet_name, object_key, context=context)
+                total_rows += len(df)
+
+        # Vectorize for RAG regardless of path
+        try:
+            text_repr = self._tabular_to_text(sheets)
+            if text_repr.strip():
+                self._vectorize_document(
+                    text_repr,
+                    os.path.basename(object_key),
+                    doc_type or category or "tabular",
+                    "tabular_data",
+                    object_key,
+                )
+        except Exception:
+            logger.warning("Failed to vectorize tabular file %s", object_key, exc_info=True)
+
+        return {
+            "object_key": object_key,
+            "status": "completed",
+            "doc_type": doc_type or category or "unknown",
+            "total_rows": str(total_rows),
+            "mapped_columns": str(total_mapped),
+        }
+
+    def _persist_tabular_rows(
+        self,
+        df: pd.DataFrame,
+        column_mapping: Dict[str, str],
+        schema_name: str,
+        table_name: str,
+    ) -> int:
+        """Persist DataFrame rows to the target table via staging pattern."""
+        from utils.procurement_schema import PROCUREMENT_SCHEMAS
+
+        schema = PROCUREMENT_SCHEMAS.get(f"{schema_name}.{table_name}")
+        pk_col = schema.required[0] if schema and schema.required else None
+        row_count = 0
+        chunk_size = 10_000
+
+        for start in range(0, len(df), chunk_size):
+            chunk = df.iloc[start : start + chunk_size]
+            try:
+                with self.agent_nick.get_db_connection() as conn:
+                    conn.autocommit = True
+                    with conn.cursor() as cur:
+                        for _, row in chunk.iterrows():
+                            payload: Dict[str, Any] = {}
+                            for csv_col, schema_col in column_mapping.items():
+                                val = row.get(csv_col)
+                                if pd.isna(val):
+                                    continue
+                                payload[schema_col] = val
+
+                            if not payload:
+                                continue
+
+                            # Generate PK if missing
+                            if pk_col and pk_col not in payload:
+                                payload[pk_col] = uuid.uuid4().hex[:8]
+
+                            conflict_cols = [pk_col] if pk_col and self._has_unique_constraint(
+                                cur, schema_name, table_name, [pk_col]
+                            ) else []
+                            update_cols = [
+                                c for c in payload.keys() if c not in set(conflict_cols)
+                            ]
+                            self._merge_from_staging(
+                                cur,
+                                target_schema=schema_name,
+                                target_table=table_name,
+                                payload=payload,
+                                conflict_cols=conflict_cols,
+                                update_cols=update_cols,
+                            )
+                            row_count += 1
+            except Exception:
+                logger.exception(
+                    "Failed to persist chunk starting at row %d for %s.%s",
+                    start, schema_name, table_name,
+                )
+        return row_count
+
+    def _tabular_to_text(self, sheets: Dict[str, pd.DataFrame]) -> str:
+        """Convert tabular data to text representation for vectorization."""
+        parts: List[str] = []
+        for sheet_name, df in sheets.items():
+            if df.empty:
+                continue
+            header = " | ".join(str(c) for c in df.columns)
+            rows = []
+            for _, row in df.head(50).iterrows():
+                rows.append(" | ".join(str(v) for v in row.values if pd.notna(v)))
+            parts.append(f"Sheet: {sheet_name}\n{header}\n" + "\n".join(rows))
+        return "\n\n".join(parts)
+
+    def _ingest_to_kg(
+        self,
+        df: pd.DataFrame,
+        category: str,
+        object_key: str,
+        *,
+        context: AgentContext | None = None,
+    ) -> None:
+        """Ingest a DataFrame into Neo4j Knowledge Graph."""
+        try:
+            from services.kg_ingestion_service import KGIngestionService
+
+            kg_service = KGIngestionService(self.agent_nick)
+            kg_service.ingest_dataframe(df, category, source=object_key)
+        except Exception:
+            logger.exception(
+                "Failed to ingest %s (category=%s) to KG", object_key, category
+            )
 
     # ============================ EXTRACTION HELPERS ======================
     def _extract_pdf_text_bundle(
