@@ -82,6 +82,7 @@ TABLE_SCHEMAS = {
             "delivery_address_line2": "text", "delivery_city": "text",
             "postal_code": "text", "payment_terms": "varchar",
             "po_status": "varchar", "contract_id": "text",
+            "exchange_rate_to_usd": "numeric", "converted_amount_usd": "numeric",
             "created_date": "timestamp", "created_by": "text",
             "last_modified_by": "text", "last_modified_date": "timestamp",
         },

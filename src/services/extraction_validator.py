@@ -90,6 +90,10 @@ class ExtractionValidator:
         header, line_items, pass2 = self._pass2_business_rules(header, line_items, doc_type)
         all_discrepancies.extend(pass2)
 
+        # Pass 2b: Currency conversion
+        header, pass2b = self._calculate_currency_conversion(header, doc_type)
+        all_discrepancies.extend(pass2b)
+
         # Pass 3: Confidence scoring
         header, pass3 = self._pass3_confidence_scoring(header, doc_type)
         all_discrepancies.extend(pass3)
@@ -451,6 +455,131 @@ class ExtractionValidator:
                     message=f"Required field '{field}' is missing or empty",
                 ))
         return discrepancies
+
+    # ------------------------------------------------------------------
+    # Currency conversion
+    # ------------------------------------------------------------------
+    # Static fallback rates (updated periodically by ModelSyncService)
+    _STATIC_USD_RATES: Dict[str, float] = {
+        "USD": 1.0,
+        "GBP": 1.27,
+        "EUR": 1.08,
+        "JPY": 0.0067,
+        "CAD": 0.74,
+        "AUD": 0.65,
+        "CHF": 1.12,
+        "INR": 0.012,
+        "NZD": 0.60,
+        "SEK": 0.096,
+        "NOK": 0.093,
+        "DKK": 0.145,
+        "SGD": 0.74,
+        "HKD": 0.128,
+        "ZAR": 0.055,
+        "BRL": 0.20,
+        "MXN": 0.058,
+        "AED": 0.272,
+        "PLN": 0.25,
+        "CZK": 0.043,
+    }
+
+    def _calculate_currency_conversion(
+        self,
+        header: Dict[str, Any],
+        doc_type: str,
+    ) -> Tuple[Dict[str, Any], List[Discrepancy]]:
+        """Calculate exchange_rate_to_usd and converted_amount_usd."""
+        discrepancies: List[Discrepancy] = []
+
+        # Determine the total amount field
+        total_field = {
+            "Invoice": "invoice_total_incl_tax",
+            "Purchase_Order": "total_amount",
+            "Quote": "total_amount_incl_tax",
+            "Contract": "total_contract_value",
+        }.get(doc_type)
+
+        if not total_field:
+            return header, discrepancies
+
+        currency = str(header.get("currency", "")).strip().upper()
+        total = self._to_float(header.get(total_field))
+
+        if not currency or total is None:
+            return header, discrepancies
+
+        if currency == "USD":
+            header["exchange_rate_to_usd"] = 1.0
+            header["converted_amount_usd"] = total
+            discrepancies.append(Discrepancy(
+                field_name="converted_amount_usd",
+                rule_name="currency_conversion",
+                severity="info",
+                corrected_value=str(total),
+                confidence=1.0,
+                pass_number=2,
+                source="currency_conversion",
+                message=f"USD amount — no conversion needed: {total}",
+            ))
+            return header, discrepancies
+
+        # Try live rate first
+        rate = self._get_live_exchange_rate(currency)
+        rate_source = "live_api"
+
+        if rate is None:
+            # Fallback to static rates
+            rate = self._STATIC_USD_RATES.get(currency)
+            rate_source = "static_fallback"
+
+        if rate is None:
+            discrepancies.append(Discrepancy(
+                field_name="exchange_rate_to_usd",
+                rule_name="currency_conversion_failed",
+                severity="warning",
+                extracted_value=currency,
+                pass_number=2,
+                source="currency_conversion",
+                message=f"No exchange rate available for {currency} to USD",
+            ))
+            return header, discrepancies
+
+        converted = round(total * rate, 2)
+        header["exchange_rate_to_usd"] = round(rate, 6)
+        header["converted_amount_usd"] = converted
+
+        discrepancies.append(Discrepancy(
+            field_name="converted_amount_usd",
+            rule_name="currency_conversion",
+            severity="info",
+            corrected_value=str(converted),
+            confidence=0.95 if rate_source == "live_api" else 0.80,
+            pass_number=2,
+            source=rate_source,
+            message=f"{currency} {total} × {rate:.6f} = USD {converted} (source: {rate_source})",
+        ))
+
+        return header, discrepancies
+
+    def _get_live_exchange_rate(self, from_currency: str) -> Optional[float]:
+        """Fetch live exchange rate from free API. Returns rate to convert 1 unit to USD."""
+        try:
+            # Use exchangerate-api.com (free, no key required for basic usage)
+            resp = requests.get(
+                f"https://open.er-api.com/v6/latest/{from_currency}",
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                usd_rate = data.get("rates", {}).get("USD")
+                if usd_rate:
+                    logger.debug(
+                        "Live exchange rate: 1 %s = %s USD", from_currency, usd_rate
+                    )
+                    return float(usd_rate)
+        except Exception:
+            logger.debug("Live exchange rate fetch failed for %s", from_currency)
+        return None
 
     # ------------------------------------------------------------------
     # Pass 3: Confidence scoring
