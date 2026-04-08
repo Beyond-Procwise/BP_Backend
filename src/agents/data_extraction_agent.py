@@ -5307,6 +5307,29 @@ class DataExtractionAgent(BaseAgent):
         the structured result dict with document_type, header data, and line items.
         Returns None if the new engine fails (caller should fall back to legacy).
         """
+        if not file_bytes:
+            logger.debug("No file bytes provided, skipping new extraction engine")
+            return None
+
+        # Quick check: if this is a PDF with corrupt zlib streams, skip temp file
+        # approach and let text-based extraction handle it
+        if file_bytes[:5] == b"%PDF-":
+            try:
+                import pdfplumber
+                with pdfplumber.open(BytesIO(file_bytes)) as test_pdf:
+                    test_text = ""
+                    for p in test_pdf.pages[:1]:
+                        test_text += (p.extract_text() or "")
+                    if not test_text.strip():
+                        logger.info(
+                            "PDF has no extractable text (likely corrupt streams), "
+                            "skipping new extraction engine for %s",
+                            source_hint or "unknown",
+                        )
+                        return None
+            except Exception:
+                pass
+
         suffix = ".pdf"
         if source_hint:
             ext = os.path.splitext(source_hint)[1].lower()
