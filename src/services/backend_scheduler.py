@@ -212,9 +212,34 @@ class BackendScheduler:
 
     MODEL_SYNC_JOB_NAME = "model-sync-dispatch"
 
+    KG_SYNC_JOB_NAME = "kg-sync-dispatch"
+
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
         self._register_model_sync_job()
+        self._register_kg_sync_job()
+
+    def _register_kg_sync_job(self) -> None:
+        """Register periodic KG sync job (startup + every 6 hours)."""
+        if self.KG_SYNC_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.KG_SYNC_JOB_NAME,
+            self._run_kg_sync,
+            interval=timedelta(hours=6),
+            initial_delay=timedelta(minutes=2),
+        )
+
+    def _run_kg_sync(self) -> None:
+        """Build/refresh the procurement knowledge graph."""
+        try:
+            from services.procurement_kg_builder import ProcurementKGBuilder
+            builder = ProcurementKGBuilder(self.agent_nick)
+            counts = builder.build_full_graph()
+            logger.info("KG sync completed: %s", counts)
+            builder.close()
+        except Exception:
+            logger.exception("KG sync job failed")
 
     def _register_model_sync_job(self) -> None:
         """Register periodic model sync job (every 6 hours)."""
