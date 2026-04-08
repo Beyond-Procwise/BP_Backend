@@ -1648,12 +1648,30 @@ class DataExtractionAgent(BaseAgent):
         )
         text_bundle = self._extract_text(file_bytes, object_key, force_ocr=force_ocr)
         text = text_bundle.full_text
-        doc_type = self._classify_doc_type(
-            text,
-            file_bytes=file_bytes,
-            file_name=object_key,
-            text_bundle=text_bundle,
-        )
+
+        # --- Category-aware routing: use process_monitor.category as hint ---
+        category_hint = ""
+        if context and hasattr(context, "input_data") and isinstance(context.input_data, dict):
+            category_hint = context.input_data.get("category", "")
+        category_doc_type = None
+        if category_hint:
+            from utils.procurement_schema import normalize_category
+            category_doc_type = normalize_category(category_hint)
+            if category_doc_type:
+                logger.info(
+                    "Using category '%s' as doc_type hint: %s for %s",
+                    category_hint, category_doc_type, object_key,
+                )
+
+        if category_doc_type:
+            doc_type = category_doc_type
+        else:
+            doc_type = self._classify_doc_type(
+                text,
+                file_bytes=file_bytes,
+                file_name=object_key,
+                text_bundle=text_bundle,
+            )
         product_type = self._classify_product_type(text)
         unique_id = self._extract_unique_id(text, doc_type)
         vendor_name = self._infer_vendor_name(text, object_key)
