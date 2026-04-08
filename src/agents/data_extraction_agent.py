@@ -3106,18 +3106,7 @@ class DataExtractionAgent(BaseAgent):
     def _extract_line_items_from_layout(
         self, file_bytes: bytes, text: str, doc_type: str
     ) -> List[Dict[str, Any]]:
-        """
-        Extract line items using PDF layout analysis.
-        This provides the most accurate extraction when tables are present.
-
-        Args:
-            file_bytes: Raw PDF bytes
-            text: Extracted text (for fallback)
-            doc_type: Document type
-
-        Returns:
-            List of line item dictionaries
-        """
+        """Extract line items using PDF layout analysis with multi-page table support."""
 
         items: List[Dict[str, Any]] = []
 
@@ -3128,6 +3117,10 @@ class DataExtractionAgent(BaseAgent):
             from io import BytesIO
 
             import pdfplumber
+
+            # Track column mapping across pages for table continuation
+            prev_col_map: Dict[str, int] | None = None
+            prev_col_count: int | None = None
 
             with pdfplumber.open(BytesIO(file_bytes)) as pdf:
                 for page in pdf.pages:
@@ -3151,6 +3144,7 @@ class DataExtractionAgent(BaseAgent):
                         if not table or len(table) < 2:
                             continue
 
+                        # Detect header row
                         header_row_idx: Optional[int] = None
                         for idx in range(min(3, len(table))):
                             row = table[idx]
@@ -3159,35 +3153,55 @@ class DataExtractionAgent(BaseAgent):
                                 header_row_idx = idx
                                 break
 
-                        if header_row_idx is None:
+                        if header_row_idx is not None:
+                            # New table with header — build column mapping
+                            headers = [
+                                str(cell or "").lower().strip() for cell in table[header_row_idx]
+                            ]
+                            col_map: Dict[str, int] = {}
+
+                            for idx, header_cell in enumerate(headers):
+                                if "description" in header_cell or "item" in header_cell:
+                                    col_map.setdefault("description", idx)
+                                elif "qty" in header_cell or "quantity" in header_cell:
+                                    col_map.setdefault("quantity", idx)
+                                elif "price" in header_cell or "rate" in header_cell or "cost" in header_cell:
+                                    col_map.setdefault("unit_price", idx)
+                                elif "amount" in header_cell or "total" in header_cell or "ext" in header_cell:
+                                    col_map.setdefault("line_amount", idx)
+                                elif "measure" in header_cell or "uom" in header_cell or "unit" == header_cell:
+                                    col_map.setdefault("unit_of_measure", idx)
+                                elif "tax" in header_cell and "percent" in header_cell:
+                                    col_map.setdefault("tax_percent", idx)
+                                elif "tax" in header_cell:
+                                    col_map.setdefault("tax_amount", idx)
+
+                            prev_col_map = col_map
+                            prev_col_count = len(table[header_row_idx])
+                            data_start = header_row_idx + 1
+                        elif prev_col_map and len(table[0]) == prev_col_count:
+                            # Continuation page — no header row but same column count
+                            # Reuse previous page's column mapping
+                            col_map = prev_col_map
+                            data_start = 0
+                            logger.debug(
+                                "Table continuation detected on page %d (reusing %d-column mapping)",
+                                page.page_number, prev_col_count,
+                            )
+                        else:
                             continue
 
-                        headers = [
-                            str(cell or "").lower().strip() for cell in table[header_row_idx]
-                        ]
-                        col_map: Dict[str, int] = {}
-
-                        for idx, header_cell in enumerate(headers):
-                            if "description" in header_cell or "item" in header_cell:
-                                col_map["description"] = idx
-                            elif "qty" in header_cell or "quantity" in header_cell:
-                                col_map["quantity"] = idx
-                            elif "price" in header_cell or "rate" in header_cell:
-                                col_map["unit_price"] = idx
-                            elif "amount" in header_cell or "total" in header_cell:
-                                col_map["line_amount"] = idx
-                            elif "measure" in header_cell or "uom" in header_cell:
-                                col_map["unit_of_measure"] = idx
-
-                        for row in table[header_row_idx + 1 :]:
+                        for row in table[data_start:]:
                             if not any(row):
                                 continue
 
-                            first_cell = str(row[0] or "").lower()
+                            # Check for totals row — stop extraction
+                            row_text = " ".join(str(cell or "").lower() for cell in row)
                             if any(
-                                kw in first_cell
-                                for kw in ["subtotal", "tax", "total", "amount due"]
+                                kw in row_text
+                                for kw in ["subtotal", "sub total", "tax", "total", "amount due", "grand total"]
                             ):
+                                prev_col_map = None  # Reset continuation tracking
                                 break
 
                             item: Dict[str, Any] = {"line_no": len(items) + 1}
@@ -3197,8 +3211,8 @@ class DataExtractionAgent(BaseAgent):
                                     value = row[col_idx]
                                     if value is None:
                                         continue
-                                    if field in {"quantity", "unit_price", "line_amount"}:
-                                        clean_val = re.sub(r"[^0-9.]", "", str(value))
+                                    if field in {"quantity", "unit_price", "line_amount", "tax_percent", "tax_amount"}:
+                                        clean_val = re.sub(r"[^0-9.\-]", "", str(value))
                                         if clean_val:
                                             try:
                                                 item[field] = float(clean_val)
@@ -6856,9 +6870,9 @@ class DataExtractionAgent(BaseAgent):
 
     def _persist_line_items_to_postgres(self, pk_value: str, line_items: List[Dict], doc_type: str, header: Dict[str, str], conn=None) -> None:
         table_map = {
-            "Invoice": ("proc", "invoice_line_items_agent", "invoice_id", "line_no"),
-            "Purchase_Order": ("proc", "po_line_items_agent", "po_id", "line_number"),
-            "Quote": ("proc", "quote_line_items_agent", "quote_id", "line_number"),
+            "Invoice": ("proc", "bp_invoice_line_items", "invoice_id", "line_no"),
+            "Purchase_Order": ("proc", "bp_po_line_items", "po_id", "line_number"),
+            "Quote": ("proc", "bp_quote_line_items", "quote_id", "line_number"),
         }
         field_map = {
             "Invoice": {
