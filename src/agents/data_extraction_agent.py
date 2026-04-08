@@ -2016,6 +2016,19 @@ class DataExtractionAgent(BaseAgent):
             header["needs_review"] = needs_review
             # --- End Validation Gate ---
 
+            # --- Set audit columns ---
+            now = datetime.now()
+            user_id = getattr(context, "user_id", None) or "DataExtractionAgent"
+            header.setdefault("created_date", now)
+            header.setdefault("created_by", user_id)
+            header["last_modified_date"] = now
+            header["last_modified_by"] = user_id
+            for item in line_items:
+                item.setdefault("created_date", now)
+                item.setdefault("created_by", user_id)
+                item["last_modified_date"] = now
+                item["last_modified_by"] = user_id
+
             self._persist_to_postgres(header, line_items, doc_type, pk_value)
             self._vectorize_structured_data(header, line_items, doc_type, pk_value, product_type)
 
