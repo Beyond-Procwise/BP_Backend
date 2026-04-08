@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 import psycopg2
 import psycopg2.extensions
 
+from services.agent_nick_orchestrator import AgentNickOrchestrator
+
 logger = logging.getLogger(__name__)
 
 LISTEN_CHANNEL = "process_monitor_ready"
@@ -231,11 +233,10 @@ class ProcessMonitorWatcher:
                 self._processing_ids.discard(record_id)
 
     def _process_record(self, record: Dict[str, Any]) -> None:
-        """Run extraction for a claimed record."""
+        """Dispatch to AgentNick (primary agent) for document processing."""
         record_id = record["id"]
         file_path = record.get("file_path", "")
         category = record.get("category", "")
-        document_type = record.get("document_type", "")
         user_id = record.get("user_id")
         logger.info(
             "Starting extraction for record %s: file_path=%s category=%s",
@@ -244,53 +245,27 @@ class ProcessMonitorWatcher:
             category,
         )
         try:
-            # Try direct extraction first (schema-driven, LLM-powered)
-            try:
-                from services.direct_extraction_service import DirectExtractionService
-                agent_nick = self._agent_nick
-                if agent_nick and hasattr(agent_nick, "settings") and hasattr(agent_nick.settings, "s3_bucket_name"):
-                    service = DirectExtractionService(agent_nick)
-                    result = service.extract_and_persist(
-                        file_path,
-                        category,
-                        user_id=str(user_id) if user_id is not None else None,
-                    )
-                    status = str(result.get("status", "error")).lower()
-                    if status == "success":
-                        self._mark_extracted(record_id)
-                        logger.info(
-                            "Direct extraction completed for record %s: %s pk=%s header=%s lines=%s",
-                            record_id, result.get("doc_type"), result.get("pk"),
-                            result.get("header_fields"), result.get("line_items"),
-                        )
-                        return
-                    logger.warning(
-                        "Direct extraction failed for record %s: %s — falling back to orchestrator",
-                        record_id, result.get("error"),
-                    )
-            except Exception as direct_exc:
-                logger.warning(
-                    "Direct extraction unavailable for record %s: %s — using orchestrator",
-                    record_id, direct_exc,
-                )
-
-            # Fallback to orchestrator pipeline
-            orchestrator = self._orchestrator
-            if orchestrator is None:
-                raise RuntimeError("Orchestrator not available")
-            result = orchestrator.execute_extraction_flow(
-                s3_object_key=file_path,
-                category=category,
-                document_type=document_type,
+            nick = AgentNickOrchestrator(self._agent_nick)
+            result = nick.process_document(
+                file_path,
+                category,
                 user_id=str(user_id) if user_id is not None else None,
             )
-            status = "error"
-            if isinstance(result, dict):
-                status = str(result.get("status", "error")).lower()
-            if status in ("blocked", "error", "failed"):
-                raise RuntimeError(f"Extraction {status}: {result.get('reason', result.get('error', 'unknown'))}")
+            status = str(result.get("status", "error")).lower()
+            if status in ("error", "failed"):
+                raise RuntimeError(
+                    f"Extraction {status}: {result.get('error', 'unknown')}"
+                )
             self._mark_extracted(record_id)
-            logger.info("Extraction completed for record %s", record_id)
+            logger.info(
+                "Extraction completed for record %s: %s pk=%s fields=%s lines=%s missing=%s",
+                record_id,
+                result.get("doc_type"),
+                result.get("pk"),
+                result.get("header_fields"),
+                result.get("line_items"),
+                result.get("missing_fields"),
+            )
         except Exception as exc:
             logger.exception("Extraction failed for record %s", record_id)
             self._mark_failed(record_id, str(exc))
