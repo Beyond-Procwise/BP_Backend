@@ -134,17 +134,18 @@ class AgentNickOrchestrator:
                 still_missing,
             )
 
-        # Step 4: Set audit columns
-        now = datetime.now(timezone.utc)
-        audit_user = user_id or "AgentNick"
-        header.setdefault("created_date", now)
-        header.setdefault("created_by", audit_user)
+        # Step 4: Set audit columns (force-set, don't use setdefault
+        # because extraction may return empty strings for these fields)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        audit_user = "AgentNick"
+        header["created_date"] = now
+        header["created_by"] = audit_user
         header["last_modified_date"] = now
         header["last_modified_by"] = audit_user
 
         for item in line_items:
-            item.setdefault("created_date", now)
-            item.setdefault("created_by", audit_user)
+            item["created_date"] = now
+            item["created_by"] = audit_user
             item["last_modified_date"] = now
             item["last_modified_by"] = audit_user
 
