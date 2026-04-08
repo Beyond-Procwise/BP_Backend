@@ -71,12 +71,39 @@ class ProcessMonitorWatcher:
     # Trigger management
     # ------------------------------------------------------------------
     def _ensure_trigger(self) -> None:
-        """Create the PG trigger + function if they don't exist (idempotent)."""
-        sql = """
+        """Ensure the process_monitor table has proper schema and trigger."""
+        schema_sql = """
+        -- Ensure id column has a sequence default and is the primary key
+        ALTER TABLE proc.process_monitor
+            ALTER COLUMN id SET DEFAULT nextval('proc.process_monitor_id_seq');
+
+        -- Backfill any NULL ids
+        UPDATE proc.process_monitor
+        SET id = nextval('proc.process_monitor_id_seq')
+        WHERE id IS NULL;
+
+        -- Ensure NOT NULL
+        ALTER TABLE proc.process_monitor
+            ALTER COLUMN id SET NOT NULL;
+
+        -- Add primary key if missing
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'proc.process_monitor'::regclass
+                AND contype = 'p'
+            ) THEN
+                ALTER TABLE proc.process_monitor ADD PRIMARY KEY (id);
+            END IF;
+        END;
+        $$;
+        """
+        trigger_sql = """
         CREATE OR REPLACE FUNCTION proc.notify_process_monitor_ready()
         RETURNS TRIGGER AS $$
         BEGIN
-            IF NEW.status = 'Completed' THEN
+            IF NEW.status = 'Completed' AND NEW.id IS NOT NULL THEN
                 PERFORM pg_notify('process_monitor_ready', NEW.id::text);
             END IF;
             RETURN NEW;
@@ -100,12 +127,13 @@ class ProcessMonitorWatcher:
             conn = self._get_connection()
             try:
                 with conn.cursor() as cur:
-                    cur.execute(sql)
-                logger.info("PG trigger 'trg_process_monitor_ready' ensured")
+                    cur.execute(schema_sql)
+                    cur.execute(trigger_sql)
+                logger.info("process_monitor schema and trigger ensured")
             finally:
                 conn.close()
         except Exception:
-            logger.exception("Failed to ensure process_monitor trigger")
+            logger.exception("Failed to ensure process_monitor schema/trigger")
 
     # ------------------------------------------------------------------
     # Claim + process
