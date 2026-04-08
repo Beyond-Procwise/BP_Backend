@@ -337,10 +337,27 @@ class ProcessMonitorWatcher:
                 logger.exception("Poll sweep failed")
 
     def _sweep_completed(self) -> None:
-        """Query for all Completed records and dispatch them."""
+        """Query for Completed records and stale Extracting records, then dispatch."""
         conn = self._get_connection()
         try:
             with conn.cursor() as cur:
+                # Recover stale Extracting records (stuck > 10 minutes)
+                cur.execute(
+                    """
+                    UPDATE proc.process_monitor
+                    SET status = 'Completed', start_ts = NULL
+                    WHERE status = 'Extracting'
+                      AND start_ts < NOW() - INTERVAL '10 minutes'
+                    RETURNING id
+                    """
+                )
+                stale = cur.fetchall()
+                if stale:
+                    logger.warning(
+                        "Recovered %d stale Extracting records: %s",
+                        len(stale), [r[0] for r in stale],
+                    )
+
                 cur.execute(
                     """
                     SELECT id FROM proc.process_monitor
