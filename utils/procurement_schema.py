@@ -379,6 +379,165 @@ PROCUREMENT_SCHEMAS: Dict[str, TableSchema] = {
     ),
 }
 
+BP_PROCUREMENT_SCHEMAS: Dict[str, TableSchema] = {
+    "proc.bp_invoice": TableSchema(
+        columns=[
+            "invoice_id", "po_id", "supplier_id", "buyer_id", "requisition_id",
+            "requested_by", "requested_date", "invoice_date", "due_date",
+            "invoice_paid_date", "payment_terms", "currency", "invoice_amount",
+            "tax_percent", "tax_amount", "invoice_total_incl_tax",
+            "exchange_rate_to_usd", "converted_amount_usd", "country", "region",
+            "invoice_status", "ai_flag_required", "trigger_type",
+            "trigger_context_description", "created_date", "created_by",
+            "last_modified_by", "last_modified_date",
+        ],
+        required=["invoice_id", "supplier_id", "invoice_total_incl_tax"],
+        synonyms={
+            "invoice_id": ["invoice number", "invoice no", "invoice #", "tax invoice", "bill number"],
+            "po_id": ["purchase order", "po number", "po no", "po #"],
+            "supplier_id": ["vendor", "vendor name", "seller", "supplier", "supplier name"],
+            "invoice_amount": ["subtotal", "net amount", "amount before tax"],
+            "invoice_total_incl_tax": ["total", "grand total", "amount due", "total amount"],
+            "tax_amount": ["vat", "gst", "sales tax", "tax"],
+            "tax_percent": ["tax rate", "vat rate", "gst rate"],
+            "currency": ["ccy", "curr"],
+            "invoice_date": ["date", "invoice dt", "bill date"],
+            "due_date": ["payment due", "due by", "pay by"],
+            "payment_terms": ["terms", "payment terms", "net days"],
+        },
+    ),
+    "proc.bp_invoice_line_items": TableSchema(
+        columns=[
+            "invoice_line_id", "invoice_id", "line_no", "item_id",
+            "item_description", "quantity", "unit_of_measure", "unit_price",
+            "line_amount", "tax_percent", "tax_amount", "total_amount_incl_tax",
+            "po_id", "delivery_date", "country", "region",
+            "created_date", "created_by", "last_modified_by", "last_modified_date",
+        ],
+        required=["invoice_id", "line_no"],
+        synonyms={
+            "item_description": ["description", "desc", "item", "product", "service"],
+            "quantity": ["qty", "units", "count"],
+            "unit_price": ["price", "rate", "unit cost", "cost per unit"],
+            "line_amount": ["amount", "line total", "ext price", "extended price"],
+            "unit_of_measure": ["uom", "unit", "measure"],
+        },
+    ),
+    "proc.bp_purchase_order": TableSchema(
+        columns=[
+            "po_id", "supplier_name", "buyer_id", "requisition_id",
+            "requested_by", "requested_date", "currency", "order_date",
+            "expected_delivery_date", "ship_to_country", "delivery_region",
+            "incoterm", "incoterm_responsibility", "total_amount",
+            "delivery_address_line1", "delivery_address_line2", "delivery_city",
+            "created_date", "created_by", "last_modified_by", "last_modified_date",
+        ],
+        required=["po_id", "supplier_name", "total_amount"],
+        synonyms={
+            "po_id": ["purchase order number", "po number", "po no", "po #", "order number", "order no"],
+            "supplier_name": ["vendor", "vendor name", "supplier", "seller"],
+            "total_amount": ["total", "grand total", "order total", "po total", "amount"],
+            "order_date": ["date", "po date", "order dt"],
+            "expected_delivery_date": ["delivery date", "ship date", "eta", "due date"],
+            "currency": ["ccy", "curr"],
+        },
+    ),
+    "proc.bp_po_line_items": TableSchema(
+        columns=[
+            "po_id", "po_line_id", "line_number", "item_id", "item_description",
+            "quote_number", "quantity", "unit_price", "unit_of_measue", "currency",
+            "line_total", "tax_percent", "tax_amount", "total_amount",
+            "created_date", "created_by", "last_modified_by", "last_modified_date",
+        ],
+        required=["po_id", "line_number"],
+        synonyms={
+            "item_description": ["description", "desc", "item", "product", "material"],
+            "quantity": ["qty", "units", "count", "ordered qty"],
+            "unit_price": ["price", "rate", "unit cost"],
+            "line_total": ["amount", "line amount", "ext price", "extended price"],
+            "unit_of_measue": ["uom", "unit", "measure"],
+            "quote_number": ["quote no", "quote #", "quotation number"],
+        },
+    ),
+    "proc.bp_quote": TableSchema(
+        columns=[
+            "quote_id", "deal_id", "supplier_id", "buyer_id",
+            "supplier_address", "buyer_address", "quote_date", "validity_date",
+            "currency", "total_amount", "tax_percent", "tax_amount",
+            "total_amount_incl_tax", "po_id", "country", "region",
+            "ai_flag_required", "created_date", "created_by",
+            "last_modified_by", "last_modified_date",
+        ],
+        required=["quote_id", "supplier_id", "total_amount"],
+        synonyms={
+            "quote_id": ["quotation number", "quote number", "quote no", "quote #", "reference"],
+            "supplier_id": ["vendor", "vendor name", "supplier", "supplier name"],
+            "total_amount": ["total", "subtotal", "net amount", "quote total"],
+            "total_amount_incl_tax": ["grand total", "total incl tax", "amount due"],
+            "quote_date": ["date", "quotation date"],
+            "validity_date": ["valid until", "expiry", "valid to", "expiration date"],
+            "currency": ["ccy", "curr"],
+        },
+    ),
+    "proc.bp_quote_line_items": TableSchema(
+        columns=[
+            "quote_line_id", "quote_id", "line_number", "item_id",
+            "item_description", "quantity", "unit_of_measure", "unit_price",
+            "line_total", "tax_percent", "tax_amount", "total_amount",
+            "currency", "created_date", "created_by",
+            "last_modified_by", "last_modified_date",
+        ],
+        required=["quote_id", "line_number"],
+        synonyms={
+            "item_description": ["description", "desc", "item", "product"],
+            "quantity": ["qty", "units", "count"],
+            "unit_price": ["price", "rate", "unit cost"],
+            "line_total": ["amount", "line amount", "ext price"],
+            "unit_of_measure": ["uom", "unit"],
+        },
+    ),
+    "proc.bp_contracts": TableSchema(
+        columns=[
+            "contract_id", "contract_title", "contract_type", "supplier_id",
+            "buyer_org_id", "contract_start_date", "contract_end_date",
+            "currency", "total_contract_value", "spend_category",
+            "business_unit_id", "cost_centre_id", "is_amendment",
+            "parent_contract_id", "auto_renew_flag", "renewal_term",
+            "contract_lifecycle_status",
+            "created_date", "created_by", "last_modified_by", "last_modified_date",
+        ],
+        required=["contract_id", "supplier_id", "contract_title"],
+        synonyms={
+            "contract_id": ["contract number", "contract no", "contract #", "agreement number"],
+            "supplier_id": ["vendor", "vendor name", "supplier", "supplier name", "party"],
+            "contract_title": ["title", "description", "contract name", "agreement"],
+            "total_contract_value": ["value", "contract value", "total value", "amount"],
+            "contract_start_date": ["start date", "effective date", "commencement"],
+            "contract_end_date": ["end date", "expiry date", "termination date"],
+            "contract_type": ["type", "agreement type"],
+        },
+    ),
+}
+
+BP_DOC_TYPE_TO_TABLE = {
+    "Invoice": (
+        "proc.bp_invoice",
+        "proc.bp_invoice_line_items",
+    ),
+    "Purchase_Order": (
+        "proc.bp_purchase_order",
+        "proc.bp_po_line_items",
+    ),
+    "Quote": (
+        "proc.bp_quote",
+        "proc.bp_quote_line_items",
+    ),
+    "Contract": (
+        "proc.bp_contracts",
+        None,
+    ),
+}
+
 DOC_TYPE_TO_TABLE = {
     "Invoice": (
         "proc.invoice_agent",
@@ -430,7 +589,7 @@ def map_columns_to_schema(
     Returns a dict of {csv_column: schema_column} for matched columns.
     Unmatched columns are excluded.
     """
-    schema = PROCUREMENT_SCHEMAS.get(table_key)
+    schema = PROCUREMENT_SCHEMAS.get(table_key) or BP_PROCUREMENT_SCHEMAS.get(table_key)
     if schema is None:
         return {}
     used: set[str] = set()
