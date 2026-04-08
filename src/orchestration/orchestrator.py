@@ -92,13 +92,16 @@ class Orchestrator:
         self.routing_model = self.routing_engine.routing_model
         self.executor = ThreadPoolExecutor(max_workers=self.settings.max_workers)
         self.model_training_endpoint = training_endpoint
+        self.event_bus = get_event_bus()
+        self.manifest_service = AgentManifestService(agent_nick)
+        # BackendScheduler must be initialized AFTER event_bus and
+        # manifest_service because it starts the ProcessMonitorWatcher
+        # which may immediately call execute_extraction_flow().
         self.backend_scheduler = BackendScheduler.ensure(
             agent_nick,
             training_endpoint=training_endpoint,
             orchestrator=self,
         )
-        self.event_bus = get_event_bus()
-        self.manifest_service = AgentManifestService(agent_nick)
         self._prompt_cache: Optional[Dict[int, Dict[str, Any]]] = None
         self._policy_cache: Optional[Dict[int, Dict[str, Any]]] = None
         self._workflow_redis = get_workflow_redis_client()
