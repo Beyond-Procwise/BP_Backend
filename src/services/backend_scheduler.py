@@ -210,8 +210,31 @@ class BackendScheduler:
             one_shot=True,
         )
 
+    MODEL_SYNC_JOB_NAME = "model-sync-dispatch"
+
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
+        self._register_model_sync_job()
+
+    def _register_model_sync_job(self) -> None:
+        """Register periodic model sync job (every 6 hours)."""
+        if self.MODEL_SYNC_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.MODEL_SYNC_JOB_NAME,
+            self._run_model_sync,
+            interval=timedelta(hours=6),
+            initial_delay=timedelta(minutes=30),
+        )
+
+    def _run_model_sync(self) -> None:
+        """Execute model sync — rebuild AgentNick with learned patterns."""
+        try:
+            from services.model_sync_service import ModelSyncService
+            sync = ModelSyncService(self.agent_nick)
+            sync.sync_model()
+        except Exception:
+            logger.exception("Model sync job failed")
 
     def _training_scheduler_enabled(self) -> bool:
         settings = getattr(self.agent_nick, "settings", None)
