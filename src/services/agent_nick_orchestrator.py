@@ -126,15 +126,27 @@ class AgentNickOrchestrator:
                 header, missing, extraction.get("_source_text", ""), doc_type
             )
 
-        # Re-check after enrichment
+        # Step 4: Multi-pass validation and correction
+        source_text = extraction.get("_source_text", "")
+        try:
+            from services.extraction_validator import ExtractionValidator
+            validator = ExtractionValidator(self._agent_nick)
+            header, line_items, discrepancies = validator.validate_and_correct(
+                header, line_items, doc_type, source_text, file_path=file_path,
+            )
+        except Exception:
+            logger.exception("[AgentNick] Validation failed, proceeding with raw extraction")
+            discrepancies = []
+
+        # Re-check after validation
         still_missing = [f for f in required if not header.get(f)]
         if still_missing:
             logger.warning(
-                "[AgentNick] Still missing required fields after enrichment: %s",
+                "[AgentNick] Still missing required fields after validation: %s",
                 still_missing,
             )
 
-        # Step 4: Set audit columns (force-set, don't use setdefault
+        # Step 5: Set audit columns (force-set, don't use setdefault
         # because extraction may return empty strings for these fields)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         audit_user = "AgentNick"
@@ -149,16 +161,17 @@ class AgentNickOrchestrator:
             item["last_modified_date"] = now
             item["last_modified_by"] = audit_user
 
-        # Step 5: Persist to bp_ tables
+        # Step 6: Persist to bp_ tables
         pk_col = PK_MAP.get(doc_type)
         pk_value = header.get(pk_col, "") if pk_col else ""
 
         header_ok = self._persist_header(header, doc_type)
         lines_ok = self._persist_line_items(line_items, doc_type, pk_value)
 
-        # Step 6: Learn vendor profile
+        # Step 7: Learn vendor profile
         self._learn_vendor_profile(header, doc_type)
 
+        error_count = sum(1 for d in discrepancies if d.severity == "error")
         result = {
             "status": "success" if header_ok else "partial",
             "file_path": file_path,
@@ -169,6 +182,10 @@ class AgentNickOrchestrator:
             "header_persisted": header_ok,
             "lines_persisted": lines_ok,
             "missing_fields": still_missing,
+            "discrepancies": len(discrepancies),
+            "errors": error_count,
+            "confidence": header.get("confidence_score", 0),
+            "needs_review": header.get("needs_review", False),
         }
 
         logger.info(
