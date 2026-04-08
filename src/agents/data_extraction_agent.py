@@ -1650,6 +1650,37 @@ class DataExtractionAgent(BaseAgent):
         )
         text_bundle = self._extract_text(file_bytes, object_key, force_ocr=force_ocr)
 
+        # --- Fallback: if document path yields empty text, try canonical S3 prefix ---
+        if not text_bundle.full_text.strip() and object_key.startswith("documents/"):
+            canonical_map = {
+                "documents/invoice/": "Invoice/",
+                "documents/po/": "Purchase_Order/",
+                "documents/quote/": "Invoice/",
+                "documents/contract/": "Invoice/",
+                "documents/spend/": "Invoice/",
+            }
+            for doc_prefix, s3_prefix in canonical_map.items():
+                if object_key.startswith(doc_prefix):
+                    filename = object_key[len(doc_prefix):]
+                    canonical_key = s3_prefix + filename
+                    try:
+                        with self._borrow_s3_client() as s3_client:
+                            alt_obj = s3_client.get_object(
+                                Bucket=self.settings.s3_bucket_name, Key=canonical_key
+                            )
+                        alt_bytes = alt_obj["Body"].read()
+                        alt_bundle = self._extract_text(alt_bytes, canonical_key, force_ocr=force_ocr)
+                        if alt_bundle.full_text.strip():
+                            logger.info(
+                                "Fallback to canonical S3 path '%s' succeeded (%d chars)",
+                                canonical_key, len(alt_bundle.full_text),
+                            )
+                            file_bytes = alt_bytes
+                            text_bundle = alt_bundle
+                    except Exception:
+                        logger.debug("Canonical fallback '%s' not found", canonical_key)
+                    break
+
         # --- Multi-section detection ---
         sections = self._detect_document_sections(text_bundle)
         if len(sections) > 1:
