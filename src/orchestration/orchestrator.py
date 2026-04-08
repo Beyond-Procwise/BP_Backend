@@ -187,20 +187,32 @@ class Orchestrator:
         self,
         s3_prefix: Optional[str] = None,
         s3_object_key: Optional[str] = None,
+        *,
+        category: Optional[str] = None,
+        document_type: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict:
         """Public wrapper for the document extraction workflow."""
-        return self.execute_workflow(
-            "document_extraction",
-            {"s3_prefix": s3_prefix, "s3_object_key": s3_object_key},
-        )
+        payload: Dict[str, Any] = {
+            "s3_prefix": s3_prefix,
+            "s3_object_key": s3_object_key,
+        }
+        if category:
+            payload["category"] = category
+        if document_type:
+            payload["document_type"] = document_type
+        if user_id:
+            payload["user_id"] = user_id
+        return self.execute_workflow("document_extraction", payload)
 
     def execute_extraction_workflow(
         self,
         s3_prefix: Optional[str] = None,
         s3_object_key: Optional[str] = None,
+        **kwargs,
     ) -> Dict:
         """Backward compatible alias for :meth:`execute_extraction_flow`."""
-        return self.execute_extraction_flow(s3_prefix, s3_object_key)
+        return self.execute_extraction_flow(s3_prefix, s3_object_key, **kwargs)
 
     def execute_workflow(
         self, workflow_name: str, input_data: Dict, user_id: str = None
