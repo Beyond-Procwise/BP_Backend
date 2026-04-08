@@ -56,6 +56,7 @@ class ProcwiseAppState(Protocol):
     backend_scheduler: Any
     email_watcher_service: Optional[Any]
     email_watcher_owned: bool
+    process_monitor_watcher: Optional[Any]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -122,6 +123,12 @@ async def lifespan(app: FastAPI):
             email_watcher_service = None
         state.email_watcher_service = email_watcher_service
         state.email_watcher_owned = False
+        try:
+            process_monitor_watcher = backend_scheduler.get_process_monitor_watcher()
+        except Exception:
+            logger.exception("Failed to obtain process monitor watcher from backend scheduler")
+            process_monitor_watcher = None
+        state.process_monitor_watcher = process_monitor_watcher
         logger.info("System initialized successfully.")
     except Exception as e:
         logger.critical(f"FATAL: System initialization failed: {e}", exc_info=True)
@@ -136,6 +143,7 @@ async def lifespan(app: FastAPI):
         state.email_watcher_service = None
         state.email_watcher_owned = False
         state.backend_scheduler = None
+        state.process_monitor_watcher = None
     yield
     if hasattr(state, "agent_nick"):
         state.agent_nick = None
@@ -150,6 +158,8 @@ async def lifespan(app: FastAPI):
             except Exception:  # pragma: no cover - defensive shutdown
                 logger.exception("Failed to stop EmailWatcherService during shutdown")
         state.email_watcher_service = None
+    if hasattr(state, "process_monitor_watcher"):
+        state.process_monitor_watcher = None
     if hasattr(state, "email_watcher_owned"):
         state.email_watcher_owned = False
     if hasattr(state, "backend_scheduler"):
