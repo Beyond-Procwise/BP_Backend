@@ -263,7 +263,7 @@ def detect_currency(
     if "$" in text[:2000]:
         country_upper = country.upper().strip()
         for key, code in _DOLLAR_CURRENCIES.items():
-            if key.upper() in country_upper:
+            if key.upper() == country_upper:
                 return code
         return "USD"  # Default $ to USD
 
