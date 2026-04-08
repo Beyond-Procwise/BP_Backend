@@ -6599,8 +6599,37 @@ class DataExtractionAgent(BaseAgent):
         if not ingestion_id:
             return
 
+        # Query target table column types for proper casting from text staging
+        col_types: Dict[str, str] = {}
+        try:
+            cur.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = %s",
+                (target_schema, target_table),
+            )
+            col_types = {row[0]: row[1] for row in cur.fetchall()}
+        except Exception:
+            logger.debug("Could not query column types for %s.%s", target_schema, target_table)
+
         column_clause = ", ".join(f'"{col}"' for col in safe_payload.keys())
-        select_clause = column_clause
+
+        # Build SELECT clause with type casts where staging text != target type
+        select_parts = []
+        for col in safe_payload.keys():
+            target_type = col_types.get(col, "text")
+            if target_type in ("integer", "bigint", "smallint"):
+                select_parts.append(f'NULLIF("{col}", \'\')::integer')
+            elif target_type.startswith("numeric"):
+                select_parts.append(f'NULLIF("{col}", \'\')::{target_type}')
+            elif target_type == "boolean":
+                select_parts.append(f'NULLIF("{col}", \'\')::boolean')
+            elif target_type in ("date",):
+                select_parts.append(f'NULLIF("{col}", \'\')::date')
+            elif target_type.startswith("timestamp"):
+                select_parts.append(f'NULLIF("{col}", \'\')::timestamp')
+            else:
+                select_parts.append(f'"{col}"')
+        select_clause = ", ".join(select_parts)
 
         sql_stmt = (
             f'INSERT INTO "{target_schema}"."{target_table}" ({column_clause}) '
