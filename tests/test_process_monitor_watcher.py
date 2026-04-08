@@ -122,6 +122,9 @@ class TestProcessRecord:
             })
             mock_orchestrator.execute_extraction_flow.assert_called_once_with(
                 s3_object_key="documents/po/test.pdf",
+                category="po",
+                document_type="",
+                user_id=None,
             )
             mark_ok.assert_called_once_with(1)
 
