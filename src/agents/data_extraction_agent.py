@@ -1647,6 +1647,84 @@ class DataExtractionAgent(BaseAgent):
             vendor and vendor in object_key.lower() for vendor in force_ocr_vendors
         )
         text_bundle = self._extract_text(file_bytes, object_key, force_ocr=force_ocr)
+
+        # --- Multi-section detection ---
+        sections = self._detect_document_sections(text_bundle)
+        if len(sections) > 1:
+            logger.info(
+                "Multi-section PDF detected: %d sections in %s",
+                len(sections), object_key,
+            )
+            section_results = []
+            for sec_idx, section_pages in enumerate(sections):
+                section_bundle = self._bundle_from_section(section_pages)
+                section_text = section_bundle.full_text
+                if not section_text.strip():
+                    continue
+                section_key = f"{object_key}#section{sec_idx + 1}"
+
+                # Classify and extract each section independently
+                category_hint = ""
+                if context and hasattr(context, "input_data") and isinstance(context.input_data, dict):
+                    category_hint = context.input_data.get("category", "")
+                from utils.procurement_schema import normalize_category as _nc
+                sec_doc_type = _nc(category_hint) if category_hint else None
+                if not sec_doc_type:
+                    sec_doc_type = self._classify_doc_type(
+                        section_text, file_bytes=file_bytes, file_name=object_key,
+                        text_bundle=section_bundle,
+                    )
+
+                sec_unique_id = self._extract_unique_id(section_text, sec_doc_type)
+                if not sec_unique_id:
+                    sec_unique_id = uuid.uuid4().hex[:8]
+
+                try:
+                    structured = self._extract_structured_data(
+                        section_text, file_bytes, sec_doc_type, section_key,
+                    )
+                    header = {}
+                    line_items = []
+                    if structured:
+                        header = structured.header or {}
+                        line_items = structured.line_items or []
+                    if header:
+                        pk_value = header.get(
+                            next((k for k in header if k.endswith("_id") and header[k]), None), sec_unique_id
+                        ) or sec_unique_id
+                        self._persist_to_postgres(header, line_items, sec_doc_type, pk_value)
+                        self._vectorize_structured_data(header, line_items, sec_doc_type, pk_value, "")
+                        section_results.append({
+                            "section": sec_idx + 1,
+                            "doc_type": sec_doc_type,
+                            "id": str(pk_value),
+                            "status": "success",
+                        })
+                except Exception as exc:
+                    logger.exception("Section %d extraction failed for %s", sec_idx + 1, object_key)
+                    section_results.append({
+                        "section": sec_idx + 1,
+                        "status": "error",
+                        "error": str(exc),
+                    })
+
+            self._log_workflow_event(
+                event="document_complete",
+                workflow_id=workflow_id,
+                agent_name=agent_name,
+                object_key=object_key,
+                status="success",
+                doc_type="multi_section",
+                duration_seconds=time.perf_counter() - start_time,
+            )
+            return {
+                "object_key": object_key,
+                "status": "success",
+                "doc_type": "multi_section",
+                "sections": len(section_results),
+                "section_results": section_results,
+            }
+
         text = text_bundle.full_text
 
         # --- Category-aware routing: use process_monitor.category as hint ---
@@ -1949,6 +2027,95 @@ class DataExtractionAgent(BaseAgent):
             errors=errors,
         )
         return result
+
+    # ============================ MULTI-SECTION DETECTION ====================
+    # Regex patterns that signal a new document boundary within a multi-page PDF
+    _DOC_BOUNDARY_PATTERNS = re.compile(
+        r"(?:^|\n)\s*(?:"
+        r"INVOICE\s*(?:#|NO|NUMBER)|"
+        r"TAX\s+INVOICE|"
+        r"PURCHASE\s+ORDER\s*(?:#|NO|NUMBER)|"
+        r"QUOTATION\s*(?:#|NO|NUMBER)|"
+        r"QUOTE\s*(?:#|NO|NUMBER)|"
+        r"CREDIT\s+NOTE|"
+        r"DELIVERY\s+NOTE|"
+        r"BILL\s+(?:TO|OF\s+LADING)"
+        r")",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    def _detect_document_sections(
+        self, text_bundle: DocumentTextBundle
+    ) -> List[List[PageExtractionResult]]:
+        """Detect document boundaries in a multi-page PDF.
+
+        Analyzes per-page text for document header patterns (e.g., "INVOICE #",
+        "PURCHASE ORDER NO") to identify where one document ends and another
+        begins.
+
+        Returns a list of page groups, where each group is a separate document.
+        If no boundaries are detected, returns a single group with all pages.
+        """
+        pages = text_bundle.page_results or []
+        if len(pages) <= 1:
+            return [pages] if pages else []
+
+        boundaries: List[int] = [0]  # First page always starts a section
+
+        for i, page in enumerate(pages):
+            if i == 0:
+                continue
+            text = page.combined_text or ""
+            # Check first 500 chars of each page for document headers
+            header_region = text[:500]
+            matches = list(self._DOC_BOUNDARY_PATTERNS.finditer(header_region))
+            if matches:
+                boundaries.append(i)
+                logger.debug(
+                    "Document boundary detected at page %d: '%s'",
+                    page.page_number,
+                    matches[0].group().strip()[:40],
+                )
+
+        if len(boundaries) <= 1:
+            return [pages]
+
+        # Split pages into sections
+        sections: List[List[PageExtractionResult]] = []
+        for idx, start in enumerate(boundaries):
+            end = boundaries[idx + 1] if idx + 1 < len(boundaries) else len(pages)
+            sections.append(pages[start:end])
+
+        logger.info(
+            "Detected %d document sections across %d pages",
+            len(sections), len(pages),
+        )
+        return sections
+
+    def _bundle_from_section(
+        self, section: List[PageExtractionResult]
+    ) -> DocumentTextBundle:
+        """Create a DocumentTextBundle from a subset of pages."""
+        full_text = "\n".join(
+            p.combined_text for p in section if p.combined_text
+        )
+        raw_text = "\n".join(
+            p.digital_text for p in section if p.digital_text
+        )
+        ocr_text = "\n".join(
+            p.ocr_text for p in section if p.ocr_text
+        )
+        routing_log = [
+            {"page": p.page_number, "route": p.route, "chars": p.char_count}
+            for p in section
+        ]
+        return DocumentTextBundle(
+            full_text=full_text,
+            page_results=section,
+            raw_text=raw_text,
+            ocr_text=ocr_text,
+            routing_log=routing_log,
+        )
 
     # ============================ TABULAR PROCESSING ======================
     def _process_tabular_document(
