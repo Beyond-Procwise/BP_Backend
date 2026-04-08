@@ -94,14 +94,6 @@ class Orchestrator:
         self.model_training_endpoint = training_endpoint
         self.event_bus = get_event_bus()
         self.manifest_service = AgentManifestService(agent_nick)
-        # BackendScheduler must be initialized AFTER event_bus and
-        # manifest_service because it starts the ProcessMonitorWatcher
-        # which may immediately call execute_extraction_flow().
-        self.backend_scheduler = BackendScheduler.ensure(
-            agent_nick,
-            training_endpoint=training_endpoint,
-            orchestrator=self,
-        )
         self._prompt_cache: Optional[Dict[int, Dict[str, Any]]] = None
         self._policy_cache: Optional[Dict[int, Dict[str, Any]]] = None
         self._workflow_redis = get_workflow_redis_client()
@@ -123,6 +115,16 @@ class Orchestrator:
             logger.warning("Workflow engine init failed, using legacy routing: %s", exc)
             self._workflow_engine = None
             self._workflow_registry = {}
+
+        # BackendScheduler MUST be the last thing initialized because it
+        # starts the ProcessMonitorWatcher which immediately sweeps for
+        # Completed records and calls execute_extraction_flow(). All
+        # orchestrator attributes must be set before this point.
+        self.backend_scheduler = BackendScheduler.ensure(
+            agent_nick,
+            training_endpoint=training_endpoint,
+            orchestrator=self,
+        )
 
     def _get_dag_scheduler(self):
         """Lazy-initialize DAG Scheduler (singleton per Orchestrator instance)."""
