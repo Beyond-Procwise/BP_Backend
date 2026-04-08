@@ -1678,6 +1678,26 @@ class DataExtractionAgent(BaseAgent):
         if not unique_id:
             unique_id = uuid.uuid4().hex[:8]
 
+        # --- Load vendor extraction profile ---
+        vendor_profile = None
+        try:
+            from services.vendor_profile_service import VendorProfileService
+            vps = VendorProfileService(self.agent_nick)
+            vendor_profile = vps.get_profile(vendor_name, doc_type)
+            if vendor_profile:
+                logger.info(
+                    "Loaded vendor profile for '%s' (doc_type=%s, extractions=%d)",
+                    vendor_name, doc_type, vendor_profile.extraction_count,
+                )
+                if vendor_profile.currency_hint:
+                    if context and hasattr(context, "input_data") and isinstance(context.input_data, dict):
+                        context.input_data.setdefault("currency_hint", vendor_profile.currency_hint)
+                if vendor_profile.date_format_hint:
+                    if context and hasattr(context, "input_data") and isinstance(context.input_data, dict):
+                        context.input_data.setdefault("date_format_hint", vendor_profile.date_format_hint)
+        except Exception:
+            logger.debug("Vendor profile lookup skipped", exc_info=True)
+
         extraction_result, raw_payload = self._trigger_document_extraction(
             object_key,
             file_bytes,
@@ -1871,6 +1891,30 @@ class DataExtractionAgent(BaseAgent):
             self._persist_to_postgres(header, line_items, doc_type, pk_value)
             self._vectorize_structured_data(header, line_items, doc_type, pk_value, product_type)
 
+            # --- Auto-learn vendor profile ---
+            try:
+                from services.vendor_profile_service import VendorProfileService
+                if vendor_name and doc_type:
+                    vps = VendorProfileService(self.agent_nick)
+                    learned_labels: Dict[str, List[str]] = {}
+                    # Capture which labels mapped to which fields
+                    for key in header:
+                        if key.startswith("_") or key in ("confidence_score", "needs_review"):
+                            continue
+                        if header[key]:
+                            learned_labels.setdefault(key, [])
+                    vps.learn_from_extraction(
+                        supplier_name=vendor_name,
+                        supplier_id=header.get("supplier_id", header.get("supplier_name", "")),
+                        doc_type=doc_type,
+                        date_format_hint=header.get("_date_format", ""),
+                        currency_hint=header.get("currency", ""),
+                        label_overrides=learned_labels if vendor_profile is None else None,
+                        field_positions=None,
+                    )
+            except Exception:
+                logger.debug("Vendor profile auto-learn skipped", exc_info=True)
+
         result = {"object_key": object_key, "id": pk_value or object_key, "doc_type": doc_type or "", "status": "success"}
         if data:
             if raw_payload and raw_payload.get("raw_text"):
@@ -1919,8 +1963,8 @@ class DataExtractionAgent(BaseAgent):
         from utils.procurement_schema import (
             normalize_category,
             map_columns_to_schema,
-            DOC_TYPE_TO_TABLE,
-            PROCUREMENT_SCHEMAS,
+            BP_DOC_TYPE_TO_TABLE,
+            BP_PROCUREMENT_SCHEMAS,
         )
 
         workflow_id = getattr(context, "workflow_id", None) if context else None
@@ -1967,7 +2011,7 @@ class DataExtractionAgent(BaseAgent):
 
             if sheet_doc_type:
                 # --- Known category: map to DB ---
-                table_info = DOC_TYPE_TO_TABLE.get(sheet_doc_type)
+                table_info = BP_DOC_TYPE_TO_TABLE.get(sheet_doc_type)
                 if not table_info:
                     logger.warning("No table mapping for doc_type '%s'", sheet_doc_type)
                     self._ingest_to_kg(df, category or sheet_name, object_key, context=context)
@@ -2044,9 +2088,9 @@ class DataExtractionAgent(BaseAgent):
         table_name: str,
     ) -> int:
         """Persist DataFrame rows to the target table via staging pattern."""
-        from utils.procurement_schema import PROCUREMENT_SCHEMAS
+        from utils.procurement_schema import PROCUREMENT_SCHEMAS, BP_PROCUREMENT_SCHEMAS
 
-        schema = PROCUREMENT_SCHEMAS.get(f"{schema_name}.{table_name}")
+        schema = BP_PROCUREMENT_SCHEMAS.get(f"{schema_name}.{table_name}") or PROCUREMENT_SCHEMAS.get(f"{schema_name}.{table_name}")
         pk_col = schema.required[0] if schema and schema.required else None
         row_count = 0
         chunk_size = 10_000
