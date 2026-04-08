@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 from services.email_watcher import EmailWatcherService
+from services.process_monitor_watcher import ProcessMonitorWatcher
 
 from services.model_training_endpoint import ModelTrainingEndpoint
 from utils.gpu import configure_gpu
@@ -60,6 +61,8 @@ class BackendScheduler:
         self._training_endpoint = training_endpoint
         self._email_watcher_service: Optional[EmailWatcherService] = None
         self._email_watcher_lock = threading.Lock()
+        self._process_monitor_watcher: Optional[ProcessMonitorWatcher] = None
+        self._process_monitor_lock = threading.Lock()
         self._orchestrator = orchestrator
         self._register_default_jobs()
         self.start()
@@ -69,6 +72,10 @@ class BackendScheduler:
             self._ensure_email_watcher_service()
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to start email watcher service during initialisation")
+        try:
+            self._ensure_process_monitor_watcher()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to start process monitor watcher during initialisation")
 
     @classmethod
     def ensure(
@@ -159,6 +166,13 @@ class BackendScheduler:
                 watcher.stop()
             except Exception:  # pragma: no cover - defensive logging
                 logger.exception("Failed to stop email watcher service")
+        with self._process_monitor_lock:
+            monitor_watcher = self._process_monitor_watcher
+        if monitor_watcher is not None:
+            try:
+                monitor_watcher.stop()
+            except Exception:  # pragma: no cover - defensive logging
+                logger.exception("Failed to stop process monitor watcher")
 
     def register_job(
         self,
@@ -276,6 +290,24 @@ class BackendScheduler:
         """Expose the active email watcher service instance."""
 
         return self._ensure_email_watcher_service()
+
+    def _ensure_process_monitor_watcher(self) -> ProcessMonitorWatcher:
+        """Create and start the ProcessMonitorWatcher if not already running."""
+        with self._process_monitor_lock:
+            if self._process_monitor_watcher is None:
+                orchestrator = getattr(self, "_orchestrator", None)
+                self._process_monitor_watcher = ProcessMonitorWatcher(
+                    self.agent_nick,
+                    orchestrator=orchestrator,
+                )
+                self._process_monitor_watcher.start()
+            elif self._orchestrator is not None:
+                self._process_monitor_watcher.update_orchestrator(self._orchestrator)
+            return self._process_monitor_watcher
+
+    def get_process_monitor_watcher(self) -> ProcessMonitorWatcher:
+        """Expose the active ProcessMonitorWatcher instance."""
+        return self._ensure_process_monitor_watcher()
 
     def notify_email_dispatch(self, workflow_id: str) -> None:
         workflow_key = (workflow_id or "").strip()

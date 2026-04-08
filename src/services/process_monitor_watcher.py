@@ -223,8 +223,8 @@ class ProcessMonitorWatcher:
             status = "error"
             if isinstance(result, dict):
                 status = str(result.get("status", "error")).lower()
-            if status in ("blocked",):
-                raise RuntimeError(f"Extraction blocked: {result.get('reason', 'unknown')}")
+            if status in ("blocked", "error", "failed"):
+                raise RuntimeError(f"Extraction {status}: {result.get('reason', result.get('error', 'unknown'))}")
             self._mark_extracted(record_id)
             logger.info("Extraction completed for record %s", record_id)
         except Exception as exc:
