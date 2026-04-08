@@ -40,7 +40,8 @@ OCR_BINARIZE_C = 10
 
 SPACY_MODEL = "en_core_web_sm"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-NUEXTRACT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:latest")
+NUEXTRACT_MODEL = os.getenv("NUEXTRACT_MODEL", "nuextract:3.8b")
+AGENT_NICK_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:latest")
 
 LINE_ITEM_ROW_Y_TOLERANCE = 8
 LINE_ITEM_COL_X_GAP = 40
@@ -4198,7 +4199,7 @@ def _ai_identify_supplier(text: str, extracted_name: str = "") -> str:
     try:
         response = requests.post(
             f"{OLLAMA_BASE_URL}/api/generate",
-            json={"model": NUEXTRACT_MODEL, "prompt": prompt, "stream": False,
+            json={"model": AGENT_NICK_MODEL, "prompt": prompt, "stream": False,
                   "options": {"temperature": 0, "num_predict": 100, "num_gpu": 99}},
             timeout=180,
         )
