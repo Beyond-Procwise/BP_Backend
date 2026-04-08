@@ -110,49 +110,58 @@ class TestClaimRecord:
 
 
 class TestProcessRecord:
-    def test_process_record_calls_extraction(self, dummy_nick, mock_orchestrator):
+    def test_process_record_calls_agent_nick(self, dummy_nick, mock_orchestrator):
+        """AgentNick is dispatched as primary agent for document processing."""
         watcher = ProcessMonitorWatcher(dummy_nick, orchestrator=mock_orchestrator)
         watcher._processing_ids.add(1)
 
-        with patch.object(watcher, "_mark_extracted") as mark_ok:
-            watcher._process_record({
-                "id": 1,
-                "file_path": "documents/po/test.pdf",
-                "category": "po",
-            })
-            mock_orchestrator.execute_extraction_flow.assert_called_once_with(
-                s3_object_key="documents/po/test.pdf",
-                category="po",
-                document_type="",
-                user_id=None,
-            )
-            mark_ok.assert_called_once_with(1)
+        mock_result = {"status": "success", "doc_type": "Purchase_Order", "pk": "PO-001",
+                       "header_fields": 10, "line_items": 3, "missing_fields": []}
+
+        with patch("services.process_monitor_watcher.AgentNickOrchestrator") as MockNick:
+            MockNick.return_value.process_document.return_value = mock_result
+            with patch.object(watcher, "_mark_extracted") as mark_ok:
+                watcher._process_record({
+                    "id": 1,
+                    "file_path": "documents/po/test.pdf",
+                    "category": "po",
+                })
+                MockNick.return_value.process_document.assert_called_once_with(
+                    "documents/po/test.pdf", "po", user_id=None,
+                )
+                mark_ok.assert_called_once_with(1)
 
     def test_process_record_marks_failed_on_error(self, dummy_nick, mock_orchestrator):
-        mock_orchestrator.execute_extraction_flow.side_effect = RuntimeError("boom")
         watcher = ProcessMonitorWatcher(dummy_nick, orchestrator=mock_orchestrator)
         watcher._processing_ids.add(1)
 
-        with patch.object(watcher, "_mark_failed") as mark_fail:
-            watcher._process_record({
-                "id": 1,
-                "file_path": "documents/po/test.pdf",
-                "category": "po",
-            })
-            mark_fail.assert_called_once_with(1, "boom")
+        with patch("services.process_monitor_watcher.AgentNickOrchestrator") as MockNick:
+            MockNick.return_value.process_document.return_value = {
+                "status": "error", "error": "boom"
+            }
+            with patch.object(watcher, "_mark_failed") as mark_fail:
+                watcher._process_record({
+                    "id": 1,
+                    "file_path": "documents/po/test.pdf",
+                    "category": "po",
+                })
+                mark_fail.assert_called_once()
+                assert "boom" in mark_fail.call_args[0][1]
 
-    def test_process_record_fails_without_orchestrator(self, dummy_nick):
+    def test_process_record_handles_agent_nick_exception(self, dummy_nick):
         watcher = ProcessMonitorWatcher(dummy_nick, orchestrator=None)
         watcher._processing_ids.add(1)
 
-        with patch.object(watcher, "_mark_failed") as mark_fail:
-            watcher._process_record({
-                "id": 1,
-                "file_path": "documents/po/test.pdf",
-                "category": "po",
-            })
-            mark_fail.assert_called_once()
-            assert "Orchestrator not available" in mark_fail.call_args[0][1]
+        with patch("services.process_monitor_watcher.AgentNickOrchestrator") as MockNick:
+            MockNick.return_value.process_document.side_effect = RuntimeError("crash")
+            with patch.object(watcher, "_mark_failed") as mark_fail:
+                watcher._process_record({
+                    "id": 1,
+                    "file_path": "documents/po/test.pdf",
+                    "category": "po",
+                })
+                mark_fail.assert_called_once()
+                assert "crash" in mark_fail.call_args[0][1]
 
 
 class TestLifecycle:
