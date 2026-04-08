@@ -244,6 +244,37 @@ class ProcessMonitorWatcher:
             category,
         )
         try:
+            # Try direct extraction first (schema-driven, LLM-powered)
+            try:
+                from services.direct_extraction_service import DirectExtractionService
+                agent_nick = self._agent_nick
+                if agent_nick and hasattr(agent_nick, "settings") and hasattr(agent_nick.settings, "s3_bucket_name"):
+                    service = DirectExtractionService(agent_nick)
+                    result = service.extract_and_persist(
+                        file_path,
+                        category,
+                        user_id=str(user_id) if user_id is not None else None,
+                    )
+                    status = str(result.get("status", "error")).lower()
+                    if status == "success":
+                        self._mark_extracted(record_id)
+                        logger.info(
+                            "Direct extraction completed for record %s: %s pk=%s header=%s lines=%s",
+                            record_id, result.get("doc_type"), result.get("pk"),
+                            result.get("header_fields"), result.get("line_items"),
+                        )
+                        return
+                    logger.warning(
+                        "Direct extraction failed for record %s: %s — falling back to orchestrator",
+                        record_id, result.get("error"),
+                    )
+            except Exception as direct_exc:
+                logger.warning(
+                    "Direct extraction unavailable for record %s: %s — using orchestrator",
+                    record_id, direct_exc,
+                )
+
+            # Fallback to orchestrator pipeline
             orchestrator = self._orchestrator
             if orchestrator is None:
                 raise RuntimeError("Orchestrator not available")
