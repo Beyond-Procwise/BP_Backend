@@ -399,6 +399,60 @@ DOC_TYPE_TO_TABLE = {
 
 }
 
+CATEGORY_TO_DOC_TYPE: Dict[str, str] = {
+    "invoice": "Invoice",
+    "po": "Purchase_Order",
+    "purchase_order": "Purchase_Order",
+    "quote": "Quote",
+    "quotes": "Quote",
+    "contract": "Contract",
+    "contracts": "Contract",
+}
+
+
+def normalize_category(category: str) -> str | None:
+    """Normalize a process_monitor category to a DOC_TYPE_TO_TABLE key.
+
+    Returns None if category is not recognized (should go to KG).
+    """
+    if not category:
+        return None
+    return CATEGORY_TO_DOC_TYPE.get(category.strip().lower())
+
+
+def map_columns_to_schema(
+    columns: list[str],
+    table_key: str,
+    threshold: float = 0.55,
+) -> Dict[str, str]:
+    """Map CSV/Excel column names to schema column names.
+
+    Returns a dict of {csv_column: schema_column} for matched columns.
+    Unmatched columns are excluded.
+    """
+    schema = PROCUREMENT_SCHEMAS.get(table_key)
+    if schema is None:
+        return {}
+    used: set[str] = set()
+    mapping: Dict[str, str] = {}
+    for col in columns:
+        normalised = _normalise(col.strip().replace("-", " ").replace("_", " "))
+        # Exact match first
+        if col.strip().lower().replace(" ", "_") in {c.lower() for c in schema.columns}:
+            for sc in schema.columns:
+                if sc.lower() == col.strip().lower().replace(" ", "_") and sc not in used:
+                    mapping[col] = sc
+                    used.add(sc)
+                    break
+            continue
+        # Fuzzy match
+        best_col, best_score = _best_schema_match(normalised, schema, used)
+        if best_col and best_score >= threshold:
+            mapping[col] = best_col
+            used.add(best_col)
+    return mapping
+
+
 _KEY_VALUE_PATTERN = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 \-/]{2,40})\s*[:\-]\s*(.+)$")
 _TOTAL_STOP_WORDS = re.compile(r"\b(Subtotal|Tax|VAT|GST|Total|Amount Due)\b", re.IGNORECASE)
 _SPLIT_PATTERN = re.compile(r"\s{2,}|\t+")
