@@ -688,9 +688,9 @@ DOCUMENT TEXT:
 
                     # Set FK and sequence
                     payload[line_fk] = pk_value
-                    if line_seq and line_seq not in payload:
+                    if line_seq and not payload.get(line_seq):
                         payload[line_seq] = idx
-                    if line_pk and line_pk not in payload:
+                    if line_pk and not payload.get(line_pk):
                         payload[line_pk] = f"{pk_value}-{idx}"
 
                     # Add audit columns
@@ -707,11 +707,21 @@ DOCUMENT TEXT:
                     placeholders = ["%s"] * len(col_names)
                     values = [payload[c] for c in col_names]
 
+                    # UPSERT: insert or update on PK conflict
                     insert_sql = (
                         f'INSERT INTO {line_table} ({", ".join(col_names)}) '
-                        f'VALUES ({", ".join(placeholders)}) '
-                        f"ON CONFLICT DO NOTHING"
+                        f'VALUES ({", ".join(placeholders)})'
                     )
+                    if line_pk:
+                        preserve = {"created_date", "created_by"}
+                        update_cols = [c for c in col_names if c != line_pk and c not in preserve]
+                        if update_cols:
+                            update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+                            insert_sql += f" ON CONFLICT ({line_pk}) DO UPDATE SET {update_clause}"
+                        else:
+                            insert_sql += f" ON CONFLICT ({line_pk}) DO NOTHING"
+                    else:
+                        insert_sql += " ON CONFLICT DO NOTHING"
                     cur.execute(insert_sql, values)
                     count += 1
 
