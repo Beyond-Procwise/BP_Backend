@@ -1,17 +1,28 @@
 """Procurement Knowledge Graph Builder.
 
-Reads the KG schema from the Excel workbook and builds the complete
-Neo4j knowledge graph with all entities, relationships, attributes,
-approval levels, TPRM profiles, finance hierarchy, and views.
+Creates Neo4j nodes from live bp_ table data and connects them using
+the relationship model defined in the KG Excel workbook.
 
-Runs unsupervised — called by BackendScheduler on startup and periodically.
+Entity-to-Table mapping:
+  Supplier        → proc.bp_supplier
+  Contract        → proc.bp_contracts
+  Invoice         → proc.bp_invoice
+  InvoiceLine     → proc.bp_invoice_line_items
+  PurchaseOrder   → proc.bp_purchase_order
+  POLine          → proc.bp_po_line_items
+  Quote           → proc.bp_quote
+  QuoteLine       → proc.bp_quote_line_items
+  Category        → proc.bp_category
+  Approval        → proc.bp_approvals
+  Policy          → proc.bp_policy
+
+Runs unsupervised via BackendScheduler.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -23,9 +34,46 @@ KG_WORKBOOK_PATH = os.getenv(
     "/home/muthu/Downloads/Procurement Knowledge Graphv2 (1).xlsx",
 )
 
+# Entity → (table, pk_column, neo4j_label)
+ENTITY_TABLE_MAP = {
+    "Supplier": ("proc.bp_supplier", "supplier_id", "Supplier"),
+    "Contract": ("proc.bp_contracts", "contract_id", "Contract"),
+    "Invoice": ("proc.bp_invoice", "invoice_id", "Invoice"),
+    "InvoiceLine": ("proc.bp_invoice_line_items", "invoice_line_id", "InvoiceLine"),
+    "PurchaseOrder": ("proc.bp_purchase_order", "po_id", "PurchaseOrder"),
+    "POLine": ("proc.bp_po_line_items", "po_line_id", "POLine"),
+    "Quote": ("proc.bp_quote", "quote_id", "Quote"),
+    "QuoteLine": ("proc.bp_quote_line_items", "quote_line_id", "QuoteLine"),
+    "Category": ("proc.bp_category", "category_id", "Category"),
+    "Approval": ("proc.bp_approvals", "id", "Approval"),
+    "Policy": ("proc.bp_policy", "id", "Policy"),
+}
+
+# FK-based relationships: (from_label, rel_type, to_label, from_fk, to_pk)
+FK_RELATIONSHIPS = [
+    # Supplier → Contract
+    ("Contract", "SUPPLIER_PARTY_TO_CONTRACT", "Supplier", "supplier_id", "supplier_id"),
+    # Invoice → Supplier
+    ("Invoice", "INVOICE_FROM_SUPPLIER", "Supplier", "supplier_id", "supplier_id"),
+    # Invoice → PO
+    ("Invoice", "INVOICE_REFERENCES_PO", "PurchaseOrder", "po_id", "po_id"),
+    # PO → Supplier (by name)
+    ("PurchaseOrder", "PO_FROM_SUPPLIER", "Supplier", "supplier_name", "supplier_name"),
+    # Quote → Supplier
+    ("Quote", "QUOTE_FROM_SUPPLIER", "Supplier", "supplier_id", "supplier_id"),
+    # Line items → parent
+    ("InvoiceLine", "LINE_OF_INVOICE", "Invoice", "invoice_id", "invoice_id"),
+    ("POLine", "LINE_OF_PO", "PurchaseOrder", "po_id", "po_id"),
+    ("QuoteLine", "LINE_OF_QUOTE", "Quote", "quote_id", "quote_id"),
+    # Category hierarchy
+    ("Category", "CATEGORY_HAS_PARENT", "Category", "parent_category_id", "category_id"),
+    # Contract → Category (via spend_category)
+    ("Contract", "CONTRACT_COVERS_CATEGORY", "Category", "spend_category", "category_name"),
+]
+
 
 class ProcurementKGBuilder:
-    """Builds and maintains the procurement knowledge graph in Neo4j."""
+    """Builds the procurement KG from live bp_ table data."""
 
     def __init__(self, agent_nick) -> None:
         self._agent_nick = agent_nick
@@ -35,169 +83,286 @@ class ProcurementKGBuilder:
         try:
             from neo4j import GraphDatabase
             s = self._agent_nick.settings
-            return GraphDatabase.driver(
-                getattr(s, "neo4j_uri", "bolt://localhost:7687"),
-                auth=(getattr(s, "neo4j_username", "neo4j"),
-                      getattr(s, "neo4j_password", "neo4j")),
-            )
+            uri = getattr(s, "neo4j_uri", "bolt://localhost:7687")
+            user = getattr(s, "neo4j_username", "neo4j")
+            pwd = getattr(s, "neo4j_password", "neo4j")
+            return GraphDatabase.driver(uri, auth=(user, pwd))
         except Exception:
             logger.exception("Failed to create Neo4j driver")
             return None
 
     def build_full_graph(self) -> Dict[str, int]:
-        """Build the complete KG from the Excel workbook. Returns counts."""
+        """Build complete KG from live data. Returns node/rel counts."""
         if not self._driver:
             return {"error": "No Neo4j driver"}
 
-        if not os.path.exists(KG_WORKBOOK_PATH):
-            logger.warning("KG workbook not found at %s", KG_WORKBOOK_PATH)
-            return {"error": f"Workbook not found: {KG_WORKBOOK_PATH}"}
-
-        xls = pd.ExcelFile(KG_WORKBOOK_PATH)
         counts = {}
 
-        # 1. Schema nodes (Entity types as schema reference)
-        counts["entity_types"] = self._load_entity_types(xls)
+        # 1. Create indexes for fast lookups
+        self._create_indexes()
 
-        # 2. Relationships schema
-        counts["relationship_types"] = self._load_relationship_types(xls)
+        # 2. Load all entities from bp_ tables
+        for entity_name, (table, pk, label) in ENTITY_TABLE_MAP.items():
+            n = self._load_entity(table, pk, label)
+            counts[entity_name] = n
 
-        # 3. Approval levels
-        counts["finance_approvals"] = self._load_approval_levels(
-            xls, "Finance_Approval_Levels", "FinanceApprovalLevel"
-        )
-        counts["procurement_approvals"] = self._load_approval_levels(
-            xls, "Procurement_Approval_Levels", "ProcurementApprovalLevel"
-        )
+        # 3. Create FK-based relationships
+        for from_label, rel_type, to_label, from_fk, to_pk in FK_RELATIONSHIPS:
+            n = self._create_relationships(from_label, rel_type, to_label, from_fk, to_pk)
+            counts[f"rel_{rel_type}"] = n
 
-        # 4. Supplier attributes
-        counts["supplier_attributes"] = self._load_keyed_attributes(
-            xls, "Supplier_Attributes", "Supplier", "Supplier_ID"
-        )
+        # 4. Load approval levels from Excel
+        if os.path.exists(KG_WORKBOOK_PATH):
+            counts.update(self._load_excel_reference_data())
 
-        # 5. Category attributes
-        counts["category_attributes"] = self._load_keyed_attributes(
-            xls, "Category_Attributes", "Category", "Category_ID"
-        )
+        # 5. Infer supplier nodes from extracted data if bp_supplier is empty
+        counts["inferred_suppliers"] = self._infer_suppliers()
 
-        # 6. TPRM profiles
-        counts["tprm_profiles"] = self._load_tprm(xls)
-
-        # 7. Risk scoring model
-        counts["risk_model"] = self._load_risk_model(xls)
-
-        # 8. Finance hierarchy
-        counts["finance_hierarchy"] = self._load_finance_hierarchy(xls)
-
-        # 9. Extended nodes and relationships
-        counts["extended_nodes"] = self._load_extended_nodes(xls)
-        counts["extended_relationships"] = self._load_extended_relationships(xls)
-
-        # 10. Approval workflow relationships
-        counts["approval_relationships"] = self._load_approval_relationships(xls)
-
-        # 11. KG relationships (Supplier-Category, TPRM, Finance)
-        counts["supplier_category_rel"] = self._load_generic_relationships(
-            xls, "KG_Supplier_Category_Rel"
-        )
-        counts["tprm_relationships"] = self._load_generic_relationships(
-            xls, "KG_TPRM_Relationships"
-        )
-        counts["finance_relationships"] = self._load_generic_relationships(
-            xls, "KG_Finance_Relationships"
-        )
-
-        # 12. Live data from bp_ tables
-        counts["bp_suppliers"] = self._sync_bp_suppliers()
-        counts["bp_invoices"] = self._sync_bp_data("bp_invoice", "Invoice", "invoice_id")
-        counts["bp_purchase_orders"] = self._sync_bp_data("bp_purchase_order", "PurchaseOrder", "po_id")
-        counts["bp_quotes"] = self._sync_bp_data("bp_quote", "Quote", "quote_id")
-        counts["bp_contracts"] = self._sync_bp_data("bp_contracts", "Contract", "contract_id")
-
-        logger.info("[KG Builder] Complete. Counts: %s", counts)
+        logger.info("[KG Builder] Complete: %s", counts)
         return counts
 
-    # ------------------------------------------------------------------
-    # Schema loading
-    # ------------------------------------------------------------------
-    def _load_entity_types(self, xls: pd.ExcelFile) -> int:
-        df = xls.parse("Entities")
+    def _create_indexes(self) -> None:
+        """Create indexes for all entity labels."""
+        with self._driver.session() as session:
+            for _, (_, pk, label) in ENTITY_TABLE_MAP.items():
+                try:
+                    session.run(
+                        f"CREATE INDEX IF NOT EXISTS FOR (n:{label}) ON (n.{pk})"
+                    )
+                except Exception:
+                    pass
+            # Extra indexes for relationship lookups
+            for idx in [
+                "CREATE INDEX IF NOT EXISTS FOR (n:Supplier) ON (n.supplier_name)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:Category) ON (n.category_name)",
+            ]:
+                try:
+                    session.run(idx)
+                except Exception:
+                    pass
+
+    def _load_entity(self, table: str, pk: str, label: str) -> int:
+        """Load all rows from a bp_ table as Neo4j nodes."""
+        try:
+            conn = self._agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT * FROM {table} LIMIT 5000")
+                    rows = cur.fetchall()
+                    cols = [d.name for d in cur.description]
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Failed to read %s", table, exc_info=True)
+            return 0
+
+        if not rows:
+            return 0
+
         count = 0
         with self._driver.session() as session:
-            for _, row in df.iterrows():
-                code = row.get("Entity Code", "")
-                if not code:
+            for row in rows:
+                data = dict(zip(cols, row))
+                pk_val = data.get(pk)
+                if not pk_val:
                     continue
+
+                props = {}
+                for k, v in data.items():
+                    if v is not None:
+                        if isinstance(v, (int, float)):
+                            props[k] = v
+                        else:
+                            s = str(v).strip()
+                            if s:
+                                props[k] = s
+
                 session.run(
-                    "MERGE (e:EntityType {code: $code}) "
-                    "SET e.name = $name, e.description = $desc, "
-                    "e.functional_group = $group, e.source_systems = $sources",
-                    code=str(code),
-                    name=str(row.get("Entity Name", "")),
-                    desc=str(row.get("Description", "")),
-                    group=str(row.get("Functional Group", "")),
-                    sources=str(row.get("Typical Source Systems", "")),
+                    f"MERGE (n:{label} {{{pk}: $pk_val}}) SET n += $props",
+                    pk_val=str(pk_val),
+                    props=props,
                 )
                 count += 1
 
-        # Also load attributes for each entity
-        if "Attributes" in xls.sheet_names:
-            attr_df = xls.parse("Attributes")
+        logger.info("[KG] Loaded %d %s nodes from %s", count, label, table)
+        return count
+
+    def _create_relationships(
+        self,
+        from_label: str,
+        rel_type: str,
+        to_label: str,
+        from_fk: str,
+        to_pk: str,
+    ) -> int:
+        """Create relationships between existing nodes based on FK values."""
+        count = 0
+        try:
             with self._driver.session() as session:
-                for _, row in attr_df.iterrows():
-                    entity_code = row.get("Entity Code", "")
-                    attr_code = row.get("Attribute Code", "")
-                    if not entity_code or not attr_code:
+                result = session.run(
+                    f"MATCH (a:{from_label}) WHERE a.{from_fk} IS NOT NULL "
+                    f"MATCH (b:{to_label} {{{to_pk}: a.{from_fk}}}) "
+                    f"MERGE (a)-[r:{rel_type}]->(b) "
+                    f"RETURN count(r) as cnt"
+                )
+                record = result.single()
+                count = record["cnt"] if record else 0
+        except Exception:
+            logger.debug("Failed to create %s relationships", rel_type, exc_info=True)
+
+        if count > 0:
+            logger.info("[KG] Created %d %s relationships", count, rel_type)
+        return count
+
+    def _infer_suppliers(self) -> int:
+        """Create Supplier nodes from extracted data if bp_supplier is empty."""
+        count = 0
+        try:
+            with self._driver.session() as session:
+                # From invoices
+                result = session.run(
+                    "MATCH (i:Invoice) WHERE i.supplier_id IS NOT NULL "
+                    "MERGE (s:Supplier {supplier_id: i.supplier_id}) "
+                    "ON CREATE SET s.supplier_name = i.supplier_id, s.source = 'inferred_from_invoice' "
+                    "MERGE (i)-[:INVOICE_FROM_SUPPLIER]->(s) "
+                    "RETURN count(s) as cnt"
+                )
+                count += (result.single() or {}).get("cnt", 0)
+
+                # From POs
+                result = session.run(
+                    "MATCH (p:PurchaseOrder) WHERE p.supplier_name IS NOT NULL "
+                    "MERGE (s:Supplier {supplier_name: p.supplier_name}) "
+                    "ON CREATE SET s.supplier_id = p.supplier_name, s.source = 'inferred_from_po' "
+                    "MERGE (p)-[:PO_FROM_SUPPLIER]->(s) "
+                    "RETURN count(s) as cnt"
+                )
+                count += (result.single() or {}).get("cnt", 0)
+
+                # From quotes
+                result = session.run(
+                    "MATCH (q:Quote) WHERE q.supplier_id IS NOT NULL "
+                    "MERGE (s:Supplier {supplier_id: q.supplier_id}) "
+                    "ON CREATE SET s.supplier_name = q.supplier_id, s.source = 'inferred_from_quote' "
+                    "MERGE (q)-[:QUOTE_FROM_SUPPLIER]->(s) "
+                    "RETURN count(s) as cnt"
+                )
+                count += (result.single() or {}).get("cnt", 0)
+
+                # From contracts
+                result = session.run(
+                    "MATCH (c:Contract) WHERE c.supplier_id IS NOT NULL "
+                    "MERGE (s:Supplier {supplier_id: c.supplier_id}) "
+                    "ON CREATE SET s.supplier_name = c.supplier_id, s.source = 'inferred_from_contract' "
+                    "MERGE (c)-[:SUPPLIER_PARTY_TO_CONTRACT]->(s) "
+                    "RETURN count(s) as cnt"
+                )
+                count += (result.single() or {}).get("cnt", 0)
+
+        except Exception:
+            logger.debug("Supplier inference failed", exc_info=True)
+
+        if count > 0:
+            logger.info("[KG] Inferred %d supplier nodes from extracted data", count)
+        return count
+
+    def _load_excel_reference_data(self) -> Dict[str, int]:
+        """Load reference data from Excel: approval levels, risk model, finance hierarchy."""
+        counts = {}
+        try:
+            xls = pd.ExcelFile(KG_WORKBOOK_PATH)
+        except Exception:
+            return counts
+
+        # Finance approval levels
+        if "Finance_Approval_Levels" in xls.sheet_names:
+            counts["finance_approvals"] = self._load_levels(
+                xls, "Finance_Approval_Levels", "FinanceApprovalLevel"
+            )
+
+        # Procurement approval levels
+        if "Procurement_Approval_Levels" in xls.sheet_names:
+            counts["procurement_approvals"] = self._load_levels(
+                xls, "Procurement_Approval_Levels", "ProcurementApprovalLevel"
+            )
+
+        # Risk scoring model
+        if "Risk_Scoring_Model" in xls.sheet_names:
+            df = xls.parse("Risk_Scoring_Model")
+            n = 0
+            with self._driver.session() as session:
+                for _, row in df.iterrows():
+                    comp = row.get("Component", "")
+                    if not comp:
                         continue
                     session.run(
-                        "MATCH (e:EntityType {code: $entity_code}) "
-                        "MERGE (a:Attribute {code: $attr_code, entity: $entity_code}) "
-                        "SET a.data_type = $dtype, a.description = $desc, "
-                        "a.required = $required, a.example = $example "
-                        "MERGE (e)-[:HAS_ATTRIBUTE]->(a)",
-                        entity_code=str(entity_code),
-                        attr_code=str(attr_code),
-                        dtype=str(row.get("Data Type", "")),
-                        desc=str(row.get("Description", "")),
-                        required=bool(row.get("Required", 0)),
-                        example=str(row.get("Example", "")),
+                        "MERGE (r:RiskComponent {name: $name}) "
+                        "SET r.weight = $w, r.example_score = $s",
+                        name=str(comp),
+                        w=float(row.get("Weight", 0)),
+                        s=float(row.get("Example_Score", 0)),
                     )
-        return count
+                    n += 1
+            counts["risk_components"] = n
 
-    def _load_relationship_types(self, xls: pd.ExcelFile) -> int:
-        df = xls.parse("Relationships")
-        count = 0
-        with self._driver.session() as session:
-            for _, row in df.iterrows():
-                code = row.get("Edge Code", "")
-                if not code:
-                    continue
-                session.run(
-                    "MERGE (r:RelationshipType {code: $code}) "
-                    "SET r.name = $name, r.from_entity = $from_e, "
-                    "r.to_entity = $to_e, r.cardinality = $card, "
-                    "r.functional_group = $group, r.notes = $notes",
-                    code=str(code),
-                    name=str(row.get("Edge Name", "")),
-                    from_e=str(row.get("From Entity Code", "")),
-                    to_e=str(row.get("To Entity Code", "")),
-                    card=str(row.get("Cardinality", "")),
-                    group=str(row.get("Functional Group", "")),
-                    notes=str(row.get("Notes", "")),
-                )
-                count += 1
-        return count
+        # Finance hierarchy
+        if "Finance_Budget_Hierarchy" in xls.sheet_names:
+            df = xls.parse("Finance_Budget_Hierarchy")
+            n = 0
+            with self._driver.session() as session:
+                for _, row in df.iterrows():
+                    nid = row.get("finance_budget_hierarchy_id", "")
+                    if not nid:
+                        continue
+                    props = {}
+                    for col in df.columns:
+                        v = row.get(col)
+                        if pd.notna(v):
+                            props[col.lower()] = float(v) if isinstance(v, (int, float)) else str(v)
+                    session.run(
+                        "MERGE (n:FinanceBudgetNode {node_id: $nid}) SET n += $props",
+                        nid=str(nid), props=props,
+                    )
+                    parent = row.get("parent_budget_id")
+                    if pd.notna(parent) and str(parent).strip():
+                        session.run(
+                            "MATCH (c:FinanceBudgetNode {node_id: $c}) "
+                            "MATCH (p:FinanceBudgetNode {node_id: $p}) "
+                            "MERGE (c)-[:ROLLS_UP_TO]->(p)",
+                            c=str(nid), p=str(parent),
+                        )
+                    n += 1
+            counts["finance_hierarchy"] = n
 
-    # ------------------------------------------------------------------
-    # Approval levels
-    # ------------------------------------------------------------------
-    def _load_approval_levels(
-        self, xls: pd.ExcelFile, sheet: str, label: str
-    ) -> int:
-        if sheet not in xls.sheet_names:
-            return 0
+        # TPRM profiles
+        if "TPRM_Profile" in xls.sheet_names:
+            df = xls.parse("TPRM_Profile")
+            n = 0
+            with self._driver.session() as session:
+                for _, row in df.iterrows():
+                    sid = row.get("Supplier_ID", "")
+                    if not sid:
+                        continue
+                    session.run(
+                        "MERGE (p:TPRMProfile {supplier_id: $sid}) "
+                        "SET p.risk_tier = $tier, p.overall_score = $score, "
+                        "p.risk_owner = $owner "
+                        "WITH p "
+                        "MERGE (s:Supplier {supplier_id: $sid}) "
+                        "MERGE (s)-[:HAS_RISK_PROFILE]->(p)",
+                        sid=str(sid),
+                        tier=str(row.get("Risk_Tier", "")),
+                        score=float(row.get("Overall_Score", 0)),
+                        owner=str(row.get("Risk_Owner", "")),
+                    )
+                    n += 1
+            counts["tprm_profiles"] = n
+
+        return counts
+
+    def _load_levels(self, xls, sheet: str, label: str) -> int:
         df = xls.parse(sheet)
-        count = 0
+        n = 0
         with self._driver.session() as session:
             for _, row in df.iterrows():
                 level = row.get("Level", "")
@@ -208,353 +373,13 @@ class ProcurementKGBuilder:
                     "SET a.threshold_min = $tmin, a.threshold_max = $tmax, "
                     "a.approver_role = $role, a.description = $desc",
                     level=str(level),
-                    tmin=self._safe_num(row.get("Threshold_Min")),
+                    tmin=float(row.get("Threshold_Min", 0)),
                     tmax=str(row.get("Threshold_Max", "")),
                     role=str(row.get("Approver_Role", "")),
                     desc=str(row.get("Description", "")),
                 )
-                count += 1
-        return count
-
-    # ------------------------------------------------------------------
-    # Keyed attributes (Supplier, Category)
-    # ------------------------------------------------------------------
-    def _load_keyed_attributes(
-        self, xls: pd.ExcelFile, sheet: str, label: str, id_col: str
-    ) -> int:
-        if sheet not in xls.sheet_names:
-            return 0
-        df = xls.parse(sheet)
-        count = 0
-        with self._driver.session() as session:
-            for _, row in df.iterrows():
-                entity_id = row.get(id_col, "")
-                attr = row.get("Attribute", "")
-                if not entity_id or not attr:
-                    continue
-                name = row.get(f"{label}_Name", "")
-                safe_attr = attr.replace(" ", "_").lower()
-                session.run(
-                    f"MERGE (n:{label} {{{id_col.lower()}: $eid}}) "
-                    f"SET n.name = $name, n.{safe_attr} = $val",
-                    eid=str(entity_id),
-                    name=str(name),
-                    val=str(row.get("Value", "")),
-                )
-                count += 1
-        return count
-
-    # ------------------------------------------------------------------
-    # TPRM
-    # ------------------------------------------------------------------
-    def _load_tprm(self, xls: pd.ExcelFile) -> int:
-        count = 0
-        if "TPRM_Profile" in xls.sheet_names:
-            df = xls.parse("TPRM_Profile")
-            with self._driver.session() as session:
-                for _, row in df.iterrows():
-                    sid = row.get("Supplier_ID", "")
-                    if not sid:
-                        continue
-                    session.run(
-                        "MERGE (p:TPRMProfile {supplier_id: $sid}) "
-                        "SET p.risk_tier = $tier, p.overall_score = $score, "
-                        "p.last_assessed = $assessed, p.next_review = $review, "
-                        "p.risk_owner = $owner",
-                        sid=str(sid),
-                        tier=str(row.get("Risk_Tier", "")),
-                        score=self._safe_num(row.get("Overall_Score")),
-                        assessed=str(row.get("Last_Assessed", "")),
-                        review=str(row.get("Next_Review", "")),
-                        owner=str(row.get("Risk_Owner", "")),
-                    )
-                    # Link to supplier
-                    session.run(
-                        "MATCH (s:Supplier {supplier_id: $sid}) "
-                        "MATCH (p:TPRMProfile {supplier_id: $sid}) "
-                        "MERGE (s)-[:HAS_PROFILE]->(p)",
-                        sid=str(sid),
-                    )
-                    count += 1
-
-        for sheet, label in [("TPRM_Domains", "TPRMDomain"),
-                             ("TPRM_Controls", "TPRMControl"),
-                             ("TPRM_Events", "TPRMEvent")]:
-            if sheet not in xls.sheet_names:
-                continue
-            df = xls.parse(sheet)
-            with self._driver.session() as session:
-                for _, row in df.iterrows():
-                    sid = row.get("Supplier_ID", "")
-                    if not sid:
-                        continue
-                    props = {k.lower(): str(v) for k, v in row.items()
-                             if k != "Supplier_ID" and pd.notna(v)}
-                    props["supplier_id"] = str(sid)
-                    session.run(
-                        f"MERGE (n:{label} {{supplier_id: $sid, name: $name}}) SET n += $props",
-                        sid=str(sid),
-                        name=str(row.get("Domain", row.get("Control", row.get("Event", "")))),
-                        props=props,
-                    )
-                    count += 1
-        return count
-
-    # ------------------------------------------------------------------
-    # Risk scoring model
-    # ------------------------------------------------------------------
-    def _load_risk_model(self, xls: pd.ExcelFile) -> int:
-        if "Risk_Scoring_Model" not in xls.sheet_names:
-            return 0
-        df = xls.parse("Risk_Scoring_Model")
-        count = 0
-        with self._driver.session() as session:
-            for _, row in df.iterrows():
-                comp = row.get("Component", "")
-                if not comp:
-                    continue
-                session.run(
-                    "MERGE (r:RiskComponent {name: $name}) "
-                    "SET r.weight = $weight, r.example_score = $score, "
-                    "r.weighted_contribution = $contrib",
-                    name=str(comp),
-                    weight=self._safe_num(row.get("Weight")),
-                    score=self._safe_num(row.get("Example_Score")),
-                    contrib=self._safe_num(row.get("Weighted_Contribution")),
-                )
-                count += 1
-        return count
-
-    # ------------------------------------------------------------------
-    # Finance hierarchy
-    # ------------------------------------------------------------------
-    def _load_finance_hierarchy(self, xls: pd.ExcelFile) -> int:
-        if "Finance_Budget_Hierarchy" not in xls.sheet_names:
-            return 0
-        df = xls.parse("Finance_Budget_Hierarchy")
-        count = 0
-        with self._driver.session() as session:
-            for _, row in df.iterrows():
-                node_id = row.get("finance_budget_hierarchy_id", "")
-                if not node_id:
-                    continue
-                props = {}
-                for col in df.columns:
-                    val = row.get(col)
-                    if pd.notna(val):
-                        safe_key = col.lower().replace(" ", "_")
-                        props[safe_key] = self._safe_num(val) if isinstance(val, (int, float)) else str(val)
-
-                session.run(
-                    "MERGE (n:FinanceBudgetHierarchy {node_id: $nid}) SET n += $props",
-                    nid=str(node_id),
-                    props=props,
-                )
-
-                # Parent relationship
-                parent = row.get("parent_budget_id")
-                if pd.notna(parent) and str(parent).strip():
-                    session.run(
-                        "MATCH (child:FinanceBudgetHierarchy {node_id: $child}) "
-                        "MATCH (parent:FinanceBudgetHierarchy {node_id: $parent}) "
-                        "MERGE (child)-[:ROLLS_UP_TO]->(parent)",
-                        child=str(node_id),
-                        parent=str(parent),
-                    )
-                count += 1
-        return count
-
-    # ------------------------------------------------------------------
-    # Extended nodes and relationships
-    # ------------------------------------------------------------------
-    def _load_extended_nodes(self, xls: pd.ExcelFile) -> int:
-        if "Extended_Nodes" not in xls.sheet_names:
-            return 0
-        df = xls.parse("Extended_Nodes")
-        count = 0
-        with self._driver.session() as session:
-            for _, row in df.iterrows():
-                node_type = row.get("Node_Type", "")
-                name = row.get("Node_Name", "")
-                if not node_type or not name:
-                    continue
-                attr_key = str(row.get("Attribute_Key", "")).lower().replace(" ", "_")
-                attr_val = row.get("Attribute_Value", "")
-                session.run(
-                    f"MERGE (n:{node_type} {{name: $name}}) "
-                    f"SET n.{attr_key} = $val, n.description = $desc",
-                    name=str(name),
-                    val=str(attr_val) if pd.notna(attr_val) else "",
-                    desc=str(row.get("Description", "")),
-                )
-                count += 1
-        return count
-
-    def _load_extended_relationships(self, xls: pd.ExcelFile) -> int:
-        if "Extended_Relationships" not in xls.sheet_names:
-            return 0
-        df = xls.parse("Extended_Relationships")
-        count = 0
-        with self._driver.session() as session:
-            for _, row in df.iterrows():
-                from_node = row.get("From_Node", "")
-                rel = row.get("Relationship", "")
-                to_node = row.get("To_Node", "")
-                if not from_node or not rel or not to_node:
-                    continue
-                safe_rel = rel.upper().replace(" ", "_")
-                session.run(
-                    f"MATCH (a {{name: $from_name}}) "
-                    f"MATCH (b {{name: $to_name}}) "
-                    f"MERGE (a)-[:{safe_rel}]->(b)",
-                    from_name=str(from_node),
-                    to_name=str(to_node),
-                )
-                count += 1
-        return count
-
-    def _load_approval_relationships(self, xls: pd.ExcelFile) -> int:
-        if "KG_Approval_Relationships" not in xls.sheet_names:
-            return 0
-        df = xls.parse("KG_Approval_Relationships")
-        count = 0
-        with self._driver.session() as session:
-            for _, row in df.iterrows():
-                from_n = row.get("From_Node", "")
-                rel = row.get("Relationship", "")
-                to_n = row.get("To_Node", "")
-                if not from_n or not rel or not to_n:
-                    continue
-                safe_rel = rel.upper().replace(" ", "_")
-                session.run(
-                    f"MERGE (a:ApprovalNode {{name: $from_n}}) "
-                    f"MERGE (b:ApprovalNode {{name: $to_n}}) "
-                    f"MERGE (a)-[:{safe_rel} {{condition: $cond, description: $desc}}]->(b)",
-                    from_n=str(from_n),
-                    to_n=str(to_n),
-                    cond=str(row.get("Condition", "")),
-                    desc=str(row.get("Description", "")),
-                )
-                count += 1
-        return count
-
-    def _load_generic_relationships(self, xls: pd.ExcelFile, sheet: str) -> int:
-        if sheet not in xls.sheet_names:
-            return 0
-        df = xls.parse(sheet)
-        count = 0
-        with self._driver.session() as session:
-            for _, row in df.iterrows():
-                from_n = row.get("From_Node", "")
-                rel = row.get("Relationship", "")
-                to_n = row.get("To_Node", "")
-                if not from_n or not rel or not to_n:
-                    continue
-                safe_rel = rel.upper().replace(" ", "_")
-                desc = str(row.get("Description", ""))
-                cond = str(row.get("Condition", ""))
-                session.run(
-                    f"MERGE (a:KGNode {{name: $from_n}}) "
-                    f"MERGE (b:KGNode {{name: $to_n}}) "
-                    f"MERGE (a)-[:{safe_rel} {{description: $desc, condition: $cond}}]->(b)",
-                    from_n=str(from_n),
-                    to_n=str(to_n),
-                    desc=desc,
-                    cond=cond,
-                )
-                count += 1
-        return count
-
-    # ------------------------------------------------------------------
-    # Live data sync from bp_ tables
-    # ------------------------------------------------------------------
-    def _sync_bp_suppliers(self) -> int:
-        try:
-            conn = self._agent_nick.get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT supplier_id, supplier_name, trading_name, supplier_type, "
-                        "registered_country, risk_score, default_currency, is_preferred_supplier "
-                        "FROM proc.bp_supplier LIMIT 500"
-                    )
-                    rows = cur.fetchall()
-                    cols = [d.name for d in cur.description]
-            finally:
-                conn.close()
-
-            count = 0
-            with self._driver.session() as session:
-                for row in rows:
-                    data = dict(zip(cols, row))
-                    sid = data.get("supplier_id", "")
-                    if not sid:
-                        continue
-                    props = {k: str(v) for k, v in data.items() if v is not None}
-                    session.run(
-                        "MERGE (s:Supplier {supplier_id: $sid}) SET s += $props",
-                        sid=str(sid),
-                        props=props,
-                    )
-                    count += 1
-            return count
-        except Exception:
-            logger.debug("bp_supplier sync failed", exc_info=True)
-            return 0
-
-    def _sync_bp_data(
-        self, table: str, label: str, pk_col: str
-    ) -> int:
-        try:
-            conn = self._agent_nick.get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(f"SELECT * FROM proc.{table} LIMIT 500")
-                    rows = cur.fetchall()
-                    cols = [d.name for d in cur.description]
-            finally:
-                conn.close()
-
-            count = 0
-            with self._driver.session() as session:
-                for row in rows:
-                    data = dict(zip(cols, row))
-                    pk = data.get(pk_col, "")
-                    if not pk:
-                        continue
-                    props = {}
-                    for k, v in data.items():
-                        if v is not None:
-                            props[k] = str(v) if not isinstance(v, (int, float)) else v
-                    session.run(
-                        f"MERGE (n:{label} {{{pk_col}: $pk}}) SET n += $props",
-                        pk=str(pk),
-                        props=props,
-                    )
-                    # Link to supplier
-                    supplier = data.get("supplier_id") or data.get("supplier_name")
-                    if supplier:
-                        session.run(
-                            f"MATCH (n:{label} {{{pk_col}: $pk}}) "
-                            "MERGE (s:Supplier {name: $sname}) "
-                            f"MERGE (s)-[:HAS_{label.upper()}]->(n)",
-                            pk=str(pk),
-                            sname=str(supplier),
-                        )
-                    count += 1
-            return count
-        except Exception:
-            logger.debug("bp_%s sync failed", table, exc_info=True)
-            return 0
-
-    @staticmethod
-    def _safe_num(val) -> Any:
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            return None
-        try:
-            return float(val)
-        except (ValueError, TypeError):
-            return str(val)
+                n += 1
+        return n
 
     def close(self):
         if self._driver:
