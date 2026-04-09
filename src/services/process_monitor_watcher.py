@@ -244,6 +244,47 @@ class ProcessMonitorWatcher:
             file_path,
             category,
         )
+
+        # Check for duplicate file_path (same document already extracted)
+        if file_path:
+            try:
+                conn = self._get_connection()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT id FROM proc.process_monitor "
+                            "WHERE file_path = %s AND status = 'Extracted' AND id != %s "
+                            "LIMIT 1",
+                            (file_path, record_id),
+                        )
+                        existing = cur.fetchone()
+                        if existing:
+                            logger.info(
+                                "Duplicate detected: record %s has same file_path as "
+                                "already-extracted record %s — logging discrepancy",
+                                record_id, existing[0],
+                            )
+                            # Log duplicate to discrepancy table
+                            cur.execute(
+                                "INSERT INTO proc.bp_discrepancy_data "
+                                "(doc_type, record_id, field_name, rule_name, severity, "
+                                "extracted_value, expected_value, message, file_path) "
+                                "VALUES (%s, %s, 'file_path', 'duplicate_document', 'warning', "
+                                "%s, %s, %s, %s)",
+                                (
+                                    category, str(record_id), file_path,
+                                    str(existing[0]),
+                                    f"Duplicate upload: same file already extracted as record {existing[0]}",
+                                    file_path,
+                                ),
+                            )
+                            self._mark_extracted(record_id)
+                            return
+                finally:
+                    conn.close()
+            except Exception:
+                logger.debug("Duplicate check failed", exc_info=True)
+
         try:
             nick = AgentNickOrchestrator(self._agent_nick)
             result = nick.process_document(
@@ -258,14 +299,26 @@ class ProcessMonitorWatcher:
                 )
             self._mark_extracted(record_id)
             logger.info(
-                "Extraction completed for record %s: %s pk=%s fields=%s lines=%s missing=%s",
+                "Extraction completed for record %s: %s pk=%s fields=%s lines=%s discrep=%s conf=%s",
                 record_id,
                 result.get("doc_type"),
                 result.get("pk"),
                 result.get("header_fields"),
                 result.get("line_items"),
-                result.get("missing_fields"),
+                result.get("discrepancies"),
+                result.get("confidence"),
             )
+
+            # Trigger KG sync in background
+            try:
+                from services.procurement_kg_builder import ProcurementKGBuilder
+                builder = ProcurementKGBuilder(self._agent_nick)
+                builder.build_full_graph()
+                builder.close()
+                logger.info("KG synced after extraction of record %s", record_id)
+            except Exception:
+                logger.debug("KG sync after extraction failed", exc_info=True)
+
         except Exception as exc:
             logger.exception("Extraction failed for record %s", record_id)
             self._mark_failed(record_id, str(exc))
