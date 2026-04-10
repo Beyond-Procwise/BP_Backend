@@ -1,0 +1,48 @@
+[Unit]
+Description=ProcWise Agentic System API
+Documentation=https://github.com/BeyondProcure/BP_Backend
+After=network-online.target docker.service nvidia-persistenced.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=muthu
+Group=muthu
+WorkingDirectory=/home/muthu/PycharmProjects/BP_Backend/src
+Environment=PYTHONPATH=/home/muthu/PycharmProjects/BP_Backend:/home/muthu/PycharmProjects/BP_Backend/src
+EnvironmentFile=/home/muthu/PycharmProjects/BP_Backend/.env
+
+ExecStartPre=/usr/bin/docker compose --env-file /home/muthu/PycharmProjects/BP_Backend/.env -f /home/muthu/PycharmProjects/BP_Backend/procurement_knowledge_graph/docker-compose.yml up -d neo4j
+ExecStartPre=/bin/sleep 10
+
+ExecStart=/home/muthu/PycharmProjects/BP_Backend/.venv/bin/uvicorn api.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 1 \
+    --timeout-keep-alive 300 \
+    --log-level info
+
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=procwise
+
+ProtectSystem=full
+NoNewPrivileges=true
+PrivateTmp=true
+
+MemoryMax=12G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
