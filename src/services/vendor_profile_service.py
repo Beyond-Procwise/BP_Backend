@@ -148,6 +148,13 @@ class VendorProfileService:
         """
         if not supplier_name or not doc_type:
             return
+        # Guard: reject bank names, payment info, and other non-supplier text
+        _reject = (
+            "bank name", "bank account", "sort code", "iban", "swift",
+            "payment", "payable to", "monthly design", "package",
+        )
+        if any(r in supplier_name.lower() for r in _reject):
+            return
         label_json = json.dumps(label_overrides or {})
         field_json = json.dumps(field_positions or {})
         try:

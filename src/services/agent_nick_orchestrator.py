@@ -172,6 +172,28 @@ class AgentNickOrchestrator:
             logger.exception("[AgentNick] Validation failed, proceeding with raw extraction")
             discrepancies = []
 
+        # Step 5: Auto-fix tax/amount swap (tax_amount > invoice_amount is wrong)
+        if doc_type == "Invoice":
+            try:
+                amt = float(header.get("invoice_amount") or 0)
+                tax = float(header.get("tax_amount") or 0)
+                total = float(header.get("invoice_total_incl_tax") or 0)
+                if tax > amt > 0:
+                    # Tax and amount are swapped
+                    header["invoice_amount"] = tax
+                    header["tax_amount"] = amt
+                    logger.info(
+                        "[AgentNick] Fixed tax/amount swap: amt=%.2f→%.2f, tax=%.2f→%.2f",
+                        amt, tax, tax, amt,
+                    )
+                # If total doesn't match, recalculate
+                new_amt = float(header.get("invoice_amount") or 0)
+                new_tax = float(header.get("tax_amount") or 0)
+                if new_amt > 0 and new_tax > 0 and abs(total - (new_amt + new_tax)) > 0.01:
+                    header["invoice_total_incl_tax"] = round(new_amt + new_tax, 2)
+            except (ValueError, TypeError):
+                pass
+
         # Re-check after validation
         still_missing = [f for f in required if not header.get(f)]
         if still_missing:
@@ -415,11 +437,10 @@ class AgentNickOrchestrator:
                     )
                     row = cur.fetchone()
                     if row:
-                        header["supplier_id"] = row[0] or row[1]
-                        header["supplier_name"] = row[1]
+                        header["supplier_id"] = row[0]
                         logger.info(
-                            "[AgentNick] Supplier resolved: '%s' → '%s' (id=%s)",
-                            raw_name, row[1], row[0],
+                            "[AgentNick] Supplier resolved: '%s' → id=%s",
+                            raw_name, row[0],
                         )
                     else:
                         # Try fuzzy match
@@ -431,24 +452,23 @@ class AgentNickOrchestrator:
                         )
                         row = cur.fetchone()
                         if row:
-                            header["supplier_id"] = row[0] or row[1]
-                            header["supplier_name"] = row[1]
+                            header["supplier_id"] = row[0]
                             logger.info(
-                                "[AgentNick] Supplier fuzzy-matched: '%s' → '%s'",
-                                raw_name, row[1],
+                                "[AgentNick] Supplier fuzzy-matched: '%s' → id=%s",
+                                raw_name, row[0],
                             )
                         else:
-                            # No match in bp_supplier — use extracted name as ID
+                            # No match in bp_supplier — set supplier_id
+                            # from extracted name but do NOT overwrite
+                            # supplier_name
                             if not header.get("supplier_id"):
                                 header["supplier_id"] = raw_name
-                            if not header.get("supplier_name"):
-                                header["supplier_name"] = raw_name
             finally:
                 conn.close()
         except Exception:
             logger.debug("[AgentNick] Supplier resolution failed", exc_info=True)
 
-        # Ensure supplier_id is always set from supplier_name as fallback
+        # Ensure supplier_id is always populated
         if not header.get("supplier_id") and header.get("supplier_name"):
             header["supplier_id"] = header["supplier_name"]
 
