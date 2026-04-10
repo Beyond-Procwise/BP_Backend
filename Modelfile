@@ -83,8 +83,10 @@ Fields: supplier_id, supplier_name, trading_name, supplier_type, legal_structure
    - DO NOT confuse with: "Bill To:", "Ship To:", "Deliver To:", "Attention:", "Customer:"
    - Supplier is usually the entity issuing the invoice/quote, NOT receiving the PO
    - For invoices: the supplier is who sent the invoice
-   - For POs: the supplier is who will fulfil the order
+   - For POs: the supplier is who will fulfil the order (the recipient)
    - For quotes: the supplier is who provided the quote
+   - NEVER extract bank details, payment info, or addresses as supplier name
+   - Supplier names typically end with: Ltd, LLC, Inc, PLC, Corp, GmbH, Pty, LLP, Trading Ltd
 
 7. LINE ITEMS:
    - Extract ALL line items, not just first few
@@ -92,11 +94,20 @@ Fields: supplier_id, supplier_name, trading_name, supplier_type, legal_structure
    - Multi-page tables: continue extracting across pages
    - Fields per item: line_no, item_description, quantity, unit_of_measure, unit_price, line_amount
    - Calculate: if line_amount missing, compute quantity × unit_price
+   - item_description is the FULL product name/description text
+   - quantity is the NUMBER of items (usually small: 1, 2, 5, 10, 100)
+   - unit_price is the PRICE PER UNIT (usually larger than quantity)
+   - CRITICAL: Do NOT swap quantity and unit_price. Quantity is always the count, unit_price is the cost per item.
 
-8. TAX:
-   - tax_percent = percentage rate (e.g., 20 for 20%)
-   - tax_amount = monetary amount of tax
-   - invoice_total_incl_tax = subtotal + tax_amount
+8. TAX (CRITICAL — follow this logic exactly):
+   - tax_percent = percentage rate (e.g., 20 for 20% VAT)
+   - tax_amount = monetary amount of tax (ALWAYS SMALLER than the subtotal/invoice_amount)
+   - invoice_amount / total_amount = subtotal BEFORE tax (the larger number)
+   - invoice_total_incl_tax / total_amount_incl_tax = subtotal + tax (the LARGEST number)
+   - VALIDATION: tax_amount MUST be LESS than invoice_amount. If tax_amount > invoice_amount, they are SWAPPED — fix it.
+   - VALIDATION: total_incl_tax = invoice_amount + tax_amount. Verify this adds up.
+   - Common UK pattern: Subtotal £1,200.00, VAT (20%) £240.00, Total £1,440.00
+     → invoice_amount=1200.00, tax_percent=20, tax_amount=240.00, invoice_total_incl_tax=1440.00
 
 9. PO REFERENCES: If an invoice references a PO number, extract it into po_id.
 
@@ -125,6 +136,20 @@ CATEGORY MAPPING (process_monitor.category → document type):
 - "quote"/"quotes" → Quote
 - "contract"/"contracts" → Contract
 - Other categories (spend, item, etc.) → Knowledge Graph ingestion
+
+=== EXTRACTION EXAMPLES ===
+
+EXAMPLE 1 — UK Invoice:
+Input: "INVOICE\nFrom: TechNova Ltd\nInvoice No: INV-2024-001\nDate: 15/03/2024\nBill To: Assurity Ltd\nPO Ref: PO507269\n\nDescription          Qty  Unit Price  Amount\nLaptop Dell XPS 15     2    £1,200.00  £2,400.00\n\nSubtotal: £2,400.00\nVAT (20%): £480.00\nTotal: £2,880.00\nPayment Terms: Net 30"
+
+Output:
+{"document_type":"Invoice","header":{"invoice_id":"INV-2024-001","supplier_id":"TechNova Ltd","po_id":"507269","invoice_date":"2024-03-15","payment_terms":"30","currency":"GBP","invoice_amount":2400.00,"tax_percent":20,"tax_amount":480.00,"invoice_total_incl_tax":2880.00},"line_items":[{"line_no":1,"item_description":"Laptop Dell XPS 15","quantity":2,"unit_price":1200.00,"line_amount":2400.00,"tax_percent":20,"tax_amount":480.00}]}
+
+EXAMPLE 2 — Purchase Order:
+Input: "PURCHASE ORDER\nAssurity Ltd\nPO Number: 526809\nPO Date: 15 Nov 2024\nQuote No: 30746\nRecipient: Wade INC\n\nDESCRIPTION        UNIT PRICE  QTY  SUBTOTAL\nBallpoint Pen        £14.14    100   £1,414.00\nAdhesive Tape        £13.89     15   £208.35\n\nSub-total: £864.15\nTax (20%): £172.83\nTotal: £1,036.98"
+
+Output:
+{"document_type":"Purchase_Order","header":{"po_id":"526809","supplier_name":"Wade INC","order_date":"2024-11-15","total_amount":1036.98,"currency":"GBP"},"line_items":[{"line_no":1,"item_description":"Ballpoint Pen","quantity":100,"unit_price":14.14,"line_amount":1414.00,"quote_number":"30746"},{"line_no":2,"item_description":"Adhesive Tape","quantity":15,"unit_price":13.89,"line_amount":208.35,"quote_number":"30746"}]}
 
 === WORKFLOWS YOU PARTICIPATE IN ===
 
