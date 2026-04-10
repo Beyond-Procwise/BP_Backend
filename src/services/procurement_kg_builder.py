@@ -65,6 +65,10 @@ FK_RELATIONSHIPS = [
     ("InvoiceLine", "LINE_OF_INVOICE", "Invoice", "invoice_id", "invoice_id"),
     ("POLine", "LINE_OF_PO", "PurchaseOrder", "po_id", "po_id"),
     ("QuoteLine", "LINE_OF_QUOTE", "Quote", "quote_id", "quote_id"),
+    # Quote → PO (quote references the PO it was created for)
+    ("Quote", "QUOTE_FOR_PO", "PurchaseOrder", "po_id", "po_id"),
+    # PO line → Quote (PO line items reference the quote they originated from)
+    ("POLine", "PO_LINE_FROM_QUOTE", "Quote", "quote_number", "quote_id"),
     # Category hierarchy
     ("Category", "CATEGORY_HAS_PARENT", "Category", "parent_category_id", "category_id"),
     # Contract → Category (via spend_category)
@@ -85,10 +89,15 @@ class ProcurementKGBuilder:
             s = self._agent_nick.settings
             uri = getattr(s, "neo4j_uri", "bolt://localhost:7687")
             user = getattr(s, "neo4j_username", "neo4j")
-            pwd = getattr(s, "neo4j_password", "neo4j")
-            return GraphDatabase.driver(uri, auth=(user, pwd))
+            pwd = getattr(s, "neo4j_password", "procwise2026")
+            driver = GraphDatabase.driver(uri, auth=(user, pwd))
+            driver.verify_connectivity()
+            return driver
         except Exception:
-            logger.exception("Failed to create Neo4j driver")
+            logger.exception(
+                "Failed to connect to Neo4j — the knowledge graph is unavailable. "
+                "Ensure Neo4j is running at the configured URI."
+            )
             return None
 
     def build_full_graph(self) -> Dict[str, int]:
@@ -115,7 +124,10 @@ class ProcurementKGBuilder:
         if os.path.exists(KG_WORKBOOK_PATH):
             counts.update(self._load_excel_reference_data())
 
-        # 5. Infer supplier nodes from extracted data if bp_supplier is empty
+        # 5. Create inferred cross-document relationships
+        counts["rel_PO_REFERENCES_QUOTE"] = self._link_po_to_quotes()
+
+        # 6. Infer supplier nodes from extracted data if bp_supplier is empty
         counts["inferred_suppliers"] = self._infer_suppliers()
 
         logger.info("[KG Builder] Complete: %s", counts)
@@ -212,6 +224,27 @@ class ProcurementKGBuilder:
 
         if count > 0:
             logger.info("[KG] Created %d %s relationships", count, rel_type)
+        return count
+
+    def _link_po_to_quotes(self) -> int:
+        """Create PO → Quote relationships inferred from PO line item quote references."""
+        count = 0
+        try:
+            with self._driver.session() as session:
+                # PO line items carry a quote_number that maps to quote_id.
+                # Create a direct PO_REFERENCES_QUOTE edge at the document level.
+                result = session.run(
+                    "MATCH (pl:POLine)-[:LINE_OF_PO]->(po:PurchaseOrder) "
+                    "WHERE pl.quote_number IS NOT NULL "
+                    "MATCH (q:Quote {quote_id: pl.quote_number}) "
+                    "MERGE (po)-[r:PO_REFERENCES_QUOTE]->(q) "
+                    "RETURN count(r) as cnt"
+                )
+                count = (result.single() or {}).get("cnt", 0)
+                if count:
+                    logger.info("[KG] Created %d PO_REFERENCES_QUOTE relationships", count)
+        except Exception:
+            logger.debug("PO→Quote linking failed", exc_info=True)
         return count
 
     def _infer_suppliers(self) -> int:

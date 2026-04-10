@@ -211,6 +211,11 @@ def _pdf_clean_text(text: str) -> str:
     return text
 
 
+def _decode_pdf_octal(raw: str) -> str:
+    """Decode PDF octal escapes in StructTree text (e.g. \\243 → £)."""
+    return re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1), 8)), raw)
+
+
 class PDFParser:
 
     @staticmethod
@@ -222,7 +227,45 @@ class PDFParser:
                 page_text = page.get_text("text")
                 if page_text:
                     text_parts.append(page_text.strip())
-        return _pdf_clean_text("\n".join(text_parts))
+
+        result = _pdf_clean_text("\n".join(text_parts))
+
+        # StructTree fallback for PDFs with corrupted content streams
+        # (e.g. Canva-generated).  Tagged PDFs store text in /T and /E
+        # attributes of /StructElem objects.
+        if not result.strip():
+            result = PDFParser._extract_struct_tree(file_path)
+        return result
+
+    @staticmethod
+    def _extract_struct_tree(file_path: str) -> str:
+        """Extract text from PDF StructTreeRoot elements."""
+        try:
+            with fitz.open(file_path) as doc:
+                struct_texts: list[str] = []
+                for i in range(1, doc.xref_length()):
+                    obj_str = doc.xref_object(i)
+                    if "/StructElem" not in obj_str:
+                        continue
+                    for tag in ("/T (", "/E ("):
+                        start = obj_str.find(tag)
+                        if start == -1:
+                            continue
+                        start += len(tag)
+                        end = obj_str.find(")", start)
+                        if end != -1:
+                            val = _decode_pdf_octal(obj_str[start:end].strip())
+                            if val and val not in struct_texts:
+                                struct_texts.append(val)
+                if struct_texts:
+                    logger.info(
+                        "StructTree fallback recovered %d text fragments",
+                        len(struct_texts),
+                    )
+                    return "\n".join(struct_texts)
+        except Exception:
+            logger.debug("StructTree extraction failed", exc_info=True)
+        return ""
 
     @staticmethod
     def extract_text_by_page(file_path: str) -> list[str]:
@@ -240,6 +283,9 @@ class PDFParser:
             for page in doc:
                 if len(page.get_text("text").strip()) >= min_chars:
                     return False
+        # Check StructTree before declaring scanned
+        if PDFParser._extract_struct_tree(file_path).strip():
+            return False
         return True
 
 
@@ -3835,6 +3881,28 @@ class AgentController_po:
         return DOCXParser.extract_text(file_path)
 
 
+def _generate_item_id(description: str) -> str:
+    """Generate a deterministic item ID from the item description.
+
+    Normalises the description (lowercase, stripped, collapsed whitespace)
+    and produces a short hash so that the same product always gets the same
+    ID across POs, Invoices, and Quotes.
+    """
+    if not description:
+        return ""
+    import hashlib
+    normalised = re.sub(r"\s+", " ", description.strip().lower())
+    # Remove currency symbols and prices that may be mixed in
+    normalised = re.sub(r"[£$€¥₹]\s*[\d,]+\.?\d*", "", normalised).strip()
+    if not normalised:
+        return ""
+    h = hashlib.md5(normalised.encode()).hexdigest()[:8].upper()
+    # Create a readable prefix from the first significant word
+    words = [w for w in normalised.split() if len(w) > 2]
+    prefix = words[0][:6].upper() if words else "ITEM"
+    return f"{prefix}-{h}"
+
+
 def _parse_numeric(val: str) -> str:
 
     if not val:
@@ -4406,10 +4474,12 @@ def map_line_items_invoice(result: dict[str, Any]) -> list[dict[str, str]]:
                 total_with_tax = f"{lt_val + line_tax_val:.2f}"
         except (ValueError, ZeroDivisionError):
             pass
+        item_desc = item.get("item", "")
         mapped.append({
             "invoice_id": invoice_id,
             "line_no": str(i),
-            "item_id": item.get("item", ""),
+            "item_id": _generate_item_id(item_desc),
+            "item_description": item_desc,
             "quantity": quantity,
             "unit_price": _round_money(_parse_numeric(unit_price)),
             "tax_percent": tax_pct,
@@ -4654,12 +4724,12 @@ def map_po_line_items(result: dict[str, Any]) -> list[dict[str, str]]:
                 total_with_tax = f"{line_after_disc:.2f}"
         except (ValueError, ZeroDivisionError):
             pass
+        po_item_desc = item.get("item", "")
         mapped.append({
             "po_id": po_id,
-            "po_line_id": "",
             "line_number": str(i),
-            "item_id": "",
-            "item_description": item.get("item", ""),
+            "item_id": _generate_item_id(po_item_desc),
+            "item_description": po_item_desc,
             "quote_number": quote_number,
             "quantity": quantity,
             "unit_price": _parse_numeric(unit_price),
@@ -6634,12 +6704,12 @@ def map_quote_line_items(result: dict[str, Any]) -> list[dict[str, str]]:
                 total_with_tax = f"{line_after_disc:.2f}"
         except (ValueError, ZeroDivisionError):
             pass
+        q_item_desc = item.get("item", "")
         mapped.append({
-            "quote_line_id": "",
             "quote_id": quote_id,
             "line_number": str(i),
-            "item_id": "",
-            "item_description": item.get("item", ""),
+            "item_id": _generate_item_id(q_item_desc),
+            "item_description": q_item_desc,
             "quantity": quantity,
             "unit_of_measure": "",
             "unit_price": _parse_numeric(unit_price),

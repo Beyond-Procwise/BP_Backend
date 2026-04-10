@@ -224,7 +224,7 @@ class Settings(BaseSettings):
 
     neo4j_uri: str = Field(default="bolt://localhost:7687", env="NEO4J_URI")
     neo4j_username: str = Field(default="neo4j", env="NEO4J_USERNAME")
-    neo4j_password: str = Field(default="neo4j", env="NEO4J_PASSWORD")
+    neo4j_password: str = Field(default="procwise2026", env="NEO4J_PASSWORD")
 
     ollama_base_url: str = Field(
         default="http://localhost:11434", env="OLLAMA_BASE_URL"

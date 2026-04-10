@@ -6421,12 +6421,18 @@ class DataExtractionAgent(BaseAgent):
         match = re.search(r"-?\d*\.?\d+", text)
         return float(match.group()) if match else None
 
-    def _clean_date(self, raw: Any) -> Optional[str]:
-        """Clean and parse a date value using locale-aware parsing."""
+    def _clean_date(self, raw: Any) -> Optional[date]:
+        """Clean and parse a date value using locale-aware parsing.
+
+        Returns a ``datetime.date`` object so that psycopg2 can bind it
+        directly to a PostgreSQL ``date`` column without a text cast.
+        """
         if raw is None:
             return None
-        if isinstance(raw, (datetime, date)):
-            return raw.strftime("%Y-%m-%d")
+        if isinstance(raw, datetime):
+            return raw.date()
+        if isinstance(raw, date):
+            return raw
         text = str(raw).strip()
         if not text:
             return None
@@ -6434,14 +6440,14 @@ class DataExtractionAgent(BaseAgent):
             from services.field_accuracy import parse_date
             parsed = parse_date(text, dayfirst=True)
             if parsed:
-                return parsed.strftime("%Y-%m-%d")
+                return parsed.date() if isinstance(parsed, datetime) else parsed
         except Exception:
             pass
         # Fallback to dateutil
         try:
             from dateutil import parser as dateutil_parser
             dt = dateutil_parser.parse(text, dayfirst=True, fuzzy=True)
-            return dt.date().strftime("%Y-%m-%d")
+            return dt.date()
         except Exception:
             return None
 
@@ -6510,8 +6516,7 @@ class DataExtractionAgent(BaseAgent):
             if sql_type == "integer":
                 return int(self._clean_numeric(value) or 0)
             if "date" in sql_type and "timestamp" not in sql_type:
-                dt = self._clean_date(value)
-                return dt.isoformat() if dt else None
+                return self._clean_date(value)
             if "timestamp" in sql_type:
                 dt = parser.parse(str(value))
                 return dt.isoformat()
@@ -6947,6 +6952,11 @@ class DataExtractionAgent(BaseAgent):
                                 sanitized = int(sanitized)
                         except (TypeError, ValueError):
                             logger.warning("Dropping %s due to type mismatch (%s)", k, v)
+                            continue
+                    elif col_type == "date":
+                        if not isinstance(sanitized, date):
+                            sanitized = self._clean_date(sanitized)
+                        if sanitized is None:
                             continue
                     payload[k] = sanitized
                 if not payload:

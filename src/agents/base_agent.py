@@ -1372,6 +1372,7 @@ class AgentNick:
         self.agents = {}
         self._initialize_qdrant_collection()
         self._preload_ollama_model()
+        self._verify_neo4j()
         logger.info("AgentNick is ready.")
 
     def _initialise_static_policy_corpus(self) -> None:
@@ -1553,6 +1554,25 @@ class AgentNick:
             user=self.settings.db_user, password=self.settings.db_password,
             port=self.settings.db_port
         )
+
+    def _verify_neo4j(self) -> None:
+        """Verify Neo4j connectivity at startup — KG is a required service."""
+        try:
+            from neo4j import GraphDatabase
+            uri = getattr(self.settings, "neo4j_uri", "bolt://localhost:7687")
+            user = getattr(self.settings, "neo4j_username", "neo4j")
+            pwd = getattr(self.settings, "neo4j_password", "procwise2026")
+            driver = GraphDatabase.driver(uri, auth=(user, pwd))
+            driver.verify_connectivity()
+            driver.close()
+            logger.info("Neo4j connectivity verified at %s", uri)
+        except Exception as exc:
+            logger.error(
+                "Neo4j is NOT reachable at %s — knowledge graph features will fail. "
+                "Start Neo4j before running the system. Error: %s",
+                getattr(self.settings, "neo4j_uri", "bolt://localhost:7687"),
+                exc,
+            )
 
     def _preload_ollama_model(self) -> None:
         """Preload the primary LLM model into Ollama's VRAM with keep_alive.

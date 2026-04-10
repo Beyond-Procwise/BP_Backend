@@ -235,6 +235,12 @@ class BackendScheduler:
         try:
             from services.procurement_kg_builder import ProcurementKGBuilder
             builder = ProcurementKGBuilder(self.agent_nick)
+            if not builder._driver:
+                logger.error(
+                    "KG sync skipped — Neo4j is not reachable. "
+                    "Ensure Neo4j is running at the configured URI."
+                )
+                return
             counts = builder.build_full_graph()
             logger.info("KG sync completed: %s", counts)
             builder.close()

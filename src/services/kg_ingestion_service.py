@@ -57,7 +57,7 @@ class KGIngestionService:
             settings = self._agent_nick.settings
             uri = getattr(settings, "neo4j_uri", "bolt://localhost:7687")
             username = getattr(settings, "neo4j_username", "neo4j")
-            password = getattr(settings, "neo4j_password", "neo4j")
+            password = getattr(settings, "neo4j_password", "procwise2026")
             return GraphDatabase.driver(uri, auth=(username, password))
         except Exception:
             logger.exception("Failed to create Neo4j driver")
