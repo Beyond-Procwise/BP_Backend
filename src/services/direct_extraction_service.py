@@ -162,6 +162,16 @@ CATEGORY_MAP = {
 }
 
 
+def _decode_pdf_string(raw: str) -> str:
+    """Decode PDF octal escapes in StructTree text (e.g. \\243 → £)."""
+    import re
+
+    def _octal_repl(m: re.Match) -> str:
+        return chr(int(m.group(1), 8))
+
+    return re.sub(r"\\(\d{3})", _octal_repl, raw)
+
+
 class DirectExtractionService:
     """Schema-driven extraction: text → LLM → bp_ tables."""
 
@@ -270,7 +280,7 @@ class DirectExtractionService:
             canonical_map = {
                 "documents/invoice/": ["Invoice/", "PO_Invoice/"],
                 "documents/po/": ["Purchase_Order/", "PO_Invoice/"],
-                "documents/quote/": ["Invoice/", "PO_Invoice/"],
+                "documents/quote/": ["Quote/", "PO_Invoice/"],
             }
             for prefix, s3_prefixes in canonical_map.items():
                 if file_path.startswith(prefix):
@@ -372,9 +382,9 @@ class DirectExtractionService:
         return ""
 
     def _extract_pdf_text(self, file_bytes: bytes) -> str:
-        """Extract text from PDF using pdfplumber, with OCR fallback."""
+        """Extract text from PDF using pdfplumber, with OCR and StructTree fallbacks."""
         import pdfplumber
-        text_parts = []
+        text_parts: list[str] = []
         try:
             with pdfplumber.open(BytesIO(file_bytes)) as pdf:
                 for page in pdf.pages:
@@ -396,10 +406,50 @@ class DirectExtractionService:
                 ocr_text = pytesseract.image_to_string(img)
                 if ocr_text.strip():
                     text_parts.append(ocr_text)
+            if not text_parts:
+                logger.warning(
+                    "OCR fallback produced no text (%d pages converted)",
+                    len(images),
+                )
         except Exception:
-            logger.debug("OCR fallback failed", exc_info=True)
+            logger.warning("OCR fallback failed for scanned PDF", exc_info=True)
 
-        return "\n".join(text_parts)
+        if text_parts:
+            return "\n".join(text_parts)
+
+        # StructTree fallback for corrupted PDFs (e.g. Canva-generated with
+        # broken zlib content streams).  Tagged PDFs store text in /T and /E
+        # attributes of /StructElem objects even when the page stream is
+        # unreadable.
+        try:
+            import fitz
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            struct_texts: list[str] = []
+            for i in range(1, doc.xref_length()):
+                obj_str = doc.xref_object(i)
+                if "/StructElem" not in obj_str:
+                    continue
+                for tag in ("/T (", "/E ("):
+                    start = obj_str.find(tag)
+                    if start == -1:
+                        continue
+                    start += len(tag)
+                    end = obj_str.find(")", start)
+                    if end != -1:
+                        val = _decode_pdf_string(obj_str[start:end].strip())
+                        if val and val not in struct_texts:
+                            struct_texts.append(val)
+            doc.close()
+            if struct_texts:
+                logger.info(
+                    "StructTree fallback recovered %d text fragments from corrupted PDF",
+                    len(struct_texts),
+                )
+                return "\n".join(struct_texts)
+        except Exception:
+            logger.warning("StructTree fallback failed", exc_info=True)
+
+        return ""
 
     def _extract_docx_text(self, file_bytes: bytes) -> str:
         """Extract text from DOCX."""
@@ -686,6 +736,12 @@ DOCUMENT TEXT:
                             continue
                         payload[col] = self._coerce_value(val, columns[col])
 
+                    # Sanitize empty strings to None BEFORE auto-generation
+                    # so that empty-string PKs from extraction don't block it
+                    for k, v in list(payload.items()):
+                        if isinstance(v, str) and not v.strip():
+                            payload[k] = None
+
                     # Set FK and sequence
                     payload[line_fk] = pk_value
                     if line_seq and not payload.get(line_seq):
@@ -697,11 +753,6 @@ DOCUMENT TEXT:
                     for k, v in audit.items():
                         if v is not None:
                             payload[k] = v
-
-                    # Final sanitization
-                    for k, v in list(payload.items()):
-                        if isinstance(v, str) and not v.strip():
-                            payload[k] = None
 
                     col_names = list(payload.keys())
                     placeholders = ["%s"] * len(col_names)

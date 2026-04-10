@@ -174,6 +174,46 @@ class ProcessMonitorWatcher:
             logger.exception("Failed to claim record %s", record_id)
             return None
 
+    @staticmethod
+    def _data_needs_reextraction(cur, file_path: str, category: str) -> bool:
+        """Check if extracted data is missing from the target bp_ table.
+
+        Returns True when the process_monitor says 'Extracted' but the
+        actual business data was deleted (e.g. during cleanup), meaning
+        the document must be re-extracted.
+        """
+        import re as _re
+
+        fname = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
+        cat = (category or "").lower()
+
+        # Extract expected PK from filename
+        pk_val = None
+        table = None
+        pk_col = None
+        if cat == "po":
+            m = _re.search(r"PO\s*(\d{4,})", fname)
+            if m:
+                pk_val, table, pk_col = m.group(1), "proc.bp_purchase_order", "po_id"
+        elif cat == "invoice":
+            m = _re.search(r"(INV[\-]?\s*[\w\-]+)", fname, _re.I)
+            if m:
+                pk_val = _re.sub(r"\s+", "", m.group(1))
+                table, pk_col = "proc.bp_invoice", "invoice_id"
+        elif cat in ("quote", "quotes"):
+            m = _re.search(r"QUT\s*(\d{4,})", fname, _re.I)
+            if m:
+                pk_val, table, pk_col = m.group(1), "proc.bp_quote", "quote_id"
+
+        if not pk_val or not table:
+            return False  # can't determine — assume no re-extraction needed
+
+        try:
+            cur.execute(f"SELECT 1 FROM {table} WHERE {pk_col} = %s LIMIT 1", (pk_val,))
+            return cur.fetchone() is None  # True = data missing, needs re-extraction
+        except Exception:
+            return False
+
     def _mark_extracted(self, record_id: int) -> None:
         """Mark a record as successfully extracted."""
         try:
@@ -246,6 +286,9 @@ class ProcessMonitorWatcher:
         )
 
         # Check for duplicate file_path (same document already extracted)
+        # Only skip if the data actually exists in the target bp_ table,
+        # not just based on process_monitor status (which can be stale
+        # after DB cleanup).
         if file_path:
             try:
                 conn = self._get_connection()
@@ -258,6 +301,13 @@ class ProcessMonitorWatcher:
                             (file_path, record_id),
                         )
                         existing = cur.fetchone()
+                        # Verify data actually exists in the target table
+                        if existing and not self._data_needs_reextraction(
+                            cur, file_path, category
+                        ):
+                            pass  # genuine duplicate — proceed to skip
+                        else:
+                            existing = None  # stale marker — allow re-extraction
                         if existing:
                             logger.info(
                                 "Duplicate detected: record %s has same file_path as "

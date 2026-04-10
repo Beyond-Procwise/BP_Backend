@@ -126,6 +126,40 @@ class AgentNickOrchestrator:
                 header, missing, extraction.get("_source_text", ""), doc_type
             )
 
+        # Step 3b: Filename-based PK — the filename is the most reliable
+        # source for the document ID (e.g. "PERRY QUT136586 .pdf").
+        # Always prefer filename PK over LLM-extracted values which can
+        # be wrong (e.g. "10", "INVOICE", empty).
+        pk_col = PK_MAP.get(doc_type)
+        if pk_col:
+            fname_id = self._extract_pk_from_filename(file_path, doc_type)
+            if fname_id:
+                existing = header.get(pk_col, "")
+                if existing != fname_id:
+                    if existing:
+                        logger.info(
+                            "[AgentNick] Overriding %s: '%s' → '%s' (from filename)",
+                            pk_col, existing, fname_id,
+                        )
+                    else:
+                        logger.info(
+                            "[AgentNick] Filled %s from filename: %s",
+                            pk_col, fname_id,
+                        )
+                    header[pk_col] = fname_id
+
+        # Step 3c: Extract cross-references and supplier from filename
+        self._fill_cross_refs_from_filename(header, file_path, doc_type)
+
+        # Step 3d: Extract supplier name from filename as last resort
+        # Filename pattern: "SUPPLIER_NAME DOC_ID for REF.pdf"
+        if not header.get("supplier_id") and not header.get("supplier_name"):
+            fname_supplier = self._extract_supplier_from_filename(file_path)
+            if fname_supplier:
+                header["supplier_id"] = fname_supplier
+                header["supplier_name"] = fname_supplier
+                logger.info("[AgentNick] Filled supplier from filename: %s", fname_supplier)
+
         # Step 4: Multi-pass validation and correction
         source_text = extraction.get("_source_text", "")
         try:
@@ -307,6 +341,57 @@ class AgentNickOrchestrator:
     # ------------------------------------------------------------------
     # Enrichment
     # ------------------------------------------------------------------
+    @staticmethod
+    def _fill_cross_refs_from_filename(
+        header: Dict[str, Any], file_path: str, doc_type: str
+    ) -> None:
+        """Extract cross-reference IDs from filename patterns like 'for PO398434'."""
+        basename = os.path.splitext(os.path.basename(file_path))[0]
+
+        # Invoice/Quote → PO link
+        if doc_type in ("Invoice", "Quote") and not header.get("po_id"):
+            m = re.search(r"(?:for\s+)?PO\s*(\d{4,})", basename, re.IGNORECASE)
+            if m:
+                header["po_id"] = m.group(1)
+                logger.info("[AgentNick] Linked %s to po_id=%s from filename", doc_type, m.group(1))
+
+        # PO → Quote link (stored on line items, but set header hint for orchestration)
+        if doc_type == "Purchase_Order" and not header.get("_quote_ref"):
+            m = re.search(r"(?:for\s+)?QUT\s*([\d][\d\-]{2,})", basename, re.IGNORECASE)
+            if m:
+                header["_quote_ref"] = m.group(1)
+
+    @staticmethod
+    def _extract_supplier_from_filename(file_path: str) -> Optional[str]:
+        """Extract supplier name from filename — it's always the leading portion."""
+        basename = os.path.splitext(os.path.basename(file_path))[0]
+        # Remove trailing "for POxxxx" / "for QUTxxxx"
+        basename = re.sub(r"\s+for\s+(?:PO|QUT)\S*\s*$", "", basename, flags=re.IGNORECASE).strip()
+        # Remove the document ID (INV/PO/QUT + number)
+        supplier_part = re.sub(
+            r"\s*(?:INV|PO|QUT)[\-\s]*[\w\-]+\s*$", "", basename, flags=re.IGNORECASE
+        ).strip()
+        # Clean up trailing numbers/punctuation
+        supplier_part = re.sub(r"\s*\d+\s*$", "", supplier_part).strip()
+        if supplier_part and len(supplier_part) > 2:
+            return supplier_part.title()
+        return None
+
+    @staticmethod
+    def _extract_pk_from_filename(file_path: str, doc_type: str) -> Optional[str]:
+        """Extract document PK from filename patterns like 'WADE PO526809 for QUT30746.pdf'."""
+        basename = os.path.splitext(os.path.basename(file_path))[0]
+        patterns = {
+            "Invoice": [r"(INV[\-]?\s*[\w\-]+)"],
+            "Purchase_Order": [r"PO\s*(\d{4,})"],
+            "Quote": [r"QUT\s*([\d][\d\-]{2,})", r"Q\s*(\d{4,})"],
+        }
+        for pat in patterns.get(doc_type, []):
+            m = re.search(pat, basename, re.IGNORECASE)
+            if m:
+                return re.sub(r"\s+", "", m.group(1).strip())
+        return None
+
     def _resolve_supplier(
         self, header: Dict[str, Any], doc_type: str
     ) -> Dict[str, Any]:
@@ -352,10 +437,20 @@ class AgentNickOrchestrator:
                                 "[AgentNick] Supplier fuzzy-matched: '%s' → '%s'",
                                 raw_name, row[1],
                             )
+                        else:
+                            # No match in bp_supplier — use extracted name as ID
+                            if not header.get("supplier_id"):
+                                header["supplier_id"] = raw_name
+                            if not header.get("supplier_name"):
+                                header["supplier_name"] = raw_name
             finally:
                 conn.close()
         except Exception:
             logger.debug("[AgentNick] Supplier resolution failed", exc_info=True)
+
+        # Ensure supplier_id is always set from supplier_name as fallback
+        if not header.get("supplier_id") and header.get("supplier_name"):
+            header["supplier_id"] = header["supplier_name"]
 
         return header
 
