@@ -160,9 +160,23 @@ class ModelSyncService:
     def _inject_vendor_knowledge(
         self, modelfile: str, vendor_knowledge: str
     ) -> str:
-        """Inject vendor knowledge into the Modelfile system prompt."""
+        """Inject vendor knowledge into the Modelfile system prompt.
+
+        Replaces any existing LEARNED PATTERNS section(s) with the latest
+        data, preventing the bloat caused by repeated appends.
+        """
         if not vendor_knowledge:
             return modelfile
+
+        import re
+
+        # Remove ALL existing learned pattern sections first
+        modelfile = re.sub(
+            r"\n*=== LEARNED PATTERNS \(auto-updated\) ===\n.*?(?==== |\"\"\")",
+            "\n",
+            modelfile,
+            flags=re.DOTALL,
+        )
 
         marker = "=== QUALITY STANDARDS ==="
         injection = f"\n=== LEARNED PATTERNS (auto-updated) ===\n\n{vendor_knowledge}\n\n"
@@ -170,7 +184,6 @@ class ModelSyncService:
         if marker in modelfile:
             return modelfile.replace(marker, injection + marker)
         else:
-            # Append before the closing triple-quote
             return modelfile.rstrip().rstrip('"') + injection + '"""\n'
 
     @property
