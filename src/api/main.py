@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI):
 
         # Seed initial patterns if table is empty
         from services.seed_patterns import seed_patterns
-        existing = pattern_service.get_patterns(limit=1)
+        existing = pattern_service.get_patterns()
         if not existing:
             seed_patterns(pattern_service)
             logger.info("Seeded initial procurement patterns")
