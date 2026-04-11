@@ -471,7 +471,12 @@ class DirectExtractionService:
             return ""
 
     def _tabular_to_text(self, file_bytes: bytes, ext: str) -> str:
-        """Convert CSV/Excel to text for LLM processing."""
+        """Convert CSV/Excel to structured text for LLM processing.
+
+        For Excel files, reads ALL cells including metadata rows above
+        the main table (quote ID, supplier, dates etc.) to give the LLM
+        full context.
+        """
         try:
             if ext == ".csv":
                 for enc in ("utf-8", "latin-1", "cp1252"):
@@ -482,17 +487,34 @@ class DirectExtractionService:
                         continue
                 else:
                     return ""
-            else:
-                df = pd.read_excel(BytesIO(file_bytes))
+                header = " | ".join(str(c) for c in df.columns)
+                rows = []
+                for _, row in df.iterrows():
+                    rows.append(" | ".join(
+                        str(v) for v in row.values if pd.notna(v)
+                    ))
+                return f"COLUMNS: {header}\n\n" + "\n".join(rows)
 
-            header = " | ".join(str(c) for c in df.columns)
-            rows = []
-            for _, row in df.iterrows():
-                rows.append(" | ".join(
-                    str(v) for v in row.values if pd.notna(v)
-                ))
-            return f"COLUMNS: {header}\n\n" + "\n".join(rows)
+            # Excel: read raw cells to capture metadata above the table
+            import openpyxl
+            wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+            parts: list[str] = []
+            for sheet in wb.worksheets:
+                if sheet.max_row and sheet.max_row > 0:
+                    parts.append(f"--- Sheet: {sheet.title} ---")
+                    for row in sheet.iter_rows(
+                        min_row=1, max_row=min(sheet.max_row, 200),
+                        values_only=True,
+                    ):
+                        cells = [
+                            str(c).strip() for c in row
+                            if c is not None and str(c).strip()
+                        ]
+                        if cells:
+                            parts.append(" | ".join(cells))
+            return "\n".join(parts) if parts else ""
         except Exception:
+            logger.debug("Tabular text extraction failed", exc_info=True)
             return ""
 
     # ------------------------------------------------------------------

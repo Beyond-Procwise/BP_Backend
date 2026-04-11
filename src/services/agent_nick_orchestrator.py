@@ -172,27 +172,8 @@ class AgentNickOrchestrator:
             logger.exception("[AgentNick] Validation failed, proceeding with raw extraction")
             discrepancies = []
 
-        # Step 5: Auto-fix tax/amount swap (tax_amount > invoice_amount is wrong)
-        if doc_type == "Invoice":
-            try:
-                amt = float(header.get("invoice_amount") or 0)
-                tax = float(header.get("tax_amount") or 0)
-                total = float(header.get("invoice_total_incl_tax") or 0)
-                if tax > amt > 0:
-                    # Tax and amount are swapped
-                    header["invoice_amount"] = tax
-                    header["tax_amount"] = amt
-                    logger.info(
-                        "[AgentNick] Fixed tax/amount swap: amt=%.2f→%.2f, tax=%.2f→%.2f",
-                        amt, tax, tax, amt,
-                    )
-                # If total doesn't match, recalculate
-                new_amt = float(header.get("invoice_amount") or 0)
-                new_tax = float(header.get("tax_amount") or 0)
-                if new_amt > 0 and new_tax > 0 and abs(total - (new_amt + new_tax)) > 0.01:
-                    header["invoice_total_incl_tax"] = round(new_amt + new_tax, 2)
-            except (ValueError, TypeError):
-                pass
+        # Step 5: Cross-validation engine — auto-fix math errors
+        header, line_items = self._cross_validate(header, line_items, doc_type)
 
         # Re-check after validation
         still_missing = [f for f in required if not header.get(f)]
@@ -473,6 +454,85 @@ class AgentNickOrchestrator:
             header["supplier_id"] = header["supplier_name"]
 
         return header
+
+    @staticmethod
+    def _cross_validate(
+        header: Dict[str, Any],
+        line_items: List[Dict[str, Any]],
+        doc_type: str,
+    ) -> tuple:
+        """Cross-validate extracted data: fix math errors, swap misplaced values."""
+
+        def _f(v) -> float:
+            try:
+                return float(v) if v else 0.0
+            except (ValueError, TypeError):
+                return 0.0
+
+        # --- Tax/Amount swap detection (all doc types) ---
+        amt_key = "invoice_amount" if doc_type == "Invoice" else "total_amount"
+        tax_key = "tax_amount"
+        total_key = (
+            "invoice_total_incl_tax" if doc_type == "Invoice"
+            else "total_amount_incl_tax" if doc_type == "Quote"
+            else "total_amount"
+        )
+
+        amt = _f(header.get(amt_key))
+        tax = _f(header.get(tax_key))
+        total = _f(header.get(total_key))
+
+        if tax > amt > 0:
+            header[amt_key], header[tax_key] = tax, amt
+            amt, tax = tax, amt
+            logger.info("[CrossVal] Fixed tax/amount swap on %s", doc_type)
+
+        # Recalculate total if it doesn't add up
+        if amt > 0 and tax > 0:
+            expected_total = round(amt + tax, 2)
+            if total_key != amt_key and abs(total - expected_total) > 0.50:
+                header[total_key] = expected_total
+                logger.info("[CrossVal] Recalculated %s: %.2f", total_key, expected_total)
+
+        # Derive tax_percent from amounts if missing
+        if amt > 0 and tax > 0 and not header.get("tax_percent"):
+            header["tax_percent"] = round((tax / amt) * 100, 2)
+
+        # --- Line item validation ---
+        for item in line_items:
+            qty = _f(item.get("quantity"))
+            price = _f(item.get("unit_price"))
+            line_amt = _f(item.get("line_amount") or item.get("line_total") or item.get("line_total_amount"))
+
+            # Quantity/price swap: if qty > price and both > 0, they're likely swapped
+            if qty > 0 and price > 0 and qty > price * 10:
+                item["quantity"], item["unit_price"] = price, qty
+                qty, price = price, qty
+                logger.info("[CrossVal] Fixed qty/price swap: qty=%.0f, price=%.2f", qty, price)
+
+            # Calculate line_amount if missing
+            if qty > 0 and price > 0 and line_amt == 0:
+                calculated = round(qty * price, 2)
+                for k in ("line_amount", "line_total", "line_total_amount"):
+                    if k in item:
+                        item[k] = calculated
+                        break
+
+        # --- Header total vs line items sum ---
+        if line_items and amt == 0:
+            line_sum = sum(
+                _f(li.get("line_amount") or li.get("line_total") or li.get("line_total_amount"))
+                for li in line_items
+            )
+            if line_sum > 0:
+                header[amt_key] = round(line_sum, 2)
+                logger.info("[CrossVal] Derived %s from line items: %.2f", amt_key, line_sum)
+
+        # --- Currency: default GBP if not set (UK procurement) ---
+        if not header.get("currency"):
+            header["currency"] = "GBP"
+
+        return header, line_items
 
     def _llm_fill_gaps(
         self,
