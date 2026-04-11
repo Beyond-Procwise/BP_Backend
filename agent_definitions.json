@@ -1,0 +1,238 @@
+{
+  "agents": [
+    {
+      "agentId": 1,
+      "agentType": "DataExtractionAgent",
+      "slug": "data_extraction",
+      "class_path": "agents.data_extraction_agent.DataExtractionAgent",
+      "description": "Extracts structured data from PDF documents using ML/DL ensemble pipeline (layout-spatial, NER, semantic embeddings, regex, LLM) for high-accuracy extraction.",
+      "role": "source",
+      "capabilities": ["document_extraction", "document_classification", "header_extraction", "line_item_extraction"],
+      "required_inputs": [],
+      "output_fields": ["details", "summary", "mismatches"],
+      "dependencies": ["s3_client", "db_client", "qdrant_client", "ollama_client", "embedding_model"],
+      "inputs": {
+        "required": [],
+        "optional": ["s3_prefix", "s3_object_key"]
+      },
+      "outputs": ["details", "summary", "mismatches"],
+      "version": "2.0.0"
+    },
+    {
+      "agentId": 2,
+      "agentType": "SupplierRankingAgent",
+      "slug": "supplier_ranking",
+      "class_path": "agents.supplier_ranking_agent.SupplierRankingAgent",
+      "description": "Ranks suppliers based on policies, performance data, and configurable criteria weights.",
+      "role": "processor",
+      "capabilities": ["supplier_ranking"],
+      "required_inputs": ["query"],
+      "output_fields": ["ranking", "justification"],
+      "dependencies": ["prompt_engine", "policy_engine", "query_engine"],
+      "inputs": {
+        "required": ["query"],
+        "optional": ["criteria", "supplier_data", "supplier_candidates"]
+      },
+      "outputs": ["ranking", "justification"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 3,
+      "agentType": "QuoteComparisonAgent",
+      "slug": "quote_comparison",
+      "class_path": "agents.quote_comparison_agent.QuoteComparisonAgent",
+      "description": "Aggregates and compares supplier quotes into a comparable structure with recommendation.",
+      "role": "aggregator",
+      "capabilities": ["quote_comparison"],
+      "required_inputs": [],
+      "output_fields": ["comparison", "recommendation"],
+      "dependencies": ["db_client"],
+      "inputs": {
+        "required": [],
+        "optional": ["quotes", "ranking"]
+      },
+      "outputs": ["comparison", "recommendation"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 4,
+      "agentType": "OpportunityMinerAgent",
+      "slug": "opportunity_miner",
+      "class_path": "agents.opportunity_miner_agent.OpportunityMinerAgent",
+      "description": "Identifies procurement anomalies, savings opportunities, and candidate suppliers.",
+      "role": "source",
+      "capabilities": ["opportunity_mining"],
+      "required_inputs": [],
+      "output_fields": ["findings", "supplier_candidates", "supplier_directory"],
+      "dependencies": ["db_client"],
+      "inputs": {
+        "required": [],
+        "optional": ["query", "product_category"]
+      },
+      "outputs": ["findings", "supplier_candidates", "supplier_directory"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 5,
+      "agentType": "EmailDraftingAgent",
+      "slug": "email_drafting",
+      "class_path": "agents.email_drafting_agent.EmailDraftingAgent",
+      "description": "Drafts supplier communication emails using LLM with context from ranking and negotiation.",
+      "role": "communicator",
+      "capabilities": ["email_drafting"],
+      "required_inputs": [],
+      "output_fields": ["drafts"],
+      "dependencies": ["prompt_engine"],
+      "inputs": {
+        "required": [],
+        "optional": ["ranking", "findings", "negotiation_context"]
+      },
+      "outputs": ["drafts"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 6,
+      "agentType": "NegotiationAgent",
+      "slug": "negotiation",
+      "class_path": "agents.negotiation_agent.NegotiationAgent",
+      "description": "Generates multi-round supplier negotiation messages with strategy-aware drafting.",
+      "role": "communicator",
+      "capabilities": ["negotiation"],
+      "required_inputs": [],
+      "output_fields": ["negotiation_result", "drafts"],
+      "dependencies": ["prompt_engine"],
+      "inputs": {
+        "required": [],
+        "optional": ["supplier", "current_offer", "target_price", "rfq_id", "negotiation_context"]
+      },
+      "outputs": ["negotiation_result", "drafts"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 7,
+      "agentType": "SupplierInteractionAgent",
+      "slug": "supplier_interaction",
+      "class_path": "agents.supplier_interaction_agent.SupplierInteractionAgent",
+      "description": "Normalizes supplier communications and routes to the appropriate downstream agent.",
+      "role": "communicator",
+      "capabilities": ["supplier_interaction"],
+      "required_inputs": [],
+      "output_fields": ["interaction_result"],
+      "dependencies": ["routing_engine", "prompt_engine"],
+      "inputs": {
+        "required": [],
+        "optional": ["draft_payload", "supplier_input"]
+      },
+      "outputs": ["interaction_result"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 8,
+      "agentType": "ApprovalsAgent",
+      "slug": "approvals",
+      "class_path": "agents.approvals_agent.ApprovalsAgent",
+      "description": "Determines approval decisions based on policy thresholds and business rules.",
+      "role": "validator",
+      "capabilities": ["approval_decision"],
+      "required_inputs": [],
+      "output_fields": ["decision", "justification"],
+      "dependencies": ["policy_engine"],
+      "inputs": {
+        "required": [],
+        "optional": ["policy_context"]
+      },
+      "outputs": ["decision", "justification"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 9,
+      "agentType": "QuoteEvaluationAgent",
+      "slug": "quote_evaluation",
+      "class_path": "agents.quote_evaluation_agent.QuoteEvaluationAgent",
+      "description": "Evaluates supplier quotes against historical data, policies, and ranking criteria.",
+      "role": "processor",
+      "capabilities": ["quote_evaluation"],
+      "required_inputs": [],
+      "output_fields": ["quotes", "evaluation"],
+      "dependencies": ["policy_engine", "db_client"],
+      "inputs": {
+        "required": [],
+        "optional": ["ranking", "supplier_candidates"]
+      },
+      "outputs": ["quotes", "evaluation"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 10,
+      "agentType": "EmailDispatchAgent",
+      "slug": "email_dispatch",
+      "class_path": "agents.email_dispatch_agent.EmailDispatchAgent",
+      "description": "Sends approved email drafts to suppliers and records dispatch metadata.",
+      "role": "communicator",
+      "capabilities": ["email_dispatch"],
+      "required_inputs": ["drafts"],
+      "output_fields": ["dispatch_results"],
+      "dependencies": ["db_client"],
+      "inputs": {
+        "required": ["drafts"],
+        "optional": []
+      },
+      "outputs": ["dispatch_results"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 11,
+      "agentType": "EmailWatcherAgent",
+      "slug": "email_watcher",
+      "class_path": null,
+      "description": "Monitors inbound supplier email responses and maps replies to workflow threads.",
+      "role": "communicator",
+      "capabilities": ["email_watching"],
+      "required_inputs": [],
+      "output_fields": ["responses"],
+      "dependencies": [],
+      "inputs": {
+        "required": [],
+        "optional": ["workflow_id"]
+      },
+      "outputs": ["responses"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 12,
+      "agentType": "DiscrepancyDetectionAgent",
+      "slug": "discrepancy_detection",
+      "class_path": "agents.discrepancy_detection_agent.DiscrepancyDetectionAgent",
+      "description": "Detects data quality issues, mismatches, and validation errors in extracted documents.",
+      "role": "validator",
+      "capabilities": ["discrepancy_detection"],
+      "required_inputs": ["extracted_docs"],
+      "output_fields": ["mismatches"],
+      "dependencies": [],
+      "inputs": {
+        "required": ["extracted_docs"],
+        "optional": ["processing_issues"]
+      },
+      "outputs": ["mismatches"],
+      "version": "1.0.0"
+    },
+    {
+      "agentId": 13,
+      "agentType": "RAGAgent",
+      "slug": "rag",
+      "class_path": "agents.base_agent.RAGAgent",
+      "description": "Retrieval-augmented generation for procurement knowledge Q&A.",
+      "role": "processor",
+      "capabilities": ["rag_query"],
+      "required_inputs": ["query"],
+      "output_fields": ["answer", "sources"],
+      "dependencies": ["qdrant_client", "embedding_model", "ollama_client"],
+      "inputs": {
+        "required": ["query"],
+        "optional": []
+      },
+      "outputs": ["answer", "sources"],
+      "version": "1.0.0"
+    }
+  ]
+}
