@@ -256,7 +256,7 @@ class AgentNickOrchestrator:
                 logger.error("[AgentNick] No text extracted from %s", file_path)
                 return None
 
-            # Run the extraction engine (the proven docs/extraction.py logic)
+            # Run the extraction engine
             import tempfile
             from agents.extraction_engine import (
                 run_data_extraction,
@@ -267,19 +267,25 @@ class AgentNickOrchestrator:
             set_db_connection_func(self._agent_nick.get_db_connection)
 
             suffix = os.path.splitext(file_path)[1].lower() or ".pdf"
-            with tempfile.NamedTemporaryFile(
-                suffix=suffix, delete=False
-            ) as tmp:
-                tmp.write(file_bytes)
-                tmp_path = tmp.name
 
-            try:
-                result = run_data_extraction(tmp_path)
-            finally:
+            # Excel/CSV: extraction engine doesn't support these formats,
+            # so use LLM directly on the tabular text
+            if suffix in (".xlsx", ".xls", ".csv"):
+                result = self._llm_extract_tabular(text, doc_type)
+            else:
+                with tempfile.NamedTemporaryFile(
+                    suffix=suffix, delete=False
+                ) as tmp:
+                    tmp.write(file_bytes)
+                    tmp_path = tmp.name
+
                 try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+                    result = run_data_extraction(tmp_path)
+                finally:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
 
             if not result or result.get("error"):
                 logger.warning(
@@ -608,6 +614,56 @@ class AgentNickOrchestrator:
             header["currency"] = "GBP"
 
         return header, line_items
+
+    def _llm_extract_tabular(
+        self, text: str, doc_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """Extract structured data from Excel/CSV text using LLM directly."""
+        schema_hints = {
+            "Quote": "quote_id, supplier_id, buyer_id, quote_date, validity_date, currency, total_amount (subtotal before tax), tax_percent, tax_amount, total_amount_incl_tax",
+            "Invoice": "invoice_id, supplier_id, po_id, invoice_date, due_date, currency, invoice_amount, tax_percent, tax_amount, invoice_total_incl_tax",
+            "Purchase_Order": "po_id, supplier_name, order_date, currency, total_amount",
+        }
+        fields = schema_hints.get(doc_type, "")
+        prompt = (
+            f"Extract ALL data from this {doc_type} spreadsheet. Return ONLY valid JSON.\n\n"
+            f"Header fields: {fields}\n"
+            f"Line items: array of {{line_no, item_description, quantity, unit_price, line_total}}\n\n"
+            f"RULES:\n"
+            f"- supplier is the company providing the quote (usually at the top)\n"
+            f"- buyer is the company receiving the quote (delivery/billing address)\n"
+            f"- tax_amount must be LESS than total_amount\n"
+            f"- Extract ALL line items from the table\n"
+            f"- If source has data issues (empty totals, orphaned rows), extract what IS there\n\n"
+            f"Spreadsheet content:\n{text[:6000]}"
+        )
+        try:
+            resp = requests.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": AGENT_NICK_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0, "num_predict": 2048, "num_gpu": 99},
+                },
+                timeout=300,
+            )
+            raw = resp.json().get("response", "")
+            import re as _re
+            json_match = _re.search(r"\{[\s\S]*\}", raw)
+            if json_match:
+                data = json.loads(json_match.group())
+                header = data.get("header", {k: v for k, v in data.items() if k != "line_items"})
+                line_items = data.get("line_items", [])
+                header["_source_text"] = text[:3000]
+                return {
+                    "header": header,
+                    "line_items": line_items,
+                    "_source_text": text[:3000],
+                }
+        except Exception:
+            logger.exception("[AgentNick] Tabular LLM extraction failed")
+        return None
 
     def _llm_fill_gaps(
         self,
