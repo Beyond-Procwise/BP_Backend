@@ -1,0 +1,74 @@
+[
+  {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Extract all fields from this Invoice document. Return ONLY valid JSON.\n\nINVOICE\nDuncan LLC\nInvoice No: INV132548\nDate: 2024-10-01\nPO Ref: 526702\n1. Staedtler Ballpoint Pen Black Ink, 10 per Pack\n2. 3M Adhesive Tape 15 cm x 19 mm, Black\n3. Faber-Castell A4 Ruled Notebook, White Cover\n4. Red Ink, 5 per Pack\n\nAmount: \u00a33300.05\nTax: \u00a3\nTotal: \u00a32557.26\nTerms: Net 90"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"document_type\": \"Invoice\", \"header\": {\"invoice_id\": \"INV132548\", \"po_id\": \"526702\", \"supplier_id\": \"Duncan LLC\", \"invoice_date\": \"2024-10-01\", \"due_date\": \"2024-12-30\", \"invoice_amount\": \"3300.05\", \"invoice_total_incl_tax\": \"2557.26\", \"currency\": \"GBP\", \"payment_terms\": \"90\"}, \"line_items\": [{\"item_description\": \"Staedtler Ballpoint Pen Black Ink, 10 per Pack\", \"quantity\": 100.0, \"unit_price\": 13.85}, {\"item_description\": \"3M Adhesive Tape 15 cm x 19 mm, Black\", \"quantity\": 15.0, \"unit_price\": 15.29}, {\"item_description\": \"Faber-Castell A4 Ruled Notebook, White Cover\", \"quantity\": 11.0, \"unit_price\": 116.9}, {\"item_description\": \"Red Ink, 5 per Pack\", \"quantity\": 19.0, \"unit_price\": 20.0}]}"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Extract all fields from this Invoice document. Return ONLY valid JSON.\n\nINVOICE\nDuncan LLC\nInvoice No: INV132666\nDate: 2024-01-10\nPO Ref: 526702\n1. Fellowes Office Chair Black Upholstery, Aluminium Base\n2. Green Upholstery, Metal Base Grey Upholstery, Steel Base\n\nAmount: \u00a3799.90\nTax: \u00a3479.94\nTotal: \u00a31279.84\nTerms: Net 90"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"document_type\": \"Invoice\", \"header\": {\"invoice_id\": \"INV132666\", \"po_id\": \"526702\", \"supplier_id\": \"Duncan LLC\", \"invoice_date\": \"2024-01-10\", \"due_date\": \"2024-04-09\", \"invoice_amount\": \"799.90\", \"tax_amount\": \"479.94\", \"invoice_total_incl_tax\": \"1279.84\", \"currency\": \"GBP\", \"payment_terms\": \"90\"}, \"line_items\": [{\"item_description\": \"Fellowes Office Chair Black Upholstery, Aluminium Base\", \"quantity\": 10.0, \"unit_price\": 79.99}, {\"item_description\": \"Green Upholstery, Metal Base Grey Upholstery, Steel Base\", \"quantity\": 2399.0}]}"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Extract all fields from this Purchase_Order document. Return ONLY valid JSON.\n\nPURCHASE ORDER\nGomez, Good and Cross Trading Ltd\nPO Number: 519999\nDate: 2025-01-02\n1. Logitech MX Keys Wireless Illuminated Keyboard | Qty: 4.0 | Price: \u00a3110.0\n2. Logitech MX Master 3S Advanced Wireless Mouse | Qty: 86.0 | Price: \u00a3345.16\n3. Mono Laser Printer | Qty: 2.0 | Price: \u00a3181.89\n\nTotal: \u00a31380.55"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"document_type\": \"Purchase_Order\", \"header\": {\"po_id\": \"519999\", \"supplier_name\": \"Gomez, Good and Cross Trading Ltd\", \"order_date\": \"2025-01-02\", \"total_amount\": \"1380.55\", \"currency\": \"GBP\"}, \"line_items\": [{\"item_description\": \"Logitech MX Keys Wireless Illuminated Keyboard\", \"quantity\": 4.0, \"unit_price\": 110.0, \"quote_number\": \"10483\"}, {\"item_description\": \"Logitech MX Master 3S Advanced Wireless Mouse\", \"quantity\": 86.0, \"unit_price\": 345.16, \"quote_number\": \"10483\"}, {\"item_description\": \"Mono Laser Printer\", \"quantity\": 2.0, \"unit_price\": 181.89, \"quote_number\": \"10483\"}]}"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Extract all fields from this Purchase_Order document. Return ONLY valid JSON.\n\nPURCHASE ORDER\nPerry Ltd\nPO Number: 526640\nDate: 2024-12-17\n1. Fellowes Office Chair Black Upholstery, Aluminium Base | Qty: 84.0 | Price: \u00a310.0\n2. Green Upholstery, Metal Base | Qty: 799.0 | Price: \u00a379.99\n\nTotal: \u00a32937.64"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"document_type\": \"Purchase_Order\", \"header\": {\"po_id\": \"526640\", \"supplier_name\": \"Perry Ltd\", \"order_date\": \"2024-12-17\", \"total_amount\": \"2937.64\", \"currency\": \"GBP\"}, \"line_items\": [{\"item_description\": \"Fellowes Office Chair Black Upholstery, Aluminium Base\", \"quantity\": 84.0, \"unit_price\": 10.0, \"quote_number\": \"136700\"}, {\"item_description\": \"Green Upholstery, Metal Base\", \"quantity\": 799.0, \"unit_price\": 79.99, \"quote_number\": \"136700\"}]}"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Extract all fields from this Quote document. Return ONLY valid JSON.\n\nQUOTE\nTechNova Ltd\nQuote No: 103069\nDate: 2024-01-10\nTo: Assurity Ltd\nAddress: 72 King William Street, London, EC4N 7HR\n1. Acer TravelMate P2 IIntel i5, 8GB RAM, 512GB SSD | Qty: 2.0 | Price: \u00a3620.03 | Total: \u00a31240.06\n2. Sub Total : Tax 20% : | Qty: 248.0 | Price: \u00a3None | Total: \u00a32480.12\n\nSubtotal: \u00a33720.18\nVAT (20%): \u00a30.00\nTotal: \u00a33720.18"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"document_type\": \"Quote\", \"header\": {\"quote_id\": \"103069\", \"supplier_id\": \"TechNova Ltd\", \"supplier_address\": \"72 King William Street, London, EC4N 7HR\", \"buyer_id\": \"Assurity Ltd\", \"buyer_address\": \"10 Redkiln Way, Horsham, West Sussex, RH13 5QH, Level 2, NovaTech House\", \"quote_date\": \"2024-01-10\", \"total_amount\": \"3720.18\", \"tax_amount\": \"0.00\", \"total_amount_incl_tax\": \"3720.18\", \"currency\": \"GBP\"}, \"line_items\": [{\"item_description\": \"Acer TravelMate P2 IIntel i5, 8GB RAM, 512GB SSD\", \"quantity\": 2.0, \"unit_price\": 620.03, \"line_total\": 1240.06}, {\"item_description\": \"Sub Total : Tax 20% :\", \"quantity\": 248.0, \"line_total\": 2480.12}]}"
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Extract all fields from this Quote document. Return ONLY valid JSON.\n\nQUOTE\nDuncan LLC\nQuote No: 128234\nDate: 2024-09-20\nTo: Assurity Ltd\nAddress: Duncan LLC, 20 Sept, 2024\n1. Staedtler Ballpoint Pen Black Ink, 10 per Pack | Qty: 100.0 | Price: \u00a313.85 | Total: \u00a31385.0\n2. 3M Adhesive Tape 15 cm x 19 mm, Black | Qty: 15.0 | Price: \u00a315.29 | Total: \u00a3229.35\n3. Faber-Castell A4 Ruled Notebook, White Cover | Qty: 11.0 | Price: \u00a3116.9 | Total: \u00a31285.9\n4. Red Ink, 5 per Pack | Qty: 19.0 | Price: \u00a320.0 | Total: \u00a3399.8\n\nSubtotal: \u00a32014.15\nVAT (27.00%): \u00a3543.11\nTotal: \u00a32557.26"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"document_type\": \"Quote\", \"header\": {\"quote_id\": \"128234\", \"supplier_id\": \"Duncan LLC\", \"supplier_address\": \"Duncan LLC, 20 Sept, 2024\", \"buyer_id\": \"Assurity Ltd\", \"buyer_address\": \"10 Redkiln Way Horsham West Sussex RH13 5QH\", \"quote_date\": \"2024-09-20\", \"total_amount\": \"2014.15\", \"tax_percent\": \"27.00\", \"tax_amount\": \"543.11\", \"total_amount_incl_tax\": \"2557.26\", \"currency\": \"GBP\"}, \"line_items\": [{\"item_description\": \"Staedtler Ballpoint Pen Black Ink, 10 per Pack\", \"quantity\": 100.0, \"unit_price\": 13.85, \"line_total\": 1385.0}, {\"item_description\": \"3M Adhesive Tape 15 cm x 19 mm, Black\", \"quantity\": 15.0, \"unit_price\": 15.29, \"line_total\": 229.35}, {\"item_description\": \"Faber-Castell A4 Ruled Notebook, White Cover\", \"quantity\": 11.0, \"unit_price\": 116.9, \"line_total\": 1285.9}, {\"item_description\": \"Red Ink, 5 per Pack\", \"quantity\": 19.0, \"unit_price\": 20.0, \"line_total\": 399.8}]}"
+      }
+    ]
+  }
+]

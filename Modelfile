@@ -163,44 +163,164 @@ Output:
 === LEARNED PATTERNS (auto-updated) ===
 
 LEARNED VENDOR PATTERNS (from successful extractions):
-- Gomez, Good and Cross Trading Ltd (Purchase_Order), extractions=23
+- Gomez, Good and Cross Trading Ltd (Purchase_Order), currency=GBP, extractions=29
+- Sarah Thompson (Invoice), currency=GBP, extractions=20
 - THRIVE STUDIOS LLC (Quote), currency=GBP, extractions=20
-- NexaSpark (Invoice), currency=GBP, extractions=16
-- Sarah Thompson (Invoice), currency=GBP, extractions=16
-- Daniel, Perry and Goodman Trading Ltd. (Quote), currency=GBP, extractions=15
-- Dixon, Reynolds and Solomon (Invoice), currency=GBP, extractions=14
-- Williams, Reynolds and Aguirre Trading Ltd. (Quote), currency=GBP, extractions=13
-- TechNova Ltd (Quote), currency=GBP, extractions=12
-- Duncan LLC (Quote), currency=GBP, extractions=12
-- Wade Inc (Invoice), currency=GBP, extractions=12
-- Wade Inc (Purchase_Order), extractions=12
-- Duncan LLC (Invoice), currency=GBP, extractions=11
-- Gomez, Good and Cross Trading Ltd (Quote), currency=GBP, extractions=11
-- Perry Ltd (Purchase_Order), extractions=10
-- AquariusTeam (Purchase_Order), currency=GBP, extractions=10
+- NexaSpark (Invoice), currency=GBP, extractions=20
+- Daniel, Perry and Goodman Trading Ltd. (Quote), currency=GBP, extractions=18
+- Williams, Reynolds and Aguirre Trading Ltd. (Quote), currency=GBP, extractions=17
+- Dixon, Reynolds and Solomon (Invoice), currency=GBP, extractions=17
+- TechNova Ltd (Quote), currency=GBP, extractions=16
+- Gomez, Good and Cross Trading Ltd (Quote), currency=GBP, extractions=16
+- Duncan LLC (Quote), currency=GBP, extractions=16
+- Wade Inc (Purchase_Order), currency=GBP, extractions=15
+- Wade Inc (Invoice), currency=GBP, extractions=14
+- Perry Ltd (Purchase_Order), currency=GBP, extractions=14
+- Duncan LLC (Invoice), currency=GBP, extractions=14
+- Duncan LLC (Purchase_Order), currency=GBP, extractions=13
 - Assurity Ltd (Invoice), currency=GBP, extractions=10
-- Duncan LLC (Purchase_Order), extractions=9
-- Robin Ashford Bank Name (Invoice), currency=GBP, extractions=6
-- Eleanor Price Creative Studio (Purchase_Order), extractions=6
-- ELEANOR PRICE CREATIVE STUDIO (Quote), currency=GBP, extractions=6
-- NexaSpark (Quote), currency=GBP, extractions=6
-- Black and Sons (Quote), currency=GBP, extractions=6
-- InfoTech Consulting (Purchase_Order), extractions=6
+- AquariusTeam (Purchase_Order), currency=GBP, extractions=10
+- SupplyX Ltd (Quote), currency=GBP, extractions=9
+- Black and Sons (Quote), currency=GBP, extractions=8
+- InfoTech Consulting (Purchase_Order), currency=GBP, extractions=8
+- Eleanor Price Creative Studio (Purchase_Order), currency=GBP, extractions=8
+- ELEANOR PRICE CREATIVE STUDIO (Quote), currency=GBP, extractions=8
+- NexaSpark (Quote), currency=GBP, extractions=8
+- Dell Workspace Solutions Ltd (Quote), currency=GBP, extractions=8
+- Rubilogy (Purchase_Order), currency=GBP, extractions=7
+- Wade Inc (Quote), currency=GBP, extractions=7
+- NexaSpark (Purchase_Order), currency=GBP, extractions=7
+- Dixon, Reynolds and Solomon (Purchase_Order), currency=GBP, extractions=6
+- Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=5
+- Sarah Thompson (Quote), currency=GBP, extractions=5
+- Infotech (Invoice), currency=GBP, extractions=5
 - Gomez, Good and Cross Trading Ltd. (Quote), currency=GBP, extractions=5
-- NexaSpark (Purchase_Order), extractions=5
-- Wade Inc (Quote), currency=GBP, extractions=5
-- Rubilogy (Purchase_Order), extractions=5
-- Dixon, Reynolds and Solomon (Purchase_Order), currency=GBP, extractions=4
-- Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=4
+- Rubilogy (Quote), currency=GBP, extractions=5
+- Wells LLC (Quote), currency=GBP, extractions=4
 - Gomez, Good and Cross (Quote), currency=GBP, extractions=4
-- Rubilogy (Quote), currency=GBP, extractions=3
 - AquariusTeam (Invoice), currency=GBP, extractions=3
-- Sarah Thompson (Quote), currency=GBP, extractions=3
-- Robin Ashford Bank Name (Quote), currency=GBP, extractions=2
-- city of newport (Quote), currency=GBP, extractions=2
-- THRIVE STUDIOS LLC (Invoice), currency=GBP, extractions=2
-- Wells LLC (Quote), currency=GBP, extractions=2
+- city of newport (Quote), currency=GBP, extractions=3
+- SupplyX1 Ltd (Quote), currency=GBP, extractions=3
+- Brand Development Services (Invoice), currency=GBP, extractions=2
 - AUARIUS MARKETING (Quote), currency=GBP, extractions=2
+- THRIVE STUDIOS LLC (Invoice), currency=GBP, extractions=2
+- Black and Sons (Invoice), currency=GBP, extractions=2
+
+
+=== VERIFIED EXTRACTION EXAMPLES (from production data) ===
+
+EXAMPLE 1 (Invoice):
+Input:
+Extract all fields from this Invoice document. Return ONLY valid JSON.
+
+INVOICE
+Duncan LLC
+Invoice No: INV132548
+Date: 2024-10-01
+PO Ref: 526702
+1. Staedtler Ballpoint Pen Black Ink, 10 per Pack
+2. 3M Adhesive Tape 15 cm x 19 mm, Black
+3. Faber-Castell A4 Ruled Notebook, White Cover
+4. Red Ink, 5 per Pack
+
+Amount: £3300.05
+Tax: £
+Total: £2557.26
+Terms: Net 90
+
+Output:
+{"document_type":"Invoice","header":{"invoice_id":"INV132548","po_id":"526702","supplier_id":"Duncan LLC","invoice_date":"2024-10-01","due_date":"2024-12-30","invoice_amount":"3300.05","invoice_total_incl_tax":"2557.26","currency":"GBP","payment_terms":"90"},"line_items":[{"item_description":"Staedtler Ballpoint Pen Black Ink, 10 per Pack","quantity":100.0,"unit_price":13.85},{"item_description":"3M Adhesive Tape 15 cm x 19 mm, Black","quantity":15.0,"unit_price":15.29},{"item_description":"Faber-Castell A4 Ruled Notebook, White Cover","quantity":11.0,"unit_price":116.9},{"item_description":"R
+
+EXAMPLE 2 (Invoice):
+Input:
+Extract all fields from this Invoice document. Return ONLY valid JSON.
+
+INVOICE
+Duncan LLC
+Invoice No: INV132666
+Date: 2024-01-10
+PO Ref: 526702
+1. Fellowes Office Chair Black Upholstery, Aluminium Base
+2. Green Upholstery, Metal Base Grey Upholstery, Steel Base
+
+Amount: £799.90
+Tax: £479.94
+Total: £1279.84
+Terms: Net 90
+
+Output:
+{"document_type":"Invoice","header":{"invoice_id":"INV132666","po_id":"526702","supplier_id":"Duncan LLC","invoice_date":"2024-01-10","due_date":"2024-04-09","invoice_amount":"799.90","tax_amount":"479.94","invoice_total_incl_tax":"1279.84","currency":"GBP","payment_terms":"90"},"line_items":[{"item_description":"Fellowes Office Chair Black Upholstery, Aluminium Base","quantity":10.0,"unit_price":79.99},{"item_description":"Green Upholstery, Metal Base Grey Upholstery, Steel Base","quantity":2399.0}]}
+
+EXAMPLE 3 (Purchase_Order):
+Input:
+Extract all fields from this Purchase_Order document. Return ONLY valid JSON.
+
+PURCHASE ORDER
+Gomez, Good and Cross Trading Ltd
+PO Number: 519999
+Date: 2025-01-02
+1. Logitech MX Keys Wireless Illuminated Keyboard | Qty: 4.0 | Price: £110.0
+2. Logitech MX Master 3S Advanced Wireless Mouse | Qty: 86.0 | Price: £345.16
+3. Mono Laser Printer | Qty: 2.0 | Price: £181.89
+
+Total: £1380.55
+
+Output:
+{"document_type":"Purchase_Order","header":{"po_id":"519999","supplier_name":"Gomez, Good and Cross Trading Ltd","order_date":"2025-01-02","total_amount":"1380.55","currency":"GBP"},"line_items":[{"item_description":"Logitech MX Keys Wireless Illuminated Keyboard","quantity":4.0,"unit_price":110.0,"quote_number":"10483"},{"item_description":"Logitech MX Master 3S Advanced Wireless Mouse","quantity":86.0,"unit_price":345.16,"quote_number":"10483"},{"item_description":"Mono Laser Printer","quantity":2.0,"unit_price":181.89,"quote_number":"10483"}]}
+
+EXAMPLE 4 (Purchase_Order):
+Input:
+Extract all fields from this Purchase_Order document. Return ONLY valid JSON.
+
+PURCHASE ORDER
+Perry Ltd
+PO Number: 526640
+Date: 2024-12-17
+1. Fellowes Office Chair Black Upholstery, Aluminium Base | Qty: 84.0 | Price: £10.0
+2. Green Upholstery, Metal Base | Qty: 799.0 | Price: £79.99
+
+Total: £2937.64
+
+Output:
+{"document_type":"Purchase_Order","header":{"po_id":"526640","supplier_name":"Perry Ltd","order_date":"2024-12-17","total_amount":"2937.64","currency":"GBP"},"line_items":[{"item_description":"Fellowes Office Chair Black Upholstery, Aluminium Base","quantity":84.0,"unit_price":10.0,"quote_number":"136700"},{"item_description":"Green Upholstery, Metal Base","quantity":799.0,"unit_price":79.99,"quote_number":"136700"}]}
+
+EXAMPLE 5 (Quote):
+Input:
+Extract all fields from this Quote document. Return ONLY valid JSON.
+
+QUOTE
+TechNova Ltd
+Quote No: 103069
+Date: 2024-01-10
+To: Assurity Ltd
+Address: 72 King William Street, London, EC4N 7HR
+1. Acer TravelMate P2 IIntel i5, 8GB RAM, 512GB SSD | Qty: 2.0 | Price: £620.03 | Total: £1240.06
+2. Sub Total : Tax 20% : | Qty: 248.0 | Price: £None | Total: £2480.12
+
+Subtotal: £3720.18
+VAT (20%): £0.00
+Total: £3720.18
+
+Output:
+{"document_type":"Quote","header":{"quote_id":"103069","supplier_id":"TechNova Ltd","supplier_address":"72 King William Street, London, EC4N 7HR","buyer_id":"Assurity Ltd","buyer_address":"10 Redkiln Way, Horsham, West Sussex, RH13 5QH, Level 2, NovaTech House","quote_date":"2024-01-10","total_amount":"3720.18","tax_amount":"0.00","total_amount_incl_tax":"3720.18","currency":"GBP"},"line_items":[{"item_description":"Acer TravelMate P2 IIntel i5, 8GB RAM, 512GB SSD","quantity":2.0,"unit_price":620.03,"line_total":1240.06},{"item_description":"Sub Total : Tax 20% :","quantity":248.0,"line_total"
+
+EXAMPLE 6 (Quote):
+Input:
+Extract all fields from this Quote document. Return ONLY valid JSON.
+
+QUOTE
+Duncan LLC
+Quote No: 128234
+Date: 2024-09-20
+To: Assurity Ltd
+Address: Duncan LLC, 20 Sept, 2024
+1. Staedtler Ballpoint Pen Black Ink, 10 per Pack | Qty: 100.0 | Price: £13.85 | Total: £1385.0
+2. 3M Adhesive Tape 15 cm x 19 mm, Black | Qty: 15.0 | Price: £15.29 | Total: £229.35
+3. Faber-Castell A4 Ruled Notebook, White Cover | Qty: 11.0 | Price: £116.9 | Total: £1285.9
+4. Red Ink, 5 per Pack | Qty: 19.0 | Price: £20.0 | 
+
+Output:
+{"document_type":"Quote","header":{"quote_id":"128234","supplier_id":"Duncan LLC","supplier_address":"Duncan LLC, 20 Sept, 2024","buyer_id":"Assurity Ltd","buyer_address":"10 Redkiln Way Horsham West Sussex RH13 5QH","quote_date":"2024-09-20","total_amount":"2014.15","tax_percent":"27.00","tax_amount":"543.11","total_amount_incl_tax":"2557.26","currency":"GBP"},"line_items":[{"item_description":"Staedtler Ballpoint Pen Black Ink, 10 per Pack","quantity":100.0,"unit_price":13.85,"line_total":1385.0},{"item_description":"3M Adhesive Tape 15 cm x 19 mm, Black","quantity":15.0,"unit_price":15.29,"
 
 === QUALITY STANDARDS ===
 
