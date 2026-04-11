@@ -268,11 +268,19 @@ class AgentNickOrchestrator:
 
             suffix = os.path.splitext(file_path)[1].lower() or ".pdf"
 
-            # Excel/CSV: extraction engine doesn't support these formats,
-            # so use LLM directly on the tabular text
-            if suffix in (".xlsx", ".xls", ".csv"):
+            result = None
+
+            # Excel/DOCX: try external Docwain API first (higher accuracy
+            # on structured formats), fallback to local extraction
+            if suffix in (".xlsx", ".xls", ".csv", ".docx"):
+                result = self._docwain_extract(file_bytes, file_path, doc_type)
+
+            # Excel/CSV fallback: use local LLM tabular extraction
+            if not result and suffix in (".xlsx", ".xls", ".csv"):
                 result = self._llm_extract_tabular(text, doc_type)
-            else:
+
+            # PDF and remaining: use extraction engine
+            if not result:
                 with tempfile.NamedTemporaryFile(
                     suffix=suffix, delete=False
                 ) as tmp:
@@ -618,6 +626,72 @@ class AgentNickOrchestrator:
             header["currency"] = "GBP"
 
         return header, line_items
+
+    # External Docwain API for high-accuracy extraction of structured formats
+    DOCWAIN_URL = os.getenv("DOCWAIN_API_URL", "http://198.145.127.234:8000/api/v1/docwain/extract")
+    DOCWAIN_KEY = os.getenv("DOCWAIN_API_KEY", "dw_0b40bd8bb676e2dec6dc63134e45154db4111d5302be094d")
+
+    def _docwain_extract(
+        self, file_bytes: bytes, file_path: str, doc_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """Extract via external Docwain API — higher accuracy for Excel/DOCX."""
+        if not self.DOCWAIN_KEY:
+            return None
+
+        fname = os.path.basename(file_path)
+        schema_hints = {
+            "Quote": "quote_id, supplier_name, buyer_name, quote_date, validity_date, currency, subtotal (before tax), tax_percent, tax_amount, total_incl_tax",
+            "Invoice": "invoice_id, supplier_name, po_id, invoice_date, due_date, currency, invoice_amount (subtotal), tax_percent, tax_amount, total_incl_tax",
+            "Purchase_Order": "po_id, supplier_name, buyer_name, order_date, currency, subtotal, tax_amount, total_amount",
+        }
+        prompt = (
+            f"Extract ALL fields from this {doc_type} as JSON:\n"
+            f"{schema_hints.get(doc_type, '')}\n"
+            f"Line items: line_no, item_description, quantity, unit_price, line_total\n"
+            f"CRITICAL: quantity is a count, unit_price is cost per item. tax_amount < subtotal."
+        )
+
+        try:
+            resp = requests.post(
+                self.DOCWAIN_URL,
+                headers={"X-Api-Key": self.DOCWAIN_KEY},
+                files={"file": (fname, file_bytes)},
+                data={"mode": "entities", "output_format": "json", "prompt": prompt},
+                timeout=120,
+            )
+            data = resp.json()
+            if "error" in data:
+                logger.debug("[Docwain] Error: %s", data["error"])
+                return None
+
+            result = data.get("result", {})
+            if not result:
+                return None
+
+            # Map Docwain result to our standard format
+            header = {k: v for k, v in result.items() if k != "line_items"}
+            line_items = result.get("line_items", [])
+
+            # Normalize field names to match our schema
+            field_map = {
+                "supplier_name": "supplier_id" if doc_type != "Purchase_Order" else "supplier_name",
+                "buyer_name": "buyer_id",
+                "subtotal": "invoice_amount" if doc_type == "Invoice" else "total_amount",
+                "total_incl_tax": "invoice_total_incl_tax" if doc_type == "Invoice" else "total_amount_incl_tax",
+            }
+            for old_key, new_key in field_map.items():
+                if old_key in header and old_key != new_key:
+                    header[new_key] = header.pop(old_key)
+
+            logger.info(
+                "[Docwain] Extracted %d header fields, %d line items from %s",
+                len(header), len(line_items), fname,
+            )
+            return {"header": header, "line_items": line_items, "_source_text": ""}
+
+        except Exception:
+            logger.debug("[Docwain] Request failed", exc_info=True)
+            return None
 
     def _llm_extract_tabular(
         self, text: str, doc_type: str
