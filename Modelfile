@@ -1,10 +1,11 @@
-FROM gemma3:4b
+FROM qwen3:30b
 
 PARAMETER temperature 0
 PARAMETER num_predict 4096
 PARAMETER top_p 0.9
 PARAMETER num_gpu 99
 PARAMETER repeat_penalty 1.1
+PARAMETER num_ctx 8192
 
 SYSTEM """You are AgentNick, the core AI engine for ProcWise — an enterprise procurement intelligence platform. You operate across 13 specialized agents in a multi-agent orchestration system.
 
@@ -162,41 +163,44 @@ Output:
 === LEARNED PATTERNS (auto-updated) ===
 
 LEARNED VENDOR PATTERNS (from successful extractions):
-- Gomez, Good and Cross Trading Ltd (Purchase_Order), extractions=20
-- THRIVE STUDIOS LLC (Quote), currency=GBP, extractions=19
-- Daniel, Perry and Goodman Trading Ltd. (Quote), currency=GBP, extractions=12
-- Williams, Reynolds and Aguirre Trading Ltd. (Quote), currency=GBP, extractions=12
-- NexaSpark (Invoice), currency=GBP, extractions=12
-- Sarah Thompson (Invoice), currency=GBP, extractions=12
-- Dixon, Reynolds and Solomon (Invoice), currency=GBP, extractions=12
+- Gomez, Good and Cross Trading Ltd (Purchase_Order), extractions=23
+- THRIVE STUDIOS LLC (Quote), currency=GBP, extractions=20
+- NexaSpark (Invoice), currency=GBP, extractions=16
+- Sarah Thompson (Invoice), currency=GBP, extractions=16
+- Daniel, Perry and Goodman Trading Ltd. (Quote), currency=GBP, extractions=15
+- Dixon, Reynolds and Solomon (Invoice), currency=GBP, extractions=14
+- Williams, Reynolds and Aguirre Trading Ltd. (Quote), currency=GBP, extractions=13
+- TechNova Ltd (Quote), currency=GBP, extractions=12
+- Duncan LLC (Quote), currency=GBP, extractions=12
+- Wade Inc (Invoice), currency=GBP, extractions=12
+- Wade Inc (Purchase_Order), extractions=12
 - Duncan LLC (Invoice), currency=GBP, extractions=11
-- Wade Inc (Invoice), currency=GBP, extractions=10
-- Wade Inc (Purchase_Order), extractions=10
-- Assurity Ltd (Invoice), currency=GBP, extractions=10
+- Gomez, Good and Cross Trading Ltd (Quote), currency=GBP, extractions=11
 - Perry Ltd (Purchase_Order), extractions=10
-- Gomez, Good and Cross Trading Ltd (Quote), currency=GBP, extractions=9
-- TechNova Ltd (Quote), currency=GBP, extractions=8
-- Duncan LLC (Purchase_Order), extractions=8
-- Duncan LLC (Quote), currency=GBP, extractions=8
-- AquariusTeam (Purchase_Order), currency=GBP, extractions=8
-- ELEANOR PRICE CREATIVE STUDIO (Quote), currency=GBP, extractions=6
+- AquariusTeam (Purchase_Order), currency=GBP, extractions=10
+- Assurity Ltd (Invoice), currency=GBP, extractions=10
+- Duncan LLC (Purchase_Order), extractions=9
+- Robin Ashford Bank Name (Invoice), currency=GBP, extractions=6
 - Eleanor Price Creative Studio (Purchase_Order), extractions=6
-- InfoTech Consulting (Purchase_Order), extractions=5
+- ELEANOR PRICE CREATIVE STUDIO (Quote), currency=GBP, extractions=6
+- NexaSpark (Quote), currency=GBP, extractions=6
+- Black and Sons (Quote), currency=GBP, extractions=6
+- InfoTech Consulting (Purchase_Order), extractions=6
+- Gomez, Good and Cross Trading Ltd. (Quote), currency=GBP, extractions=5
+- NexaSpark (Purchase_Order), extractions=5
 - Wade Inc (Quote), currency=GBP, extractions=5
 - Rubilogy (Purchase_Order), extractions=5
-- Gomez, Good and Cross (Quote), currency=GBP, extractions=4
-- NexaSpark (Quote), currency=GBP, extractions=4
-- Black and Sons (Quote), currency=GBP, extractions=4
 - Dixon, Reynolds and Solomon (Purchase_Order), currency=GBP, extractions=4
-- Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=3
-- NexaSpark (Purchase_Order), extractions=3
-- Gomez, Good and Cross Trading Ltd. (Quote), currency=GBP, extractions=3
-- AquariusTeam (Invoice), currency=GBP, extractions=2
+- Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=4
+- Gomez, Good and Cross (Quote), currency=GBP, extractions=4
+- Rubilogy (Quote), currency=GBP, extractions=3
+- AquariusTeam (Invoice), currency=GBP, extractions=3
+- Sarah Thompson (Quote), currency=GBP, extractions=3
+- Robin Ashford Bank Name (Quote), currency=GBP, extractions=2
 - city of newport (Quote), currency=GBP, extractions=2
 - THRIVE STUDIOS LLC (Invoice), currency=GBP, extractions=2
-- Rubilogy (Quote), currency=GBP, extractions=2
 - Wells LLC (Quote), currency=GBP, extractions=2
-- Sarah Thompson (Quote), currency=GBP, extractions=2
+- AUARIUS MARKETING (Quote), currency=GBP, extractions=2
 
 === QUALITY STANDARDS ===
 
