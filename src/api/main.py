@@ -64,44 +64,58 @@ async def lifespan(app: FastAPI):
     state = cast(ProcwiseAppState, app.state)
     try:
         agent_nick = AgentNick()
-        discrepancy_agent = DiscrepancyDetectionAgent(agent_nick)
-        quote_evaluation_agent = QuoteEvaluationAgent(agent_nick)
-        quote_comparison_agent = QuoteComparisonAgent(agent_nick)
-        negotiation_agent = NegotiationAgent(agent_nick)
-        approvals_agent = ApprovalsAgent(agent_nick)
-        supplier_interaction_agent = SupplierInteractionAgent(agent_nick)
-        email_dispatch_agent = EmailDispatchAgent(agent_nick)
 
-        agent_nick.agents = AgentRegistry(
-            {
-                "data_extraction": DataExtractionAgent(agent_nick),
-                "supplier_ranking": SupplierRankingAgent(agent_nick),
-                "quote_evaluation": quote_evaluation_agent,
-                "quote_comparison": quote_comparison_agent,
-                "opportunity_miner": OpportunityMinerAgent(agent_nick),
-                "discrepancy_detection": discrepancy_agent,
-                "email_drafting": EmailDraftingAgent(agent_nick),
-                "email_dispatch": email_dispatch_agent,
-                "negotiation": negotiation_agent,
-                "approvals": approvals_agent,
-                "supplier_interaction": supplier_interaction_agent,
-            }
+        # Auto-discover agents from agent_definitions.json (replaces manual registration)
+        from agents.auto_registry import AutoRegistry
+        auto_registry = AutoRegistry.from_json()
+        auto_registry.set_agent_nick(agent_nick)
+        agent_nick.auto_registry = auto_registry
+
+        # Eagerly instantiate core agents for backward compatibility
+        # (AutoRegistry lazy-loads, but some code accesses agents dict directly)
+        agents_dict = {}
+        for agent_id in auto_registry.agent_ids:
+            contract = auto_registry.get_contract(agent_id)
+            if contract.class_path:
+                try:
+                    agents_dict[agent_id] = auto_registry.get_agent(agent_id)
+                except Exception:
+                    logger.warning("Failed to instantiate agent: %s", agent_id)
+        agent_nick.agents = AgentRegistry(agents_dict)
+        agent_nick.agents.add_aliases({
+            "DataExtractionAgent": "data_extraction",
+            "SupplierRankingAgent": "supplier_ranking",
+            "QuoteEvaluationAgent": "quote_evaluation",
+            "QuoteComparisonAgent": "quote_comparison",
+            "OpportunityMinerAgent": "opportunity_miner",
+            "DiscrepancyDetectionAgent": "discrepancy_detection",
+            "EmailDraftingAgent": "email_drafting",
+            "EmailDispatchAgent": "email_dispatch",
+            "NegotiationAgent": "negotiation",
+            "ApprovalsAgent": "approvals",
+            "SupplierInteractionAgent": "supplier_interaction",
+        })
+
+        # Initialize reasoning engine
+        from services.pattern_service import PatternService
+        from services.procurement_context_service import ProcurementContextService
+        from orchestration.reasoning_engine import ReasoningEngine
+
+        pattern_service = PatternService(agent_nick)
+        pattern_service.ensure_table()
+        context_service = ProcurementContextService(agent_nick)
+        reasoning_engine = ReasoningEngine(
+            agent_nick, auto_registry, pattern_service, context_service
         )
-        agent_nick.agents.add_aliases(
-            {
-                "DataExtractionAgent": "data_extraction",
-                "SupplierRankingAgent": "supplier_ranking",
-                "QuoteEvaluationAgent": "quote_evaluation",
-                "QuoteComparisonAgent": "quote_comparison",
-                "OpportunityMinerAgent": "opportunity_miner",
-                "DiscrepancyDetectionAgent": "discrepancy_detection",
-                "EmailDraftingAgent": "email_drafting",
-                "EmailDispatchAgent": "email_dispatch",
-                "NegotiationAgent": "negotiation",
-                "ApprovalsAgent": "approvals",
-                "SupplierInteractionAgent": "supplier_interaction",
-            }
-        )
+        agent_nick.reasoning_engine = reasoning_engine
+        agent_nick.pattern_service = pattern_service
+
+        # Seed initial patterns if table is empty
+        from services.seed_patterns import seed_patterns
+        existing = pattern_service.get_patterns(limit=1)
+        if not existing:
+            seed_patterns(pattern_service)
+            logger.info("Seeded initial procurement patterns")
         state.agent_nick = agent_nick
         state.model_training_endpoint = ModelTrainingEndpoint(agent_nick)
         orchestrator = Orchestrator(

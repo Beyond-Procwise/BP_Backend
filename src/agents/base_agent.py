@@ -230,6 +230,7 @@ class BaseAgent:
     def __init__(self, agent_nick):
         self.agent_nick = agent_nick
         self.settings = agent_nick.settings
+        self._workflow_context = None  # Set during execution for signal emission
         # Ensure GPU environment variables are set for all agents
         self.device = configure_gpu()
         os.environ.setdefault("PROCWISE_DEVICE", self.device)
@@ -265,6 +266,32 @@ class BaseAgent:
 
     def run(self, *args, **kwargs):
         raise NotImplementedError("Each agent must implement its own 'run' method.")
+
+    def set_workflow_context(self, wf_ctx) -> None:
+        """Attach a WorkflowContext for inter-agent communication."""
+        self._workflow_context = wf_ctx
+
+    def emit_signal(self, signal_type: str, message: str, data: dict = None) -> None:
+        """Emit a signal to the shared workflow context.
+
+        Signal types: NEEDS_ATTENTION, CONFIDENCE_LOW, RECOMMEND_ESCALATION, SUGGEST_AGENT
+        """
+        if self._workflow_context is None:
+            return
+        try:
+            from orchestration.workflow_context import AgentSignal
+            self._workflow_context.emit_signal(AgentSignal(
+                agent=self.__class__.__name__,
+                signal_type=signal_type,
+                message=message,
+                data=data or {},
+            ))
+        except Exception:
+            logger.debug("Failed to emit signal", exc_info=True)
+
+    def get_workflow_context(self):
+        """Access the shared workflow context (read prior results, shared data)."""
+        return self._workflow_context
 
     def execute(self, context: "AgentContext") -> "AgentOutput":
         """Execute the agent with process logging.
