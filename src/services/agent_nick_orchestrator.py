@@ -298,8 +298,9 @@ class AgentNickOrchestrator:
             if not result and suffix in (".xlsx", ".xls", ".csv"):
                 result = self._llm_extract_tabular(text, doc_type)
 
-            # PDF and remaining: use extraction engine
-            if not result:
+            # PDF and DOCX only: use extraction engine
+            # (images and spreadsheets don't go through extraction engine)
+            if not result and suffix in (".pdf", ".docx"):
                 with tempfile.NamedTemporaryFile(
                     suffix=suffix, delete=False
                 ) as tmp:
