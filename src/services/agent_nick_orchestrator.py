@@ -295,11 +295,15 @@ class AgentNickOrchestrator:
                 # Fallback: use AgentNick LLM directly
                 return self._llm_extract_direct(text, doc_type)
 
-            # Map extraction engine output to standard format
+            # Map extraction result to standard format
             header = {}
             line_items = []
 
-            if result.get("document_type") == "invoice":
+            # Tabular extraction (Excel/CSV) already returns header/line_items
+            if "header" in result:
+                header = dict(result.get("header", {}))
+                line_items = list(result.get("line_items", []))
+            elif result.get("document_type") == "invoice":
                 header = dict(result.get("invoice_data", {}))
                 line_items = list(result.get("line_items", []))
             elif result.get("document_type") == "po":
@@ -646,7 +650,7 @@ class AgentNickOrchestrator:
                     "stream": False,
                     "options": {"temperature": 0, "num_predict": 2048, "num_gpu": 99},
                 },
-                timeout=300,
+                timeout=600,
             )
             raw = resp.json().get("response", "")
             import re as _re
