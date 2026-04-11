@@ -1,0 +1,1271 @@
+[
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "102494",
+      "supplier_id": "Williams, Reynolds and Aguirre Trading Ltd.",
+      "supplier_address": "Daniel Kerr, 3rd Floor, 190 Great Portland Street, London W1W 5QZ, United Kingdom, Becker Inc",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way, Horsham, West Sussex, RH13 5QH",
+      "quote_date": "2024-01-01",
+      "total_amount": "638.60",
+      "tax_percent": null,
+      "tax_amount": null,
+      "total_amount_incl_tax": "0.00",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Lenova ThinkCentre M70t Intel i5, 8GB RAM, 256GB SSD, Win 11 Pro",
+        "quantity": 1.0,
+        "unit_price": 638.6,
+        "line_total": 638.6
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "10253",
+      "supplier_id": "Williams, Reynolds and Aguirre Trading Ltd.",
+      "supplier_address": "10 Redkiln Way, Horsham, West Sussex RH13 5QH",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way, Horsham, West Sussex, RH13 5QH",
+      "quote_date": "2024-11-01",
+      "total_amount": "922.88",
+      "tax_percent": "140.00",
+      "tax_amount": "659.20",
+      "total_amount_incl_tax": "1582.08",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Acer TravelMate P2 Intel i5, 8GB RAM, 512GB SSD, 14\" Display",
+        "quantity": 2.0,
+        "unit_price": 659.2,
+        "line_total": 1318.4
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "103069",
+      "supplier_id": "TechNova Ltd",
+      "supplier_address": "72 King William Street, London, EC4N 7HR",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way, Horsham, West Sussex, RH13 5QH, Level 2, NovaTech House",
+      "quote_date": "2024-01-10",
+      "total_amount": "3720.18",
+      "tax_percent": null,
+      "tax_amount": "0.00",
+      "total_amount_incl_tax": "3720.18",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Acer TravelMate P2 IIntel i5, 8GB RAM, 512GB SSD",
+        "quantity": 2.0,
+        "unit_price": 620.03,
+        "line_total": 1240.06
+      },
+      {
+        "item_description": "Sub Total : Tax 20% :",
+        "quantity": 248.0,
+        "unit_price": null,
+        "line_total": 2480.12
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "103107",
+      "supplier_id": "TechNova Ltd",
+      "supplier_address": "TechNova Ltd, Level 2, NovaTech House, 72 King William Street, London, EC4N 7HR, Dana Parker DDS, Account Manager",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way, Horsham, West Sussex, RH13 5QH",
+      "quote_date": "2025-05-01",
+      "total_amount": "580.42",
+      "tax_percent": null,
+      "tax_amount": null,
+      "total_amount_incl_tax": "0.00",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Lenovo  ThinkCentre M70t Intel i5, 8GB RAM, 256GB SSD, Win 11 Pro",
+        "quantity": 1.0,
+        "unit_price": 580.42,
+        "line_total": 580.42
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "10483",
+      "supplier_id": "Gomez, Good and Cross Trading Ltd",
+      "supplier_address": "Suite 14, Innovation House 48 Regent Street Cambridge, CB2 1FD United Kingdom",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "Innovation House  48 Regent Street Cambridge, CB2 1FD   United Kingdom",
+      "quote_date": "2024-12-04",
+      "total_amount": "1150.46",
+      "tax_percent": null,
+      "tax_amount": "0.00",
+      "total_amount_incl_tax": "1150.46",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "HP |  LaserJet Pro M404dn  Mono Laser Printer",
+        "quantity": 2.0,
+        "unit_price": 4.0,
+        "line_total": 110.38
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "128234",
+      "supplier_id": "Duncan LLC",
+      "supplier_address": "Duncan LLC, 20 Sept, 2024",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way Horsham West Sussex RH13 5QH",
+      "quote_date": "2024-09-20",
+      "total_amount": "2014.15",
+      "tax_percent": "27.00",
+      "tax_amount": "543.11",
+      "total_amount_incl_tax": "2557.26",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Staedtler Ballpoint Pen Black Ink, 10 per Pack",
+        "quantity": 100.0,
+        "unit_price": 13.85,
+        "line_total": 1385.0
+      },
+      {
+        "item_description": "3M Adhesive Tape 15 cm x 19 mm, Black",
+        "quantity": 15.0,
+        "unit_price": 15.29,
+        "line_total": 229.35
+      },
+      {
+        "item_description": "Faber-Castell A4 Ruled Notebook, White Cover",
+        "quantity": 11.0,
+        "unit_price": 116.9,
+        "line_total": 1285.9
+      },
+      {
+        "item_description": "Red Ink, 5 per Pack",
+        "quantity": 19.0,
+        "unit_price": 20.0,
+        "line_total": 399.8
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "128300",
+      "supplier_id": "Duncan LLC",
+      "supplier_address": "28 Victoria Works Business Park, Unit 5B",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way Horsham West Sussex RH13 5QH",
+      "quote_date": "2024-12-22",
+      "total_amount": "2079.74",
+      "tax_percent": "260.00",
+      "tax_amount": "799.90",
+      "total_amount_incl_tax": "2879.64",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Fellowes Office Chair Black Upholstery, Aluminium Base",
+        "quantity": 10.0,
+        "unit_price": 79.99,
+        "line_total": 799.9
+      },
+      {
+        "item_description": "Green Upholstery, Metal Base Grey Upholstery, Steel Base",
+        "quantity": 2399.0,
+        "unit_price": null,
+        "line_total": null
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "136586",
+      "supplier_id": "Daniel, Perry and Goodman Trading Ltd.",
+      "supplier_address": "54 Hawthorne Industrial Estate West Yorkshire, LS10 1QP",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way Horsham West Sussex RH13 5QH, 136586",
+      "quote_date": "2024-09-10",
+      "total_amount": "2826.65",
+      "tax_percent": "20.00",
+      "tax_amount": "565.33",
+      "total_amount_incl_tax": "3391.98",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Staedtler Ballpoint Pen",
+        "quantity": 100.0,
+        "unit_price": 12.49,
+        "line_total": 1249.0
+      },
+      {
+        "item_description": "3M Adhesive Tape",
+        "quantity": 15.0,
+        "unit_price": 13.99,
+        "line_total": 209.85
+      },
+      {
+        "item_description": "Faber-Castell A4 Ruled",
+        "quantity": 10.0,
+        "unit_price": 1010.0,
+        "line_total": 10201.0
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "136700",
+      "supplier_id": "Daniel, Perry and Goodman Trading Ltd.",
+      "supplier_address": "54 Hawthorne Industrial Estate West Yorkshire, LS10 1QP",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way Horsham West Sussex RH13 5QH, 136700",
+      "quote_date": "2024-12-10",
+      "total_amount": "2447.70",
+      "tax_percent": "20.00",
+      "tax_amount": "489.94",
+      "total_amount_incl_tax": "2937.64",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Fellowes Office Chair, Black",
+        "quantity": 10.0,
+        "unit_price": 84.99,
+        "line_total": 849.9
+      },
+      {
+        "item_description": "Fellowes Office Chair, Green",
+        "quantity": 799.0,
+        "unit_price": 79.99,
+        "line_total": 63912.01
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "25-304-34",
+      "supplier_id": "Robin Ashford Bank Name",
+      "supplier_address": "14 Meadowcroft Lane, Birmingham, B15 2TH",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "10 Redkiln Way, Horsham, West Sussex RH13 5QH, United Kingdom, Robin Ashford",
+      "quote_date": "2019-01-02",
+      "total_amount": "7200.00",
+      "tax_percent": "500.00",
+      "tax_amount": "1440.00",
+      "total_amount_incl_tax": "8640.00",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Tailored IT strategy & infrastructure planning",
+        "quantity": 1.0,
+        "unit_price": 1200.0,
+        "line_total": 7200.0
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "30746",
+      "supplier_id": "Black and Sons",
+      "supplier_address": "42 Kingsway Business Park, Manchester, M17 1AB",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "Address, Redkiln Way Horsham West Sussex RH13 5QH",
+      "quote_date": "2024-11-07",
+      "total_amount": "864.15",
+      "tax_percent": "20.00",
+      "tax_amount": "172.83",
+      "total_amount_incl_tax": "1036.98",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Staedtler Ballpoint Pen, Black Ink, 10 per Pack",
+        "quantity": 100.0,
+        "unit_price": 14.14,
+        "line_total": 141.4
+      },
+      {
+        "item_description": "3M Adhesive Tape, 15 cm x 19 mm, Black",
+        "quantity": 15.0,
+        "unit_price": 13.89,
+        "line_total": 208.35
+      },
+      {
+        "item_description": "Pilot Ballpoint Pen, Red Ink, 5 per Pack",
+        "quantity": 20.0,
+        "unit_price": 18.98,
+        "line_total": 379.6
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "30789",
+      "supplier_id": "Wade Inc",
+      "supplier_address": "42 Kingsway Business Park, Manchester, M17 1AB, Customer Information, Name",
+      "buyer_id": "Assurity Ltd",
+      "buyer_address": "Address, Redkiln Way Horsham West Sussex RH13 5QH",
+      "quote_date": "2024-12-28",
+      "total_amount": "2176.96",
+      "tax_percent": "273.60",
+      "tax_amount": "795.80",
+      "total_amount_incl_tax": "2972.76",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Fellowes Office Chair, Black Upholstery, Aluminium Base",
+        "quantity": 10.0,
+        "unit_price": 79.58,
+        "line_total": 795.8
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "QTE-2026-00487",
+      "supplier_id": "SupplyX Ltd",
+      "supplier_address": "8th Floor, The Blade, Abbey Square, Reading, RG1 3BE",
+      "buyer_id": "Greenfield Holdings Ltd",
+      "buyer_address": "Greenfield Office Park, Building 3, Meadow Lane, Reading, RG1 2AB",
+      "quote_date": "2026-04-18",
+      "total_amount": "68660.00",
+      "tax_percent": "20.00",
+      "tax_amount": "13732.00",
+      "total_amount_incl_tax": "82392.00",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Herman Miller Aeron Chair (Ergonomic office chair, size B, graphite finish)",
+        "quantity": 20.0,
+        "unit_price": 1050.0,
+        "line_total": 21000.0
+      },
+      {
+        "item_description": "IKEA Bekant Desk 160x80cm (White top, black frame, cable management included)",
+        "quantity": 20.0,
+        "unit_price": 180.0,
+        "line_total": 3600.0
+      },
+      {
+        "item_description": "Bisley Steel Filing Cabinet 3 Drawer (Lockable, grey finish)",
+        "quantity": 10.0,
+        "unit_price": 210.0,
+        "line_total": 2100.0
+      },
+      {
+        "item_description": "Steelcase Series 1 Meeting Chair (Fabric seat, black frame)",
+        "quantity": 8.0,
+        "unit_price": 320.0,
+        "line_total": 2560.0
+      },
+      {
+        "item_description": "Orangebox Do Pod Meeting Booth (Acoustic meeting pod for 2\u20134 people)",
+        "quantity": 4.0,
+        "unit_price": 6500.0,
+        "line_total": 26000.0
+      },
+      {
+        "item_description": "Humanscale Float Height Adjustable Desk (Manual sit-stand desk)",
+        "quantity": 6.0,
+        "unit_price": 950.0,
+        "line_total": 5700.0
+      },
+      {
+        "item_description": "Delivery & Installation Services (assembly, positioning, waste removal)",
+        "quantity": 1.0,
+        "unit_price": 4500.0,
+        "line_total": 4500.0
+      },
+      {
+        "item_description": "Space Planning & Layout Design Service (CAD layouts, optimisation of floor space)",
+        "quantity": 1.0,
+        "unit_price": 3200.0,
+        "line_total": 3200.0
+      }
+    ]
+  },
+  {
+    "document_type": "Quote",
+    "header": {
+      "quote_id": "WSG100024",
+      "supplier_id": "Dell Workspace Solutions Ltd",
+      "supplier_address": "['7642 Mariner Drive, Suite 300', 'Tampa, FL 33609']",
+      "buyer_id": "Kaiser LLC",
+      "buyer_address": "['257 Douglas Centers', 'Hasselt, 91202', 'Belgium']",
+      "quote_date": null,
+      "total_amount": "93235.00",
+      "tax_percent": "20.00",
+      "tax_amount": "18647.00",
+      "total_amount_incl_tax": "111882.00",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Knoll Generation Task Chair",
+        "quantity": 12.0,
+        "unit_price": 760.0,
+        "line_total": 9120.0
+      },
+      {
+        "item_description": "Herman Miller Mirra 2 Chair",
+        "quantity": 10.0,
+        "unit_price": 910.0,
+        "line_total": 9100.0
+      },
+      {
+        "item_description": "Haworth Zody Task Chair",
+        "quantity": 6.0,
+        "unit_price": 820.0,
+        "line_total": 4920.0
+      },
+      {
+        "item_description": "IKEA Alex Drawer Unit",
+        "quantity": 14.0,
+        "unit_price": 90.0,
+        "line_total": 1260.0
+      },
+      {
+        "item_description": "Vitra Tip Ton Chair",
+        "quantity": 9.0,
+        "unit_price": 205.0,
+        "line_total": 1845.0
+      },
+      {
+        "item_description": "Steelcase Ology Desk",
+        "quantity": 3.0,
+        "unit_price": 1200.0,
+        "line_total": 3600.0
+      },
+      {
+        "item_description": "Humanscale Freedom Chair",
+        "quantity": 7.0,
+        "unit_price": 1100.0,
+        "line_total": 7700.0
+      },
+      {
+        "item_description": "Orangebox Meeting Table",
+        "quantity": 5.0,
+        "unit_price": 1750.0,
+        "line_total": 8750.0
+      },
+      {
+        "item_description": "Bene PIXEL Storage Unit",
+        "quantity": 2.0,
+        "unit_price": 620.0,
+        "line_total": 1240.0
+      },
+      {
+        "item_description": "Allermuir Lounge Chair",
+        "quantity": 11.0,
+        "unit_price": 1000.0,
+        "line_total": 11000.0
+      },
+      {
+        "item_description": "Vitra Alcove Sofa",
+        "quantity": 4.0,
+        "unit_price": 4700.0,
+        "line_total": 18800.0
+      },
+      {
+        "item_description": "Senator Meeting Table",
+        "quantity": 8.0,
+        "unit_price": 580.0,
+        "line_total": 4640.0
+      },
+      {
+        "item_description": "Bisley Tambour Cabinet",
+        "quantity": 6.0,
+        "unit_price": 500.0,
+        "line_total": 3000.0
+      },
+      {
+        "item_description": "Logitech Rally Bar",
+        "quantity": 10.0,
+        "unit_price": 2600.0,
+        "line_total": 26000.0
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV103411",
+      "po_id": "502001",
+      "supplier_id": "Wells LLC",
+      "invoice_date": "2023-04-01",
+      "due_date": "2023-06-30",
+      "invoice_amount": "3120.00",
+      "tax_amount": "0.00",
+      "invoice_total_incl_tax": "3120.00",
+      "currency": "GBP",
+      "payment_terms": "90"
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV132548",
+      "po_id": "526702",
+      "supplier_id": "Duncan LLC",
+      "invoice_date": "2024-10-01",
+      "due_date": "2024-12-30",
+      "invoice_amount": "3300.05",
+      "tax_amount": null,
+      "invoice_total_incl_tax": "2557.26",
+      "currency": "GBP",
+      "payment_terms": "90"
+    },
+    "line_items": [
+      {
+        "item_description": "Staedtler Ballpoint Pen Black Ink, 10 per Pack",
+        "quantity": 100.0,
+        "unit_price": 13.85,
+        "line_amount": null
+      },
+      {
+        "item_description": "3M Adhesive Tape 15 cm x 19 mm, Black",
+        "quantity": 15.0,
+        "unit_price": 15.29,
+        "line_amount": null
+      },
+      {
+        "item_description": "Faber-Castell A4 Ruled Notebook, White Cover",
+        "quantity": 11.0,
+        "unit_price": 116.9,
+        "line_amount": null
+      },
+      {
+        "item_description": "Red Ink, 5 per Pack",
+        "quantity": 19.0,
+        "unit_price": 20.0,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV132666",
+      "po_id": "526702",
+      "supplier_id": "Duncan LLC",
+      "invoice_date": "2024-01-10",
+      "due_date": "2024-04-09",
+      "invoice_amount": "799.90",
+      "tax_amount": "479.94",
+      "invoice_total_incl_tax": "1279.84",
+      "currency": "GBP",
+      "payment_terms": "90"
+    },
+    "line_items": [
+      {
+        "item_description": "Fellowes Office Chair Black Upholstery, Aluminium Base",
+        "quantity": 10.0,
+        "unit_price": 79.99,
+        "line_amount": null
+      },
+      {
+        "item_description": "Green Upholstery, Metal Base Grey Upholstery, Steel Base",
+        "quantity": 2399.0,
+        "unit_price": null,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV-2025-055",
+      "po_id": "505697",
+      "supplier_id": "Sarah Thompson",
+      "invoice_date": "2025-01-15",
+      "due_date": "2025-01-29",
+      "invoice_amount": "5000.00",
+      "tax_amount": "1000.00",
+      "invoice_total_incl_tax": "6000.00",
+      "currency": "GBP",
+      "payment_terms": "14"
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV-2025-056",
+      "po_id": "505697",
+      "supplier_id": "Sarah Thompson",
+      "invoice_date": "2025-02-15",
+      "due_date": "2025-03-01",
+      "invoice_amount": "15000.00",
+      "tax_amount": "3000.00",
+      "invoice_total_incl_tax": "18000.00",
+      "currency": "GBP",
+      "payment_terms": "14"
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV2025-290",
+      "po_id": "389948",
+      "supplier_id": "Eleanor Price Creative Studio",
+      "invoice_date": "2020-04-01",
+      "due_date": "2020-06-30",
+      "invoice_amount": "1200.00",
+      "tax_amount": "240.00",
+      "invoice_total_incl_tax": "1440.00",
+      "currency": "GBP",
+      "payment_terms": "90"
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV25-021-75",
+      "po_id": "398434",
+      "supplier_id": "Infotech",
+      "invoice_date": "2019-01-20",
+      "due_date": "2019-02-19",
+      "invoice_amount": "1440.00",
+      "tax_amount": "240.00",
+      "invoice_total_incl_tax": "1680.00",
+      "currency": "GBP",
+      "payment_terms": "30"
+    },
+    "line_items": [
+      {
+        "item_description": "Onsite support \\(4 visits per month\\",
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null
+      },
+      {
+        "item_description": "Sub Total Tax \\(20%\\",
+        "quantity": 240.0,
+        "unit_price": null,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV25-021-76",
+      "po_id": "398434",
+      "supplier_id": "Infotech",
+      "invoice_date": "2019-02-20",
+      "due_date": "2019-03-22",
+      "invoice_amount": "1440.00",
+      "tax_amount": "240.00",
+      "invoice_total_incl_tax": "1680.00",
+      "currency": "GBP",
+      "payment_terms": "30"
+    },
+    "line_items": [
+      {
+        "item_description": "Onsite support \\(4 visits per month\\",
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null
+      },
+      {
+        "item_description": "Sub Total Tax \\(20%\\",
+        "quantity": 240.0,
+        "unit_price": null,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV25-021-77",
+      "po_id": "398434",
+      "supplier_id": "Infotech",
+      "invoice_date": "2019-03-20",
+      "due_date": "2019-04-19",
+      "invoice_amount": "1440.00",
+      "tax_amount": "240.00",
+      "invoice_total_incl_tax": "1680.00",
+      "currency": "GBP",
+      "payment_terms": "30"
+    },
+    "line_items": [
+      {
+        "item_description": "Onsite support \\(4 visits per month\\",
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null
+      },
+      {
+        "item_description": "Sub Total Tax \\(20%\\",
+        "quantity": 240.0,
+        "unit_price": null,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV25-021-79",
+      "po_id": "398434",
+      "supplier_id": "Infotech",
+      "invoice_date": "2019-05-20",
+      "due_date": "2019-06-19",
+      "invoice_amount": "1440.00",
+      "tax_amount": "240.00",
+      "invoice_total_incl_tax": "1680.00",
+      "currency": "GBP",
+      "payment_terms": "30"
+    },
+    "line_items": [
+      {
+        "item_description": "Onsite support \\(4 visits per month\\",
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null
+      },
+      {
+        "item_description": "Sub Total Tax \\(20%\\",
+        "quantity": 240.0,
+        "unit_price": null,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV25-021-80",
+      "po_id": "398434",
+      "supplier_id": "Infotech",
+      "invoice_date": "2019-06-20",
+      "due_date": "2019-07-20",
+      "invoice_amount": "1440.00",
+      "tax_amount": "240.00",
+      "invoice_total_incl_tax": "1680.00",
+      "currency": "GBP",
+      "payment_terms": "30"
+    },
+    "line_items": [
+      {
+        "item_description": "Onsite support \\(4 visits per month\\",
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null
+      },
+      {
+        "item_description": "Sub Total Tax \\(20%\\",
+        "quantity": 240.0,
+        "unit_price": null,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV-25-050",
+      "po_id": "508084",
+      "supplier_id": "Brand Development Services",
+      "invoice_date": "2025-07-22",
+      "due_date": "2025-07-05",
+      "invoice_amount": "5000.00",
+      "tax_amount": "1000.00",
+      "invoice_total_incl_tax": "6000.00",
+      "currency": "GBP",
+      "payment_terms": null
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV304056",
+      "po_id": "526809",
+      "supplier_id": "Black and Sons",
+      "invoice_date": "2024-11-17",
+      "due_date": "2024-12-17",
+      "invoice_amount": "864.15",
+      "tax_amount": "172.83",
+      "invoice_total_incl_tax": "1036.98",
+      "currency": "GBP",
+      "payment_terms": "30"
+    },
+    "line_items": [
+      {
+        "item_description": "Staedtler Ballpoint Pen, Black Ink, 10 per Pack",
+        "quantity": 100.0,
+        "unit_price": 14.14,
+        "line_amount": null
+      },
+      {
+        "item_description": "3M Adhesive Tape, 15 cm x 19 mm, Black",
+        "quantity": 15.0,
+        "unit_price": 13.89,
+        "line_amount": null
+      },
+      {
+        "item_description": "Pilot Ballpoint Pen, Red Ink, 5 per Pack",
+        "quantity": 20.0,
+        "unit_price": 18.98,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV304099",
+      "po_id": "526906",
+      "supplier_id": "Wade Inc",
+      "invoice_date": "2024-01-15",
+      "due_date": "2024-02-14",
+      "invoice_amount": "795.80",
+      "tax_amount": null,
+      "invoice_total_incl_tax": "2972.76",
+      "currency": "GBP",
+      "payment_terms": "30"
+    },
+    "line_items": [
+      {
+        "item_description": "Fellowes Office Chair, Black Upholstery, Aluminium Base",
+        "quantity": 10.0,
+        "unit_price": 79.58,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV4759275",
+      "po_id": "506789",
+      "supplier_id": "NexaSpark",
+      "invoice_date": "2025-06-12",
+      "due_date": "2025-09-10",
+      "invoice_amount": "12000.00",
+      "tax_amount": "2000.00",
+      "invoice_total_incl_tax": "14000.00",
+      "currency": "GBP",
+      "payment_terms": "90"
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV4759276",
+      "po_id": "506789",
+      "supplier_id": "NexaSpark",
+      "invoice_date": "2025-12-12",
+      "due_date": "2026-03-12",
+      "invoice_amount": "18000.00",
+      "tax_amount": "3000.00",
+      "invoice_total_incl_tax": "21000.00",
+      "currency": "GBP",
+      "payment_terms": "90"
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV600820",
+      "po_id": "507222",
+      "supplier_id": "Dixon, Reynolds and Solomon",
+      "invoice_date": "2025-03-01",
+      "due_date": "2025-04-30",
+      "invoice_amount": "439.52",
+      "tax_amount": "234.13",
+      "invoice_total_incl_tax": "673.65",
+      "currency": "GBP",
+      "payment_terms": "60"
+    },
+    "line_items": [
+      {
+        "item_description": "Logitech MX Keys Wireless Illuminated Keyboard",
+        "quantity": 4.0,
+        "unit_price": 109.88,
+        "line_amount": null
+      },
+      {
+        "item_description": "Logitech MX Master 3S Advanced Wireless Mouse",
+        "quantity": 89.0,
+        "unit_price": 358.92,
+        "line_amount": null
+      },
+      {
+        "item_description": "Mono Laser Printer",
+        "quantity": 2.0,
+        "unit_price": 186.0,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Invoice",
+    "header": {
+      "invoice_id": "INV609767",
+      "po_id": "521031",
+      "supplier_id": "Dixon, Reynolds and Solomon",
+      "invoice_date": "2024-01-01",
+      "due_date": "2024-02-12",
+      "invoice_amount": "638.60",
+      "tax_amount": "127.72",
+      "invoice_total_incl_tax": "766.32",
+      "currency": "GBP",
+      "payment_terms": "42"
+    },
+    "line_items": [
+      {
+        "item_description": "Lenova ThinkCentre M70t Intel i5, 8GB RAM, 256GB SSD, Win 11 Pro",
+        "quantity": 1.0,
+        "unit_price": 638.6,
+        "line_amount": null
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "302305",
+      "supplier_name": "Rubilogy",
+      "order_date": "2017-01-14",
+      "total_amount": "2760.00",
+      "currency": "GBP"
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "506789",
+      "supplier_name": "NexaSpark",
+      "order_date": "2025-06-12",
+      "total_amount": "30000.00",
+      "currency": "GBP"
+    },
+    "line_items": []
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "507099",
+      "supplier_name": "Dixon, Reynolds and Solomon",
+      "order_date": "2024-11-13",
+      "total_amount": "1582.08",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Acer TravelMate P2 Intel i5, 8GB RAM, 512GB SSD, 14\" Display",
+        "quantity": 2.0,
+        "unit_price": 659.0,
+        "line_total": null,
+        "quote_number": "10253"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "507269",
+      "supplier_name": "Gomez, Good and Cross Trading Ltd",
+      "order_date": "2024-01-31",
+      "total_amount": "647.00",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Lenova ThinkCentre M70t Intel i5, 8GB RAM, 256GB SSD, Win 11 Pro",
+        "quantity": 1.0,
+        "unit_price": 647.0,
+        "line_total": null,
+        "quote_number": "104683"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "519829",
+      "supplier_name": "Gomez, Good and Cross Trading Ltd",
+      "order_date": "2023-09-05",
+      "total_amount": "1169.58",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Acer | TravelMate P2 IIntel i5, 8GB RAM, 512GB SSD, 14\" Display",
+        "quantity": 2.0,
+        "unit_price": 584.0,
+        "line_total": null,
+        "quote_number": "104680"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "519999",
+      "supplier_name": "Gomez, Good and Cross Trading Ltd",
+      "order_date": "2025-01-02",
+      "total_amount": "1380.55",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Logitech MX Keys Wireless Illuminated Keyboard",
+        "quantity": 4.0,
+        "unit_price": 110.0,
+        "line_total": null,
+        "quote_number": "10483"
+      },
+      {
+        "item_description": "Logitech MX Master 3S Advanced Wireless Mouse",
+        "quantity": 86.0,
+        "unit_price": 345.16,
+        "line_total": null,
+        "quote_number": "10483"
+      },
+      {
+        "item_description": "Mono Laser Printer",
+        "quantity": 2.0,
+        "unit_price": 181.89,
+        "line_total": null,
+        "quote_number": "10483"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "526640",
+      "supplier_name": "Perry Ltd",
+      "order_date": "2024-12-17",
+      "total_amount": "2937.64",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Fellowes Office Chair Black Upholstery, Aluminium Base",
+        "quantity": 84.0,
+        "unit_price": 10.0,
+        "line_total": null,
+        "quote_number": "136700"
+      },
+      {
+        "item_description": "Green Upholstery, Metal Base",
+        "quantity": 799.0,
+        "unit_price": 79.99,
+        "line_total": null,
+        "quote_number": "136700"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "526689",
+      "supplier_name": "Perry Ltd",
+      "order_date": "2024-09-18",
+      "total_amount": "3391.98",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Staedtler Ballpoint Pen Black Ink, 10 per Pack",
+        "quantity": 12.0,
+        "unit_price": 100.0,
+        "line_total": null,
+        "quote_number": "136586"
+      },
+      {
+        "item_description": "3M Adhesive Tape 15 cm x 19 mm, Black",
+        "quantity": 13.0,
+        "unit_price": 15.0,
+        "line_total": null,
+        "quote_number": "136586"
+      },
+      {
+        "item_description": "Faber-Castell A4 Ruled Notebook White Cover",
+        "quantity": 10.0,
+        "unit_price": 1010.0,
+        "line_total": null,
+        "quote_number": "136586"
+      },
+      {
+        "item_description": "Red Ink, 5 per Pack",
+        "quantity": 20.0,
+        "unit_price": 17.89,
+        "line_total": null,
+        "quote_number": "136586"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "526702",
+      "supplier_name": "Duncan LLC",
+      "order_date": null,
+      "total_amount": "2557.26",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Staedtler Ballpoint Pen Black Ink, 10 per Pack",
+        "quantity": 13.0,
+        "unit_price": 100.0,
+        "line_total": null,
+        "quote_number": "Quote Date: 128234"
+      },
+      {
+        "item_description": "3M Adhesive Tape 15 cm x 19 mm, Black",
+        "quantity": 15.0,
+        "unit_price": 15.0,
+        "line_total": null,
+        "quote_number": "Quote Date: 128234"
+      },
+      {
+        "item_description": "Faber-Castell A4 Ruled Notebook White Cover",
+        "quantity": 11.0,
+        "unit_price": 116.9,
+        "line_total": null,
+        "quote_number": "Quote Date: 128234"
+      },
+      {
+        "item_description": "Red Ink, 5 per Pack",
+        "quantity": 20.0,
+        "unit_price": 19.99,
+        "line_total": null,
+        "quote_number": "Quote Date: 128234"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "526800",
+      "supplier_name": "Duncan LLC",
+      "order_date": "2024-01-03",
+      "total_amount": "2879.64",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Fellowes Office Chair Black Upholstery, Aluminium Base",
+        "quantity": 79.0,
+        "unit_price": 10.0,
+        "line_total": null,
+        "quote_number": "Quote Date: 128300"
+      },
+      {
+        "item_description": "Grey Upholstery, Steel Base Sub-total:",
+        "quantity": 2399.0,
+        "unit_price": null,
+        "line_total": null,
+        "quote_number": "Quote Date: 128300"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "526809",
+      "supplier_name": "Wade Inc",
+      "order_date": "2024-11-15",
+      "total_amount": "1036.98",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Staedtler Ballpoint Pen Black Ink, 10 per Pack",
+        "quantity": 14.0,
+        "unit_price": 100.0,
+        "line_total": null,
+        "quote_number": "30746"
+      },
+      {
+        "item_description": "3M Adhesive Tape 15 cm x 19 mm, Black",
+        "quantity": 13.0,
+        "unit_price": 15.0,
+        "line_total": null,
+        "quote_number": "30746"
+      },
+      {
+        "item_description": "Faber-Castell A4 Ruled Notebook White Cover",
+        "quantity": 13.0,
+        "unit_price": 134.8,
+        "line_total": null,
+        "quote_number": "30746"
+      },
+      {
+        "item_description": "Red Ink, 5 per Pack",
+        "quantity": 20.0,
+        "unit_price": 18.98,
+        "line_total": null,
+        "quote_number": "30746"
+      }
+    ]
+  },
+  {
+    "document_type": "Purchase_Order",
+    "header": {
+      "po_id": "526906",
+      "supplier_name": "Wade Inc",
+      "order_date": "2024-01-05",
+      "total_amount": "2972.76",
+      "currency": "GBP"
+    },
+    "line_items": [
+      {
+        "item_description": "Fellowes Office Chair Black Upholstery, Aluminium Base",
+        "quantity": 79.0,
+        "unit_price": 10.0,
+        "line_total": null,
+        "quote_number": "Quote No: 30789"
+      },
+      {
+        "item_description": "Green Upholstery, Metal Base",
+        "quantity": 828.0,
+        "unit_price": 82.86,
+        "line_total": null,
+        "quote_number": "Quote No: 30789"
+      }
+    ]
+  }
+]
