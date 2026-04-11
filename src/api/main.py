@@ -125,8 +125,8 @@ async def lifespan(app: FastAPI):
         state.orchestrator = orchestrator
         state.rag_pipeline = RAGPipeline(agent_nick)
         state.agent_registry = agent_nick.agents
-        state.supplier_interaction_agent = supplier_interaction_agent
-        state.negotiation_agent = negotiation_agent
+        state.supplier_interaction_agent = agents_dict.get("supplier_interaction")
+        state.negotiation_agent = agents_dict.get("negotiation")
         state.email_watcher_runner = run_email_watcher_for_workflow
         backend_scheduler = orchestrator.backend_scheduler
         state.backend_scheduler = backend_scheduler
