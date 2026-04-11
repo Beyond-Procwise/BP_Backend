@@ -172,8 +172,15 @@ class AgentNickOrchestrator:
             logger.exception("[AgentNick] Validation failed, proceeding with raw extraction")
             discrepancies = []
 
-        # Step 5: Cross-validation engine — auto-fix math errors
+        # Step 5: Cross-validation engine — auto-fix math errors, flag source issues
         header, line_items = self._cross_validate(header, line_items, doc_type)
+
+        # Step 6: Flag source data issues (NOT auto-fix — these are problems in the document)
+        source_warnings = self._flag_source_issues(header, line_items, doc_type)
+        if source_warnings:
+            header["_source_data_warnings"] = source_warnings
+            for w in source_warnings:
+                logger.warning("[AgentNick] SOURCE DATA ISSUE: %s", w)
 
         # Re-check after validation
         still_missing = [f for f in required if not header.get(f)]
@@ -454,6 +461,74 @@ class AgentNickOrchestrator:
             header["supplier_id"] = header["supplier_name"]
 
         return header
+
+    @staticmethod
+    def _flag_source_issues(
+        header: Dict[str, Any],
+        line_items: List[Dict[str, Any]],
+        doc_type: str,
+    ) -> List[str]:
+        """Detect issues in the SOURCE document — flag, don't fix."""
+        warnings: List[str] = []
+
+        def _f(v) -> float:
+            try:
+                return float(v) if v else 0.0
+            except (ValueError, TypeError):
+                return 0.0
+
+        amt_key = "invoice_amount" if doc_type == "Invoice" else "total_amount"
+        tax_key = "tax_amount"
+        total_key = (
+            "invoice_total_incl_tax" if doc_type == "Invoice"
+            else "total_amount_incl_tax" if doc_type == "Quote"
+            else "total_amount"
+        )
+
+        amt = _f(header.get(amt_key))
+        tax = _f(header.get(tax_key))
+        total = _f(header.get(total_key))
+
+        # Check: total should equal subtotal + tax
+        if amt > 0 and tax > 0 and total > 0:
+            expected = round(amt + tax, 2)
+            if abs(total - expected) > 1.0:
+                warnings.append(
+                    f"Total mismatch: {total_key}={total} but "
+                    f"{amt_key}({amt}) + {tax_key}({tax}) = {expected}"
+                )
+
+        # Check: line items sum vs header subtotal
+        if line_items and amt > 0:
+            line_sum = sum(
+                _f(li.get("line_amount") or li.get("line_total") or li.get("line_total_amount"))
+                for li in line_items
+            )
+            if line_sum > 0 and abs(line_sum - amt) > 1.0:
+                warnings.append(
+                    f"Line items sum ({line_sum:.2f}) != {amt_key} ({amt:.2f})"
+                )
+
+        # Check: empty/missing critical amounts
+        if amt == 0 and total == 0:
+            warnings.append("Both subtotal and total are missing or zero")
+        elif amt == 0 and total > 0:
+            warnings.append(f"Subtotal ({amt_key}) is missing, only total available")
+
+        # Check: line items with missing data
+        incomplete = 0
+        for li in line_items:
+            qty = _f(li.get("quantity"))
+            price = _f(li.get("unit_price"))
+            desc = li.get("item_description", "")
+            if not desc and (qty > 0 or price > 0):
+                incomplete += 1
+            elif desc and qty == 0 and price == 0:
+                incomplete += 1
+        if incomplete:
+            warnings.append(f"{incomplete} line item(s) have incomplete data (missing description, qty, or price)")
+
+        return warnings
 
     @staticmethod
     def _cross_validate(
