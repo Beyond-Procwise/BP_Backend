@@ -152,7 +152,21 @@ class AgentNickOrchestrator:
         self._fill_cross_refs_from_filename(header, file_path, doc_type)
 
         # Step 3d: Extract supplier name from filename as last resort
-        # Filename pattern: "SUPPLIER_NAME DOC_ID for REF.pdf"
+        # Step 3d: Supplier sanity check — reject bank/payment terms as supplier
+        _bad_supplier_markers = (
+            "bank name", "bank account", "sort code", "iban", "swift",
+            "payable to", "payment", "remittance",
+        )
+        for field in ("supplier_id", "supplier_name"):
+            val = header.get(field, "")
+            if val and any(m in val.lower() for m in _bad_supplier_markers):
+                logger.warning(
+                    "[AgentNick] Rejected bad supplier '%s' (contains bank/payment terms)",
+                    val,
+                )
+                header[field] = ""
+
+        # Step 3e: Filename supplier fallback
         if not header.get("supplier_id") and not header.get("supplier_name"):
             fname_supplier = self._extract_supplier_from_filename(file_path)
             if fname_supplier:
@@ -640,15 +654,16 @@ class AgentNickOrchestrator:
 
         fname = os.path.basename(file_path)
         schema_hints = {
-            "Quote": "quote_id, supplier_name, buyer_name, quote_date, validity_date, currency, subtotal (before tax), tax_percent, tax_amount, total_incl_tax",
-            "Invoice": "invoice_id, supplier_name, po_id, invoice_date, due_date, currency, invoice_amount (subtotal), tax_percent, tax_amount, total_incl_tax",
-            "Purchase_Order": "po_id, supplier_name, buyer_name, order_date, currency, subtotal, tax_amount, total_amount",
+            "Quote": "quote_id, supplier_name, supplier_address, buyer_name, buyer_address, quote_date, validity_date, currency, payment_terms, subtotal (before tax), tax_percent, tax_amount, total_incl_tax, vat_registration, company_registration, account_manager, phone, email",
+            "Invoice": "invoice_id, supplier_name, supplier_address, po_id, invoice_date, due_date, currency, invoice_amount (subtotal), tax_percent, tax_amount, total_incl_tax, payment_terms, phone, email",
+            "Purchase_Order": "po_id, supplier_name, supplier_address, buyer_name, buyer_address, order_date, currency, subtotal, tax_amount, total_amount, payment_terms, delivery_address",
         }
         prompt = (
             f"Extract ALL fields from this {doc_type} as JSON:\n"
-            f"{schema_hints.get(doc_type, '')}\n"
-            f"Line items: line_no, item_description, quantity, unit_price, line_total\n"
-            f"CRITICAL: quantity is a count, unit_price is cost per item. tax_amount < subtotal."
+            f"Header: {schema_hints.get(doc_type, '')}\n"
+            f"Line items array: line_no, item_description, quantity, unit_price, line_total\n"
+            f"CRITICAL: Extract ALL addresses, phone numbers, email addresses.\n"
+            f"quantity is a count (small number), unit_price is cost per item. tax_amount < subtotal."
         )
 
         try:
@@ -682,6 +697,17 @@ class AgentNickOrchestrator:
             for old_key, new_key in field_map.items():
                 if old_key in header and old_key != new_key:
                     header[new_key] = header.pop(old_key)
+
+            # Ensure supplier_name is preserved alongside supplier_id
+            if "supplier_id" in header and "supplier_name" not in header:
+                header["supplier_name"] = header["supplier_id"]
+
+            # Generate item_id for each line item
+            from agents.extraction_engine import _generate_item_id
+            for li in line_items:
+                desc = li.get("item_description", "")
+                if desc and not li.get("item_id"):
+                    li["item_id"] = _generate_item_id(desc)
 
             logger.info(
                 "[Docwain] Extracted %d header fields, %d line items from %s",
