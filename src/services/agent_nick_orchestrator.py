@@ -289,6 +289,11 @@ class AgentNickOrchestrator:
             if suffix in (".xlsx", ".xls", ".csv", ".docx"):
                 result = self._docwain_extract(file_bytes, file_path, doc_type)
 
+            # Image files (JPEG/PNG): use LLM on OCR text directly
+            # (extraction engine doesn't handle image files)
+            if not result and suffix in (".jpeg", ".jpg", ".png"):
+                result = self._llm_extract_tabular(text, doc_type)
+
             # Excel/CSV fallback: use local LLM tabular extraction
             if not result and suffix in (".xlsx", ".xls", ".csv"):
                 result = self._llm_extract_tabular(text, doc_type)

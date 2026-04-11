@@ -452,12 +452,22 @@ class DirectExtractionService:
         return ""
 
     def _extract_docx_text(self, file_bytes: bytes) -> str:
-        """Extract text from DOCX."""
+        """Extract text from DOCX including paragraphs AND tables."""
         try:
             from docx import Document
             doc = Document(BytesIO(file_bytes))
-            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            parts: list[str] = []
+            for p in doc.paragraphs:
+                if p.text.strip():
+                    parts.append(p.text.strip())
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if cells:
+                        parts.append(" | ".join(cells))
+            return "\n".join(parts)
         except Exception:
+            logger.debug("DOCX text extraction failed", exc_info=True)
             return ""
 
     def _extract_image_text(self, file_bytes: bytes) -> str:
