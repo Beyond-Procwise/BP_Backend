@@ -23,8 +23,8 @@ DATASET_PATH = PROJECT_ROOT / "data" / "training" / "qlora_dataset.json"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "models" / "agentnick-qlora"
 MERGED_DIR = PROJECT_ROOT / "data" / "models" / "agentnick-merged"
 
-# Model config — using the HuggingFace model ID for qwen3 MoE
-BASE_MODEL = "Qwen/Qwen3-30B-A3B"  # MoE model, ~3B active params
+# Model config — Qwen2.5-7B fits in A10G with room for training
+BASE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 
 # QLoRA config
 LORA_R = 16
@@ -67,7 +67,7 @@ def main():
     logger.info(f"Dataset: {DATASET_PATH}")
     logger.info(f"Base model: {BASE_MODEL}")
     logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-    logger.info(f"VRAM: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB")
+    logger.info(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
 
     # Check if base model is available locally via Ollama
     # If not, we'll download from HuggingFace
@@ -139,7 +139,6 @@ def main():
         weight_decay=0.01,
         logging_steps=5,
         save_strategy="epoch",
-        max_seq_length=MAX_SEQ_LENGTH,
         bf16=True,
         gradient_checkpointing=True,
         optim="paged_adamw_8bit",
@@ -153,7 +152,7 @@ def main():
         model=model,
         train_dataset=dataset,
         args=training_args,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     trainer.train()
