@@ -378,6 +378,12 @@ class AgentNickOrchestrator:
                 for item in line_items
             ]
 
+            # Second-pass: if header extracted but NO line items, ask LLM
+            # specifically for line items from the document text
+            if header and not line_items and text:
+                logger.info("[AgentNick] No line items found — running focused LLM extraction")
+                line_items = self._llm_extract_line_items(text, doc_type, header)
+
             return {
                 "header": header,
                 "line_items": line_items,
@@ -659,14 +665,37 @@ class AgentNickOrchestrator:
                         break
 
         # --- Header total vs line items sum ---
-        if line_items and amt == 0:
+        if line_items:
             line_sum = sum(
                 _f(li.get("line_amount") or li.get("line_total") or li.get("line_total_amount"))
                 for li in line_items
             )
-            if line_sum > 0:
+            if line_sum > 0 and amt == 0:
                 header[amt_key] = round(line_sum, 2)
+                amt = line_sum
                 logger.info("[CrossVal] Derived %s from line items: %.2f", amt_key, line_sum)
+
+        # --- Compute missing total_incl_tax from subtotal + tax ---
+        amt = _f(header.get(amt_key))
+        tax = _f(header.get(tax_key))
+        total = _f(header.get(total_key))
+
+        if total_key != amt_key:
+            if amt > 0 and tax > 0 and total == 0:
+                header[total_key] = round(amt + tax, 2)
+                logger.info("[CrossVal] Computed %s: %.2f + %.2f = %.2f", total_key, amt, tax, amt + tax)
+            elif total > 0 and amt > 0 and tax == 0:
+                header[tax_key] = round(total - amt, 2)
+                logger.info("[CrossVal] Derived tax: %.2f - %.2f = %.2f", total, amt, total - amt)
+            elif total > 0 and tax > 0 and amt == 0:
+                header[amt_key] = round(total - tax, 2)
+                logger.info("[CrossVal] Derived %s: %.2f - %.2f = %.2f", amt_key, total, tax, total - tax)
+
+        # --- Derive tax_percent if missing ---
+        amt = _f(header.get(amt_key))
+        tax = _f(header.get(tax_key))
+        if amt > 0 and tax > 0 and not header.get("tax_percent"):
+            header["tax_percent"] = round((tax / amt) * 100, 2)
 
         # --- Currency: default GBP if not set (UK procurement) ---
         if not header.get("currency"):
@@ -751,6 +780,45 @@ class AgentNickOrchestrator:
         except Exception:
             logger.debug("[Docwain] Request failed", exc_info=True)
             return None
+
+    def _llm_extract_line_items(
+        self, text: str, doc_type: str, header: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Focused LLM call to extract ONLY line items when header succeeded but items are empty."""
+        prompt = (
+            f"Extract ALL line items from this {doc_type} document.\n"
+            f"Return a JSON array of objects with: line_no, item_description, quantity, unit_price, line_total\n"
+            f"RULES:\n"
+            f"- quantity is a COUNT (small number like 1, 2, 5, 10, 100)\n"
+            f"- unit_price is COST PER ITEM (£ amount)\n"
+            f"- line_total = quantity × unit_price\n"
+            f"- Stop at Subtotal/Tax/Total rows — those are NOT line items\n"
+            f"- Return ONLY the JSON array, nothing else\n\n"
+            f"Document:\n{text[:5000]}"
+        )
+        try:
+            resp = requests.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": AGENT_NICK_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0, "num_predict": 2048, "num_gpu": 99},
+                },
+                timeout=600,
+            )
+            raw = resp.json().get("response", "")
+            # Parse JSON array
+            import re as _re
+            arr_match = _re.search(r"\[[\s\S]*\]", raw)
+            if arr_match:
+                items = json.loads(arr_match.group())
+                if isinstance(items, list) and items:
+                    logger.info("[AgentNick] Focused LLM extracted %d line items", len(items))
+                    return items
+        except Exception:
+            logger.debug("[AgentNick] Focused line item extraction failed", exc_info=True)
+        return []
 
     def _llm_extract_tabular(
         self, text: str, doc_type: str
