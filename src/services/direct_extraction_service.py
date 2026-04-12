@@ -421,14 +421,30 @@ class DirectExtractionService:
         # broken zlib content streams).  Tagged PDFs store text in /T and /E
         # attributes of /StructElem objects even when the page stream is
         # unreadable.
+        #
+        # Key improvement: reconstruct table rows by detecting H3 column
+        # headers then grouping subsequent P elements into rows matching
+        # the header column count.
         try:
             import fitz
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            struct_texts: list[str] = []
+
+            elements: list[tuple[str, str]] = []  # (struct_type, text)
             for i in range(1, doc.xref_length()):
                 obj_str = doc.xref_object(i)
                 if "/StructElem" not in obj_str:
                     continue
+
+                # Get structure type (/S)
+                s_type = ""
+                s_start = obj_str.find("/S /")
+                if s_start != -1:
+                    s_start += 4
+                    s_end = obj_str.find("\n", s_start)
+                    s_type = obj_str[s_start:s_end].strip()
+
+                # Get text (/T or /E)
+                text = ""
                 for tag in ("/T (", "/E ("):
                     start = obj_str.find(tag)
                     if start == -1:
@@ -436,16 +452,103 @@ class DirectExtractionService:
                     start += len(tag)
                     end = obj_str.find(")", start)
                     if end != -1:
-                        val = _decode_pdf_string(obj_str[start:end].strip())
-                        if val and val not in struct_texts:
-                            struct_texts.append(val)
+                        text = _decode_pdf_string(obj_str[start:end].strip())
+                        break
+
+                if text:
+                    elements.append((s_type, text))
+
             doc.close()
-            if struct_texts:
+
+            if not elements:
+                return ""
+
+            # Reconstruct structured text with table awareness.
+            # Strategy: detect table header keywords, then group subsequent
+            # P elements into rows. Handles both H3-header and P-header
+            # patterns, and multi-line descriptions.
+            import re as _re
+
+            _TABLE_HEADERS = {
+                "description", "item", "qty", "quantity", "price",
+                "unit price", "subtotal", "total", "amount", "line total",
+                "cost", "unit price (£)", "total (£)", "total price",
+                "line total (£)", "unit price (£)", "total price (£)",
+            }
+            _SUMMARY_STARTS = (
+                "sub-total", "subtotal", "tax", "total", "vat",
+                "payable", "bank", "account", "notes", "payment",
+                "delivery", "grand total",
+            )
+            _MONEY_RE = _re.compile(r"^£[\d,]+\.?\d*$")
+            _NUMBER_RE = _re.compile(r"^\d+$")
+
+            output_lines: list[str] = []
+            i = 0
+            while i < len(elements):
+                s_type, text = elements[i]
+                text_lower = text.lower().strip()
+
+                # Detect table header: element whose text is a known header keyword
+                if text_lower in _TABLE_HEADERS:
+                    headers = [text]
+                    j = i + 1
+                    while j < len(elements) and elements[j][1].lower().strip() in _TABLE_HEADERS:
+                        headers.append(elements[j][1])
+                        j += 1
+
+                    if len(headers) >= 2:
+                        output_lines.append(" | ".join(headers))
+                        col_count = len(headers)
+
+                        # Group subsequent elements into table rows.
+                        # A cell is either a money value (£X), a number, or
+                        # a text description. Multi-line descriptions (2 P
+                        # elements like "Staedtler Pen" + "Black Ink") are
+                        # merged if neither looks like a number/money.
+                        while j < len(elements):
+                            _, next_text = elements[j]
+                            if next_text.lower().strip().startswith(_SUMMARY_STARTS):
+                                break
+                            if elements[j][0] not in ("P", "H5", "H6"):
+                                break
+
+                            row_cells: list[str] = []
+                            while len(row_cells) < col_count and j < len(elements):
+                                _, cell = elements[j]
+                                if cell.lower().strip().startswith(_SUMMARY_STARTS):
+                                    break
+                                if elements[j][0] not in ("P", "H5", "H6"):
+                                    break
+
+                                # Merge multi-line text descriptions
+                                if (row_cells
+                                    and not _MONEY_RE.match(cell)
+                                    and not _NUMBER_RE.match(cell.strip())
+                                    and not _MONEY_RE.match(row_cells[-1])
+                                    and not _NUMBER_RE.match(row_cells[-1].strip())):
+                                    row_cells[-1] += " " + cell
+                                else:
+                                    row_cells.append(cell)
+                                j += 1
+
+                            if row_cells:
+                                output_lines.append(" | ".join(row_cells))
+                            if len(row_cells) < col_count:
+                                break
+
+                        i = j
+                        continue
+
+                output_lines.append(text)
+                i += 1
+
+            if output_lines:
                 logger.info(
-                    "StructTree fallback recovered %d text fragments from corrupted PDF",
-                    len(struct_texts),
+                    "StructTree fallback recovered %d lines (table-aware) from corrupted PDF",
+                    len(output_lines),
                 )
-                return "\n".join(struct_texts)
+                return "\n".join(output_lines)
         except Exception:
             logger.warning("StructTree fallback failed", exc_info=True)
 
