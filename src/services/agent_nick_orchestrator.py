@@ -289,6 +289,33 @@ class AgentNickOrchestrator:
             if suffix in (".xlsx", ".xls", ".csv", ".docx"):
                 result = self._docwain_extract(file_bytes, file_path, doc_type)
 
+                # Check if Docwain result is complete enough — if key fields
+                # are missing, supplement with local LLM extraction
+                if result and suffix == ".docx":
+                    header = result.get("header", {})
+                    pk_map = {"Invoice": "invoice_id", "Purchase_Order": "po_id", "Quote": "quote_id"}
+                    total_map = {"Invoice": "invoice_total_incl_tax", "Purchase_Order": "total_amount", "Quote": "total_amount_incl_tax"}
+                    supplier_map = {"Invoice": "supplier_id", "Purchase_Order": "supplier_name", "Quote": "supplier_id"}
+
+                    has_pk = bool(header.get(pk_map.get(doc_type, "")))
+                    has_total = bool(header.get(total_map.get(doc_type, "")))
+                    has_supplier = bool(header.get(supplier_map.get(doc_type, "")))
+                    has_items = bool(result.get("line_items"))
+
+                    if not (has_pk and has_total and has_supplier and has_items):
+                        missing = [f for f, v in [("pk", has_pk), ("total", has_total), ("supplier", has_supplier), ("items", has_items)] if not v]
+                        logger.info("[AgentNick] Docwain incomplete (missing %s), supplementing with LLM", missing)
+                        llm_result = self._llm_extract_tabular(text, doc_type)
+                        if llm_result:
+                            llm_header = llm_result.get("header", {})
+                            llm_items = llm_result.get("line_items", [])
+                            # Merge: LLM fills gaps in Docwain result
+                            for k, v in llm_header.items():
+                                if v and not header.get(k):
+                                    header[k] = v
+                            if not has_items and llm_items:
+                                result["line_items"] = llm_items
+
             # Image files (JPEG/PNG): use LLM on OCR text directly
             # (extraction engine doesn't handle image files)
             if not result and suffix in (".jpeg", ".jpg", ".png"):
@@ -730,22 +757,24 @@ class AgentNickOrchestrator:
     ) -> Optional[Dict[str, Any]]:
         """Extract structured data from Excel/CSV text using LLM directly."""
         schema_hints = {
-            "Quote": "quote_id, supplier_id, buyer_id, quote_date, validity_date, currency, total_amount (subtotal before tax), tax_percent, tax_amount, total_amount_incl_tax",
-            "Invoice": "invoice_id, supplier_id, po_id, invoice_date, due_date, currency, invoice_amount, tax_percent, tax_amount, invoice_total_incl_tax",
-            "Purchase_Order": "po_id, supplier_name, order_date, currency, total_amount",
+            "Quote": "quote_id, supplier_id, supplier_address, buyer_id, buyer_address, quote_date, validity_date, currency, total_amount (subtotal before tax), tax_percent, tax_amount, total_amount_incl_tax, payment_terms",
+            "Invoice": "invoice_id, supplier_id, supplier_address, po_id, invoice_date, due_date, currency, invoice_amount (subtotal), tax_percent, tax_amount, invoice_total_incl_tax, payment_terms",
+            "Purchase_Order": "po_id, supplier_name, supplier_address, buyer_id, buyer_address, order_date, currency, total_amount (the FINAL total from summary section — look for Subtotal/Total rows at the bottom), tax_amount, payment_terms",
         }
         fields = schema_hints.get(doc_type, "")
         prompt = (
-            f"Extract ALL data from this {doc_type} spreadsheet. Return ONLY valid JSON.\n\n"
+            f"Extract ALL data from this {doc_type} document. Return ONLY valid JSON.\n\n"
             f"Header fields: {fields}\n"
             f"Line items: array of {{line_no, item_description, quantity, unit_price, line_total}}\n\n"
             f"RULES:\n"
-            f"- supplier is the company providing the quote (usually at the top)\n"
-            f"- buyer is the company receiving the quote (delivery/billing address)\n"
-            f"- tax_amount must be LESS than total_amount\n"
-            f"- Extract ALL line items from the table\n"
+            f"- VENDOR section contains the supplier name and address\n"
+            f"- BILL TO section contains the buyer name and address (NOT the supplier)\n"
+            f"- Look for Subtotal/Total rows in a SEPARATE summary table — this is the total_amount\n"
+            f"- For POs: total_amount is the final total from the summary section, NOT a line item\n"
+            f"- Extract ALL line items from the line items table (skip header rows and summary rows)\n"
+            f"- tax_amount must be LESS than subtotal\n"
             f"- If source has data issues (empty totals, orphaned rows), extract what IS there\n\n"
-            f"Spreadsheet content:\n{text[:6000]}"
+            f"Document content:\n{text[:6000]}"
         )
         try:
             resp = requests.post(
