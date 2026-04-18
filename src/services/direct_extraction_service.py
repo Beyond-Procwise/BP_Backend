@@ -28,7 +28,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-EXTRACTION_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:latest")
+EXTRACTION_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:extract")
 
 # Exact table schemas from the database — source of truth
 TABLE_SCHEMAS = {
@@ -72,13 +72,17 @@ TABLE_SCHEMAS = {
         "line_fk": "po_id",
         "line_seq": "line_number",
         "header_columns": {
-            "po_id": "text", "supplier_name": "text", "buyer_id": "text",
+            "po_id": "text", "supplier_name": "text", "supplier_id": "text",
+            "buyer_id": "text",
             "requisition_id": "text", "requested_by": "text",
             "requested_date": "date", "currency": "varchar",
             "order_date": "date", "expected_delivery_date": "date",
             "ship_to_country": "text", "delivery_region": "text",
             "incoterm": "text", "incoterm_responsibility": "text",
-            "total_amount": "numeric", "delivery_address_line1": "text",
+            "total_amount": "numeric",
+            "tax_percent": "numeric", "tax_amount": "numeric",
+            "total_amount_incl_tax": "numeric",
+            "delivery_address_line1": "text",
             "delivery_address_line2": "text", "delivery_city": "text",
             "postal_code": "text", "payment_terms": "varchar",
             "po_status": "varchar", "contract_id": "text",
@@ -90,7 +94,7 @@ TABLE_SCHEMAS = {
             "po_line_id": "text", "po_id": "text", "line_number": "integer",
             "item_id": "text", "item_description": "text", "quote_number": "text",
             "quantity": "numeric", "unit_price": "numeric",
-            "unit_of_measue": "text", "currency": "varchar",
+            "unit_of_measure": "text", "currency": "varchar",
             "line_total": "numeric", "tax_percent": "smallint",
             "tax_amount": "numeric", "total_amount": "numeric",
             "created_date": "timestamp", "created_by": "text",
@@ -261,12 +265,15 @@ class DirectExtractionService:
     # Text extraction
     # ------------------------------------------------------------------
     def _get_document_text(self, file_path: str) -> Tuple[str, bytes]:
-        """Download from S3 and extract text. Try canonical fallback for corrupt PDFs."""
-        file_bytes = self._download_s3(file_path)
-        if not file_bytes:
-            return "", b""
-
+        """Download from S3 and extract text. Try canonical fallback paths."""
         ext = os.path.splitext(file_path)[1].lower()
+        file_bytes = self._download_s3(file_path)
+
+        # If direct download failed, try canonical S3 paths before giving up
+        if not file_bytes:
+            file_bytes = self._try_canonical_download(file_path)
+            if not file_bytes:
+                return "", b""
 
         # CSV/Excel — convert to text representation
         if ext in (".csv", ".xlsx", ".xls"):
@@ -275,37 +282,92 @@ class DirectExtractionService:
         # PDF/DOCX/Image
         text = self._extract_text_from_bytes(file_bytes, ext)
 
-        # Fallback: try canonical S3 path if empty
-        if not text.strip() and file_path.startswith("documents/"):
-            canonical_map = {
-                "documents/invoice/": ["Invoice/", "PO_Invoice/"],
-                "documents/po/": ["Purchase_Order/", "PO_Invoice/"],
-                "documents/quote/": ["Quote/", "PO_Invoice/"],
-            }
-            for prefix, s3_prefixes in canonical_map.items():
-                if file_path.startswith(prefix):
-                    filename = file_path[len(prefix):]
-                    for s3_prefix in s3_prefixes:
-                        # Try exact filename first
-                        alt_bytes = self._download_s3(s3_prefix + filename)
-                        if alt_bytes:
-                            alt_text = self._extract_text_from_bytes(alt_bytes, ext)
-                            if alt_text.strip():
-                                logger.info(
-                                    "Canonical fallback '%s%s' succeeded (%d chars)",
-                                    s3_prefix, filename, len(alt_text),
-                                )
-                                return alt_text, alt_bytes
-
-                        # Try fuzzy match: search S3 prefix for similar filename
-                        alt_text, alt_bytes = self._search_s3_fuzzy(
-                            s3_prefix, filename, ext
-                        )
-                        if alt_text:
-                            return alt_text, alt_bytes
-                    break
+        # Fallback: try canonical S3 path if text extraction was empty
+        if not text.strip():
+            alt_text, alt_bytes = self._try_canonical_text(file_path, ext)
+            if alt_text:
+                return alt_text, alt_bytes
 
         return text, file_bytes
+
+    def _try_canonical_download(self, file_path: str) -> Optional[bytes]:
+        """Try canonical S3 paths when direct download fails.
+
+        Handles both prefixed paths (documents/quote/file.xlsx) and
+        bare filenames (file.xlsx) by searching known S3 prefixes.
+        """
+        canonical_map = {
+            "documents/invoice/": ["Invoice/", "PO_Invoice/"],
+            "documents/po/": ["Purchase_Order/", "PO_Invoice/"],
+            "documents/quote/": ["Quote/", "PO_Invoice/"],
+        }
+
+        filename = file_path
+        s3_prefixes_to_try: list[str] = []
+
+        # Extract filename and determine which S3 prefixes to search
+        for prefix, s3_prefixes in canonical_map.items():
+            if file_path.startswith(prefix):
+                filename = file_path[len(prefix):]
+                s3_prefixes_to_try = s3_prefixes
+                break
+        else:
+            # Bare filename — try all canonical prefixes
+            s3_prefixes_to_try = [
+                p for prefixes in canonical_map.values() for p in prefixes
+            ]
+
+        for s3_prefix in s3_prefixes_to_try:
+            alt_bytes = self._download_s3(s3_prefix + filename)
+            if alt_bytes:
+                logger.info(
+                    "Canonical S3 download '%s%s' succeeded",
+                    s3_prefix, filename,
+                )
+                return alt_bytes
+
+        return None
+
+    def _try_canonical_text(self, file_path: str, ext: str) -> Tuple[str, bytes]:
+        """Try canonical S3 paths when text extraction produced empty result."""
+        canonical_map = {
+            "documents/invoice/": ["Invoice/", "PO_Invoice/"],
+            "documents/po/": ["Purchase_Order/", "PO_Invoice/"],
+            "documents/quote/": ["Quote/", "PO_Invoice/"],
+        }
+
+        filename = file_path
+        s3_prefixes_to_try: list[str] = []
+
+        for prefix, s3_prefixes in canonical_map.items():
+            if file_path.startswith(prefix):
+                filename = file_path[len(prefix):]
+                s3_prefixes_to_try = s3_prefixes
+                break
+        else:
+            s3_prefixes_to_try = [
+                p for prefixes in canonical_map.values() for p in prefixes
+            ]
+
+        for s3_prefix in s3_prefixes_to_try:
+            alt_bytes = self._download_s3(s3_prefix + filename)
+            if alt_bytes:
+                alt_text = self._extract_text_from_bytes(alt_bytes, ext)
+                if alt_text.strip():
+                    logger.info(
+                        "Canonical fallback '%s%s' succeeded (%d chars)",
+                        s3_prefix, filename, len(alt_text),
+                    )
+                    return alt_text, alt_bytes
+
+            # Try fuzzy match
+            alt_text, alt_bytes = self._search_s3_fuzzy(
+                s3_prefix, filename, ext
+            )
+            if alt_text:
+                return alt_text, alt_bytes
+
+        return "", b""
 
     def _search_s3_fuzzy(
         self, s3_prefix: str, filename: str, ext: str
@@ -397,18 +459,61 @@ class DirectExtractionService:
         if text_parts:
             return "\n".join(text_parts)
 
-        # OCR fallback for scanned PDFs
+        # OCR fallback for scanned PDFs — multi-engine with preprocessing
         try:
             from pdf2image import convert_from_bytes
             import pytesseract
             images = convert_from_bytes(file_bytes, dpi=300)
+
             for img in images:
+                # Try Tesseract first on raw image
                 ocr_text = pytesseract.image_to_string(img)
                 if ocr_text.strip():
                     text_parts.append(ocr_text)
+                    continue
+
+                # Tesseract failed — try with image preprocessing
+                try:
+                    import cv2
+                    import numpy as np
+                    img_array = np.array(img)
+                    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+                    # Increase contrast with CLAHE
+                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                    gray = clahe.apply(gray)
+                    # Denoise
+                    gray = cv2.fastNlMeansDenoising(gray, h=10)
+                    # Adaptive threshold for binarization
+                    binary = cv2.adaptiveThreshold(
+                        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                        cv2.THRESH_BINARY, 31, 10,
+                    )
+                    from PIL import Image
+                    preprocessed = Image.fromarray(binary)
+                    ocr_text = pytesseract.image_to_string(preprocessed)
+                    if ocr_text.strip():
+                        text_parts.append(ocr_text)
+                        continue
+                except Exception:
+                    logger.debug("Preprocessed Tesseract failed", exc_info=True)
+
+                # Both Tesseract attempts failed — try easyOCR (GPU)
+                try:
+                    import easyocr
+                    import numpy as np
+                    reader = easyocr.Reader(["en"], gpu=True, verbose=False)
+                    img_array = np.array(img)
+                    results = reader.readtext(img_array, detail=0, paragraph=True)
+                    if results:
+                        ocr_text = "\n".join(results)
+                        text_parts.append(ocr_text)
+                        logger.info("easyOCR GPU recovered %d text blocks", len(results))
+                except Exception:
+                    logger.debug("easyOCR fallback failed", exc_info=True)
+
             if not text_parts:
                 logger.warning(
-                    "OCR fallback produced no text (%d pages converted)",
+                    "All OCR engines produced no text (%d pages converted)",
                     len(images),
                 )
         except Exception:
@@ -470,18 +575,28 @@ class DirectExtractionService:
             import re as _re
 
             _TABLE_HEADERS = {
-                "description", "item", "qty", "quantity", "price",
-                "unit price", "subtotal", "total", "amount", "line total",
-                "cost", "unit price (£)", "total (£)", "total price",
-                "line total (£)", "unit price (£)", "total price (£)",
+                "description", "item", "item description", "items",
+                "product", "product description", "service", "services",
+                "qty", "quantity", "qty.", "no.", "no",
+                "price", "rate", "unit cost",
+                "unit price", "unit price (£)", "unit price ($)",
+                "subtotal", "sub total", "sub-total",
+                "total", "total (£)", "total ($)", "total price",
+                "amount", "net amount", "gross amount",
+                "line total", "line total (£)", "line amount",
+                "cost", "ext. price", "extended price",
+                "total price", "total price (£)",
+                "discount", "discount %", "vat", "vat %", "tax",
+                "uom", "unit", "units",
             }
             _SUMMARY_STARTS = (
                 "sub-total", "subtotal", "tax", "total", "vat",
                 "payable", "bank", "account", "notes", "payment",
-                "delivery", "grand total",
+                "delivery", "grand total", "net total", "amount due",
+                "balance", "remittance",
             )
-            _MONEY_RE = _re.compile(r"^£[\d,]+\.?\d*$")
-            _NUMBER_RE = _re.compile(r"^\d+$")
+            _MONEY_RE = _re.compile(r"^[£$€¥]?\s*[\d,]+\.?\d*$")
+            _NUMBER_RE = _re.compile(r"^\d+\.?\d*$")
 
             output_lines: list[str] = []
             i = 0
@@ -501,8 +616,11 @@ class DirectExtractionService:
                         output_lines.append(" | ".join(headers))
                         col_count = len(headers)
 
+                        # Allowed struct types in table body
+                        _TABLE_BODY_TYPES = {"P", "H5", "H6", "Span", "TD", "LBody"}
+
                         # Group subsequent elements into table rows.
-                        # A cell is either a money value (£X), a number, or
+                        # A cell is either a money value (£/$X), a number, or
                         # a text description. Multi-line descriptions (2 P
                         # elements like "Staedtler Pen" + "Black Ink") are
                         # merged if neither looks like a number/money.
@@ -510,7 +628,7 @@ class DirectExtractionService:
                             _, next_text = elements[j]
                             if next_text.lower().strip().startswith(_SUMMARY_STARTS):
                                 break
-                            if elements[j][0] not in ("P", "H5", "H6"):
+                            if elements[j][0] not in _TABLE_BODY_TYPES:
                                 break
 
                             row_cells: list[str] = []
@@ -518,7 +636,7 @@ class DirectExtractionService:
                                 _, cell = elements[j]
                                 if cell.lower().strip().startswith(_SUMMARY_STARTS):
                                     break
-                                if elements[j][0] not in ("P", "H5", "H6"):
+                                if elements[j][0] not in _TABLE_BODY_TYPES:
                                     break
 
                                 # Merge multi-line text descriptions
@@ -534,7 +652,8 @@ class DirectExtractionService:
 
                             if row_cells:
                                 output_lines.append(" | ".join(row_cells))
-                            if len(row_cells) < col_count:
+                            # Allow partial rows (don't break on incomplete rows)
+                            if len(row_cells) == 0:
                                 break
 
                         i = j
@@ -555,7 +674,12 @@ class DirectExtractionService:
         return ""
 
     def _extract_docx_text(self, file_bytes: bytes) -> str:
-        """Extract text from DOCX including paragraphs AND tables."""
+        """Extract text from DOCX including paragraphs AND tables.
+
+        Falls back to raw XML parsing for complex/watermarked documents
+        that python-docx cannot handle.
+        """
+        # Primary: python-docx
         try:
             from docx import Document
             doc = Document(BytesIO(file_bytes))
@@ -568,20 +692,216 @@ class DirectExtractionService:
                     cells = [c.text.strip() for c in row.cells if c.text.strip()]
                     if cells:
                         parts.append(" | ".join(cells))
-            return "\n".join(parts)
+            text = "\n".join(parts)
+            if text.strip():
+                return text
         except Exception:
-            logger.debug("DOCX text extraction failed", exc_info=True)
-            return ""
+            logger.debug("python-docx extraction failed", exc_info=True)
+
+        # Fallback: raw XML extraction from DOCX zip
+        # Handles watermarked, complex, or partially corrupted DOCX files
+        try:
+            import zipfile
+            import xml.etree.ElementTree as ET
+
+            zf = zipfile.ZipFile(BytesIO(file_bytes))
+            parts: list[str] = []
+
+            # Extract from word/document.xml (main content)
+            for xml_path in ["word/document.xml", "word/document2.xml"]:
+                if xml_path in zf.namelist():
+                    xml_data = zf.read(xml_path)
+                    root = ET.fromstring(xml_data)
+                    # Strip namespace prefixes for easier parsing
+                    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+                    for para in root.findall(".//w:p", ns):
+                        texts = [t.text for t in para.findall(".//w:t", ns) if t.text]
+                        if texts:
+                            parts.append("".join(texts))
+
+            # Also extract from tables
+            for xml_path in zf.namelist():
+                if "word/" in xml_path and xml_path.endswith(".xml"):
+                    try:
+                        xml_data = zf.read(xml_path)
+                        root = ET.fromstring(xml_data)
+                        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+                        for tbl in root.findall(".//w:tbl", ns):
+                            for tr in tbl.findall(".//w:tr", ns):
+                                cells = []
+                                for tc in tr.findall(".//w:tc", ns):
+                                    cell_texts = [t.text for t in tc.findall(".//w:t", ns) if t.text]
+                                    if cell_texts:
+                                        cells.append(" ".join(cell_texts))
+                                if cells:
+                                    parts.append(" | ".join(cells))
+                    except Exception:
+                        continue
+
+            zf.close()
+            text = "\n".join(parts)
+            if text.strip():
+                logger.info("DOCX raw XML fallback recovered %d lines", len(parts))
+                return text
+        except Exception:
+            logger.debug("DOCX raw XML fallback failed", exc_info=True)
+
+        return ""
 
     def _extract_image_text(self, file_bytes: bytes) -> str:
-        """Extract text from image using OCR."""
+        """Extract text from image with comprehensive OCR pipeline.
+
+        Procurement-optimized: handles scanned invoices, photographed
+        receipts, low-quality images. Preserves table structure.
+
+        Pipeline:
+        1. Image preprocessing (deskew, upscale, contrast, denoise)
+        2. Tesseract with multiple PSM modes for best result
+        3. easyOCR GPU with layout detection as fallback
+        4. Merge best result
+        """
         try:
-            from PIL import Image
+            from PIL import Image, ImageEnhance, ImageFilter
             import pytesseract
-            img = Image.open(BytesIO(file_bytes))
-            return pytesseract.image_to_string(img)
+            import cv2
+            import numpy as np
+
+            img = Image.open(BytesIO(file_bytes)).convert("RGB")
+            img_array = np.array(img)
+
+            # Step 1: Image preprocessing
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+
+            # Upscale small images (phone photos, thumbnails)
+            h, w = gray.shape
+            if max(h, w) < 1500:
+                scale = 2.0
+                gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                logger.info("Image upscaled %.0fx (was %dx%d)", scale, w, h)
+
+            # Deskew: detect and correct rotation
+            try:
+                coords = np.column_stack(np.where(gray < 128))
+                if len(coords) > 100:
+                    angle = cv2.minAreaRect(coords)[-1]
+                    if angle < -45:
+                        angle = -(90 + angle)
+                    else:
+                        angle = -angle
+                    if abs(angle) > 0.5 and abs(angle) < 15:
+                        center = (gray.shape[1] // 2, gray.shape[0] // 2)
+                        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+                        gray = cv2.warpAffine(
+                            gray, M, (gray.shape[1], gray.shape[0]),
+                            flags=cv2.INTER_CUBIC,
+                            borderMode=cv2.BORDER_REPLICATE,
+                        )
+                        logger.info("Image deskewed by %.1f degrees", angle)
+            except Exception:
+                pass  # Deskew is best-effort
+
+            # Contrast enhancement (CLAHE)
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+
+            # Denoise
+            denoised = cv2.fastNlMeansDenoising(enhanced, h=12)
+
+            # Step 2: Try multiple Tesseract modes and pick the best
+            results = []
+
+            # Mode A: Adaptive threshold + Tesseract PSM 6 (block of text)
+            binary_adaptive = cv2.adaptiveThreshold(
+                denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 31, 10,
+            )
+            try:
+                pil_adaptive = Image.fromarray(binary_adaptive)
+                text_a = pytesseract.image_to_string(
+                    pil_adaptive, config="--psm 6 --oem 3"
+                )
+                if text_a.strip():
+                    results.append(("tesseract_psm6", text_a.strip()))
+            except Exception:
+                pass
+
+            # Mode B: Otsu threshold + Tesseract PSM 3 (auto page segmentation)
+            _, binary_otsu = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            try:
+                pil_otsu = Image.fromarray(binary_otsu)
+                text_b = pytesseract.image_to_string(
+                    pil_otsu, config="--psm 3 --oem 3"
+                )
+                if text_b.strip():
+                    results.append(("tesseract_psm3", text_b.strip()))
+            except Exception:
+                pass
+
+            # Mode C: Enhanced grayscale directly (no binarization — preserves more detail)
+            try:
+                pil_gray = Image.fromarray(denoised)
+                text_c = pytesseract.image_to_string(
+                    pil_gray, config="--psm 4 --oem 3"
+                )
+                if text_c.strip():
+                    results.append(("tesseract_psm4", text_c.strip()))
+            except Exception:
+                pass
+
+            # Step 3: easyOCR with layout detection (GPU)
+            try:
+                import easyocr
+                reader = easyocr.Reader(["en"], gpu=True, verbose=False)
+                # Use detail mode to get bounding boxes for table reconstruction
+                ocr_results = reader.readtext(img_array, detail=1, paragraph=False)
+                if ocr_results:
+                    # Sort by vertical position then horizontal for reading order
+                    ocr_results.sort(key=lambda r: (r[0][0][1], r[0][0][0]))
+
+                    # Group into lines by Y proximity
+                    lines = []
+                    current_line = []
+                    last_y = -100
+                    for bbox, text_val, conf in ocr_results:
+                        y = bbox[0][1]
+                        if abs(y - last_y) > 15 and current_line:
+                            lines.append(" ".join(current_line))
+                            current_line = []
+                        current_line.append(text_val)
+                        last_y = y
+                    if current_line:
+                        lines.append(" ".join(current_line))
+
+                    easy_text = "\n".join(lines)
+                    if easy_text.strip():
+                        results.append(("easyocr_gpu", easy_text.strip()))
+                        logger.info("easyOCR extracted %d lines from image", len(lines))
+            except Exception:
+                logger.debug("easyOCR failed for image", exc_info=True)
+
+            # Step 4: Pick the best result (most content with readable structure)
+            if not results:
+                logger.warning("All OCR engines produced no text from image")
+                return ""
+
+            # Score each result: prefer more lines, more alphanumeric chars, fewer garbage chars
+            def _score(text: str) -> float:
+                lines = len(text.split("\n"))
+                alnum = sum(1 for c in text if c.isalnum())
+                total = len(text) or 1
+                alnum_ratio = alnum / total
+                return lines * alnum_ratio * len(text)
+
+            best_method, best_text = max(results, key=lambda r: _score(r[1]))
+            logger.info(
+                "Image OCR: best method=%s (%d chars, %d lines)",
+                best_method, len(best_text), len(best_text.split("\n")),
+            )
+            return best_text
+
         except Exception:
-            return ""
+            logger.warning("Image text extraction failed", exc_info=True)
+        return ""
 
     def _tabular_to_text(self, file_bytes: bytes, ext: str) -> str:
         """Convert CSV/Excel to structured text for LLM processing.
@@ -610,25 +930,160 @@ class DirectExtractionService:
 
             # Excel: read raw cells to capture metadata above the table
             import openpyxl
-            wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
-            parts: list[str] = []
-            for sheet in wb.worksheets:
-                if sheet.max_row and sheet.max_row > 0:
-                    parts.append(f"--- Sheet: {sheet.title} ---")
-                    for row in sheet.iter_rows(
-                        min_row=1, max_row=min(sheet.max_row, 200),
-                        values_only=True,
-                    ):
-                        cells = [
-                            str(c).strip() for c in row
-                            if c is not None and str(c).strip()
-                        ]
-                        if cells:
-                            parts.append(" | ".join(cells))
-            return "\n".join(parts) if parts else ""
+            try:
+                wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+            except Exception:
+                # Try ZIP repair for corrupted xlsx files
+                logger.warning("openpyxl failed, attempting ZIP repair for xlsx")
+                try:
+                    import struct, zipfile
+                    cd_pos = file_bytes.find(b'PK\x01\x02')
+                    eocd_pos = file_bytes.rfind(b'PK\x05\x06')
+                    if cd_pos > 0 and eocd_pos > cd_pos:
+                        fixed = bytearray(file_bytes)
+                        struct.pack_into('<I', fixed, eocd_pos + 16, cd_pos)
+                        struct.pack_into('<I', fixed, eocd_pos + 12, eocd_pos - cd_pos)
+                        wb = openpyxl.load_workbook(BytesIO(bytes(fixed)), data_only=True)
+                        logger.info("ZIP repair succeeded for corrupted xlsx")
+                    else:
+                        raise ValueError("No valid ZIP central directory found")
+                except Exception:
+                    # Try pandas as last resort (handles some corrupt formats)
+                    try:
+                        df = pd.read_excel(BytesIO(file_bytes), engine="openpyxl")
+                        if not df.empty:
+                            header = " | ".join(str(c) for c in df.columns)
+                            rows = [" | ".join(str(v) for v in row if pd.notna(v))
+                                    for _, row in df.iterrows()]
+                            return f"COLUMNS: {header}\n\n" + "\n".join(rows)
+                    except Exception:
+                        pass
+                    logger.warning("Excel file is corrupted and cannot be repaired")
+                    return ""
+            return self._excel_to_structured_text(wb)
         except Exception:
-            logger.debug("Tabular text extraction failed", exc_info=True)
+            logger.warning("Tabular text extraction failed", exc_info=True)
             return ""
+
+    # ------------------------------------------------------------------
+    # Excel structure detection
+    # ------------------------------------------------------------------
+
+    _HEADER_KEYWORDS = frozenset({
+        "quantity", "qty", "description", "item", "product", "unit price",
+        "total", "amount", "price", "uom", "unit of measure", "part",
+        "sku", "code", "no", "ref", "service", "rate",
+    })
+    _TOTAL_KEYWORDS = frozenset({
+        "subtotal", "sub-total", "sub total", "total", "vat", "tax",
+        "delivery", "grand total", "net", "gross", "discount",
+    })
+
+    @classmethod
+    def _is_header_row(cls, cells_text: list[str]) -> bool:
+        """True when 3+ cells look like column headers."""
+        matches = 0
+        for ct in cells_text:
+            norm = ct.lower().strip()
+            if any(kw in norm for kw in cls._HEADER_KEYWORDS):
+                matches += 1
+        return matches >= 3
+
+    @classmethod
+    def _is_total_row(cls, cells_text: list[str]) -> bool:
+        """True when a cell looks like a subtotal/total/tax label."""
+        for ct in cells_text:
+            norm = ct.lower().strip()
+            if any(kw == norm or norm.startswith(kw) for kw in cls._TOTAL_KEYWORDS):
+                return True
+        return False
+
+    def _excel_to_structured_text(self, wb) -> str:
+        """Convert openpyxl workbook to structured text with metadata/table separation.
+
+        Detects the header row that defines line-item columns, then:
+        - Rows above header → DOCUMENT METADATA section
+        - Header row + data rows → LINE ITEMS TABLE with column-labeled values
+        - Subtotal/Total/VAT rows → TOTALS section
+        """
+        parts: list[str] = []
+
+        for sheet in wb.worksheets:
+            if not sheet.max_row or sheet.max_row == 0:
+                continue
+
+            if len(wb.worksheets) > 1:
+                parts.append(f"--- Sheet: {sheet.title} ---")
+
+            # Collect all rows with their cell values and column positions
+            all_rows: list[list[tuple[int, str]]] = []  # [(col_idx, text), ...]
+            for row in sheet.iter_rows(
+                min_row=1, max_row=min(sheet.max_row, 200), values_only=False
+            ):
+                cells = []
+                for c in row:
+                    if c.value is not None:
+                        val = str(c.value).strip()
+                        if val:
+                            cells.append((c.column - 1, val))  # 0-indexed
+                all_rows.append(cells)
+
+            # Find header row
+            header_row_idx = None
+            header_map: dict[int, str] = {}  # col_idx -> header name
+            for i, row_cells in enumerate(all_rows):
+                texts = [t for _, t in row_cells]
+                if self._is_header_row(texts):
+                    header_row_idx = i
+                    header_map = {col: text for col, text in row_cells}
+                    break
+
+            if header_row_idx is None:
+                # No header detected — fall back to raw pipe-delimited output
+                for row_cells in all_rows:
+                    if row_cells:
+                        parts.append(" | ".join(t for _, t in row_cells))
+                continue
+
+            # === DOCUMENT METADATA ===
+            parts.append("\n=== DOCUMENT METADATA ===")
+            for i in range(header_row_idx):
+                row_cells = all_rows[i]
+                if not row_cells:
+                    continue
+                parts.append(" | ".join(t for _, t in row_cells))
+
+            # === LINE ITEMS TABLE ===
+            parts.append("\n=== LINE ITEMS TABLE ===")
+            in_totals = False
+
+            for i in range(header_row_idx + 1, len(all_rows)):
+                row_cells = all_rows[i]
+                if not row_cells:
+                    continue
+
+                texts = [t for _, t in row_cells]
+
+                # Check if we've hit totals section
+                if not in_totals and self._is_total_row(texts):
+                    in_totals = True
+                    parts.append("\n--- TOTALS ---")
+
+                if in_totals:
+                    parts.append(" | ".join(texts))
+                else:
+                    # Label each cell with its column header
+                    labeled = []
+                    for col_idx, val in row_cells:
+                        hdr = header_map.get(col_idx, "")
+                        if hdr:
+                            labeled.append(f"{hdr}: {val}")
+                        else:
+                            labeled.append(val)
+                    if labeled:
+                        parts.append(" | ".join(labeled))
+
+        return "\n".join(parts) if parts else ""
 
     # ------------------------------------------------------------------
     # LLM extraction
@@ -645,26 +1100,64 @@ class DirectExtractionService:
         )
 
         try:
-            response = requests.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": EXTRACTION_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0,
-                        "num_predict": 4096,
-                        "num_gpu": 99,
-                    },
-                },
-                timeout=300,
+            from services.ollama_client import ollama_generate
+            raw = ollama_generate(
+                prompt,
+                model=EXTRACTION_MODEL,
+                num_predict=4096,
             )
-            response.raise_for_status()
-            raw = response.json().get("response", "").strip()
+            if not raw:
+                logger.error("LLM extraction returned empty response")
+                return None
             return self._parse_llm_response(raw, schema)
         except Exception as exc:
             logger.exception("LLM extraction failed: %s", exc)
             return None
+
+    # Procurement domain context per document type
+    _PROCUREMENT_CONTEXT = {
+        "Invoice": """PROCUREMENT CONTEXT — INVOICE:
+An invoice is a payment request from a SUPPLIER to a BUYER for goods/services delivered.
+- supplier_id / supplier_name: The company that ISSUED this invoice (the SELLER). Look for "From", "Vendor", "Supplier", company letterhead, or the name at the TOP of the document. This is NOT the "Bill To" or "Ship To" company.
+- buyer_id: The company being BILLED (the purchaser). Look for "Bill To", "Invoice To", "Customer".
+- invoice_id: The unique invoice reference number. Look for "Invoice No", "Invoice #", "Inv No", "Reference". This is the document's own ID, not a PO or order number.
+- po_id: The Purchase Order this invoice relates to. Look for "PO Number", "Order Ref", "Your Ref".
+- invoice_date: When the invoice was ISSUED. Look for "Invoice Date", "Date", "Date of Issue".
+- due_date: When payment is DUE. Look for "Due Date", "Payment Due", "Terms Date". Must be AFTER invoice_date.
+- invoice_amount: The SUBTOTAL before tax (net amount). Look for "Subtotal", "Net Total", "Amount Before Tax".
+- tax_amount: The tax/VAT amount. Look for "VAT", "Tax", "GST". Must be LESS than the subtotal.
+- tax_percent: The tax RATE as a percentage (e.g., 20 for 20% VAT). Look for "VAT @20%", "Tax Rate". If the document says "20%" the value is 20, not 0.20. Do NOT confuse line item quantities or reference numbers with tax percentage.
+- invoice_total_incl_tax: The FINAL total including tax. Look for "Total", "Amount Due", "Grand Total", "Total Payable". This is the largest amount on the invoice.
+- payment_terms: e.g. "Net 30", "Due on receipt". Look for "Payment Terms", "Terms".""",
+
+        "Purchase_Order": """PROCUREMENT CONTEXT — PURCHASE ORDER:
+A PO is issued BY the buyer TO a supplier, authorizing purchase of goods/services.
+- po_id: The PO number. Look for "PO Number", "Purchase Order No", "Order #".
+- supplier_name: The company RECEIVING the order (the VENDOR). Look for "Vendor", "Supplier", "Ship From".
+- buyer_id: The company PLACING the order. Look for "Buyer", "Ship To", "Bill To", "Ordered By".
+- order_date: When the PO was issued.
+- expected_delivery_date: When goods/services are expected.
+- total_amount: The SUBTOTAL before tax — sum of all line items BEFORE VAT/tax is added. Look for "Subtotal", "Net Total", "Total Before Tax". This is NOT the grand total including VAT.
+- tax_amount: The VAT/tax amount added on top of the subtotal.
+- payment_terms: e.g. "Net 30", "Due on receipt".
+CRITICAL: total_amount must equal the SUM of line item amounts (before tax). If you see a "Grand Total" or "Total Including VAT", that is NOT total_amount — extract the subtotal instead.""",
+
+        "Quote": """PROCUREMENT CONTEXT — QUOTE/QUOTATION:
+A quote is a pricing proposal from a SUPPLIER to a prospective BUYER.
+- quote_id: The quotation reference. Look for "Quote No", "Quotation #", "Ref".
+- supplier_id: The company providing the quote (the SELLER).
+- buyer_id: The company requesting the quote.
+- quote_date: When the quote was issued.
+- validity_date: When the quote expires. Must be AFTER quote_date.
+- total_amount: Subtotal before tax. total_amount_incl_tax: Final total with tax.""",
+
+        "Contract": """PROCUREMENT CONTEXT — CONTRACT:
+A contract is a binding agreement between parties for goods/services over a period.
+- contract_id: The contract reference number.
+- supplier_id: The contracting VENDOR/supplier.
+- contract_start_date / contract_end_date: The contract period.
+- total_contract_value: The full monetary value of the contract.""",
+    }
 
     def _build_extraction_prompt(
         self,
@@ -674,42 +1167,66 @@ class DirectExtractionService:
         line_cols: List[str],
         schema: Dict,
     ) -> str:
-        """Build a precise extraction prompt with exact column names and types."""
+        """Build a procurement-intelligent extraction prompt.
+
+        Embeds deep domain knowledge about procurement document types,
+        field semantics, and column-mapping rules so the LLM understands
+        the business context and maps fields correctly.
+        """
+        # Filter out audit/system columns the LLM shouldn't extract
+        _SKIP_COLS = {
+            "created_date", "created_by", "last_modified_date", "last_modified_by",
+            "exchange_rate_to_usd", "converted_amount_usd",
+        }
+        header_cols = [c for c in header_cols if c not in _SKIP_COLS]
+        line_cols = [c for c in line_cols if c not in _SKIP_COLS]
+
         header_spec = "\n".join(
             f"  - {col} ({schema['header_columns'][col]})"
             for col in header_cols
         )
         line_spec = ""
         if line_cols:
-            line_spec = "\nLINE ITEM COLUMNS (extract ALL line items):\n" + "\n".join(
+            line_spec = "\nLINE ITEM COLUMNS (use these exact field names):\n" + "\n".join(
                 f"  - {col} ({schema['line_columns'][col]})"
                 for col in line_cols
             )
 
-        return f"""Extract structured data from this {doc_type} document.
+        context = self._PROCUREMENT_CONTEXT.get(doc_type, "")
 
-HEADER COLUMNS (use these exact field names):
+        return f"""You are ProcWise, an expert procurement document extraction system.
+Extract ALL data from this {doc_type} document with absolute accuracy.
+
+{context}
+
+DATABASE COLUMNS — use these EXACT field names in your JSON response:
+HEADER FIELDS:
 {header_spec}
 {line_spec}
 
-RULES:
-- Return ONLY valid JSON, no other text
-- Dates must be YYYY-MM-DD format
-- Amounts must be numbers without currency symbols (e.g., 1234.56 not £1,234.56)
-- Currency must be 3-letter ISO code (GBP, USD, EUR)
-- The supplier/vendor is the SELLER (who issued the document), NOT the buyer
-- If a field is not found in the document, omit it from the response
-- Extract ALL line items, stop at subtotal/total rows
-- tax_percent should be the percentage number (e.g., 20 for 20%, not 0.20)
+CRITICAL RULES:
+1. EXTRACT EXACTLY what the document says — never invent, guess, or compute values
+2. If a value appears in the document, extract it verbatim (converted to the correct type)
+3. If a field is NOT in the document, OMIT it entirely — do not guess
+4. Dates: convert to YYYY-MM-DD format
+5. Amounts: numbers only, strip currency symbols (£1,234.56 → 1234.56)
+6. Currency: 3-letter ISO code (GBP, USD, EUR, AUD, etc.)
+7. tax_percent: the percentage NUMBER (20% → 20). Do NOT confuse quantities, reference numbers, or other digits with tax_percent
+8. Line items: extract EVERY line item row. STOP at subtotal/total/tax summary rows — those are NOT line items
+9. quantity: a COUNT of items (typically small: 1, 2, 5, 10, 100). NOT a price or amount
+10. unit_price: cost PER SINGLE ITEM. NOT the total line amount
+11. line_amount / line_total: the total for that line (usually quantity × unit_price)
+12. The SUPPLIER/VENDOR is the company that ISSUED/SENT this document
+13. The BUYER is the company RECEIVING the document (the customer)
 
-RESPONSE FORMAT:
+RESPONSE — return ONLY this JSON structure, nothing else:
 {{
-  "header": {{ ... header fields using exact column names above ... }},
+  "header": {{ ... fields using exact column names above ... }},
   "line_items": [ {{ ... line item fields ... }}, ... ]
 }}
 
 DOCUMENT TEXT:
-{text[:8000]}"""
+{text}"""
 
     def _parse_llm_response(
         self, raw: str, schema: Dict
@@ -849,7 +1366,12 @@ DOCUMENT TEXT:
         pk_value: str,
         audit: Dict[str, Any],
     ) -> int:
-        """Insert line items into the bp_ line items table."""
+        """Replace line items in the bp_ line items table.
+
+        Deletes existing line items for this PK first, then inserts fresh.
+        This ensures re-extractions fully replace stale data and recovers
+        from external deletions (e.g. manual pgAdmin cleanup).
+        """
         line_table = schema.get("line_table")
         if not line_table or not line_items:
             return 0
@@ -864,6 +1386,19 @@ DOCUMENT TEXT:
             conn = self._agent_nick.get_db_connection()
             conn.autocommit = True
             with conn.cursor() as cur:
+                # Delete existing line items for this parent record
+                # so re-extractions fully replace stale data
+                cur.execute(
+                    f"DELETE FROM {line_table} WHERE {line_fk} = %s",
+                    (pk_value,),
+                )
+                deleted = cur.rowcount
+                if deleted:
+                    logger.debug(
+                        "Cleared %d old line items from %s for %s=%s",
+                        deleted, line_table, line_fk, pk_value,
+                    )
+
                 for idx, item in enumerate(line_items, start=1):
                     payload = {}
                     for col, val in item.items():
@@ -898,16 +1433,9 @@ DOCUMENT TEXT:
                         f'INSERT INTO {line_table} ({", ".join(col_names)}) '
                         f'VALUES ({", ".join(placeholders)})'
                     )
+                    # Fresh insert — old rows already deleted above
                     if line_pk:
-                        preserve = {"created_date", "created_by"}
-                        update_cols = [c for c in col_names if c != line_pk and c not in preserve]
-                        if update_cols:
-                            update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
-                            insert_sql += f" ON CONFLICT ({line_pk}) DO UPDATE SET {update_clause}"
-                        else:
-                            insert_sql += f" ON CONFLICT ({line_pk}) DO NOTHING"
-                    else:
-                        insert_sql += " ON CONFLICT DO NOTHING"
+                        insert_sql += f" ON CONFLICT ({line_pk}) DO NOTHING"
                     cur.execute(insert_sql, values)
                     count += 1
 
