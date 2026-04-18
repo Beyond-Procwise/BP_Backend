@@ -1133,23 +1133,30 @@ An invoice is a payment request from a SUPPLIER to a BUYER for goods/services de
         "Purchase_Order": """PROCUREMENT CONTEXT — PURCHASE ORDER:
 A PO is issued BY the buyer TO a supplier, authorizing purchase of goods/services.
 - po_id: The PO number. Look for "PO Number", "Purchase Order No", "Order #".
-- supplier_name: The company RECEIVING the order (the VENDOR). Look for "Vendor", "Supplier", "Ship From".
-- buyer_id: The company PLACING the order. Look for "Buyer", "Ship To", "Bill To", "Ordered By".
+- supplier_name: The company RECEIVING the order — the VENDOR who will FULFIL it. Look for "To", "Vendor", "Supplier", "Ship From", "Deliver From". This is the company the goods/services are being ordered FROM.
+- buyer_id: The company that CREATED/ISSUED the PO — the one PLACING the order. Look for letterhead, "From", "Issued By", "Buyer", "Ordered By", "Ship To", "Bill To". This is the company PAYING for the goods/services.
 - order_date: When the PO was issued.
 - expected_delivery_date: When goods/services are expected.
 - total_amount: The SUBTOTAL before tax — sum of all line items BEFORE VAT/tax is added. Look for "Subtotal", "Net Total", "Total Before Tax". This is NOT the grand total including VAT.
 - tax_amount: The VAT/tax amount added on top of the subtotal.
+- tax_percent: The VAT/tax rate as a number (e.g. 20 for 20%). Extract from labels like "VAT @20%", "Tax 20%".
+- total_amount_incl_tax: The GRAND TOTAL including tax. Look for "Total", "Grand Total", "Total Payable", "Total (GBP)".
 - payment_terms: e.g. "Net 30", "Due on receipt".
-CRITICAL: total_amount must equal the SUM of line item amounts (before tax). If you see a "Grand Total" or "Total Including VAT", that is NOT total_amount — extract the subtotal instead.""",
+CRITICAL: total_amount is the SUBTOTAL (before tax). If you see a "Grand Total" or "Total Including VAT", that goes in total_amount_incl_tax, NOT total_amount.""",
 
         "Quote": """PROCUREMENT CONTEXT — QUOTE/QUOTATION:
 A quote is a pricing proposal from a SUPPLIER to a prospective BUYER.
-- quote_id: The quotation reference. Look for "Quote No", "Quotation #", "Ref".
-- supplier_id: The company providing the quote (the SELLER).
-- buyer_id: The company requesting the quote.
-- quote_date: When the quote was issued.
-- validity_date: When the quote expires. Must be AFTER quote_date.
-- total_amount: Subtotal before tax. total_amount_incl_tax: Final total with tax.""",
+- quote_id: The quotation reference number. Look for "Quote No", "Quotation #", "Quote Number", "Ref", "QTE-", "QUT".
+- supplier_id: The company that CREATED and SENT this quote — the SELLER. This is the company whose name, logo, letterhead, or address appears at the TOP of the document. For Excel quotes, the supplier name is in the first few rows above the table (e.g., "PeopleFirst HR Solutions Ltd", "SupplyX Ltd"). This is NOT the "Prepared For" or "Bill To" company.
+- buyer_id: The company the quote was SENT TO — the prospective BUYER/CUSTOMER. Look for "Prepared For", "Customer", "Attention", "Bill To", "Invoice Address". For Excel quotes, this is the company in the "Prepared For" or "Invoice Address" section.
+- supplier_address: The supplier's full address (from letterhead/header).
+- buyer_address: The buyer's address (from "Invoice Address", "Delivery Address", "Bill To").
+- quote_date: When the quote was issued. Look for "Quote Date", "Date", "Issued".
+- validity_date: When the quote expires. Look for "Valid Until", "Expiry", "Quote valid for X days". Must be AFTER quote_date.
+- total_amount: The SUBTOTAL before tax. Look for "Subtotal", "Net Total", "Total (ex VAT)". NOT the final total with VAT.
+- tax_amount: The VAT/tax amount. Look for "VAT", "Tax".
+- tax_percent: The VAT/tax rate as a number (e.g. 20 for 20%).
+- total_amount_incl_tax: The FINAL total including tax. Look for "Total (GBP)", "Grand Total", "Total Payable".""",
 
         "Contract": """PROCUREMENT CONTEXT — CONTRACT:
 A contract is a binding agreement between parties for goods/services over a period.
@@ -1212,12 +1219,15 @@ CRITICAL RULES:
 5. Amounts: numbers only, strip currency symbols (£1,234.56 → 1234.56)
 6. Currency: 3-letter ISO code (GBP, USD, EUR, AUD, etc.)
 7. tax_percent: the percentage NUMBER (20% → 20). Do NOT confuse quantities, reference numbers, or other digits with tax_percent
-8. Line items: extract EVERY line item row. STOP at subtotal/total/tax summary rows — those are NOT line items
+8. Line items: extract EVERY line item row. STOP at subtotal/total/tax summary rows — those are NOT line items. Rows with quantity=0 or total=0 with no description should be SKIPPED
 9. quantity: a COUNT of items (typically small: 1, 2, 5, 10, 100). NOT a price or amount
 10. unit_price: cost PER SINGLE ITEM. NOT the total line amount
 11. line_amount / line_total: the total for that line (usually quantity × unit_price)
-12. The SUPPLIER/VENDOR is the company that ISSUED/SENT this document
-13. The BUYER is the company RECEIVING the document (the customer)
+12. The SUPPLIER/VENDOR is the company that ISSUED/SENT this document — their name/logo/address is at the TOP
+13. The BUYER is the company RECEIVING the document — look for "Prepared For", "Bill To", "Customer", "Ship To"
+14. item_id: If the document shows a product code, SKU, part number, catalog number, or item reference for a line item, extract it as item_id. Look for columns like "Item Code", "SKU", "Part No", "Product Code", "Ref", "Item #". If no product code exists in the document, OMIT item_id
+15. unit_of_measure: Extract the unit if present (e.g., "each", "box", "kg", "hours", "months", "days", "per annum", "set", "licence"). Look for columns like "UOM", "Unit", "Measure". If not explicitly stated, OMIT — do not guess
+16. For EXCEL/spreadsheet documents: The "DOCUMENT METADATA" section above the table contains header information (supplier company, buyer, dates, quote/PO number). The "LINE ITEMS TABLE" section contains products/services with column-labeled values. Extract header fields from metadata and line items from the table. The "TOTALS" section has subtotal, tax, and total values
 
 RESPONSE — return ONLY this JSON structure, nothing else:
 {{
