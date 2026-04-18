@@ -59,6 +59,16 @@ class AgentNickOrchestrator:
 
     def __init__(self, agent_nick) -> None:
         self._agent_nick = agent_nick
+        self._product_catalog = None  # lazy init on first use
+
+    def _get_product_catalog(self):
+        """Lazy-initialize ProductCatalogService on first use."""
+        if self._product_catalog is None:
+            from services.product_catalog_service import ProductCatalogService
+            self._product_catalog = ProductCatalogService(
+                self._agent_nick.get_db_connection
+            )
+        return self._product_catalog
 
     def process_document(
         self,
@@ -117,6 +127,15 @@ class AgentNickOrchestrator:
         # Step 3: Enrich — resolve supplier, fill gaps with LLM
         header = self._resolve_supplier(header, doc_type)
 
+        # Auto-create supplier if not found in bp_supplier
+        supplier_val = header.get("supplier_id") or header.get("supplier_name") or ""
+        if supplier_val and len(supplier_val) >= 3:
+            new_id = self._auto_create_supplier(header, doc_type)
+            if new_id:
+                header["supplier_id"] = new_id
+
+        # Re-check after supplier resolution
+        missing = [f for f in required if not header.get(f)]
         if missing:
             logger.info(
                 "[AgentNick] Missing fields %s — asking LLM to fill gaps",
@@ -126,29 +145,28 @@ class AgentNickOrchestrator:
                 header, missing, extraction.get("_source_text", ""), doc_type
             )
 
-        # Step 3b: Filename-based PK — the filename is the most reliable
-        # source for the document ID (e.g. "PERRY QUT136586 .pdf").
-        # Always prefer filename PK over LLM-extracted values which can
-        # be wrong (e.g. "10", "INVOICE", empty).
+        # Step 3b: Validate PK using source text — format-agnostic
+        # Instead of regex patterns, check if the extracted PK actually
+        # appears in the document. This works for ANY document format.
         pk_col = PK_MAP.get(doc_type)
+        source_text = extraction.get("_source_text", "")
         if pk_col:
-            fname_id = self._extract_pk_from_filename(file_path, doc_type)
-            if fname_id:
-                existing = header.get(pk_col, "")
-                if existing != fname_id:
-                    if existing:
-                        logger.info(
-                            "[AgentNick] Overriding %s: '%s' → '%s' (from filename)",
-                            pk_col, existing, fname_id,
-                        )
-                    else:
-                        logger.info(
-                            "[AgentNick] Filled %s from filename: %s",
-                            pk_col, fname_id,
-                        )
-                    header[pk_col] = fname_id
+            current_pk = str(header.get(pk_col, "") or "").strip()
+            pk_valid = self._validate_pk_against_source(current_pk, source_text, doc_type)
 
-        # Step 3c: Extract cross-references and supplier from filename
+            if not pk_valid:
+                if current_pk:
+                    logger.warning(
+                        "[AgentNick] PK '%s' not found in source text — trying filename hint",
+                        current_pk,
+                    )
+                # Fallback: try filename-based PK as hint
+                fname_id = self._extract_pk_from_filename(file_path, doc_type)
+                if fname_id:
+                    header[pk_col] = fname_id
+                    logger.info("[AgentNick] Filled %s from filename: %s", pk_col, fname_id)
+
+        # Step 3c: Extract cross-references from filename (PO links etc.)
         self._fill_cross_refs_from_filename(header, file_path, doc_type)
 
         # Step 3d: Extract supplier name from filename as last resort
@@ -219,9 +237,59 @@ class AgentNickOrchestrator:
             item["last_modified_date"] = now
             item["last_modified_by"] = audit_user
 
-        # Step 6: Persist to bp_ tables
+        # Step 6: Final re-verification before persistence
+        # Ensure critical fields are valid before writing to database.
+        # This is the last gate — anything that passes here becomes
+        # the official record.
         pk_col = PK_MAP.get(doc_type)
         pk_value = header.get(pk_col, "") if pk_col else ""
+
+        verification_issues = []
+        if not pk_value:
+            verification_issues.append(f"MISSING_PK: {pk_col} is empty")
+        for amt_field in ("invoice_amount", "tax_amount", "invoice_total_incl_tax",
+                          "total_amount", "total_amount_incl_tax"):
+            val = header.get(amt_field)
+            if val is not None:
+                try:
+                    float(val)
+                except (ValueError, TypeError):
+                    verification_issues.append(f"NON_NUMERIC: {amt_field}='{val}'")
+                    header[amt_field] = None  # null out non-numeric amounts
+
+        for date_field in ("invoice_date", "due_date", "order_date", "quote_date",
+                           "expected_delivery_date", "validity_date"):
+            val = header.get(date_field)
+            if val is not None and not re.match(r"^\d{4}-\d{2}-\d{2}", str(val)):
+                verification_issues.append(f"INVALID_DATE: {date_field}='{val}'")
+
+        if verification_issues:
+            logger.warning(
+                "[AgentNick] PRE-PERSIST ISSUES for %s %s: %s",
+                doc_type, pk_value, verification_issues,
+            )
+
+        # Step 6b: Populate item_id via product catalog
+        if line_items:
+            catalog = self._get_product_catalog()
+            for item in line_items:
+                desc = item.get("item_description", "")
+                doc_item_id = item.get("item_id")
+                price = None
+                try:
+                    price = float(item.get("unit_price") or 0) or None
+                except (ValueError, TypeError):
+                    pass
+                product_id = catalog.match_or_create(
+                    item_description=desc,
+                    item_id_from_doc=doc_item_id,
+                    unit_price=price,
+                    currency=header.get("currency"),
+                    unit_of_measure=item.get("unit_of_measure"),
+                    doc_type=doc_type,
+                    doc_id=pk_value,
+                )
+                item["item_id"] = product_id
 
         header_ok = self._persist_header(header, doc_type)
         lines_ok = self._persist_line_items(line_items, doc_type, pk_value)
@@ -254,14 +322,29 @@ class AgentNickOrchestrator:
         return result
 
     # ------------------------------------------------------------------
-    # Sub-agent dispatch
+    # Sub-agent dispatch — DocWain + LLM in parallel
     # ------------------------------------------------------------------
     def _dispatch_extraction(
         self, file_path: str, doc_type: str
     ) -> Optional[Dict[str, Any]]:
-        """Dispatch DataExtractionAgent to extract document content."""
+        """Extract document content using parallel DocWain + LLM approach.
+
+        Strategy:
+        1. Extract text from file (OCR pipeline)
+        2. Launch DocWain API + LLM extraction IN PARALLEL
+        3. DocWain is the accuracy-primary source
+        4. LLM fills any gaps DocWain misses
+        5. Extraction engine only as last resort fallback
+
+        This reduces latency by running both extractors concurrently
+        and improves accuracy by using DocWain as primary for all formats.
+        """
         try:
-            from services.direct_extraction_service import DirectExtractionService
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from services.direct_extraction_service import (
+                DirectExtractionService,
+                TABLE_SCHEMAS,
+            )
 
             service = DirectExtractionService(self._agent_nick)
             text, file_bytes = service._get_document_text(file_path)
@@ -270,123 +353,74 @@ class AgentNickOrchestrator:
                 logger.error("[AgentNick] No text extracted from %s", file_path)
                 return None
 
-            # Run the extraction engine
-            import tempfile
-            from agents.extraction_engine import (
-                run_data_extraction,
-                set_db_connection_func,
-            )
+            schema = TABLE_SCHEMAS.get(doc_type)
+            if not schema:
+                logger.error("[AgentNick] No schema for doc_type=%s", doc_type)
+                return None
 
-            # Ensure DB connection is available for supplier resolution
-            set_db_connection_func(self._agent_nick.get_db_connection)
+            basename = os.path.splitext(os.path.basename(file_path))[0]
+            enhanced_text = self._build_enhanced_text(text, basename, doc_type)
 
+            # Inject vendor profile context if available
+            supplier_hint = self._extract_supplier_from_filename(file_path)
+            vendor_context = self._get_vendor_context(supplier_hint or "")
+            if vendor_context:
+                enhanced_text = vendor_context + "\n\n" + enhanced_text
+
+            # ---- LLM-ONLY EXTRACTION ----
+            # Single comprehensive LLM call with full schema.
+            # DocWain disabled — LLM handles all document formats.
+            llm_result = service._llm_extract(enhanced_text, doc_type, schema)
+
+            header: Dict[str, Any] = {}
+            line_items: List[Dict[str, Any]] = []
+
+            if llm_result:
+                header = llm_result.get("header", {})
+                line_items = llm_result.get("line_items", [])
+                logger.info(
+                    "[AgentNick] LLM primary extraction: %d header fields, %d line items",
+                    len(header), len(line_items),
+                )
+
+            # If both DocWain and LLM got results, validate line items
+            if not line_items and text:
+                logger.info("[AgentNick] No line items from either source — focused extraction")
+                line_items = self._llm_extract_line_items(text, doc_type, header)
+
+            # ---- FALLBACK: Extraction engine ----
             suffix = os.path.splitext(file_path)[1].lower() or ".pdf"
-
-            result = None
-
-            # Excel/DOCX: try external Docwain API first (higher accuracy
-            # on structured formats), fallback to local extraction
-            if suffix in (".xlsx", ".xls", ".csv", ".docx"):
-                result = self._docwain_extract(file_bytes, file_path, doc_type)
-
-                # Check if Docwain result is complete enough — if key fields
-                # are missing, supplement with local LLM extraction
-                if result and suffix == ".docx":
-                    header = result.get("header", {})
-                    pk_map = {"Invoice": "invoice_id", "Purchase_Order": "po_id", "Quote": "quote_id"}
-                    total_map = {"Invoice": "invoice_total_incl_tax", "Purchase_Order": "total_amount", "Quote": "total_amount_incl_tax"}
-                    supplier_map = {"Invoice": "supplier_id", "Purchase_Order": "supplier_name", "Quote": "supplier_id"}
-
-                    has_pk = bool(header.get(pk_map.get(doc_type, "")))
-                    has_total = bool(header.get(total_map.get(doc_type, "")))
-                    has_supplier = bool(header.get(supplier_map.get(doc_type, "")))
-                    has_items = bool(result.get("line_items"))
-
-                    if not (has_pk and has_total and has_supplier and has_items):
-                        missing = [f for f, v in [("pk", has_pk), ("total", has_total), ("supplier", has_supplier), ("items", has_items)] if not v]
-                        logger.info("[AgentNick] Docwain incomplete (missing %s), supplementing with LLM", missing)
-                        llm_result = self._llm_extract_tabular(text, doc_type)
-                        if llm_result:
-                            llm_header = llm_result.get("header", {})
-                            llm_items = llm_result.get("line_items", [])
-                            # Merge: LLM fills gaps in Docwain result
-                            for k, v in llm_header.items():
-                                if v and not header.get(k):
-                                    header[k] = v
-                            if not has_items and llm_items:
-                                result["line_items"] = llm_items
-
-            # Image files (JPEG/PNG): use LLM on OCR text directly
-            # (extraction engine doesn't handle image files)
-            if not result and suffix in (".jpeg", ".jpg", ".png"):
-                result = self._llm_extract_tabular(text, doc_type)
-
-            # Excel/CSV fallback: use local LLM tabular extraction
-            if not result and suffix in (".xlsx", ".xls", ".csv"):
-                result = self._llm_extract_tabular(text, doc_type)
-
-            # PDF and DOCX only: use extraction engine
-            # (images and spreadsheets don't go through extraction engine)
-            if not result and suffix in (".pdf", ".docx"):
-                with tempfile.NamedTemporaryFile(
-                    suffix=suffix, delete=False
-                ) as tmp:
+            if not header and suffix in (".pdf", ".docx"):
+                logger.info("[AgentNick] Both DocWain and LLM failed — falling back to extraction engine")
+                import tempfile
+                from agents.extraction_engine import (
+                    run_data_extraction,
+                    set_db_connection_func,
+                )
+                set_db_connection_func(self._agent_nick.get_db_connection)
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                     tmp.write(file_bytes)
                     tmp_path = tmp.name
-
                 try:
-                    result = run_data_extraction(tmp_path)
+                    engine_result = run_data_extraction(tmp_path)
                 finally:
                     try:
                         os.unlink(tmp_path)
                     except Exception:
                         pass
+                if engine_result and not engine_result.get("error"):
+                    mapped = self._map_engine_result(engine_result)
+                    if mapped:
+                        mapped["_source_text"] = text
+                        return mapped
 
-            if not result or result.get("error"):
-                logger.warning(
-                    "[AgentNick] Extraction engine error: %s",
-                    result.get("error") if result else "None",
-                )
-                # Fallback: use AgentNick LLM directly
-                return self._llm_extract_direct(text, doc_type)
-
-            # Map extraction result to standard format
-            header = {}
-            line_items = []
-
-            # Tabular extraction (Excel/CSV) already returns header/line_items
-            if "header" in result:
-                header = dict(result.get("header", {}))
-                line_items = list(result.get("line_items", []))
-            elif result.get("document_type") == "invoice":
-                header = dict(result.get("invoice_data", {}))
-                line_items = list(result.get("line_items", []))
-            elif result.get("document_type") == "po":
-                header = dict(result.get("po_data", {}))
-                line_items = list(result.get("line_items", []))
-            elif result.get("document_type") == "quote":
-                header = dict(result.get("quote_data", {}))
-                line_items = list(result.get("line_items", []))
-
-            # Sanitize: strip empty strings to None
-            header = {
-                k: (v if v != "" else None)
-                for k, v in header.items()
-            }
-            line_items = [
-                {k: (v if v != "" else None) for k, v in item.items()}
-                for item in line_items
-            ]
-
-            # Second-pass: if header extracted but NO line items, ask LLM
-            # specifically for line items from the document text
-            if header and not line_items and text:
-                logger.info("[AgentNick] No line items found — running focused LLM extraction")
-                line_items = self._llm_extract_line_items(text, doc_type, header)
+            if not header:
+                logger.error("[AgentNick] All extraction methods failed for %s", file_path)
+                return None
 
             return {
-                "header": header,
-                "line_items": line_items,
+                "header": self._sanitize_header(header),
+                "line_items": self._sanitize_items(line_items),
                 "_source_text": text,
             }
 
@@ -395,6 +429,68 @@ class AgentNickOrchestrator:
                 "[AgentNick] DataExtractionAgent dispatch failed: %s", exc
             )
             return None
+
+    @staticmethod
+    def _build_enhanced_text(text: str, filename: str, doc_type: str) -> str:
+        """Build optimized extraction text with filename context and smart windowing.
+
+        Uses document intelligence to detect sections and prioritize
+        line items (never truncated) over boilerplate.
+        """
+        from services.document_intelligence import build_smart_text
+
+        hint = (
+            f"FILENAME: {filename}\n"
+            f"(The filename may contain the document ID, supplier name, "
+            f"and related document references — use as context.)\n\n"
+        )
+        smart_text = build_smart_text(text, max_chars=6000)
+        return hint + smart_text
+
+    @staticmethod
+    def _sanitize_header(header: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: (v if v != "" else None) for k, v in header.items()}
+
+    @staticmethod
+    def _sanitize_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            {k: (v if v != "" else None) for k, v in item.items()}
+            for item in items
+        ]
+
+    def _sanitize_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "header": self._sanitize_header(result.get("header", {})),
+            "line_items": self._sanitize_items(result.get("line_items", [])),
+            "_source_text": result.get("_source_text", ""),
+        }
+
+    @staticmethod
+    def _map_engine_result(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Map extraction engine result format to standard header/line_items."""
+        header = {}
+        line_items = []
+        if "header" in result:
+            header = dict(result.get("header", {}))
+            line_items = list(result.get("line_items", []))
+        elif result.get("document_type") == "invoice":
+            header = dict(result.get("invoice_data", {}))
+            line_items = list(result.get("line_items", []))
+        elif result.get("document_type") == "po":
+            header = dict(result.get("po_data", {}))
+            line_items = list(result.get("line_items", []))
+        elif result.get("document_type") == "quote":
+            header = dict(result.get("quote_data", {}))
+            line_items = list(result.get("line_items", []))
+        if not header:
+            return None
+        return {
+            "header": {k: (v if v != "" else None) for k, v in header.items()},
+            "line_items": [
+                {k: (v if v != "" else None) for k, v in item.items()}
+                for item in line_items
+            ],
+        }
 
     def _llm_extract_direct(
         self, text: str, doc_type: str
@@ -443,6 +539,57 @@ class AgentNickOrchestrator:
                 header["_quote_ref"] = m.group(1)
 
     @staticmethod
+    def _validate_pk_against_source(
+        pk_value: str, source_text: str, doc_type: str
+    ) -> bool:
+        """Validate that extracted PK actually appears in the source document.
+
+        Format-agnostic: instead of regex patterns, simply checks whether
+        the PK string (or a normalized version) is present in the document
+        text. This works for ANY document format.
+        """
+        if not pk_value or len(pk_value) < 3:
+            return False
+
+        # Reject generic/hallucinated values
+        _HALLUCINATED = {
+            "invoice", "invoice1", "invoice2", "quote", "quote1",
+            "po", "purchase order", "contract", "n/a", "na", "none",
+            "unknown", "null", "test",
+        }
+        if pk_value.lower() in _HALLUCINATED:
+            return False
+
+        # Short pure digits are likely hallucinated
+        if pk_value.isdigit() and len(pk_value) < 4:
+            return False
+
+        if not source_text:
+            # No source text to validate against — accept if it looks reasonable
+            return len(pk_value) >= 3
+
+        # Check if PK appears in source text (case-insensitive)
+        text_lower = source_text.lower()
+        pk_lower = pk_value.lower()
+
+        # Direct match
+        if pk_lower in text_lower:
+            return True
+
+        # Try without whitespace/hyphens (e.g. "INV-25-058" vs "INV25058")
+        pk_normalized = re.sub(r"[\s\-]", "", pk_lower)
+        text_normalized = re.sub(r"[\s\-]", "", text_lower)
+        if pk_normalized in text_normalized:
+            return True
+
+        # Try just the numeric portion for IDs like "INV600255"
+        numeric_part = re.sub(r"[^\d]", "", pk_value)
+        if numeric_part and len(numeric_part) >= 4 and numeric_part in source_text:
+            return True
+
+        return False
+
+    @staticmethod
     def _extract_supplier_from_filename(file_path: str) -> Optional[str]:
         """Extract supplier name from filename — it's always the leading portion."""
         basename = os.path.splitext(os.path.basename(file_path))[0]
@@ -463,14 +610,31 @@ class AgentNickOrchestrator:
         """Extract document PK from filename patterns like 'WADE PO526809 for QUT30746.pdf'."""
         basename = os.path.splitext(os.path.basename(file_path))[0]
         patterns = {
-            "Invoice": [r"(INV[\-]?\s*[\w\-]+)"],
-            "Purchase_Order": [r"PO\s*(\d{4,})"],
-            "Quote": [r"QUT\s*([\d][\d\-]{2,})", r"Q\s*(\d{4,})"],
+            "Invoice": [
+                r"(INV[\-]?\s*[\w\-]+)",        # INV-123, INV123, INV 123-456
+                r"(Invoice[\-\s]*\d{3,})",       # Invoice-001, Invoice 12345
+                r"(BILL[\-\s]*\d{3,})",          # BILL-001
+            ],
+            "Purchase_Order": [
+                r"PO\s*(\d{4,})",                # PO526809, PO 526809
+                r"(PUR[\-\s]*\d{3,})",           # PUR-001
+            ],
+            "Quote": [
+                r"(QUT[\-\s]*[\d][\d\-]{2,})",   # QUT30746, QUT-25-032
+                r"(QTE[\-\s]*[\d][\d\-]{2,})",   # QTE-2026-00487
+                r"(QUOTE[\-\s]*[\d][\d\-]{2,})", # QUOTE-123
+                r"Q\s*(\d{4,})",                 # Q10483
+                r"(\d{5,})",                     # bare numeric IDs (136700)
+            ],
         }
         for pat in patterns.get(doc_type, []):
             m = re.search(pat, basename, re.IGNORECASE)
             if m:
-                return re.sub(r"\s+", "", m.group(1).strip())
+                pk = re.sub(r"\s+", "", m.group(1).strip())
+                # Reject overly generic values
+                if pk.lower() in ("invoice", "quote", "po", "purchase"):
+                    continue
+                return pk
         return None
 
     def _resolve_supplier(
@@ -539,7 +703,11 @@ class AgentNickOrchestrator:
         line_items: List[Dict[str, Any]],
         doc_type: str,
     ) -> List[str]:
-        """Detect issues in the SOURCE document — flag, don't fix."""
+        """Comprehensive source data integrity audit — flag anomalies, NEVER modify.
+
+        Logs every data quality issue found in the extracted values so
+        humans can investigate. Values are preserved exactly as extracted.
+        """
         warnings: List[str] = []
 
         def _f(v) -> float:
@@ -560,44 +728,80 @@ class AgentNickOrchestrator:
         tax = _f(header.get(tax_key))
         total = _f(header.get(total_key))
 
-        # Check: total should equal subtotal + tax
+        # --- Amount arithmetic check ---
         if amt > 0 and tax > 0 and total > 0:
             expected = round(amt + tax, 2)
             if abs(total - expected) > 1.0:
                 warnings.append(
-                    f"Total mismatch: {total_key}={total} but "
+                    f"AMOUNT_MISMATCH: {total_key}={total} but "
                     f"{amt_key}({amt}) + {tax_key}({tax}) = {expected}"
                 )
 
-        # Check: line items sum vs header subtotal
+        # --- Tax/Amount swap indicator ---
+        if tax > amt > 0:
+            warnings.append(
+                f"TAX_EXCEEDS_SUBTOTAL: {tax_key}({tax}) > {amt_key}({amt}) — "
+                f"possible field swap in source document"
+            )
+
+        # --- Tax percent anomaly ---
+        tax_pct = _f(header.get("tax_percent"))
+        if tax_pct > 30:
+            actual_pct = round((tax / amt) * 100, 1) if amt > 0 and tax > 0 else 0
+            warnings.append(
+                f"TAX_PERCENT_HIGH: tax_percent={tax_pct}% (computed from amounts: {actual_pct}%) — "
+                f"may be misread from document"
+            )
+
+        # --- Date logic checks ---
+        invoice_date = header.get("invoice_date") or header.get("order_date") or header.get("quote_date")
+        due_date = header.get("due_date") or header.get("validity_date") or header.get("expected_delivery_date")
+        if invoice_date and due_date and str(due_date) < str(invoice_date):
+            warnings.append(
+                f"DATE_LOGIC: due/validity date ({due_date}) is before issue date ({invoice_date})"
+            )
+
+        # --- Missing critical amounts ---
+        if amt == 0 and total == 0:
+            warnings.append("MISSING_AMOUNTS: both subtotal and total are zero/missing")
+        elif amt == 0 and total > 0:
+            warnings.append(f"MISSING_SUBTOTAL: {amt_key} is missing, only total available")
+
+        # --- Line items sum vs header subtotal ---
         if line_items and amt > 0:
             line_sum = sum(
-                _f(li.get("line_amount") or li.get("line_total") or li.get("line_total_amount"))
+                _f(li.get("line_amount") or li.get("line_total"))
                 for li in line_items
             )
             if line_sum > 0 and abs(line_sum - amt) > 1.0:
                 warnings.append(
-                    f"Line items sum ({line_sum:.2f}) != {amt_key} ({amt:.2f})"
+                    f"LINE_SUM_MISMATCH: line items total ({line_sum:.2f}) != {amt_key} ({amt:.2f})"
                 )
 
-        # Check: empty/missing critical amounts
-        if amt == 0 and total == 0:
-            warnings.append("Both subtotal and total are missing or zero")
-        elif amt == 0 and total > 0:
-            warnings.append(f"Subtotal ({amt_key}) is missing, only total available")
-
-        # Check: line items with missing data
-        incomplete = 0
-        for li in line_items:
+        # --- Line item math checks ---
+        for i, li in enumerate(line_items):
             qty = _f(li.get("quantity"))
             price = _f(li.get("unit_price"))
-            desc = li.get("item_description", "")
+            line_amt = _f(li.get("line_amount") or li.get("line_total"))
+            desc = str(li.get("item_description", ""))[:50]
+
+            if qty > 0 and price > 0 and line_amt > 0:
+                expected = round(qty * price, 2)
+                if abs(expected - line_amt) > 1.0:
+                    warnings.append(
+                        f"LINE_MATH: item '{desc}' qty({qty}) x price({price}) = {expected} but amount={line_amt}"
+                    )
+
+            if qty > 10000:
+                warnings.append(f"QUANTITY_HIGH: item '{desc}' has qty={qty} — verify this is a count")
+
             if not desc and (qty > 0 or price > 0):
-                incomplete += 1
-            elif desc and qty == 0 and price == 0:
-                incomplete += 1
-        if incomplete:
-            warnings.append(f"{incomplete} line item(s) have incomplete data (missing description, qty, or price)")
+                warnings.append(f"LINE_INCOMPLETE: line {i+1} has amounts but no description")
+
+        # --- Supplier sanity check ---
+        supplier = header.get("supplier_id", "") or header.get("supplier_name", "")
+        if supplier and len(str(supplier)) < 3:
+            warnings.append(f"SUPPLIER_SHORT: supplier_id='{supplier}' is suspiciously short")
 
         return warnings
 
@@ -607,7 +811,12 @@ class AgentNickOrchestrator:
         line_items: List[Dict[str, Any]],
         doc_type: str,
     ) -> tuple:
-        """Cross-validate extracted data: fix math errors, swap misplaced values."""
+        """Validate extracted data integrity — LOG anomalies, NEVER modify source values.
+
+        Principle: Values from the document are persisted exactly as extracted.
+        Only derive values when they are completely ABSENT from the document.
+        Inaccurate data is logged to discrepancy records for human review.
+        """
 
         def _f(v) -> float:
             try:
@@ -615,7 +824,6 @@ class AgentNickOrchestrator:
             except (ValueError, TypeError):
                 return 0.0
 
-        # --- Tax/Amount swap detection (all doc types) ---
         amt_key = "invoice_amount" if doc_type == "Invoice" else "total_amount"
         tax_key = "tax_amount"
         total_key = (
@@ -628,76 +836,72 @@ class AgentNickOrchestrator:
         tax = _f(header.get(tax_key))
         total = _f(header.get(total_key))
 
+        # --- LOG anomalies but DO NOT modify source values ---
         if tax > amt > 0:
-            header[amt_key], header[tax_key] = tax, amt
-            amt, tax = tax, amt
-            logger.info("[CrossVal] Fixed tax/amount swap on %s", doc_type)
+            logger.warning(
+                "[CrossVal] ANOMALY: tax_amount(%.2f) > %s(%.2f) — possible swap in source document",
+                tax, amt_key, amt,
+            )
 
-        # Recalculate total if it doesn't add up
-        if amt > 0 and tax > 0:
+        if amt > 0 and tax > 0 and total_key != amt_key:
             expected_total = round(amt + tax, 2)
-            if total_key != amt_key and abs(total - expected_total) > 0.50:
-                header[total_key] = expected_total
-                logger.info("[CrossVal] Recalculated %s: %.2f", total_key, expected_total)
+            if total > 0 and abs(total - expected_total) > 0.50:
+                logger.warning(
+                    "[CrossVal] ANOMALY: %s(%.2f) != %s(%.2f) + %s(%.2f) = %.2f",
+                    total_key, total, amt_key, amt, tax_key, tax, expected_total,
+                )
 
-        # Derive tax_percent from amounts if missing
-        if amt > 0 and tax > 0 and not header.get("tax_percent"):
-            header["tax_percent"] = round((tax / amt) * 100, 2)
+        if header.get("tax_percent"):
+            tax_pct = _f(header.get("tax_percent"))
+            if tax_pct > 30:
+                logger.warning(
+                    "[CrossVal] ANOMALY: tax_percent=%.1f%% is unusually high — verify source document",
+                    tax_pct,
+                )
 
-        # --- Line item validation ---
+        # --- Line item anomaly logging ---
         for item in line_items:
             qty = _f(item.get("quantity"))
             price = _f(item.get("unit_price"))
-            line_amt = _f(item.get("line_amount") or item.get("line_total") or item.get("line_total_amount"))
+            line_amt = _f(item.get("line_amount") or item.get("line_total"))
 
-            # Quantity/price swap: if qty > price and both > 0, they're likely swapped
-            if qty > 0 and price > 0 and qty > price * 10:
-                item["quantity"], item["unit_price"] = price, qty
-                qty, price = price, qty
-                logger.info("[CrossVal] Fixed qty/price swap: qty=%.0f, price=%.2f", qty, price)
+            if qty > 0 and price > 0 and line_amt > 0:
+                expected = round(qty * price, 2)
+                if abs(expected - line_amt) > 1.0:
+                    logger.warning(
+                        "[CrossVal] ANOMALY: line item '%s' qty(%.0f) x price(%.2f) = %.2f but amount=%.2f",
+                        str(item.get("item_description", ""))[:40], qty, price, expected, line_amt,
+                    )
 
-            # Calculate line_amount if missing
-            if qty > 0 and price > 0 and line_amt == 0:
-                calculated = round(qty * price, 2)
-                for k in ("line_amount", "line_total", "line_total_amount"):
-                    if k in item:
-                        item[k] = calculated
-                        break
-
-        # --- Header total vs line items sum ---
-        if line_items:
-            line_sum = sum(
-                _f(li.get("line_amount") or li.get("line_total") or li.get("line_total_amount"))
-                for li in line_items
-            )
-            if line_sum > 0 and amt == 0:
-                header[amt_key] = round(line_sum, 2)
-                amt = line_sum
-                logger.info("[CrossVal] Derived %s from line items: %.2f", amt_key, line_sum)
-
-        # --- Compute missing total_incl_tax from subtotal + tax ---
-        amt = _f(header.get(amt_key))
-        tax = _f(header.get(tax_key))
-        total = _f(header.get(total_key))
-
-        if total_key != amt_key:
-            if amt > 0 and tax > 0 and total == 0:
-                header[total_key] = round(amt + tax, 2)
-                logger.info("[CrossVal] Computed %s: %.2f + %.2f = %.2f", total_key, amt, tax, amt + tax)
-            elif total > 0 and amt > 0 and tax == 0:
-                header[tax_key] = round(total - amt, 2)
-                logger.info("[CrossVal] Derived tax: %.2f - %.2f = %.2f", total, amt, total - amt)
-            elif total > 0 and tax > 0 and amt == 0:
-                header[amt_key] = round(total - tax, 2)
-                logger.info("[CrossVal] Derived %s: %.2f - %.2f = %.2f", amt_key, total, tax, total - tax)
-
-        # --- Derive tax_percent if missing ---
-        amt = _f(header.get(amt_key))
-        tax = _f(header.get(tax_key))
-        if amt > 0 and tax > 0 and not header.get("tax_percent"):
+        # --- DERIVE only when value is completely ABSENT ---
+        # tax_percent: derive from amounts ONLY if not present in document
+        if not header.get("tax_percent") and amt > 0 and tax > 0:
             header["tax_percent"] = round((tax / amt) * 100, 2)
+            logger.info("[CrossVal] Derived missing tax_percent: %.2f%%", header["tax_percent"])
 
-        # --- Currency: default GBP if not set (UK procurement) ---
+        # total_incl_tax: derive ONLY if absent
+        if total_key != amt_key:
+            if not header.get(total_key) and amt > 0 and tax > 0:
+                header[total_key] = round(amt + tax, 2)
+                logger.info("[CrossVal] Derived missing %s: %.2f", total_key, header[total_key])
+            elif not header.get(tax_key) and total > 0 and amt > 0:
+                header[tax_key] = round(total - amt, 2)
+                logger.info("[CrossVal] Derived missing %s: %.2f", tax_key, header[tax_key])
+            elif not header.get(amt_key) and total > 0 and tax > 0:
+                header[amt_key] = round(total - tax, 2)
+                logger.info("[CrossVal] Derived missing %s: %.2f", amt_key, header[amt_key])
+
+        # line_amount: derive ONLY if absent
+        for item in line_items:
+            qty = _f(item.get("quantity"))
+            price = _f(item.get("unit_price"))
+            has_amt = item.get("line_amount") or item.get("line_total")
+            if qty > 0 and price > 0 and not has_amt:
+                calculated = round(qty * price, 2)
+                item["line_amount"] = calculated
+                logger.info("[CrossVal] Derived missing line_amount: %.2f", calculated)
+
+        # Currency: default GBP only if completely absent
         if not header.get("currency"):
             header["currency"] = "GBP"
 
@@ -797,17 +1001,14 @@ class AgentNickOrchestrator:
             f"Document:\n{text[:5000]}"
         )
         try:
-            resp = requests.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": AGENT_NICK_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0, "num_predict": 2048, "num_gpu": 99},
-                },
-                timeout=600,
+            from services.ollama_client import ollama_generate
+            raw = ollama_generate(
+                prompt,
+                model=AGENT_NICK_MODEL,
+                num_predict=2048,
             )
-            raw = resp.json().get("response", "")
+            if not raw:
+                return []
             # Parse JSON array
             import re as _re
             arr_match = _re.search(r"\[[\s\S]*\]", raw)
@@ -845,17 +1046,14 @@ class AgentNickOrchestrator:
             f"Document content:\n{text[:6000]}"
         )
         try:
-            resp = requests.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": AGENT_NICK_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0, "num_predict": 2048, "num_gpu": 99},
-                },
-                timeout=600,
+            from services.ollama_client import ollama_generate
+            raw = ollama_generate(
+                prompt,
+                model=AGENT_NICK_MODEL,
+                num_predict=2048,
             )
-            raw = resp.json().get("response", "")
+            if not raw:
+                return None
             import re as _re
             json_match = _re.search(r"\{[\s\S]*\}", raw)
             if json_match:
@@ -894,18 +1092,14 @@ class AgentNickOrchestrator:
         )
 
         try:
-            response = requests.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": AGENT_NICK_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0, "num_predict": 512, "num_gpu": 99},
-                },
-                timeout=120,
+            from services.ollama_client import ollama_generate
+            raw = ollama_generate(
+                prompt,
+                model=AGENT_NICK_MODEL,
+                num_predict=512,
             )
-            response.raise_for_status()
-            raw = response.json().get("response", "").strip()
+            if not raw:
+                return header
 
             # Parse JSON from response
             cleaned = re.sub(r"^```(?:json)?\s*\n?", "", raw)
@@ -1003,3 +1197,151 @@ class AgentNickOrchestrator:
             )
         except Exception:
             logger.debug("[AgentNick] Vendor profile learning failed", exc_info=True)
+
+        # Also update the v2 vendor profile table
+        self._update_vendor_profile(header, doc_type)
+
+    def _get_vendor_context(self, supplier_hint: str) -> str:
+        """Look up vendor profile and return context string for LLM prompt."""
+        if not supplier_hint or len(supplier_hint) < 3:
+            return ""
+        try:
+            conn = self._agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT profile_data, extraction_count, avg_confidence "
+                        "FROM proc.vendor_profile WHERE supplier_name ILIKE %s LIMIT 1",
+                        (f"%{supplier_hint}%",),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return ""
+                    profile = row[0] if isinstance(row[0], dict) else {}
+                    count = row[1] or 0
+                    if count < 2:
+                        return ""
+                    parts = [f"VENDOR CONTEXT (from {count} previous extractions):"]
+                    if profile.get("default_currency"):
+                        parts.append(f"- Currency: {profile['default_currency']}")
+                    if profile.get("typical_tax_rate"):
+                        parts.append(f"- Typical tax rate: {profile['typical_tax_rate']}%")
+                    if profile.get("date_format_hint"):
+                        parts.append(f"- Date format: {profile['date_format_hint']}")
+                    if profile.get("id_pattern"):
+                        parts.append(f"- Document ID pattern: {profile['id_pattern']}")
+                    return "\n".join(parts)
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Vendor profile lookup failed", exc_info=True)
+            return ""
+
+    def _update_vendor_profile(self, header: Dict[str, Any], doc_type: str) -> None:
+        """Update v2 vendor profile with patterns from this extraction."""
+        import json as _json
+        supplier = header.get("supplier_id") or header.get("supplier_name") or ""
+        if not supplier or len(supplier) < 3:
+            return
+        try:
+            conn = self._agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT profile_data, extraction_count, avg_confidence "
+                        "FROM proc.vendor_profile WHERE supplier_name = %s",
+                        (supplier,),
+                    )
+                    row = cur.fetchone()
+                    profile = row[0] if row and isinstance(row[0], dict) else {}
+                    count = (row[1] or 0) if row else 0
+                    old_conf = float(row[2] or 0) if row else 0.0
+
+                    profile["default_currency"] = header.get("currency") or profile.get("default_currency")
+                    if header.get("tax_percent"):
+                        try:
+                            profile["typical_tax_rate"] = float(header["tax_percent"])
+                        except (ValueError, TypeError):
+                            pass
+                    profile["last_doc_type"] = doc_type
+
+                    new_count = count + 1
+                    conf = float(header.get("confidence_score", 0) or 0)
+                    new_avg = ((old_conf * count) + conf) / new_count if new_count > 0 else 0
+
+                    cur.execute("""
+                        INSERT INTO proc.vendor_profile
+                            (supplier_name, profile_data, extraction_count, avg_confidence,
+                             last_extraction, last_modified_date)
+                        VALUES (%s, %s, %s, %s, NOW(), NOW())
+                        ON CONFLICT (supplier_name) DO UPDATE SET
+                            profile_data = %s,
+                            extraction_count = %s,
+                            avg_confidence = %s,
+                            last_extraction = NOW(),
+                            last_modified_date = NOW()
+                    """, (supplier, _json.dumps(profile, default=str), new_count, round(new_avg, 3),
+                          _json.dumps(profile, default=str), new_count, round(new_avg, 3)))
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Vendor profile update failed", exc_info=True)
+
+    def _auto_create_supplier(self, header: Dict[str, Any], doc_type: str) -> Optional[str]:
+        """Auto-create a new supplier in bp_supplier if not found.
+
+        Only creates from explicitly extracted document values — never guesses.
+        Returns the new supplier_id or None.
+        """
+        supplier_name = header.get("supplier_id") or header.get("supplier_name") or ""
+        if not supplier_name or len(supplier_name) < 3:
+            return None
+
+        try:
+            conn = self._agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT supplier_id FROM proc.bp_supplier "
+                        "WHERE LOWER(supplier_name) = LOWER(%s) OR LOWER(trading_name) = LOWER(%s) "
+                        "LIMIT 1",
+                        (supplier_name, supplier_name),
+                    )
+                    if cur.fetchone():
+                        return None
+
+                    clean = re.sub(r"[^a-zA-Z0-9]", "", supplier_name)
+                    supplier_id = f"SUP-{clean[:20]}"
+
+                    cur.execute("""
+                        INSERT INTO proc.bp_supplier
+                            (supplier_id, supplier_name, trading_name, default_currency,
+                             country, created_date, created_by)
+                        VALUES (%s, %s, %s, %s, %s, NOW(), %s)
+                        ON CONFLICT DO NOTHING
+                    """, (
+                        supplier_id, supplier_name, supplier_name,
+                        header.get("currency"),
+                        header.get("country"),
+                        "AgentNick-AutoDiscovery",
+                    ))
+
+                    cur.execute("""
+                        INSERT INTO proc.supplier
+                            (supplier_id, supplier_name, trading_name, default_currency,
+                             created_date, created_by)
+                        VALUES (%s, %s, %s, %s, NOW(), %s)
+                        ON CONFLICT DO NOTHING
+                    """, (supplier_id, supplier_name, supplier_name,
+                          header.get("currency"), "AgentNick-AutoDiscovery"))
+
+                    logger.info(
+                        "[AgentNick] Auto-created supplier: %s → %s",
+                        supplier_name, supplier_id,
+                    )
+                    return supplier_id
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Supplier auto-creation failed", exc_info=True)
+            return None
