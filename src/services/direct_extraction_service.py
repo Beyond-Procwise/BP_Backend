@@ -688,10 +688,14 @@ class DirectExtractionService:
                 if p.text.strip():
                     parts.append(p.text.strip())
             for table in doc.tables:
-                for row in table.rows:
+                for row_idx, row in enumerate(table.rows):
                     cells = [c.text.strip() for c in row.cells if c.text.strip()]
                     if cells:
-                        parts.append(" | ".join(cells))
+                        line = " | ".join(cells)
+                        parts.append(line)
+                        # After the first row (header), add a separator
+                        if row_idx == 0:
+                            parts.append("--- | " * (len(cells) - 1) + "---")
             text = "\n".join(parts)
             if text.strip():
                 return text
@@ -976,7 +980,7 @@ class DirectExtractionService:
     })
     _TOTAL_KEYWORDS = frozenset({
         "subtotal", "sub-total", "sub total", "total", "vat", "tax",
-        "delivery", "grand total", "net", "gross", "discount",
+        "grand total", "net", "gross", "discount",
     })
 
     @classmethod
@@ -991,8 +995,20 @@ class DirectExtractionService:
 
     @classmethod
     def _is_total_row(cls, cells_text: list[str]) -> bool:
-        """True when a cell looks like a subtotal/total/tax label."""
-        for ct in cells_text:
+        """True when a row is a summary/total row, not a line item.
+
+        A total row has 1-2 non-empty cells where one is a label like
+        "Subtotal" or "VAT (20%)" and the other is a number.  Line item
+        rows typically have 3+ cells (qty, description, price, total).
+
+        The keyword must appear as a standalone label — not embedded
+        inside a longer item description like "Delivery & Installation
+        Services".
+        """
+        non_empty = [ct for ct in cells_text if ct.strip()]
+        if len(non_empty) > 2:
+            return False
+        for ct in non_empty:
             norm = ct.lower().strip()
             if any(kw == norm or norm.startswith(kw) for kw in cls._TOTAL_KEYWORDS):
                 return True
@@ -1057,6 +1073,13 @@ class DirectExtractionService:
             parts.append("\n=== LINE ITEMS TABLE ===")
             in_totals = False
 
+            # Identify description column indices for phantom-row filtering
+            _DESC_HINTS = {"description", "item", "product", "service"}
+            desc_col_idxs = {
+                col for col, hdr in header_map.items()
+                if any(h in hdr.lower() for h in _DESC_HINTS)
+            }
+
             for i in range(header_row_idx + 1, len(all_rows)):
                 row_cells = all_rows[i]
                 if not row_cells:
@@ -1072,6 +1095,17 @@ class DirectExtractionService:
                 if in_totals:
                     parts.append(" | ".join(texts))
                 else:
+                    # Filter phantom rows: if we know which columns are
+                    # descriptions, skip rows that have no text in any
+                    # description column (e.g. rows with only "0" values).
+                    if desc_col_idxs:
+                        has_desc = any(
+                            col_idx in desc_col_idxs and val.strip()
+                            for col_idx, val in row_cells
+                        )
+                        if not has_desc:
+                            continue
+
                     # Label each cell with its column header
                     labeled = []
                     for col_idx, val in row_cells:
