@@ -138,9 +138,10 @@ class IntelligentExtractor:
         "total (inc vat)", "invoice total",
     }
 
-    def __init__(self, direct_service):
+    def __init__(self, direct_service, pattern_store=None):
         """Initialize with a DirectExtractionService for text extraction methods."""
         self._service = direct_service
+        self._pattern_store = pattern_store
 
     # ------------------------------------------------------------------
     # Phase 1: PARSE — Structure-preserving document parsing
@@ -523,10 +524,38 @@ class IntelligentExtractor:
         doc_type: str,
         schema: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Extract structured data from parsed document using LLM."""
+        """Extract structured data from parsed document using LLM.
+
+        Checks for known patterns first to inject proven extraction hints.
+        After successful extraction, captures the pattern for future reuse.
+        """
         from services.ollama_client import ollama_generate
 
-        prompt = self._build_intelligent_prompt(doc, doc_type, schema)
+        # Check for known extraction pattern
+        pattern_hints = ""
+        matched_pattern = None
+        if self._pattern_store:
+            matched_pattern = self._pattern_store.find_matching_pattern(
+                doc, doc.file_type, doc_type
+            )
+            if matched_pattern and matched_pattern.get("extraction_hints"):
+                pattern_hints = (
+                    f"\nPREVIOUS SUCCESSFUL PATTERN:\n"
+                    f"{matched_pattern['extraction_hints']}\n"
+                )
+            if matched_pattern and matched_pattern.get("column_mapping"):
+                mapping = matched_pattern["column_mapping"]
+                pattern_hints += (
+                    f"\nKNOWN COLUMN MAPPING from previous extraction of similar document:\n"
+                    + "\n".join(
+                        f"  {k} → {v}" for k, v in mapping.items()
+                    )
+                    + "\n"
+                )
+
+        prompt = self._build_intelligent_prompt(
+            doc, doc_type, schema, extra_context=pattern_hints
+        )
 
         raw = ollama_generate(
             prompt,
@@ -568,10 +597,52 @@ class IntelligentExtractor:
                         issues = retry_issues
 
         result["_verification"] = issues
+
+        # Phase 5: LEARN — capture pattern on successful extraction
+        if issues.get("critical_count", 0) == 0 and self._pattern_store:
+            header = result.get("header", {})
+            supplier = (
+                header.get("supplier_id")
+                or header.get("supplier_name")
+                or ""
+            )
+            # Build column mapping from what the LLM extracted
+            col_mapping = {}
+            if doc.tables:
+                table_headers = doc.tables[0].get("headers", [])
+                for h in table_headers:
+                    if h:
+                        col_mapping[h] = self._guess_schema_field(h)
+
+            hints = (
+                f"Supplier: {supplier}\n"
+                f"Line items: {len(result.get('line_items', []))}\n"
+                f"Header fields: {len(header)}\n"
+                f"File type: {doc.file_type}"
+            )
+            self._pattern_store.capture_pattern(
+                doc_structure=doc,
+                file_type=doc.file_type,
+                doc_type=doc_type,
+                supplier_name=supplier,
+                column_mapping=col_mapping,
+                extraction_hints=hints,
+            )
+
         return result
 
+    @classmethod
+    def _guess_schema_field(cls, header_name: str) -> str:
+        """Map a document column header to the most likely schema field."""
+        norm = header_name.lower().strip()
+        for schema_field, synonyms in cls._HEADER_SYNONYMS.items():
+            if any(syn in norm for syn in synonyms):
+                return schema_field
+        return header_name
+
     def _build_intelligent_prompt(
-        self, doc: DocumentStructure, doc_type: str, schema: Dict
+        self, doc: DocumentStructure, doc_type: str, schema: Dict,
+        extra_context: str = "",
     ) -> str:
         """Build extraction prompt using structured document representation."""
         from services.direct_extraction_service import DirectExtractionService
@@ -646,7 +717,7 @@ Return ONLY this JSON:
   "header": {{ ... }},
   "line_items": [ {{ ... }}, ... ]
 }}
-
+{extra_context}
 DOCUMENT:
 {doc_content}"""
 

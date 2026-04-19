@@ -8,6 +8,7 @@ Falls back to polling every 60s for resilience.
 from __future__ import annotations
 
 import logging
+import os
 import select
 import threading
 import time
@@ -105,7 +106,7 @@ class ProcessMonitorWatcher:
         CREATE OR REPLACE FUNCTION proc.notify_process_monitor_ready()
         RETURNS TRIGGER AS $$
         BEGIN
-            IF NEW.status = 'Completed' AND NEW.id IS NOT NULL THEN
+            IF NEW.status IN ('Completed', 'Running') AND NEW.id IS NOT NULL THEN
                 PERFORM pg_notify('process_monitor_ready', NEW.id::text);
             END IF;
             RETURN NEW;
@@ -144,17 +145,47 @@ class ProcessMonitorWatcher:
         """Atomically claim a record by transitioning Completed -> Extracting.
 
         Returns the record dict if successfully claimed, None otherwise.
+        Performs an early duplicate check before claiming to reduce
+        unnecessary processing and log noise.
         """
         with self._processing_lock:
             if record_id in self._processing_ids:
                 return None
         try:
             with conn.cursor() as cur:
+                # Early duplicate check — skip before claiming to reduce noise
+                cur.execute(
+                    "SELECT file_path, category FROM proc.process_monitor WHERE id = %s",
+                    (record_id,),
+                )
+                pre_row = cur.fetchone()
+                if pre_row and pre_row[0]:
+                    file_path, category = pre_row
+                    cur.execute(
+                        "SELECT id FROM proc.process_monitor "
+                        "WHERE file_path = %s AND status IN ('Extracted', 'Extracting') AND id != %s "
+                        "LIMIT 1",
+                        (file_path, record_id),
+                    )
+                    dup = cur.fetchone()
+                    if dup and not self._data_needs_reextraction(cur, file_path, category or ""):
+                        logger.debug(
+                            "Early dedup: record %s is duplicate of %s — skipping claim",
+                            record_id, dup[0],
+                        )
+                        # Mark as extracted without processing
+                        cur.execute(
+                            "UPDATE proc.process_monitor SET status = 'Extracted', "
+                            "end_ts = %s, lastmodified_date = %s WHERE id = %s AND status IN ('Completed', 'Running')",
+                            (datetime.now(timezone.utc), datetime.now(timezone.utc), record_id),
+                        )
+                        return None
+
                 cur.execute(
                     """
                     UPDATE proc.process_monitor
                     SET status = 'Extracting', start_ts = %s
-                    WHERE id = %s AND status = 'Completed'
+                    WHERE id = %s AND status IN ('Completed', 'Running')
                     RETURNING id, process_name, type, status, file_path,
                               start_ts, created_date, created_by,
                               lastmodified_date, end_ts, category,
@@ -201,9 +232,12 @@ class ProcessMonitorWatcher:
                 pk_val = _re.sub(r"\s+", "", m.group(1))
                 table, pk_col = "proc.bp_invoice", "invoice_id"
         elif cat in ("quote", "quotes"):
-            m = _re.search(r"QUT\s*(\d{4,})", fname, _re.I)
-            if m:
-                pk_val, table, pk_col = m.group(1), "proc.bp_quote", "quote_id"
+            # Try QUT first, then QTE, then bare numeric
+            for pat in (r"QUT[\-\s]*([\d][\d\-]{2,})", r"QTE[\-\s]*([\d][\d\-]{2,})", r"(\d{5,})"):
+                m = _re.search(pat, fname, _re.I)
+                if m:
+                    pk_val, table, pk_col = _re.sub(r"\s+", "", m.group(1)), "proc.bp_quote", "quote_id"
+                    break
 
         if not pk_val or not table:
             return False  # can't determine — assume no re-extraction needed
@@ -296,7 +330,7 @@ class ProcessMonitorWatcher:
                     with conn.cursor() as cur:
                         cur.execute(
                             "SELECT id FROM proc.process_monitor "
-                            "WHERE file_path = %s AND status = 'Extracted' AND id != %s "
+                            "WHERE file_path = %s AND status IN ('Extracted', 'Extracting') AND id != %s "
                             "LIMIT 1",
                             (file_path, record_id),
                         )
@@ -348,30 +382,157 @@ class ProcessMonitorWatcher:
                     f"Extraction {status}: {result.get('error', 'unknown')}"
                 )
             self._mark_extracted(record_id)
+            confidence = result.get("confidence", 0)
+            error_count = result.get("errors", 0)
+            pk = result.get("pk", "")
+            doc_type = result.get("doc_type", "")
+
             logger.info(
                 "Extraction completed for record %s: %s pk=%s fields=%s lines=%s discrep=%s conf=%s",
-                record_id,
-                result.get("doc_type"),
-                result.get("pk"),
+                record_id, doc_type, pk,
                 result.get("header_fields"),
                 result.get("line_items"),
                 result.get("discrepancies"),
-                result.get("confidence"),
+                confidence,
             )
 
-            # Trigger KG sync in background
-            try:
-                from services.procurement_kg_builder import ProcurementKGBuilder
-                builder = ProcurementKGBuilder(self._agent_nick)
-                builder.build_full_graph()
-                builder.close()
-                logger.info("KG synced after extraction of record %s", record_id)
-            except Exception:
-                logger.debug("KG sync after extraction failed", exc_info=True)
+            # --- PRE-KG VALIDATION GATE ---
+            # Only sync to Knowledge Graph when extraction meets quality bar.
+            # Bad data must not propagate to the graph where it would affect
+            # downstream agents (ranking, opportunities, negotiation).
+            kg_eligible = True
+            if not pk:
+                logger.warning(
+                    "KG BLOCKED for record %s: missing primary key — data not synced to graph",
+                    record_id,
+                )
+                kg_eligible = False
+            elif confidence < 0.70:
+                logger.warning(
+                    "KG BLOCKED for record %s: confidence %.2f below 0.70 threshold — data not synced to graph",
+                    record_id, confidence,
+                )
+                kg_eligible = False
+            elif error_count > 2:
+                logger.warning(
+                    "KG BLOCKED for record %s: %d errors — data not synced to graph",
+                    record_id, error_count,
+                )
+                kg_eligible = False
+
+            if kg_eligible:
+                try:
+                    from services.procurement_kg_builder import ProcurementKGBuilder
+                    builder = ProcurementKGBuilder(self._agent_nick)
+                    builder.build_full_graph()
+                    builder.close()
+                    logger.info("KG synced after extraction of record %s", record_id)
+                except Exception:
+                    logger.debug("KG sync after extraction failed", exc_info=True)
+
+            # --- TRAINING DATA COLLECTION ---
+            # High-confidence, error-free extractions are automatically
+            # collected as verified training examples for recursive fine-tuning.
+            if confidence >= 0.90 and error_count == 0 and pk:
+                try:
+                    self._collect_training_example(
+                        record_id, doc_type, pk, result, file_path,
+                    )
+                except Exception:
+                    logger.warning("Training data collection failed", exc_info=True)
 
         except Exception as exc:
             logger.exception("Extraction failed for record %s", record_id)
             self._mark_failed(record_id, str(exc))
+
+    def _collect_training_example(
+        self, record_id: int, doc_type: str, pk: str,
+        result: dict, file_path: str,
+    ) -> None:
+        """Collect verified extraction as training data for recursive fine-tuning.
+
+        High-confidence, error-free extractions are appended to the
+        fine-tuning dataset so the model learns from its own best work.
+        """
+        import json as _json
+        training_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", "training", "auto_collected_examples.jsonl",
+        )
+        os.makedirs(os.path.dirname(training_path), exist_ok=True)
+
+        # Deduplicate: skip if this doc_type+pk already in training data
+        if os.path.exists(training_path):
+            dedup_key = f'"{doc_type}"' + '.*' + f'"{pk}"'
+            with open(training_path) as f:
+                for line in f:
+                    if f'"doc_type": "{doc_type}"' in line and f'"pk": "{pk}"' in line:
+                        logger.debug(
+                            "Training example already exists for %s pk=%s — skipping",
+                            doc_type, pk,
+                        )
+                        return
+
+        # Build the training conversation (instruction → response)
+        source_text = result.get("_source_text", "") if isinstance(result, dict) else ""
+
+        # Fetch persisted data from DB as the "verified" output
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    pk_map = {"Invoice": ("proc.bp_invoice", "invoice_id"),
+                              "Purchase_Order": ("proc.bp_purchase_order", "po_id"),
+                              "Quote": ("proc.bp_quote", "quote_id")}
+                    table_info = pk_map.get(doc_type)
+                    if not table_info:
+                        return
+                    table, pk_col = table_info
+                    cur.execute(f"SELECT row_to_json(t) FROM {table} t WHERE {pk_col} = %s", (pk,))
+                    row = cur.fetchone()
+                    if not row:
+                        return
+                    header_data = row[0]
+
+                    # Get line items
+                    line_table_map = {"Invoice": ("proc.bp_invoice_line_items", "invoice_id"),
+                                     "Purchase_Order": ("proc.bp_po_line_items", "po_id"),
+                                     "Quote": ("proc.bp_quote_line_items", "quote_id")}
+                    lt_info = line_table_map.get(doc_type)
+                    line_data = []
+                    if lt_info:
+                        lt_table, lt_fk = lt_info
+                        cur.execute(f"SELECT row_to_json(t) FROM {lt_table} t WHERE {lt_fk} = %s", (pk,))
+                        line_data = [r[0] for r in cur.fetchall()]
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Failed to fetch persisted data for training", exc_info=True)
+            return
+
+        # Remove audit columns from training data
+        skip = {"created_date", "created_by", "last_modified_date", "last_modified_by",
+                "confidence_score", "needs_review", "ai_flag_required"}
+        header_clean = {k: v for k, v in header_data.items() if k not in skip and v is not None}
+        lines_clean = [{k: v for k, v in li.items() if k not in skip and v is not None} for li in line_data]
+
+        example = {
+            "doc_type": doc_type,
+            "pk": pk,
+            "file_path": file_path,
+            "confidence": result.get("confidence", 0),
+            "source_text": source_text[:6000] if source_text else "",
+            "extracted": {"header": header_clean, "line_items": lines_clean},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with open(training_path, "a") as f:
+            f.write(_json.dumps(example, default=str) + "\n")
+
+        logger.info(
+            "Collected training example: %s pk=%s conf=%.2f → %s",
+            doc_type, pk, result.get("confidence", 0), training_path,
+        )
 
     def _dispatch(self, record: Dict[str, Any]) -> None:
         """Submit a record for extraction on the thread pool."""
@@ -446,11 +607,11 @@ class ProcessMonitorWatcher:
                 logger.exception("Poll sweep failed")
 
     def _sweep_completed(self) -> None:
-        """Query for Completed records and stale Extracting records, then dispatch."""
+        """Query for Completed/Running records and stale Extracting records, then dispatch."""
         conn = self._get_connection()
         try:
             with conn.cursor() as cur:
-                # Recover stale Extracting records (stuck > 10 minutes)
+                # Recover stale Extracting records (stuck > 30 minutes)
                 cur.execute(
                     """
                     UPDATE proc.process_monitor
@@ -470,7 +631,7 @@ class ProcessMonitorWatcher:
                 cur.execute(
                     """
                     SELECT id FROM proc.process_monitor
-                    WHERE status = 'Completed'
+                    WHERE status IN ('Completed', 'Running')
                     ORDER BY created_date ASC
                     """
                 )
@@ -485,6 +646,7 @@ class ProcessMonitorWatcher:
                     self._dispatch(record)
         finally:
             conn.close()
+
 
     # ------------------------------------------------------------------
     # Lifecycle

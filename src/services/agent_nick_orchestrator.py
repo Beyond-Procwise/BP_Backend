@@ -59,7 +59,8 @@ class AgentNickOrchestrator:
 
     def __init__(self, agent_nick) -> None:
         self._agent_nick = agent_nick
-        self._product_catalog = None  # lazy init on first use
+        self._product_catalog = None   # lazy init on first use
+        self._pattern_store = None     # lazy init on first use
 
     def _get_product_catalog(self):
         """Lazy-initialize ProductCatalogService on first use."""
@@ -69,6 +70,15 @@ class AgentNickOrchestrator:
                 self._agent_nick.get_db_connection
             )
         return self._product_catalog
+
+    def _get_pattern_store(self):
+        """Lazy-initialize ExtractionPatternStore on first use."""
+        if self._pattern_store is None:
+            from services.extraction_pattern_store import ExtractionPatternStore
+            self._pattern_store = ExtractionPatternStore(
+                self._agent_nick.get_db_connection
+            )
+        return self._pattern_store
 
     def process_document(
         self,
@@ -359,7 +369,9 @@ class AgentNickOrchestrator:
                 return None
 
             # Step 2: Parse document into structured representation
-            extractor = IntelligentExtractor(service)
+            extractor = IntelligentExtractor(
+                service, pattern_store=self._get_pattern_store()
+            )
             doc_structure = extractor.parse_document(file_bytes, ext)
 
             # If structured parsing produced no tables and no metadata,
