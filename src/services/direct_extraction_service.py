@@ -907,11 +907,39 @@ class DirectExtractionService:
                 "Image OCR: best method=%s (%d chars, %d lines)",
                 best_method, len(best_text), len(best_text.split("\n")),
             )
+            # Post-process: mark line item boundaries in OCR text
+            # so multi-line descriptions don't merge across items
+            best_text = self._mark_ocr_line_items(best_text)
             return best_text
 
         except Exception:
             logger.warning("Image text extraction failed", exc_info=True)
         return ""
+
+    @staticmethod
+    def _mark_ocr_line_items(text: str) -> str:
+        """Post-process OCR text to mark line item row boundaries.
+
+        In scanned documents, line items often wrap across 2-3 lines:
+            1 HR Transformation Programme 16,500 16,500
+            (Phase 1 - Assessment &
+            1 Workforce Skills Gap Analysis 11,200 11,200
+
+        This detects rows starting with a quantity number followed by
+        description text and prices, inserting a separator to help the
+        LLM distinguish individual items.
+        """
+        # Pattern: line starts with a small integer (qty), has text, ends with numbers (prices)
+        line_item_re = re.compile(
+            r"^\s*(\d{1,3})\s+[A-Za-z].*[\d,.]+\s*$"
+        )
+        lines = text.split("\n")
+        marked = []
+        for line in lines:
+            if line_item_re.match(line):
+                marked.append("---")  # separator before each line item
+            marked.append(line)
+        return "\n".join(marked)
 
     def _tabular_to_text(self, file_bytes: bytes, ext: str) -> str:
         """Convert CSV/Excel to structured text for LLM processing.
@@ -1266,6 +1294,7 @@ CRITICAL RULES:
 12. The SUPPLIER/VENDOR is the company that ISSUED/SENT this document — their name/logo/address is at the TOP
 13. The BUYER is the company RECEIVING the document — look for "Prepared For", "Bill To", "Customer", "Ship To"
 17. DEDUPLICATION: If the same line item appears more than once (duplicate tables from watermarks or split pages), extract it ONLY ONCE. Compare descriptions — identical rows should not be repeated
+18. MULTI-LINE DESCRIPTIONS: In scanned/OCR documents, item descriptions often wrap across multiple lines. A new line item starts when you see a QUANTITY NUMBER at the beginning of a line (e.g., "1 Product Name", "2 Service Description"). Lines WITHOUT a leading quantity number are continuations of the previous item's description. Count the quantity numbers to determine how many line items exist
 14. item_id: If the document shows a product code, SKU, part number, catalog number, or item reference for a line item, extract it as item_id. Look for columns like "Item Code", "SKU", "Part No", "Product Code", "Ref", "Item #". If no product code exists in the document, OMIT item_id
 15. unit_of_measure: Extract the unit if present (e.g., "each", "box", "kg", "hours", "months", "days", "per annum", "set", "licence"). Look for columns like "UOM", "Unit", "Measure". If not explicitly stated, OMIT — do not guess
 16. For EXCEL/spreadsheet documents: The "DOCUMENT METADATA" section above the table contains header information (supplier company, buyer, dates, quote/PO number). The "LINE ITEMS TABLE" section contains products/services with column-labeled values. Extract header fields from metadata and line items from the table. The "TOTALS" section has subtotal, tax, and total values
