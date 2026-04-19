@@ -327,102 +327,124 @@ class AgentNickOrchestrator:
     def _dispatch_extraction(
         self, file_path: str, doc_type: str
     ) -> Optional[Dict[str, Any]]:
-        """Extract document content using parallel DocWain + LLM approach.
+        """Extract document content using intelligent structure-preserving pipeline.
 
         Strategy:
-        1. Extract text from file (OCR pipeline)
-        2. Launch DocWain API + LLM extraction IN PARALLEL
-        3. DocWain is the accuracy-primary source
-        4. LLM fills any gaps DocWain misses
-        5. Extraction engine only as last resort fallback
-
-        This reduces latency by running both extractors concurrently
-        and improves accuracy by using DocWain as primary for all formats.
+        1. Download file from S3
+        2. Parse into structured representation (tables, metadata, totals)
+        3. Send structured data to LLM for intelligent mapping to schema
+        4. Verify extraction against source structure
+        5. Retry with targeted guidance if verification finds errors
+        6. Fall back to legacy extraction engine as last resort
         """
         try:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
             from services.direct_extraction_service import (
                 DirectExtractionService,
                 TABLE_SCHEMAS,
             )
+            from services.intelligent_extractor import IntelligentExtractor
 
             service = DirectExtractionService(self._agent_nick)
-            text, file_bytes = service._get_document_text(file_path)
-
-            if not text.strip():
-                logger.error("[AgentNick] No text extracted from %s", file_path)
-                return None
-
             schema = TABLE_SCHEMAS.get(doc_type)
             if not schema:
                 logger.error("[AgentNick] No schema for doc_type=%s", doc_type)
                 return None
 
-            basename = os.path.splitext(os.path.basename(file_path))[0]
-            enhanced_text = self._build_enhanced_text(text, basename, doc_type)
+            # Step 1: Download file
+            text, file_bytes = service._get_document_text(file_path)
+            ext = os.path.splitext(file_path)[1].lower() or ".pdf"
 
-            # Inject vendor profile context if available
+            if not file_bytes and not text.strip():
+                logger.error("[AgentNick] No content extracted from %s", file_path)
+                return None
+
+            # Step 2: Parse document into structured representation
+            extractor = IntelligentExtractor(service)
+            doc_structure = extractor.parse_document(file_bytes, ext)
+
+            # If structured parsing produced no tables and no metadata,
+            # fall back to raw text from the existing extraction pipeline
+            if (
+                not doc_structure.tables
+                and not doc_structure.metadata
+                and not doc_structure.raw_text
+            ):
+                if text.strip():
+                    doc_structure.raw_text = text
+                else:
+                    logger.error(
+                        "[AgentNick] No text or structure extracted from %s",
+                        file_path,
+                    )
+                    return None
+
+            # Inject vendor profile context
             supplier_hint = self._extract_supplier_from_filename(file_path)
             vendor_context = self._get_vendor_context(supplier_hint or "")
             if vendor_context:
-                enhanced_text = vendor_context + "\n\n" + enhanced_text
+                doc_structure.metadata.insert(
+                    0, {"label": "VENDOR_PROFILE", "value": vendor_context}
+                )
 
-            # ---- LLM-ONLY EXTRACTION ----
-            # Single comprehensive LLM call with full schema.
-            # DocWain disabled — LLM handles all document formats.
-            llm_result = service._llm_extract(enhanced_text, doc_type, schema)
+            # Step 3-4: Intelligent extraction with verification
+            result = extractor.extract(doc_structure, doc_type, schema)
 
-            header: Dict[str, Any] = {}
-            line_items: List[Dict[str, Any]] = []
-
-            if llm_result:
-                header = llm_result.get("header", {})
-                line_items = llm_result.get("line_items", [])
+            if result:
+                header = result.get("header", {})
+                line_items = result.get("line_items", [])
+                verification = result.get("_verification", {})
                 logger.info(
-                    "[AgentNick] LLM primary extraction: %d header fields, %d line items",
-                    len(header), len(line_items),
+                    "[AgentNick] Intelligent extraction: %d header fields, "
+                    "%d line items, %d issues",
+                    len(header),
+                    len(line_items),
+                    verification.get("critical_count", 0)
+                    + verification.get("warning_count", 0),
                 )
 
-            # If both DocWain and LLM got results, validate line items
-            if not line_items and text:
-                logger.info("[AgentNick] No line items from either source — focused extraction")
-                line_items = self._llm_extract_line_items(text, doc_type, header)
+                # If no line items, try focused extraction as fallback
+                if not line_items and (text or doc_structure.raw_text):
+                    fallback_text = text or doc_structure.raw_text
+                    logger.info(
+                        "[AgentNick] No line items — trying focused extraction"
+                    )
+                    line_items = self._llm_extract_line_items(
+                        fallback_text, doc_type, header
+                    )
 
-            # ---- FALLBACK: Extraction engine ----
-            suffix = os.path.splitext(file_path)[1].lower() or ".pdf"
-            if not header and suffix in (".pdf", ".docx"):
-                logger.info("[AgentNick] Both DocWain and LLM failed — falling back to extraction engine")
-                import tempfile
-                from agents.extraction_engine import (
-                    run_data_extraction,
-                    set_db_connection_func,
+                return {
+                    "header": self._sanitize_header(header),
+                    "line_items": self._sanitize_items(line_items),
+                    "_source_text": text or doc_structure.raw_text,
+                }
+
+            # Step 5: Fall back to legacy extraction
+            logger.info(
+                "[AgentNick] Intelligent extraction failed — trying legacy"
+            )
+            if text.strip():
+                basename = os.path.splitext(os.path.basename(file_path))[0]
+                enhanced_text = self._build_enhanced_text(
+                    text, basename, doc_type
                 )
-                set_db_connection_func(self._agent_nick.get_db_connection)
-                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                    tmp.write(file_bytes)
-                    tmp_path = tmp.name
-                try:
-                    engine_result = run_data_extraction(tmp_path)
-                finally:
-                    try:
-                        os.unlink(tmp_path)
-                    except Exception:
-                        pass
-                if engine_result and not engine_result.get("error"):
-                    mapped = self._map_engine_result(engine_result)
-                    if mapped:
-                        mapped["_source_text"] = text
-                        return mapped
+                llm_result = service._llm_extract(
+                    enhanced_text, doc_type, schema
+                )
+                if llm_result:
+                    return {
+                        "header": self._sanitize_header(
+                            llm_result.get("header", {})
+                        ),
+                        "line_items": self._sanitize_items(
+                            llm_result.get("line_items", [])
+                        ),
+                        "_source_text": text,
+                    }
 
-            if not header:
-                logger.error("[AgentNick] All extraction methods failed for %s", file_path)
-                return None
-
-            return {
-                "header": self._sanitize_header(header),
-                "line_items": self._sanitize_items(line_items),
-                "_source_text": text,
-            }
+            logger.error(
+                "[AgentNick] All extraction methods failed for %s", file_path
+            )
+            return None
 
         except Exception as exc:
             logger.exception(
