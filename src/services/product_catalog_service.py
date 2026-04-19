@@ -161,6 +161,54 @@ class ProductCatalogService:
         """Number of products currently in the cache."""
         return len(self._cache)
 
+    def backfill_item_ids(self) -> int:
+        """Populate item_id on existing line items that have NULL item_id.
+
+        Matches item_description against the product catalog and updates
+        the item_id column. Returns count of rows updated.
+        """
+        total_updated = 0
+        tables = [
+            ("proc.bp_po_line_items", "po_line_id", "po_id"),
+            ("proc.bp_quote_line_items", "quote_line_id", "quote_id"),
+            ("proc.bp_invoice_line_items", "invoice_line_id", "invoice_id"),
+        ]
+        for table, pk, fk in tables:
+            try:
+                conn = self._get_conn()
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT {pk}, item_description, unit_price, {fk} "
+                        f"FROM {table} WHERE item_id IS NULL AND item_description IS NOT NULL"
+                    )
+                    rows = cur.fetchall()
+                    for line_pk, desc, price, doc_id in rows:
+                        price_f = float(price) if price else None
+                        product_id = self.match_or_create(
+                            item_description=desc,
+                            item_id_from_doc=None,
+                            unit_price=price_f,
+                            currency=None,
+                            unit_of_measure=None,
+                            doc_type=table.split("_")[1] if "_" in table else "",
+                            doc_id=str(doc_id or ""),
+                        )
+                        cur.execute(
+                            f"UPDATE {table} SET item_id = %s WHERE {pk} = %s",
+                            (product_id, line_pk),
+                        )
+                        total_updated += 1
+                conn.close()
+            except Exception:
+                logger.warning(
+                    "item_id backfill failed for %s", table, exc_info=True
+                )
+
+        if total_updated:
+            logger.info("Backfilled item_id on %d line items", total_updated)
+        return total_updated
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
