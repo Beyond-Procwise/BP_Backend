@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 EXTRACTION_MODEL = os.getenv(
-    "PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:latest"
+    "PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:extract"
 )
 
 
