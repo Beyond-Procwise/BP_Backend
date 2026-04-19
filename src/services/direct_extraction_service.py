@@ -687,11 +687,15 @@ class DirectExtractionService:
             for p in doc.paragraphs:
                 if p.text.strip():
                     parts.append(p.text.strip())
+            seen_rows: set[str] = set()  # deduplicate rows from split/watermarked tables
             for table in doc.tables:
                 for row_idx, row in enumerate(table.rows):
                     cells = [c.text.strip() for c in row.cells if c.text.strip()]
                     if cells:
                         line = " | ".join(cells)
+                        if line in seen_rows:
+                            continue  # skip duplicate row from split table
+                        seen_rows.add(line)
                         parts.append(line)
                         # After the first row (header), add a separator
                         if row_idx == 0:
@@ -776,12 +780,12 @@ class DirectExtractionService:
             # Step 1: Image preprocessing
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
 
-            # Upscale small images (phone photos, thumbnails)
+            # Upscale images for better OCR — procurement documents need detail
             h, w = gray.shape
-            if max(h, w) < 1500:
-                scale = 2.0
+            if max(h, w) < 2000:
+                scale = max(2.0, 2500 / max(h, w))
                 gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-                logger.info("Image upscaled %.0fx (was %dx%d)", scale, w, h)
+                logger.info("Image upscaled %.1fx (was %dx%d → %dx%d)", scale, w, h, int(w*scale), int(h*scale))
 
             # Deskew: detect and correct rotation
             try:
@@ -862,13 +866,15 @@ class DirectExtractionService:
                     # Sort by vertical position then horizontal for reading order
                     ocr_results.sort(key=lambda r: (r[0][0][1], r[0][0][0]))
 
-                    # Group into lines by Y proximity
+                    # Group into lines by Y proximity (adaptive threshold)
+                    img_h = img_array.shape[0]
+                    y_threshold = max(15, img_h // 80)  # ~1.25% of image height
                     lines = []
                     current_line = []
                     last_y = -100
                     for bbox, text_val, conf in ocr_results:
                         y = bbox[0][1]
-                        if abs(y - last_y) > 15 and current_line:
+                        if abs(y - last_y) > y_threshold and current_line:
                             lines.append(" ".join(current_line))
                             current_line = []
                         current_line.append(text_val)
@@ -1256,9 +1262,10 @@ CRITICAL RULES:
 8. Line items: extract EVERY line item row. STOP at subtotal/total/tax summary rows — those are NOT line items. Rows with quantity=0 or total=0 with no description should be SKIPPED
 9. quantity: a COUNT of items (typically small: 1, 2, 5, 10, 100). NOT a price or amount
 10. unit_price: cost PER SINGLE ITEM. NOT the total line amount
-11. line_amount / line_total: the total for that line (usually quantity × unit_price)
+11. line_amount / line_total: the total for that line as WRITTEN in the document. Do NOT compute quantity × unit_price — extract the actual total value shown. If the document says line_total is 31500, extract 31500 even if qty × price gives a different number
 12. The SUPPLIER/VENDOR is the company that ISSUED/SENT this document — their name/logo/address is at the TOP
 13. The BUYER is the company RECEIVING the document — look for "Prepared For", "Bill To", "Customer", "Ship To"
+17. DEDUPLICATION: If the same line item appears more than once (duplicate tables from watermarks or split pages), extract it ONLY ONCE. Compare descriptions — identical rows should not be repeated
 14. item_id: If the document shows a product code, SKU, part number, catalog number, or item reference for a line item, extract it as item_id. Look for columns like "Item Code", "SKU", "Part No", "Product Code", "Ref", "Item #". If no product code exists in the document, OMIT item_id
 15. unit_of_measure: Extract the unit if present (e.g., "each", "box", "kg", "hours", "months", "days", "per annum", "set", "licence"). Look for columns like "UOM", "Unit", "Measure". If not explicitly stated, OMIT — do not guess
 16. For EXCEL/spreadsheet documents: The "DOCUMENT METADATA" section above the table contains header information (supplier company, buyer, dates, quote/PO number). The "LINE ITEMS TABLE" section contains products/services with column-labeled values. Extract header fields from metadata and line items from the table. The "TOTALS" section has subtotal, tax, and total values
