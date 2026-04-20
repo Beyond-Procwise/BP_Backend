@@ -1498,7 +1498,10 @@ DOCUMENT TEXT:
                     payload[line_fk] = pk_value
                     if line_seq and not payload.get(line_seq):
                         payload[line_seq] = idx
-                    if line_pk and not payload.get(line_pk):
+                    # Always generate a scoped PK: "{parent_pk}-{idx}"
+                    # LLM-provided line IDs (bare numbers like "1", "2")
+                    # can conflict across documents, so we override them.
+                    if line_pk:
                         payload[line_pk] = f"{pk_value}-{idx}"
 
                     # Add audit columns
