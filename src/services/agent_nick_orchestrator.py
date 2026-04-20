@@ -901,6 +901,44 @@ class AgentNickOrchestrator:
             except (ValueError, TypeError):
                 pass
 
+        # ---- ADDRESS DERIVATIONS (PO) ----
+        if doc_type == "Purchase_Order":
+            postal = str(header.get("postal_code", "") or "")
+            addr1 = str(header.get("delivery_address_line1", "") or "")
+            addr2 = str(header.get("delivery_address_line2", "") or "")
+            city = str(header.get("delivery_city", "") or "")
+
+            # Derive ship_to_country from postcode pattern
+            if not header.get("ship_to_country") and postal:
+                if re.match(r"[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}", postal, re.I):
+                    header["ship_to_country"] = "United Kingdom"
+                    logger.info("[Derive] ship_to_country=United Kingdom from UK postcode %s", postal)
+
+            # Derive delivery_region from address fields
+            if not header.get("delivery_region"):
+                # Check address_line2 for county/region
+                uk_regions = [
+                    "West Sussex", "East Sussex", "Surrey", "Kent", "Hampshire",
+                    "Berkshire", "Oxfordshire", "Hertfordshire", "Essex",
+                    "Greater London", "London", "Middlesex", "Norfolk", "Suffolk",
+                    "Devon", "Cornwall", "Somerset", "Dorset", "Wiltshire",
+                    "Gloucestershire", "Warwickshire", "West Midlands",
+                    "Leicestershire", "Nottinghamshire", "Yorkshire",
+                    "Lancashire", "Cheshire", "Merseyside", "Manchester",
+                ]
+                for region in uk_regions:
+                    if region.lower() in addr2.lower() or region.lower() in addr1.lower():
+                        header["delivery_region"] = region
+                        logger.info("[Derive] delivery_region=%s from address", region)
+                        break
+
+            # Derive delivery_address_line2 from city + region when missing
+            if not header.get("delivery_address_line2") and city:
+                region = header.get("delivery_region", "")
+                if region and region.lower() not in city.lower():
+                    header["delivery_address_line2"] = f"{city}, {region}"
+                    logger.info("[Derive] delivery_address_line2=%s", header["delivery_address_line2"])
+
     @staticmethod
     def _extract_supplier_from_filename(file_path: str) -> Optional[str]:
         """Extract supplier name from filename — it's always the leading portion."""
