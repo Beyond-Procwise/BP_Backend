@@ -482,27 +482,56 @@ class AgentNickOrchestrator:
         return hint + smart_text
 
     @staticmethod
+    @staticmethod
     def _sanitize_header(header: Dict[str, Any]) -> Dict[str, Any]:
         """Sanitize extracted header — fix known LLM mistakes."""
         cleaned = {k: (v if v != "" else None) for k, v in header.items()}
 
-        # Fix: buyer_id / supplier_id must be company names, not addresses
-        _address_indicators = [
+        # Fix: buyer_id / supplier_id / supplier_name must be company names
+        _address_indicators = {
             "street", "road", "lane", "way", "park", "unit ", "floor",
-            "department", "suite", "building", "house", ",",
-        ]
+            "department", "suite", "building", "house", "avenue", "drive",
+            "close", "crescent", "place", "terrace", "square",
+        }
+        # Postcode patterns (UK, US, etc.)
+        _postcode_re = re.compile(
+            r"[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}|"  # UK: RH13 5QH
+            r"\d{5}(-\d{4})?",                     # US: 10001
+            re.IGNORECASE,
+        )
+
         for field in ("buyer_id", "supplier_id", "supplier_name"):
             val = cleaned.get(field)
-            if val and isinstance(val, str):
-                val_lower = val.lower()
-                # If value looks like an address (contains address words + is long)
-                addr_words = sum(1 for w in _address_indicators if w in val_lower)
-                if addr_words >= 2 and len(val) > 40:
-                    logger.warning(
-                        "Sanitize: %s looks like an address, not a company name: '%s'",
-                        field, val[:60],
-                    )
-                    cleaned[field] = None  # Clear — will be filled by supplier resolution
+            if not val or not isinstance(val, str):
+                continue
+            val_lower = val.lower().strip()
+
+            # Check 1: Contains postcode → likely address
+            if _postcode_re.search(val):
+                logger.warning(
+                    "Sanitize: %s contains postcode, clearing: '%s'",
+                    field, val[:60],
+                )
+                cleaned[field] = None
+                continue
+
+            # Check 2: Multiple address words → likely address
+            addr_words = sum(1 for w in _address_indicators if w in val_lower)
+            if addr_words >= 1 and len(val) > 25:
+                logger.warning(
+                    "Sanitize: %s looks like address, clearing: '%s'",
+                    field, val[:60],
+                )
+                cleaned[field] = None
+                continue
+
+            # Check 3: Truncated values (< 4 chars and not a known abbreviation)
+            if len(val.strip()) < 4 and val.strip() not in ("Ltd", "Inc", "LLC", "PLC"):
+                logger.warning(
+                    "Sanitize: %s too short, clearing: '%s'",
+                    field, val,
+                )
+                cleaned[field] = None
 
         return cleaned
 
