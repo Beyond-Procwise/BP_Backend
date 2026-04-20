@@ -172,7 +172,6 @@ def main():
         optim="paged_adamw_8bit",
         report_to="none",
         dataset_text_field="text",
-        max_seq_length=args.max_seq_len,
     )
 
     # Train
@@ -190,6 +189,22 @@ def main():
     logger.info(f"Saving LoRA adapter to {args.output}")
     trainer.save_model(args.output)
     tokenizer.save_pretrained(args.output)
+
+    # Cleanup: remove intermediate checkpoints to free disk space
+    import shutil
+    output_path = Path(args.output)
+    for ckpt_dir in sorted(output_path.glob("checkpoint-*")):
+        logger.info(f"Cleanup: removing checkpoint {ckpt_dir.name}")
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
+    # Remove any merged/GGUF artifacts from previous runs
+    for subdir in ("merged",):
+        d = output_path / subdir
+        if d.exists():
+            logger.info(f"Cleanup: removing {d}")
+            shutil.rmtree(d, ignore_errors=True)
+    for gguf in output_path.glob("*.gguf"):
+        logger.info(f"Cleanup: removing {gguf.name}")
+        gguf.unlink(missing_ok=True)
 
     logger.info("QLoRA fine-tuning v2 complete!")
     logger.info(f"Adapter saved to: {args.output}")
