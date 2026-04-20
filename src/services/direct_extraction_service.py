@@ -1186,8 +1186,9 @@ class DirectExtractionService:
     _PROCUREMENT_CONTEXT = {
         "Invoice": """PROCUREMENT CONTEXT — INVOICE:
 An invoice is a payment request from a SUPPLIER to a BUYER for goods/services delivered.
-- supplier_id / supplier_name: The company that ISSUED this invoice (the SELLER). Look for "From", "Vendor", "Supplier", company letterhead, or the name at the TOP of the document. This is NOT the "Bill To" or "Ship To" company. Extract the COMPANY NAME only — not an address, not a department, not a person's name.
-- buyer_id: The COMPANY NAME being BILLED (the purchaser). Look for "Bill To", "Invoice To", "Customer". CRITICAL: buyer_id must be a COMPANY NAME (e.g., "Assurity Ltd", "Horizon Retail Group Ltd"). If the document only shows a department or address (e.g., "Accounts Payable Department, Unit 12..."), look elsewhere for the actual company name — check the delivery address, header, or PO reference. NEVER put an address, department name, or person's name in buyer_id.
+- supplier_id / supplier_name: The COMPANY NAME that ISSUED this invoice (the SELLER). Look for "From", "Vendor", "Supplier", company letterhead at the TOP. Extract ONLY the company name — never an address, department, or person's name.
+- buyer_id: The COMPANY NAME being BILLED. Look for "Bill To", "Invoice To", "Customer". Must be a company name (e.g., "Assurity Ltd"). If "Bill To" only shows a department or address, look for the company name elsewhere in the document. NEVER put an address in buyer_id.
+- country, region: Extract from the buyer's or invoice address. Capture the country and region/county if stated.
 - invoice_id: The unique invoice reference number. Look for "Invoice No", "Invoice #", "Inv No", "Reference". This is the document's own ID, not a PO or order number.
 - po_id: The Purchase Order this invoice relates to. Look for "PO Number", "Order Ref", "Your Ref".
 - invoice_date: When the invoice was ISSUED. Look for "Invoice Date", "Date", "Date of Issue".
@@ -1201,8 +1202,9 @@ An invoice is a payment request from a SUPPLIER to a BUYER for goods/services de
         "Purchase_Order": """PROCUREMENT CONTEXT — PURCHASE ORDER:
 A PO is issued BY the buyer TO a supplier, authorizing purchase of goods/services.
 - po_id: The PO number. Look for "PO Number", "Purchase Order No", "Order #".
-- supplier_name: The company RECEIVING the order — the VENDOR who will FULFIL it. Look for "To", "Vendor", "Supplier", "Ship From", "Deliver From". This is the company the goods/services are being ordered FROM.
-- buyer_id: The company that CREATED/ISSUED the PO — the one PLACING the order. Look for letterhead, "From", "Issued By", "Buyer", "Ordered By", "Ship To", "Bill To". This is the company PAYING for the goods/services.
+- supplier_name: The COMPANY NAME of the vendor RECEIVING the order. Look for "To", "Vendor", "Supplier". Extract ONLY the company name (e.g., "Perry Ltd", "TechNova Ltd"). NEVER put an address, street name, or postcode in supplier_name.
+- buyer_id: The COMPANY NAME that CREATED/ISSUED the PO. Look for letterhead, "From", "Issued By", "Buyer". Extract ONLY the company name.
+- delivery_address_line1, delivery_address_line2, delivery_city, postal_code: Extract the FULL delivery/shipping address from the document. Addresses may span multiple lines — capture all lines. delivery_address_line1 = street/building, delivery_city = city/town, postal_code = postcode/zip.
 - order_date: When the PO was issued.
 - expected_delivery_date: When goods/services are expected.
 - total_amount: The SUBTOTAL before tax — sum of all line items BEFORE VAT/tax is added. Look for "Subtotal", "Net Total", "Total Before Tax". This is NOT the grand total including VAT.
@@ -1217,8 +1219,8 @@ A quote is a pricing proposal from a SUPPLIER to a prospective BUYER.
 - quote_id: The quotation reference number. Look for "Quote No", "Quotation #", "Quote Number", "Ref", "QTE-", "QUT".
 - supplier_id: The company that CREATED and SENT this quote — the SELLER. This is the company whose name, logo, letterhead, or address appears at the TOP of the document. For Excel quotes, the supplier name is in the first few rows above the table (e.g., "PeopleFirst HR Solutions Ltd", "SupplyX Ltd"). This is NOT the "Prepared For" or "Bill To" company.
 - buyer_id: The company the quote was SENT TO — the prospective BUYER/CUSTOMER. Look for "Prepared For", "Customer", "Attention", "Bill To", "Invoice Address". For Excel quotes, this is the company in the "Prepared For" or "Invoice Address" section.
-- supplier_address: The supplier's full address (from letterhead/header).
-- buyer_address: The buyer's address (from "Invoice Address", "Delivery Address", "Bill To").
+- supplier_address: The supplier's FULL address including all lines (street, city, postcode, country). Combine multiple address lines into one value. Look in letterhead/header.
+- buyer_address: The buyer's FULL address including all lines. Look in "Invoice Address", "Delivery Address", "Bill To" sections. Combine multi-line address into one value.
 - quote_date: When the quote was issued. Look for "Quote Date", "Date", "Issued".
 - validity_date: When the quote expires. Look for "Valid Until", "Expiry", "Quote valid for X days". Must be AFTER quote_date.
 - total_amount: The SUBTOTAL before tax. Look for "Subtotal", "Net Total", "Total (ex VAT)". NOT the final total with VAT.
