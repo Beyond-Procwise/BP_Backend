@@ -665,6 +665,13 @@ class IntelligentExtractor:
                         result = retry_result
                         issues = retry_issues
 
+        # Phase 4b: RECONCILE — compare LLM results against source structure
+        # If the source document has more rows than the LLM extracted,
+        # construct missing rows directly from the parsed data.
+        result = self._reconcile_line_items(result, doc, doc_type)
+
+        # Re-verify after reconciliation
+        issues = self._verify(result, doc, doc_type)
         result["_verification"] = issues
 
         # Phase 5: LEARN — capture pattern on successful extraction
@@ -697,6 +704,108 @@ class IntelligentExtractor:
                 column_mapping=col_mapping,
                 extraction_hints=hints,
             )
+
+        return result
+
+    def _reconcile_line_items(
+        self,
+        result: Dict[str, Any],
+        doc: DocumentStructure,
+        doc_type: str,
+    ) -> Dict[str, Any]:
+        """Reconcile LLM-extracted line items against parsed source structure.
+
+        If the source document has table rows that the LLM missed,
+        construct them directly from the parsed cell data. This is a
+        deterministic safety net — no LLM needed for the missing rows.
+        """
+        if not doc.tables:
+            return result
+
+        line_items = result.get("line_items", [])
+        source_rows = doc.tables[0].get("rows", [])
+        source_headers = doc.tables[0].get("headers", [])
+
+        if not source_rows or len(line_items) >= len(source_rows):
+            return result  # LLM got all rows or more
+
+        # Build a set of descriptions from LLM results for matching
+        extracted_descs = set()
+        for item in line_items:
+            desc = str(item.get("item_description", "")).lower().strip()
+            if desc:
+                # Use first 30 chars for matching (handles truncation)
+                extracted_descs.add(desc[:30])
+
+        # Map source columns to schema fields
+        col_map = {}
+        if source_headers:
+            for i, h in enumerate(source_headers):
+                field = self._guess_schema_field(h)
+                if field:
+                    col_map[i] = field
+        else:
+            # Use inferred headers
+            inferred = DocumentStructureMixin._infer_column_headers(source_rows)
+            field_map = {
+                "Quantity": "quantity",
+                "Description": "item_description",
+                "Unit Price": "unit_price",
+                "Line Total": "line_total" if doc_type != "Invoice" else "line_amount",
+            }
+            for i, h in enumerate(inferred):
+                if h in field_map:
+                    col_map[i] = field_map[h]
+
+        # Find missing rows
+        missing = []
+        for row in source_rows:
+            # Check if this row's description is already in extracted items
+            desc_cell = ""
+            for i, cell in enumerate(row):
+                if col_map.get(i) == "item_description":
+                    desc_cell = str(cell).lower().strip()
+                    break
+            if not desc_cell:
+                # Try to find the longest text cell as description
+                for cell in row:
+                    if len(str(cell)) > len(desc_cell):
+                        desc_cell = str(cell).lower().strip()
+
+            if desc_cell[:30] in extracted_descs:
+                continue  # Already extracted
+
+            # This row is missing — construct from source
+            item = {}
+            for i, cell in enumerate(row):
+                field = col_map.get(i)
+                if field:
+                    # Coerce numeric values
+                    val = str(cell).strip()
+                    if field in ("quantity", "unit_price", "line_total", "line_amount"):
+                        cleaned = re.sub(r"[£$€,\s]", "", val)
+                        try:
+                            item[field] = float(cleaned)
+                        except ValueError:
+                            item[field] = val
+                    else:
+                        item[field] = val
+
+            if item.get("item_description"):
+                missing.append(item)
+                logger.info(
+                    "[Reconcile] Recovered missing line item from source: %s",
+                    str(item.get("item_description", ""))[:50],
+                )
+
+        if missing:
+            logger.info(
+                "[Reconcile] Added %d missing line items from source structure "
+                "(LLM had %d, source has %d)",
+                len(missing), len(line_items), len(source_rows),
+            )
+            # Insert missing items at the beginning (they're usually the first rows)
+            result["line_items"] = missing + line_items
 
         return result
 
