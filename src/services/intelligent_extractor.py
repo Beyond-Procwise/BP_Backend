@@ -706,8 +706,9 @@ EXTRACTION RULES:
 7. line_total / line_amount: extract the ACTUAL value from the document. Do NOT compute quantity × unit_price
 8. quantity: COUNT of items. unit_price: cost PER SINGLE ITEM
 9. The SUPPLIER is the company that CREATED/SENT this document (letterhead, logo, top of document)
-10. The BUYER is the RECIPIENT company. buyer_id MUST be a COMPANY NAME (e.g., "Assurity Ltd", "Horizon Retail Group Ltd"). NEVER put an address, department, person name, or phone number in buyer_id. If "Bill To" or "Invoice To" shows only a department/address, look for the company name elsewhere in the document
+10. The BUYER is the RECIPIENT company. buyer_id MUST be a COMPANY NAME (e.g., "Assurity Ltd", "Horizon Retail Group Ltd"). NEVER put an address in buyer_id. If "Bill To" shows only a department/address, look for the company name elsewhere
 11. supplier_id / supplier_name MUST be a COMPANY NAME. Never put an address in these fields
+16. ADDRESSES: Capture full multi-line addresses in the appropriate address fields (supplier_address, buyer_address, delivery_address_line1/2, delivery_city, postal_code). Combine multiple address lines into one value. Addresses and company names go in SEPARATE fields
 12. item_id: extract product code/SKU/part number if present, otherwise OMIT
 13. unit_of_measure: extract if explicitly stated, otherwise OMIT
 14. If duplicate line items exist (from watermarks/split pages), include each item ONLY ONCE
