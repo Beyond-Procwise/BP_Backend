@@ -698,7 +698,7 @@ HEADER FIELDS:
 
 EXTRACTION RULES:
 1. EXTRACT EXACTLY what the document says — never invent or compute values
-2. Dates → YYYY-MM-DD format
+2. Dates → YYYY-MM-DD format. ONLY extract dates that are explicitly written in the document. Do NOT compute dates from payment terms
 3. Amounts → numbers only, strip currency symbols (£1,234.56 → 1234.56)
 4. Currency → 3-letter ISO code (GBP, USD, EUR)
 5. tax_percent → the percentage NUMBER (20% → 20)
@@ -706,11 +706,12 @@ EXTRACTION RULES:
 7. line_total / line_amount: extract the ACTUAL value from the document. Do NOT compute quantity × unit_price
 8. quantity: COUNT of items. unit_price: cost PER SINGLE ITEM
 9. The SUPPLIER is the company that CREATED/SENT this document (letterhead, logo, top of document)
-10. The BUYER is the RECIPIENT (Prepared For, Bill To, Customer, Ship To)
-11. item_id: extract product code/SKU/part number if present, otherwise OMIT
-12. unit_of_measure: extract if explicitly stated, otherwise OMIT
-13. If duplicate line items exist (from watermarks/split pages), include each item ONLY ONCE
-14. If a field is NOT in the document, OMIT it — do not guess
+10. The BUYER is the RECIPIENT company. buyer_id MUST be a COMPANY NAME (e.g., "Assurity Ltd", "Horizon Retail Group Ltd"). NEVER put an address, department, person name, or phone number in buyer_id. If "Bill To" or "Invoice To" shows only a department/address, look for the company name elsewhere in the document
+11. supplier_id / supplier_name MUST be a COMPANY NAME. Never put an address in these fields
+12. item_id: extract product code/SKU/part number if present, otherwise OMIT
+13. unit_of_measure: extract if explicitly stated, otherwise OMIT
+14. If duplicate line items exist (from watermarks/split pages), include each item ONLY ONCE
+15. If a field is NOT in the document, OMIT it — do not guess or compute it
 
 Return ONLY this JSON:
 {{

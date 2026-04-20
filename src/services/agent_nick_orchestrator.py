@@ -483,7 +483,28 @@ class AgentNickOrchestrator:
 
     @staticmethod
     def _sanitize_header(header: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: (v if v != "" else None) for k, v in header.items()}
+        """Sanitize extracted header — fix known LLM mistakes."""
+        cleaned = {k: (v if v != "" else None) for k, v in header.items()}
+
+        # Fix: buyer_id / supplier_id must be company names, not addresses
+        _address_indicators = [
+            "street", "road", "lane", "way", "park", "unit ", "floor",
+            "department", "suite", "building", "house", ",",
+        ]
+        for field in ("buyer_id", "supplier_id", "supplier_name"):
+            val = cleaned.get(field)
+            if val and isinstance(val, str):
+                val_lower = val.lower()
+                # If value looks like an address (contains address words + is long)
+                addr_words = sum(1 for w in _address_indicators if w in val_lower)
+                if addr_words >= 2 and len(val) > 40:
+                    logger.warning(
+                        "Sanitize: %s looks like an address, not a company name: '%s'",
+                        field, val[:60],
+                    )
+                    cleaned[field] = None  # Clear — will be filled by supplier resolution
+
+        return cleaned
 
     @staticmethod
     def _sanitize_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

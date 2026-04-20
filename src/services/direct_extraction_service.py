@@ -1186,12 +1186,12 @@ class DirectExtractionService:
     _PROCUREMENT_CONTEXT = {
         "Invoice": """PROCUREMENT CONTEXT — INVOICE:
 An invoice is a payment request from a SUPPLIER to a BUYER for goods/services delivered.
-- supplier_id / supplier_name: The company that ISSUED this invoice (the SELLER). Look for "From", "Vendor", "Supplier", company letterhead, or the name at the TOP of the document. This is NOT the "Bill To" or "Ship To" company.
-- buyer_id: The company being BILLED (the purchaser). Look for "Bill To", "Invoice To", "Customer".
+- supplier_id / supplier_name: The company that ISSUED this invoice (the SELLER). Look for "From", "Vendor", "Supplier", company letterhead, or the name at the TOP of the document. This is NOT the "Bill To" or "Ship To" company. Extract the COMPANY NAME only — not an address, not a department, not a person's name.
+- buyer_id: The COMPANY NAME being BILLED (the purchaser). Look for "Bill To", "Invoice To", "Customer". CRITICAL: buyer_id must be a COMPANY NAME (e.g., "Assurity Ltd", "Horizon Retail Group Ltd"). If the document only shows a department or address (e.g., "Accounts Payable Department, Unit 12..."), look elsewhere for the actual company name — check the delivery address, header, or PO reference. NEVER put an address, department name, or person's name in buyer_id.
 - invoice_id: The unique invoice reference number. Look for "Invoice No", "Invoice #", "Inv No", "Reference". This is the document's own ID, not a PO or order number.
 - po_id: The Purchase Order this invoice relates to. Look for "PO Number", "Order Ref", "Your Ref".
 - invoice_date: When the invoice was ISSUED. Look for "Invoice Date", "Date", "Date of Issue".
-- due_date: When payment is DUE. Look for "Due Date", "Payment Due", "Terms Date". Must be AFTER invoice_date.
+- due_date: When payment is DUE. Look for "Due Date", "Payment Due", "Terms Date". Extract ONLY if an explicit due date is written in the document. Do NOT compute due_date from payment_terms — if there is no explicit date, OMIT this field.
 - invoice_amount: The SUBTOTAL before tax (net amount). Look for "Subtotal", "Net Total", "Amount Before Tax".
 - tax_amount: The tax/VAT amount. Look for "VAT", "Tax", "GST". Must be LESS than the subtotal.
 - tax_percent: The tax RATE as a percentage (e.g., 20 for 20% VAT). Look for "VAT @20%", "Tax Rate". If the document says "20%" the value is 20, not 0.20. Do NOT confuse line item quantities or reference numbers with tax percentage.
