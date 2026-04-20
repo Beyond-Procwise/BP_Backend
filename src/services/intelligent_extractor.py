@@ -68,19 +68,16 @@ class DocumentStructure:
                 parts.append("| " + " | ".join(str(h) for h in headers) + " |")
                 parts.append("|" + "|".join("---" for _ in headers) + "|")
 
+            # If no headers, infer column labels from data pattern
+            if not headers and rows:
+                headers = DocumentStructureMixin._infer_column_headers(rows)
+
             for row_idx, row in enumerate(rows):
-                if headers:
-                    # Label each cell with header for clarity
-                    labeled = []
-                    for i, cell in enumerate(row):
-                        hdr = headers[i] if i < len(headers) else f"Col{i+1}"
-                        labeled.append(f"{hdr}: {cell}")
-                    parts.append(f"  Row {row_idx + 1}: " + " | ".join(labeled))
-                else:
-                    parts.append(
-                        f"  Row {row_idx + 1}: "
-                        + " | ".join(str(c) for c in row)
-                    )
+                labeled = []
+                for i, cell in enumerate(row):
+                    hdr = headers[i] if i < len(headers) else f"Col{i+1}"
+                    labeled.append(f"{hdr}: {cell}")
+                parts.append(f"  Row {row_idx + 1}: " + " | ".join(labeled))
 
         # Totals
         if self.totals:
@@ -95,6 +92,64 @@ class DocumentStructure:
                 parts.append(f"  {note}")
 
         return "\n".join(parts)
+
+
+class DocumentStructureMixin:
+    """Shared utilities for document structure operations."""
+
+    @staticmethod
+    def _infer_column_headers(rows: list) -> list:
+        """Infer column headers from data patterns when no explicit headers exist.
+
+        Analyzes the first few rows to detect column types:
+        - Small integers (1-999) → Quantity
+        - Long text → Description
+        - Large numbers → Unit Price / Line Total
+        """
+        if not rows:
+            return []
+
+        num_cols = max(len(r) for r in rows)
+        headers = [f"Col{i+1}" for i in range(num_cols)]
+
+        # Analyze first 3 rows to determine column types
+        col_types = [{"small_int": 0, "text": 0, "money": 0} for _ in range(num_cols)]
+
+        for row in rows[:min(3, len(rows))]:
+            for i, cell in enumerate(row):
+                if i >= num_cols:
+                    break
+                val = str(cell).strip().replace(",", "").replace("£", "").replace("$", "")
+                try:
+                    num = float(val)
+                    if 0 < num < 1000 and num == int(num):
+                        col_types[i]["small_int"] += 1
+                    else:
+                        col_types[i]["money"] += 1
+                except ValueError:
+                    if len(str(cell)) > 5:
+                        col_types[i]["text"] += 1
+
+        # Assign labels based on dominant type
+        qty_assigned = False
+        desc_assigned = False
+        price_assigned = False
+
+        for i in range(num_cols):
+            ct = col_types[i]
+            if ct["small_int"] > ct["text"] and ct["small_int"] > ct["money"] and not qty_assigned:
+                headers[i] = "Quantity"
+                qty_assigned = True
+            elif ct["text"] > ct["small_int"] and ct["text"] > ct["money"] and not desc_assigned:
+                headers[i] = "Description"
+                desc_assigned = True
+            elif ct["money"] > 0 and not price_assigned:
+                headers[i] = "Unit Price"
+                price_assigned = True
+            elif ct["money"] > 0:
+                headers[i] = "Line Total"
+
+        return headers
 
 
 class IntelligentExtractor:
