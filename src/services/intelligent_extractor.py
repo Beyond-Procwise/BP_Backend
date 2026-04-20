@@ -349,6 +349,11 @@ class IntelligentExtractor:
                 # Find rows that look like line items (have numeric values)
                 line_item_rows = []
                 header_row = None
+                _col_header_words = {
+                    "qty", "quantity", "description", "item", "price",
+                    "total", "amount", "unit", "product", "service",
+                    "no", "ref", "uom",
+                }
                 for row in all_data_rows:
                     has_number = any(
                         cell.replace(",", "").replace(".", "").replace("£", "")
@@ -357,11 +362,20 @@ class IntelligentExtractor:
                     )
                     if has_number:
                         line_item_rows.append(row)
-                    elif not header_row and len([c for c in row if c]) >= 3:
-                        # First non-numeric row with 3+ cells = potential header
-                        header_row = row
+                    elif not header_row:
+                        # Check if this row looks like column headers
+                        row_words = set()
+                        for cell in row:
+                            if cell:
+                                row_words.update(cell.lower().split())
+                        if len(row_words & _col_header_words) >= 2:
+                            header_row = row
+                        else:
+                            # Not a header — treat as metadata
+                            non_empty = [c for c in row if c]
+                            for cell in non_empty:
+                                doc.metadata.append({"label": "", "value": cell})
                     else:
-                        # Other metadata row
                         non_empty = [c for c in row if c]
                         for cell in non_empty:
                             doc.metadata.append({"label": "", "value": cell})
