@@ -439,14 +439,38 @@ class AgentNickOrchestrator:
                 )
 
                 # If no line items, try focused extraction as fallback
+                # Use the legacy flat-text extraction first (more reliable for PDFs)
+                # then focused line-item extraction
                 if not line_items and (text or doc_structure.raw_text):
                     fallback_text = text or doc_structure.raw_text
                     logger.info(
-                        "[AgentNick] No line items — trying focused extraction"
+                        "[AgentNick] No line items — trying legacy + focused extraction"
                     )
-                    line_items = self._llm_extract_line_items(
-                        fallback_text, doc_type, header
-                    )
+                    # Try 1: Legacy full extraction (sometimes finds lines the intelligent extractor misses)
+                    try:
+                        from services.direct_extraction_service import DirectExtractionService
+                        legacy_result = service._llm_extract(
+                            self._build_enhanced_text(
+                                fallback_text,
+                                os.path.splitext(os.path.basename(file_path))[0],
+                                doc_type,
+                            ),
+                            doc_type, schema,
+                        )
+                        if legacy_result and legacy_result.get("line_items"):
+                            line_items = legacy_result["line_items"]
+                            logger.info(
+                                "[AgentNick] Legacy extraction found %d line items",
+                                len(line_items),
+                            )
+                    except Exception:
+                        pass
+
+                    # Try 2: Focused line-item-only extraction
+                    if not line_items:
+                        line_items = self._llm_extract_line_items(
+                            fallback_text, doc_type, header
+                        )
 
                 return {
                     "header": self._sanitize_header(header),
@@ -769,6 +793,23 @@ class AgentNickOrchestrator:
                         )
                     except Exception:
                         pass
+
+            # Default: if still no due_date and we have invoice_date,
+            # apply business default of invoice_date + 90 days
+            if not header.get("due_date") and inv_date_str:
+                try:
+                    from datetime import datetime as dt
+                    inv_date = dt.strptime(str(inv_date_str)[:10], "%Y-%m-%d")
+                    due = inv_date + timedelta(days=90)
+                    header["due_date"] = due.strftime("%Y-%m-%d")
+                    if not header.get("payment_terms"):
+                        header["payment_terms"] = "Net 90"
+                    logger.info(
+                        "[Derive] due_date=%s (default: invoice_date + 90 days)",
+                        header["due_date"],
+                    )
+                except Exception:
+                    pass
 
         # Derive validity_date for quotes
         if doc_type == "Quote" and not header.get("validity_date"):
@@ -1196,17 +1237,18 @@ class AgentNickOrchestrator:
             f"RULES:\n"
             f"- quantity is a COUNT (small number like 1, 2, 5, 10, 100)\n"
             f"- unit_price is COST PER ITEM (£ amount)\n"
-            f"- line_total = quantity × unit_price\n"
+            f"- line_total: extract the ACTUAL value from the document, do NOT compute\n"
             f"- Stop at Subtotal/Tax/Total rows — those are NOT line items\n"
             f"- Return ONLY the JSON array, nothing else\n\n"
-            f"Document:\n{text[:5000]}"
+            f"Document:\n{text}"
         )
         try:
             from services.ollama_client import ollama_generate
             raw = ollama_generate(
                 prompt,
                 model=AGENT_NICK_MODEL,
-                num_predict=2048,
+                num_predict=4096,
+                timeout=600,
             )
             if not raw:
                 return []
