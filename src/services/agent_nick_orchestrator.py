@@ -179,7 +179,6 @@ class AgentNickOrchestrator:
         # Step 3c: Extract cross-references from filename (PO links etc.)
         self._fill_cross_refs_from_filename(header, file_path, doc_type)
 
-        # Step 3d: Extract supplier name from filename as last resort
         # Step 3d: Supplier sanity check — reject bank/payment terms as supplier
         _bad_supplier_markers = (
             "bank name", "bank account", "sort code", "iban", "swift",
@@ -194,13 +193,38 @@ class AgentNickOrchestrator:
                 )
                 header[field] = ""
 
-        # Step 3e: Filename supplier fallback
-        if not header.get("supplier_id") and not header.get("supplier_name"):
-            fname_supplier = self._extract_supplier_from_filename(file_path)
-            if fname_supplier:
-                header["supplier_id"] = fname_supplier
+        # Step 3e: Filename-based supplier validation
+        # The filename is the ground truth: "{SUPPLIER} PO{num} for QUT{num}.pdf"
+        fname_supplier = self._extract_supplier_from_filename(file_path)
+        if fname_supplier:
+            extracted_sup = (
+                header.get("supplier_name")
+                or header.get("supplier_id")
+                or ""
+            )
+            # If no supplier extracted, or supplier doesn't match filename
+            if not extracted_sup:
                 header["supplier_name"] = fname_supplier
-                logger.info("[AgentNick] Filled supplier from filename: %s", fname_supplier)
+                if not header.get("supplier_id"):
+                    header["supplier_id"] = fname_supplier
+                logger.info(
+                    "[AgentNick] Filled supplier from filename: %s", fname_supplier
+                )
+            elif fname_supplier.lower().split()[0] not in extracted_sup.lower():
+                # Filename supplier's first word doesn't appear in extracted value
+                # This catches: extracted="Assurity Ltd" but filename="PERRY PO526689"
+                logger.warning(
+                    "[AgentNick] Supplier mismatch: extracted='%s' but filename says '%s' — using filename",
+                    extracted_sup, fname_supplier,
+                )
+                header["supplier_name"] = fname_supplier
+                header["supplier_id"] = fname_supplier
+
+        # Step 3f: Derive computable fields from document content
+        # Pass source text so derivation can find "valid for 30 days" etc.
+        header["_source_notes"] = extraction.get("_source_text", "")
+        self._derive_fields(header, doc_type)
+        header.pop("_source_notes", None)  # remove internal field before persistence
 
         # Step 4: Multi-pass validation and correction
         source_text = extraction.get("_source_text", "")
@@ -491,7 +515,8 @@ class AgentNickOrchestrator:
         _address_indicators = {
             "street", "road", "lane", "way", "park", "unit ", "floor",
             "department", "suite", "building", "house", "avenue", "drive",
-            "close", "crescent", "place", "terrace", "square",
+            "close", "crescent", "place", "terrace", "square", "redkiln",
+            "kingsway", "regent", "market st",
         }
         # Postcode patterns (UK, US, etc.)
         _postcode_re = re.compile(
@@ -499,6 +524,12 @@ class AgentNickOrchestrator:
             r"\d{5}(-\d{4})?",                     # US: 10001
             re.IGNORECASE,
         )
+        # Company name suffixes — if the value has one, it's likely a company
+        _company_suffixes = {
+            "ltd", "limited", "llc", "inc", "plc", "corp", "gmbh",
+            "pty", "co.", "group", "partners", "llp", "trading",
+            "solutions", "services", "consulting", "agency", "studio",
+        }
 
         for field in ("buyer_id", "supplier_id", "supplier_name"):
             val = cleaned.get(field)
@@ -506,7 +537,11 @@ class AgentNickOrchestrator:
                 continue
             val_lower = val.lower().strip()
 
-            # Check 1: Contains postcode → likely address
+            # Skip if value has a company suffix — it's a company name
+            if any(suf in val_lower for suf in _company_suffixes):
+                continue
+
+            # Check 1: Contains postcode → address
             if _postcode_re.search(val):
                 logger.warning(
                     "Sanitize: %s contains postcode, clearing: '%s'",
@@ -515,9 +550,9 @@ class AgentNickOrchestrator:
                 cleaned[field] = None
                 continue
 
-            # Check 2: Multiple address words → likely address
+            # Check 2: Contains address words → address
             addr_words = sum(1 for w in _address_indicators if w in val_lower)
-            if addr_words >= 1 and len(val) > 25:
+            if addr_words >= 1:
                 logger.warning(
                     "Sanitize: %s looks like address, clearing: '%s'",
                     field, val[:60],
@@ -525,8 +560,8 @@ class AgentNickOrchestrator:
                 cleaned[field] = None
                 continue
 
-            # Check 3: Truncated values (< 4 chars and not a known abbreviation)
-            if len(val.strip()) < 4 and val.strip() not in ("Ltd", "Inc", "LLC", "PLC"):
+            # Check 3: Truncated values (< 4 chars)
+            if len(val.strip()) < 4:
                 logger.warning(
                     "Sanitize: %s too short, clearing: '%s'",
                     field, val,
@@ -672,6 +707,88 @@ class AgentNickOrchestrator:
             return True
 
         return False
+
+    @staticmethod
+    @staticmethod
+    def _derive_fields(header: Dict[str, Any], doc_type: str) -> None:
+        """Derive computable fields from document content.
+
+        Only derives when the source data clearly supports it:
+        - due_date from payment_terms + invoice_date (e.g., "Net 30" + date)
+        - validity_date from quote_date + "valid for X days"
+        """
+        from datetime import timedelta
+
+        # Derive due_date for invoices
+        if doc_type == "Invoice" and not header.get("due_date"):
+            terms = str(header.get("payment_terms", "") or "").strip()
+            inv_date_str = header.get("invoice_date")
+            if terms and inv_date_str:
+                days = None
+                # "Net 30", "Net 60", "Net 90"
+                m = re.search(r"[Nn]et\s+(\d+)", terms)
+                if m:
+                    days = int(m.group(1))
+                # "30 days", "60 days", "14 days"
+                if not days:
+                    m = re.search(r"(\d+)\s*[Dd]ays?", terms)
+                    if m:
+                        days = int(m.group(1))
+                # "Pay by {date}" — extract the explicit date
+                if not days:
+                    m = re.search(
+                        r"[Pp]ay\s+by\s+(\d{1,2}\s+\w+\s+\d{4})", terms
+                    )
+                    if m:
+                        try:
+                            from dateutil.parser import parse as dateparse
+                            due = dateparse(m.group(1), dayfirst=True)
+                            header["due_date"] = due.strftime("%Y-%m-%d")
+                            logger.info(
+                                "[Derive] due_date=%s from terms='%s'",
+                                header["due_date"], terms,
+                            )
+                        except Exception:
+                            pass
+                # "Due on receipt" / "immediately" → same as invoice_date
+                if not days and ("receipt" in terms.lower() or "immediate" in terms.lower()):
+                    header["due_date"] = inv_date_str
+                    logger.info(
+                        "[Derive] due_date=%s (due on receipt)", inv_date_str
+                    )
+
+                if days:
+                    try:
+                        from datetime import datetime as dt
+                        inv_date = dt.strptime(str(inv_date_str)[:10], "%Y-%m-%d")
+                        due = inv_date + timedelta(days=days)
+                        header["due_date"] = due.strftime("%Y-%m-%d")
+                        logger.info(
+                            "[Derive] due_date=%s from invoice_date=%s + %d days",
+                            header["due_date"], inv_date_str, days,
+                        )
+                    except Exception:
+                        pass
+
+        # Derive validity_date for quotes
+        if doc_type == "Quote" and not header.get("validity_date"):
+            quote_date_str = header.get("quote_date")
+            # Check notes/metadata for "valid for X days"
+            source = str(header.get("_source_notes", ""))
+            if quote_date_str:
+                m = re.search(r"[Vv]alid\s+(?:for\s+)?(\d+)\s*[Dd]ays?", source)
+                if m:
+                    try:
+                        from datetime import datetime as dt
+                        qd = dt.strptime(str(quote_date_str)[:10], "%Y-%m-%d")
+                        vd = qd + timedelta(days=int(m.group(1)))
+                        header["validity_date"] = vd.strftime("%Y-%m-%d")
+                        logger.info(
+                            "[Derive] validity_date=%s from quote_date + %s days",
+                            header["validity_date"], m.group(1),
+                        )
+                    except Exception:
+                        pass
 
     @staticmethod
     def _extract_supplier_from_filename(file_path: str) -> Optional[str]:
