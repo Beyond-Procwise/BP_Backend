@@ -792,6 +792,10 @@ class IntelligentExtractor:
                         item[field] = val
 
             if item.get("item_description"):
+                # Remove any PK fields — let the persistence layer auto-generate
+                # to avoid conflicts with existing rows from other documents
+                for pk_field in ("invoice_line_id", "po_line_id", "quote_line_id", "line_no"):
+                    item.pop(pk_field, None)
                 missing.append(item)
                 logger.info(
                     "[Reconcile] Recovered missing line item from source: %s",
