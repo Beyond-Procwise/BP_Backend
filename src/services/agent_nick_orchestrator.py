@@ -733,103 +733,173 @@ class AgentNickOrchestrator:
         return False
 
     @staticmethod
-    @staticmethod
     def _derive_fields(header: Dict[str, Any], doc_type: str) -> None:
         """Derive computable fields from document content.
 
-        Only derives when the source data clearly supports it:
-        - due_date from payment_terms + invoice_date (e.g., "Net 30" + date)
+        Derives values ONLY when the source document provides enough
+        information to compute them accurately. Falls back to business
+        defaults only when the document has no payment/date information.
+
+        Derivations:
+        - due_date from payment_terms + invoice_date
         - validity_date from quote_date + "valid for X days"
+        - tax_amount from total_amount * tax_percent / 100 (when missing)
+        - total_amount_incl_tax from total_amount + tax_amount (when missing)
+        - country/region from address fields
         """
         from datetime import timedelta
 
-        # Derive due_date for invoices
-        if doc_type == "Invoice" and not header.get("due_date"):
-            terms = str(header.get("payment_terms", "") or "").strip()
+        source_text = str(header.get("_source_notes", "") or "")
+
+        # ---- INVOICE DERIVATIONS ----
+        if doc_type == "Invoice":
             inv_date_str = header.get("invoice_date")
-            if terms and inv_date_str:
+
+            # Derive due_date from payment_terms
+            if not header.get("due_date"):
+                terms = str(header.get("payment_terms", "") or "").strip()
                 days = None
-                # "Net 30", "Net 60", "Net 90"
-                m = re.search(r"[Nn]et\s+(\d+)", terms)
-                if m:
-                    days = int(m.group(1))
-                # "30 days", "60 days", "14 days"
-                if not days:
-                    m = re.search(r"(\d+)\s*[Dd]ays?", terms)
+
+                if terms:
+                    # "Net 30", "Net 60", "Net 90"
+                    m = re.search(r"[Nn]et\s+(\d+)", terms)
                     if m:
                         days = int(m.group(1))
-                # "Pay by {date}" — extract the explicit date
-                if not days:
-                    m = re.search(
-                        r"[Pp]ay\s+by\s+(\d{1,2}\s+\w+\s+\d{4})", terms
-                    )
-                    if m:
-                        try:
-                            from dateutil.parser import parse as dateparse
-                            due = dateparse(m.group(1), dayfirst=True)
-                            header["due_date"] = due.strftime("%Y-%m-%d")
-                            logger.info(
-                                "[Derive] due_date=%s from terms='%s'",
-                                header["due_date"], terms,
-                            )
-                        except Exception:
-                            pass
-                # "Due on receipt" / "immediately" → same as invoice_date
-                if not days and ("receipt" in terms.lower() or "immediate" in terms.lower()):
-                    header["due_date"] = inv_date_str
-                    logger.info(
-                        "[Derive] due_date=%s (due on receipt)", inv_date_str
-                    )
+                    # "30 days", "60 days", "14 days"
+                    if not days:
+                        m = re.search(r"(\d+)\s*[Dd]ays?", terms)
+                        if m:
+                            days = int(m.group(1))
+                    # "within 30 days"
+                    if not days:
+                        m = re.search(r"within\s+(\d+)\s*[Dd]ays?", terms)
+                        if m:
+                            days = int(m.group(1))
+                    # "Pay by {date}" — extract explicit date
+                    if not days:
+                        m = re.search(
+                            r"[Pp]ay\s+by\s+(\d{1,2}\s+\w+\s+\d{4})", terms
+                        )
+                        if m:
+                            try:
+                                from dateutil.parser import parse as dateparse
+                                due = dateparse(m.group(1), dayfirst=True)
+                                header["due_date"] = due.strftime("%Y-%m-%d")
+                                logger.info(
+                                    "[Derive] due_date=%s from terms='%s'",
+                                    header["due_date"], terms,
+                                )
+                            except Exception:
+                                pass
+                    # "Due on receipt" / "immediately"
+                    if not days and not header.get("due_date"):
+                        if "receipt" in terms.lower() or "immediate" in terms.lower():
+                            if inv_date_str:
+                                header["due_date"] = inv_date_str
+                                logger.info("[Derive] due_date=%s (due on receipt)", inv_date_str)
 
-                if days:
+                # Also check source text for payment info
+                if not days and not header.get("due_date") and source_text:
+                    m = re.search(r"[Nn]et\s+(\d+)", source_text)
+                    if m:
+                        days = int(m.group(1))
+                        if not terms:
+                            header["payment_terms"] = f"Net {days}"
+                    if not days:
+                        m = re.search(r"(\d+)\s*[Dd]ays?", source_text)
+                        if m:
+                            days = int(m.group(1))
+                            if not terms:
+                                header["payment_terms"] = f"{days} Days"
+
+                # Compute due_date from days + invoice_date
+                if days and inv_date_str and not header.get("due_date"):
                     try:
                         from datetime import datetime as dt
                         inv_date = dt.strptime(str(inv_date_str)[:10], "%Y-%m-%d")
                         due = inv_date + timedelta(days=days)
                         header["due_date"] = due.strftime("%Y-%m-%d")
                         logger.info(
-                            "[Derive] due_date=%s from invoice_date=%s + %d days",
-                            header["due_date"], inv_date_str, days,
+                            "[Derive] due_date=%s from invoice_date + %d days",
+                            header["due_date"], days,
                         )
                     except Exception:
                         pass
 
-            # Default: if still no due_date and we have invoice_date,
-            # apply business default of invoice_date + 90 days
-            if not header.get("due_date") and inv_date_str:
-                try:
-                    from datetime import datetime as dt
-                    inv_date = dt.strptime(str(inv_date_str)[:10], "%Y-%m-%d")
-                    due = inv_date + timedelta(days=90)
-                    header["due_date"] = due.strftime("%Y-%m-%d")
-                    if not header.get("payment_terms"):
-                        header["payment_terms"] = "Net 90"
-                    logger.info(
-                        "[Derive] due_date=%s (default: invoice_date + 90 days)",
-                        header["due_date"],
-                    )
-                except Exception:
-                    pass
-
-        # Derive validity_date for quotes
-        if doc_type == "Quote" and not header.get("validity_date"):
-            quote_date_str = header.get("quote_date")
-            # Check notes/metadata for "valid for X days"
-            source = str(header.get("_source_notes", ""))
-            if quote_date_str:
-                m = re.search(r"[Vv]alid\s+(?:for\s+)?(\d+)\s*[Dd]ays?", source)
-                if m:
+                # Business default: invoice_date + 90 days when NO payment info at all
+                if not header.get("due_date") and inv_date_str:
                     try:
                         from datetime import datetime as dt
-                        qd = dt.strptime(str(quote_date_str)[:10], "%Y-%m-%d")
-                        vd = qd + timedelta(days=int(m.group(1)))
-                        header["validity_date"] = vd.strftime("%Y-%m-%d")
+                        inv_date = dt.strptime(str(inv_date_str)[:10], "%Y-%m-%d")
+                        due = inv_date + timedelta(days=90)
+                        header["due_date"] = due.strftime("%Y-%m-%d")
+                        if not header.get("payment_terms"):
+                            header["payment_terms"] = "Net 90"
                         logger.info(
-                            "[Derive] validity_date=%s from quote_date + %s days",
-                            header["validity_date"], m.group(1),
+                            "[Derive] due_date=%s (default: invoice_date + 90 days)",
+                            header["due_date"],
                         )
                     except Exception:
                         pass
+
+        # ---- QUOTE DERIVATIONS ----
+        if doc_type == "Quote":
+            if not header.get("validity_date"):
+                quote_date_str = header.get("quote_date")
+                if quote_date_str:
+                    # Check source for "valid for X days"
+                    m = re.search(
+                        r"[Vv]alid\s+(?:for\s+)?(\d+)\s*[Dd]ays?",
+                        source_text,
+                    )
+                    if m:
+                        try:
+                            from datetime import datetime as dt
+                            qd = dt.strptime(str(quote_date_str)[:10], "%Y-%m-%d")
+                            vd = qd + timedelta(days=int(m.group(1)))
+                            header["validity_date"] = vd.strftime("%Y-%m-%d")
+                            logger.info(
+                                "[Derive] validity_date=%s from quote_date + %s days",
+                                header["validity_date"], m.group(1),
+                            )
+                        except Exception:
+                            pass
+
+        # ---- COMMON DERIVATIONS (all doc types) ----
+
+        # Derive tax_amount when we have total_amount and tax_percent
+        subtotal_field = "invoice_amount" if doc_type == "Invoice" else "total_amount"
+        total_field = "invoice_total_incl_tax" if doc_type == "Invoice" else "total_amount_incl_tax"
+        subtotal = header.get(subtotal_field)
+        tax_pct = header.get("tax_percent")
+        tax_amt = header.get("tax_amount")
+        total_incl = header.get(total_field)
+
+        if subtotal is not None and tax_pct is not None and tax_amt is None:
+            try:
+                derived_tax = round(float(subtotal) * float(tax_pct) / 100, 2)
+                header["tax_amount"] = derived_tax
+                logger.info("[Derive] tax_amount=%s from %s × %s%%", derived_tax, subtotal, tax_pct)
+            except (ValueError, TypeError):
+                pass
+
+        # Derive total_amount_incl_tax
+        if subtotal is not None and header.get("tax_amount") is not None and total_incl is None:
+            try:
+                derived_total = round(float(subtotal) + float(header["tax_amount"]), 2)
+                header[total_field] = derived_total
+                logger.info("[Derive] %s=%s", total_field, derived_total)
+            except (ValueError, TypeError):
+                pass
+
+        # Derive subtotal from total_incl_tax - tax_amount
+        if subtotal is None and total_incl is not None and tax_amt is not None:
+            try:
+                derived_sub = round(float(total_incl) - float(tax_amt), 2)
+                header[subtotal_field] = derived_sub
+                logger.info("[Derive] %s=%s from total - tax", subtotal_field, derived_sub)
+            except (ValueError, TypeError):
+                pass
 
     @staticmethod
     def _extract_supplier_from_filename(file_path: str) -> Optional[str]:
