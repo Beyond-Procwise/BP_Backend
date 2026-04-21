@@ -117,7 +117,48 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
         return []
     ordered_keys = sorted(lines.keys())
 
-    # Find header row: all-TEXT line followed within 3 rows by a MONEY-bearing row
+    # Find header row: all-TEXT line followed within 3 rows by a MONEY-bearing
+    # row AND whose tokens look like column headers (short, keyword-like).
+    # Addresses like 'WEST SUSSEX, RH13 5QH MANCHESTER, M1 7HY' look all-TEXT
+    # and precede the line-item MONEY rows, but they are NOT headers — we
+    # reject them via a 'looks like a header row' heuristic.
+    # Common English function-words: a header is a column-label row, not
+    # prose. Prose lines have connectors like 'and', 'for', 'of'; headers
+    # don't. This filter separates 'Item Description Total' (header) from
+    # 'Ongoing content creation and revisions' (prose bullet).
+    _STOPWORDS = {
+        "and", "or", "but", "the", "of", "to", "for", "from", "in", "on",
+        "at", "by", "with", "as", "a", "an", "is", "are", "was", "were",
+        "be", "been", "being", "has", "have", "had", "our", "their",
+        "this", "that", "these", "those",
+    }
+
+    def _row_looks_like_header(line_toks: list[Token]) -> bool:
+        # Token check: headers have 2-8 tokens; reject very long address-like rows.
+        if not (2 <= len(line_toks) <= 8):
+            return False
+        # Reject rows containing digit tokens (addresses have postcodes/numbers).
+        for t in line_toks:
+            clean = t.text.strip(".,:;")
+            if any(ch.isdigit() for ch in clean):
+                return False
+        # Reject rows where any token is > 14 chars (long descriptions).
+        if any(len(t.text.strip(".,:;")) > 14 for t in line_toks):
+            return False
+        # Reject rows containing English function-words (prose, not headers).
+        for t in line_toks:
+            if t.text.strip(".,:;").lower() in _STOPWORDS:
+                return False
+        # Reject rows where the MAJORITY of tokens start with a lowercase
+        # letter — headers use Title Case or ALL CAPS.
+        lower_starts = sum(
+            1 for t in line_toks
+            if t.text[:1].isalpha() and t.text[:1].islower()
+        )
+        if lower_starts > len(line_toks) // 2:
+            return False
+        return True
+
     header_key = None
     for idx, k in enumerate(ordered_keys):
         line_toks = [t for t in lines[k] if t.text.strip()]
@@ -125,6 +166,8 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
             continue
         types = {_classify(t) for t in line_toks}
         if types != {"TEXT"}:
+            continue
+        if not _row_looks_like_header(line_toks):
             continue
         next_rows = [lines[kk] for kk in ordered_keys[idx + 1:idx + 4]]
         if any(any(_classify(t) == "MONEY" for t in row) for row in next_rows):
@@ -250,12 +293,34 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
         def _money_toks(col):
             return [t for t in cells[col] if _classify(t) == "MONEY"]
 
-        # Description must strip out non-text tokens that ended up in this cell
-        # (rare but happens on description continuation rows).
-        desc_toks = [t for t in cells[desc_col] if _classify(t) == "TEXT"] if desc_col is not None else []
-        desc = " ".join(t.text for t in desc_toks) if desc_toks else (
-            " ".join(t.text for t in cells[desc_col]) if desc_col is not None else ""
+        # Description: concatenate all TEXT tokens from all text-type cells
+        # in reading order (left-to-right, top-to-bottom). A data row in
+        # practice often spans multiple header columns (especially in
+        # two-column 'Item | Description' layouts where the service title
+        # flows across both). Taking only the longest-text column misses
+        # the leading word ('Monthly' in ELEANOR's 'Monthly Design &
+        # Marketing Package'). All MONEY/INTEGER tokens are excluded —
+        # those belong to qty / price / total columns.
+        desc_tokens_all: list[Token] = []
+        for col_idx in text_cols:
+            for t in cells[col_idx]:
+                if _classify(t) == "TEXT":
+                    desc_tokens_all.append(t)
+        # Sort by (y0, x0) for natural reading order — preserves sub-lines.
+        desc_tokens_all.sort(
+            key=lambda t: (
+                (t.anchor.y0, t.anchor.x0) if isinstance(t.anchor, BBox) else (0, 0)
+            )
         )
+        desc = " ".join(t.text for t in desc_tokens_all)
+        # Back-compat: if desc_col was set but the new logic produced an
+        # empty string, fall back to the old behavior (defensive — should
+        # never fire in practice).
+        if not desc and desc_col is not None:
+            fallback_toks = [t for t in cells[desc_col] if _classify(t) == "TEXT"]
+            desc = " ".join(t.text for t in fallback_toks) if fallback_toks else (
+                " ".join(t.text for t in cells[desc_col])
+            )
         qty_val = _parse_num(cells[qty_col]) if qty_col is not None else None
 
         price_col, total_col = None, None
