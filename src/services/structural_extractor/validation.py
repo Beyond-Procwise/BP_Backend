@@ -2,7 +2,9 @@
 cross-field consistency."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 from src.services.structural_extractor.parsing.model import ParsedDocument
 from src.services.structural_extractor.types import ExtractedValue
@@ -91,5 +93,53 @@ def verify_math(header: dict, line_items: list[dict], tol: float = 0.01) -> Vali
                 )
         except Exception:
             pass
+
+    return ValidationReport(passed=not failures, failures=failures)
+
+
+def _as_date(v):
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v).date()
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_org(s) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+
+def verify_cross_field(header: dict) -> ValidationReport:
+    """Cross-field sanity: date ordering, supplier != buyer, etc."""
+    failures: list[str] = []
+
+    inv_d = header.get("invoice_date")
+    due_d = header.get("due_date")
+    if inv_d and due_d:
+        id_v = _as_date(inv_d.value)
+        dd_v = _as_date(due_d.value)
+        if id_v and dd_v and id_v > dd_v:
+            failures.append(f"invoice_date({id_v}) > due_date({dd_v})")
+
+    ord_d = header.get("order_date")
+    exp_d = header.get("expected_delivery_date")
+    if ord_d and exp_d:
+        od_v = _as_date(ord_d.value)
+        ed_v = _as_date(exp_d.value)
+        if od_v and ed_v and od_v > ed_v:
+            failures.append(f"order_date({od_v}) > expected_delivery_date({ed_v})")
+
+    supp = header.get("supplier_id")
+    buy = header.get("buyer_id")
+    if supp and buy:
+        s_n = _normalize_org(supp.value)
+        b_n = _normalize_org(buy.value)
+        if s_n and b_n and (s_n in b_n or b_n in s_n):
+            failures.append(
+                f"supplier_id({supp.value}) and buyer_id({buy.value}) are not distinct orgs"
+            )
 
     return ValidationReport(passed=not failures, failures=failures)

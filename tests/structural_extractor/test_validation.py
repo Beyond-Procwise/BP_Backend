@@ -1,8 +1,11 @@
+from datetime import date
+
 from src.services.structural_extractor.parsing.model import BBox, ParsedDocument, Token
 from src.services.structural_extractor.types import ExtractedValue
 from src.services.structural_extractor.validation import (
     ValidationReport,
     verify_anchors,
+    verify_cross_field,
     verify_math,
 )
 
@@ -129,3 +132,33 @@ def test_line_item_math_reconciles():
     ]
     rep = verify_math(header, items)
     assert rep.passed
+
+
+# ------------------ cross-field tests ------------------
+
+def test_cross_field_date_order():
+    header = {
+        "invoice_date": _ev(date(2020, 4, 1)),
+        "due_date": _ev(date(2020, 5, 1)),
+    }
+    rep = verify_cross_field(header)
+    assert rep.passed
+
+
+def test_cross_field_date_order_fails():
+    header = {
+        "invoice_date": _ev(date(2020, 5, 1)),
+        "due_date": _ev(date(2020, 4, 1)),
+    }
+    rep = verify_cross_field(header)
+    assert not rep.passed
+
+
+def test_cross_field_supplier_buyer_distinct():
+    header = {"supplier_id": _ev("Acme Ltd"), "buyer_id": _ev("Buyer Inc")}
+    assert verify_cross_field(header).passed
+
+
+def test_cross_field_supplier_substring_buyer_fails():
+    header = {"supplier_id": _ev("Acme"), "buyer_id": _ev("Acme Ltd")}
+    assert not verify_cross_field(header).passed
