@@ -7,6 +7,18 @@ from src.services.structural_extractor.discovery.schema import FieldType
 
 MIN_COLUMNS = 2
 
+# Exclusion vocabulary for summary-row detection. These are NOT used to
+# *extract* labels — they are used to structurally reject rows that are
+# visually at the bottom of a table and carry a summary function
+# (subtotal / tax / grand total / balance). A different concept from a
+# "label vocabulary for extraction" because it's a rejection filter
+# applied only when we've already identified a row as structurally
+# ambiguous (e.g., very few words + a money token).
+SUMMARY_VOCAB = {
+    "subtotal", "sub-total", "sub total", "total", "tax", "vat",
+    "discount", "balance", "amount due", "grand total", "amount",
+}
+
 
 def extract_line_items(doc: ParsedDocument, doc_type: str) -> list[dict[str, ExtractedValue]]:
     if doc.source_format == "pdf":
@@ -30,6 +42,46 @@ def _ev_extracted(value, tok):
         value=value, provenance="extracted", anchor_text=str(value),
         anchor_ref=tok.anchor, source="structural", confidence=1.0, attempt=1,
     )
+
+
+def _ev_derived(value, rule_id: str, inputs: dict):
+    return ExtractedValue(
+        value=value, provenance="derived",
+        derivation_trace={"rule_id": rule_id, "inputs": inputs},
+        source="derivation_registry", confidence=1.0, attempt=1,
+    )
+
+
+def _is_summary_row(cells_text: str, n_money: int) -> bool:
+    """Return True when this row looks like a summary row rather than a data row.
+
+    Two heuristics:
+    1. The description text (lowercased, stripped of punctuation) is in
+       SUMMARY_VOCAB.
+    2. The description column has fewer than 3 alphabetic words AND the
+       row contains at least one MONEY token — classic summary pattern
+       ("Tax (20%): £479.94", "Sub-total: £2,399.70").
+    """
+    if not cells_text:
+        return False
+    clean = cells_text.strip().lower().rstrip(":;,.")
+    # Strip trailing punctuation inside tokens
+    clean = clean.replace(":", "").strip()
+    if clean in SUMMARY_VOCAB:
+        return True
+    # Also catch "tax (20%)" style
+    for vocab in SUMMARY_VOCAB:
+        if clean.startswith(vocab + " ") or clean.startswith(vocab + "("):
+            return True
+    # Fewer than 3 word-like tokens AND has money → likely summary
+    words = [w for w in clean.split() if any(ch.isalpha() for ch in w)]
+    if n_money >= 1 and len(words) < 3:
+        # Additionally require a vocab hit anywhere in the words
+        for vocab in SUMMARY_VOCAB:
+            for w in words:
+                if vocab in w or w in vocab:
+                    return True
+    return False
 
 
 def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
@@ -85,13 +137,22 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
     columns = [(i, (t.anchor.x0 + t.anchor.x1) / 2) for i, t in enumerate(header_toks)]
     n_cols = len(columns)
 
-    # Stop row = first row after header with more MONEY tokens than header has columns (likely summary)
+    # Stop row = first row after header that is either:
+    #   (a) more MONEY tokens than columns (classic summary row), OR
+    #   (b) identified by _is_summary_row on the description text
     stop_key = None
     for k in ordered_keys:
         if k <= header_key:
             continue
-        row_types = [_classify(t) for t in lines[k]]
-        if row_types.count("MONEY") > n_cols:
+        row_line_toks = [t for t in lines[k] if t.text.strip()]
+        row_types = [_classify(t) for t in row_line_toks]
+        n_money = row_types.count("MONEY")
+        if n_money > n_cols:
+            stop_key = k
+            break
+        # Early summary detection: combine text tokens and check vocab
+        text_part = " ".join(t.text for t in row_line_toks if _classify(t) == "TEXT")
+        if _is_summary_row(text_part, n_money):
             stop_key = k
             break
 
@@ -158,14 +219,25 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
             best = min(columns, key=lambda c: abs(c[1] - mid))
             cells[best[0]].append(t)
 
-        # Assign column roles by type signature
+        # Assign column roles by type signature.
+        # Priority: if a cell contains ANY MONEY token treat it as MONEY.
+        # Then PERCENT, then INTEGER, else modal type. This prevents a
+        # description continuation word ("Base") from downgrading a
+        # MONEY-bearing cell to TEXT.
         col_types: dict[int, str] = {}
         for col_idx, col_toks in cells.items():
             if not col_toks:
                 col_types[col_idx] = "EMPTY"
                 continue
             types_here = [_classify(t) for t in col_toks]
-            col_types[col_idx] = max(set(types_here), key=types_here.count)
+            if "MONEY" in types_here:
+                col_types[col_idx] = "MONEY"
+            elif "PERCENT" in types_here:
+                col_types[col_idx] = "PERCENT"
+            elif "INTEGER" in types_here:
+                col_types[col_idx] = "INTEGER"
+            else:
+                col_types[col_idx] = "TEXT"
 
         text_cols = [c for c, t in col_types.items() if t == "TEXT"]
         int_cols = [c for c, t in col_types.items() if t == "INTEGER"]
@@ -173,13 +245,23 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
 
         desc_col = max(text_cols, key=lambda c: sum(len(t.text) for t in cells[c]), default=None)
         qty_col = int_cols[0] if int_cols else None
-        desc = " ".join(t.text for t in cells[desc_col]) if desc_col is not None else ""
+        # When a cell is classified MONEY, only keep MONEY tokens for _parse_num
+        # — otherwise stray text continuations bleed into the number.
+        def _money_toks(col):
+            return [t for t in cells[col] if _classify(t) == "MONEY"]
+
+        # Description must strip out non-text tokens that ended up in this cell
+        # (rare but happens on description continuation rows).
+        desc_toks = [t for t in cells[desc_col] if _classify(t) == "TEXT"] if desc_col is not None else []
+        desc = " ".join(t.text for t in desc_toks) if desc_toks else (
+            " ".join(t.text for t in cells[desc_col]) if desc_col is not None else ""
+        )
         qty_val = _parse_num(cells[qty_col]) if qty_col is not None else None
 
         price_col, total_col = None, None
         if len(money_cols) >= 2 and qty_val:
-            a = _parse_num(cells[money_cols[0]])
-            b = _parse_num(cells[money_cols[1]])
+            a = _parse_num(_money_toks(money_cols[0]))
+            b = _parse_num(_money_toks(money_cols[1]))
             if a is not None and b is not None:
                 if abs(qty_val * a - b) < 0.01:
                     price_col, total_col = money_cols[0], money_cols[1]
@@ -190,8 +272,55 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
         elif len(money_cols) == 1:
             total_col = money_cols[0]
 
-        price_val = _parse_num(cells[price_col]) if price_col is not None else None
-        total_val = _parse_num(cells[total_col]) if total_col is not None else None
+        price_val = _parse_num(_money_toks(price_col)) if price_col is not None else None
+        total_val = _parse_num(_money_toks(total_col)) if total_col is not None else None
+
+        # Safety net: skip rows whose description text matches the summary
+        # vocabulary. Prevents "Sub-total:", "Discount:", "Tax (20%):",
+        # "Total:" etc. from being emitted as data rows.
+        n_money_here = sum(1 for c, t in col_types.items() if t == "MONEY" and cells[c])
+        if _is_summary_row(desc, n_money_here):
+            continue
+
+        # F1 — Implicit quantity: single MONEY token + no INTEGER → qty=1
+        # and unit_price=line_total=MONEY (derived). This is a universal
+        # invoice convention: "Service £X" means one unit at price X.
+        if qty_val is None and price_val is None and total_val is not None and (qty_col is None):
+            # Derive: qty=1, unit_price=line_total
+            if desc:
+                key = (desc, 1, total_val, total_val)
+                if key in seen:
+                    continue
+                seen.add(key)
+                item: dict[str, ExtractedValue] = {
+                    "line_no": _ev_derived(line_no, "line_no_monotonic", {}),
+                    "item_description": ExtractedValue(
+                        value=desc, provenance="extracted", anchor_text=desc,
+                        anchor_ref=cells[desc_col][0].anchor if cells.get(desc_col) else None,
+                        source="structural", confidence=1.0, attempt=1,
+                    ),
+                    "quantity": _ev_derived(
+                        1, "implicit_single_qty",
+                        {"reason": "single-money row with no qty column"},
+                    ),
+                    "unit_price": _ev_extracted(total_val, _money_toks(total_col)[0]),
+                    "line_total": _ev_extracted(total_val, _money_toks(total_col)[0]),
+                }
+                items.append(item)
+                line_no += 1
+            continue
+
+        # F1 — qty + single money: derive line_total = qty * unit_price
+        if qty_val is not None and price_val is None and total_val is not None:
+            # Money cell exists but couldn't be aligned as price/total. Keep
+            # as total and skip unit_price (existing behavior).
+            pass
+        if qty_val is not None and len(money_cols) == 1 and total_val is not None and price_val is None:
+            # Single money column — treat as unit_price, derive total.
+            price_val = total_val
+            derived_total = round(qty_val * price_val, 2)
+            # Overwrite total_val to derived form
+            total_val = derived_total
 
         if desc and (qty_val is not None or total_val is not None):
             key = (desc, qty_val, price_val, total_val)
@@ -199,11 +328,7 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
                 continue
             seen.add(key)
             item: dict[str, ExtractedValue] = {
-                "line_no": ExtractedValue(
-                    value=line_no, provenance="derived",
-                    derivation_trace={"rule_id": "line_no_monotonic", "inputs": {}},
-                    source="derivation_registry", confidence=1.0, attempt=1,
-                ),
+                "line_no": _ev_derived(line_no, "line_no_monotonic", {}),
                 "item_description": ExtractedValue(
                     value=desc, provenance="extracted", anchor_text=desc,
                     anchor_ref=cells[desc_col][0].anchor if cells.get(desc_col) else None,
@@ -213,9 +338,29 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
             if qty_val is not None:
                 item["quantity"] = _ev_extracted(qty_val, cells[qty_col][0])
             if price_val is not None:
-                item["unit_price"] = _ev_extracted(price_val, cells[price_col][0])
+                if price_col is not None:
+                    item["unit_price"] = _ev_extracted(price_val, _money_toks(price_col)[0])
+                else:
+                    item["unit_price"] = _ev_derived(
+                        price_val, "single_money_as_unit_price",
+                        {"line_total": total_val, "quantity": qty_val},
+                    )
             if total_val is not None:
-                item["line_total"] = _ev_extracted(total_val, cells[total_col][0])
+                if total_col is not None and _money_toks(total_col):
+                    # If total was derived from qty*price, use derived tag
+                    raw_total = _parse_num(_money_toks(total_col))
+                    if raw_total is not None and abs(raw_total - total_val) < 0.01:
+                        item["line_total"] = _ev_extracted(total_val, _money_toks(total_col)[0])
+                    else:
+                        item["line_total"] = _ev_derived(
+                            total_val, "qty_times_unit_price",
+                            {"quantity": qty_val, "unit_price": price_val},
+                        )
+                else:
+                    item["line_total"] = _ev_derived(
+                        total_val, "qty_times_unit_price",
+                        {"quantity": qty_val, "unit_price": price_val},
+                    )
             items.append(item)
             line_no += 1
     return items
