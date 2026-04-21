@@ -32,3 +32,21 @@ def run_attempt_1(state: RetryState) -> AttemptOutput:
         line_items=line_items if line_items else None,
         validation_failures=[], residual_unresolved=residual, latency_ms=latency,
     )
+
+
+def run_attempt_nlu(state: RetryState, attempt_no: int) -> AttemptOutput:
+    """Attempts 2-4 stub: run structural extraction again + NLU candidate augmentation.
+
+    Full NLU integration deferred to Phase 15; this establishes the API.
+    """
+    t0 = time.monotonic()
+    sources = {2: "nlu_ner", 3: "nlu_table", 4: "nlu_layout"}
+    source = sources.get(attempt_no, "nlu_ner")
+    # For now, re-run structural as a baseline; real NLU augmentation is Phase 15
+    base = run_attempt_1(state)
+    return AttemptOutput(
+        attempt=attempt_no, source=source, extracted=base.extracted,
+        line_items=base.line_items, validation_failures=[],
+        residual_unresolved=base.residual_unresolved,
+        latency_ms=int((time.monotonic() - t0) * 1000),
+    )
