@@ -1,0 +1,98 @@
+# Hand-verified ground truth for audit fixtures.
+# Used by the recursive-accuracy-improvement harness.
+# Field naming matches proc.bp_* columns.
+# null = field should NOT be extracted (absent in source or not a target for this doc).
+
+INV600254:
+  file: INV600254.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600254
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-08-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+DHA-2025-143:
+  file: DHA-2025-143.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: DHA-2025-143
+    po_id: PO438295
+    supplier_id: DESIGN HOUSE AGENCY
+    buyer_id: ASSURITY LTD
+    invoice_date: "2022-07-01"
+    invoice_amount: 2000.00
+    tax_amount: 400.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 2400.00
+    currency: GBP
+    payment_terms: "NET 14"
+  line_items:
+    - line_no: 1
+      item_description: Social Media Management
+      quantity: 1
+      unit_price: 2000.00
+      line_total: 2000.00
+
+ELEANOR-2025-290:
+  file: ELEANOR-2025-290.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: "2025-290"
+    po_id: "389948"
+    supplier_id: Eleanor Price Creative Studio
+    buyer_id: Assurity Ltd
+    invoice_date: "2020-04-01"
+    invoice_amount: 1200.00
+    tax_amount: 240.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 1440.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Monthly Design & Marketing Package
+      quantity: 1
+      unit_price: 1200.00
+      line_total: 1200.00
+
+DUNCAN_PO526800:
+  file: DUNCAN_PO526800.pdf
+  doc_type: Purchase_Order
+  header:
+    po_id: "526800"
+    supplier_name: Duncan LLC
+    order_date: "2024-01-03"
+    total_amount: 2399.70
+    tax_amount: 479.94
+    tax_percent: 20.00
+    total_amount_incl_tax: 2879.64
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Fellowes Office Chair
+      quantity: 10
+      unit_price: 79.99
+      line_total: 799.90
+    - line_no: 2
+      item_description: Fellowes Office Chair
+      quantity: 10
+      unit_price: 79.99
+      line_total: 799.90
+    - line_no: 3
+      item_description: Fellowes Office Chair
+      quantity: 10
+      unit_price: 79.99
+      line_total: 799.90
