@@ -9,6 +9,7 @@ from src.services.structural_extractor.extractors import line_items as ext_lines
 from src.services.structural_extractor.extractors import parties as ext_parties
 from src.services.structural_extractor.extractors import payment_terms as ext_pt
 from src.services.structural_extractor.retry.state import AttemptOutput, RetryState
+from src.services.structural_extractor.types import ExtractedValue
 
 
 def run_attempt_1(state: RetryState) -> AttemptOutput:
@@ -48,5 +49,41 @@ def run_attempt_nlu(state: RetryState, attempt_no: int) -> AttemptOutput:
         attempt=attempt_no, source=source, extracted=base.extracted,
         line_items=base.line_items, validation_failures=[],
         residual_unresolved=base.residual_unresolved,
+        latency_ms=int((time.monotonic() - t0) * 1000),
+    )
+
+
+def run_attempt_llm(state: RetryState, attempt_no: int) -> AttemptOutput:
+    """Attempts 5-10: grounded LLM arbiter for residual unresolved fields."""
+    t0 = time.monotonic()
+    doc = state.doc
+    residual = list(state.unresolved - state.accepted_header.keys())
+    if not residual:
+        return AttemptOutput(
+            attempt=attempt_no, source="llm_fallback", extracted={},
+            line_items=None, validation_failures=[], residual_unresolved=[],
+            latency_ms=0,
+        )
+    from src.services.structural_extractor.llm_fallback import extract_fields_with_llm
+    prior_attempts = [a.extracted for a in state.attempts]
+    llm_out = extract_fields_with_llm(
+        doc_text=doc.full_text,
+        fields_needed=residual,
+        prior_attempts=[
+            {k: v.value for k, v in ev_dict.items()} for ev_dict in prior_attempts
+        ],
+        attempt_no=attempt_no,
+    )
+    extracted: dict[str, ExtractedValue] = {}
+    for fname, fval in llm_out.items():
+        extracted[fname] = ExtractedValue(
+            value=fval, provenance="extracted",  # LLM output verified as source substring
+            anchor_text=fval, anchor_ref=None,
+            source="llm_fallback", confidence=0.85, attempt=attempt_no,
+        )
+    still_unresolved = sorted(set(residual) - extracted.keys())
+    return AttemptOutput(
+        attempt=attempt_no, source="llm_fallback", extracted=extracted,
+        line_items=None, validation_failures=[], residual_unresolved=still_unresolved,
         latency_ms=int((time.monotonic() - t0) * 1000),
     )
