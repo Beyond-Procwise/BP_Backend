@@ -38,8 +38,8 @@ def ollama_generate(
     model: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
     temperature: float = 0,
-    num_predict: int = 4096,
-    num_gpu: int = 25,
+    num_predict: int = 8192,
+    num_gpu: int = 99,
     retries: int = MAX_RETRIES,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
@@ -74,7 +74,20 @@ def ollama_generate(
                 timeout=timeout,
             )
             response.raise_for_status()
-            return response.json().get("response", "").strip()
+            body = response.json()
+            text = (body.get("response") or "").strip()
+            if not text:
+                # Thinking-capable models (qwen3:30b) may emit JSON inside the
+                # `thinking` field when reasoning consumed all generation budget
+                # before switching to response output. Salvage anything that
+                # looks like JSON from there so extraction doesn't lose data.
+                thinking = (body.get("thinking") or "").strip()
+                if thinking:
+                    import re as _re
+                    match = _re.search(r"\{[\s\S]*\}", thinking)
+                    if match:
+                        text = match.group(0).strip()
+            return text
         except requests.exceptions.ReadTimeout:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(
