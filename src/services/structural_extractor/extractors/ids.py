@@ -1,8 +1,68 @@
+import re
 from src.services.structural_extractor.parsing.model import ParsedDocument, BBox
 from src.services.structural_extractor.discovery.schema import FieldType, type_of, fields_for
 from src.services.structural_extractor.discovery.type_entities import find_candidates
 from src.services.structural_extractor.discovery.proximity import inferred_label
 from src.services.structural_extractor.types import ExtractedValue
+
+
+# Patterns that identify non-ID tokens (SWIFT / IBAN / postcode / currency)
+# which should never be returned as a document ID.
+SWIFT_RE = re.compile(r"^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?$")
+IBAN_PREFIX_RE = re.compile(r"^[A-Z]{2}\d{2}$")  # e.g., "GB29"
+UK_POSTCODE_OUTCODE_RE = re.compile(r"^[A-Z]{1,2}\d[A-Z0-9]?$")  # e.g., "RH13", "M1"
+UK_POSTCODE_INCODE_RE = re.compile(r"^\d[A-Z]{2}$")  # e.g., "5QH", "7HY"
+
+
+# Field-key conflict table: when we're looking for field X, penalize candidates
+# whose inferred label prominently mentions a different field's keyword.
+CONFLICT_KEYWORDS: dict[str, set[str]] = {
+    "invoice": {"po", "purchase", "swift", "iban", "bic", "sort", "account"},
+    "po": {"invoice", "swift", "iban", "bic", "sort", "account"},
+    "order": {"invoice", "swift", "iban", "bic"},
+    "quote": {"invoice", "po", "purchase"},
+}
+
+# Synonym labels that count as a positive match even when the field_key word
+# itself is absent. Doc-type-specific: an Invoice's "No." / "Number" labels
+# almost always identify the invoice number.
+FIELD_SYNONYMS: dict[tuple[str, str], set[str]] = {
+    ("invoice", "Invoice"): {"no", "no.", "#", "number", "num"},
+    ("po", "Purchase_Order"): {"no", "no.", "#", "number", "num"},
+    ("quote", "Quote"): {"no", "no.", "#", "number", "num"},
+}
+
+# "Reference" in the label flips semantic: an invoice that "references PO X"
+# — the ID attached is a PO, not an invoice. Treat as conflict for invoice.
+REFERENCE_POISON = {"references", "reference", "ref", "ref:"}
+
+
+def _is_rejectable_id_format(text: str) -> bool:
+    """Return True for tokens that match recognized non-ID formats."""
+    t = text.strip()
+    if SWIFT_RE.match(t):
+        return True
+    if IBAN_PREFIX_RE.match(t):
+        return True
+    if UK_POSTCODE_OUTCODE_RE.match(t) and len(t) <= 4:
+        return True
+    if UK_POSTCODE_INCODE_RE.match(t):
+        return True
+    return False
+
+
+def _label_words(label: str) -> list[str]:
+    words = []
+    for raw in label.lower().split():
+        norm = raw.strip(".,:;()[]{}\"'-/")
+        if norm:
+            words.append(norm)
+    return words
+
+
+def _word_in_label(word: str, label_words: list[str]) -> bool:
+    target = word.lower().strip()
+    return target in label_words
 
 
 def _nearby_label(cand, all_tokens) -> str:
@@ -37,6 +97,87 @@ def _nearby_label(cand, all_tokens) -> str:
     return (same_line + " " + above_text).strip()
 
 
+def _score_candidate(field_key: str, doc_type: str, cand, label: str) -> int:
+    """Score a candidate for a given field_key. Higher = better.
+
+    Positive signals:
+      +10 per direct label word-match for a field keyword ("invoice", "po")
+      + 7 for a field-synonym match ("no", "#", "number") when doc_type aligns
+    Negative signals:
+      -100 if candidate's OWN text matches a rejectable format (SWIFT/IBAN/postcode)
+      - 15 per conflict-keyword match in label (e.g. "swift" label for po_id)
+      -  5 if label contains a "references"/"ref" poison word AND the
+          field_key is "invoice" (the phrase "this invoice references PO" is
+          about the PO, not the invoice)
+      - 50 if candidate text STARTS WITH a conflicting prefix ("PO" for
+          invoice_id; "INV" for po_id)
+    """
+    label_words = _label_words(label)
+    score = 0
+    words = [w for w in field_key.split() if w]
+    primary = words[0] if words else ""
+
+    # "This invoice references: X" — the "invoice" word in this context
+    # does NOT mean X is an invoice. Neutralize invoice/po keywords when
+    # a reference-poison word is present.
+    has_reference_poison = any(p in label_words for p in REFERENCE_POISON)
+
+    for w in words:
+        if _word_in_label(w, label_words):
+            # If the field is "invoice" and "references" is in the label,
+            # this is actually a PO-reference phrase, not an invoice label.
+            if w == "invoice" and has_reference_poison:
+                continue
+            score += 10
+
+    synonyms = FIELD_SYNONYMS.get((primary, doc_type), set())
+    for syn in synonyms:
+        if _word_in_label(syn, label_words):
+            score += 7
+            break
+
+    # Self-label: the candidate's own text starts with the field keyword
+    # (e.g. "PO438295" for po_id, "INV600254" for invoice_id). This is a
+    # strong structural signal — many invoices omit an explicit label and
+    # just print "PO12345" or "INV-0001".
+    txt_upper = cand.text.upper()
+    primary_upper = primary.upper()
+    if primary_upper == "INVOICE":
+        if txt_upper.startswith("INV") and any(c.isdigit() for c in txt_upper):
+            score += 8
+    elif primary_upper == "PO":
+        if txt_upper.startswith("PO") and any(c.isdigit() for c in txt_upper):
+            score += 8
+
+    # Conflict penalty from label
+    for conflict_word in CONFLICT_KEYWORDS.get(primary, set()):
+        if _word_in_label(conflict_word, label_words):
+            # Same neutralization: "invoice" doesn't count as a conflict
+            # when the phrase is "this invoice references X".
+            if conflict_word == "invoice" and has_reference_poison:
+                continue
+            score -= 15
+
+    # Reference poison: "this invoice references PO X" — flips semantics
+    if primary == "invoice":
+        for poison in REFERENCE_POISON:
+            if _word_in_label(poison, label_words):
+                score -= 5
+                break
+
+    # Reject tokens that LOOK like SWIFT/IBAN/postcode entirely
+    if _is_rejectable_id_format(cand.text):
+        score -= 100
+
+    # Cross-keyword bleed in the candidate text itself
+    if primary == "invoice" and (txt_upper.startswith("PO") and any(c.isdigit() for c in txt_upper)):
+        score -= 50
+    if primary == "po" and txt_upper.startswith("INV"):
+        score -= 50
+
+    return score
+
+
 def extract_ids(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedValue]:
     out: dict[str, ExtractedValue] = {}
     id_fields = [f for f in fields_for(doc_type) if type_of(doc_type, f) == FieldType.ID]
@@ -45,10 +186,10 @@ def extract_ids(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedValue]
         field_key = field.replace("_id", "").replace("_", " ").lower()
         scored: list = []
         for c in cands:
-            lbl = _nearby_label(c, doc.tokens).lower()
-            overlap = sum(1 for w in field_key.split() if w in lbl)
-            if overlap > 0:
-                scored.append((overlap, c))
+            lbl = _nearby_label(c, doc.tokens)
+            score = _score_candidate(field_key, doc_type, c, lbl)
+            if score > 0:
+                scored.append((score, c))
         if scored:
             scored.sort(key=lambda s: -s[0])
             best = scored[0][1]
