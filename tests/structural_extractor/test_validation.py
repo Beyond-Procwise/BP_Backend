@@ -3,6 +3,7 @@ from src.services.structural_extractor.types import ExtractedValue
 from src.services.structural_extractor.validation import (
     ValidationReport,
     verify_anchors,
+    verify_math,
 )
 
 
@@ -92,3 +93,39 @@ def test_verify_anchors_fails_when_anchor_text_absent():
 def test_validation_report_default():
     rep = ValidationReport(passed=True)
     assert rep.failures == []
+
+
+# ------------------ math tests ------------------
+
+def test_math_reconciles():
+    header = {
+        "invoice_amount": _ev(8333.0),
+        "tax_amount": _ev(1666.60),
+        "invoice_total_incl_tax": _ev(9999.60),
+    }
+    rep = verify_math(header, [])
+    assert rep.passed
+
+
+def test_math_fails_on_mismatch():
+    header = {
+        "invoice_amount": _ev(8000.0),
+        "tax_amount": _ev(1000.0),
+        "invoice_total_incl_tax": _ev(9999.60),
+    }
+    rep = verify_math(header, [])
+    assert not rep.passed
+
+
+def test_line_item_math_reconciles():
+    header = {
+        "invoice_amount": _ev(1599.80),
+        "tax_amount": _ev(0.0),
+        "invoice_total_incl_tax": _ev(1599.80),
+    }
+    items = [
+        {"quantity": _ev(10), "unit_price": _ev(79.99), "line_total": _ev(799.90)},
+        {"quantity": _ev(10), "unit_price": _ev(79.99), "line_total": _ev(799.90)},
+    ]
+    rep = verify_math(header, items)
+    assert rep.passed
