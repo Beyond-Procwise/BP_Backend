@@ -75,3 +75,36 @@ def test_duncan_supplier_via_recipient_anchor():
         val = out["supplier_id"].value
     assert val is not None, f"no supplier found: {out}"
     assert "duncan" in val.lower()
+
+
+# === F7: AQUARIUS letterhead supplier — must not pick the 'BILLED TO' anchor phrase ===
+
+def test_aquarius_supplier_is_letterhead_not_anchor_phrase():
+    """AQUARIUS: supplier 'AUARIUS MARKETING' is at the top-left letterhead
+    (PyMuPDF drops the stylized 'Q' glyph). The extractor must not return
+    the 'BILLED TO' anchor phrase itself as the supplier name.
+    The 'Q' missing from 'AQUARIUS' is intentional — it's a graphic, so
+    ground truth matches the literal extracted text."""
+    for name in (
+        "AQUARIUS-25-050.pdf",
+        "AQUARIUS-25-051.pdf",
+        "AQUARIUS-25-052.pdf",
+        "AQUARIUS-25-053.pdf",
+        "AQUARIUS-25-054.pdf",
+    ):
+        fixture = FIXDIR / name
+        if not fixture.exists():
+            import pytest; pytest.skip(f"{name} fixture missing")
+        doc = parse_pdf(fixture.read_bytes(), name)
+        out = extract_parties(doc, "Invoice")
+        sup = out.get("supplier_id")
+        assert sup is not None, f"{name}: no supplier extracted"
+        # Must never equal an anchor phrase
+        assert sup.value.strip().upper() not in {
+            "BILLED TO", "BILL TO", "INVOICE TO", "SHIP TO", "INVOICE",
+            "PAYMENT", "PAYMENT INFORMATION",
+        }, f"{name}: anchor phrase leaked as supplier: {sup.value!r}"
+        # Must match the expected letterhead token run
+        assert "AUARIUS" in sup.value.upper() and "MARKETING" in sup.value.upper(), (
+            f"{name}: expected AUARIUS MARKETING in supplier, got {sup.value!r}"
+        )
