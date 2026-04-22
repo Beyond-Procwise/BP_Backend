@@ -382,7 +382,20 @@ class AgentNickOrchestrator:
                     from src.services.structural_extractor.provenance import write_provenance
                     filename = os.path.basename(file_path)
                     result = _extract(_file_bytes, filename, doc_type)
-                    if not result.unresolved_fields:
+                    # Required-field gate: only fall back to legacy if a CRITICAL
+                    # field is unresolved. Optional fields (delivery_address_line1,
+                    # incoterm, expected_delivery_date, payment_terms, etc.) are
+                    # allowed to be NULL — falling back to the hallucinating LLM
+                    # path would overwrite correct structural values with wrong
+                    # ones (the Staedtler pen regression on Duncan PO).
+                    _critical = {
+                        "Invoice": {"invoice_id", "invoice_amount", "invoice_total_incl_tax"},
+                        "Purchase_Order": {"po_id", "total_amount"},
+                        "Quote": {"quote_id", "total_amount"},
+                        "Contract": {"contract_id"},
+                    }.get(doc_type, set())
+                    _missing_critical = _critical - result.header.keys()
+                    if not _missing_critical:
                         # Per-doc-type line-total column name mapping.
                         # bp_invoice_line_items uses `line_amount`, bp_po_line_items
                         # and bp_quote_line_items use `line_total`.
@@ -447,10 +460,10 @@ class AgentNickOrchestrator:
                             "line_items": line_items_dicts,
                             "_source_text": result.parsed_text,
                         }
-                    # On unresolved fields: log and fall through to legacy
+                    # Missing CRITICAL field: legacy fallback (last resort)
                     logger.warning(
-                        "[structural] %s: unresolved %s — falling back to legacy",
-                        file_path, result.unresolved_fields,
+                        "[structural] %s: missing critical %s (unresolved %s) — falling back to legacy",
+                        file_path, _missing_critical, result.unresolved_fields,
                     )
             except Exception as exc:
                 logger.warning(
