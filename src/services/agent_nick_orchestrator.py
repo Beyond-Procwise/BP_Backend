@@ -379,18 +379,72 @@ class AgentNickOrchestrator:
                 _text, _file_bytes = _svc._get_document_text(file_path)
                 if _file_bytes:
                     from src.services.structural_extractor import extract as _extract
+                    from src.services.structural_extractor.provenance import write_provenance
                     filename = os.path.basename(file_path)
                     result = _extract(_file_bytes, filename, doc_type)
                     if not result.unresolved_fields:
+                        # Per-doc-type line-total column name mapping.
+                        # bp_invoice_line_items uses `line_amount`, bp_po_line_items
+                        # and bp_quote_line_items use `line_total`.
+                        _lt_key = "line_amount" if doc_type == "Invoice" else "line_total"
+                        header_dict = {
+                            k: v.value for k, v in result.header.items()
+                            if v.value is not None
+                        }
+                        line_items_dicts: list = []
+                        for item in result.line_items:
+                            li = {}
+                            for k, v in item.items():
+                                val = v.value if hasattr(v, "value") else v
+                                # Map line_total → line_amount for invoices;
+                                # downstream persistence (data_extraction_agent._persist_line_items_to_postgres)
+                                # expects the per-doc-type column name.
+                                if k == "line_total" and _lt_key == "line_amount":
+                                    li["line_amount"] = val
+                                else:
+                                    li[k] = val
+                            line_items_dicts.append(li)
+                        # Provenance: write one row per populated field (header + line items).
+                        # Uses a fresh connection from AgentNick's DB pool; best-effort —
+                        # failure to write provenance never blocks extraction persistence.
+                        pk_field = {
+                            "Invoice": "invoice_id",
+                            "Purchase_Order": "po_id",
+                            "Quote": "quote_id",
+                            "Contract": "contract_id",
+                        }.get(doc_type)
+                        parent_pk = result.header.get(pk_field).value if pk_field and result.header.get(pk_field) else None
+                        if parent_pk:
+                            try:
+                                _prov_conn = self._agent_nick.get_db_connection()
+                                try:
+                                    parent_table = {
+                                        "Invoice": "bp_invoice",
+                                        "Purchase_Order": "bp_purchase_order",
+                                        "Quote": "bp_quote",
+                                        "Contract": "bp_contracts",
+                                    }.get(doc_type, f"bp_{doc_type.lower()}")
+                                    write_provenance(_prov_conn, parent_table, str(parent_pk), result.header)
+                                    for idx, item in enumerate(result.line_items, 1):
+                                        line_pk = f"{parent_pk}-{idx}"
+                                        line_parent_table = {
+                                            "Invoice": "bp_invoice_line_items",
+                                            "Purchase_Order": "bp_po_line_items",
+                                            "Quote": "bp_quote_line_items",
+                                        }.get(doc_type)
+                                        if line_parent_table:
+                                            write_provenance(_prov_conn, line_parent_table, line_pk, item)
+                                    _prov_conn.commit()
+                                finally:
+                                    _prov_conn.close()
+                            except Exception as _prov_exc:
+                                logger.warning(
+                                    "[structural] provenance write failed for %s: %s (non-blocking)",
+                                    parent_pk, _prov_exc,
+                                )
                         return {
-                            "header": {
-                                k: v.value for k, v in result.header.items()
-                                if v.value is not None
-                            },
-                            "line_items": [
-                                {k: v.value for k, v in item.items()}
-                                for item in result.line_items
-                            ],
+                            "header": header_dict,
+                            "line_items": line_items_dicts,
                             "_source_text": result.parsed_text,
                         }
                     # On unresolved fields: log and fall through to legacy
