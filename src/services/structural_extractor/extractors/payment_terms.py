@@ -1,5 +1,7 @@
 import re
-from src.services.structural_extractor.parsing.model import ParsedDocument, BBox
+from src.services.structural_extractor.parsing.model import (
+    ParsedDocument, BBox, CellRef, ColumnRef, NodeRef
+)
 from src.services.structural_extractor.types import ExtractedValue
 
 ANCHOR_TOKENS = {"payment terms", "payment due", "terms", "payment terms:", "terms:"}
@@ -26,6 +28,15 @@ def _is_section_break(token_text: str) -> bool:
     # (heuristic for an inline section label).
     if token_text.endswith(":") and token_text[:-1].isupper() and len(token_text) > 3:
         return True
+    # Catch Title-Case colon-terminated tokens — these are common inline
+    # section labels in authored documents ('Currency:', 'Notes:', 'Ref:',
+    # 'Bank:'). Requires a leading uppercase AND an alpha-only body (no
+    # digits, no punctuation beyond the terminal colon) so we don't
+    # accidentally match a candidate value like 'Net:' or '30:'.
+    if len(token_text) > 2 and token_text.endswith(":"):
+        body = token_text[:-1]
+        if body and body[0].isupper() and body.isalpha():
+            return True
     return False
 
 
@@ -44,38 +55,77 @@ def extract_payment_terms(doc: ParsedDocument, doc_type: str) -> dict[str, Extra
     #   (b) a Y-line change (the value fits on one line in all 4 docs),
     #   (c) any ALL-CAPS colon-terminated token (inline section label).
     MAX_TOKENS = 6
-    for i in range(len(tokens) - 1):
-        two_words = f"{tokens[i].text} {tokens[i+1].text}".lower().rstrip(":")
-        if two_words in ANCHOR_TOKENS:
-            # Collect value tokens until a section break or token cap.
-            anchor_y = None
-            if i + 1 < len(tokens) and isinstance(tokens[i + 1].anchor, BBox):
-                anchor_y = tokens[i + 1].anchor.y0
-            value_tokens = []
-            for j in range(i + 2, min(i + 2 + MAX_TOKENS, len(tokens))):
-                if _is_section_break(tokens[j].text):
-                    break
-                # Y-line change: if this token's y differs from the anchor
-                # by more than 4pt (one line height) AND we already have at
-                # least one value token, stop here.
-                if (
-                    anchor_y is not None
-                    and value_tokens
-                    and isinstance(tokens[j].anchor, BBox)
-                    and abs(tokens[j].anchor.y0 - anchor_y) > 4
-                ):
-                    break
-                value_tokens.append(tokens[j])
-            text = " ".join(t.text for t in value_tokens)[:200]
-            text = _clean_value(text)
-            if text:
-                out["payment_terms"] = ExtractedValue(
-                    value=text, provenance="extracted",
-                    anchor_text=text,
-                    anchor_ref=value_tokens[0].anchor if value_tokens else tokens[i].anchor,
-                    source="structural", confidence=1.0, attempt=1,
-                )
-                return out
+
+    def _is_anchor_phrase(text: str) -> bool:
+        """Return True if the text equals one of ANCHOR_TOKENS ignoring case and
+        trailing colons. Accepts both 'Payment Terms' (single structured cell)
+        and 'Payment Terms:' variants."""
+        norm = text.lower().strip().rstrip(":")
+        return norm in {a.rstrip(":") for a in ANCHOR_TOKENS}
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        # Single-token anchor (XLSX/CSV cells often carry the full label).
+        single_match = _is_anchor_phrase(tok.text)
+        # Two-word anchor (PDF/DOCX split tokens like 'Payment' 'Terms').
+        two_match = False
+        if i + 1 < len(tokens):
+            combo = f"{tok.text} {tokens[i + 1].text}"
+            two_match = _is_anchor_phrase(combo)
+        if not (single_match or two_match):
+            i += 1
+            continue
+
+        start = i + (2 if two_match else 1)
+        anchor_tok = tokens[start - 1]
+        anchor_y = anchor_tok.anchor.y0 if isinstance(anchor_tok.anchor, BBox) else None
+        # For XLSX the label and value live in adjacent cells on the same row
+        # ('Payment Terms' | 'Net 14'). Take the next same-row cell verbatim —
+        # that cell's entire text IS the payment-terms value.
+        if isinstance(anchor_tok.anchor, CellRef) and start < len(tokens):
+            nxt = tokens[start]
+            if (
+                isinstance(nxt.anchor, CellRef)
+                and nxt.anchor.row == anchor_tok.anchor.row
+                and nxt.anchor.sheet == anchor_tok.anchor.sheet
+            ):
+                val_text = _clean_value(nxt.text)
+                if val_text:
+                    out["payment_terms"] = ExtractedValue(
+                        value=val_text, provenance="extracted",
+                        anchor_text=val_text, anchor_ref=nxt.anchor,
+                        source="structural", confidence=1.0, attempt=1,
+                    )
+                    return out
+
+        value_tokens = []
+        for j in range(start, min(start + MAX_TOKENS, len(tokens))):
+            if _is_section_break(tokens[j].text):
+                break
+            # Y-line change: if this token's y differs from the anchor
+            # by more than 4pt (one line height) AND we already have at
+            # least one value token, stop here.
+            if (
+                anchor_y is not None
+                and value_tokens
+                and isinstance(tokens[j].anchor, BBox)
+                and abs(tokens[j].anchor.y0 - anchor_y) > 4
+            ):
+                break
+            value_tokens.append(tokens[j])
+        text = " ".join(t.text for t in value_tokens)[:200]
+        text = _clean_value(text)
+        if text:
+            out["payment_terms"] = ExtractedValue(
+                value=text, provenance="extracted",
+                anchor_text=text,
+                anchor_ref=value_tokens[0].anchor if value_tokens else tok.anchor,
+                source="structural", confidence=1.0, attempt=1,
+            )
+            return out
+        i += 1
+
     # Strategy 2: "Net N" or "within N days" standalone
     for i, t in enumerate(tokens):
         if NET_RE.match(t.text) and i + 1 < len(tokens) and tokens[i+1].text.isdigit():
