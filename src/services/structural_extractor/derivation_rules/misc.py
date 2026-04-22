@@ -18,11 +18,25 @@ def _country(inputs):
 
 @rule("region_from_address", "region", ["_address_text"])
 def _region(inputs):
-    text = str(inputs["_address_text"] or "")
-    # Simplified: look for common UK regions
-    for region in ["West Sussex", "East Sussex", "Greater London", "Surrey",
-                   "Hampshire", "Kent", "Essex", "Yorkshire", "Lancashire"]:
-        if region in text:
+    text_lower = str(inputs["_address_text"] or "").lower()
+    # Case-insensitive match: handles "West Sussex", "WEST SUSSEX", "west sussex".
+    # Return value is the canonical capitalization.
+    UK_REGIONS = [
+        "West Sussex", "East Sussex", "West Midlands", "East Midlands",
+        "Greater London", "Greater Manchester", "Merseyside",
+        "South Yorkshire", "West Yorkshire", "North Yorkshire", "East Yorkshire",
+        "Surrey", "Hampshire", "Kent", "Essex", "Yorkshire", "Lancashire",
+        "Cheshire", "Norfolk", "Suffolk", "Devon", "Cornwall", "Somerset",
+        "Dorset", "Wiltshire", "Gloucestershire", "Warwickshire",
+        "Leicestershire", "Nottinghamshire", "Derbyshire", "Staffordshire",
+        "Berkshire", "Oxfordshire", "Hertfordshire", "Buckinghamshire",
+        "Bedfordshire", "Cambridgeshire", "Northamptonshire",
+        "Lincolnshire", "Rutland", "Shropshire", "Herefordshire",
+        "Worcestershire", "Cumbria", "Northumberland", "Durham",
+        "Tyne and Wear", "Middlesex", "London",
+    ]
+    for region in UK_REGIONS:
+        if region.lower() in text_lower:
             return region
     return None
 

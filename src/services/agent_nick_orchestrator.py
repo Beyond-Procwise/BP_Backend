@@ -450,6 +450,30 @@ class AgentNickOrchestrator:
                                 for _inherit in ("country", "region"):
                                     if _inherit not in li and header_dict.get(_inherit):
                                         li[_inherit] = header_dict[_inherit]
+                            # Per-line tax derivation: tax_percent inherits from
+                            # header; tax_amount = line_amount × tax_percent/100;
+                            # total_amount_incl_tax (invoices) or total_amount
+                            # (POs/quotes) = line_amount + tax_amount. Applies
+                            # when header has a single tax rate.
+                            _hdr_pct = header_dict.get("tax_percent")
+                            _line_amt = li.get("line_amount") or li.get("line_total")
+                            if _hdr_pct is not None and _line_amt is not None:
+                                try:
+                                    _pct = float(_hdr_pct)
+                                    _amt = float(_line_amt)
+                                    if "tax_percent" not in li:
+                                        li["tax_percent"] = _pct
+                                    if "tax_amount" not in li:
+                                        li["tax_amount"] = round(_amt * _pct / 100, 2)
+                                    _line_incl = round(_amt + li["tax_amount"], 2)
+                                    if doc_type == "Invoice":
+                                        if "total_amount_incl_tax" not in li:
+                                            li["total_amount_incl_tax"] = _line_incl
+                                    else:  # Purchase_Order / Quote
+                                        if "total_amount" not in li:
+                                            li["total_amount"] = _line_incl
+                                except (TypeError, ValueError):
+                                    pass
                             line_items_dicts.append(li)
                         # Provenance: write one row per populated field (header + line items).
                         # Uses a fresh connection from AgentNick's DB pool; best-effort —
