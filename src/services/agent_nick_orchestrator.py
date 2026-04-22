@@ -396,6 +396,33 @@ class AgentNickOrchestrator:
                     }.get(doc_type, set())
                     _missing_critical = _critical - result.header.keys()
                     if not _missing_critical:
+                        # --- Country / region derivation from full document text ---
+                        # The structural extractor's country_from_postcode rule
+                        # expects an "_address_text" input; populate it from the
+                        # parsed document's full_text so the rule can fire and
+                        # produce fully-traced country + region values.
+                        try:
+                            from src.services.structural_extractor.derivation_rules import misc as _derivation_misc
+                            from src.services.structural_extractor.types import ExtractedValue as _EV
+                            _addr_text = result.parsed_text or ""
+                            for _rule in (_derivation_misc._country, _derivation_misc._region):
+                                _field = {"_country": "country", "_region": "region"}[_rule.__name__]
+                                if _field in result.header:
+                                    continue  # already extracted
+                                _val = _rule({"_address_text": _addr_text})
+                                if _val is None:
+                                    continue
+                                result.header[_field] = _EV(
+                                    value=_val, provenance="inferred",
+                                    derivation_trace={
+                                        "rule_id": f"{_field}_from_postcode" if _field == "country" else "region_from_address",
+                                        "inputs": {"_address_text_sample": _addr_text[:120]},
+                                    },
+                                    source="derivation_registry", confidence=1.0, attempt=1,
+                                )
+                        except Exception as _addr_exc:
+                            logger.debug("[structural] country/region derivation skipped: %s", _addr_exc)
+
                         # Per-doc-type line-total column name mapping.
                         # bp_invoice_line_items uses `line_amount`, bp_po_line_items
                         # and bp_quote_line_items use `line_total`.
@@ -416,6 +443,13 @@ class AgentNickOrchestrator:
                                     li["line_amount"] = val
                                 else:
                                     li[k] = val
+                            # Inherit country/region from header into line items
+                            # (bp_invoice_line_items has country/region columns;
+                            # bp_po_line_items and bp_quote_line_items do not).
+                            if doc_type == "Invoice":
+                                for _inherit in ("country", "region"):
+                                    if _inherit not in li and header_dict.get(_inherit):
+                                        li[_inherit] = header_dict[_inherit]
                             line_items_dicts.append(li)
                         # Provenance: write one row per populated field (header + line items).
                         # Uses a fresh connection from AgentNick's DB pool; best-effort —
