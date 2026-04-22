@@ -18,7 +18,10 @@ def _country(inputs):
 
 @rule("region_from_address", "region", ["_address_text"])
 def _region(inputs):
-    text_lower = str(inputs["_address_text"] or "").lower()
+    # Collapse all whitespace (including newlines) to single spaces so that
+    # regions split across line breaks (e.g. "Horsham West\nSussex RH13 5QH")
+    # still match against the canonical "West Sussex" region name.
+    text_lower = re.sub(r"\s+", " ", str(inputs["_address_text"] or "").lower())
     # Case-insensitive match: handles "West Sussex", "WEST SUSSEX", "west sussex".
     # Return value is the canonical capitalization.
     UK_REGIONS = [
