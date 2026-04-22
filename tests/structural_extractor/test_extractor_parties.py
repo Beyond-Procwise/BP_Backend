@@ -86,11 +86,11 @@ def test_aquarius_supplier_is_letterhead_not_anchor_phrase():
     The 'Q' missing from 'AQUARIUS' is intentional — it's a graphic, so
     ground truth matches the literal extracted text."""
     for name in (
-        "AQUARIUS-25-050.pdf",
-        "AQUARIUS-25-051.pdf",
-        "AQUARIUS-25-052.pdf",
-        "AQUARIUS-25-053.pdf",
-        "AQUARIUS-25-054.pdf",
+        "AQUARIUS INV-25-050 for PO508084 .pdf",
+        "AQUARIUS INV-25-051 for PO508084 .pdf",
+        "AQUARIUS INV-25-052 for PO508084 .pdf",
+        "AQUARIUS INV-25-053 for PO508084 .pdf",
+        "AQUARIUS INV-25-054 for PO508084 .pdf",
     ):
         fixture = FIXDIR / name
         if not fixture.exists():

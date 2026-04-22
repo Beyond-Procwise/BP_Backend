@@ -127,7 +127,7 @@ def test_aquarius_line_description_preserves_services():
     as one complete description. The 'Services' token sits in the wide
     'Item' column and must NOT be lost due to a prose/address row being
     mis-selected as the table header."""
-    fixture = FIX / "AQUARIUS-25-050.pdf"
+    fixture = FIX / "AQUARIUS INV-25-050 for PO508084 .pdf"
     if not fixture.exists():
         import pytest; pytest.skip("AQUARIUS fixture missing")
     doc = parse_pdf(fixture.read_bytes(), fixture.name)
