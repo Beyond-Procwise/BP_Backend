@@ -1,0 +1,422 @@
+# Hand-verified ground truth for audit fixtures.
+# Used by the recursive-accuracy-improvement harness.
+# Field naming matches proc.bp_* columns.
+# null = field should NOT be extracted (absent in source or not a target for this doc).
+
+INV600254:
+  file: INV600254.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600254
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-08-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+DHA-2025-143:
+  file: DHA-2025-143.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: DHA-2025-143
+    po_id: PO438295
+    supplier_id: DESIGN HOUSE AGENCY
+    buyer_id: ASSURITY LTD
+    invoice_date: "2022-07-01"
+    invoice_amount: 2000.00
+    tax_amount: 400.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 2400.00
+    currency: GBP
+    payment_terms: "NET 14"
+  line_items:
+    - line_no: 1
+      item_description: Social Media Management
+      quantity: 1
+      unit_price: 2000.00
+      line_total: 2000.00
+
+ELEANOR-2025-290:
+  file: ELEANOR-2025-290.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: "2025-290"
+    po_id: "389948"
+    supplier_id: Eleanor Price Creative Studio
+    buyer_id: Assurity Ltd
+    invoice_date: "2020-04-01"
+    invoice_amount: 1200.00
+    tax_amount: 240.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 1440.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Monthly Design & Marketing Package
+      quantity: 1
+      unit_price: 1200.00
+      line_total: 1200.00
+
+# -- AQUARIUS series (5 docs, same structure, different ids/dates) --
+AQUARIUS-25-050:
+  file: "AQUARIUS INV-25-050 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-050
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-07-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+AQUARIUS-25-051:
+  file: "AQUARIUS INV-25-051 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-051
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-08-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+AQUARIUS-25-052:
+  file: "AQUARIUS INV-25-052 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-052
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-09-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+AQUARIUS-25-053:
+  file: "AQUARIUS INV-25-053 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-053
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-10-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+AQUARIUS-25-054:
+  file: "AQUARIUS INV-25-054 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-054
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-11-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+# -- CITY OF NEWPORT series (5 more beyond INV600254) --
+INV600253:
+  file: INV600253.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600253
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-07-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+INV600255:
+  file: INV600255.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600255
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-09-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+INV600257:
+  file: INV600257.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600257
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-11-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+INV600258:
+  file: INV600258.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600258
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-12-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+INV600260:
+  file: INV600260.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600260
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-02-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+# -- Multi-format synthesized fixtures (DOCX/XLSX/CSV) --
+invoice_acme:
+  file: invoice_acme.docx
+  doc_type: Invoice
+  header:
+    invoice_id: ACME-2024-0417
+    po_id: PO-77821
+    supplier_id: ACME PROFESSIONAL SERVICES LTD
+    buyer_id: Assurity Ltd
+    invoice_date: "2024-03-15"
+    invoice_amount: 5300.00
+    tax_amount: 1060.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6360.00
+    currency: GBP
+    payment_terms: Net 30
+  line_items:
+    - line_no: 1
+      item_description: Technical Consulting
+      quantity: 20
+      unit_price: 150.00
+      line_total: 3000.00
+    - line_no: 2
+      item_description: Project Management
+      quantity: 10
+      unit_price: 180.00
+      line_total: 1800.00
+    - line_no: 3
+      item_description: Documentation
+      quantity: 5
+      unit_price: 100.00
+      line_total: 500.00
+
+invoice_megamart:
+  file: invoice_megamart.xlsx
+  doc_type: Invoice
+  header:
+    invoice_id: MM-INV-9921
+    po_id: PO-33501
+    supplier_id: MEGAMART SUPPLIES INC
+    buyer_id: Assurity Ltd
+    invoice_date: "2024-05-10"
+    invoice_amount: 2300.00
+    tax_amount: 230.00
+    tax_percent: 10.00
+    invoice_total_incl_tax: 2530.00
+    currency: USD
+    payment_terms: Net 14
+  line_items:
+    - line_no: 1
+      item_description: Office Chair
+      quantity: 5
+      unit_price: 120.00
+      line_total: 600.00
+    - line_no: 2
+      item_description: Standing Desk
+      quantity: 5
+      unit_price: 340.00
+      line_total: 1700.00
+
+po_widgetco:
+  file: po_widgetco.xlsx
+  doc_type: Purchase_Order
+  header:
+    po_id: PO-88512
+    supplier_name: WidgetCo Ltd
+    order_date: "2024-06-20"
+    total_amount: 2500.00
+    tax_amount: 475.00
+    tax_percent: 19.00
+    total_amount_incl_tax: 2975.00
+    currency: EUR
+  line_items:
+    - line_no: 1
+      item_description: Widget Type A
+      quantity: 100
+      unit_price: 12.50
+      line_total: 1250.00
+    - line_no: 2
+      item_description: Widget Type B
+      quantity: 50
+      unit_price: 25.00
+      line_total: 1250.00
+
+line_items_bulk:
+  file: line_items_bulk.csv
+  doc_type: Purchase_Order
+  header:
+    # CSV has no header metadata — only line items. Most header fields legitimately absent.
+    currency: null    # not extractable from line-items-only CSV
+  line_items:
+    - line_no: 1
+      item_description: Server Rack
+      quantity: 2
+      unit_price: 850.00
+      line_total: 1700.00
+    - line_no: 2
+      item_description: Network Switch
+      quantity: 4
+      unit_price: 240.00
+      line_total: 960.00
+    - line_no: 3
+      item_description: Cable Bundle
+      quantity: 10
+      unit_price: 45.50
+      line_total: 455.00
+
+DUNCAN_PO526800:
+  file: DUNCAN_PO526800.pdf
+  doc_type: Purchase_Order
+  header:
+    po_id: "526800"
+    supplier_name: Duncan LLC
+    order_date: "2024-01-03"
+    total_amount: 2399.70
+    tax_amount: 479.94
+    tax_percent: 20.00
+    total_amount_incl_tax: 2879.64
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Fellowes Office Chair
+      quantity: 10
+      unit_price: 79.99
+      line_total: 799.90
+    - line_no: 2
+      item_description: Fellowes Office Chair
+      quantity: 10
+      unit_price: 79.99
+      line_total: 799.90
+    - line_no: 3
+      item_description: Fellowes Office Chair
+      quantity: 10
+      unit_price: 79.99
+      line_total: 799.90

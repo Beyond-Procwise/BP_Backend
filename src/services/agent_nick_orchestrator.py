@@ -371,6 +371,38 @@ class AgentNickOrchestrator:
         5. Retry with targeted guidance if verification finds errors
         6. Fall back to legacy extraction engine as last resort
         """
+        # Feature-flag routing: structural extractor path
+        if os.getenv("USE_STRUCTURAL_EXTRACTOR", "false").lower() in ("true", "1", "yes"):
+            try:
+                from services.direct_extraction_service import DirectExtractionService
+                _svc = DirectExtractionService(self._agent_nick)
+                _text, _file_bytes = _svc._get_document_text(file_path)
+                if _file_bytes:
+                    from src.services.structural_extractor import extract as _extract
+                    filename = os.path.basename(file_path)
+                    result = _extract(_file_bytes, filename, doc_type)
+                    if not result.unresolved_fields:
+                        return {
+                            "header": {
+                                k: v.value for k, v in result.header.items()
+                                if v.value is not None
+                            },
+                            "line_items": [
+                                {k: v.value for k, v in item.items()}
+                                for item in result.line_items
+                            ],
+                            "_source_text": result.parsed_text,
+                        }
+                    # On unresolved fields: log and fall through to legacy
+                    logger.warning(
+                        "[structural] %s: unresolved %s — falling back to legacy",
+                        file_path, result.unresolved_fields,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[structural] failed for %s: %s — falling back", file_path, exc
+                )
+        # end structural hook — existing legacy path follows below unchanged
         try:
             from services.direct_extraction_service import (
                 DirectExtractionService,
