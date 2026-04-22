@@ -27,6 +27,39 @@ LETTERHEAD_STOPWORDS = {
     "date:", "date", "no.", "no", "number:",
 }
 
+# Section-header / anchor phrases that must never be returned as a party name.
+# These are structural labels, not organization names. Matched against the
+# normalized (upper, stripped) line text.
+ANCHOR_PHRASE_REJECTS = {
+    "BILLED TO", "BILL TO", "BILLED TO:", "BILL TO:",
+    "INVOICE TO", "INVOICE TO:",
+    "SHIP TO", "SHIP TO:", "SOLD TO", "SOLD TO:",
+    "INVOICE", "PAYMENT", "PAYMENT INFORMATION", "PAYMENT DETAILS",
+    "CUSTOMER", "CUSTOMER:", "VENDOR", "VENDOR:", "SUPPLIER", "SUPPLIER:",
+    "RECIPIENT", "RECIPIENT:",
+}
+
+
+def _is_anchor_phrase(text: str) -> bool:
+    """Return True if the given text looks like a structural section-header
+    phrase (all-caps, <=3 words, ends in 'TO'/':' or matches a known label).
+    These must never be returned as a party name.
+    """
+    if not text:
+        return False
+    norm = text.strip().upper().rstrip(":;,.")
+    if norm in ANCHOR_PHRASE_REJECTS:
+        return True
+    # Strip trailing colon and re-check
+    if text.strip().upper() in ANCHOR_PHRASE_REJECTS:
+        return True
+    # Heuristic: short all-caps phrase ending in 'TO' is almost always an
+    # anchor label ('PAYABLE TO', 'REMIT TO', etc.).
+    words = norm.split()
+    if 1 <= len(words) <= 3 and norm.isupper() and words[-1] == "TO":
+        return True
+    return False
+
 
 def _find_anchor_position(tokens: list, phrases: set) -> tuple | None:
     """Scan for any of the given (space-separated) anchor phrases and return (page, y, x) of the last token of the match.
@@ -155,8 +188,16 @@ def _find_all_caps_orgs(doc: ParsedDocument) -> list[tuple[str, BBox]]:
                     # Reject pure-postcode / pure-alphanumeric-code runs
                     # like 'RH13 5QH' or 'B7 4AX' — these are addresses,
                     # not orgs.
-                    if not _is_postcode_pair(span):
-                        runs.append((text, span[0].anchor))
+                    if _is_postcode_pair(span):
+                        i = j
+                        continue
+                    # Reject anchor-phrase labels ('BILLED TO:', 'PAYMENT
+                    # INFORMATION', etc.) — they look like ORG runs
+                    # structurally but are section headers, not names.
+                    if _is_anchor_phrase(text):
+                        i = j
+                        continue
+                    runs.append((text, span[0].anchor))
                 i = j
             else:
                 i += 1
@@ -248,10 +289,32 @@ def _supplier_letterhead(doc: ParsedDocument, y_boundary: float, buyer_val: str 
         yb = int(t.anchor.y0 / 4)
         lines.setdefault(yb, []).append(t)
 
+    # Split same-y-bucket tokens into horizontal column-groups whenever
+    # the x-gap between consecutive tokens exceeds 40pt. Otherwise a
+    # letterhead on the LEFT ('AUARIUS MARKETING') and invoice metadata
+    # on the RIGHT ('Invoice No. INV-25-050') appear as one logical line,
+    # and a 'NO'/'DATE' keyword on the right poisons the whole line.
+    line_groups: list[tuple[int, list[Token]]] = []
+    for yb in sorted(lines.keys()):
+        toks_sorted = sorted(lines[yb], key=lambda t: t.anchor.x0)
+        group: list[Token] = []
+        for t in toks_sorted:
+            if not group:
+                group.append(t)
+                continue
+            prev = group[-1]
+            gap = t.anchor.x0 - prev.anchor.x1
+            if gap > 40:
+                line_groups.append((yb, group))
+                group = [t]
+            else:
+                group.append(t)
+        if group:
+            line_groups.append((yb, group))
+
     # Build line descriptors with bucket key, tokens, and text
     descriptors: list[tuple[int, list[Token], str]] = []
-    for yb in sorted(lines.keys()):
-        line_toks = sorted(lines[yb], key=lambda t: t.anchor.x0)
+    for yb, line_toks in line_groups:
         line_text = " ".join(t.text for t in line_toks).strip(" .:")
         if not line_text or len(line_text) < 3:
             continue
@@ -263,6 +326,10 @@ def _supplier_letterhead(doc: ParsedDocument, y_boundary: float, buyer_val: str 
         if any(tu in {"DATE", "NO"} for tu in toks_up):
             continue
         if buyer_val and line_text == buyer_val:
+            continue
+        # Reject anchor-phrase labels — they can appear in the top band
+        # (e.g. 'BILLED TO' when AQUARIUS puts the buyer block at y=168).
+        if _is_anchor_phrase(line_text):
             continue
         descriptors.append((yb, line_toks, line_text))
 
@@ -501,9 +568,16 @@ def extract_parties(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedVa
         for c in sorted(org_cands, key=_y_key):
             if c.text == buyer_val:
                 continue
+            if _is_anchor_phrase(c.text):
+                continue
             supplier_val = c.text
             supplier_anchor = _org_anchor(c)
             break
+
+    # Final guard: never return an anchor phrase as the supplier name.
+    if supplier_val and _is_anchor_phrase(supplier_val):
+        supplier_val = None
+        supplier_anchor = None
 
     # Schema: POs use 'supplier_name' as the primary ORG field, invoices
     # use 'supplier_id'. Emit whichever the schema declares for this doc
