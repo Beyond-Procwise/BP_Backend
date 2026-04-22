@@ -68,6 +68,223 @@ ELEANOR-2025-290:
       unit_price: 1200.00
       line_total: 1200.00
 
+# -- AQUARIUS series (5 docs, same structure, different ids/dates) --
+AQUARIUS-25-050:
+  file: "AQUARIUS INV-25-050 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-050
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-07-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+AQUARIUS-25-051:
+  file: "AQUARIUS INV-25-051 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-051
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-08-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+AQUARIUS-25-052:
+  file: "AQUARIUS INV-25-052 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-052
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-09-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+AQUARIUS-25-053:
+  file: "AQUARIUS INV-25-053 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-053
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-10-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+AQUARIUS-25-054:
+  file: "AQUARIUS INV-25-054 for PO508084 .pdf"
+  doc_type: Invoice
+  header:
+    invoice_id: INV-25-054
+    po_id: PO508084
+    supplier_id: AUARIUS MARKETING
+    buyer_id: Assurity Ltd
+    invoice_date: "2025-11-22"
+    invoice_amount: 5000.00
+    tax_amount: 1000.00
+    tax_percent: 20.00
+    invoice_total_incl_tax: 6000.00
+    currency: GBP
+  line_items:
+    - line_no: 1
+      item_description: Marketing and Brand Development Services
+      quantity: 1
+      unit_price: 5000.00
+      line_total: 5000.00
+
+# -- CITY OF NEWPORT series (5 more beyond INV600254) --
+INV600253:
+  file: INV600253.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600253
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-07-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+INV600255:
+  file: INV600255.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600255
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-09-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+INV600257:
+  file: INV600257.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600257
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-11-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+INV600258:
+  file: INV600258.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600258
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-12-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
+INV600260:
+  file: INV600260.pdf
+  doc_type: Invoice
+  header:
+    invoice_id: INV600260
+    po_id: PO502004
+    supplier_id: City of Newport
+    buyer_id: Assurity Ltd
+    invoice_date: "2019-02-22"
+    invoice_amount: 8333.00
+    tax_amount: 1666.60
+    tax_percent: 20.00
+    invoice_total_incl_tax: 9999.60
+    currency: GBP
+    payment_terms: "within 30 days"
+  line_items:
+    - line_no: 1
+      item_description: Bespoke Marketing Services
+      quantity: 1
+      unit_price: 8333.00
+      line_total: 8333.00
+
 DUNCAN_PO526800:
   file: DUNCAN_PO526800.pdf
   doc_type: Purchase_Order

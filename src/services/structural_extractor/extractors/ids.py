@@ -178,6 +178,42 @@ def _score_candidate(field_key: str, doc_type: str, cand, label: str) -> int:
     return score
 
 
+# Filename-hint patterns: ID values that are commonly embedded in
+# filenames but omitted from the document body. Each entry is
+# (field_key, compiled regex, value-builder).
+# The regex is matched against the filename (case-insensitive); the
+# value-builder takes the match object and returns the normalized ID
+# value (preserving any required prefix).
+#
+# Invoice IDs are deliberately NOT listed: the invoice body always
+# carries its own invoice number, and filenames are often derivative
+# (e.g. 'AQUARIUS INV-25-050 for PO508084 .pdf' has INV-25-050 as the
+# subject but it's also in the body — body wins).
+_FILENAME_HINT_PATTERNS: list[tuple[str, "re.Pattern", "callable"]] = [
+    # PO number: 'PO12345', 'PO-12345', 'for PO12345' — preserve the PO prefix.
+    ("po", re.compile(r"\bPO[- ]?(\d{4,})\b", re.IGNORECASE), lambda m: "PO" + m.group(1)),
+    # Quote number: 'QUT-1234', 'Q1234', 'QUOTE-123'.
+    ("quote", re.compile(r"\bQUT[- ]?(\d{3,})\b", re.IGNORECASE), lambda m: "QUT-" + m.group(1)),
+    ("quote", re.compile(r"\bQUOTE[- ]?(\d{3,})\b", re.IGNORECASE), lambda m: "QUOTE-" + m.group(1)),
+]
+
+
+def _filename_hint(field_key: str, filename: str) -> str | None:
+    """Scan the filename for an ID token matching field_key's pattern.
+    Returns the normalized ID value, or None if no match.
+    """
+    if not filename:
+        return None
+    primary = field_key.split()[0] if field_key else ""
+    for key, pattern, builder in _FILENAME_HINT_PATTERNS:
+        if key != primary:
+            continue
+        m = pattern.search(filename)
+        if m:
+            return builder(m)
+    return None
+
+
 def extract_ids(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedValue]:
     out: dict[str, ExtractedValue] = {}
     id_fields = [f for f in fields_for(doc_type) if type_of(doc_type, f) == FieldType.ID]
@@ -197,5 +233,23 @@ def extract_ids(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedValue]
                 value=best.text, provenance="extracted",
                 anchor_text=best.text, anchor_ref=best.tokens[0].anchor,
                 source="structural", confidence=1.0, attempt=1,
+            )
+
+    # Filename-hint fallback: for fields still unresolved after body
+    # discovery, try to pull the ID out of the document filename. This
+    # is the "...for PO508084 .pdf" convention where the PO reference
+    # lives only in the filename and not in the invoice body.
+    # Only applied to fields whose primary keyword has a registered
+    # filename pattern (po / quote), never to invoice_id.
+    for field in id_fields:
+        if field in out:
+            continue
+        field_key = field.replace("_id", "").replace("_", " ").lower()
+        hint_val = _filename_hint(field_key, getattr(doc, "filename", "") or "")
+        if hint_val:
+            out[field] = ExtractedValue(
+                value=hint_val, provenance="extracted",
+                anchor_text=hint_val, anchor_ref=None,
+                source="filename_hint", confidence=0.9, attempt=1,
             )
     return out
