@@ -1,5 +1,5 @@
 from src.services.structural_extractor.parsing.model import (
-    ParsedDocument, Token, BBox, CellRef, ColumnRef, NodeRef
+    ParsedDocument, Token, BBox, CellRef, ColumnRef, NodeRef, Table
 )
 from src.services.structural_extractor.types import ExtractedValue
 from src.services.structural_extractor.discovery.type_entities import find_candidates
@@ -23,7 +23,12 @@ SUMMARY_VOCAB = {
 def extract_line_items(doc: ParsedDocument, doc_type: str) -> list[dict[str, ExtractedValue]]:
     if doc.source_format == "pdf":
         return _pdf_line_items(doc)
-    # XLSX/DOCX/CSV branches will be added in Phase 15 Tasks 51a/b/c
+    if doc.source_format == "docx":
+        return _docx_line_items(doc)
+    if doc.source_format == "xlsx":
+        return _xlsx_line_items(doc)
+    if doc.source_format == "csv":
+        return _csv_line_items(doc)
     return []
 
 
@@ -452,4 +457,293 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
                     )
             items.append(item)
             line_no += 1
+    return items
+
+
+# =====================================================================
+# Structured-table branches — DOCX / XLSX / CSV
+# =====================================================================
+#
+# DOCX and XLSX expose explicit row/column structure via doc.tables, so
+# we skip PDF's spatial Y-bucket clustering entirely. CSV is purely a
+# line-items feed with column-name metadata on each token.
+#
+# Column-role detection: reuse the same TYPE signature + arithmetic-fit
+# heuristic as PDF — the only difference is that "x-midpoint" is replaced
+# by "cell column index".
+
+_DESC_COL_KEYS = {"description", "item", "product", "service", "particulars"}
+_QTY_COL_KEYS = {"qty", "quantity", "units", "count"}
+_PRICE_COL_KEYS = {"unit_price", "unit price", "price", "rate", "cost"}
+_TOTAL_COL_KEYS = {
+    "line_total", "line total", "total", "amount", "line_amount", "line amount", "extended",
+}
+
+
+def _col_name_matches(col_name: str, keys: set) -> bool:
+    """Return True if the normalized column name matches any key in keys.
+
+    Normalization: lowercase, spaces collapsed. Matching is substring-
+    based so 'Line Total (GBP)' matches 'line total'.
+    """
+    if not col_name:
+        return False
+    norm = " ".join(col_name.lower().split())
+    for key in keys:
+        if key in norm:
+            return True
+    return False
+
+
+def _row_cell_text(row_cells: list, col_idx: int) -> str:
+    """Return concatenated cell text at col_idx, or '' if missing."""
+    if 0 <= col_idx < len(row_cells):
+        return " ".join(t.text for t in row_cells[col_idx].tokens)
+    return ""
+
+
+def _row_cell_tokens(row_cells: list, col_idx: int) -> list[Token]:
+    if 0 <= col_idx < len(row_cells):
+        return list(row_cells[col_idx].tokens)
+    return []
+
+
+def _try_num(text: str) -> float | None:
+    if not text:
+        return None
+    clean = text.replace(",", "").replace("£", "").replace("$", "").replace("€", "").strip()
+    try:
+        return float(clean)
+    except ValueError:
+        return None
+
+
+def _row_is_summary(row_cells: list) -> bool:
+    """Return True if the row's first non-empty cell text is in SUMMARY_VOCAB."""
+    for cell in row_cells:
+        if cell.tokens:
+            txt = " ".join(t.text for t in cell.tokens).strip().lower().rstrip(":;,.")
+            clean = txt.replace(":", "").strip()
+            if clean in SUMMARY_VOCAB:
+                return True
+            for vocab in SUMMARY_VOCAB:
+                if clean.startswith(vocab + " ") or clean.startswith(vocab + "(") or clean == vocab:
+                    return True
+            return False
+    return False
+
+
+def _infer_header_row(table: Table) -> int | None:
+    """Return the index of the header row. Two heuristics:
+
+    1. If the parser flagged `header_row_index`, use it — but only when
+       the row actually contains description/qty/price-like keywords.
+       (DOCX tables always set header_row_index=0 and XLSX sets it to
+       the first non-numeric row, which can be a letterhead cell.)
+    2. Otherwise scan for the first row whose text contains a description
+       keyword AND some money/number-like keyword ('price', 'qty', 'total',
+       'amount'). This is a one-time structural check on the user-authored
+       column labels — the same kind of label normalization we already do
+       for CSV ColumnRef.column_name.
+    """
+    for r_idx, row in enumerate(table.rows):
+        has_desc = False
+        has_num = False
+        for cell in row:
+            txt = " ".join(t.text for t in cell.tokens).lower().strip()
+            if not txt:
+                continue
+            if _col_name_matches(txt, _DESC_COL_KEYS):
+                has_desc = True
+            if (
+                _col_name_matches(txt, _QTY_COL_KEYS)
+                or _col_name_matches(txt, _PRICE_COL_KEYS)
+                or _col_name_matches(txt, _TOTAL_COL_KEYS)
+            ):
+                has_num = True
+        if has_desc and has_num:
+            return r_idx
+    # Fallback: the parser's own header_row_index (may be the first
+    # non-numeric row which isn't necessarily the column header).
+    return table.header_row_index
+
+
+def _classify_columns(header_row: list) -> dict[int, str]:
+    """Map column index → role ('description' / 'quantity' / 'unit_price' /
+    'line_total' / 'other') using column-label keywords.
+    """
+    roles: dict[int, str] = {}
+    for c_idx, cell in enumerate(header_row):
+        txt = " ".join(t.text for t in cell.tokens).strip()
+        if not txt:
+            roles[c_idx] = "other"
+            continue
+        if _col_name_matches(txt, _DESC_COL_KEYS):
+            roles[c_idx] = "description"
+        elif _col_name_matches(txt, _QTY_COL_KEYS):
+            roles[c_idx] = "quantity"
+        elif _col_name_matches(txt, _PRICE_COL_KEYS):
+            roles[c_idx] = "unit_price"
+        elif _col_name_matches(txt, _TOTAL_COL_KEYS):
+            roles[c_idx] = "line_total"
+        else:
+            roles[c_idx] = "other"
+    return roles
+
+
+def _build_items_from_table(table: Table, header_idx: int) -> list[dict[str, ExtractedValue]]:
+    """Common implementation for DOCX/XLSX — iterates rows after the
+    header row, respects summary-row termination, assigns columns to
+    schema fields via column-label mapping.
+    """
+    header_row = table.rows[header_idx]
+    roles = _classify_columns(header_row)
+
+    # Identify role columns
+    desc_col = next((c for c, r in roles.items() if r == "description"), None)
+    qty_col = next((c for c, r in roles.items() if r == "quantity"), None)
+    price_col = next((c for c, r in roles.items() if r == "unit_price"), None)
+    total_col = next((c for c, r in roles.items() if r == "line_total"), None)
+
+    if desc_col is None:
+        return []
+
+    items: list[dict[str, ExtractedValue]] = []
+    line_no = 1
+    seen: set = set()
+    for r_idx in range(header_idx + 1, len(table.rows)):
+        row = table.rows[r_idx]
+        if _row_is_summary(row):
+            break  # stop at the first summary row
+        desc_text = _row_cell_text(row, desc_col).strip()
+        if not desc_text:
+            # Empty row — tolerate as spacer and continue; terminate only
+            # if the next populated row is a summary (already handled above).
+            continue
+        qty_val = _try_num(_row_cell_text(row, qty_col)) if qty_col is not None else None
+        price_val = _try_num(_row_cell_text(row, price_col)) if price_col is not None else None
+        total_val = _try_num(_row_cell_text(row, total_col)) if total_col is not None else None
+
+        # Accept rows that have at least description + one numeric field.
+        if qty_val is None and price_val is None and total_val is None:
+            continue
+
+        dedup_key = (desc_text, qty_val, price_val, total_val)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        desc_tokens = _row_cell_tokens(row, desc_col)
+        item: dict[str, ExtractedValue] = {
+            "line_no": _ev_derived(line_no, "line_no_monotonic", {}),
+            "item_description": ExtractedValue(
+                value=desc_text, provenance="extracted", anchor_text=desc_text,
+                anchor_ref=desc_tokens[0].anchor if desc_tokens else None,
+                source="structural", confidence=1.0, attempt=1,
+            ),
+        }
+        if qty_val is not None:
+            qty_tokens = _row_cell_tokens(row, qty_col)
+            item["quantity"] = _ev_extracted(qty_val, qty_tokens[0]) if qty_tokens else _ev_derived(qty_val, "cell_qty", {})
+        if price_val is not None:
+            p_tokens = _row_cell_tokens(row, price_col)
+            item["unit_price"] = _ev_extracted(price_val, p_tokens[0]) if p_tokens else _ev_derived(price_val, "cell_unit_price", {})
+        if total_val is not None:
+            t_tokens = _row_cell_tokens(row, total_col)
+            item["line_total"] = _ev_extracted(total_val, t_tokens[0]) if t_tokens else _ev_derived(total_val, "cell_line_total", {})
+
+        items.append(item)
+        line_no += 1
+    return items
+
+
+def _docx_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
+    """DOCX line items: iterate the first table whose header row carries
+    description/qty/price/total labels.
+    """
+    for tbl in doc.tables:
+        header_idx = _infer_header_row(tbl)
+        if header_idx is None:
+            continue
+        items = _build_items_from_table(tbl, header_idx)
+        if items:
+            return items
+    return []
+
+
+def _xlsx_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
+    """XLSX line items: use the first Table (sheet) whose header row
+    carries description-like labels.
+    """
+    for tbl in doc.tables:
+        header_idx = _infer_header_row(tbl)
+        if header_idx is None:
+            continue
+        items = _build_items_from_table(tbl, header_idx)
+        if items:
+            return items
+    return []
+
+
+def _csv_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
+    """CSV line items: group tokens by row index, map column_name → role
+    directly (CSV headers are author-provided and explicit).
+    """
+    # Group tokens by row
+    rows: dict[int, list[Token]] = {}
+    for t in doc.tokens:
+        if not isinstance(t.anchor, ColumnRef):
+            continue
+        rows.setdefault(t.anchor.row, []).append(t)
+
+    items: list[dict[str, ExtractedValue]] = []
+    line_no = 1
+    for r_idx in sorted(rows.keys()):
+        row_toks = rows[r_idx]
+        role_to_tok: dict[str, Token] = {}
+        for t in row_toks:
+            col_name = t.anchor.column_name or ""
+            if _col_name_matches(col_name, _DESC_COL_KEYS):
+                role_to_tok["description"] = t
+            elif _col_name_matches(col_name, _QTY_COL_KEYS):
+                role_to_tok["quantity"] = t
+            elif _col_name_matches(col_name, _PRICE_COL_KEYS):
+                role_to_tok["unit_price"] = t
+            elif _col_name_matches(col_name, _TOTAL_COL_KEYS):
+                role_to_tok["line_total"] = t
+
+        desc_tok = role_to_tok.get("description")
+        if desc_tok is None or not desc_tok.text.strip():
+            continue
+        qty_tok = role_to_tok.get("quantity")
+        price_tok = role_to_tok.get("unit_price")
+        total_tok = role_to_tok.get("line_total")
+
+        qty_val = _try_num(qty_tok.text) if qty_tok else None
+        price_val = _try_num(price_tok.text) if price_tok else None
+        total_val = _try_num(total_tok.text) if total_tok else None
+
+        if qty_val is None and price_val is None and total_val is None:
+            continue
+
+        # Skip rows whose description is in summary vocabulary.
+        if _is_summary_row(desc_tok.text, int(bool(price_val) + bool(total_val))):
+            continue
+
+        item: dict[str, ExtractedValue] = {
+            "line_no": _ev_derived(line_no, "line_no_monotonic", {}),
+            "item_description": ExtractedValue(
+                value=desc_tok.text, provenance="extracted", anchor_text=desc_tok.text,
+                anchor_ref=desc_tok.anchor, source="structural",
+                confidence=1.0, attempt=1,
+            ),
+        }
+        if qty_val is not None and qty_tok is not None:
+            item["quantity"] = _ev_extracted(qty_val, qty_tok)
+        if price_val is not None and price_tok is not None:
+            item["unit_price"] = _ev_extracted(price_val, price_tok)
+        if total_val is not None and total_tok is not None:
+            item["line_total"] = _ev_extracted(total_val, total_tok)
+        items.append(item)
+        line_no += 1
     return items

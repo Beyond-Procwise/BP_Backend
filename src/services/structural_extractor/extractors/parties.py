@@ -1,5 +1,7 @@
 import re
-from src.services.structural_extractor.parsing.model import ParsedDocument, Token, BBox
+from src.services.structural_extractor.parsing.model import (
+    ParsedDocument, Token, BBox, CellRef, ColumnRef, NodeRef
+)
 from src.services.structural_extractor.types import ExtractedValue
 from src.services.structural_extractor.discovery.type_entities import find_candidates
 from src.services.structural_extractor.discovery.schema import FieldType, fields_for, type_of
@@ -409,8 +411,302 @@ def _anchor_to_text(anchor_pos, tokens: list) -> tuple[str, BBox] | None:
     return text, keep[0].anchor
 
 
+def _structured_buyer_anchor_tokens(doc: ParsedDocument) -> list[Token]:
+    """Return tokens marking the END of a buyer-anchor phrase.
+
+    For a 2-word label ('Bill' 'To:'), the END token is 'To:' — the value
+    lookup starts AFTER this token. For a single-token label ('Bill To' in
+    an XLSX cell or 'Customer:' alone) the END token IS the label token.
+
+    Matches 'Bill To', 'Bill To:', 'Billed To', 'Invoice To', 'Ship To',
+    'Sold To', 'Customer:', 'Invoice For'.
+    """
+    matches: list[Token] = []
+    buyer_phrases = {p.rstrip(":") for p in BUYER_ANCHORS}
+    tokens = doc.tokens
+    n = len(tokens)
+    for i, t in enumerate(tokens):
+        single_norm = t.text.lower().strip().rstrip(":;,.")
+        if single_norm in buyer_phrases:
+            matches.append(t)
+            continue
+        # Two-word match (DOCX splits "Bill To:" into 'Bill' 'To:').
+        # Return the SECOND token — value lookup advances past it.
+        if i + 1 < n:
+            combo = f"{t.text} {tokens[i + 1].text}".lower().rstrip(":;,. ")
+            if combo in buyer_phrases:
+                matches.append(tokens[i + 1])
+    return matches
+
+
+def _structured_supplier_anchor_tokens(doc: ParsedDocument) -> list[Token]:
+    """Return tokens marking the END of a supplier-anchor phrase.
+
+    Same semantics as the buyer helper — multi-token labels ('Remit'
+    'To:') return the LAST token so value lookup starts after it.
+    """
+    matches: list[Token] = []
+    supplier_phrases = {p.rstrip(":") for p in SUPPLIER_ANCHORS}
+    tokens = doc.tokens
+    n = len(tokens)
+    for i, t in enumerate(tokens):
+        single_norm = t.text.lower().strip().rstrip(":;,.")
+        if single_norm in supplier_phrases:
+            matches.append(t)
+            continue
+        if i + 1 < n:
+            combo = f"{t.text} {tokens[i + 1].text}".lower().rstrip(":;,. ")
+            if combo in supplier_phrases:
+                matches.append(tokens[i + 1])
+    return matches
+
+
+def _value_token_after_label(label_tok: Token, tokens: list[Token]) -> Token | None:
+    """Return the candidate value token for a given label anchor.
+
+    XLSX: the value is the cell to the right of the label cell on the
+    same row ('Bill To' in A5, 'Assurity Ltd' in B5).
+
+    DOCX: the value sits in the next paragraph (Assurity Ltd in P10
+    immediately after 'Bill To:' in P9). If the label is followed in
+    the same paragraph by the value (e.g. 'Supplier: WidgetCo Ltd'),
+    the in-paragraph remainder wins.
+    """
+    anchor = label_tok.anchor
+    # XLSX: find next token on same row with col > label col.
+    if isinstance(anchor, CellRef):
+        same_sheet = [
+            t for t in tokens
+            if isinstance(t.anchor, CellRef)
+            and t.anchor.sheet == anchor.sheet
+            and t.anchor.row == anchor.row
+            and t.anchor.col > anchor.col
+            and t.text.strip()
+        ]
+        same_sheet.sort(key=lambda t: t.anchor.col)
+        return same_sheet[0] if same_sheet else None
+    # DOCX paragraph anchor.
+    if isinstance(anchor, NodeRef) and anchor.kind == "paragraph":
+        # Find tokens AFTER label in the same paragraph — sometimes
+        # 'Supplier:' 'WidgetCo' 'Ltd' live in one paragraph.
+        in_para_after = [
+            t for t in tokens
+            if isinstance(t.anchor, NodeRef)
+            and t.anchor.kind == "paragraph"
+            and t.anchor.paragraph_index == anchor.paragraph_index
+            and t.order > label_tok.order
+            and t.text.strip()
+        ]
+        if in_para_after:
+            # Combine all tokens following the label in the same paragraph.
+            # Use the first one as the anchor; the downstream caller joins
+            # texts from a span.
+            return in_para_after[0]
+        # Next paragraph: find smallest paragraph_index > current whose
+        # first token is non-empty.
+        next_para_toks = [
+            t for t in tokens
+            if isinstance(t.anchor, NodeRef)
+            and t.anchor.kind == "paragraph"
+            and t.anchor.paragraph_index is not None
+            and anchor.paragraph_index is not None
+            and t.anchor.paragraph_index > anchor.paragraph_index
+            and t.text.strip()
+        ]
+        if next_para_toks:
+            min_pidx = min(t.anchor.paragraph_index for t in next_para_toks)
+            return next(
+                (t for t in next_para_toks if t.anchor.paragraph_index == min_pidx),
+                None,
+            )
+    return None
+
+
+def _paragraph_text(doc: ParsedDocument, paragraph_index: int) -> str:
+    toks = [
+        t for t in doc.tokens
+        if isinstance(t.anchor, NodeRef)
+        and t.anchor.kind == "paragraph"
+        and t.anchor.paragraph_index == paragraph_index
+    ]
+    return " ".join(t.text for t in toks)
+
+
+def _extract_parties_structured(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedValue]:
+    """Extract buyer + supplier for DOCX / XLSX documents.
+
+    Strategy:
+    1. Buyer — find a "Bill To" / "Invoice To" / "Customer" label; return
+       the value in the next cell (XLSX) or next paragraph (DOCX).
+    2. Supplier — find a "Supplier" / "From" / "Remit To" label. If absent,
+       fall back to the letterhead: top cell of the first sheet (XLSX) or
+       first paragraph (DOCX) that looks like an org name (all-caps multi-
+       word OR ends in a corporate suffix).
+    """
+    out: dict[str, ExtractedValue] = {}
+    tokens = doc.tokens
+
+    org_cands = find_candidates(doc, FieldType.ORG)
+    # Build a map: token.order -> org candidate text (prefer the longest
+    # candidate starting at that token).
+    org_by_start: dict[int, tuple[str, Token]] = {}
+    for c in org_cands:
+        if not c.tokens:
+            continue
+        key = c.tokens[0].order
+        prev = org_by_start.get(key)
+        if prev is None or len(c.text) > len(prev[0]):
+            org_by_start[key] = (c.text, c.tokens[0])
+
+    # --- Buyer ---
+    buyer_val: str | None = None
+    buyer_anchor = None
+    for label_tok in _structured_buyer_anchor_tokens(doc):
+        val_tok = _value_token_after_label(label_tok, tokens)
+        if val_tok is None:
+            continue
+        # Prefer: if the value token IS an ORG candidate start, use the
+        # full candidate text.
+        if val_tok.order in org_by_start:
+            buyer_val, _ = org_by_start[val_tok.order]
+            buyer_anchor = val_tok.anchor
+            break
+        # XLSX: cell text may be a multi-word org like 'Assurity Ltd' —
+        # already one token. Use it verbatim.
+        if isinstance(val_tok.anchor, CellRef):
+            text = val_tok.text.strip()
+            if text:
+                buyer_val = text
+                buyer_anchor = val_tok.anchor
+                break
+        # DOCX: if val_tok is paragraph-anchored and NOT an org candidate,
+        # take the whole paragraph as the buyer string (up to 5 words, to
+        # avoid pulling in the subsequent address line).
+        if isinstance(val_tok.anchor, NodeRef) and val_tok.anchor.kind == "paragraph":
+            # If label and value are in the same paragraph (e.g. 'Supplier:
+            # WidgetCo Ltd'), limit to tokens after the label.
+            pidx = val_tok.anchor.paragraph_index
+            if label_tok.anchor.kind == "paragraph" and label_tok.anchor.paragraph_index == pidx:
+                para_toks = [
+                    t for t in tokens
+                    if isinstance(t.anchor, NodeRef)
+                    and t.anchor.paragraph_index == pidx
+                    and t.order > label_tok.order
+                    and t.text.strip()
+                ]
+            else:
+                para_toks = [
+                    t for t in tokens
+                    if isinstance(t.anchor, NodeRef)
+                    and t.anchor.paragraph_index == pidx
+                    and t.text.strip()
+                ]
+            if para_toks:
+                text = " ".join(t.text for t in para_toks[:6])
+                buyer_val = text
+                buyer_anchor = para_toks[0].anchor
+                break
+
+    if buyer_val:
+        out["buyer_id"] = ExtractedValue(
+            value=buyer_val, provenance="extracted", anchor_text=buyer_val,
+            anchor_ref=buyer_anchor, source="structural", confidence=1.0,
+            attempt=1,
+        )
+
+    # --- Supplier ---
+    supplier_val: str | None = None
+    supplier_anchor = None
+    for label_tok in _structured_supplier_anchor_tokens(doc):
+        val_tok = _value_token_after_label(label_tok, tokens)
+        if val_tok is None:
+            continue
+        if val_tok.order in org_by_start:
+            supplier_val, _ = org_by_start[val_tok.order]
+            supplier_anchor = val_tok.anchor
+            break
+        if isinstance(val_tok.anchor, CellRef):
+            text = val_tok.text.strip()
+            if text and text != buyer_val:
+                supplier_val = text
+                supplier_anchor = val_tok.anchor
+                break
+        if isinstance(val_tok.anchor, NodeRef) and val_tok.anchor.kind == "paragraph":
+            pidx = val_tok.anchor.paragraph_index
+            if label_tok.anchor.kind == "paragraph" and label_tok.anchor.paragraph_index == pidx:
+                para_toks = [
+                    t for t in tokens
+                    if isinstance(t.anchor, NodeRef)
+                    and t.anchor.paragraph_index == pidx
+                    and t.order > label_tok.order
+                    and t.text.strip()
+                ]
+            else:
+                para_toks = [
+                    t for t in tokens
+                    if isinstance(t.anchor, NodeRef)
+                    and t.anchor.paragraph_index == pidx
+                    and t.text.strip()
+                ]
+            if para_toks:
+                text = " ".join(t.text for t in para_toks[:6])
+                if text and text != buyer_val:
+                    supplier_val = text
+                    supplier_anchor = para_toks[0].anchor
+                    break
+
+    # Supplier letterhead fallback: top-of-document ORG candidate.
+    if supplier_val is None:
+        # Sort candidates by document order (first occurrence first), so
+        # the letterhead ORG wins over buyer-block ORGs.
+        ordered = sorted(
+            org_cands,
+            key=lambda c: c.tokens[0].order if c.tokens else 10**9,
+        )
+        for c in ordered:
+            if c.text == buyer_val:
+                continue
+            # Reject anchor phrases ('PURCHASE ORDER') — these are
+            # document titles, not org names.
+            if _is_anchor_phrase(c.text):
+                continue
+            # Reject short generic-label candidates (already rejected by
+            # anchor phrase, but double-check).
+            supplier_val = c.text
+            supplier_anchor = c.tokens[0].anchor if c.tokens else None
+            break
+
+    # Emit supplier into schema-declared fields (Purchase_Order uses
+    # supplier_name + supplier_id; Invoice uses supplier_id).
+    supplier_fields = [
+        f for f in fields_for(doc_type)
+        if type_of(doc_type, f) == FieldType.ORG and f.startswith("supplier")
+    ]
+    if supplier_val and supplier_fields:
+        for sf in supplier_fields:
+            out[sf] = ExtractedValue(
+                value=supplier_val, provenance="extracted",
+                anchor_text=supplier_val, anchor_ref=supplier_anchor,
+                source="structural", confidence=0.9, attempt=1,
+            )
+    elif supplier_val:
+        out["supplier_id"] = ExtractedValue(
+            value=supplier_val, provenance="extracted",
+            anchor_text=supplier_val, anchor_ref=supplier_anchor,
+            source="structural", confidence=0.9, attempt=1,
+        )
+    return out
+
+
 def extract_parties(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedValue]:
     out: dict[str, ExtractedValue] = {}
+
+    # Structured-table formats (DOCX paragraphs, XLSX cells) expose party
+    # names through explicit label+value adjacency rather than spatial
+    # bbox positioning. Handle them via a dedicated branch — the PDF/BBox
+    # logic below is kept untouched for the 14-doc PDF golden set.
+    if doc.source_format in ("docx", "xlsx"):
+        return _extract_parties_structured(doc, doc_type)
 
     # Build a unified ORG candidate list from multiple detectors. The
     # global find_candidates can return spans that cross line boundaries
