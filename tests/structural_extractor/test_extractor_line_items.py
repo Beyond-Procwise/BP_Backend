@@ -118,3 +118,24 @@ def test_duncan_no_summary_line_items():
     for d in descs:
         for forb in forbidden_substrs:
             assert forb not in d, f"forbidden summary row leaked: {d!r} (matched {forb!r})"
+
+
+# === F9: AQUARIUS line description must include the trailing "Services" ===
+
+def test_aquarius_line_description_preserves_services():
+    """AQUARIUS: 'Marketing and Brand Development Services' must be extracted
+    as one complete description. The 'Services' token sits in the wide
+    'Item' column and must NOT be lost due to a prose/address row being
+    mis-selected as the table header."""
+    fixture = FIX / "AQUARIUS-25-050.pdf"
+    if not fixture.exists():
+        import pytest; pytest.skip("AQUARIUS fixture missing")
+    doc = parse_pdf(fixture.read_bytes(), fixture.name)
+    items = extract_line_items(doc, "Invoice")
+    data_items = _ground_truth_lines(items)
+    assert len(data_items) >= 1, f"no line items produced: {items}"
+    line1 = data_items[0]
+    desc = line1["item_description"].value
+    assert desc == "Marketing and Brand Development Services", (
+        f"expected full description, got {desc!r}"
+    )

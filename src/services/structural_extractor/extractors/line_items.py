@@ -149,6 +149,12 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
         for t in line_toks:
             if t.text.strip(".,:;").lower() in _STOPWORDS:
                 return False
+        # Reject rows where any token ends with a comma — these are
+        # prose/address runs like "Redkiln Way, Horsham, West Sussex".
+        # A header column label never ends with a comma.
+        for t in line_toks:
+            if t.text.rstrip().endswith(","):
+                return False
         # Reject rows where the MAJORITY of tokens start with a lowercase
         # letter — headers use Title Case or ALL CAPS.
         lower_starts = sum(
@@ -156,6 +162,24 @@ def _pdf_line_items(doc: ParsedDocument) -> list[dict[str, ExtractedValue]]:
             if t.text[:1].isalpha() and t.text[:1].islower()
         )
         if lower_starts > len(line_toks) // 2:
+            return False
+        # Column-structure check: a real header has its tokens positioned at
+        # column midpoints, so there is at least one LARGE horizontal gap
+        # between consecutive tokens (>=50pt). Prose/address rows have tight
+        # word-spacing (<=5pt) throughout.
+        toks_sorted = sorted(
+            line_toks,
+            key=lambda t: t.anchor.x0 if isinstance(t.anchor, BBox) else 0,
+        )
+        max_gap = 0.0
+        for i in range(1, len(toks_sorted)):
+            a = toks_sorted[i - 1].anchor
+            b = toks_sorted[i].anchor
+            if isinstance(a, BBox) and isinstance(b, BBox):
+                gap = b.x0 - a.x1
+                if gap > max_gap:
+                    max_gap = gap
+        if max_gap < 50:
             return False
         return True
 
