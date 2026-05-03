@@ -17,9 +17,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from src.services.extraction_v2.locator.base import AnchorRef, LocatorOutput
+from src.services.extraction_v2.fingerprint import compute_fingerprint
+from src.services.extraction_v2.locator.base import AnchorRef, Locator, LocatorOutput
 from src.services.extraction_v2.locator.consensus import ConsensusResult, run_locators
 from src.services.extraction_v2.locator.registry import build_locators
+from src.services.extraction_v2.locator.strategies.template import TemplateLocator
+from src.services.extraction_v2.template_store import (
+    InMemoryTemplateStore, TemplateStore, VendorTemplate,
+)
 from src.services.extraction_v2.verification.network import (
     Rule, RuleResult, run_verification, VerificationOutcome,
 )
@@ -70,6 +75,8 @@ class ExtractionResultV2:
     committed: dict[str, CommittedField] = field(default_factory=dict)
     residuals: list[ResidualField] = field(default_factory=list)
     rule_trace: list[RuleResult] = field(default_factory=list)
+    fingerprint: Optional[str] = None
+    template_used: bool = False
 
     def as_header_dict(self) -> dict[str, Any]:
         """Flatten the committed values into a dict suitable for persistence."""
@@ -79,8 +86,13 @@ class ExtractionResultV2:
 class ExtractionPipelineV2:
     """Orchestrates the V2 extraction pipeline."""
 
-    def __init__(self, commit_threshold: float = _COMMIT_THRESHOLD):
+    def __init__(self, commit_threshold: float = _COMMIT_THRESHOLD,
+                 template_store: Optional[TemplateStore] = None):
         self.commit_threshold = commit_threshold
+        # Default to an in-memory store so the pipeline is self-contained
+        # in tests; production wires a Postgres-backed store at the
+        # service factory.
+        self.template_store: TemplateStore = template_store or InMemoryTemplateStore()
 
     def extract(self, doc: ParsedDocument, doc_type: str) -> ExtractionResultV2:
         """Run multi-strategy consensus + verification on `doc`.
@@ -94,6 +106,20 @@ class ExtractionPipelineV2:
         if not locators_per_field:
             logger.warning("no locators registered for doc_type=%r", doc_type)
             return result
+
+        # Layout fingerprint → vendor template lookup. If a template
+        # exists, prepend its hints as TemplateLocators per field.
+        fingerprint = compute_fingerprint(doc)
+        result.fingerprint = fingerprint
+        template = self.template_store.get(fingerprint)
+        if template is not None and template.field_hints:
+            result.template_used = True
+            for fname, hint in template.field_hints.items():
+                if fname in locators_per_field:
+                    locators_per_field[fname] = (
+                        [TemplateLocator(field=fname, hint=hint)]
+                        + locators_per_field[fname]
+                    )
 
         # Step 1: run consensus voting per field
         consensus_per_field: dict[str, ConsensusResult] = {}
@@ -155,6 +181,13 @@ class ExtractionPipelineV2:
                 evidence=winner.evidence,
                 why=cr.why,
                 locator_count=len(cr.candidates),
+            )
+
+        # Record success against the template — only counts when at least
+        # one field committed (otherwise the doc is a fresh layout).
+        if result.committed and fingerprint:
+            self.template_store.record_success(
+                fingerprint, fields_committed=tuple(result.committed.keys())
             )
 
         return result
