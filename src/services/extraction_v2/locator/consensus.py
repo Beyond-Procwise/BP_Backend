@@ -33,7 +33,7 @@ class ConsensusResult:
 
 
 # Confidence thresholds used by the voting policy
-_SINGLE_STRATEGY_FLOOR = 0.95   # one locator suffices only if ≥ this
+_SINGLE_STRATEGY_FLOOR = 0.90   # one high-trust locator suffices if ≥ this
 _GROUP_AGREEMENT_FLOOR = 2      # need ≥ this many agreeing for a multi-locator commit
 
 
@@ -92,14 +92,16 @@ def run_locators(
 
     largest_size = len(largest)
     total_locators = len(locators)
-    mean_conf = sum(c.confidence for c in largest) / max(1, largest_size)
+    max_conf = max(c.confidence for c in largest)
 
     # Apply voting policy
     if largest_size >= _GROUP_AGREEMENT_FLOOR:
-        # Multi-locator agreement → commit
-        # Confidence scaled by agreement rate
-        agreement_rate = largest_size / total_locators
-        confidence = mean_conf * (0.7 + 0.3 * agreement_rate)
+        # Multi-locator agreement → commit.
+        # Use max_conf rather than mean: when N independent strategies
+        # converge on the same value, the highest-trust strategy is
+        # corroborated, not diluted by lower-trust ones. Each additional
+        # agreeing voter beyond the first adds a small bonus.
+        confidence = max_conf + (largest_size - 1) * 0.05
         return ConsensusResult(
             field_name=field_name,
             value=largest[0].value,
@@ -131,11 +133,30 @@ def run_locators(
     )
 
 
+_NAME_SUFFIXES = {
+    "ltd", "limited", "llc", "inc", "incorporated", "corp", "corporation",
+    "co", "company", "plc", "gmbh", "ag", "sa", "srl", "bv", "nv", "kg",
+}
+
+
 def _canonical_key(value: Any) -> Any:
-    """Canonicalize a value for vote-equality comparison."""
-    if isinstance(value, str):
-        return value.strip().lower()
-    return value
+    """Canonicalize a value for vote-equality comparison.
+
+    String values: lowercase + strip + trim recognised company suffixes
+    (Ltd / LLC / Inc / Corp …) from the right so 'Acme' and 'Acme Ltd'
+    vote together. Otherwise the full normalised string is used — this
+    is conservative; values that are merely substrings of one another
+    do NOT match, by design.
+    """
+    if not isinstance(value, str):
+        return value
+    s = value.strip().lower()
+    if not s:
+        return s
+    words = [w.strip(",.;:") for w in s.split() if w.strip(",.;:")]
+    while words and words[-1] in _NAME_SUFFIXES:
+        words.pop()
+    return " ".join(words) if words else s
 
 
 def _abstain(
