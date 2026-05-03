@@ -35,7 +35,7 @@ from agents.email_dispatch_agent import EmailDispatchAgent
 from agents.negotiation_agent import NegotiationAgent
 from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
-from api.routers import agents as agents_router_mod, documents, email, run, stream, system, training, workflows
+from api.routers import agents as agents_router_mod, documents, email, run, stream, system, training, vendors, workflows
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -199,6 +199,7 @@ app.include_router(system.router)
 app.include_router(run.router)
 app.include_router(stream.router)
 app.include_router(training.router)
+app.include_router(vendors.build_router())
 
 @app.get("/", tags=["General"])
 def read_root(): return {"message": "Welcome to the ProcWise Agentic System API"}
