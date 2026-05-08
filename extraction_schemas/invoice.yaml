@@ -71,9 +71,11 @@ fields:
     db_column: buyer_id
     canonical_labels:
       - "Bill To"
+      - "Invoice To"
       - "Customer"
       - "Buyer"
       - "Client"
+      - "Billed To"
     extractors:
       - layoutlmv3
       - sbert_anchor

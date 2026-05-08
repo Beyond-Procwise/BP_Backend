@@ -365,11 +365,12 @@ def _extract_intra_token(token_text: str, label: str, field_type: str) -> str | 
             return raw_val
 
     # Strategy 1: explicit "Label: value" pattern within the compound token
-    # Build a pattern for this specific label
+    # Build a pattern for this specific label.
+    # Allow an optional trailing period before the colon (handles "Invoice No.: 1011"
+    # when the canonical label is "Invoice No" without the trailing period).
     label_escaped = re.escape(label.strip())
-    # Allow partial match and handle multi-word labels
     label_pattern = re.compile(
-        rf"(?:^|(?<=\s)){label_escaped}\s*:\s*(.+?)(?=\s+[A-Za-z]{{2,}}[A-Za-z\s#\(\)\.]*\s*:|$)",
+        rf"(?:^|(?<=\s)){label_escaped}\.?\s*:\s*(.+?)(?=\s+[A-Za-z]{{2,}}[A-Za-z\s#\(\)\.]*\.?\s*:|$)",
         re.IGNORECASE | re.DOTALL,
     )
     m = label_pattern.search(text)
@@ -520,6 +521,10 @@ class LayoutLMv3Extractor(Extractor):
                                 display_val = iso if iso else intra_value
                             else:
                                 display_val = intra_value
+                            # Boost confidence for compound-token intra-extraction:
+                            # finding a value INSIDE a token is more reliable than
+                            # a proximity hop to a separate adjacent token.
+                            intra_confidence = min(0.95, confidence + 0.10)
                             out.append(Candidate(
                                 field=field.name,
                                 value=display_val,
@@ -527,7 +532,7 @@ class LayoutLMv3Extractor(Extractor):
                                 bbox=label_token.bbox,
                                 evidence_text=intra_value,
                                 model="layoutlmv3",
-                                confidence=confidence,
+                                confidence=intra_confidence,
                             ))
                             continue  # found within this token; skip proximity search
 
