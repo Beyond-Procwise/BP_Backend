@@ -473,6 +473,110 @@ class _FakeCursor:
             self.description = [_ColumnDescriptor(col) for col in columns]
             return
 
+        # --- extraction_v3 table operations -----------------------------------
+
+        # INSERT/UPSERT into proc.bp_invoice
+        if upper_stmt.startswith("INSERT INTO PROC.BP_INVOICE"):
+            col_segment = statement.split("(", 1)[1].split(")", 1)[0]
+            cols = [c.strip() for c in col_segment.split(",")]
+            row = {cols[i]: (params[i] if i < len(params) else None) for i in range(len(cols))}
+            pk = row.get("invoice_id")
+            if pk:
+                self._store.bp_invoice[str(pk)] = row
+            return
+
+        # DELETE from proc.bp_invoice_line_items (idempotency delete before re-insert)
+        if upper_stmt.startswith("DELETE FROM PROC.BP_INVOICE_LINE_ITEMS"):
+            if params:
+                invoice_id = params[0]
+                self._store.bp_invoice_line_items = [
+                    r for r in self._store.bp_invoice_line_items
+                    if r.get("invoice_id") != invoice_id
+                ]
+            return
+
+        # INSERT into proc.bp_invoice_line_items
+        if upper_stmt.startswith("INSERT INTO PROC.BP_INVOICE_LINE_ITEMS"):
+            col_segment = statement.split("(", 1)[1].split(")", 1)[0]
+            cols = [c.strip() for c in col_segment.split(",")]
+            row = {cols[i]: (params[i] if i < len(params) else None) for i in range(len(cols))}
+            self._store.bp_invoice_line_items.append(row)
+            return
+
+        # INSERT into proc.bp_extraction_provenance_v3
+        if upper_stmt.startswith("INSERT INTO PROC.BP_EXTRACTION_PROVENANCE_V3"):
+            col_segment = statement.split("(", 1)[1].split(")", 1)[0]
+            cols = [c.strip() for c in col_segment.split(",")]
+            row = {cols[i]: (params[i] if i < len(params) else None) for i in range(len(cols))}
+            self._store.bp_extraction_provenance_v3.append(row)
+            return
+
+        # DELETE from proc.bp_extraction_provenance_v3
+        if upper_stmt.startswith("DELETE FROM PROC.BP_EXTRACTION_PROVENANCE_V3"):
+            if params:
+                doc_pk = params[0]
+                self._store.bp_extraction_provenance_v3 = [
+                    r for r in self._store.bp_extraction_provenance_v3
+                    if r.get("doc_pk") != doc_pk
+                ]
+            return
+
+        # DELETE from proc.bp_invoice
+        if upper_stmt.startswith("DELETE FROM PROC.BP_INVOICE"):
+            if params:
+                invoice_id = params[0]
+                self._store.bp_invoice.pop(str(invoice_id), None)
+            return
+
+        # SELECT from proc.bp_invoice
+        if upper_stmt.startswith("SELECT") and "FROM PROC.BP_INVOICE" in upper_stmt:
+            select_part = statement.split("SELECT", 1)[1].split("FROM", 1)[0]
+            col_names = [c.strip() for c in select_part.split(",")]
+            invoice_id = params[0] if params else None
+            if invoice_id is not None:
+                row = self._store.bp_invoice.get(str(invoice_id))
+                self._results = [tuple(row.get(c) for c in col_names)] if row else []
+            else:
+                self._results = []
+            self.description = [_ColumnDescriptor(c) for c in col_names]
+            return
+
+        # SELECT count(*) from proc.bp_extraction_provenance_v3
+        if (
+            upper_stmt.startswith("SELECT")
+            and "FROM PROC.BP_EXTRACTION_PROVENANCE_V3" in upper_stmt
+        ):
+            if "COUNT(*)" in upper_stmt:
+                doc_pk = params[0] if params else None
+                count = sum(
+                    1 for r in self._store.bp_extraction_provenance_v3
+                    if doc_pk is None or r.get("doc_pk") == doc_pk
+                )
+                self._results = [(count,)]
+                self.description = [_ColumnDescriptor("count")]
+            else:
+                doc_pk = params[0] if params else None
+                rows = [
+                    r for r in self._store.bp_extraction_provenance_v3
+                    if doc_pk is None or r.get("doc_pk") == doc_pk
+                ]
+                self._results = [tuple(r.values()) for r in rows]
+                self.description = [_ColumnDescriptor(k) for k in (rows[0].keys() if rows else [])]
+            return
+
+        # SELECT from proc.bp_invoice_line_items
+        if upper_stmt.startswith("SELECT") and "FROM PROC.BP_INVOICE_LINE_ITEMS" in upper_stmt:
+            select_part = statement.split("SELECT", 1)[1].split("FROM", 1)[0]
+            col_names = [c.strip() for c in select_part.split(",")]
+            invoice_id = params[0] if params else None
+            rows = [
+                r for r in self._store.bp_invoice_line_items
+                if invoice_id is None or r.get("invoice_id") == invoice_id
+            ]
+            self._results = [tuple(r.get(c) for c in col_names) for r in rows]
+            self.description = [_ColumnDescriptor(c) for c in col_names]
+            return
+
         raise NotImplementedError(f"Unsupported fake query: {statement}")
 
 
@@ -491,6 +595,28 @@ class _FakePostgresStore:
             self.supplier_risk_signals = []  # type: ignore[attr-defined]
         if not hasattr(self, "supplier_risk_scores"):
             self.supplier_risk_scores = {}  # type: ignore[attr-defined]
+        # extraction_v3 tables
+        if not hasattr(self, "bp_invoice"):
+            self.bp_invoice: Dict[str, Dict[str, Any]] = {}
+        if not hasattr(self, "bp_invoice_line_items"):
+            self.bp_invoice_line_items: List[Dict[str, Any]] = []
+        if not hasattr(self, "bp_extraction_provenance_v3"):
+            self.bp_extraction_provenance_v3: List[Dict[str, Any]] = []
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a shallow copy of all extraction_v3 mutable state for rollback."""
+        import copy
+        return {
+            "bp_invoice": copy.deepcopy(self.bp_invoice),
+            "bp_invoice_line_items": copy.deepcopy(self.bp_invoice_line_items),
+            "bp_extraction_provenance_v3": copy.deepcopy(self.bp_extraction_provenance_v3),
+        }
+
+    def restore(self, snap: Dict[str, Any]) -> None:
+        """Restore extraction_v3 state from a snapshot (used by fake rollback)."""
+        self.bp_invoice = snap["bp_invoice"]
+        self.bp_invoice_line_items = snap["bp_invoice_line_items"]
+        self.bp_extraction_provenance_v3 = snap["bp_extraction_provenance_v3"]
 
     # -- information schema helpers --------------------------------------
     def _schema_columns(self) -> Dict[str, List[str]]:
@@ -573,6 +699,24 @@ class _FakePostgresStore:
                 "model_version",
                 "feature_summary",
                 "computed_at",
+            ],
+            "proc.bp_invoice": [
+                "invoice_id", "supplier_id", "po_id", "buyer_id", "requested_by",
+                "requested_date", "invoice_date", "due_date", "invoice_paid_date",
+                "payment_terms", "currency", "invoice_amount", "tax_percent",
+                "tax_amount", "invoice_total_incl_tax", "exchange_rate_to_usd",
+                "converted_amount_usd", "country", "region",
+            ],
+            "proc.bp_invoice_line_items": [
+                "invoice_line_id", "invoice_id", "line_no", "item_description",
+                "quantity", "unit_price", "line_amount", "tax_percent",
+                "tax_amount", "total_amount_incl_tax",
+            ],
+            "proc.bp_extraction_provenance_v3": [
+                "provenance_id", "doc_type", "doc_pk", "field_path", "value",
+                "page", "bbox_x0", "bbox_y0", "bbox_x1", "bbox_y1",
+                "evidence_text", "model", "model_confidence", "judge_actions",
+                "final_confidence", "extracted_at", "pipeline_version",
             ],
         }
 
@@ -829,15 +973,48 @@ def _fake_store() -> _FakePostgresStore:
 
 
 class _FakeConnection:
-    """Very small in-memory stand-in used for offline unit tests."""
+    """Very small in-memory stand-in used for offline unit tests.
 
-    autocommit = True
+    Setting ``autocommit = False`` triggers a snapshot so that a subsequent
+    ``rollback()`` can undo any in-memory writes made during the transaction.
+    """
+
+    # Class-level default; instances shadow this with an instance attribute when
+    # persistence code sets conn.autocommit = False/True.
+    _autocommit_default = True
 
     def __init__(self) -> None:
         self._store = _fake_store()
+        self._rollback_snapshot: Optional[Dict[str, Any]] = None
+        # Use object.__setattr__ to avoid triggering our own __setattr__ for
+        # the private attributes set during construction.
+        object.__setattr__(self, "autocommit", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "autocommit":
+            prev = self.__dict__.get("autocommit", True)
+            object.__setattr__(self, name, value)
+            # Entering a transaction (True → False): take a snapshot
+            if prev and not value:
+                object.__setattr__(
+                    self, "_rollback_snapshot", self._store.snapshot()
+                )
+        else:
+            object.__setattr__(self, name, value)
 
     def cursor(self) -> _FakeCursor:
         return _FakeCursor(self._store)
+
+    def commit(self) -> None:
+        """Commit: discard the rollback snapshot (changes are durable in-memory)."""
+        object.__setattr__(self, "_rollback_snapshot", None)
+
+    def rollback(self) -> None:
+        """Rollback: restore extraction_v3 tables to the pre-transaction snapshot."""
+        snap = self.__dict__.get("_rollback_snapshot")
+        if snap is not None:
+            self._store.restore(snap)
+            object.__setattr__(self, "_rollback_snapshot", None)
 
     def close(self) -> None:  # pragma: no cover - compatibility no-op
         return
