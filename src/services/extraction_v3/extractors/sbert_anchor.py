@@ -54,7 +54,9 @@ def _is_label_shaped(text: str) -> bool:
     Recognises:
       - Tokens ending with ":"  (e.g. "Invoice Number:", "BILL TO:")
       - All-caps multi-word tokens with no digits (e.g. "DELIVER TO", "SHIP VIA")
-      - Short title-case phrases (e.g. "Invoice Date", "Due Date")
+      - Title-case multi-word phrases with no digits (e.g. "Invoice Number",
+        "Due Date", "Invoice Date", "Balance Due") — common on scanned invoices
+        where labels appear without a trailing colon.
     """
     s = text.strip()
     if len(s) < 2 or len(s) > 80:
@@ -65,8 +67,21 @@ def _is_label_shaped(text: str) -> bool:
     # Strip trailing colon for further checks
     cleaned = s.rstrip(":").strip()
     words = cleaned.split()
+    # No words or contains digits → likely a value
+    if not words or any(re.search(r"\d", w) for w in words):
+        return False
     # All-caps multi-word, no digits — e.g. "DELIVER TO", "SHIP VIA", "BILL TO"
-    if words and all(w.isupper() and w.isalpha() for w in words) and len(words) >= 1 and len(s) >= 3:
+    if all(w.isupper() and w.isalpha() for w in words) and len(s) >= 3:
+        return True
+    # Title-case multi-word phrase, no digits — e.g. "Invoice Number", "Due Date"
+    # Require 2-3 words and all words start with uppercase (Title case).
+    # Single-word tokens are values (city names, etc.).
+    # 4+ word phrases are typically company names or descriptions, not labels.
+    if (
+        2 <= len(words) <= 3
+        and all(w[0].isupper() and w.isalpha() for w in words)
+        and len(s) <= 40
+    ):
         return True
     return False
 

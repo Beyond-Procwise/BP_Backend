@@ -201,13 +201,24 @@ class PipelineV3:
         # 6b. Invoice-specific recovery: if invoice_amount is a residual but
         # invoice_total_incl_tax is committed AND no tax was extracted, infer
         # invoice_amount = invoice_total_incl_tax (no-tax invoice pattern).
+        # Also handles the case where tax_amount was spuriously extracted as
+        # the same value as invoice_total_incl_tax (duplicate extraction from a
+        # GRAND TOTAL line — e.g. PO5 split invoices with only one total figure).
         if schema.doc_type == "invoice":
             committed_fields = {cf.field_path: cf for cf in committed}
             residual_fields = {rf.field_path for rf in residuals}
+            # Detect spurious tax: tax_amount == invoice_total_incl_tax → treat as no-tax
+            _tax_amount_cf = committed_fields.get("tax_amount")
+            _total_cf_check = committed_fields.get("invoice_total_incl_tax")
+            _tax_equals_total = (
+                _tax_amount_cf is not None
+                and _total_cf_check is not None
+                and _tax_amount_cf.value == _total_cf_check.value
+            )
             if (
                 "invoice_amount" in residual_fields
                 and "invoice_total_incl_tax" in committed_fields
-                and "tax_amount" not in committed_fields
+                and ("tax_amount" not in committed_fields or _tax_equals_total)
                 and "tax_percent" not in committed_fields
             ):
                 # No tax extracted — treat grand total as the pre-tax amount too
