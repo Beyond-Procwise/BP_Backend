@@ -23,3 +23,19 @@ def test_paddleocr_parses_scanned_pdf():
     assert doc.full_text, "PaddleOCR returned empty full_text from scanned PDF"
     # Should have detected at least some text tokens
     assert any(p.tokens for p in doc.pages), "no tokens detected on any page"
+    # Should contain at least one recognisable invoice word
+    assert any(
+        word.lower() in doc.full_text.lower()
+        for word in ["invoice", "total", "company"]
+    ), "full_text does not contain any expected invoice keywords"
+
+
+@pytest.mark.gpu
+def test_paddleocr_substring_guarantee():
+    """Every token's text must appear in full_text — Task 19 hallucination check relies on this."""
+    doc = parse_with_paddleocr(FX / "INV-005-scanned.pdf", file_format="pdf-scanned")
+    for page in doc.pages:
+        for tok in page.tokens:
+            assert tok.text in doc.full_text, (
+                f"token {tok.text!r} not in full_text — substring guarantee broken"
+            )

@@ -33,11 +33,14 @@ stdlib html.parser to reconstruct rows×cells without an extra dependency.
 """
 
 import html.parser
+import logging
 import threading
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from src.services.extraction_v3.schemas.parsed_document import (
     BBox,
@@ -63,6 +66,12 @@ def _get_pipeline():
     if _pipeline is None:
         with _pipeline_lock:
             if _pipeline is None:
+                import paddle  # C2: assert GPU is available before loading model
+                if not paddle.device.get_device().startswith("gpu"):
+                    raise RuntimeError(
+                        f"PaddleOCR must run on GPU per spec C2; "
+                        f"current device={paddle.device.get_device()}"
+                    )
                 from paddleocr import PPStructureV3  # deferred import — no GPU at collection time
                 _pipeline = PPStructureV3()
     return _pipeline
@@ -101,10 +110,18 @@ class _TableHTMLParser(html.parser.HTMLParser):
 
 
 def _html_to_rows(html_content: str) -> list[list[str]]:
-    """Parse HTML table string → list of rows, each row a list of cell texts."""
-    parser = _TableHTMLParser()
-    parser.feed(html_content)
-    return parser.rows
+    """Parse HTML table string → list of rows, each row a list of cell texts.
+
+    Returns an empty list on any parse error so a malformed table on one
+    page does not abort the whole document.
+    """
+    try:
+        parser = _TableHTMLParser()
+        parser.feed(html_content)
+        return parser.rows
+    except Exception as e:
+        logger.warning("_html_to_rows: failed to parse table HTML — skipping table. %s", e)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +177,9 @@ def parse_with_paddleocr(
         page_images = [np.array(Image.open(p))]
 
     pages: list[Page] = []
-    full_text_parts: list[str] = []
+    # C1: full_text is built exclusively from rec_texts (per-line OCR) so that
+    # every Token.text is guaranteed to be a substring of full_text.
+    all_rec_texts: list[str] = []
     all_confidences: list[float] = []
 
     for pg_idx, img in enumerate(page_images):
@@ -175,10 +194,12 @@ def parse_with_paddleocr(
 
         # --- Per-line OCR data for Token objects ---
         ocr_res = page_result["overall_ocr_res"]
-        rec_texts: list[str] = ocr_res["rec_texts"]
-        rec_scores: list[float] = ocr_res["rec_scores"]
+        rec_texts: list[str] = ocr_res.get("rec_texts") or []
+        rec_scores: list[float] = ocr_res.get("rec_scores") or []
         # rec_boxes: np.ndarray shape=(N,4) → [x0,y0,x1,y1]
-        rec_boxes: np.ndarray = np.asarray(ocr_res["rec_boxes"])
+        # Use explicit None-check because a non-empty ndarray is truthy-ambiguous with `or`.
+        _raw_boxes = ocr_res.get("rec_boxes")
+        rec_boxes: np.ndarray = np.asarray(_raw_boxes) if _raw_boxes is not None else np.empty((0, 4))
 
         page_tokens: list[Token] = []
         for text, score, box in zip(rec_texts, rec_scores, rec_boxes):
@@ -186,6 +207,8 @@ def parse_with_paddleocr(
                 continue
             x0, y0, x1, y1 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
             page_tokens.append(Token(text=text, page=pg_idx, bbox=(x0, y0, x1, y1)))
+            # C1: accumulate rec_texts in document order — this becomes full_text
+            all_rec_texts.append(text)
             all_confidences.append(float(score))
 
         # --- Structural layout blocks for Regions and Tables ---
@@ -239,13 +262,11 @@ def parse_with_paddleocr(
                     Region(page=pg_idx, bbox=block_bbox, role=role, text="")
                 )
             else:
-                # text / paragraph_title / header / footer / abstract → Region + full_text
+                # text / paragraph_title / header / footer / abstract → Region
                 role = _LABEL_TO_ROLE.get(label, "body")
                 page_regions.append(
                     Region(page=pg_idx, bbox=block_bbox, role=role, text=content)
                 )
-                if content:
-                    full_text_parts.append(content)
 
         pages.append(
             Page(
@@ -259,15 +280,20 @@ def parse_with_paddleocr(
             )
         )
 
+    # I3: 0.0 (not 0.5) when no text detected so the router can fall back to Donut.
     overall_conf = (
-        float(sum(all_confidences) / len(all_confidences)) if all_confidences else 0.5
+        float(sum(all_confidences) / len(all_confidences)) if all_confidences else 0.0
     )
+
+    # C1: full_text is the canonical join of rec_texts collected above.
+    # Every Token.text is guaranteed to be a substring of this string.
+    full_text = "\n".join(all_rec_texts)
 
     return ParsedDocument(
         source_path=str(p),
         file_format=file_format,
         pages=pages,
-        full_text="\n".join(full_text_parts),
+        full_text=full_text,
         parser_backend="paddleocr",
         parser_confidence=overall_conf,
     )
