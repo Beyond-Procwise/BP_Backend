@@ -75,8 +75,12 @@ def bind_typed(candidate: Candidate, field_type: FieldType) -> BoundCandidate:
         # dateparser is too permissive — "$3" → "3rd of current month", "5" → today.
         # A legitimate date must have a 4-digit year, or a separator pattern
         # (e.g. 10/14), or a month name paired with at least one digit.
+        # NOTE: dot is intentionally excluded from separators — "0.00" and "$3.95"
+        # look like money and would incorrectly match \d{1,2}\.\d{1,2}.  Dates
+        # using dot separators (European style "01.09") also contain a 4-digit
+        # year in our dataset, so _has_year catches them.
         _has_year = re.search(r"20\d{2}", raw)
-        _has_sep = re.search(r"\d{1,2}[/\-\.]\d{1,2}", raw)
+        _has_sep = re.search(r"\d{1,2}[/\-]\d{1,2}", raw)
         _has_month_name = re.search(
             r"(january|february|march|april|may|june|july|august|september|october|"
             r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)",

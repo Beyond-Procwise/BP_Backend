@@ -142,7 +142,7 @@ _DATE_HAS_MONTH_NAME_RE = re.compile(
     r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)",
     re.IGNORECASE,
 )
-_DATE_HAS_SEPARATOR_RE = re.compile(r"\d{1,2}[/\-\.]\d{1,2}")
+_DATE_HAS_SEPARATOR_RE = re.compile(r"\d{1,2}[/\-]\d{1,2}")
 
 
 def _looks_like_date(text: str) -> bool:
