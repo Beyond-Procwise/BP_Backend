@@ -418,10 +418,11 @@ class LayoutLMv3Extractor(Extractor):
                     if raw_tok_text not in parsed.full_text:
                         continue
                     # Sanity guard: if the label token IS the document header
-                    # (e.g. "PURCHASE ORDER", "INVOICE") and the nearest
-                    # value token is an address block (very long, multi-line),
-                    # skip this candidate — the header is not a field label.
-                    if _is_document_header(label_token.text) and len(raw_tok_text) > 80:
+                    # (e.g. "PURCHASE ORDER", "INVOICE"), skip proximity-based
+                    # value candidates entirely.  The document-type header is not
+                    # a field label; it names the document.  Any value embedded in
+                    # a header token is handled by Path A (intra-token) above.
+                    if _is_document_header(label_token.text):
                         continue
                     evidence_text = raw_tok_text
                     out.append(
@@ -525,11 +526,20 @@ class LayoutLMv3Extractor(Extractor):
                 # Free-text: skip if the token is itself label-shaped
                 if _is_label_shaped(tok.text):
                     continue
-                # Skip long compound tokens (address blocks, multi-field blobs)
-                # that contain embedded labels — they are not clean field values.
                 tok_stripped = tok.text.strip()
-                if len(tok_stripped) > 80 and ":" in tok_stripped:
+                # Skip compound tokens that embed a "Label: value" sub-pattern.
+                # Two conditions (either is sufficient):
+                # 1. Token is long (>80 chars) — address blocks, multi-field blobs
+                # 2. Token contains ":<text>" where before the colon is a short
+                #    alpha-only phrase (≤40 chars) — classic "Field: value" structure
+                if len(tok_stripped) > 80:
                     continue
+                if ":" in tok_stripped:
+                    colon_pos = tok_stripped.index(":")
+                    before_colon = tok_stripped[:colon_pos].strip()
+                    # Short alpha-only before-colon = label-value compound
+                    if before_colon and len(before_colon) <= 40 and re.match(r"^[A-Za-z][A-Za-z ]*$", before_colon):
+                        continue
                 return tok, None
 
         return None, None

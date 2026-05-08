@@ -143,10 +143,21 @@ def _next_value_token(
     cands.sort(key=lambda c: c[0])
 
     is_typed = field_type in ("money", "decimal", "iso_date", "currency")
-    scan_limit = MAX_TYPE_SCAN_RADIUS if is_typed else 3
+    scan_limit = MAX_TYPE_SCAN_RADIUS if is_typed else 4
 
     for _, tok in cands[:scan_limit]:
         if _token_satisfies_type(tok, field_type):
+            # Additional guard for string fields: skip long compound tokens
+            # and "Label: value" compound tokens (handled by layoutlmv3 intra-token).
+            if not is_typed:
+                tok_stripped = tok.text.strip()
+                if len(tok_stripped) > 80:
+                    continue
+                if ":" in tok_stripped:
+                    colon_pos = tok_stripped.index(":")
+                    before_colon = tok_stripped[:colon_pos].strip()
+                    if before_colon and len(before_colon) <= 40 and re.match(r"^[A-Za-z][A-Za-z ]*$", before_colon):
+                        continue
             return tok
 
     return None
