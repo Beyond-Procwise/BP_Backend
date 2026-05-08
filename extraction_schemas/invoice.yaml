@@ -38,6 +38,7 @@ fields:
       - layoutlmv3
       - spacy_ner
       - sbert_anchor
+      - vendor_template
     judge:
       tiebreaker: true
       grounded_last_resort: true
