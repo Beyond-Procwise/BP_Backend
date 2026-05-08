@@ -218,14 +218,20 @@ class IsoDate(date):
                 "IsoDate: dateparser not installed; only ISO-8601 supported"
             )
 
-        parsed = dateparser.parse(
-            s,
-            settings={
-                "DATE_ORDER": "DMY",       # UK convention default
+        _dp_settings_dmy = {
+            "DATE_ORDER": "DMY",       # UK convention default
+            "STRICT_PARSING": False,
+            "PREFER_DAY_OF_MONTH": "first",
+        }
+        parsed = dateparser.parse(s, settings=_dp_settings_dmy)
+        if parsed is None:
+            # Fallback: try US MDY convention (e.g. "10/20/2025" where day > 12)
+            _dp_settings_mdy = {
+                "DATE_ORDER": "MDY",
                 "STRICT_PARSING": False,
                 "PREFER_DAY_OF_MONTH": "first",
-            },
-        )
+            }
+            parsed = dateparser.parse(s, settings=_dp_settings_mdy)
         if parsed is None:
             raise InvalidValue(f"IsoDate: {original!r} unparseable")
         return parsed.date()
