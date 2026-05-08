@@ -151,6 +151,9 @@ def _next_value_token(
             # and "Label: value" compound tokens (handled by layoutlmv3 intra-token).
             if not is_typed:
                 tok_stripped = tok.text.strip()
+                # Must contain at least one alphanumeric character
+                if not re.search(r"[a-zA-Z0-9]", tok_stripped):
+                    continue
                 if len(tok_stripped) > 80:
                     continue
                 if ":" in tok_stripped:

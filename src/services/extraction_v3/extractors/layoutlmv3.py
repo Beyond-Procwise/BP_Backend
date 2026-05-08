@@ -194,6 +194,64 @@ def _is_document_header(text: str) -> bool:
     return bool(set(words_lower) & doc_type_words)
 
 
+_TABLE_HEADER_MONEY_RE = re.compile(r"[\$£€¥₹]\s*\d|^\d[\d,\.]+$")
+_TABLE_HEADER_NUMERIC_RE = re.compile(r"^\d{5,}$")  # long digit-only string = likely an ID value
+
+
+def _is_in_table_header_row(tok: Token, all_tokens: list[Token]) -> bool:
+    """Return True if *tok* appears to be in a table column-header row.
+
+    Heuristic: a token is in a column-header row if there are at least 2
+    other tokens on the same horizontal line (within ±0.8 * token_height)
+    AND all co-row tokens are short (≤25 chars) and contain no money/decimal
+    values (i.e. look like column labels, not data values like "$450.00").
+
+    Exclusions (returns False immediately):
+    - The candidate token itself is a long digit string (≥5 digits) → it's
+      an ID value, not in a column-header row even if surrounded by short words.
+    - The candidate token itself contains a currency symbol followed by a digit.
+
+    This guards against "Supplier" column header → "Qty" column header
+    proximity matches that corrupt supplier_name extraction, while allowing
+    "lnvoice" (OCR'd "Invoice") → "1234567890" (numeric PO ID) to pass.
+    """
+    tok_text = tok.text.strip()
+
+    # If the candidate itself is a numeric ID (≥5 digits) or money → not a column header
+    if _TABLE_HEADER_NUMERIC_RE.match(tok_text):
+        return False
+    if _TABLE_HEADER_MONEY_RE.search(tok_text):
+        return False
+
+    ty0, ty1 = tok.bbox[1], tok.bbox[3]
+    tok_y_centre = (ty0 + ty1) / 2.0
+    tok_height = max(ty1 - ty0, 1.0)
+
+    row_peers: list[Token] = []
+    for t in all_tokens:
+        if t is tok:
+            continue
+        t_y_centre = (t.bbox[1] + t.bbox[3]) / 2.0
+        if abs(t_y_centre - tok_y_centre) < tok_height * 0.8:
+            row_peers.append(t)
+
+    if len(row_peers) < 2:
+        # Fewer than 2 peers on same line — not a multi-column header row
+        return False
+
+    # All peers must be "column-header-like": short (≤25 chars), no money/decimal content
+    for peer in row_peers:
+        peer_text = peer.text.strip()
+        if len(peer_text) > 25:
+            return False  # long text = not a column header
+        if _TABLE_HEADER_MONEY_RE.search(peer_text):
+            return False  # money value = not a column header row
+        if _TABLE_HEADER_NUMERIC_RE.match(peer_text):
+            return False  # numeric ID value = not a column header row
+
+    return True  # all peers are short non-value tokens = table header row
+
+
 def _token_satisfies_type(token: Token, field_type: str) -> bool:
     """Return True iff the token's text satisfies the type constraint."""
     text = token.text.strip()
@@ -531,6 +589,9 @@ class LayoutLMv3Extractor(Extractor):
                 if _is_label_shaped(tok.text):
                     continue
                 tok_stripped = tok.text.strip()
+                # Must contain at least one alphanumeric character
+                if not re.search(r"[a-zA-Z0-9]", tok_stripped):
+                    continue
                 # Skip compound tokens that embed a "Label: value" sub-pattern.
                 # Two conditions (either is sufficient):
                 # 1. Token is long (>80 chars) — address blocks, multi-field blobs
@@ -545,6 +606,10 @@ class LayoutLMv3Extractor(Extractor):
                     # Allows "#", ".", digits in label like "Invoice #", "P.O."
                     if before_colon and len(before_colon) <= 40 and re.match(r"^[A-Za-z][A-Za-z0-9 #\.\-/&]*$", before_colon):
                         continue
+                # Skip tokens that are in a table column-header row context.
+                # e.g. "Supplier" → "Qty" (next column header) must be suppressed.
+                if _is_in_table_header_row(tok, tokens):
+                    continue
                 return tok, None
 
         return None, None
@@ -571,6 +636,16 @@ class LayoutLMv3Extractor(Extractor):
         "poland": "PLN",
     }
 
+    # Regex: ISO currency code in parentheses, e.g. "(USD)" or "[ USD ]"
+    # Also catches standalone ISO codes on word boundaries in text.
+    _CURRENCY_IN_TEXT_RE = re.compile(
+        r"[\(\[]\s*(USD|GBP|EUR|JPY|INR|CAD|AUD|CHF|CNY|NZD|ZAR|SGD|HKD|AED|"
+        r"SEK|NOK|DKK|PLN|CZK)\s*[\)\]]"
+        r"|(?<![A-Z])(USD|GBP|EUR|JPY|INR|CAD|AUD|CHF|CNY|NZD|ZAR|SGD|HKD|AED|"
+        r"SEK|NOK|DKK|PLN|CZK)(?![A-Z])",
+        re.IGNORECASE,
+    )
+
     def _currency_global_scan(
         self,
         parsed: ParsedDocument,
@@ -579,8 +654,10 @@ class LayoutLMv3Extractor(Extractor):
         """Global scan for currency symbols/codes when no label match was found.
 
         Pass 1: Counts all tokens whose text contains an ISO-4217 code or symbol.
+        Pass 1b: If no token match, scan full_text for ISO codes (e.g. "(USD)" in
+                 column headers like "Unit Price (USD)" — common in Canva/sparse PDFs).
         Pass 2: If nothing found, infers from country mentions in the full text.
-        Emits a Candidate at confidence 0.55 (symbol match) or 0.40 (country inference).
+        Emits at confidence 0.55 (token match), 0.50 (text scan), 0.40 (country inference).
         """
         counter: Counter[str] = Counter()
         token_for: dict[str, Token] = {}
@@ -600,9 +677,7 @@ class LayoutLMv3Extractor(Extractor):
             tok = token_for[best_iso]
             raw_text = tok.text.strip()
             # Substring guarantee: raw token must be in full_text
-            if raw_text not in parsed.full_text:
-                pass  # fall through to country inference
-            else:
+            if raw_text in parsed.full_text:
                 return Candidate(
                     field=field.name,
                     value=best_iso,
@@ -611,6 +686,36 @@ class LayoutLMv3Extractor(Extractor):
                     evidence_text=raw_text,
                     model="layoutlmv3",
                     confidence=0.55,
+                )
+
+        # Pass 1b: scan full_text for ISO codes embedded in column headers / text
+        # This handles sparse-token PDFs (Canva style) where "Unit Price (USD)" is
+        # only in the markdown export and has no discrete bboxed token.
+        text_iso_counter: Counter[str] = Counter()
+        text_evidence: dict[str, str] = {}
+        for m in self._CURRENCY_IN_TEXT_RE.finditer(parsed.full_text):
+            code = (m.group(1) or m.group(2) or "").upper().strip()
+            if not code:
+                continue
+            iso = _SYMBOL_TO_ISO.get(code, code if code in _ISO_CURRENCY_CODES else None)
+            if iso:
+                text_iso_counter[iso] += 1
+                if iso not in text_evidence:
+                    # Use the matched substring as evidence (guaranteed in full_text)
+                    text_evidence[iso] = m.group(0).strip()
+
+        if text_iso_counter:
+            best_iso, _ = text_iso_counter.most_common(1)[0]
+            ev_text = text_evidence[best_iso]
+            if ev_text in parsed.full_text:
+                return Candidate(
+                    field=field.name,
+                    value=best_iso,
+                    page=0,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    evidence_text=ev_text,
+                    model="layoutlmv3",
+                    confidence=0.50,
                 )
 
         # Pass 2: infer from country mentions in the document text
@@ -644,12 +749,8 @@ class LayoutLMv3Extractor(Extractor):
 
         return None
 
-    # Markdown table row pattern: "| label text  | value text |"
-    # Handles currency symbols (£, $, €) embedded in the value cell.
-    _MD_TABLE_ROW_RE = re.compile(
-        r"\|\s*([^|]{1,60}?)\s*\|\s*([^|]{1,40}?)\s*\|",
-        re.IGNORECASE,
-    )
+    # Markdown table row: a line starting with "|" and containing at least two "|"
+    _MD_TABLE_LINE_RE = re.compile(r"^\|(.+)\|$", re.MULTILINE)
 
     def _markdown_table_scan(
         self,
@@ -657,6 +758,10 @@ class LayoutLMv3Extractor(Extractor):
         field: FieldSpec,
     ) -> list[Candidate]:
         """Scan full_text for markdown table rows that contain a canonical label.
+
+        Handles multi-column tables (e.g. 6-column Canva POs) by splitting each
+        row into all cells and checking whether ANY cell matches a canonical label.
+        The value is taken from the LAST cell that satisfies the type constraint.
 
         Emits candidates at confidence up to 0.85 (label-match weighted).
         Only runs when no token-proximity candidates were found for the field.
@@ -669,36 +774,53 @@ class LayoutLMv3Extractor(Extractor):
         out: list[Candidate] = []
         label_lower_set = {lbl.lower().rstrip(":").strip() for lbl in field.canonical_labels}
 
-        for m in self._MD_TABLE_ROW_RE.finditer(parsed.full_text):
-            cell_label = m.group(1).strip()
-            cell_value = m.group(2).strip()
+        for m in self._MD_TABLE_LINE_RE.finditer(parsed.full_text):
+            row_text = m.group(1)  # everything between leading | and trailing |
+            cells = [c.strip() for c in row_text.split("|")]
 
-            # Skip separator rows (e.g. "---")
-            if re.match(r"^[-:]+$", cell_label):
+            # Skip separator rows (only dashes/colons in cells)
+            if all(re.match(r"^[-:\s]*$", c) for c in cells if c):
                 continue
 
-            cell_label_lower = cell_label.lower().rstrip(":").strip()
-            # Check if this row's label matches any canonical label (fuzzy)
+            # Check if any cell matches a canonical label
             best_score = 0.0
-            for lbl_lower in label_lower_set:
-                score = fuzz.ratio(cell_label_lower, lbl_lower)
-                if score > best_score:
-                    best_score = score
+            label_cell_idx = -1
+            for i, cell in enumerate(cells):
+                cell_lower = cell.lower().rstrip(":").strip()
+                if not cell_lower:
+                    continue
+                for lbl_lower in label_lower_set:
+                    score = fuzz.ratio(cell_lower, lbl_lower)
+                    if score > best_score:
+                        best_score = score
+                        label_cell_idx = i
 
-            if best_score < LABEL_MATCH_MIN_SCORE:
+            if best_score < LABEL_MATCH_MIN_SCORE or label_cell_idx < 0:
                 continue
 
-            # Validate value type
-            value_str = cell_value.strip()
+            # Find the value: scan cells AFTER the label cell (right-to-left preference),
+            # pick the last cell that satisfies the type constraint.
+            value_str = None
+            for cell in reversed(cells[label_cell_idx + 1:]):
+                candidate_val = cell.strip()
+                if not candidate_val:
+                    continue
+                if field.type in ("money", "decimal"):
+                    if parse_amount(candidate_val) is not None:
+                        value_str = candidate_val
+                        break
+                elif field.type == "iso_date":
+                    if parse_date(candidate_val) is not None:
+                        value_str = candidate_val
+                        break
+                else:
+                    # string field: accept non-empty, non-label cell
+                    if not re.match(r"^[-:\s]*$", candidate_val) and not _is_label_shaped(candidate_val):
+                        value_str = candidate_val
+                        break
+
             if not value_str:
                 continue
-
-            if field.type in ("money", "decimal"):
-                if parse_amount(value_str) is None:
-                    continue
-            elif field.type == "iso_date":
-                if parse_date(value_str) is None:
-                    continue
 
             # Substring guarantee: the value must appear in full_text
             if value_str not in parsed.full_text:
