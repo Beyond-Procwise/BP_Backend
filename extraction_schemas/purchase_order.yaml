@@ -17,6 +17,7 @@ fields:
       - "Order No"
       - "Invoice Number"
       - "Invoice No"
+      - "Invoice #"
     extractors:
       - layoutlmv3
       - sbert_anchor

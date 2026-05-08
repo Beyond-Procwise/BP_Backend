@@ -168,26 +168,30 @@ def _extract_currency_from_token(text: str) -> str | None:
 def _is_document_header(text: str) -> bool:
     """Return True if this token looks like a document-type header (not a field label).
 
-    Document headers are short, all-caps phrases like "INVOICE", "PURCHASE ORDER",
-    "QUOTATION", etc. that appear at the top of a page and name the document type
-    rather than labelling a specific field.
+    Document headers are short phrases like "INVOICE", "PURCHASE ORDER",
+    "Interior Design Purchase Order" that appear at the top of a page and name
+    the document type rather than labelling a specific field.
+
+    Detects both:
+    - ALL-CAPS versions: "PURCHASE ORDER", "INVOICE"
+    - Title-Case versions: "Interior Design Purchase Order"
+    - Mixed: "Purchase Order Form"
     """
     s = text.strip()
-    # Must be all caps, 2-5 words, no colon
+    # Must not contain a colon (colons indicate field labels)
     if ":" in s:
         return False
     words = s.split()
-    if not words or len(words) > 5:
+    if not words or len(words) > 8:
         return False
-    if not all(w.isupper() and w.isalpha() for w in words):
-        return False
-    # Must match known document-type vocabulary
+    # Must match known document-type vocabulary (case-insensitive)
     doc_type_words = {
-        "INVOICE", "PURCHASE", "ORDER", "QUOTATION", "QUOTE", "CONTRACT",
-        "STATEMENT", "RECEIPT", "ESTIMATE", "PROPOSAL", "BILL", "CREDIT",
-        "MEMO", "NOTE",
+        "invoice", "purchase", "order", "quotation", "quote", "contract",
+        "statement", "receipt", "estimate", "proposal", "bill", "credit",
+        "memo", "note",
     }
-    return bool(set(words) & doc_type_words)
+    words_lower = [w.lower() for w in words if w.isalpha()]
+    return bool(set(words_lower) & doc_type_words)
 
 
 def _token_satisfies_type(token: Token, field_type: str) -> bool:
@@ -537,8 +541,9 @@ class LayoutLMv3Extractor(Extractor):
                 if ":" in tok_stripped:
                     colon_pos = tok_stripped.index(":")
                     before_colon = tok_stripped[:colon_pos].strip()
-                    # Short alpha-only before-colon = label-value compound
-                    if before_colon and len(before_colon) <= 40 and re.match(r"^[A-Za-z][A-Za-z ]*$", before_colon):
+                    # Short label-like before-colon = label-value compound.
+                    # Allows "#", ".", digits in label like "Invoice #", "P.O."
+                    if before_colon and len(before_colon) <= 40 and re.match(r"^[A-Za-z][A-Za-z0-9 #\.\-/&]*$", before_colon):
                         continue
                 return tok, None
 

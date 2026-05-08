@@ -156,7 +156,7 @@ def _next_value_token(
                 if ":" in tok_stripped:
                     colon_pos = tok_stripped.index(":")
                     before_colon = tok_stripped[:colon_pos].strip()
-                    if before_colon and len(before_colon) <= 40 and re.match(r"^[A-Za-z][A-Za-z ]*$", before_colon):
+                    if before_colon and len(before_colon) <= 40 and re.match(r"^[A-Za-z][A-Za-z0-9 #\.\-/&]*$", before_colon):
                         continue
             return tok
 
