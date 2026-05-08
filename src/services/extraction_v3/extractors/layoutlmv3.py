@@ -127,10 +127,26 @@ def _try_parse_money(text: str) -> bool:
     return parse_amount(text) is not None
 
 
+_MONTH_ONLY_RE = re.compile(
+    r"^(january|february|march|april|may|june|july|august|september|october|"
+    r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?$",
+    re.IGNORECASE,
+)
+
+
 def _try_parse_date(text: str) -> bool:
-    """Return True iff text can be coerced to a date."""
+    """Return True iff text can be coerced to a date.
+
+    Rejects bare month names (e.g. "October") that dateparser would expand to
+    "October 1 <current_year>" — these are almost certainly label proximity
+    accidents rather than actual dates.
+    """
     from src.services.extraction_v2.parsers.dates import parse_date
-    return parse_date(text) is not None
+    s = text.strip()
+    # A bare month name has no year info — reject to avoid current-year hallucinations
+    if _MONTH_ONLY_RE.match(s):
+        return False
+    return parse_date(s) is not None
 
 
 def _try_parse_currency(text: str) -> bool:

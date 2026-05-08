@@ -9,6 +9,7 @@ Used as a fallback extractor: in the L3 orchestrator, QA-roberta candidates
 only commit when no higher-priority extractor produced a candidate for the
 same field.
 """
+import re
 from __future__ import annotations
 import threading
 import torch
@@ -21,6 +22,10 @@ from src.services.extraction_v3.yaml_schema.registry import register_extractor
 
 MODEL_NAME = "deepset/roberta-base-squad2"
 MIN_CONFIDENCE = 0.4
+
+# Garbage answers that roberta often returns when the context has no real answer.
+# Markdown heading tokens (##, ###), section markers, punctuation-only strings.
+_GARBAGE_RE = re.compile(r"^#+$|^[-=\*]{1,}$|^\W+$")
 
 _tokenizer = None
 _model = None
@@ -156,6 +161,10 @@ class QARobertaExtractor(Extractor):
             if not answer or score < MIN_CONFIDENCE:
                 continue
             if answer not in parsed.full_text:
+                continue
+            # Reject garbage answers: markdown headings (#, ##), punctuation-only strings.
+            # Roberta sometimes returns these when the context has no real answer span.
+            if _GARBAGE_RE.match(answer.strip()):
                 continue
             bbox_loc = _find_bbox_for_text(parsed, answer)
             page_idx, b = bbox_loc if bbox_loc else (0, (0.0, 0.0, 0.0, 0.0))
