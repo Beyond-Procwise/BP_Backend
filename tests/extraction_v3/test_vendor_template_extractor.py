@@ -31,10 +31,13 @@ def template_store_with_invoice_template():
     parsed = parse_with_docling(FX / "INV-007-rich.pdf", file_format="pdf-native")
     fp = compute_v3_fingerprint(parsed)
 
-    # Pick a value KNOWN to be in parsed.full_text (the substring guarantee
-    # depends on this). Use a token we can see — find one programmatically.
-    sample_tokens = [t.text.strip() for t in parsed.pages[0].tokens if t.text.strip()]
-    seed_value = next((t for t in sample_tokens if len(t) >= 4), "INVOICE")
+    # Pick a value KNOWN to be in parsed.full_text. Token texts can fail
+    # the substring check because Docling's markdown export HTML-escapes
+    # characters (e.g. '&' → '&amp;'), so pick directly from full_text.
+    import re
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{3,}", parsed.full_text)]
+    seed_value = words[0] if words else "INVOICE"
+    assert seed_value in parsed.full_text, "test setup invalid: seed not in full_text"
 
     store = PostgresTemplateStore(get_conn)
     store.init_schema()
