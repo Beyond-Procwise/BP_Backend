@@ -10,9 +10,12 @@ fields:
     canonical_labels:
       - "Invoice Number"
       - "Invoice No"
+      - "Invoice No."
       - "Invoice #"
       - "Inv No"
       - "Document Number"
+      - "Document No"
+      - "Document No."
     extractors:
       - layoutlmv3
       - sbert_anchor
