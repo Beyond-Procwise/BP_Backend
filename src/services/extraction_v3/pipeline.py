@@ -148,6 +148,35 @@ class PipelineV3:
                     candidates=outcome.candidates_seen,
                 ))
 
+        # 4b. Cross-field duplicate suppression: if a qa_roberta-only candidate's
+        # committed value is identical to a higher-confidence candidate already
+        # committed for a DIFFERENT required field, discard it (return to residual).
+        # This prevents "PO id = 01-2024-001" from bleeding into payment_terms.
+        required_field_values: dict[str, str] = {}
+        for cf in list(committed):
+            fspec = next((f for f in schema.fields if f.name == cf.field_path), None)
+            if fspec and fspec.required:
+                required_field_values[cf.field_path] = cf.value
+
+        cleaned_committed: list[CommittedField] = []
+        for cf in committed:
+            fspec = next((f for f in schema.fields if f.name == cf.field_path), None)
+            if (
+                fspec and not fspec.required
+                and cf.model == "qa_roberta"
+                and cf.value in required_field_values.values()
+                and cf.field_path not in required_field_values
+            ):
+                # This non-required field's qa_roberta value duplicates a required
+                # field's committed value → suppress it (leave as residual / absent)
+                log.debug(
+                    "Suppressing qa_roberta duplicate: field=%s value=%r mirrors a required field",
+                    cf.field_path, cf.value
+                )
+                continue
+            cleaned_committed.append(cf)
+        committed = cleaned_committed
+
         # 5. Demote on critical invariant failures
         critical = [r for r in invariant_results if r.severity in ("CRITICAL", "critical", "fail")]
         if critical:
