@@ -114,7 +114,8 @@ def _token_satisfies_type(token: Token, field_type: str) -> bool:
     # string: skip label-shaped tokens
     if _is_label_shaped(text):
         return False
-    return bool(re.search(r"[a-zA-Z]", text))
+    # Accept alphanumeric content (IDs can be purely numeric)
+    return bool(re.search(r"[a-zA-Z0-9]", text))
 
 
 def _next_value_token(

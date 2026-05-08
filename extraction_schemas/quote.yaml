@@ -25,28 +25,6 @@ fields:
       ner_type_check: "none"
     invariants: []
 
-  - name: supplier_name
-    type: string
-    required: true
-    db_column: null
-    resolves_to_db_column: supplier_id
-    canonical_labels:
-      - "Supplier"
-      - "Vendor"
-      - "From"
-      - "Quoted By"
-      - "Seller"
-    extractors:
-      - layoutlmv3
-      - spacy_ner
-      - sbert_anchor
-      - vendor_template
-    judge:
-      tiebreaker: true
-      grounded_last_resort: true
-      ner_type_check: "ORG"
-    invariants: []
-
   - name: buyer_id
     type: string
     required: false
@@ -145,24 +123,6 @@ fields:
     invariants:
       - date_sanity
 
-  - name: payment_terms
-    type: string
-    required: false
-    db_column: payment_terms
-    canonical_labels:
-      - "Payment Terms"
-      - "Terms"
-      - "Net Terms"
-    extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - qa_roberta
-    judge:
-      tiebreaker: true
-      grounded_last_resort: true
-      ner_type_check: "none"
-    invariants: []
-
   - name: currency
     type: string
     required: true
@@ -190,10 +150,48 @@ fields:
       - "Quote Total"
       - "Amount Due"
       - "Total"
+      - "Subtotal"
+      - "Net Total"
     extractors:
       - layoutlmv3
       - sbert_anchor
       - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: country
+    type: string
+    required: false
+    db_column: country
+    canonical_labels:
+      - "Country"
+      - "Billing Country"
+      - "Country of Origin"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "GPE"
+    invariants: []
+
+  - name: region
+    type: string
+    required: false
+    db_column: region
+    canonical_labels:
+      - "Region"
+      - "State"
+      - "Province"
+      - "County"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -260,7 +258,7 @@ line_items:
     - name: line_amount
       type: money
       required: true
-      db_column: line_amount
+      db_column: line_total
       canonical_labels:
         - "Amount"
         - "Line Amount"

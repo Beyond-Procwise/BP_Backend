@@ -165,6 +165,31 @@ def _extract_currency_from_token(text: str) -> str | None:
     return None
 
 
+def _is_document_header(text: str) -> bool:
+    """Return True if this token looks like a document-type header (not a field label).
+
+    Document headers are short, all-caps phrases like "INVOICE", "PURCHASE ORDER",
+    "QUOTATION", etc. that appear at the top of a page and name the document type
+    rather than labelling a specific field.
+    """
+    s = text.strip()
+    # Must be all caps, 2-5 words, no colon
+    if ":" in s:
+        return False
+    words = s.split()
+    if not words or len(words) > 5:
+        return False
+    if not all(w.isupper() and w.isalpha() for w in words):
+        return False
+    # Must match known document-type vocabulary
+    doc_type_words = {
+        "INVOICE", "PURCHASE", "ORDER", "QUOTATION", "QUOTE", "CONTRACT",
+        "STATEMENT", "RECEIPT", "ESTIMATE", "PROPOSAL", "BILL", "CREDIT",
+        "MEMO", "NOTE",
+    }
+    return bool(set(words) & doc_type_words)
+
+
 def _token_satisfies_type(token: Token, field_type: str) -> bool:
     """Return True iff the token's text satisfies the type constraint."""
     text = token.text.strip()
@@ -179,8 +204,8 @@ def _token_satisfies_type(token: Token, field_type: str) -> bool:
     # string / address / postcode: reject if purely label-shaped
     if _is_label_shaped(text):
         return False
-    # Require at least one alphabetic character for free-text strings
-    return bool(re.search(r"[a-zA-Z]", text))
+    # Accept alphanumeric content (IDs can be purely numeric like "1000587")
+    return bool(re.search(r"[a-zA-Z0-9]", text))
 
 
 # ---------------------------------------------------------------------------
@@ -285,16 +310,22 @@ def _validate_extracted_value(raw_val: str, field_type: str) -> bool:
     from src.services.extraction_v2.parsers.amounts import parse_amount
     from src.services.extraction_v2.parsers.dates import parse_date
 
-    if not raw_val.strip():
+    s = raw_val.strip()
+    if not s:
         return False
     if field_type in ("money", "decimal"):
-        return parse_amount(raw_val) is not None
+        return parse_amount(s) is not None
     if field_type == "iso_date":
-        return parse_date(raw_val) is not None
+        return parse_date(s) is not None
     if field_type == "currency":
-        return _try_parse_currency(raw_val)
-    # string: non-empty, non-pure-label
-    return bool(raw_val.strip()) and not _is_label_shaped(raw_val)
+        return _try_parse_currency(s)
+    # string: non-empty, not purely a label phrase.
+    # Accept alphanumeric IDs (e.g. "1000587"), mixed strings, etc.
+    # Only reject tokens that look EXACTLY like a label (ends with ":" or all-caps words).
+    if _is_label_shaped(s):
+        return False
+    # Require non-empty content (alphanumeric or punctuation, but not only whitespace)
+    return bool(re.search(r"[a-zA-Z0-9]", s))
 
 
 @register_extractor("layoutlmv3")
@@ -377,6 +408,12 @@ class LayoutLMv3Extractor(Extractor):
                     # Substring guard — the raw token text must appear in full_text.
                     raw_tok_text = value_token.text.strip()
                     if raw_tok_text not in parsed.full_text:
+                        continue
+                    # Sanity guard: if the label token IS the document header
+                    # (e.g. "PURCHASE ORDER", "INVOICE") and the nearest
+                    # value token is an address block (very long, multi-line),
+                    # skip this candidate — the header is not a field label.
+                    if _is_document_header(label_token.text) and len(raw_tok_text) > 80:
                         continue
                     evidence_text = raw_tok_text
                     out.append(
@@ -484,6 +521,28 @@ class LayoutLMv3Extractor(Extractor):
 
         return None, None
 
+    # Country → default currency mapping for country-based inference
+    _COUNTRY_TO_CURRENCY: dict[str, str] = {
+        "united kingdom": "GBP", "uk": "GBP", "england": "GBP",
+        "united states": "USD", "usa": "USD", "us": "USD",
+        "australia": "AUD",
+        "canada": "CAD",
+        "india": "INR",
+        "japan": "JPY",
+        "china": "CNY",
+        "germany": "EUR", "france": "EUR", "spain": "EUR", "italy": "EUR",
+        "netherlands": "EUR", "belgium": "EUR", "austria": "EUR",
+        "new zealand": "NZD",
+        "singapore": "SGD",
+        "hong kong": "HKD",
+        "south africa": "ZAR",
+        "united arab emirates": "AED", "uae": "AED",
+        "sweden": "SEK",
+        "norway": "NOK",
+        "denmark": "DKK",
+        "poland": "PLN",
+    }
+
     def _currency_global_scan(
         self,
         parsed: ParsedDocument,
@@ -491,10 +550,9 @@ class LayoutLMv3Extractor(Extractor):
     ) -> Candidate | None:
         """Global scan for currency symbols/codes when no label match was found.
 
-        Counts all tokens whose text contains an ISO-4217 code or symbol and
-        emits the most-frequent one as a fallback candidate at confidence 0.55.
-        This covers invoices that embed currency as a symbol (e.g. '$') in
-        amount cells rather than a dedicated 'Currency:' field.
+        Pass 1: Counts all tokens whose text contains an ISO-4217 code or symbol.
+        Pass 2: If nothing found, infers from country mentions in the full text.
+        Emits a Candidate at confidence 0.55 (symbol match) or 0.40 (country inference).
         """
         counter: Counter[str] = Counter()
         token_for: dict[str, Token] = {}
@@ -509,22 +567,51 @@ class LayoutLMv3Extractor(Extractor):
                         token_for[iso] = tok
                         page_for[iso] = page.index
 
-        if not counter:
-            return None
+        if counter:
+            best_iso, _ = counter.most_common(1)[0]
+            tok = token_for[best_iso]
+            raw_text = tok.text.strip()
+            # Substring guarantee: raw token must be in full_text
+            if raw_text not in parsed.full_text:
+                pass  # fall through to country inference
+            else:
+                return Candidate(
+                    field=field.name,
+                    value=best_iso,
+                    page=page_for[best_iso],
+                    bbox=tok.bbox,
+                    evidence_text=raw_text,
+                    model="layoutlmv3",
+                    confidence=0.55,
+                )
 
-        best_iso, _ = counter.most_common(1)[0]
-        tok = token_for[best_iso]
-        raw_text = tok.text.strip()
-        # Substring guarantee: raw token must be in full_text
-        if raw_text not in parsed.full_text:
-            return None
+        # Pass 2: infer from country mentions in the document text
+        full_lower = parsed.full_text.lower()
+        for country_text, iso_code in self._COUNTRY_TO_CURRENCY.items():
+            if country_text in full_lower:
+                # Find a token that contains the country text for evidence
+                evidence_tok = None
+                for page in parsed.pages:
+                    for tok in page.tokens:
+                        if country_text in tok.text.lower():
+                            evidence_tok = tok
+                            ev_page = page.index
+                            break
+                    if evidence_tok:
+                        break
+                if evidence_tok is None:
+                    continue
+                raw_text = evidence_tok.text.strip()
+                if raw_text not in parsed.full_text:
+                    continue
+                return Candidate(
+                    field=field.name,
+                    value=iso_code,
+                    page=ev_page,
+                    bbox=evidence_tok.bbox,
+                    evidence_text=raw_text,
+                    model="layoutlmv3",
+                    confidence=0.40,  # lower confidence: inferred from country, not explicit
+                )
 
-        return Candidate(
-            field=field.name,
-            value=best_iso,
-            page=page_for[best_iso],
-            bbox=tok.bbox,
-            evidence_text=raw_text,
-            model="layoutlmv3",
-            confidence=0.55,
-        )
+        return None

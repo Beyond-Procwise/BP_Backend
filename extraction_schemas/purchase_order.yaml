@@ -28,8 +28,7 @@ fields:
   - name: supplier_name
     type: string
     required: true
-    db_column: null
-    resolves_to_db_column: supplier_id
+    db_column: supplier_name
     canonical_labels:
       - "Supplier"
       - "Vendor"
@@ -114,8 +113,6 @@ fields:
       - "Requested Date"
       - "Request Date"
       - "Requisition Date"
-      - "Order Date"
-      - "Date"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -136,6 +133,7 @@ fields:
       - "PO Date"
       - "Issue Date"
       - "Date Issued"
+      - "Date"
       - "Purchase Date"
     extractors:
       - layoutlmv3
@@ -157,6 +155,7 @@ fields:
       - "Required By"
       - "Need By Date"
       - "Due Date"
+      - "Delivery Deadline"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -218,6 +217,8 @@ fields:
       - "Total Value"
       - "Net Total"
       - "Amount"
+      - "Sub Total"
+      - "Subtotal"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -326,7 +327,7 @@ line_items:
     - name: line_amount
       type: money
       required: true
-      db_column: line_amount
+      db_column: line_total
       canonical_labels:
         - "Amount"
         - "Line Amount"

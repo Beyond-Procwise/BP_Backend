@@ -397,23 +397,31 @@ class SpacyNERExtractor(Extractor):
                     if not ent_text or ent_text not in parsed.full_text:
                         continue
 
-                    # Skip if clearly a buyer ORG (unless also in supplier context)
                     is_buyer = ent_text in buyer_context_orgs
                     is_supplier = ent_text in supplier_context_orgs
-                    if is_buyer and not is_supplier:
-                        continue  # skip buyer-context ORGs
 
                     bbox = _find_bbox_for_text(parsed, ent_text)
                     page_idx, b = bbox if bbox else (0, (0.0, 0.0, 0.0, 0.0))
-                    # Confidence boost for entities in the top 40% of page 0
                     in_header = (page_idx == 0 and b[1] < page0_height * 0.40)
-                    # Further boost if explicitly in supplier context
+
+                    # Confidence assignment:
+                    # - Explicitly in supplier context (near Vendor:/From:): 0.90
+                    # - In page header, not in buyer context: 0.80
+                    # - In page header, but also in buyer context: 0.55 (ambiguous)
+                    # - Elsewhere, not in buyer context: 0.65
+                    # - Elsewhere, in buyer context: 0.45 (last resort — may be
+                    #   the only org in doc; don't exclude entirely)
                     if is_supplier:
                         conf = 0.90
-                    elif in_header:
+                    elif in_header and not is_buyer:
                         conf = 0.80
+                    elif in_header and is_buyer:
+                        conf = 0.55
+                    elif not is_buyer:
+                        conf = 0.65
                     else:
-                        conf = 0.60
+                        conf = 0.45  # buyer context but may be only option
+
                     candidates.append(Candidate(
                         field=field.name,
                         value=ent_text,
