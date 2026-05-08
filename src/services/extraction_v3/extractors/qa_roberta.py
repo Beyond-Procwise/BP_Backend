@@ -9,8 +9,8 @@ Used as a fallback extractor: in the L3 orchestrator, QA-roberta candidates
 only commit when no higher-priority extractor produced a candidate for the
 same field.
 """
-import re
 from __future__ import annotations
+import re
 import threading
 import torch
 from transformers import AutoModelForQuestionAnswering, AutoTokenizer
