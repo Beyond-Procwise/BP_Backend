@@ -526,19 +526,27 @@ class LayoutLMv3Extractor(Extractor):
         """
         matches: list[tuple[Token, float]] = []
         label_lower = label.lower().strip()
+        # Normalize label for whitespace-insensitive matching
+        label_lower_norm = re.sub(r"\s+", " ", label_lower)
         for tok in tokens:
             tok_text_raw = tok.text.strip()
             tok_text = tok_text_raw.lower().rstrip(":").rstrip(".")
+            # Normalize token text for whitespace-insensitive containment checks
+            tok_text_norm = re.sub(r"\s+", " ", tok_text)
             score = fuzz.ratio(tok_text, label_lower)
             if score >= LABEL_MATCH_MIN_SCORE:
                 matches.append((tok, float(score)))
-            elif label_lower in tok_text:
+            elif label_lower_norm in tok_text_norm:
                 # Embedded label match — label appears somewhere in a larger token.
-                # Assign a partial score based on label length ratio.
-                ratio = len(label_lower) / max(len(tok_text), 1)
-                partial_score = max(float(score), 80.0 * ratio + 20.0)
+                # The token is a compound "Label: value" or "Label # value" block.
+                # We grant a fixed score of 80.0 (= LABEL_MATCH_MIN_SCORE + 2) so
+                # Path A (intra-token extraction) can handle it.  Previously the
+                # formula 80*ratio+20 under-scored long compound tokens (e.g.
+                # "Quotation  # WSG100024" with ratio=0.41 → 52.7 < threshold).
+                # Whitespace is normalised to handle double-space OCR/formatting artefacts.
+                partial_score = max(float(score), 80.0)
                 matches.append((tok, min(90.0, partial_score)))
-            elif tok_text in label_lower:
+            elif tok_text_norm in label_lower_norm:
                 matches.append((tok, max(float(score), 80.0)))
         return matches
 
