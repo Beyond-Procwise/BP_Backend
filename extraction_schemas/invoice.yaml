@@ -237,6 +237,12 @@ fields:
       - "Subtotal ($)"
       - "Total Before Tax"
       - "Net Total"
+      - "Total Materials"
+      - "Total Labor"
+      - "Materials Total"
+      - "Labour Total"
+      - "Services Total"
+      - "Total Services"
     extractors:
       - layoutlmv3
       - sbert_anchor
