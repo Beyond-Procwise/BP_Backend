@@ -25,6 +25,7 @@ spans are substrings by construction (ent.text is doc.text[ent.start_char:ent.en
 """
 from __future__ import annotations
 
+import re
 import threading
 
 import spacy
@@ -431,6 +432,15 @@ class SpacyNERExtractor(Extractor):
                         model="spacy_ner",
                         confidence=conf,
                     ))
+
+                # Fallback: if spaCy found no ORG entities, try a company-suffix
+                # regex scan.  This catches invented names like "UrbEdge Facilities
+                # Management Ltd" that spaCy doesn't recognise as ORG.
+                if not field_ents:
+                    _emit_company_suffix_candidates(
+                        parsed, field, candidates, buyer_context_orgs, page0_height
+                    )
+
                 continue
 
             # Default path for all other fields (requested_by → PERSON, etc.)
@@ -456,6 +466,62 @@ class SpacyNERExtractor(Extractor):
                 ))
 
         return candidates
+
+
+# Regex for company-suffix heuristic (catches names spaCy misses).
+# Only matches names that TERMINATE with a recognised legal suffix — this
+# prevents service descriptions like "Office Cleaning Services" (which merely
+# contain a generic word) from being treated as company names.
+_COMPANY_SUFFIX_RE = re.compile(
+    r"([A-Z][A-Za-z0-9\-\. &']{2,60}?\s+"
+    r"(?:Ltd|Limited|Inc|Incorporated|Corp|Corporation|LLC|LLP|GmbH|Pty|PLC|plc)"
+    r"(?:\b|\.))",
+    re.MULTILINE,
+)
+
+
+def _emit_company_suffix_candidates(
+    parsed,
+    field,
+    candidates: list,
+    buyer_context_orgs: set,
+    page0_height: float,
+) -> None:
+    """Scan full_text for company-suffix patterns and emit low-confidence candidates.
+
+    Used only when spaCy found zero ORG entities for supplier_name.
+    Confidence is capped at 0.60 since the regex is less precise than NER.
+    """
+    seen: set[str] = set()
+    for m in _COMPANY_SUFFIX_RE.finditer(parsed.full_text):
+        name = m.group(1).strip()
+        if name in seen:
+            continue
+        if name not in parsed.full_text:
+            continue
+        seen.add(name)
+
+        is_buyer = name in buyer_context_orgs
+        bbox = _find_bbox_for_text(parsed, name)
+        page_idx, b = bbox if bbox else (0, (0.0, 0.0, 0.0, 0.0))
+        in_header = page_idx == 0 and b[1] < page0_height * 0.40
+
+        if is_buyer:
+            conf = 0.40  # buyer context — very low but not excluded
+        elif in_header:
+            conf = 0.60  # header position, not buyer context → plausible supplier
+        else:
+            conf = 0.50  # found somewhere else in document
+
+        candidates.append(Candidate(
+            field=field.name,
+            value=name,
+            page=page_idx,
+            bbox=b,
+            evidence_text=name,
+            model="spacy_ner",
+            confidence=conf,
+        ))
 
 
 def _find_bbox_for_text(parsed: ParsedDocument, text: str):

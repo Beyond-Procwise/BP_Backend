@@ -357,6 +357,14 @@ class LayoutLMv3Extractor(Extractor):
                 if fallback:
                     candidates.append(fallback)
 
+            # Money/decimal fields: if no token-proximity candidates were found,
+            # try scanning the markdown representation of the full_text for
+            # "| Label   | £amount |" patterns (common when Docling renders tables
+            # as markdown with no discrete bboxed tokens for table cells).
+            if field.type in ("money", "decimal") and not field_cands:
+                md_cands = self._markdown_table_scan(parsed, field)
+                candidates.extend(md_cands)
+
         return candidates
 
     # ---------------------------------------------------------------------- #
@@ -504,7 +512,7 @@ class LayoutLMv3Extractor(Extractor):
         # For untyped string fields: skip tokens that are themselves label-shaped.
         # For typed fields: pick the first token that satisfies the type constraint.
         is_typed = field_type in ("money", "decimal", "iso_date", "currency")
-        scan_limit = MAX_TYPE_SCAN_RADIUS if is_typed else 3
+        scan_limit = MAX_TYPE_SCAN_RADIUS if is_typed else 4
 
         for _, tok in ranked[:scan_limit]:
             if is_typed:
@@ -516,6 +524,11 @@ class LayoutLMv3Extractor(Extractor):
             else:
                 # Free-text: skip if the token is itself label-shaped
                 if _is_label_shaped(tok.text):
+                    continue
+                # Skip long compound tokens (address blocks, multi-field blobs)
+                # that contain embedded labels — they are not clean field values.
+                tok_stripped = tok.text.strip()
+                if len(tok_stripped) > 80 and ":" in tok_stripped:
                     continue
                 return tok, None
 
@@ -615,3 +628,75 @@ class LayoutLMv3Extractor(Extractor):
                 )
 
         return None
+
+    # Markdown table row pattern: "| label text  | value text |"
+    # Handles currency symbols (£, $, €) embedded in the value cell.
+    _MD_TABLE_ROW_RE = re.compile(
+        r"\|\s*([^|]{1,60}?)\s*\|\s*([^|]{1,40}?)\s*\|",
+        re.IGNORECASE,
+    )
+
+    def _markdown_table_scan(
+        self,
+        parsed: ParsedDocument,
+        field: FieldSpec,
+    ) -> list[Candidate]:
+        """Scan full_text for markdown table rows that contain a canonical label.
+
+        Emits candidates at confidence up to 0.85 (label-match weighted).
+        Only runs when no token-proximity candidates were found for the field.
+        Substring guarantee: candidate value must appear verbatim in full_text.
+        """
+        from src.services.extraction_v2.parsers.amounts import parse_amount
+        from src.services.extraction_v2.parsers.dates import parse_date
+        from rapidfuzz import fuzz
+
+        out: list[Candidate] = []
+        label_lower_set = {lbl.lower().rstrip(":").strip() for lbl in field.canonical_labels}
+
+        for m in self._MD_TABLE_ROW_RE.finditer(parsed.full_text):
+            cell_label = m.group(1).strip()
+            cell_value = m.group(2).strip()
+
+            # Skip separator rows (e.g. "---")
+            if re.match(r"^[-:]+$", cell_label):
+                continue
+
+            cell_label_lower = cell_label.lower().rstrip(":").strip()
+            # Check if this row's label matches any canonical label (fuzzy)
+            best_score = 0.0
+            for lbl_lower in label_lower_set:
+                score = fuzz.ratio(cell_label_lower, lbl_lower)
+                if score > best_score:
+                    best_score = score
+
+            if best_score < LABEL_MATCH_MIN_SCORE:
+                continue
+
+            # Validate value type
+            value_str = cell_value.strip()
+            if not value_str:
+                continue
+
+            if field.type in ("money", "decimal"):
+                if parse_amount(value_str) is None:
+                    continue
+            elif field.type == "iso_date":
+                if parse_date(value_str) is None:
+                    continue
+
+            # Substring guarantee: the value must appear in full_text
+            if value_str not in parsed.full_text:
+                continue
+
+            out.append(Candidate(
+                field=field.name,
+                value=value_str,
+                page=0,
+                bbox=(0.0, 0.0, 0.0, 0.0),
+                evidence_text=value_str,
+                model="layoutlmv3",
+                confidence=min(0.85, (best_score / 100.0) * 0.9),
+            ))
+
+        return out

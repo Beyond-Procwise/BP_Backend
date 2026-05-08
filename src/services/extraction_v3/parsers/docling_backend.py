@@ -210,6 +210,22 @@ def parse_with_docling(
             )
         )
 
+    # ------------------------------------------------------------------ #
+    # Extend full_text with floating tokens not in the markdown export   #
+    # Some docling elements (e.g. top-right supplier header blocks)      #
+    # appear as bboxed tokens in page_tokens but are omitted from the    #
+    # markdown reading order. Appending them preserves the substring     #
+    # guarantee for extractors that scan tokens directly.                #
+    # ------------------------------------------------------------------ #
+    floating_parts: list[str] = []
+    for pn_toks in page_tokens.values():
+        for tok in pn_toks:
+            tok_text = (tok.text or "").strip()
+            if tok_text and tok_text not in full_text:
+                floating_parts.append(tok_text)
+    if floating_parts:
+        full_text = full_text + "\n" + "\n".join(floating_parts)
+
     return ParsedDocument(
         source_path=str(p),
         file_format=file_format,
