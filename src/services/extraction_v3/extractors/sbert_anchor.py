@@ -92,18 +92,39 @@ _MONTH_ONLY_RE = re.compile(
     r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?$",
     re.IGNORECASE,
 )
+_DATE_HAS_YEAR_RE = re.compile(r"20\d{2}")
+_DATE_HAS_MONTH_NAME_RE = re.compile(
+    r"(january|february|march|april|may|june|july|august|september|october|"
+    r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)",
+    re.IGNORECASE,
+)
+_DATE_HAS_SEPARATOR_RE = re.compile(r"\d{1,2}[/\-\.]\d{1,2}")
+
+
+def _looks_like_date(text: str) -> bool:
+    """Return True iff *text* contains enough structure to be a date token."""
+    s = text.strip()
+    if _DATE_HAS_YEAR_RE.search(s):
+        return True
+    if _DATE_HAS_SEPARATOR_RE.search(s):
+        return True
+    if _DATE_HAS_MONTH_NAME_RE.search(s) and re.search(r"\d", s):
+        return True
+    return False
 
 
 def _try_parse_date(text: str) -> bool:
     """Return True iff text can be coerced to a date.
 
-    Rejects bare month names (e.g. "October") — dateparser would expand these
-    to "October 1 <current_year>", which is almost certainly a label-proximity
-    accident rather than an actual document date.
+    Applies a structural pre-filter before calling dateparser to prevent
+    over-eager parsing of bare digits, currency fragments, or other non-date
+    tokens that dateparser expands using the current date as a reference.
     """
     from src.services.extraction_v2.parsers.dates import parse_date
     s = text.strip()
     if _MONTH_ONLY_RE.match(s):
+        return False
+    if not _looks_like_date(s):
         return False
     return parse_date(s) is not None
 

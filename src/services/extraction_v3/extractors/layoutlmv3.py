@@ -132,19 +132,51 @@ _MONTH_ONLY_RE = re.compile(
     r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?$",
     re.IGNORECASE,
 )
+# A valid date string must contain at least one of:
+# - a 4-digit year (2000–2099), OR
+# - an ISO-8601 date pattern (YYYY-MM-DD), OR
+# - a written month name followed by at least one digit
+_DATE_HAS_YEAR_RE = re.compile(r"20\d{2}")
+_DATE_HAS_MONTH_NAME_RE = re.compile(
+    r"(january|february|march|april|may|june|july|august|september|october|"
+    r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)",
+    re.IGNORECASE,
+)
+_DATE_HAS_SEPARATOR_RE = re.compile(r"\d{1,2}[/\-\.]\d{1,2}")
+
+
+def _looks_like_date(text: str) -> bool:
+    """Return True iff *text* contains enough date components to be worth parsing.
+
+    Guards against dateparser accepting single-digit strings like "$3" or "3"
+    (which it expands to "day 3 of current month") or bare month names.
+    """
+    s = text.strip()
+    # Must contain a 4-digit year (e.g. 2024, 2025), OR
+    # a separator pattern (e.g. 10/14, 14/10), OR
+    # a month name with at least one adjacent digit.
+    if _DATE_HAS_YEAR_RE.search(s):
+        return True
+    if _DATE_HAS_SEPARATOR_RE.search(s):
+        return True
+    if _DATE_HAS_MONTH_NAME_RE.search(s) and re.search(r"\d", s):
+        return True
+    return False
 
 
 def _try_parse_date(text: str) -> bool:
     """Return True iff text can be coerced to a date.
 
-    Rejects bare month names (e.g. "October") that dateparser would expand to
-    "October 1 <current_year>" — these are almost certainly label proximity
-    accidents rather than actual dates.
+    Applies a structural pre-filter (_looks_like_date) before calling dateparser
+    to prevent over-eager parsing of bare digits, currency symbols, or other
+    non-date tokens that dateparser expands using the current date as a reference.
     """
     from src.services.extraction_v2.parsers.dates import parse_date
     s = text.strip()
-    # A bare month name has no year info — reject to avoid current-year hallucinations
+    # Reject bare month names (e.g. "October") and tokens without date structure
     if _MONTH_ONLY_RE.match(s):
+        return False
+    if not _looks_like_date(s):
         return False
     return parse_date(s) is not None
 

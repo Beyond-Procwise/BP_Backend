@@ -69,6 +69,21 @@ def bind_typed(candidate: Candidate, field_type: FieldType) -> BoundCandidate:
 
     if field_type == "iso_date":
         from src.services.extraction_v2.parsers.dates import parse_date
+        import re
+
+        # Pre-filter: reject strings that don't contain recognisable date structure.
+        # dateparser is too permissive — "$3" → "3rd of current month", "5" → today.
+        # A legitimate date must have a 4-digit year, or a separator pattern
+        # (e.g. 10/14), or a month name paired with at least one digit.
+        _has_year = re.search(r"20\d{2}", raw)
+        _has_sep = re.search(r"\d{1,2}[/\-\.]\d{1,2}", raw)
+        _has_month_name = re.search(
+            r"(january|february|march|april|may|june|july|august|september|october|"
+            r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)",
+            raw, re.IGNORECASE,
+        )
+        if not (_has_year or _has_sep or (_has_month_name and re.search(r"\d", raw))):
+            return BoundCandidate(candidate, None, bind_error=True)
 
         result = parse_date(raw)
         if result is None:

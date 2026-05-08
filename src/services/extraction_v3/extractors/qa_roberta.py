@@ -27,6 +27,11 @@ MIN_CONFIDENCE = 0.4
 # Markdown heading tokens (##, ###), section markers, punctuation-only strings.
 _GARBAGE_RE = re.compile(r"^#+$|^[-=\*]{1,}$|^\W+$")
 
+# Money-shaped strings that should never be used as string-type field values
+# (e.g. po_id, supplier_name, payment_terms, requested_by).
+# These start with a currency symbol and contain digits.
+_MONEY_SHAPED_RE = re.compile(r"^[\$£€¥₹]\s*[\d,]")
+
 _tokenizer = None
 _model = None
 _lock = threading.Lock()
@@ -164,7 +169,12 @@ class QARobertaExtractor(Extractor):
                 continue
             # Reject garbage answers: markdown headings (#, ##), punctuation-only strings.
             # Roberta sometimes returns these when the context has no real answer span.
-            if _GARBAGE_RE.match(answer.strip()):
+            answer_stripped = answer.strip()
+            if _GARBAGE_RE.match(answer_stripped):
+                continue
+            # Reject money-shaped answers for string-type fields
+            # (e.g. "$3" being returned as po_id because it's near the total amount).
+            if field.type == "string" and _MONEY_SHAPED_RE.match(answer_stripped):
                 continue
             bbox_loc = _find_bbox_for_text(parsed, answer)
             page_idx, b = bbox_loc if bbox_loc else (0, (0.0, 0.0, 0.0, 0.0))
