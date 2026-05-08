@@ -490,6 +490,15 @@ class LayoutLMv3Extractor(Extractor):
                 md_cands = self._markdown_table_scan(parsed, field)
                 candidates.extend(md_cands)
 
+            # supplier_name fallback: if no label-proximate candidate was found,
+            # check whether the first non-header, all-caps or title-case multi-word
+            # token on page 1 is the supplier's name (common on invoices where the
+            # company letterhead appears without a "From:" or "Vendor:" label).
+            if field.name == "supplier_name" and not field_cands:
+                header_cand = self._page_header_supplier(parsed, field)
+                if header_cand:
+                    candidates.append(header_cand)
+
         return candidates
 
     # ---------------------------------------------------------------------- #
@@ -912,3 +921,64 @@ class LayoutLMv3Extractor(Extractor):
             ))
 
         return out
+
+    def _page_header_supplier(
+        self,
+        parsed: ParsedDocument,
+        field: FieldSpec,
+    ) -> "Candidate | None":
+        """Return a supplier_name candidate from the page-1 letterhead position.
+
+        When no canonical label ("From:", "Vendor:", "Supplier:") is present in
+        the document, the supplier name is typically the first line of the
+        document — a company letterhead printed in large text at the very top.
+        Examples: "CREATIVE DESIGN AGENCY", "BrightPeak Marketing Agency".
+
+        Strategy:
+          - Scan the first 5 tokens of page 1 (top of document).
+          - Skip document-type headers ("INVOICE", "PURCHASE ORDER").
+          - Skip address/email/phone-shaped tokens (contain digits, @, punctuation).
+          - Accept the first 2-6-word all-alpha multi-word token.
+          - Emit at confidence 0.55 (lower than label-proximate extractions).
+        """
+        if not parsed.pages:
+            return None
+        page = parsed.pages[0]
+        for tok in page.tokens[:5]:
+            text = tok.text.strip()
+            # Skip document-type header tokens
+            if _is_document_header(text):
+                continue
+            # Skip tokens with digits, @, or common address punctuation
+            if re.search(r"[\d@,\|]", text):
+                continue
+            # Skip label-shaped tokens (colons, all-caps single words that are
+            # schema field labels like "INVOICE", "FROM", "TO")
+            # Also skip single-word tokens — company names are multi-word
+            words = text.split()
+            if len(words) < 2:
+                continue
+            # Skip very long tokens (multi-sentence address blocks)
+            if len(text) > 60:
+                continue
+            # Require all words to be alpha (no punctuation fragments)
+            if not all(w.isalpha() for w in words):
+                continue
+            # Must be title-case or ALL-CAPS (not a sentence)
+            is_all_caps = all(w.isupper() for w in words)
+            is_title_case = all(w[0].isupper() for w in words)
+            if not (is_all_caps or is_title_case):
+                continue
+            # Substring guarantee
+            if text not in parsed.full_text:
+                continue
+            return Candidate(
+                field=field.name,
+                value=text,
+                page=tok.page,
+                bbox=tok.bbox,
+                evidence_text=text,
+                model="layoutlmv3",
+                confidence=0.55,
+            )
+        return None
