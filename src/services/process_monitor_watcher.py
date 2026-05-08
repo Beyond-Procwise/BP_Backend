@@ -370,10 +370,11 @@ class ProcessMonitorWatcher:
                 logger.debug("Duplicate check failed", exc_info=True)
 
         try:
-            nick = AgentNickOrchestrator(self._agent_nick)
-            result = nick.process_document(
-                file_path,
-                category,
+            from src.services.extraction_v3.dispatch import dispatch_document
+            result = dispatch_document(
+                agent_nick=self._agent_nick,
+                file_path=file_path,
+                category=category,
                 user_id=str(user_id) if user_id is not None else None,
             )
             status = str(result.get("status", "error")).lower()
