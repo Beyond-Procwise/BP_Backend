@@ -87,11 +87,22 @@ class PipelineV3:
         # 3a. Header candidates → judge orchestrator
         header_by_field = _group_candidates_by_field(header_cands)
 
-        # Type-bind each candidate set (for type validation; the binding is
-        # done per chosen field below — here we do an early bind error scan
-        # to feed the orchestrator)
-        # For Plan 1 we don't pre-filter on bind errors; the orchestrator
-        # picks first, then we bind below.
+        # Pre-filter: drop candidates that fail type-binding when valid
+        # alternatives exist for the same field.  This prevents qa_roberta
+        # multi-line / over-extracted values (e.g. "$27.00\n\nShipping…")
+        # from winning the tiebreaker over a correctly-typed candidate.
+        fields_by_name = {f.name: f for f in schema.fields}
+        for fname, cands in list(header_by_field.items()):
+            fspec = fields_by_name.get(fname)
+            if not fspec or len(cands) < 2:
+                continue
+            valid = [c for c in cands if not bind_typed(c, fspec.type).bind_error]
+            if valid and len(valid) < len(cands):
+                log.debug(
+                    "Pre-filter: dropping %d non-binding candidates for %s",
+                    len(cands) - len(valid), fname,
+                )
+                header_by_field[fname] = valid
 
         # 3b. Run invariants on a preliminary record (just the candidate values).
         # We do this BEFORE the judge so the coherence pass can see the invariants.
