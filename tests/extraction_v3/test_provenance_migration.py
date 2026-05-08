@@ -1,76 +1,110 @@
 """Tests for bp_extraction_provenance_v3 table schema migration."""
 from __future__ import annotations
 
-import os
 import sys
+import os
 import psycopg2
-from dotenv import load_dotenv
 
-# Load .env file from project root
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+# Ensure project root is in path for config imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
+from config.settings import Settings
 
 
 def get_db_conn() -> psycopg2.extensions.connection:
     """
-    Create a psycopg2 connection using environment variables.
-    Follows the pattern used by the project (see config/settings.py).
+    Create a psycopg2 connection using Settings configuration.
+    Follows the canonical pattern used by the project (see config/settings.py).
     """
-    db_host = os.environ.get("DB_HOST", "localhost")
-    db_name = os.environ.get("DB_NAME", "postgres")
-    db_user = os.environ.get("DB_USER", "postgres")
-    db_password = os.environ.get("DB_PASSWORD", "")
-    db_port = int(os.environ.get("DB_PORT", "5432"))
-
+    s = Settings()
     conn = psycopg2.connect(
-        host=db_host,
-        dbname=db_name,
-        user=db_user,
-        password=db_password,
-        port=db_port,
+        host=s.db_host,
+        dbname=s.db_name,
+        user=s.db_user,
+        password=s.db_password,
+        port=s.db_port,
     )
     conn.autocommit = True
     return conn
 
 
 def test_provenance_v3_table_exists():
-    """Verify that proc.bp_extraction_provenance_v3 table exists with correct schema."""
+    """Verify that proc.bp_extraction_provenance_v3 table exists with correct schema and nullability."""
     conn = get_db_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT column_name, data_type
+                SELECT column_name, data_type, is_nullable
                 FROM information_schema.columns
                 WHERE table_schema='proc' AND table_name='bp_extraction_provenance_v3'
                 ORDER BY ordinal_position
             """)
-            cols = {name: dtype for name, dtype in cur.fetchall()}
+            cols = {name: (dtype, nullable) for name, dtype, nullable in cur.fetchall()}
 
         expected = {
-            "provenance_id":    "bigint",
-            "doc_type":         "text",
-            "doc_pk":           "text",
-            "field_path":       "text",
-            "value":            "text",
-            "page":             "integer",
-            "bbox_x0":          "real",
-            "bbox_y0":          "real",
-            "bbox_x1":          "real",
-            "bbox_y1":          "real",
-            "evidence_text":    "text",
-            "model":            "text",
-            "model_confidence": "real",
-            "judge_actions":    "jsonb",
-            "final_confidence": "real",
-            "extracted_at":     "timestamp with time zone",
-            "pipeline_version": "text",
+            # (data_type, is_nullable)
+            "provenance_id":    ("bigint", "NO"),
+            "doc_type":         ("text", "NO"),
+            "doc_pk":           ("text", "NO"),
+            "field_path":       ("text", "NO"),
+            "value":            ("text", "NO"),
+            "page":             ("integer", "NO"),
+            "bbox_x0":          ("real", "NO"),
+            "bbox_y0":          ("real", "NO"),
+            "bbox_x1":          ("real", "NO"),
+            "bbox_y1":          ("real", "NO"),
+            "evidence_text":    ("text", "NO"),
+            "model":            ("text", "NO"),
+            "model_confidence": ("real", "NO"),
+            "judge_actions":    ("jsonb", "YES"),     # nullable
+            "final_confidence": ("real", "NO"),
+            "extracted_at":     ("timestamp with time zone", "NO"),
+            "pipeline_version": ("text", "NO"),
         }
 
-        for col, dtype in expected.items():
+        for col, (expected_dtype, expected_nullable) in expected.items():
             actual = cols.get(col)
-            assert actual == dtype, (
-                f"Column {col}: expected {dtype!r}, got {actual!r}"
+            assert actual is not None, f"Column {col} missing from table"
+            actual_dtype, actual_nullable = actual
+            assert actual_dtype == expected_dtype, (
+                f"Column {col}: expected type {expected_dtype!r}, got {actual_dtype!r}"
+            )
+            assert actual_nullable == expected_nullable, (
+                f"Column {col}: expected nullable={expected_nullable!r}, got {actual_nullable!r}"
             )
 
+    finally:
+        conn.close()
+
+
+def test_unique_constraint_present():
+    """Verify that UNIQUE constraint exists on bp_extraction_provenance_v3."""
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT constraint_name
+                FROM information_schema.table_constraints
+                WHERE table_schema='proc'
+                  AND table_name='bp_extraction_provenance_v3'
+                  AND constraint_type='UNIQUE'
+            """)
+            names = [r[0] for r in cur.fetchall()]
+        assert names, "UNIQUE constraint missing on bp_extraction_provenance_v3"
+    finally:
+        conn.close()
+
+
+def test_index_present():
+    """Verify that idx_provenance_v3_doc index exists on bp_extraction_provenance_v3."""
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT indexname FROM pg_indexes
+                WHERE schemaname='proc' AND tablename='bp_extraction_provenance_v3'
+            """)
+            names = {r[0] for r in cur.fetchall()}
+        assert "idx_provenance_v3_doc" in names, f"missing idx_provenance_v3_doc, got {names}"
     finally:
         conn.close()
