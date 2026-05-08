@@ -72,6 +72,7 @@ class ProcwiseAppState(Protocol):
     email_watcher_service: Optional[Any]
     email_watcher_owned: bool
     process_monitor_watcher: Optional[Any]
+    extraction_v3_schemas: dict
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -131,6 +132,22 @@ async def lifespan(app: FastAPI):
         if not existing:
             seed_patterns(pattern_service)
             logger.info("Seeded initial procurement patterns")
+
+        # === Extraction V3: schema validation (fail-loud on drift) ===
+        try:
+            from src.services.extraction_v3.yaml_schema.loader import load_all_schemas, SchemaDriftError
+            extraction_v3_schemas = load_all_schemas()
+            state.extraction_v3_schemas = extraction_v3_schemas
+            logger.info(
+                "extraction_v3: loaded %d doc-type schemas: %s",
+                len(extraction_v3_schemas), list(extraction_v3_schemas.keys()),
+            )
+        except SchemaDriftError as exc:
+            logger.error("extraction_v3 schema drift detected; refusing to start: %s", exc)
+            raise  # crash startup loud
+        except Exception:
+            logger.exception("extraction_v3 schema load failed; continuing without v3 schemas")
+            state.extraction_v3_schemas = {}
 
         # Configure the durable vendor-template store. The orchestrator
         # uses this to override LLM hallucinations on supplier_name etc.
@@ -206,6 +223,7 @@ async def lifespan(app: FastAPI):
         state.email_watcher_owned = False
         state.backend_scheduler = None
         state.process_monitor_watcher = None
+        state.extraction_v3_schemas = {}
     yield
     if hasattr(state, "agent_nick"):
         state.agent_nick = None
@@ -276,12 +294,17 @@ def read_root(): return {"message": "Welcome to the ProcWise Agentic System API"
 def health():
     state = app.state
     initialized = bool(getattr(state, "agent_nick", None))
+    schemas = getattr(state, "extraction_v3_schemas", {})
     return {
         "status": "ok" if initialized else "starting",
         "agent_nick": initialized,
         "orchestrator": bool(getattr(state, "orchestrator", None)),
         "email_watcher_service": bool(getattr(state, "email_watcher_service", None)),
         "process_monitor_watcher": bool(getattr(state, "process_monitor_watcher", None)),
+        "extraction_v3": {
+            "schemas_loaded": len(schemas),
+            "doc_types": sorted(schemas.keys()) if schemas else [],
+        },
     }
 
 if __name__ == "__main__":
