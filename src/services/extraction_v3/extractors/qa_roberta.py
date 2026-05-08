@@ -12,7 +12,7 @@ same field.
 from __future__ import annotations
 import threading
 import torch
-from transformers import pipeline
+from transformers import AutoModelForQuestionAnswering, AutoTokenizer
 from src.services.extraction_v3.extractors.base import Extractor
 from src.services.extraction_v3.schemas.candidate import Candidate
 from src.services.extraction_v3.schemas.parsed_document import ParsedDocument
@@ -22,25 +22,101 @@ from src.services.extraction_v3.yaml_schema.registry import register_extractor
 MODEL_NAME = "deepset/roberta-base-squad2"
 MIN_CONFIDENCE = 0.4
 
-_qa = None
+_tokenizer = None
+_model = None
 _lock = threading.Lock()
 
 
 def _get_qa():
-    global _qa
-    if _qa is not None:
-        return _qa
+    """Return (tokenizer, model) tuple. Lazy-loaded on GPU."""
+    global _tokenizer, _model
+    if _tokenizer is not None and _model is not None:
+        return _tokenizer, _model
     with _lock:
-        if _qa is None:
+        if _tokenizer is None or _model is None:
             assert torch.cuda.is_available(), "QA-roberta requires GPU per spec C2"
-            _qa = pipeline(
-                "question-answering",
-                model=MODEL_NAME,
-                tokenizer=MODEL_NAME,
-                device=0,  # cuda
-                handle_impossible_answer=True,  # honour SQuAD2's no-answer
-            )
-    return _qa
+            _tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+            _model = AutoModelForQuestionAnswering.from_pretrained(MODEL_NAME).to("cuda").eval()
+    return _tokenizer, _model
+
+
+def _answer_span(question: str, context: str, max_length: int = 384) -> tuple[str, float]:
+    """Run QA, return (answer, score). Returns ("", 0.0) for no-answer.
+
+    SQuAD2 null-score guard: only reject when the model is strongly confident
+    the question has no answer (null_score exceeds best span score by more
+    than NULL_SCORE_DIFF_THRESHOLD).  A tight threshold of 0.0 causes false
+    rejections on long, noisy contexts (markdown tables, headers) because the
+    CLS logit is inflated relative to any single span.  Using a generous
+    threshold (5.0) lets clearly-answerable fields pass through while still
+    blocking questions the model is overwhelmingly unsure about.
+
+    Confidence is computed as the average sigmoid of the best start/end
+    logits.  Unlike softmax over the full sequence length, sigmoid is
+    context-length independent and produces values in (0, 1) that are
+    comparable across documents of different sizes.
+    """
+    tokenizer, model = _get_qa()
+    # Tokenize with question + context as a sentence pair
+    inputs = tokenizer(
+        question, context,
+        return_tensors="pt", truncation="only_second", max_length=max_length,
+        return_offsets_mapping=True, padding="max_length",
+    )
+    offset_mapping = inputs.pop("offset_mapping")[0].cpu().numpy()
+    inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+    with torch.no_grad():
+        out = model(**inputs)
+
+    start_logits = out.start_logits[0].cpu()
+    end_logits = out.end_logits[0].cpu()
+
+    # SQuAD2 no-answer: position 0 is the [CLS] token; if (start, end) = (0, 0) is the
+    # best answer, that signals "no answer"
+    null_score = float(start_logits[0] + end_logits[0])
+
+    # Find best answer span (start <= end, end - start <= 30 tokens)
+    sequence_ids = inputs["input_ids"][0].cpu().numpy()
+    # The context tokens are the second sequence; restrict span search to those positions
+    # (Mask out positions outside the context.)
+    n = len(sequence_ids)
+    # Find context bounds: tokens after the first [SEP]
+    sep_token_id = tokenizer.sep_token_id
+    sep_positions = [i for i, t in enumerate(sequence_ids) if t == sep_token_id]
+    if len(sep_positions) >= 1:
+        context_start = sep_positions[0] + 1
+    else:
+        context_start = 0
+
+    best_score = -float("inf")
+    best_start, best_end = 0, 0
+    for start in range(context_start, n):
+        if offset_mapping[start][0] == 0 and offset_mapping[start][1] == 0:
+            continue  # special tokens have offset (0, 0)
+        for end in range(start, min(start + 30, n)):
+            if offset_mapping[end][0] == 0 and offset_mapping[end][1] == 0:
+                continue
+            score = float(start_logits[start] + end_logits[end])
+            if score > best_score:
+                best_score, best_start, best_end = score, start, end
+
+    # Only reject as no-answer when null_score strongly dominates the best span.
+    # A lenient threshold (5.0) avoids false rejections on long, markdown-heavy
+    # contexts where CLS logits are systematically inflated.
+    NULL_SCORE_DIFF_THRESHOLD = 5.0
+    if null_score - best_score > NULL_SCORE_DIFF_THRESHOLD:
+        return "", 0.0
+
+    # Convert (start, end) token positions to character offsets in the original context
+    char_start = int(offset_mapping[best_start][0])
+    char_end = int(offset_mapping[best_end][1])
+    answer_text = context[char_start:char_end].strip()
+    # Confidence: average sigmoid of best start/end logits.
+    # Sigmoid is context-length independent (unlike softmax over the full sequence)
+    # and produces values in (0, 1) that are comparable across documents of all sizes.
+    score = float(0.5 * (torch.sigmoid(start_logits[best_start]) + torch.sigmoid(end_logits[best_end])))
+    return answer_text, score
 
 
 def _question_for_field(field: FieldSpec) -> str:
@@ -69,25 +145,16 @@ class QARobertaExtractor(Extractor):
             return []
         if not parsed.full_text.strip():
             return []
-        qa = _get_qa()
         candidates = []
-        # Truncate context to QA model's max input (RoBERTa: 512 tokens; ~2000 chars). For longer
-        # docs, run QA on the full text and let the pipeline auto-truncate (its handle_long_documents
-        # behavior depends on transformers version).
         context = parsed.full_text
         for field in active:
             question = _question_for_field(field)
             try:
-                result = qa(question=question, context=context)
+                answer, score = _answer_span(question, context)
             except Exception:
                 continue
-            score = float(result.get("score", 0.0))
-            answer = (result.get("answer") or "").strip()
             if not answer or score < MIN_CONFIDENCE:
                 continue
-            # Anti-hallucination: the answer must be a substring of context (parsed.full_text).
-            # Defensive check even though SQuAD model returns spans — future-proofing against
-            # model contract changes.
             if answer not in parsed.full_text:
                 continue
             bbox_loc = _find_bbox_for_text(parsed, answer)
