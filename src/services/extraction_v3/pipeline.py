@@ -198,6 +198,38 @@ class PipelineV3:
                 final_confidence=cand.confidence,
             ))
 
+        # 6b. Invoice-specific recovery: if invoice_amount is a residual but
+        # invoice_total_incl_tax is committed AND no tax was extracted, infer
+        # invoice_amount = invoice_total_incl_tax (no-tax invoice pattern).
+        if schema.doc_type == "invoice":
+            committed_fields = {cf.field_path: cf for cf in committed}
+            residual_fields = {rf.field_path for rf in residuals}
+            if (
+                "invoice_amount" in residual_fields
+                and "invoice_total_incl_tax" in committed_fields
+                and "tax_amount" not in committed_fields
+                and "tax_percent" not in committed_fields
+            ):
+                # No tax extracted — treat grand total as the pre-tax amount too
+                total_cf = committed_fields["invoice_total_incl_tax"]
+                log.debug(
+                    "No-tax fallback: invoice_amount ← invoice_total_incl_tax (%s)",
+                    total_cf.value,
+                )
+                committed.append(CommittedField(
+                    field_path="invoice_amount",
+                    value=total_cf.value,
+                    page=total_cf.page,
+                    bbox=total_cf.bbox,
+                    evidence_text=total_cf.evidence_text,
+                    model="pipeline_recovery",
+                    model_confidence=0.60,
+                    judge_actions=[],
+                    final_confidence=0.60,
+                ))
+                # Remove invoice_amount from residuals
+                residuals = [rf for rf in residuals if rf.field_path != "invoice_amount"]
+
         # 7. Determine doc_pk from the committed fields (the field whose YAML
         # name matches the schema's doc_pk; for invoice that's invoice_id)
         doc_pk = next(
