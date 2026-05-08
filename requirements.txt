@@ -47,3 +47,4 @@ torch
 python-multipart
 llama-parse==0.6.79
 pyyaml
+img2pdf
