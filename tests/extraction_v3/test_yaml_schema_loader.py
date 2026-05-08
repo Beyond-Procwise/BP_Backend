@@ -56,3 +56,18 @@ fields:
     with pytest.raises(SchemaDriftError) as exc:
         load_doc_schema_path(bad)
     assert "column_that_does_not_exist" in str(exc.value)
+
+
+def test_load_all_schemas_uses_single_connection(monkeypatch):
+    """Regression: load_all_schemas must not open one DB connection per YAML."""
+    import src.services.extraction_v3.yaml_schema.loader as mod
+    real_connect = mod.psycopg2.connect
+    call_count = {"n": 0}
+
+    def counting_connect(*args, **kwargs):
+        call_count["n"] += 1
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(mod.psycopg2, "connect", counting_connect)
+    mod.load_all_schemas()
+    assert call_count["n"] == 1, f"expected 1 connection, got {call_count['n']}"

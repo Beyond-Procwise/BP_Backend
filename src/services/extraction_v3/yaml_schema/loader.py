@@ -69,14 +69,61 @@ def _parse_table_ref(full_table: str) -> tuple[str, str]:
     return "public", parts[0]
 
 
-def _verify_db_consistency(schema: DocSchema) -> None:
+def _verify_db_consistency_with_conn(schema: DocSchema, conn) -> None:
     """Check that the tables and columns declared in the schema actually exist in the DB.
 
-    Skipped entirely when schema.fields is empty (stub schemas).
+    Takes an open psycopg2 connection. Skipped entirely when schema.fields is empty (stub schemas).
+    This is the core implementation used by both the batched and single-doc paths.
     """
     if not schema.fields:
         return
 
+    with conn.cursor() as cur:
+        # --- verify main table exists ---
+        tbl_schema, tbl_name = _parse_table_ref(schema.db_table)
+        cols = _get_db_columns(cur, tbl_schema, tbl_name)
+        if not cols:
+            raise SchemaDriftError(
+                f"Table '{schema.db_table}' does not exist in the database "
+                f"(schema='{tbl_schema}', table='{tbl_name}')."
+            )
+
+        # --- verify each field's db_column and resolves_to_db_column ---
+        for field in schema.fields:
+            if field.db_column is not None and field.db_column not in cols:
+                raise SchemaDriftError(
+                    f"Column '{field.db_column}' declared for field '{field.name}' "
+                    f"does not exist on table '{schema.db_table}'."
+                )
+            if field.resolves_to_db_column is not None and field.resolves_to_db_column not in cols:
+                raise SchemaDriftError(
+                    f"resolves_to_db_column '{field.resolves_to_db_column}' declared for field "
+                    f"'{field.name}' does not exist on table '{schema.db_table}'."
+                )
+
+        # --- verify lines table if present ---
+        if schema.db_lines_table is not None:
+            lt_schema, lt_name = _parse_table_ref(schema.db_lines_table)
+            line_cols = _get_db_columns(cur, lt_schema, lt_name)
+            if not line_cols:
+                raise SchemaDriftError(
+                    f"Lines table '{schema.db_lines_table}' does not exist in the database."
+                )
+            if schema.line_items:
+                for field in schema.line_items.fields:
+                    if field.db_column is not None and field.db_column not in line_cols:
+                        raise SchemaDriftError(
+                            f"Column '{field.db_column}' declared for line item field "
+                            f"'{field.name}' does not exist on table '{schema.db_lines_table}'."
+                        )
+
+
+def _verify_db_consistency(schema: DocSchema) -> None:
+    """Check that the tables and columns declared in the schema actually exist in the DB.
+
+    Opens a single connection and calls _verify_db_consistency_with_conn.
+    Used by load_doc_schema_path for single-document loading.
+    """
     s = Settings()
     with psycopg2.connect(
         host=s.db_host,
@@ -85,44 +132,7 @@ def _verify_db_consistency(schema: DocSchema) -> None:
         password=s.db_password,
         port=s.db_port,
     ) as conn:
-        with conn.cursor() as cur:
-            # --- verify main table exists ---
-            tbl_schema, tbl_name = _parse_table_ref(schema.db_table)
-            cols = _get_db_columns(cur, tbl_schema, tbl_name)
-            if not cols:
-                raise SchemaDriftError(
-                    f"Table '{schema.db_table}' does not exist in the database "
-                    f"(schema='{tbl_schema}', table='{tbl_name}')."
-                )
-
-            # --- verify each field's db_column and resolves_to_db_column ---
-            for field in schema.fields:
-                if field.db_column is not None and field.db_column not in cols:
-                    raise SchemaDriftError(
-                        f"Column '{field.db_column}' declared for field '{field.name}' "
-                        f"does not exist on table '{schema.db_table}'."
-                    )
-                if field.resolves_to_db_column is not None and field.resolves_to_db_column not in cols:
-                    raise SchemaDriftError(
-                        f"resolves_to_db_column '{field.resolves_to_db_column}' declared for field "
-                        f"'{field.name}' does not exist on table '{schema.db_table}'."
-                    )
-
-            # --- verify lines table if present ---
-            if schema.db_lines_table is not None:
-                lt_schema, lt_name = _parse_table_ref(schema.db_lines_table)
-                line_cols = _get_db_columns(cur, lt_schema, lt_name)
-                if not line_cols:
-                    raise SchemaDriftError(
-                        f"Lines table '{schema.db_lines_table}' does not exist in the database."
-                    )
-                if schema.line_items:
-                    for field in schema.line_items.fields:
-                        if field.db_column is not None and field.db_column not in line_cols:
-                            raise SchemaDriftError(
-                                f"Column '{field.db_column}' declared for line item field "
-                                f"'{field.name}' does not exist on table '{schema.db_lines_table}'."
-                            )
+        _verify_db_consistency_with_conn(schema, conn)
 
 
 def load_doc_schema_path(path: Path) -> DocSchema:
@@ -139,5 +149,22 @@ def load_doc_schema(doc_type: str) -> DocSchema:
 
 
 def load_all_schemas() -> dict[str, DocSchema]:
-    """Load every *.yaml file in SCHEMAS_DIR and return {stem: DocSchema}."""
-    return {p.stem: load_doc_schema_path(p) for p in sorted(SCHEMAS_DIR.glob("*.yaml"))}
+    """Load every *.yaml file in SCHEMAS_DIR and return {stem: DocSchema}.
+
+    Opens a single DB connection and reuses it across all schemas for efficiency.
+    """
+    schemas: dict[str, DocSchema] = {}
+    s = Settings()
+    with psycopg2.connect(
+        host=s.db_host,
+        dbname=s.db_name,
+        user=s.db_user,
+        password=s.db_password,
+        port=s.db_port,
+    ) as conn:
+        for p in sorted(SCHEMAS_DIR.glob("*.yaml")):
+            raw = yaml.safe_load(p.read_text())
+            schema = DocSchema(**raw)
+            _verify_db_consistency_with_conn(schema, conn)
+            schemas[p.stem] = schema
+    return schemas
