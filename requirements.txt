@@ -48,3 +48,7 @@ python-multipart
 llama-parse==0.6.79
 pyyaml
 docling==2.93.0
+# PaddleOCR PP-Structure backend (GPU-only; see constraint C2)
+# Install paddle GPU wheel from: https://www.paddlepaddle.org.cn/packages/stable/cu123/
+paddlepaddle-gpu==3.1.0
+paddleocr==3.5.0
