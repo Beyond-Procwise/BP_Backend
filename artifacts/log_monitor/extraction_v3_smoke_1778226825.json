@@ -1,0 +1,44 @@
+{
+  "summary": {
+    "total": 5,
+    "succeeded": 0,
+    "errored": 5,
+    "DOCS_WITH_HALLUCINATIONS": 0,
+    "avg_judge_calls": 0.0,
+    "avg_latency_s": 0.0,
+    "p95_latency_s": 0.0,
+    "avg_residuals": 0.0
+  },
+  "results": [
+    {
+      "record_id": 1324,
+      "file_path": "documents/invoice/Office Clean Invoice1.docx",
+      "error": "file not found (likely S3-only): documents/invoice/Office Clean Invoice1.docx",
+      "latency_s": 0.0
+    },
+    {
+      "record_id": 1321,
+      "file_path": "documents/invoice/TECHWORLD INV-005-30 for PO405867.pdf",
+      "error": "file not found (likely S3-only): documents/invoice/TECHWORLD INV-005-30 for PO405867.pdf",
+      "latency_s": 0.0
+    },
+    {
+      "record_id": 1298,
+      "file_path": "documents/invoice/TECHWORLD INV-005-42 for PO405867.pdf",
+      "error": "file not found (likely S3-only): documents/invoice/TECHWORLD INV-005-42 for PO405867.pdf",
+      "latency_s": 0.0
+    },
+    {
+      "record_id": 1297,
+      "file_path": "documents/invoice/TECHWORLD INV-005-41 for PO405867.pdf",
+      "error": "file not found (likely S3-only): documents/invoice/TECHWORLD INV-005-41 for PO405867.pdf",
+      "latency_s": 0.0
+    },
+    {
+      "record_id": 1292,
+      "file_path": "documents/invoice/THRIVE INV103410 for PO502001.pdf",
+      "error": "file not found (likely S3-only): documents/invoice/THRIVE INV103410 for PO502001.pdf",
+      "latency_s": 0.0
+    }
+  ]
+}
