@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {}, \"policies\": []}",
+  "response": "<p>Body line</p>\n\n<!-- PROCWISE_MARKER:TRACKING:PROC-WF-6899B4F9DA16|SUPPLIER:S-900|TOKEN:2C5279EA0B74 -->",
+  "metadata": {
+    "workflow_id": "wf-1",
+    "agent_id": "email_drafting",
+    "agent_name": "EmailDraftingAgent"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "agent": "DataExtractionAgent",
+  "version": "1.0",
+  "prompts": {
+    "document_classification": {
+      "system": "You are a procurement document classifier. Classify the document into EXACTLY one of: Invoice, Purchase_Order, Quote, Contract. Respond with ONLY a single JSON object.",
+      "template": "Analyze the following document text and classify it.\n\nClassification rules:\n- Invoice: Contains invoice number, amounts due, payment terms, tax calculations\n- Purchase_Order: Contains PO number, ordered items, delivery dates, shipping details\n- Quote: Contains quotation/quote number, proposed pricing, validity dates\n- Contract: Contains agreement terms, parties, effective dates, legal clauses\n\nDocument text (first 3000 chars):\n---\n{document_text}\n---\n\nRespond with JSON: {\"document_type\": \"<Invoice|Purchase_Order|Quote|Contract>\", \"confidence\": <0.0-1.0>, \"evidence\": \"<brief reason>\"}"
+    },
+    "header_extraction": {
+      "system": "You are a procurement data extraction expert. Extract header-level fields from documents with high precision. Return ONLY valid JSON.",
+      "template": "Extract the header fields from this {document_type} document.\n\nRequired columns: {required_columns}\nAll columns: {all_columns}\n\nRules:\n1. Extract values EXACTLY as they appear in the document\n2. For dates, preserve the original format\n3. For monetary values, extract the number only (no currency symbols)\n4. Use null for fields you cannot find\n5. Do not guess or fabricate values\n\nDocument text:\n---\n{document_text}\n---\n\nRespond with a single JSON object mapping column names to extracted values."
+    },
+    "line_item_extraction": {
+      "system": "You are a procurement line item extraction expert. Extract tabular line items from documents. Return ONLY valid JSON.",
+      "template": "Extract all line items from this {document_type} document.\n\nExpected columns: {line_columns}\nRequired columns: {required_columns}\n\nRules:\n1. Each line item is one JSON object in an array\n2. Preserve exact quantities and prices as numbers\n3. Use null for missing fields\n4. Include ALL line items found in the document\n5. Line numbers should be sequential starting from 1 if not explicit\n\nDocument text:\n---\n{document_text}\n---\n\nRespond with JSON: {\"line_items\": [{...}, ...]}"
+    },
+    "field_recovery": {
+      "system": "You are a procurement data recovery expert. Find specific missing fields from document text.",
+      "template": "The following critical fields are MISSING from a {document_type} extraction.\n\nMissing fields: {missing_fields}\nField descriptions: {field_descriptions}\n\nAlready extracted data:\n{existing_data}\n\nOriginal document text:\n---\n{document_text}\n---\n\nSearch the document carefully for these specific fields. Respond with JSON mapping field names to found values. Use null if truly not present."
+    },
+    "structured_extraction": {
+      "system": "You are a procurement data expert. Convert the provided document text into structured tabular data. Output strict JSON with keys 'header_rows', 'line_item_rows', and 'discrepancies'. Use the column lists exactly as provided. Fill missing values with null instead of guessing. Include at most one header row. Preserve numeric precision (no currency symbols).",
+      "template": "Extract structured data from this {document_type}.\n\nInstructions:\n{instructions}\n\nDocument:\n{document_text}"
+    }
+  }
+}

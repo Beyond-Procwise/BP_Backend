@@ -24,7 +24,8 @@ from typing import Any, Iterable, Optional
 
 
 __all__ = [
-    "FieldHint", "VendorTemplate", "TemplateStore", "InMemoryTemplateStore",
+    "FieldHint", "LineItemHints", "VendorTemplate", "TemplateStore",
+    "InMemoryTemplateStore",
 ]
 
 
@@ -45,11 +46,28 @@ class FieldHint:
 
 
 @dataclass
+class LineItemHints:
+    """Hints used by the LineItemsLocator to rebuild line items deterministically.
+
+    `header_anchors` are text strings that mark the start of the line-items
+    table (e.g. "Description", "Qty", "Unit Price"). `column_map` maps the
+    detected column header text to the schema field name (e.g.
+    "Item Description" → "item_description"). `expected_min_rows` lets the
+    locator demand at least one row; failing that, the locator routes to
+    residual rather than committing zero lines.
+    """
+    header_anchors: list[str] = field(default_factory=list)
+    column_map: dict[str, str] = field(default_factory=dict)
+    expected_min_rows: int = 1
+
+
+@dataclass
 class VendorTemplate:
     fingerprint: str
     vendor_name: Optional[str]
     doc_type: str
     field_hints: dict[str, FieldHint] = field(default_factory=dict)
+    line_item_hints: Optional[LineItemHints] = None
     success_count: int = 0
     correction_count: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

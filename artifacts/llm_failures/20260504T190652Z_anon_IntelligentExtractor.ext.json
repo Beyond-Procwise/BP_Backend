@@ -1,0 +1,18 @@
+{
+  "ts": "20260504T190652Z",
+  "site": "IntelligentExtractor.extract.retry_parse_failed",
+  "model": "BeyondProcwise/AgentNick:extract",
+  "doc_type": "Invoice",
+  "file_path": "",
+  "prompt_chars": 5827,
+  "prompt_head": "You are ProcWise, an expert procurement document extraction system.\nExtract ALL data from this Invoice document with absolute accuracy.\n\nPROCUREMENT CONTEXT \u2014 INVOICE:\nAn invoice is a payment request from a SUPPLIER to a BUYER for goods/services delivered.\n- supplier_id / supplier_name: The COMPANY NAME that ISSUED this invoice (the SELLER). Look for \"From\", \"Vendor\", \"Supplier\", company letterhead at the TOP. Extract ONLY the company name \u2014 never an address, department, or person's name.\n- buyer_id: The COMPANY NAME being BILLED. Look for \"Bill To\", \"Invoice To\", \"Customer\". Must be a company name (e.g., \"Assurity Ltd\"). If \"Bill To\" only shows a department or address, look for the company name elsewhere in the document. NEVER put an address in buyer_id.\n- country, region: Extract from th",
+  "prompt_tail": " Ballpoint Pen \u00a312.49 100 \u00a31,249.00\n3M Adhesive Tape \u00a313.99 15 \u00a3209.85\nFaber-Castell A4 Ruled \u00a310.10 100 \u00a31,010.00\nPilot Ballpoint Pen \u00a317.89 20 \u00a3357.80\nSub-Total \u00a32,826.65\nTax (20%) \u00a3565.33\nTOTAL \u00a33,391.98\nPAYABLE TO: NOTES:\nPerry Ltd\n54 Hawthorne Industrial Estate\nWest Yorkshire, LS10 1QP\nBank: Rolands Ltd\nAccount No: 0133 364 8146\n030-856-2845 perryoffice.co.uk billing@perryoffice.co.uk\n\nIMPORTANT \u2014 Your previous extraction had these errors:\n  - MISSING_FIELD: invoice_id is empty\n  - MISSING_FIELD: supplier_id is empty\n\nPlease correct these issues. Pay careful attention to:\n- Extract line_total / line_amount as written in the document, do NOT compute\n- Ensure you capture ALL line items (count them in the source)\n- Do not duplicate any line items\n- Verify supplier vs buyer identification",
+  "response_chars": 269,
+  "response": ": extract fields from the top of the document (header) and item rows respectively\n\nExtract all fields with 100% accuracy. Deduplicate: if same field appears twice (watermarks/split pages), extract ONLY ONCE\nReturn ONLY valid JSON: {\"header\": {...}, \"line_items\": [...]}",
+  "response_truncated": false,
+  "error_type": null,
+  "error_message": null,
+  "extra": {
+    "critical_count": 2
+  }
+}

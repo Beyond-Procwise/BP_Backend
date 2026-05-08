@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"SupplierRankingAgent\", \"description\": \"Ranks suppliers based on policies, performance data, and configurable criteria weights.\", \"dependencies\": [\"prompt_engine\", \"policy_engine\", \"query_engine\"], \"workflow\": \"supplier_ranking\"}, \"policies\": []}",
+  "response": "{\"skipped\": true, \"reason\": \"missing_supplier_id\", \"agentic_plan\": \"1. Aggregate spend, contract, invoice, and supplier datasets relevant to the workflow scope.\\n2. Run heuristics and ML signals to detect anomalies, policy gaps, and savings opportunities.\\n3. Prioritise opportunities with structured context and recommend follow-up actions for downstream agents.\", \"context_snapshot\": {\"workflow_id\": \"e29f6832-8267-4f6d-8ea4-d249383180ff\", \"agent_id\": \"opportunity_miner\", \"user_id\": \"AgentNick\", \"manifest\": {\"task\": {\"agent_type\": \"SupplierRankingAgent\", \"description\": \"Ranks suppliers based on policies, performance data, and configurable criteria weights.\", \"dependencies\": [\"prompt_engine\", \"policy_engine\", \"query_engine\"], \"workflow\": \"supplier_ranking\"}, \"policies\": []}}, \"action_id\": \"452f3d0a-2427-46c3-a5dc-f0a60c394651\"}",
+  "metadata": {
+    "workflow_id": "e29f6832-8267-4f6d-8ea4-d249383180ff",
+    "agent_id": "opportunity_miner",
+    "agent_name": "OpportunityMinerAgent"
+  }
+}

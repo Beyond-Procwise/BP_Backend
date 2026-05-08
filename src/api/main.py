@@ -10,11 +10,20 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 os.environ.setdefault("OLLAMA_USE_GPU", "1")
 os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
+# Reduce peak CUDA-alloc fragmentation so a fresh start succeeds even when
+# the prior process hasn't finished releasing memory yet (per PyTorch's own
+# recommendation in OutOfMemoryError messages).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Force HuggingFace libraries to use local cached models only - no HTTP calls
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+
+# Suppress progress bars that journald renders as `[197B blob data]` lines.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -35,13 +44,19 @@ from agents.email_dispatch_agent import EmailDispatchAgent
 from agents.negotiation_agent import NegotiationAgent
 from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
-from api.routers import agents as agents_router_mod, documents, email, run, stream, system, training, vendors, workflows
+from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
                     handlers=[logging.StreamHandler(), logging.FileHandler(os.path.join(LOG_DIR, "procwise.log"))])
 logger = logging.getLogger(__name__)
+
+# Quiet noisy upstream loggers that emit at INFO/WARNING for harmless events.
+# - neo4j.notifications: schema "index already exists" notices on every KG sync.
+# - absl: LangExtract few-shot prompt-template self-alignment warnings.
+logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
+logging.getLogger("absl").setLevel(logging.ERROR)
 
 
 class ProcwiseAppState(Protocol):
@@ -80,7 +95,7 @@ async def lifespan(app: FastAPI):
                 try:
                     agents_dict[agent_id] = auto_registry.get_agent(agent_id)
                 except Exception:
-                    logger.warning("Failed to instantiate agent: %s", agent_id)
+                    logger.exception("Failed to instantiate agent: %s", agent_id)
         agent_nick.agents = AgentRegistry(agents_dict)
         agent_nick.agents.add_aliases({
             "DataExtractionAgent": "data_extraction",
@@ -116,6 +131,39 @@ async def lifespan(app: FastAPI):
         if not existing:
             seed_patterns(pattern_service)
             logger.info("Seeded initial procurement patterns")
+
+        # Configure the durable vendor-template store. The orchestrator
+        # uses this to override LLM hallucinations on supplier_name etc.
+        # for known vendor layouts and to learn templates from successful
+        # extractions.
+        try:
+            from services.db import get_conn as _db_get_conn
+            from src.services.extraction_v2.template_service import (
+                configure_template_service,
+            )
+            configure_template_service(get_conn=_db_get_conn)
+            logger.info("Vendor template service initialized (Postgres-backed)")
+        except Exception:
+            logger.exception(
+                "Vendor template service init failed — "
+                "falling back to in-memory; template learning will not persist"
+            )
+
+        # Ensure provenance sidecar schema exists.
+        try:
+            from services.db import get_conn as _prov_db_get_conn
+            from src.services.extraction_v2.provenance import DDL as _PROV_DDL
+            with _prov_db_get_conn() as _pconn:
+                with _pconn.cursor() as _pcur:
+                    _pcur.execute(_PROV_DDL)
+                _pconn.commit()
+            logger.info("Extraction provenance schema ensured")
+        except Exception:
+            logger.exception(
+                "Extraction provenance schema init failed — "
+                "per-field provenance writes will silently no-op"
+            )
+
         state.agent_nick = agent_nick
         state.model_training_endpoint = ModelTrainingEndpoint(agent_nick)
         orchestrator = Orchestrator(
@@ -186,6 +234,24 @@ async def lifespan(app: FastAPI):
         state.agent_registry = None
     if hasattr(state, "model_training_endpoint"):
         state.model_training_endpoint = None
+
+    # Release CUDA memory before exiting so the next systemd-restarted
+    # uvicorn process can claim the VRAM without an OutOfMemory at boot.
+    try:
+        import gc
+        gc.collect()
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            logger.info(
+                "CUDA cache released on shutdown (allocated=%.2fGiB reserved=%.2fGiB)",
+                torch.cuda.memory_allocated() / 1024**3,
+                torch.cuda.memory_reserved() / 1024**3,
+            )
+    except Exception:
+        logger.debug("CUDA cleanup on shutdown skipped", exc_info=True)
+
     logger.info("API shutting down.")
 
 app = FastAPI(title="ProcWise API v4 (Definitive)", version="4.0", lifespan=lifespan)
@@ -200,9 +266,23 @@ app.include_router(run.router)
 app.include_router(stream.router)
 app.include_router(training.router)
 app.include_router(vendors.build_router())
+app.include_router(metrics.router)
 
 @app.get("/", tags=["General"])
 def read_root(): return {"message": "Welcome to the ProcWise Agentic System API"}
+
+
+@app.get("/health", tags=["General"])
+def health():
+    state = app.state
+    initialized = bool(getattr(state, "agent_nick", None))
+    return {
+        "status": "ok" if initialized else "starting",
+        "agent_nick": initialized,
+        "orchestrator": bool(getattr(state, "orchestrator", None)),
+        "email_watcher_service": bool(getattr(state, "email_watcher_service", None)),
+        "process_monitor_watcher": bool(getattr(state, "process_monitor_watcher", None)),
+    }
 
 if __name__ == "__main__":
     uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)

@@ -41,21 +41,31 @@ def ollama_generate(
     num_predict: int = 8192,
     num_gpu: int = 99,
     retries: int = MAX_RETRIES,
+    stop: Optional[list] = None,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
     Returns the response text, or None on failure.
+
+    ``stop`` is forwarded as the Ollama ``stop`` option. Useful for
+    extraction prompts where the fine-tuned model can drift into
+    multi-turn output ("{\"user\":...{\"assistant\":..."); stopping at
+    the first ``"\n}\n\n{"`` boundary or a ``{"user":`` literal cuts the
+    runaway off after the first valid JSON object.
     """
     model = model or DEFAULT_MODEL
+    options: Dict[str, Any] = {
+        "temperature": temperature,
+        "num_predict": num_predict,
+        "num_gpu": num_gpu,
+    }
+    if stop:
+        options["stop"] = stop
     payload: Dict[str, Any] = {
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {
-            "temperature": temperature,
-            "num_predict": num_predict,
-            "num_gpu": num_gpu,
-        },
+        "options": options,
     }
 
     for attempt in range(1, retries + 1):
@@ -114,6 +124,16 @@ def ollama_generate(
                 _semaphore.release()
 
     logger.error("Ollama request failed after %d attempts (model=%s)", retries, model)
+    try:
+        from services.llm_diagnostics import capture_llm_failure
+        capture_llm_failure(
+            site="ollama_generate.exhausted",
+            prompt=prompt, raw_response="",
+            model=model,
+            extra={"retries_attempted": retries, "num_predict": num_predict},
+        )
+    except Exception:
+        pass
     return None
 
 

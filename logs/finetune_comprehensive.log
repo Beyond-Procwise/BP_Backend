@@ -1,0 +1,24 @@
+2026-04-15 18:16:11,547 INFO === AgentNick Comprehensive Fine-tuning (CPU offload) ===
+2026-04-15 18:16:20,434 INFO Loaded 112 examples
+Map:   0%|          | 0/112 [00:00<?, ? examples/s]Map: 100%|██████████| 112/112 [00:00<00:00, 8330.15 examples/s]
+2026-04-15 18:16:20,462 INFO Loading model with CPU offload...
+Traceback (most recent call last):
+  File "<string>", line 53, in <module>
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/transformers/models/auto/auto_factory.py", line 604, in from_pretrained
+    return model_class.from_pretrained(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/transformers/modeling_utils.py", line 277, in _wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/transformers/modeling_utils.py", line 5029, in from_pretrained
+    device_map = _get_device_map(model, device_map, max_memory, hf_quantizer, dtype, keep_in_fp32_regex)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/transformers/modeling_utils.py", line 1336, in _get_device_map
+    inferred_max_memory = get_balanced_memory(
+                          ^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/accelerate/utils/modeling.py", line 956, in get_balanced_memory
+    max_memory = get_max_memory(max_memory)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/accelerate/utils/modeling.py", line 847, in get_max_memory
+    raise ValueError(
+ValueError: Device 0 is not recognized, available devices are integers(for GPU/XPU), 'mps', 'cpu' and 'disk'

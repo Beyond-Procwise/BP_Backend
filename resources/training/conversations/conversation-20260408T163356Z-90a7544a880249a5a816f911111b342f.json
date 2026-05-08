@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {}, \"policies\": []}",
+  "response": "{\"mismatches\": [{\"doc_type\": \"Invoice\", \"id\": \"INV-2025-056\", \"checks\": {\"vendor_name\": \"missing\"}}], \"summary\": {\"documents_processed\": 1, \"documents_successful\": 0, \"documents_with_issues\": 1}, \"agentic_plan\": \"1. Review extracted documents and ingestion warnings from upstream agents.\\n2. Cross-check key header fields against warehouse tables to detect mismatches.\\n3. Log discrepancies with remediation guidance for downstream review.\", \"context_snapshot\": {\"workflow_id\": \"3a189212-720a-4e01-aa2c-75d93bcb79b4\", \"agent_id\": \"discrepancy_detection\", \"user_id\": \"AgentNick\", \"manifest\": {\"task\": {}, \"policies\": []}}, \"action_id\": \"a7d93f1d-0556-4c0e-968a-1a88d6269c35\"}",
+  "metadata": {
+    "workflow_id": "3a189212-720a-4e01-aa2c-75d93bcb79b4",
+    "agent_id": "discrepancy_detection",
+    "agent_name": "DiscrepancyDetectionAgent"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {}, \"policies\": []}",
+  "response": "<p>Dear Supplier Partner,</p><p>Thank you for your quotation. We&#x27;ve reviewed your proposal and would like to discuss the commercial terms to find a mutually beneficial arrangement.</p><p><strong>Commercial Position:</strong></p><p><strong>Commercial Levers:</strong></p><p>To facilitate an agreement, we can offer:</p><ul><li>24-month contract commitment (from 12 months)</li><li>Net-15 payment terms with 2% early payment discount</li></ul><p><strong>Key Requirements:</strong></p><ul><li>Confirm unit price, currency, tiered price @ 100/250/500.</li></ul><p><strong>Next Steps:</strong></p><p>We&#x27;d appreciate your thoughts on how we might bridge this gap using the levers above. Please share your revised proposal by next Friday.</p><p>We value this partnership and look forward to finding a mutually beneficial path forward.</p><p>Best regards,</p><p>Procurement Team</p>\n\n<!-- PROCWISE_MARKER:TRACKING:wf1-SUP-798CBEE77B|SUPPLIER:SUP-798CBEE77B|TOKEN:60B83BDA6147 -->",
+  "metadata": {
+    "workflow_id": "wf1",
+    "agent_id": "EmailDraftingAgent",
+    "agent_name": "EmailDraftingAgent"
+  }
+}

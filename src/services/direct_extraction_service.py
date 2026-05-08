@@ -30,6 +30,30 @@ logger = logging.getLogger(__name__)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 EXTRACTION_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:extract")
 
+# Cache of character_maximum_length per table — avoids repeated information_schema
+# queries and lets us truncate varchar values before INSERT so that a single
+# over-length field (e.g. verbose payment_terms into varchar(30)) does not
+# cause the entire header row to be rejected.
+_VARCHAR_LIMITS: Dict[str, Dict[str, int]] = {}
+
+
+def _get_varchar_limits(cur, schema_name: str, table_name: str) -> Dict[str, int]:
+    """Return {col_name: max_length} for varchar columns of a table. Cached."""
+    key = f"{schema_name}.{table_name}"
+    cached = _VARCHAR_LIMITS.get(key)
+    if cached is not None:
+        return cached
+    cur.execute(
+        "SELECT column_name, character_maximum_length "
+        "FROM information_schema.columns "
+        "WHERE table_schema=%s AND table_name=%s "
+        "AND character_maximum_length IS NOT NULL",
+        (schema_name, table_name),
+    )
+    limits = {name: int(length) for name, length in cur.fetchall()}
+    _VARCHAR_LIMITS[key] = limits
+    return limits
+
 # Exact table schemas from the database — source of truth
 TABLE_SCHEMAS = {
     "Invoice": {
@@ -216,8 +240,10 @@ class DirectExtractionService:
             len(text), file_path, doc_type,
         )
 
-        # Step 2: Send to LLM with exact schema
-        extraction = self._llm_extract(text, doc_type, schema)
+        # Step 2: Send to LLM with exact schema. Filename is passed so the
+        # prompt can warn the model not to capture filename fragments as
+        # supplier_name/buyer_id (a common failure mode).
+        extraction = self._llm_extract(text, doc_type, schema, file_path=file_path)
         if not extraction:
             return {
                 "status": "error",
@@ -889,32 +915,113 @@ class DirectExtractionService:
             except Exception:
                 logger.debug("easyOCR failed for image", exc_info=True)
 
-            # Step 4: Pick the best result (most content with readable structure)
+            # Step 4: Add a sparse-text pass (PSM 11) — designed for
+            # isolated text blocks like document headers and banners that
+            # the block-mode passes (PSM 6/4/3) often miss.
+            try:
+                pil_gray2 = Image.fromarray(denoised)
+                text_d = pytesseract.image_to_string(
+                    pil_gray2, config="--psm 11 --oem 3"
+                )
+                if text_d.strip():
+                    results.append(("tesseract_psm11_sparse", text_d.strip()))
+            except Exception:
+                pass
+
+            # Step 5: Merge complementary results instead of picking one
+            # winner. Single-best discarded content other engines captured —
+            # in the HR invoice case the top banner (invoice_id, supplier
+            # name) was extracted by PSM3 but PSM6 had more lines so PSM6
+            # won and the banner was lost.
             if not results:
                 logger.warning("All OCR engines produced no text from image")
                 return ""
 
-            # Score each result: prefer more lines, more alphanumeric chars, fewer garbage chars
-            def _score(text: str) -> float:
-                lines = len(text.split("\n"))
-                alnum = sum(1 for c in text if c.isalnum())
-                total = len(text) or 1
-                alnum_ratio = alnum / total
-                return lines * alnum_ratio * len(text)
-
-            best_method, best_text = max(results, key=lambda r: _score(r[1]))
+            merged_text = self._merge_ocr_results(results)
+            method_summary = ",".join(name for name, _ in results)
             logger.info(
-                "Image OCR: best method=%s (%d chars, %d lines)",
-                best_method, len(best_text), len(best_text.split("\n")),
+                "Image OCR: merged %d engines (%s) → %d chars, %d lines",
+                len(results), method_summary,
+                len(merged_text), len(merged_text.split("\n")),
             )
             # Post-process: mark line item boundaries in OCR text
             # so multi-line descriptions don't merge across items
-            best_text = self._mark_ocr_line_items(best_text)
-            return best_text
+            merged_text = self._mark_ocr_line_items(merged_text)
+            return merged_text
 
         except Exception:
             logger.warning("Image text extraction failed", exc_info=True)
         return ""
+
+    # Procurement-domain keywords used to score OCR results: outputs that
+    # capture more of these signal that the document content was actually
+    # read (vs. an output dominated by garbage/noise that happens to have
+    # a high line count).
+    _PROC_KEYWORDS = (
+        "invoice", "quote", "purchase", "order", "po no", "po number",
+        "bill to", "ship to", "supplier", "vendor", "buyer",
+        "subtotal", "total", "tax", "vat", "net", "due",
+        "payment terms", "currency", "ref", "no.", "date",
+        "qty", "quantity", "description", "unit price", "amount", "line total",
+    )
+
+    @classmethod
+    def _proc_keyword_count(cls, text: str) -> int:
+        low = text.lower()
+        return sum(1 for kw in cls._PROC_KEYWORDS if kw in low)
+
+    @classmethod
+    def _merge_ocr_results(cls, results: list) -> str:
+        """Merge multiple OCR results into a single deduplicated text.
+
+        Strategy:
+        1. Pick the result with the highest procurement-keyword density as
+           the structural skeleton (preserves reading order best for tables).
+        2. Walk the other results line by line; append any line whose
+           normalized form is not already present in the skeleton.
+
+        This way a banner caught only by PSM3 gets appended even if PSM6
+        is the structural winner.
+        """
+        if not results:
+            return ""
+        if len(results) == 1:
+            return results[0][1]
+
+        def _score(text: str) -> tuple:
+            kw = cls._proc_keyword_count(text)
+            lines = text.count("\n") + 1
+            alnum = sum(1 for c in text if c.isalnum()) or 1
+            return (kw, lines, alnum)
+
+        ranked = sorted(results, key=lambda r: _score(r[1]), reverse=True)
+        skeleton = ranked[0][1]
+        seen_lines = {cls._normalize_ocr_line(l) for l in skeleton.split("\n")}
+        seen_lines.discard("")
+        extra_lines: list[str] = []
+
+        for _name, txt in ranked[1:]:
+            for line in txt.split("\n"):
+                norm = cls._normalize_ocr_line(line)
+                if not norm or len(norm) < 3:
+                    continue
+                if norm in seen_lines:
+                    continue
+                # Skip lines that are a subsequence of an existing one
+                if any(norm in s for s in seen_lines):
+                    continue
+                seen_lines.add(norm)
+                extra_lines.append(line.strip())
+
+        if not extra_lines:
+            return skeleton
+        return skeleton + "\n--- merged from secondary OCR engines ---\n" + "\n".join(extra_lines)
+
+    @staticmethod
+    def _normalize_ocr_line(line: str) -> str:
+        """Lowercase, collapse whitespace, strip non-alphanumeric for dedup."""
+        import re as _re
+        return _re.sub(r"\s+", " ", _re.sub(r"[^a-z0-9 ]", "", line.lower())).strip()
 
     @staticmethod
     def _mark_ocr_line_items(text: str) -> str:
@@ -1157,29 +1264,93 @@ class DirectExtractionService:
     # LLM extraction
     # ------------------------------------------------------------------
     def _llm_extract(
-        self, text: str, doc_type: str, schema: Dict
+        self, text: str, doc_type: str, schema: Dict,
+        *, file_path: str = "",
     ) -> Optional[Dict[str, Any]]:
         """Send document text + exact schema to AgentNick for extraction."""
         header_cols = list(schema["header_columns"].keys())
         line_cols = list(schema.get("line_columns", {}).keys())
 
         prompt = self._build_extraction_prompt(
-            text, doc_type, header_cols, line_cols, schema
+            text, doc_type, header_cols, line_cols, schema,
+            file_path=file_path,
         )
 
         try:
+            from services.llm_diagnostics import capture_llm_failure
             from services.ollama_client import ollama_generate
+            # Stop sequences cut off the fine-tuned model when it tries
+            # to emit a second turn ("{\"user\":..."). Without these, the
+            # model regenerates training-template multi-turn JSON that
+            # overflows num_predict and corrupts the parser.
+            extraction_stops = [
+                '\n{"user":', '{"user":', '\n{"prompt":', '{"prompt":',
+                "\n[INST]", "[/INST]\n",
+            ]
             raw = ollama_generate(
                 prompt,
                 model=EXTRACTION_MODEL,
-                num_predict=4096,
+                num_predict=8192,
+                stop=extraction_stops,
             )
             if not raw:
                 logger.error("LLM extraction returned empty response")
+                capture_llm_failure(
+                    site="_llm_extract.empty",
+                    prompt=prompt, raw_response=raw or "",
+                    doc_type=doc_type, file_path=file_path, model=EXTRACTION_MODEL,
+                )
                 return None
-            return self._parse_llm_response(raw, schema)
+            parsed = self._parse_llm_response(raw, schema)
+            if parsed is not None:
+                return parsed
+            # JSON parse failed on first pass. Retry once with an explicit
+            # reminder — model output is stochastic and a second generation
+            # at temperature=0 often produces valid JSON when the first didn't.
+            logger.warning(
+                "LLM returned non-JSON on first pass — retrying with strict prompt"
+            )
+            capture_llm_failure(
+                site="_llm_extract.first_pass_non_json",
+                prompt=prompt, raw_response=raw,
+                doc_type=doc_type, file_path=file_path, model=EXTRACTION_MODEL,
+            )
+            strict_prompt = prompt + (
+                "\n\nIMPORTANT: Your previous response was not valid JSON. "
+                "Return ONLY a JSON object matching the structure above. "
+                "No markdown, no commentary, no code fences. "
+                "The first character of your response MUST be '{' and the last MUST be '}'."
+            )
+            raw2 = ollama_generate(
+                strict_prompt,
+                model=EXTRACTION_MODEL,
+                num_predict=8192,
+                stop=extraction_stops,
+            )
+            if raw2:
+                parsed2 = self._parse_llm_response(raw2, schema)
+                if parsed2 is not None:
+                    logger.info("LLM JSON-retry succeeded")
+                    return parsed2
+            logger.error("LLM JSON-retry also failed — giving up")
+            capture_llm_failure(
+                site="_llm_extract.retry_failed",
+                prompt=strict_prompt, raw_response=raw2 or "",
+                doc_type=doc_type, file_path=file_path, model=EXTRACTION_MODEL,
+                extra={"first_pass_response_chars": len(raw)},
+            )
+            return None
         except Exception as exc:
             logger.exception("LLM extraction failed: %s", exc)
+            try:
+                from services.llm_diagnostics import capture_llm_failure
+                capture_llm_failure(
+                    site="_llm_extract.exception",
+                    prompt=prompt, error=exc,
+                    doc_type=doc_type, file_path=file_path, model=EXTRACTION_MODEL,
+                )
+            except Exception:
+                pass
             return None
 
     # Procurement domain context per document type
@@ -1243,12 +1414,17 @@ A contract is a binding agreement between parties for goods/services over a peri
         header_cols: List[str],
         line_cols: List[str],
         schema: Dict,
+        *,
+        file_path: str = "",
     ) -> str:
         """Build a procurement-intelligent extraction prompt.
 
         Embeds deep domain knowledge about procurement document types,
         field semantics, and column-mapping rules so the LLM understands
-        the business context and maps fields correctly.
+        the business context and maps fields correctly. The FORBIDDEN
+        VALUES section encodes failure modes observed in production
+        (filename-as-supplier, doc-label-as-supplier, address-as-buyer,
+        PO-number-as-buyer) so the model rejects them at generation time.
         """
         # Filter out audit/system columns the LLM shouldn't extract
         _SKIP_COLS = {
@@ -1271,6 +1447,25 @@ A contract is a binding agreement between parties for goods/services over a peri
 
         context = self._PROCUREMENT_CONTEXT.get(doc_type, "")
 
+        # Filename hint — the model should NEVER capture filename text as
+        # a field value (common failure mode: "Quote_Scenario_" stored as
+        # supplier_name). Only show the filename when one is available.
+        filename = ""
+        if file_path:
+            import os as _os
+            filename = _os.path.basename(file_path)
+
+        filename_warning = ""
+        if filename:
+            filename_warning = (
+                f"\n\nFILENAME (for context only — DO NOT extract values from this string):\n"
+                f"  {filename}\n"
+                f"The filename often contains the supplier code or document number. "
+                f"You MUST find these values in the document body itself, not by parsing "
+                f"the filename. If a value is ONLY in the filename and nowhere in the "
+                f"body, OMIT the field — do not extract from filename."
+            )
+
         return f"""You are ProcWise, an expert procurement document extraction system.
 Extract ALL data from this {doc_type} document with absolute accuracy.
 
@@ -1279,7 +1474,51 @@ Extract ALL data from this {doc_type} document with absolute accuracy.
 DATABASE COLUMNS — use these EXACT field names in your JSON response:
 HEADER FIELDS:
 {header_spec}
-{line_spec}
+{line_spec}{filename_warning}
+
+FORBIDDEN VALUES — these patterns are extraction errors. NEVER write them:
+
+  supplier_name / supplier_id / buyer_id MUST be a real company name.
+  WRONG examples (real failures we have seen — refuse these):
+    × "Invoice"               (this is a document-type label, not a company)
+    × "Property Invoice"      (still a label)
+    × "Quote"                 (label)
+    × "Resource Rate Card"    (template name)
+    × "INVOICENO: 132666"     (label glued to a number)
+    × "Quote_Scenario_"       (filename fragment with trailing _)
+    × "Po5205561_Watermark_Less Items_No Vat_Duplicate"  (filename)
+    × "Office Clean_"         (filename fragment)
+    × "10 Redkiln Way Horsham RH13 5QH"  (this is an ADDRESS, not a company)
+    × "PO526809"              (this is a PO number, not a buyer)
+    × "Dana Parker DDS"       (person + professional title — extract company instead)
+    × "12345678"              (just digits — never a company)
+    × "RH13 5QH"              (postcode — never a company)
+
+  RIGHT examples — these look like real companies and are acceptable:
+    ✓ "TechWorld Ltd"
+    ✓ "Eleanor Price Creative Studio"
+    ✓ "PeopleFirst HR Solutions Ltd"
+    ✓ "Dixon, Reynolds and Solomon"
+    ✓ "City of Newport"
+
+  po_id (on Invoice/Quote) MUST be a PO reference like "PO12345" or "PO-2024-001".
+  WRONG: "3", "INV600820" (that's an invoice ID), "{{invoice_id}}" (self-reference)
+  RIGHT: "PO526809", "PO-2024-001"
+
+  payment_terms MUST be a recognized term form, NOT a fragment.
+  WRONG: "90", "&", "Payments", "Full", "Net" (truncated), "& Conditions"
+  RIGHT: "Net 30", "Net 14", "Due on Receipt", "COD"
+  If the document says "Payment must be made within 30 days" → write "Net 30".
+  If unclear, OMIT.
+
+  tax_percent MUST be 0-30. Most invoices show 20% (UK VAT) or 0%. Anything ≥50 is wrong.
+  WRONG: 100, 80, 50  (you have confused tax_amount with tax_percent)
+  RIGHT: 0, 5, 10, 20
+
+  tax_amount MUST be smaller than the subtotal. tax_amount cannot equal subtotal.
+  If subtotal=£1,240 and you see "£1,240" next to "Tax" — that's the SUBTOTAL repeated, not tax.
+
+  Dates MUST be in 2000-2030. Anything in 2099 is wrong.
 
 CRITICAL RULES:
 1. EXTRACT EXACTLY what the document says — never invent, guess, or compute values
@@ -1292,14 +1531,22 @@ CRITICAL RULES:
 8. Line items: extract EVERY line item row. STOP at subtotal/total/tax summary rows — those are NOT line items. Rows with quantity=0 or total=0 with no description should be SKIPPED
 9. quantity: a COUNT of items (typically small: 1, 2, 5, 10, 100). NOT a price or amount
 10. unit_price: cost PER SINGLE ITEM. NOT the total line amount
-11. line_amount / line_total: the total for that line as WRITTEN in the document. Do NOT compute quantity × unit_price — extract the actual total value shown. If the document says line_total is 31500, extract 31500 even if qty × price gives a different number
+11. line_amount / line_total: the total for that line as WRITTEN in the document. Do NOT compute quantity × unit_price — extract the actual total value shown
 12. The SUPPLIER/VENDOR is the company that ISSUED/SENT this document — their name/logo/address is at the TOP
 13. The BUYER is the company RECEIVING the document — look for "Prepared For", "Bill To", "Customer", "Ship To"
-17. DEDUPLICATION: If the same line item appears more than once (duplicate tables from watermarks or split pages), extract it ONLY ONCE. Compare descriptions — identical rows should not be repeated
-18. MULTI-LINE DESCRIPTIONS: In scanned/OCR documents, item descriptions often wrap across multiple lines. A new line item starts when you see a QUANTITY NUMBER at the beginning of a line (e.g., "1 Product Name", "2 Service Description"). Lines WITHOUT a leading quantity number are continuations of the previous item's description. Count the quantity numbers to determine how many line items exist
-14. item_id: If the document shows a product code, SKU, part number, catalog number, or item reference for a line item, extract it as item_id. Look for columns like "Item Code", "SKU", "Part No", "Product Code", "Ref", "Item #". If no product code exists in the document, OMIT item_id
-15. unit_of_measure: Extract the unit if present (e.g., "each", "box", "kg", "hours", "months", "days", "per annum", "set", "licence"). Look for columns like "UOM", "Unit", "Measure". If not explicitly stated, OMIT — do not guess
-16. For EXCEL/spreadsheet documents: The "DOCUMENT METADATA" section above the table contains header information (supplier company, buyer, dates, quote/PO number). The "LINE ITEMS TABLE" section contains products/services with column-labeled values. Extract header fields from metadata and line items from the table. The "TOTALS" section has subtotal, tax, and total values
+14. item_id: If the document shows a product code, SKU, part number, catalog number, or item reference for a line item, extract it as item_id. If no product code exists, OMIT item_id
+15. unit_of_measure: Extract the unit if present (e.g., "each", "box", "kg", "hours", "months"). If not explicitly stated, OMIT — do not guess
+16. For EXCEL/spreadsheet documents: The "DOCUMENT METADATA" section above the table contains header information; the "LINE ITEMS TABLE" section contains products/services; the "TOTALS" section has subtotal, tax, and total values
+17. DEDUPLICATION: If the same line item appears more than once (duplicate tables from watermarks or split pages), extract it ONLY ONCE
+18. MULTI-LINE DESCRIPTIONS: In scanned/OCR documents, item descriptions often wrap across multiple lines. A new line item starts when you see a QUANTITY NUMBER at the beginning of a line. Lines WITHOUT a leading quantity number are continuations of the previous item's description
+
+SELF-CHECK before responding:
+  □ Does each supplier_name / buyer_id appear at least once in the DOCUMENT BODY (not headers/footers/filename)?
+  □ Does invoice_amount + tax_amount = invoice_total_incl_tax (within 1.00)?
+  □ Is tax_percent between 0 and 30?
+  □ Is each date in YYYY-MM-DD format and between 2000 and 2030?
+  □ If you cannot find a field, did you OMIT it (rather than fabricate a value)?
+  □ For each FORBIDDEN example above — did you avoid that pattern?
 
 RESPONSE — return ONLY this JSON structure, nothing else:
 {{
@@ -1313,27 +1560,22 @@ DOCUMENT TEXT:
     def _parse_llm_response(
         self, raw: str, schema: Dict
     ) -> Optional[Dict[str, Any]]:
-        """Parse LLM JSON response, handling markdown code blocks."""
-        # Strip markdown code fences
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
-            cleaned = re.sub(r"\n?```\s*$", "", cleaned)
-
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Try to find JSON object in the response
-            match = re.search(r"\{[\s\S]*\}", cleaned)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    logger.error("Failed to parse LLM response as JSON")
-                    return None
-            else:
-                logger.error("No JSON found in LLM response")
-                return None
+        """Parse LLM JSON response, handling markdown code blocks and
+        truncation via the tolerant parser."""
+        from services.tolerant_json import parse_tolerant
+        result = parse_tolerant(raw)
+        if result.data is None:
+            logger.error(
+                "Failed to parse LLM response as JSON (recovery_ops=%s)",
+                result.recovery_ops,
+            )
+            return None
+        if result.recovered:
+            logger.warning(
+                "LLM response required recovery — completeness=%.2f ops=%s",
+                result.completeness, result.recovery_ops,
+            )
+        data = result.data
 
         header = data.get("header", {})
         line_items = data.get("line_items", [])
@@ -1393,6 +1635,18 @@ DOCUMENT TEXT:
             conn = self._agent_nick.get_db_connection()
             conn.autocommit = True
             with conn.cursor() as cur:
+                # Enforce varchar length limits — truncate values that would
+                # otherwise trigger StringDataRightTruncation and drop the row.
+                limits = _get_varchar_limits(cur, schema_name, table_name)
+                for col, max_len in limits.items():
+                    v = payload.get(col)
+                    if isinstance(v, str) and len(v) > max_len:
+                        logger.warning(
+                            "Truncating %s.%s from %d to %d chars: %r",
+                            table, col, len(v), max_len, v,
+                        )
+                        payload[col] = v[:max_len]
+
                 col_names = list(payload.keys())
                 placeholders = ["%s"] * len(col_names)
                 values = [payload[c] for c in col_names]

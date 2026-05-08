@@ -1,0 +1,470 @@
+#!/usr/bin/env bash
+# ============================================================================
+# procwise — Single entry point for ProcWise Agentic System
+#
+# Usage:
+#   ./procwise start        Start all infrastructure + API server
+#   ./procwise stop         Stop API server + infrastructure
+#   ./procwise restart      Stop then start
+#   ./procwise status       Health check all components
+#   ./procwise logs         Tail live logs
+#   ./procwise install      Install as systemd service (requires sudo)
+# ============================================================================
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$SCRIPT_DIR/procurement_knowledge_graph/docker-compose.yml"
+ENV_FILE="$SCRIPT_DIR/.env"
+VENV_DIR="$SCRIPT_DIR/.venv"
+SERVICE_FILE="$SCRIPT_DIR/procwise.service"
+SYSTEMD_TARGET="/etc/systemd/system/procwise.service"
+SRC_DIR="$SCRIPT_DIR/src"
+
+# Uvicorn defaults (overridable via env)
+HOST="${PROCWISE_HOST:-0.0.0.0}"
+PORT="${PROCWISE_PORT:-8000}"
+WORKERS="${PROCWISE_WORKERS:-2}"
+LOG_LEVEL="${PROCWISE_LOG_LEVEL:-info}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+log()  { printf "${CYAN}[%s]${NC} %s\n" "$(date '+%H:%M:%S')" "$*"; }
+ok()   { printf "${GREEN}  ✓${NC} %s\n" "$*"; }
+warn() { printf "${YELLOW}  !${NC} %s\n" "$*"; }
+fail() { printf "${RED}  ✗${NC} %s\n" "$*"; }
+
+check_service() {
+    local name="$1" url="$2" api_key="${3:-}"
+    local headers=()
+    [[ -n "$api_key" ]] && headers=(-H "api-key: $api_key")
+    if curl -sf -o /dev/null --max-time 5 "${headers[@]}" "$url" 2>/dev/null; then
+        ok "$name"
+        return 0
+    else
+        fail "$name (not responding at $url)"
+        return 1
+    fi
+}
+
+wait_for() {
+    local name="$1" url="$2" max="${3:-60}" api_key="${4:-}"
+    local attempt=0 headers=()
+    [[ -n "$api_key" ]] && headers=(-H "api-key: $api_key")
+    until curl -sf -o /dev/null --max-time 5 "${headers[@]}" "$url" 2>/dev/null; do
+        attempt=$((attempt + 1))
+        if [[ $attempt -ge $max ]]; then
+            fail "$name did not start within $((max * 2))s"
+            return 1
+        fi
+        printf "\r  Waiting for %-20s (%d/%d)" "$name" "$attempt" "$max"
+        sleep 2
+    done
+    printf "\r"
+    ok "$name is ready                    "
+    return 0
+}
+
+load_env() {
+    if [[ -f "$ENV_FILE" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE" 2>/dev/null || true
+        set +a
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+preflight() {
+    log "Pre-flight checks"
+    local errors=0
+
+    # Docker
+    if command -v docker &>/dev/null && docker info &>/dev/null; then
+        ok "Docker"
+    else
+        fail "Docker (not running or not installed)"
+        errors=$((errors + 1))
+    fi
+
+    # Python venv
+    if [[ -x "$VENV_DIR/bin/python" ]]; then
+        local pyver
+        pyver=$("$VENV_DIR/bin/python" --version 2>&1)
+        ok "Python venv ($pyver)"
+    else
+        fail "Python venv not found at $VENV_DIR"
+        errors=$((errors + 1))
+    fi
+
+    # GPU (optional)
+    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+        local gpu
+        gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        ok "GPU ($gpu)"
+    else
+        warn "GPU not detected (CPU-only mode)"
+    fi
+
+    # .env file
+    if [[ -f "$ENV_FILE" ]]; then
+        ok ".env file"
+    else
+        fail ".env file not found"
+        errors=$((errors + 1))
+    fi
+
+    # Port available (only when starting)
+    if [[ "${1:-}" == "start" ]]; then
+        if ss -tlnp 2>/dev/null | grep -q ":${PORT} "; then
+            warn "Port $PORT already in use"
+        else
+            ok "Port $PORT available"
+        fi
+    fi
+
+    if [[ $errors -gt 0 ]]; then
+        fail "$errors pre-flight check(s) failed"
+        return 1
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Infrastructure management
+# ---------------------------------------------------------------------------
+infra_up() {
+    log "Starting infrastructure (Docker containers)"
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d 2>&1 | \
+        grep -v "^time=" | grep -v "obsolete" || true
+
+    log "Waiting for services"
+
+    # Postgres — use docker exec for pg_isready
+    local pg_container
+    pg_container=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q postgres 2>/dev/null)
+    if [[ -n "$pg_container" ]]; then
+        local attempt=0
+        until docker exec "$pg_container" pg_isready -U "${POSTGRES_USER:-procwise}" &>/dev/null; do
+            attempt=$((attempt + 1))
+            [[ $attempt -ge 30 ]] && { fail "Postgres"; break; }
+            sleep 2
+        done
+        [[ $attempt -lt 30 ]] && ok "Postgres"
+    else
+        # Using remote RDS — skip docker postgres check
+        ok "Postgres (remote RDS)"
+    fi
+
+    # Neo4j
+    wait_for "Neo4j" "http://localhost:7474" 30
+
+    # Qdrant (local — cloud Qdrant verified separately)
+    local qdrant_container
+    qdrant_container=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q qdrant 2>/dev/null)
+    if [[ -n "$qdrant_container" ]]; then
+        wait_for "Qdrant (local)" "http://localhost:6333/healthz" 30
+    fi
+
+    # Ollama
+    wait_for "Ollama" "http://localhost:11434/api/tags" 30
+
+    # Qdrant Cloud (if configured)
+    load_env
+    if [[ -n "${QDRANT_URL:-}" ]] && [[ "$QDRANT_URL" == https://* ]]; then
+        check_service "Qdrant (cloud)" "${QDRANT_URL}/healthz" "${QDRANT_API_KEY:-}" || \
+            warn "Cloud Qdrant not reachable — will retry on first request"
+    fi
+}
+
+infra_down() {
+    log "Stopping infrastructure"
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down 2>&1 | \
+        grep -v "^time=" | grep -v "obsolete" || true
+    ok "Docker containers stopped"
+}
+
+# ---------------------------------------------------------------------------
+# API server management
+# ---------------------------------------------------------------------------
+is_systemd_service() {
+    [[ -f "$SYSTEMD_TARGET" ]] && systemctl is-enabled procwise &>/dev/null
+}
+
+api_start() {
+    if is_systemd_service; then
+        log "Starting API via systemd"
+        sudo systemctl start procwise
+    else
+        log "Starting API directly (use './procwise install' for systemd)"
+        cd "$SRC_DIR"
+        export PYTHONPATH="$SCRIPT_DIR:$SRC_DIR"
+        "$VENV_DIR/bin/uvicorn" api.main:app \
+            --host "$HOST" \
+            --port "$PORT" \
+            --workers "$WORKERS" \
+            --timeout-keep-alive 300 \
+            --log-level "$LOG_LEVEL" &
+        local pid=$!
+        echo "$pid" > "$SCRIPT_DIR/.procwise.pid"
+        ok "API started (PID $pid, $WORKERS workers on port $PORT)"
+        cd "$SCRIPT_DIR"
+    fi
+
+    log "Waiting for API"
+    wait_for "API (port $PORT)" "http://localhost:${PORT}/agents/list" 90
+}
+
+api_stop() {
+    if is_systemd_service; then
+        log "Stopping API via systemd"
+        sudo systemctl stop procwise
+        ok "API stopped"
+    elif [[ -f "$SCRIPT_DIR/.procwise.pid" ]]; then
+        local pid
+        pid=$(cat "$SCRIPT_DIR/.procwise.pid")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            sleep 2
+            kill -9 "$pid" 2>/dev/null || true
+            ok "API stopped (PID $pid)"
+        else
+            warn "PID $pid not running"
+        fi
+        rm -f "$SCRIPT_DIR/.procwise.pid"
+    else
+        # Kill by port
+        local pids
+        pids=$(lsof -ti :"$PORT" 2>/dev/null || true)
+        if [[ -n "$pids" ]]; then
+            echo "$pids" | xargs kill 2>/dev/null || true
+            sleep 2
+            ok "API stopped (port $PORT)"
+        else
+            warn "No API process found on port $PORT"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+cmd_start() {
+    echo ""
+    printf "${BOLD}  ProcWise Agentic System — Starting${NC}\n"
+    echo ""
+    preflight start || exit 1
+    echo ""
+    infra_up
+    echo ""
+    api_start
+    echo ""
+    cmd_status
+}
+
+cmd_stop() {
+    echo ""
+    printf "${BOLD}  ProcWise Agentic System — Stopping${NC}\n"
+    echo ""
+    api_stop
+    echo ""
+    read -rp "  Also stop Docker containers? [y/N] " answer
+    if [[ "${answer,,}" == "y" ]]; then
+        infra_down
+    fi
+    echo ""
+    ok "ProcWise stopped"
+}
+
+cmd_restart() {
+    echo ""
+    printf "${BOLD}  ProcWise Agentic System — Restarting${NC}\n"
+    echo ""
+    api_stop
+    sleep 3
+    infra_up
+    echo ""
+    api_start
+    echo ""
+    cmd_status
+}
+
+cmd_status() {
+    load_env
+    echo ""
+    printf "${BOLD}  ProcWise System Status${NC}\n"
+    echo "  ────────────────────────────────────"
+
+    # API
+    local http_code
+    http_code=$(curl -sf -o /dev/null -w '%{http_code}' "http://localhost:${PORT}/agents/list" 2>/dev/null || echo "000")
+    if [[ "$http_code" == "200" ]]; then
+        local agent_count
+        agent_count=$(curl -sf "http://localhost:${PORT}/agents/list" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d if isinstance(d,list) else d.get('agents',[])))" 2>/dev/null || echo "?")
+        ok "API         HTTP 200  ($agent_count agents, port $PORT)"
+    else
+        fail "API         HTTP $http_code  (port $PORT)"
+    fi
+
+    # Qdrant Cloud
+    if [[ -n "${QDRANT_URL:-}" ]] && [[ "$QDRANT_URL" == https://* ]]; then
+        check_service "Qdrant Cloud" "${QDRANT_URL}/healthz" "${QDRANT_API_KEY:-}"
+    fi
+
+    # Qdrant Local
+    check_service "Qdrant Local" "http://localhost:6333/healthz" || true
+
+    # Ollama
+    if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+        local model_count
+        model_count=$(curl -sf http://localhost:11434/api/tags 2>/dev/null | \
+            python3 -c "import sys,json; print(len(json.load(sys.stdin).get('models',[])))" 2>/dev/null || echo "?")
+        ok "Ollama      $model_count models loaded"
+    else
+        fail "Ollama      (not responding)"
+    fi
+
+    # Neo4j
+    check_service "Neo4j       " "http://localhost:7474" || true
+
+    # Postgres (RDS)
+    if [[ -n "${DB_HOST:-}" ]]; then
+        if PGPASSWORD="${DB_PASSWORD:-}" psql -h "${DB_HOST}" -U "${DB_USER:-}" -d "${DB_NAME:-}" -p "${DB_PORT:-5432}" -c "SELECT 1" &>/dev/null; then
+            ok "Postgres    (${DB_HOST%%.*})"
+        else
+            fail "Postgres    (${DB_HOST%%.*} — connection failed)"
+        fi
+    fi
+
+    # System resources
+    echo ""
+    if is_systemd_service && systemctl is-active procwise &>/dev/null; then
+        local mem cpu workers_count
+        mem=$(systemctl show procwise --property=MemoryCurrent 2>/dev/null | cut -d= -f2)
+        cpu=$(systemctl show procwise --property=CPUUsageNSec 2>/dev/null | cut -d= -f2)
+        workers_count=$(pgrep -c -f "spawn_main.*multiprocessing-fork" 2>/dev/null || echo "?")
+
+        if [[ "$mem" =~ ^[0-9]+$ ]]; then
+            mem="$((mem / 1024 / 1024))MB"
+        fi
+        if [[ "$cpu" =~ ^[0-9]+$ ]]; then
+            cpu="$((cpu / 1000000000))s"
+        fi
+
+        printf "  ${CYAN}Memory:${NC}  %s / 12GB    ${CYAN}CPU:${NC}  %s    ${CYAN}Workers:${NC}  %s\n" \
+            "$mem" "$cpu" "$workers_count"
+    fi
+    echo ""
+}
+
+cmd_logs() {
+    if is_systemd_service; then
+        journalctl -u procwise -f --no-pager --output=cat
+    else
+        tail -f "$SCRIPT_DIR/src/logs/"*.log 2>/dev/null || \
+            warn "No log files found. Use systemd install for journalctl logging."
+    fi
+}
+
+cmd_install() {
+    echo ""
+    printf "${BOLD}  Installing ProcWise as systemd service${NC}\n"
+    echo ""
+
+    if [[ $EUID -ne 0 ]]; then
+        log "Requires sudo. Re-running with sudo..."
+        exec sudo bash "$0" install
+    fi
+
+    # Stop any existing
+    if systemctl is-active procwise &>/dev/null; then
+        log "Stopping existing service"
+        systemctl stop procwise
+    fi
+
+    # GPU driver
+    if command -v nvidia-smi &>/dev/null; then
+        nvidia-smi &>/dev/null || modprobe nvidia 2>/dev/null || true
+    fi
+
+    # Docker group
+    if ! groups muthu 2>/dev/null | grep -q docker; then
+        usermod -aG docker muthu 2>/dev/null || true
+    fi
+
+    # Install
+    cp "$SERVICE_FILE" "$SYSTEMD_TARGET"
+    chmod 644 "$SYSTEMD_TARGET"
+    systemctl daemon-reload
+    systemctl enable procwise
+    ok "Service installed at $SYSTEMD_TARGET"
+
+    # Start
+    log "Starting ProcWise"
+    systemctl start procwise
+    sleep 5
+
+    if systemctl is-active --quiet procwise; then
+        ok "ProcWise is running"
+        echo ""
+        echo "  Commands:"
+        echo "    ./procwise start     Start everything"
+        echo "    ./procwise stop      Stop everything"
+        echo "    ./procwise restart   Restart"
+        echo "    ./procwise status    Health check"
+        echo "    ./procwise logs      Tail logs"
+    else
+        fail "Service failed to start"
+        journalctl -u procwise --no-pager -n 20
+        exit 1
+    fi
+    echo ""
+}
+
+cmd_help() {
+    echo ""
+    printf "${BOLD}  ProcWise — Agentic Procurement System${NC}\n"
+    echo ""
+    echo "  Usage: ./procwise <command>"
+    echo ""
+    echo "  Commands:"
+    echo "    start       Start infrastructure + API server"
+    echo "    stop        Stop API server (optionally infra)"
+    echo "    restart     Restart API server"
+    echo "    status      Show health of all components"
+    echo "    logs        Tail live logs"
+    echo "    install     Install as systemd service (sudo)"
+    echo ""
+    echo "  Environment overrides:"
+    echo "    PROCWISE_PORT=8000       API port"
+    echo "    PROCWISE_WORKERS=2       Uvicorn workers"
+    echo "    PROCWISE_LOG_LEVEL=info  Log level"
+    echo ""
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+    start)   cmd_start   ;;
+    stop)    cmd_stop    ;;
+    restart) cmd_restart ;;
+    status)  cmd_status  ;;
+    logs)    cmd_logs    ;;
+    install) cmd_install ;;
+    -h|--help|help|"")
+        cmd_help ;;
+    *)
+        fail "Unknown command: $1"
+        cmd_help
+        exit 1 ;;
+esac

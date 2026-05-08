@@ -214,6 +214,35 @@ def _filename_hint(field_key: str, filename: str) -> str | None:
     return None
 
 
+# Doc-type-aware prefix to attach to bare-numeric IDs. Real-world
+# documents often print just the numeric portion under a label
+# ("PO Number: 507099", "Invoice No: 600253") — without prefix
+# normalisation we get cross-reference drift across bp_invoice.po_id
+# and bp_purchase_order.po_id. Single canonical form per field.
+_PK_PREFIX_FOR_FIELD: dict[str, str] = {
+    "po_id": "PO",
+    "invoice_id": "INV",
+    "quote_id": "QUT",
+}
+
+
+def _normalize_pk_value(field: str, value: str) -> str:
+    """If `value` is bare numeric and `field` has a known prefix, prepend it."""
+    prefix = _PK_PREFIX_FOR_FIELD.get(field)
+    if not prefix:
+        return value
+    s = str(value).strip()
+    if not s:
+        return s
+    # Already prefixed (any case) — leave as-is
+    if s[: len(prefix)].upper() == prefix:
+        return s
+    # Bare numeric (with optional internal dashes) — prepend
+    if re.match(r"^\d[\d\-]{2,}$", s):
+        return prefix + s
+    return s
+
+
 def extract_ids(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedValue]:
     out: dict[str, ExtractedValue] = {}
     id_fields = [f for f in fields_for(doc_type) if type_of(doc_type, f) == FieldType.ID]
@@ -229,8 +258,9 @@ def extract_ids(doc: ParsedDocument, doc_type: str) -> dict[str, ExtractedValue]
         if scored:
             scored.sort(key=lambda s: -s[0])
             best = scored[0][1]
+            value = _normalize_pk_value(field, best.text)
             out[field] = ExtractedValue(
-                value=best.text, provenance="extracted",
+                value=value, provenance="extracted",
                 anchor_text=best.text, anchor_ref=best.tokens[0].anchor,
                 source="structural", confidence=1.0, attempt=1,
             )

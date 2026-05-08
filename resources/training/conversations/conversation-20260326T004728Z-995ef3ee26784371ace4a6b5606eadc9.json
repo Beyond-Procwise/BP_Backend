@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"document_extraction\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "{\"agentic_plan\": \"1. Collect source documents from S3 prefixes or targeted object keys, tagging scanned versus digital content.\\n2. Extract header fields, line items, and structured tables using schema-driven parsing with OCR fallbacks.\\n3. Validate results, detect discrepancies, and summarise extraction quality for downstream workflows.\", \"context_snapshot\": {\"workflow_id\": \"45adf8e5-dffa-45b6-ac63-2bc2aeba4c9b\", \"agent_id\": \"document_extraction\", \"user_id\": \"AgentNick\", \"manifest\": {\"task\": {\"agent_type\": \"document_extraction\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}}, \"action_id\": \"1e4ab8ab-c8d6-413e-bb31-b59da2bb857a\"}",
+  "metadata": {
+    "workflow_id": "45adf8e5-dffa-45b6-ac63-2bc2aeba4c9b",
+    "agent_id": "document_extraction",
+    "agent_name": "DataExtractionAgent"
+  }
+}

@@ -1,0 +1,16 @@
+2026-04-15 18:06:55,498 INFO === AgentNick Overnight QLoRA Fine-tuning ===
+2026-04-15 18:07:02,023 INFO Loading dataset: data/training/overnight_finetune.jsonl
+2026-04-15 18:07:02,025 INFO Loaded 102 training examples
+Map:   0%|          | 0/102 [00:00<?, ? examples/s]Map: 100%|██████████| 102/102 [00:00<00:00, 6969.89 examples/s]
+2026-04-15 18:07:02,052 INFO Dataset formatted: 102 examples
+2026-04-15 18:07:02,052 INFO Loading base model: Qwen/Qwen2.5-7B-Instruct
+`torch_dtype` is deprecated! Use `dtype` instead!
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files:  25%|██▌       | 1/4 [01:25<04:17, 85.72s/it]Fetching 4 files: 100%|██████████| 4/4 [01:25<00:00, 21.43s/it]
+2026-04-15 18:08:32,943 INFO We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  1.54it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  2.84it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  4.92it/s]
+2026-04-15 18:08:34,104 WARNING Some parameters are on the meta device because they were offloaded to the cpu.
+2026-04-15 18:08:34,105 INFO Model loaded
+trainable params: 40,370,176 || all params: 7,655,986,688 || trainable%: 0.5273
+Traceback (most recent call last):
+  File "<string>", line 74, in <module>
+TypeError: SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length'

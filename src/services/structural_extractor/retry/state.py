@@ -9,7 +9,7 @@ class AttemptOutput:
     attempt: int
     source: Literal[
         "structural", "pattern_cached", "nlu_ner", "nlu_table",
-        "nlu_layout", "llm_fallback"
+        "nlu_layout", "langextract", "llm_fallback"
     ]
     extracted: dict[str, ExtractedValue]
     line_items: Optional[list[dict[str, ExtractedValue]]]

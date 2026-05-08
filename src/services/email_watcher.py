@@ -2812,9 +2812,20 @@ class EmailWatcherService:
             self._negotiation_agent = negotiation_agent
 
     def _run_loop(self) -> None:
+        loop_count = 0
         while not self._stop_event.is_set():
             waiting_for_dispatch = False
             processed_workflow = False
+            loop_count += 1
+            # Proof-of-life heartbeat every 10 polls (~15 min at the default
+            # 90s poll interval). Emitted BEFORE the DB call so it still fires
+            # if load_active_workflow_ids hangs — without it the journal can't
+            # distinguish "healthy + idle" from "stuck + silent."
+            if loop_count == 1 or loop_count % 10 == 0:
+                logger.info(
+                    "EmailWatcherService heartbeat: poll #%d starting",
+                    loop_count,
+                )
             try:
                 workflow_ids = workflow_email_tracking_repo.load_active_workflow_ids()
             except Exception:

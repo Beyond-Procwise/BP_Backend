@@ -24,9 +24,22 @@ ExecStart=/home/muthu/PycharmProjects/BP_Backend/.venv/bin/uvicorn api.main:app 
     --log-level info
 
 ExecStop=/bin/kill -SIGTERM $MAINPID
+# After the main process exits, give the kernel a few seconds to actually
+# reclaim the GPU VRAM before the new uvicorn tries to allocate. Without
+# this the new boot can OOM while the dying process's allocations are
+# still being freed.
+ExecStopPost=/bin/sleep 6
+
+# Make sure orphan child threads are killed too — leftover Python threads
+# (e.g. EmailWatcherService) holding torch tensors keep VRAM resident
+# even after the parent exits.
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+FinalKillSignal=SIGKILL
 
 Restart=on-failure
-RestartSec=10
+RestartSec=15
 StartLimitIntervalSec=300
 StartLimitBurst=5
 

@@ -101,7 +101,7 @@ def test_workflow_types_endpoint():
     assert resp.status_code == 200
     types = [item["agentType"] for item in resp.json()]
     assert "OpportunityMinerAgent" in types
-    assert "DiscrepancyDetectionAgent" not in types
+    assert "DiscrepancyDetectionAgent" in types
 
 
 def test_email_workflow_returns_action_id(monkeypatch):

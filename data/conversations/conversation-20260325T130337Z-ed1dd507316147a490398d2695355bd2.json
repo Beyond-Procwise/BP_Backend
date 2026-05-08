@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {}, \"policies\": []}",
+  "response": "Counter for S2",
+  "metadata": {
+    "workflow_id": "wf-batch",
+    "agent_id": "NegotiationAgent",
+    "agent_name": "NegotiationAgent"
+  }
+}

@@ -1,0 +1,5 @@
+ollama pull gemma4:e2b
+echo "FROM gemma4:e2b" >> Modelfile
+echo "SYSTEM You are a friendly assistant." >> Modelfile
+ollama create -f Modelfile BeyondProcwise/AgentNick
+ollama push BeyondProcwise/AgentNick

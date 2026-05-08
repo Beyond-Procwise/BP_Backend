@@ -4,6 +4,7 @@ from src.services.structural_extractor.discovery.layout_fingerprint import layou
 from src.services.structural_extractor.discovery.schema import fields_for
 from src.services.structural_extractor.retry.attempts import (
     run_attempt_1,
+    run_attempt_langextract,
     run_attempt_llm,
     run_attempt_nlu,
 )
@@ -20,6 +21,7 @@ def run_retry_loop(doc, doc_type: str, max_attempts: int = 10) -> ExtractionResu
         doc=doc, doc_type=doc_type, target_fields=target,
         unresolved=set(target),
     )
+    prev_unresolved = len(state.unresolved)
     for attempt_no in range(1, max_attempts + 1):
         if not state.unresolved:
             break
@@ -27,13 +29,31 @@ def run_retry_loop(doc, doc_type: str, max_attempts: int = 10) -> ExtractionResu
             out = run_attempt_1(state)
         elif attempt_no in (2, 3, 4):
             out = run_attempt_nlu(state, attempt_no)
+        elif attempt_no == 5:
+            # Confidence-gated narrative-field fallback (LangExtract,
+            # char_interval grounding). Only resolves a small allow-list
+            # of narrative fields; PKs/amounts/dates pass through to the
+            # llm_fallback below.
+            out = run_attempt_langextract(state, attempt_no)
         else:
             out = run_attempt_llm(state, attempt_no)
         merge_attempt_into_state(state, out)
+        new_unresolved = len(state.unresolved)
+        progress = prev_unresolved - new_unresolved
         log.info(
             "Retry attempt %d: source=%s, +%d fields, residual=%d",
-            attempt_no, out.source, len(out.extracted), len(state.unresolved),
+            attempt_no, out.source, len(out.extracted), new_unresolved,
         )
+        # Early exit: in the LLM phase, a single zero-progress pass means the
+        # remaining fields are not discoverable in the source. Retrying wastes
+        # ~60s/attempt for no gain.
+        if out.source == "llm_fallback" and progress == 0 and not out.line_items:
+            log.info(
+                "Retry early-exit: LLM attempt %d added 0 fields, skipping remaining retries",
+                attempt_no,
+            )
+            break
+        prev_unresolved = new_unresolved
     sig = layout_signature(doc)
     return ExtractionResult(
         header=state.accepted_header,

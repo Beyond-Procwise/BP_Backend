@@ -1,0 +1,14 @@
+{
+  "status": "skipped",
+  "generated_on": "2026-03-26T04:24:43.476450+00:00",
+  "metrics": {
+    "sample_count": 0,
+    "average_response_tokens": 0,
+    "p90_response_tokens": 0
+  },
+  "artifacts": {
+    "report": "artifacts/phi4-joshi/training_report.json",
+    "adapters": "artifacts/phi4-joshi/adapters",
+    "quantized_model": "artifacts/phi4-joshi/phi4-joshi.gguf"
+  }
+}

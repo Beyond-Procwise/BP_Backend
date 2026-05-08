@@ -626,17 +626,32 @@ class IntelligentExtractor:
             doc, doc_type, schema, extra_context=pattern_hints
         )
 
+        from services.llm_diagnostics import capture_llm_failure
+        _diag_file_path = getattr(doc, "filename", "") or getattr(doc, "file_path", "")
+
         raw = ollama_generate(
             prompt,
             model=EXTRACTION_MODEL,
-            num_predict=4096,
+            num_predict=8192,
         )
         if not raw:
             logger.error("LLM extraction returned empty response")
+            capture_llm_failure(
+                site="IntelligentExtractor.extract.empty",
+                prompt=prompt, raw_response=raw or "",
+                doc_type=doc_type, file_path=_diag_file_path,
+                model=EXTRACTION_MODEL,
+            )
             return None
 
         result = self._parse_response(raw, schema)
         if not result:
+            capture_llm_failure(
+                site="IntelligentExtractor.extract.parse_failed",
+                prompt=prompt, raw_response=raw,
+                doc_type=doc_type, file_path=_diag_file_path,
+                model=EXTRACTION_MODEL,
+            )
             return None
 
         # Phase 3: VERIFY
@@ -654,7 +669,7 @@ class IntelligentExtractor:
             raw2 = ollama_generate(
                 retry_prompt,
                 model=EXTRACTION_MODEL,
-                num_predict=4096,
+                num_predict=8192,
             )
             if raw2:
                 retry_result = self._parse_response(raw2, schema)
@@ -664,6 +679,21 @@ class IntelligentExtractor:
                         logger.info("Retry improved extraction — using retry result")
                         result = retry_result
                         issues = retry_issues
+                else:
+                    capture_llm_failure(
+                        site="IntelligentExtractor.extract.retry_parse_failed",
+                        prompt=retry_prompt, raw_response=raw2,
+                        doc_type=doc_type, file_path=_diag_file_path,
+                        model=EXTRACTION_MODEL,
+                        extra={"critical_count": issues.get("critical_count", 0)},
+                    )
+            else:
+                capture_llm_failure(
+                    site="IntelligentExtractor.extract.retry_empty",
+                    prompt=retry_prompt, raw_response="",
+                    doc_type=doc_type, file_path=_diag_file_path,
+                    model=EXTRACTION_MODEL,
+                )
 
         # Phase 4b: RECONCILE — compare LLM results against source structure
         # If the source document has more rows than the LLM extracted,
@@ -1027,35 +1057,21 @@ Please correct these issues. Pay careful attention to:
     def _parse_response(
         self, raw: str, schema: Dict
     ) -> Optional[Dict[str, Any]]:
-        """Parse LLM JSON response."""
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
-            cleaned = re.sub(r"\n?```\s*$", "", cleaned)
-
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Find the outermost balanced JSON object
-            start = cleaned.find("{")
-            if start >= 0:
-                depth = 0
-                end = start
-                for i in range(start, len(cleaned)):
-                    if cleaned[i] == "{":
-                        depth += 1
-                    elif cleaned[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            end = i + 1
-                            break
-                try:
-                    data = json.loads(cleaned[start:end])
-                except json.JSONDecodeError:
-                    logger.error("Failed to parse LLM JSON response")
-                    return None
-            else:
-                return None
+        """Parse LLM JSON response with truncation tolerance."""
+        from services.tolerant_json import parse_tolerant
+        result = parse_tolerant(raw)
+        if result.data is None:
+            logger.error(
+                "Failed to parse LLM JSON response (recovery_ops=%s)",
+                result.recovery_ops,
+            )
+            return None
+        if result.recovered:
+            logger.warning(
+                "LLM JSON response required recovery — completeness=%.2f ops=%s",
+                result.completeness, result.recovery_ops,
+            )
+        data = result.data
 
         header = data.get("header", {})
         line_items = data.get("line_items", [])

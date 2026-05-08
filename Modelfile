@@ -210,6 +210,62 @@ LEARNED VENDOR PATTERNS (from successful extractions):
 - AquariusTeam (Invoice), currency=GBP, extractions=5
 - city of newport (Quote), currency=GBP, extractions=4
 
+=== LEARNED PATTERNS (auto-updated) ===
+
+LEARNED VENDOR PATTERNS (from successful extractions):
+- SUP-THRIVESTUDIOSLLC (Invoice), currency=GBP, extractions=56
+- Assurity Ltd (Purchase_Order), currency=GBP, extractions=44
+- SUP-TechWorld (Invoice), currency=GBP, extractions=38
+- Gomez, Good and Cross Trading Ltd (Purchase_Order), currency=GBP, extractions=38
+- SUP-CityofNewport (Invoice), currency=GBP, extractions=30
+- Duncan LLC (Purchase_Order), currency=GBP, extractions=29
+- Sarah Thompson (Invoice), currency=GBP, extractions=29
+- Dixon, Reynolds and Solomon (Invoice), currency=GBP, extractions=27
+- InfoTech Consulting (Purchase_Order), currency=GBP, extractions=27
+- NexaSpark (Invoice), currency=GBP, extractions=26
+- Duncan LLC (Quote), currency=GBP, extractions=25
+- Perry Ltd (Purchase_Order), currency=GBP, extractions=23
+- Dixon, Reynolds and Solomon (Purchase_Order), currency=GBP, extractions=22
+- city of newport (Invoice), currency=GBP, extractions=22
+- Daniel, Perry and Goodman Trading Ltd. (Quote), currency=GBP, extractions=21
+- Infotech (Invoice), currency=GBP, extractions=21
+- Williams, Reynolds and Aguirre Trading Ltd. (Quote), currency=GBP, extractions=20
+- Wade Inc (Purchase_Order), currency=GBP, extractions=20
+- SUP-ELEANORPRICECREATIVE (Invoice), currency=GBP, extractions=20
+- THRIVE STUDIOS LLC (Quote), currency=GBP, extractions=20
+- Gomez, Good and Cross Trading (Purchase_Order), currency=GBP, extractions=19
+- TechNova Ltd (Quote), currency=GBP, extractions=18
+- Gomez, Good and Cross Trading Ltd (Quote), currency=GBP, extractions=18
+- City of Newport (Purchase_Order), currency=GBP, extractions=18
+- Quote_Scenario_ (Quote), currency=GBP, extractions=17
+- Design House Agency (Purchase_Order), currency=GBP, extractions=17
+- Duncan LLC (Invoice), currency=GBP, extractions=17
+- SUP-SupplyXLtd (Quote), currency=GBP, extractions=16
+- SUP-SarahThompson (Invoice), currency=GBP, extractions=16
+- Wade Inc (Invoice), currency=GBP, extractions=16
+- Wells LLC (Invoice), currency=GBP, extractions=15
+- Rubilogy (Invoice), currency=GBP, extractions=14
+- Aquarius (Invoice), currency=GBP, extractions=13
+- Office Clean (Invoice), currency=GBP, extractions=13
+- Eleanor Price Creative Studio (Purchase_Order), currency=GBP, extractions=13
+- TechWorld (Invoice), currency=GBP, extractions=13
+- Aquarius (Quote), currency=GBP, extractions=13
+- SupplyX Ltd (Quote), currency=GBP, extractions=12
+- SUP-AquariusMarketing (Invoice), currency=GBP, extractions=12
+- Nexaspark (Invoice), currency=GBP, extractions=12
+- Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=11
+- PeopleFirst HR Solutions Ltd (Purchase_Order), currency=GBP, extractions=11
+- THRIVE STUDIOS LLC (Invoice), currency=GBP, extractions=11
+- AquariusTeam (Purchase_Order), currency=GBP, extractions=10
+- Dell Workspace Solutions Ltd (Quote), currency=GBP, extractions=10
+- Assurity Ltd (Invoice), currency=GBP, extractions=10
+- Redkiln Way Horsham West Sussex RH13 5QH (Purchase_Order), currency=GBP, extractions=10
+- Rubilogy (Purchase_Order), currency=GBP, extractions=10
+- Wade INC (Purchase_Order), currency=GBP, extractions=10
+- Duncan (Purchase_Order), currency=GBP, extractions=10
+
+KNOWN SUPPLIERS (match against these): Aquarius Marketing Ltd, Assurity Ltd, Becker Inc, Design House Agency, Dixon, Reynolds and Solomon, Duncan LLC, Eleanor Price Creative Studio, Gomez, Good and Cross Trading, Greenfield Holdings Ltd, Horizon Retail Group Ltd, InfoTech Consulting, NexaSpark Marketing Ltd, PeopleFirst HR Solutions Ltd, Perry Ltd, Rubilogy Ltd, TechNova Ltd, TechWorld, Thrive Studios LLC, Valued Merchant Services, Wade INC
+
 === QUALITY STANDARDS ===
 
 - Extraction confidence threshold: 0.70 minimum per field

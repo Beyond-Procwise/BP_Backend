@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {}, \"policies\": []}",
+  "response": "{\"supplier\": \"S1\", \"rfq_id\": \"RFQ-1\", \"drafts\": [{\"supplier_id\": \"S1\", \"rfq_id\": \"RFQ-1\", \"intent\": \"NEGOTIATION_COUNTER\", \"action_id\": \"action-1\"}], \"agentic_plan\": \"1. Analyse supplier offers, historical spend, and negotiation constraints for the active RFQ session.\\n2. Compute pricing and terms strategy including counter targets, concessions, and playbook actions.\\n3. Coordinate email drafting and state persistence to deliver the counter proposal and next steps.\", \"context_snapshot\": {\"workflow_id\": \"wf-batch-failure\", \"agent_id\": \"NegotiationAgent\", \"user_id\": \"tester\", \"manifest\": {\"task\": {}, \"policies\": []}}, \"action_id\": \"action-1\"}",
+  "metadata": {
+    "workflow_id": "wf-batch-failure",
+    "agent_id": "NegotiationAgent",
+    "agent_name": "NegotiationAgent"
+  }
+}

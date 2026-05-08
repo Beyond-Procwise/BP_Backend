@@ -1,0 +1,19 @@
+{
+  "ts": "20260504T191017Z",
+  "site": "ollama_generate.exhausted",
+  "model": "BeyondProcwise/AgentNick:latest",
+  "doc_type": null,
+  "file_path": null,
+  "prompt_chars": 848,
+  "prompt_head": "Extract these specific fields from the Invoice document below.\nFields needed: invoice_id, supplier_id, invoice_total_incl_tax\n\nReturn ONLY a JSON object with the field names as keys.\nDates in YYYY-MM-DD format. Amounts as numbers.\nCurrency as 3-letter ISO code.\n\nDocument:\nINVOICE PERRY\nLTD\nDate Issued: 27/09/2024 Invoice No: 148769\nBilled to: Assurity Ltd PO No: 526689\n10 Redkiln Way Horsham\nWest Sussex RH13 5QH\nDESCRIPTION PRICE QTY SUBTOTAL\nStaedtler Ballpoint Pen \u00a312.49 100 \u00a31,249.00\n3M Adhesive Tape \u00a313.99 15 \u00a3209.85\nFaber-Castell A4 Ruled \u00a310.10 100 \u00a31,010.00\nPilot Ballpoint Pen \u00a317.89 20 \u00a3357.80\nSub-Total \u00a32,826.65\nTax (20%) \u00a3565.33\nTOTAL \u00a33,391.98\nPAYABLE TO: NOTES:\nPerry Ltd\n54 Hawthorne Industrial Estate\nWest Yorkshire, LS10 1QP\nBank: Rolands Ltd\nAccount No: 0133 364 8146\n030-856-",
+  "prompt_tail": "ocument below.\nFields needed: invoice_id, supplier_id, invoice_total_incl_tax\n\nReturn ONLY a JSON object with the field names as keys.\nDates in YYYY-MM-DD format. Amounts as numbers.\nCurrency as 3-letter ISO code.\n\nDocument:\nINVOICE PERRY\nLTD\nDate Issued: 27/09/2024 Invoice No: 148769\nBilled to: Assurity Ltd PO No: 526689\n10 Redkiln Way Horsham\nWest Sussex RH13 5QH\nDESCRIPTION PRICE QTY SUBTOTAL\nStaedtler Ballpoint Pen \u00a312.49 100 \u00a31,249.00\n3M Adhesive Tape \u00a313.99 15 \u00a3209.85\nFaber-Castell A4 Ruled \u00a310.10 100 \u00a31,010.00\nPilot Ballpoint Pen \u00a317.89 20 \u00a3357.80\nSub-Total \u00a32,826.65\nTax (20%) \u00a3565.33\nTOTAL \u00a33,391.98\nPAYABLE TO: NOTES:\nPerry Ltd\n54 Hawthorne Industrial Estate\nWest Yorkshire, LS10 1QP\nBank: Rolands Ltd\nAccount No: 0133 364 8146\n030-856-2845 perryoffice.co.uk billing@perryoffice.co.uk",
+  "response_chars": 0,
+  "response": "",
+  "response_truncated": false,
+  "error_type": null,
+  "error_message": null,
+  "extra": {
+    "retries_attempted": 3,
+    "num_predict": 512
+  }
+}

@@ -1454,7 +1454,8 @@ def get_agent_types():
     try:
         with open(file_path, "r") as f:
             data = json.load(f)
-        return [AgentType(**agent) for agent in data]
+        agents = data["agents"] if isinstance(data, dict) else data
+        return [AgentType(**agent) for agent in agents]
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="agent_definitions.json not found")
     except (json.JSONDecodeError, KeyError, TypeError) as exc:

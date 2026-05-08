@@ -381,6 +381,14 @@ class ProcessMonitorWatcher:
                 raise RuntimeError(
                     f"Extraction {status}: {result.get('error', 'unknown')}"
                 )
+            # "partial" means the orchestrator could not persist the header —
+            # the bp_ table has no row for this document. Marking it Extracted
+            # here would hide a real data gap behind a green status.
+            if status == "partial" or not result.get("header_persisted", True):
+                raise RuntimeError(
+                    "Header persist failed (status=%s header_persisted=%s pk=%s)"
+                    % (status, result.get("header_persisted"), result.get("pk"))
+                )
             self._mark_extracted(record_id)
             confidence = result.get("confidence", 0)
             error_count = result.get("errors", 0)
@@ -395,6 +403,19 @@ class ProcessMonitorWatcher:
                 result.get("discrepancies"),
                 confidence,
             )
+
+            # Invariant: invoices and quotes with line-bearing documents almost
+            # always carry at least one line item. A zero-lines result paired
+            # with missing=[] is the silent-data-loss pattern observed in
+            # production and is more often a parser/prompt gap than a genuine
+            # zero-line document.
+            line_items_count = result.get("line_items") or 0
+            doc_type_lower = (doc_type or "").lower()
+            if line_items_count == 0 and doc_type_lower in {"invoice", "quote", "purchaseorder", "po"}:
+                logger.warning(
+                    "ZERO_LINE_ITEMS for record %s: %s pk=%s persisted with 0 line items — verify against source PDF",
+                    record_id, doc_type, pk,
+                )
 
             # --- PRE-KG VALIDATION GATE ---
             # Only sync to Knowledge Graph when extraction meets quality bar.
@@ -657,6 +678,33 @@ class ProcessMonitorWatcher:
             return
         self._stop_event.clear()
         self._ensure_trigger()
+
+        # Reset any records left in Extracting by a prior process. By
+        # definition no extraction is in flight on a fresh start, so these
+        # are orphans — must be requeued so the backlog drains without
+        # waiting 30 minutes for the stale-recovery window.
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE proc.process_monitor
+                        SET status = 'Completed', start_ts = NULL
+                        WHERE status = 'Extracting'
+                        RETURNING id
+                        """
+                    )
+                    orphaned = cur.fetchall()
+                    if orphaned:
+                        logger.warning(
+                            "Reset %d orphaned Extracting records on startup: %s",
+                            len(orphaned), [r[0] for r in orphaned],
+                        )
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception("Startup orphan reset failed")
 
         # Initial sweep for any records that arrived before we started
         try:

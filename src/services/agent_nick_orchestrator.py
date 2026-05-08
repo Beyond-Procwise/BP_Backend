@@ -144,6 +144,13 @@ class AgentNickOrchestrator:
             if new_id:
                 header["supplier_id"] = new_id
 
+        # Step 3a: Resolve buyer to canonical SUP-ID. The LLM/LangExtract
+        # may set either header["buyer_id"] (raw company name) or
+        # header["buyer_name"]; we want to land a canonical SUP-ID in
+        # buyer_id so cross-document joins work. Mirrors _resolve_supplier
+        # but writes to buyer_id instead.
+        self._resolve_buyer(header)
+
         # Re-check after supplier resolution
         missing = [f for f in required if not header.get(f)]
         if missing:
@@ -195,6 +202,7 @@ class AgentNickOrchestrator:
 
         # Step 3e: Filename-based supplier validation
         # The filename is the ground truth: "{SUPPLIER} PO{num} for QUT{num}.pdf"
+        rescued_fields: set = set()
         fname_supplier = self._extract_supplier_from_filename(file_path)
         if fname_supplier:
             extracted_sup = (
@@ -210,6 +218,7 @@ class AgentNickOrchestrator:
                 logger.info(
                     "[AgentNick] Filled supplier from filename: %s", fname_supplier
                 )
+                rescued_fields.update({"supplier_name", "supplier_id"})
             elif fname_supplier.lower().split()[0] not in extracted_sup.lower():
                 # Filename supplier's first word doesn't appear in extracted value
                 # This catches: extracted="Assurity Ltd" but filename="PERRY PO526689"
@@ -219,6 +228,42 @@ class AgentNickOrchestrator:
                 )
                 header["supplier_name"] = fname_supplier
                 header["supplier_id"] = fname_supplier
+                rescued_fields.update({"supplier_name", "supplier_id"})
+
+        # Step 3f: Vendor-template override.
+        # If we have seen this layout before, apply stored field hints
+        # (typically supplier_name/buyer_name) over whatever the LLM
+        # produced. Templates are durable across restarts via Postgres.
+        try:
+            from src.services.extraction_v2.template_service import (
+                get_template_service,
+            )
+            from src.services.structural_extractor.parsing import (
+                parse as _v2_parse,
+            )
+            _file_bytes = extraction.get("_file_bytes")
+            _filename = extraction.get("_filename") or os.path.basename(file_path)
+            template_fingerprint: Optional[str] = None
+            template_overrides: Dict[str, str] = {}
+            if _file_bytes:
+                try:
+                    parsed = _v2_parse(_file_bytes, _filename)
+                    template_service = get_template_service()
+                    template_fingerprint = template_service.fingerprint(parsed)
+                    header, template_overrides = template_service.apply_template(
+                        header, template_fingerprint, line_items=line_items,
+                    )
+                    rescued_fields.update(template_overrides.keys())
+                except Exception as exc:
+                    logger.warning(
+                        "[AgentNick] template apply skipped for %s: %s",
+                        file_path, exc,
+                    )
+        except Exception:
+            # If the template module is unavailable, fall through silently;
+            # the rest of the pipeline must keep working.
+            template_fingerprint = None
+            template_overrides = {}
 
         # Step 3f: Derive computable fields from document content
         # Pass source text so derivation can find "valid for 30 days" etc.
@@ -278,6 +323,20 @@ class AgentNickOrchestrator:
         pk_col = PK_MAP.get(doc_type)
         pk_value = header.get(pk_col, "") if pk_col else ""
 
+        # PK NORMALIZATION — collapse INV148769 / 148769 onto a single
+        # canonical form so the same physical document never produces
+        # two rows in bp_*. See pk_normalizer for the rules.
+        if pk_col and pk_value:
+            from services.pk_normalizer import normalize_pk
+            normalized = normalize_pk(str(pk_value), doc_type)
+            if normalized != str(pk_value):
+                logger.info(
+                    "[AgentNick] Normalized %s: %r → %r",
+                    pk_col, pk_value, normalized,
+                )
+                header[pk_col] = normalized
+                pk_value = normalized
+
         verification_issues = []
         if not pk_value:
             verification_issues.append(f"MISSING_PK: {pk_col} is empty")
@@ -303,6 +362,253 @@ class AgentNickOrchestrator:
                 doc_type, pk_value, verification_issues,
             )
 
+        # Step 6c: Field-type validation gate — sanitizes garbage party
+        # names, fixes po_id format, normalizes payment_terms, nulls
+        # tax==subtotal and far-future dates. Rejected values are logged
+        # to bp_discrepancy_data so they remain visible for review.
+        sanitizer_rejections = []
+        try:
+            from services.extraction_sanitizer import ExtractionSanitizer
+            sanitizer = ExtractionSanitizer()
+            header, line_items, sanitizer_rejections = sanitizer.sanitize(
+                header, line_items, doc_type,
+            )
+            if sanitizer_rejections:
+                self._log_sanitizer_rejections(
+                    sanitizer_rejections, doc_type, pk_value, file_path,
+                )
+        except Exception:
+            logger.exception("[AgentNick] Sanitizer pass failed (non-fatal)")
+
+        # Step 6c-2: Field recovery from parsed text. Fills NULL header
+        # fields (payment_terms, validity/delivery dates, incoterm, tax
+        # rate/amount, country/region/city, postcode) ONLY when there is
+        # explicit evidence in the parsed text. Never overwrites a
+        # non-NULL value; never fabricates. Runs before persist so
+        # recovered values land in the DB.
+        try:
+            from src.services.extraction_v2.field_recovery import recover_fields
+            parsed_text = extraction.get("_source_text", "")
+            recovery_report = recover_fields(
+                header, parsed_text=parsed_text,
+                doc_type=doc_type, file_path=file_path,
+            )
+            if recovery_report.fields_recovered:
+                logger.info(
+                    "[AgentNick] field_recovery filled %d NULL(s) for %s %s",
+                    len(recovery_report.fields_recovered), doc_type, pk_value,
+                )
+                header["_field_recovery"] = [
+                    {"field": f, "value": v[:80], "source": s}
+                    for (f, v, s) in recovery_report.fields_recovered
+                ]
+        except Exception:
+            logger.exception("[AgentNick] field_recovery skipped (non-fatal)")
+
+        # Step 6c-3a: PDF-table line-items recovery. For docs whose
+        # line-item table is laid out in columns that the structural
+        # extractor flattened (I-37 — WADE quotes etc.), use pdfplumber's
+        # word-level positions to reconstruct rows by Y-coordinate. Only
+        # fires when we have raw PDF bytes and a target subtotal; emits
+        # qty/unit_price when math reconciles.
+        try:
+            from src.services.extraction_v2.pdf_table_recovery import (
+                recover_lines_from_pdf_table,
+            )
+            # Compute subtotal target from header. The line-items table in
+            # the source document typically holds pre-tax amounts, so:
+            # 1) Prefer explicit pre-tax fields (subtotal / invoice_amount /
+            #    total_amount / total_amount_excl_tax).
+            # 2) If only the post-tax total (invoice_total_incl_tax /
+            #    total_amount_incl_tax) is available AND tax_percent is set,
+            #    derive pre-tax target = post_tax / (1 + rate).
+            tax_pct = header.get("tax_percent")
+            try:
+                tax_pct = float(tax_pct) if tax_pct is not None else None
+            except (ValueError, TypeError):
+                tax_pct = None
+
+            pdf_target = None
+            for k in ("subtotal", "invoice_amount", "total_amount",
+                      "total_amount_excl_tax"):
+                v = header.get(k)
+                if v is not None:
+                    try:
+                        f = float(v)
+                        if f > 0:
+                            pdf_target = f
+                            break
+                    except (ValueError, TypeError):
+                        continue
+            if pdf_target is None:
+                # Pre-tax not found; try post-tax + tax_pct derivation
+                for k in ("invoice_total_incl_tax", "total_amount_incl_tax"):
+                    v = header.get(k)
+                    if v is None:
+                        continue
+                    try:
+                        f = float(v)
+                        if f <= 0:
+                            continue
+                        if tax_pct is not None and tax_pct > 0:
+                            rate = tax_pct / 100.0 if tax_pct > 1 else tax_pct
+                            pdf_target = f / (1.0 + rate)
+                        else:
+                            pdf_target = f
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            pdf_bytes = extraction.get("_file_bytes")
+            if pdf_bytes and pdf_target:
+                pdf_lr = recover_lines_from_pdf_table(
+                    pdf_bytes, target_total=pdf_target, tax_percent=tax_pct,
+                    file_path=file_path,
+                )
+                # Compute existing sum to compare
+                existing_sum = 0.0
+                for it in (line_items or []):
+                    for k in ("line_total", "line_amount", "total_amount"):
+                        v = it.get(k)
+                        if v is not None:
+                            try:
+                                existing_sum += float(v)
+                                break
+                            except (ValueError, TypeError):
+                                continue
+                if pdf_lr.items_recovered > 0:
+                    # Replace if PDF table extractor's sum is closer to target
+                    # than the existing line items, OR if both sums match the
+                    # target equally well but PDF found MORE granular line
+                    # items (e.g. LLM emitted 1 line summing to subtotal but
+                    # the doc actually has 3 — replace with the 3).
+                    pdf_diff = abs(pdf_lr.sum_recovered - pdf_target)
+                    existing_diff = abs(existing_sum - pdf_target)
+                    pdf_better = (
+                        pdf_diff < existing_diff
+                        or (
+                            # Both sums equally close (within 50p) and PDF
+                            # has more line items than existing.
+                            abs(pdf_diff - existing_diff) < 0.50
+                            and pdf_lr.items_recovered > len(line_items or [])
+                        )
+                    )
+                    if not line_items or pdf_better:
+                        logger.info(
+                            "[AgentNick] pdf_table_recovery filled %d items "
+                            "for %s %s (sum=%.2f, target=%.2f, replaced=%.2f)",
+                            pdf_lr.items_recovered, doc_type, pk_value,
+                            pdf_lr.sum_recovered, pdf_target, existing_sum,
+                        )
+                        line_items = pdf_lr.items
+                        header["_line_recovery"] = {
+                            "source": "pdf_table_recovery",
+                            "count": pdf_lr.items_recovered,
+                            "sum": pdf_lr.sum_recovered,
+                            "target": pdf_target,
+                            "replaced_existing_sum": existing_sum,
+                        }
+        except Exception:
+            logger.exception("[AgentNick] pdf_table_recovery skipped (non-fatal)")
+
+        # Step 6c-3b: Text-pattern line-items recovery. Fires when the
+        # PDF-table path didn't help and either:
+        #   (a) LLM/structural extractor returned line_items=[] — empty,
+        #       but the doc clearly has line data the layout obscured.
+        #   (b) line_items is non-empty but their total doesn't match the
+        #       header subtotal — the LLM got SOME items but missed
+        #       others (partial extraction).
+        # The recovery only emits items if their amounts sum to within
+        # 5% of the header subtotal — and only REPLACES the existing
+        # set if its sum is closer to the target than the existing sum.
+        try:
+            from src.services.extraction_v2.line_recovery import (
+                recover_line_items,
+            )
+            target = None
+            for k in ("subtotal", "invoice_amount", "total_amount",
+                      "total_amount_excl_tax",
+                      "invoice_total_incl_tax", "total_amount_incl_tax"):
+                v = header.get(k)
+                if v is not None:
+                    try:
+                        f = float(v)
+                        if f > 0:
+                            target = f
+                            break
+                    except (ValueError, TypeError):
+                        continue
+
+            existing_sum = 0.0
+            if line_items and target:
+                for it in line_items:
+                    for k in ("line_total", "line_amount", "total_amount"):
+                        v = it.get(k)
+                        if v is not None:
+                            try:
+                                existing_sum += float(v)
+                                break
+                            except (ValueError, TypeError):
+                                continue
+            existing_off_target = bool(
+                target and (
+                    not line_items or
+                    abs(existing_sum - target) > max(target * 0.05, 0.50)
+                )
+            )
+
+            if not line_items or existing_off_target:
+                lr = recover_line_items(
+                    header,
+                    parsed_text=extraction.get("_source_text", ""),
+                    doc_type=doc_type, file_path=file_path,
+                )
+                if lr.items_recovered > 0:
+                    # Only replace existing set if recovery's sum is closer
+                    # to the target than what's already there.
+                    existing_diff = abs(existing_sum - (lr.target_total or 0))
+                    recovered_diff = abs(lr.sum_recovered - (lr.target_total or 0))
+                    if not line_items or recovered_diff < existing_diff:
+                        logger.info(
+                            "[AgentNick] line_recovery filled %d items for %s %s "
+                            "(sum=%.2f, target=%.2f, replaced existing sum=%.2f)",
+                            lr.items_recovered, doc_type, pk_value,
+                            lr.sum_recovered, lr.target_total or 0,
+                            existing_sum,
+                        )
+                        line_items = lr.items
+                        header["_line_recovery"] = {
+                            "count": lr.items_recovered,
+                            "sum": lr.sum_recovered,
+                            "target": lr.target_total,
+                            "replaced_existing_sum": existing_sum,
+                        }
+                    else:
+                        logger.debug(
+                            "[AgentNick] line_recovery candidates found but "
+                            "existing set is closer to target (%.2f vs %.2f)",
+                            existing_diff, recovered_diff,
+                        )
+                elif lr.skipped_reason:
+                    logger.debug(
+                        "[AgentNick] line_recovery skipped for %s %s: %s",
+                        doc_type, pk_value, lr.skipped_reason,
+                    )
+        except Exception:
+            logger.exception("[AgentNick] line_recovery skipped (non-fatal)")
+
+        # Step 6d: Critical-field confidence gate. If the sanitizer nulled
+        # a critical field (PK, supplier_id, total_amount), enqueue the
+        # record for human review. Persistence still proceeds so the
+        # pipeline doesn't block — the queue is a parallel signal.
+        try:
+            self._enqueue_for_review_if_needed(
+                header, line_items, doc_type, file_path,
+                sanitizer_rejections, source_text=extraction.get("_source_text", ""),
+                rescued_fields=rescued_fields,
+            )
+        except Exception:
+            logger.exception("[AgentNick] Review-queue enqueue failed (non-fatal)")
+
         # Step 6b: Populate item_id via product catalog
         if line_items:
             catalog = self._get_product_catalog()
@@ -326,10 +632,164 @@ class AgentNickOrchestrator:
                 item["item_id"] = product_id
 
         header_ok = self._persist_header(header, doc_type)
-        lines_ok = self._persist_line_items(line_items, doc_type, pk_value)
+        # Header must succeed before line items are written. Writing lines
+        # under a missing header produces orphan rows in bp_*_line_items that
+        # cannot be cross-referenced back to a document — silent data loss.
+        if header_ok:
+            lines_ok = self._persist_line_items(line_items, doc_type, pk_value)
+        else:
+            lines_ok = False
+            logger.error(
+                "[AgentNick] Header persist FAILED for %s %s — skipping %d line items to avoid orphans",
+                doc_type, pk_value, len(line_items),
+            )
+
+        # Record per-field provenance for the persisted record so
+        # downstream consumers can tell which fields were template-applied
+        # vs. filename-rescued vs. sanitizer-nulled vs. LLM-derived. Best-
+        # effort: a provenance write failure must not fail the extraction.
+        if header_ok and pk_value:
+            try:
+                from services.db import get_conn as _prov_get_conn
+                from src.services.extraction_v2.provenance import (
+                    record_extraction_provenance,
+                )
+                # Default-source heuristic: if the structural extractor
+                # supplied the bytes (USE_STRUCTURAL_EXTRACTOR path), we
+                # call the default ``structural``; otherwise the LLM path
+                # produced everything by default.
+                default_src = "structural" if (
+                    extraction.get("_file_bytes") is not None
+                    and os.getenv("USE_STRUCTURAL_EXTRACTOR", "false").lower()
+                        in ("true", "1", "yes")
+                ) else "llm"
+                record_extraction_provenance(
+                    _prov_get_conn,
+                    record_id=str(pk_value), doc_type=doc_type, header=header,
+                    rescued_fields=rescued_fields,
+                    template_overrides=template_overrides,
+                    sanitizer_rejections=sanitizer_rejections or [],
+                    default_source=default_src,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[AgentNick] provenance write skipped for %s: %s",
+                    pk_value, exc,
+                )
 
         # Step 7: Learn vendor profile
         self._learn_vendor_profile(header, doc_type)
+
+        # Step 7-pre-A3: line-level currency normalization. Sets
+        # header["currency"] + per-line "currency" from the parsed text
+        # / vendor country if not already specified. The CurrencyConsistency
+        # invariant below uses these to detect mixed-currency anomalies.
+        try:
+            from src.services.extraction_v2.currency import (
+                normalize_currency_in_place,
+            )
+            normalize_currency_in_place(
+                header, line_items,
+                parsed_text=extraction.get("_source_text", ""),
+            )
+        except Exception:
+            logger.debug("[AgentNick] currency normalization skipped", exc_info=True)
+
+        # Step 7-pre-A1+A4: run the procurement invariant chain. Each
+        # validator returns (passed, residual, severity). Critical
+        # failures auto-route to review regardless of other signals.
+        validation_critical_count = 0
+        validation_warning_count = 0
+        try:
+            from services.db import get_conn as _val_get_conn
+            from src.services.extraction_v2.invariants import (
+                DEFAULT_VALIDATORS, ValidatorChain,
+            )
+            from src.services.extraction_v2.po_linkage import PoLinkage
+            chain = ValidatorChain(
+                DEFAULT_VALIDATORS + [PoLinkage(get_conn=_val_get_conn)]
+            )
+            report = chain.run(header, line_items, doc_type)
+            validation_critical_count = len(report.critical_failures)
+            validation_warning_count = len(report.warnings)
+            if report.critical_failures:
+                header["needs_review"] = True
+                for r in report.critical_failures:
+                    logger.warning(
+                        "[AgentNick] INVARIANT_FAIL(%s) %s %s: %s",
+                        r.severity, doc_type, pk_value, r.message,
+                    )
+            elif report.warnings:
+                for r in report.warnings:
+                    logger.info(
+                        "[AgentNick] invariant warn(%s) %s %s: %s",
+                        r.severity, doc_type, pk_value, r.message,
+                    )
+            header["_invariant_report"] = {
+                "pass_rate": round(report.pass_rate, 3),
+                "critical_count": validation_critical_count,
+                "warning_count": validation_warning_count,
+                "failures": [
+                    {"name": r.name, "severity": r.severity,
+                     "message": r.message[:200]}
+                    for r in report.results if not r.passed
+                ],
+            }
+        except Exception:
+            logger.debug("[AgentNick] invariant chain skipped", exc_info=True)
+
+        # Step 7-pre: compute the calibrated confidence score and write
+        # it onto the header BEFORE we report the orchestration result.
+        # This replaces the static 0.85 with a real signal-driven score.
+        try:
+            from src.services.extraction_v2.confidence import calibrated_confidence
+            calib = calibrated_confidence(
+                header=header, line_items=line_items, doc_type=doc_type,
+                sanitizer_rejections=sanitizer_rejections or [],
+                rescued_fields=rescued_fields,
+                template_overrides=template_overrides,
+            )
+            # Invariant penalties: each warning -0.03, each critical -0.10.
+            invariant_penalty = (
+                0.03 * validation_warning_count
+                + 0.10 * validation_critical_count
+            )
+            score = max(0.0, calib.score - invariant_penalty)
+            header["confidence_score"] = round(score, 3)
+            if score < 0.65 or validation_critical_count > 0:
+                logger.warning(
+                    "[AgentNick] LOW_CONFIDENCE for %s %s: score=%.2f "
+                    "(calib=%.2f - invariant_penalty=%.2f) notes=%s",
+                    doc_type, pk_value, score, calib.score,
+                    invariant_penalty, calib.notes,
+                )
+                header["needs_review"] = True
+        except Exception:
+            logger.debug("[AgentNick] confidence calibration skipped", exc_info=True)
+
+        # Step 7a: Snapshot a candidate vendor template if extraction
+        # quality is good. Only successful header persistence + at least
+        # one rescued or LLM-confirmed canonical value qualifies — this
+        # prevents bad extractions from poisoning the template store.
+        if header_ok and template_fingerprint:
+            try:
+                from src.services.extraction_v2.template_service import (
+                    get_template_service,
+                )
+                template_service = get_template_service()
+                template_service.learn_from_extraction(
+                    fingerprint=template_fingerprint,
+                    header=header,
+                    line_items=line_items,
+                    doc_type=doc_type,
+                    vendor_name_hint=fname_supplier,
+                    rescued_fields=rescued_fields,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[AgentNick] template learn skipped for %s: %s",
+                    pk_value, exc,
+                )
 
         error_count = sum(1 for d in discrepancies if d.severity == "error")
         result = {
@@ -346,6 +806,9 @@ class AgentNickOrchestrator:
             "errors": error_count,
             "confidence": header.get("confidence_score", 0),
             "needs_review": header.get("needs_review", False),
+            "template_fingerprint": template_fingerprint,
+            "template_overrides": list(template_overrides.keys()),
+            "rescued_fields": sorted(rescued_fields),
         }
 
         logger.info(
@@ -420,6 +883,17 @@ class AgentNickOrchestrator:
                                     },
                                     source="derivation_registry", confidence=1.0, attempt=1,
                                 )
+                            # Purchase_Order schema uses ship_to_country /
+                            # delivery_region instead of country / region.
+                            # Copy the derived values across so they aren't
+                            # silently dropped by the persist layer's
+                            # unknown-column filter (that was the cause of
+                            # 96% of POs showing NULL ship_to_country).
+                            if doc_type == "Purchase_Order":
+                                if "country" in result.header and "ship_to_country" not in result.header:
+                                    result.header["ship_to_country"] = result.header["country"]
+                                if "region" in result.header and "delivery_region" not in result.header:
+                                    result.header["delivery_region"] = result.header["region"]
                         except Exception as _addr_exc:
                             logger.debug("[structural] country/region derivation skipped: %s", _addr_exc)
 
@@ -513,10 +987,76 @@ class AgentNickOrchestrator:
                                     "[structural] provenance write failed for %s: %s (non-blocking)",
                                     parent_pk, _prov_exc,
                                 )
+                        # Line-item salvage: structural extractor sometimes
+                        # returns zero line items on summary-style quotes
+                        # and one-page POs even though lines exist in the
+                        # body. Run a narrowly-scoped LLM pass to recover
+                        # them before falling through to persistence.
+                        # Trigger broadened: salvage on ANY substantive
+                        # parsed_text (>200 chars), even if total is null,
+                        # so quotes without explicit totals still get lines.
+                        if (not line_items_dicts
+                                and result.parsed_text and len(result.parsed_text) > 200):
+                            # Compute fingerprint + vendor hint for the
+                            # salvage prompt. This is the per-vendor
+                            # accuracy lever for line items: when we have
+                            # seen this layout before, the LLM's prompt
+                            # gets the column layout + expected min-rows
+                            # injected so it knows where to look.
+                            _vendor_hint = None
+                            try:
+                                from src.services.extraction_v2.template_service import (
+                                    get_template_service,
+                                )
+                                from src.services.structural_extractor.parsing import (
+                                    parse as _v2_parse_for_lines,
+                                )
+                                _parsed_for_hint = _v2_parse_for_lines(
+                                    _file_bytes, filename,
+                                )
+                                _ts = get_template_service()
+                                _fp = _ts.fingerprint(_parsed_for_hint)
+                                _vendor_hint = _ts.line_items_prompt_hint(_fp)
+                            except Exception:
+                                _vendor_hint = None
+                            try:
+                                salvaged = self._llm_salvage_line_items(
+                                    result.parsed_text, doc_type, header_dict,
+                                    vendor_hint=_vendor_hint,
+                                )
+                                if salvaged:
+                                    line_items_dicts = salvaged
+                                    logger.info(
+                                        "[structural] line-item salvage recovered %d rows for %s%s",
+                                        len(salvaged), file_path,
+                                        " (template-aided)" if _vendor_hint else "",
+                                    )
+                                else:
+                                    # Salvage couldn't find a tabular or
+                                    # multi-row layout. Try the narrow
+                                    # single-service fallback for
+                                    # summary-style invoices.
+                                    single = self._llm_extract_single_service(
+                                        result.parsed_text, doc_type, header_dict,
+                                    )
+                                    if single:
+                                        line_items_dicts = single
+                                        logger.info(
+                                            "[structural] single-service salvage recovered "
+                                            "1 row for %s (description=%r)",
+                                            file_path, single[0].get("item_description"),
+                                        )
+                            except Exception as _salvage_exc:
+                                logger.debug(
+                                    "[structural] line-item salvage failed: %s",
+                                    _salvage_exc,
+                                )
                         return {
                             "header": header_dict,
                             "line_items": line_items_dicts,
                             "_source_text": result.parsed_text,
+                            "_file_bytes": _file_bytes,
+                            "_filename": filename,
                         }
                     # Missing CRITICAL field: legacy fallback (last resort)
                     logger.warning(
@@ -571,13 +1111,37 @@ class AgentNickOrchestrator:
                     )
                     return None
 
-            # Inject vendor profile context
+            # Inject vendor profile context (legacy: filename-keyed
+            # vendor_profile table aggregating prior extractions).
             supplier_hint = self._extract_supplier_from_filename(file_path)
             vendor_context = self._get_vendor_context(supplier_hint or "")
             if vendor_context:
                 doc_structure.metadata.insert(
                     0, {"label": "VENDOR_PROFILE", "value": vendor_context}
                 )
+
+            # Augment with vendor-template context (V2: fingerprint-keyed
+            # hints learned automatically from successful extractions or
+            # entered manually via /vendors/onboard). This improves the
+            # FIRST-pass legacy-LLM accuracy for known vendor layouts.
+            try:
+                from src.services.extraction_v2.template_service import (
+                    get_template_service,
+                )
+                from src.services.structural_extractor.parsing import (
+                    parse as _v2_parse_for_legacy,
+                )
+                if file_bytes:
+                    parsed = _v2_parse_for_legacy(file_bytes, os.path.basename(file_path))
+                    ts = get_template_service()
+                    fp = ts.fingerprint(parsed)
+                    template_context = ts.legacy_extraction_prompt_context(fp)
+                    if template_context:
+                        doc_structure.metadata.insert(
+                            0, {"label": "VENDOR_TEMPLATE", "value": template_context}
+                        )
+            except Exception as _tpl_exc:
+                logger.debug("[AgentNick] template context skipped: %s", _tpl_exc)
 
             # Step 3-4: Intelligent extraction with verification
             result = extractor.extract(doc_structure, doc_type, schema)
@@ -633,6 +1197,8 @@ class AgentNickOrchestrator:
                     "header": self._sanitize_header(header),
                     "line_items": self._sanitize_items(line_items),
                     "_source_text": text or doc_structure.raw_text,
+                    "_file_bytes": file_bytes,
+                    "_filename": os.path.basename(file_path),
                 }
 
             # Step 5: Fall back to legacy extraction
@@ -1071,30 +1637,10 @@ class AgentNickOrchestrator:
                     header["ship_to_country"] = "United Kingdom"
                     logger.info("[Derive] ship_to_country=United Kingdom from UK postcode %s", postal)
 
-            # Derive delivery_region from address fields
-            if not header.get("delivery_region"):
-                # Check address_line2 for county/region
-                uk_regions = [
-                    "West Sussex", "East Sussex", "Surrey", "Kent", "Hampshire",
-                    "Berkshire", "Oxfordshire", "Hertfordshire", "Essex",
-                    "Greater London", "London", "Middlesex", "Norfolk", "Suffolk",
-                    "Devon", "Cornwall", "Somerset", "Dorset", "Wiltshire",
-                    "Gloucestershire", "Warwickshire", "West Midlands",
-                    "Leicestershire", "Nottinghamshire", "Yorkshire",
-                    "Lancashire", "Cheshire", "Merseyside", "Manchester",
-                ]
-                for region in uk_regions:
-                    if region.lower() in addr2.lower() or region.lower() in addr1.lower():
-                        header["delivery_region"] = region
-                        logger.info("[Derive] delivery_region=%s from address", region)
-                        break
-
-            # Derive delivery_address_line2 from city + region when missing
-            if not header.get("delivery_address_line2") and city:
-                region = header.get("delivery_region", "")
-                if region and region.lower() not in city.lower():
-                    header["delivery_address_line2"] = f"{city}, {region}"
-                    logger.info("[Derive] delivery_address_line2=%s", header["delivery_address_line2"])
+            # delivery_region is derived later by field_recovery using the
+            # delivery postcode itself — that's the only reliable signal,
+            # since UK county names appear in many address lines (supplier
+            # AND buyer) and a keyword scan picks the wrong one.
 
     @staticmethod
     def _extract_supplier_from_filename(file_path: str) -> Optional[str]:
@@ -1114,35 +1660,125 @@ class AgentNickOrchestrator:
 
     @staticmethod
     def _extract_pk_from_filename(file_path: str, doc_type: str) -> Optional[str]:
-        """Extract document PK from filename patterns like 'WADE PO526809 for QUT30746.pdf'."""
+        """Extract document PK from filename, preserving the alphabetic prefix.
+
+        Patterns are written so group(1) is the FULL identifier including its
+        alphabetic prefix (PO, INV, QUT, …). Prefix-less captures break
+        cross-references — INV600820 must not become "600820".
+        """
         basename = os.path.splitext(os.path.basename(file_path))[0]
         patterns = {
             "Invoice": [
-                r"(INV[\-]?\s*[\w\-]+)",        # INV-123, INV123, INV 123-456
-                r"(Invoice[\-\s]*\d{3,})",       # Invoice-001, Invoice 12345
-                r"(BILL[\-\s]*\d{3,})",          # BILL-001
+                r"(INV[\-\s]?[\w\-]+)",          # INV-123, INV123, INV 123-456
+                r"(Invoice[\-\s]*\d{3,})",        # Invoice-001
+                r"(BILL[\-\s]*\d{3,})",           # BILL-001
             ],
             "Purchase_Order": [
-                r"PO\s*(\d{4,})",                # PO526809, PO 526809
-                r"(PUR[\-\s]*\d{3,})",           # PUR-001
+                r"(PO[\-\s]?\d{4,})",             # PO526809, PO 526809  (FULL match w/ prefix)
+                r"(PUR[\-\s]*\d{3,})",            # PUR-001
             ],
             "Quote": [
-                r"(QUT[\-\s]*[\d][\d\-]{2,})",   # QUT30746, QUT-25-032
-                r"(QTE[\-\s]*[\d][\d\-]{2,})",   # QTE-2026-00487
-                r"(QUOTE[\-\s]*[\d][\d\-]{2,})", # QUOTE-123
-                r"Q\s*(\d{4,})",                 # Q10483
-                r"(\d{5,})",                     # bare numeric IDs (136700)
+                r"(QUT[\-\s]?[\d][\d\-]{2,})",    # QUT30746, QUT-25-032
+                r"(QTE[\-\s]?[\d][\d\-]{2,})",    # QTE-2026-00487
+                r"(QUOTE[\-\s]?[\d][\d\-]{2,})",  # QUOTE-123
+                r"(Q\d{4,})",                     # Q10483
             ],
         }
         for pat in patterns.get(doc_type, []):
             m = re.search(pat, basename, re.IGNORECASE)
             if m:
                 pk = re.sub(r"\s+", "", m.group(1).strip())
-                # Reject overly generic values
                 if pk.lower() in ("invoice", "quote", "po", "purchase"):
                     continue
                 return pk
         return None
+
+    def _resolve_buyer(self, header: Dict[str, Any]) -> None:
+        """Resolve buyer to canonical SUP-* id.
+
+        The LangExtract narrative pass surfaces ``buyer_name`` (a verbatim
+        company name from the document body). The schema only has
+        ``buyer_id`` so we must look up an existing canonical row and
+        rewrite the field. If no canonical match exists, auto-create one
+        — buyers and suppliers share the same bp_supplier table because
+        they are all parties in the procurement graph.
+
+        Mutates ``header`` in place. Never raises.
+        """
+        # Source of truth: prefer the langextract-grounded buyer_name,
+        # fall back to whatever was extracted into buyer_id raw.
+        raw = (
+            (header.get("buyer_name") or "").strip()
+            or (header.get("buyer_id") or "").strip()
+        )
+        if not raw:
+            return
+        # If buyer_id is already a canonical SUP- match, leave it alone.
+        existing_id = (header.get("buyer_id") or "").strip()
+        if existing_id.startswith("SUP-") and len(existing_id) >= 6:
+            return
+        # Reject obvious garbage early — sanitizer would null these
+        # anyway, but doing it here avoids a needless DB round-trip.
+        try:
+            from services.extraction_sanitizer import is_garbage_party_name
+            if is_garbage_party_name(raw):
+                return
+        except Exception:
+            pass
+
+        try:
+            conn = self._agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    # Exact case-insensitive match
+                    cur.execute(
+                        "SELECT supplier_id FROM proc.bp_supplier "
+                        "WHERE LOWER(supplier_name)=LOWER(%s) OR LOWER(trading_name)=LOWER(%s) "
+                        "LIMIT 1",
+                        (raw, raw),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        header["buyer_id"] = row[0]
+                        return
+                    # Fuzzy match (handles "Assurity" → "Assurity Ltd")
+                    cur.execute(
+                        "SELECT supplier_id FROM proc.bp_supplier "
+                        "WHERE supplier_name ILIKE %s OR trading_name ILIKE %s "
+                        "LIMIT 1",
+                        (f"%{raw}%", f"%{raw}%"),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        header["buyer_id"] = row[0]
+                        return
+                    # No canonical match — create one. Reuse the supplier
+                    # canonicalization helpers so buyer SUP-IDs follow the
+                    # same naming rules.
+                    canonical = self._canonical_supplier_key(raw)
+                    if not canonical:
+                        return
+                    slug = re.sub(r"\s+", "", canonical.title())[:40] or "Unknown"
+                    new_id = f"SUP-{slug}"
+                    cur.execute(
+                        """
+                        INSERT INTO proc.bp_supplier
+                            (supplier_id, supplier_name, trading_name, default_currency,
+                             country, created_date, created_by)
+                        VALUES (%s, %s, %s, %s, %s, NOW(), %s)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        (new_id, raw, raw, header.get("currency"),
+                         header.get("country"), "AgentNick-AutoBuyer"),
+                    )
+                    header["buyer_id"] = new_id
+                    logger.info(
+                        "[AgentNick] Auto-created buyer: %s → %s", raw, new_id,
+                    )
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("buyer resolution failed", exc_info=True)
 
     def _resolve_supplier(
         self, header: Dict[str, Any], doc_type: str
@@ -1795,31 +2431,544 @@ class AgentNickOrchestrator:
         except Exception:
             logger.debug("Vendor profile update failed", exc_info=True)
 
-    def _auto_create_supplier(self, header: Dict[str, Any], doc_type: str) -> Optional[str]:
-        """Auto-create a new supplier in bp_supplier if not found.
+    def _llm_salvage_line_items(
+        self, source_text: str, doc_type: str, header: dict,
+        *, vendor_hint: Optional[str] = None,
+    ) -> list:
+        """Narrow LLM pass that extracts ONLY line items from a document.
 
-        Only creates from explicitly extracted document values — never guesses.
-        Returns the new supplier_id or None.
+        Used when the structural extractor returns zero line items but the
+        header has a meaningful total — a strong signal that lines exist
+        in the document but the table detector didn't find them. The
+        prompt is tightly scoped (no header fields, no narrative) so the
+        model produces minimal, JSON-parseable output.
+
+        ``vendor_hint`` is an optional vendor-specific prompt suffix
+        produced by the template service when the document's fingerprint
+        matches a known template. Injecting the vendor's column layout
+        into the prompt is the lever that pulls 0-line-items vendors
+        (NEXASPARK, AQUARIUS, NEWPORT, RUBILOGY) out of silent failure.
         """
-        supplier_name = header.get("supplier_id") or header.get("supplier_name") or ""
-        if not supplier_name or len(supplier_name) < 3:
+        amt_total = (
+            header.get("invoice_total_incl_tax")
+            or header.get("total_amount_incl_tax")
+            or header.get("total_amount")
+            or header.get("invoice_amount")
+        )
+        # Salvage runs whenever the document looks substantive enough to
+        # have line items: either a non-trivial total OR a long enough
+        # source body. Previously we skipped salvage for any total < £10,
+        # which silently dropped legitimate small-value invoices.
+        try:
+            if amt_total is not None and float(amt_total) < 1.0:
+                return []
+        except (ValueError, TypeError):
+            pass
+
+        # Doc-type-specific line column names
+        if doc_type == "Invoice":
+            line_cols = "line_no, item_description, quantity, unit_price, line_amount"
+        else:
+            line_cols = "line_number, item_description, quantity, unit_price, line_total"
+
+        vendor_block = (
+            f"\nVENDOR CONTEXT:\n{vendor_hint}\n" if vendor_hint else ""
+        )
+        prompt = f"""Extract ALL line items / products / services from this {doc_type}.
+
+The document may be in one of THREE shapes — handle all three:
+
+  (A) TABULAR: a clear products/services table with a header row (Description,
+      Qty, Unit Price, ...). Extract every body row, skip subtotal/tax/total
+      rows.
+
+  (B) SUMMARY-STYLE (single service): the invoice describes ONE main
+      service in prose (e.g. "Digital Marketing Package", "Advanced Package
+      (3 months)") followed by a price (often the SUB TOTAL). This is a
+      LINE ITEM. Extract it as one row: item_description from the service
+      title, quantity=1, unit_price = SUBTOTAL (pre-tax) amount,
+      {('line_amount' if doc_type == "Invoice" else 'line_total')} = same.
+
+  (C) MULTI-SERVICE LIST: each service is a labelled paragraph or bullet
+      point with a price. Extract each service as a separate row.
+
+DO NOT return header fields (invoice_id, supplier, dates, totals).
+DO NOT emit subtotal / tax / TOTAL lines themselves as line items.
+{vendor_block}
+Return this JSON shape ONLY:
+{{
+  "line_items": [
+    {{ {line_cols} }},
+    ...
+  ]
+}}
+
+Rules:
+- quantity is a small count (1, 2, 10). NOT a price. Default to 1 when
+  the doc describes a single service without an explicit count.
+- unit_price is the per-unit cost. For SUMMARY-style invoices (one
+  service), unit_price = the SUB TOTAL (pre-tax) amount.
+- item_description is the product/service NAME (the title of the service
+  block, not the marketing prose around it).
+- If a row truly has no description and no price, SKIP it.
+- Only return {{ "line_items": [] }} if the document genuinely has no
+  service/product described at all (rare).
+
+DOCUMENT TEXT:
+{source_text[:8000]}"""
+
+        try:
+            from services.ollama_client import ollama_generate
+            import json as _json
+            raw = ollama_generate(prompt, num_predict=2048)
+            if not raw:
+                return []
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+                cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+            try:
+                data = _json.loads(cleaned)
+            except Exception:
+                m = re.search(r"\{[\s\S]*\}", cleaned)
+                if not m:
+                    return []
+                data = _json.loads(m.group())
+            items = data.get("line_items") or []
+            if not isinstance(items, list):
+                return []
+            # Coerce and map line_total→line_amount for invoices
+            out = []
+            for i, li in enumerate(items, start=1):
+                if not isinstance(li, dict):
+                    continue
+                desc = str(li.get("item_description", "")).strip()
+                if not desc:
+                    continue
+                row = {"item_description": desc}
+                if doc_type == "Invoice":
+                    row["line_no"] = li.get("line_no") or i
+                    for k in ("quantity", "unit_price", "line_amount"):
+                        if li.get(k) is not None:
+                            row[k] = li[k]
+                    if "line_total" in li and "line_amount" not in row:
+                        row["line_amount"] = li["line_total"]
+                else:
+                    row["line_number"] = li.get("line_number") or i
+                    for k in ("quantity", "unit_price", "line_total"):
+                        if li.get(k) is not None:
+                            row[k] = li[k]
+                out.append(row)
+            return out
+        except Exception:
+            logger.debug("line-item salvage LLM call failed", exc_info=True)
+            return []
+
+    def _llm_extract_single_service(
+        self, source_text: str, doc_type: str, header: dict,
+    ) -> list:
+        """Last-resort fallback for SUMMARY-style invoices.
+
+        Runs ONLY when the regular salvage returned zero rows and the
+        header has a non-zero total — a signal that the document is a
+        single-service invoice whose ONE line item is described in prose
+        rather than in a tabular structure.
+
+        Asks the LLM a much narrower question: "what is the one service
+        being invoiced and what is its pre-tax price?" Returns a single-
+        element list synthesised from the response.
+        """
+        amt_total = (
+            header.get("invoice_total_incl_tax")
+            or header.get("total_amount_incl_tax")
+            or header.get("total_amount")
+            or header.get("invoice_amount")
+        )
+        try:
+            if amt_total is None or float(amt_total) < 1.0:
+                return []
+        except (ValueError, TypeError):
+            return []
+
+        prompt = f"""This {doc_type} has NO structured line-items table.
+It describes ONE main product or service in prose — your task is to find it.
+
+Look for:
+  - A service or package name (often in capitals, e.g. "DIGITAL MARKETING
+    PACKAGE", "Advanced Package", "Professional Services")
+  - The pre-tax amount (often labelled "SUB TOTAL" or appears next to the
+    service name)
+
+Return JSON ONLY:
+{{
+  "description": "the service or product name as written in the document",
+  "amount":      <pre-tax amount as a number, no currency symbol>
+}}
+
+If you genuinely cannot find any service description, return {{ "description": "", "amount": 0 }}.
+
+DOCUMENT TEXT:
+{source_text[:6000]}"""
+        try:
+            from services.ollama_client import ollama_generate
+            import json as _json
+            raw = ollama_generate(prompt, num_predict=512)
+            if not raw:
+                return []
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+                cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+            try:
+                data = _json.loads(cleaned)
+            except Exception:
+                m = re.search(r"\{[\s\S]*\}", cleaned)
+                if not m:
+                    return []
+                data = _json.loads(m.group())
+            description = str(data.get("description") or "").strip()
+            try:
+                amount = float(data.get("amount") or 0)
+            except (ValueError, TypeError):
+                amount = 0.0
+            if not description or amount < 1.0:
+                return []
+            row = {
+                "item_description": description,
+                "quantity": 1,
+            }
+            if doc_type == "Invoice":
+                row["line_no"] = 1
+                row["unit_price"] = amount
+                row["line_amount"] = amount
+            else:
+                row["line_number"] = 1
+                row["unit_price"] = amount
+                row["line_total"] = amount
+            return [row]
+        except Exception:
+            logger.debug("single-service salvage LLM call failed", exc_info=True)
+            return []
+
+    # Critical fields per doc_type — when sanitizer nulls one of these,
+    # the record must be reviewed by a human before downstream agents
+    # (ranking, opportunities, negotiation) can trust it.
+    _CRITICAL_FIELDS = {
+        "Invoice": {"invoice_id", "supplier_id", "invoice_total_incl_tax"},
+        "Purchase_Order": {"po_id", "supplier_id", "total_amount_incl_tax"},
+        "Quote": {"quote_id", "supplier_id", "total_amount_incl_tax"},
+    }
+
+    def _enqueue_for_review_if_needed(
+        self, header: dict, line_items: list, doc_type: str, file_path: str,
+        sanitizer_rejections: list, source_text: str = "",
+        rescued_fields: Optional[set] = None,
+    ) -> None:
+        """Push to extraction_review_queue when extraction quality fails an
+        invariant. Idempotent — re-extraction of the same doc updates the
+        existing queue row.
+
+        Trigger conditions (any one fires):
+          1. A critical field was nulled by the sanitizer.
+          2. A critical field is missing from the header.
+          3. ``len(line_items) == 0`` for an invoice/quote/PO whose
+             total_amount is non-zero (silent line-data loss invariant).
+          4. ``len(rescued_fields) >= 3`` — too many fields needed
+             filename/template rescue, suggesting overall extraction
+             quality is poor.
+        """
+        critical = self._CRITICAL_FIELDS.get(doc_type, set())
+        rescued_fields = rescued_fields or set()
+
+        # 1. Critical field nulled by sanitizer
+        rejected = {r.field for r in sanitizer_rejections} & critical
+        # 2. Critical field missing
+        missing = {f for f in critical if header.get(f) in (None, "", 0)}
+
+        # 3. Zero-line-items invariant for line-bearing doc types.
+        # An invoice/quote/PO with a non-zero total but zero line items is
+        # almost certainly a parser/prompt failure rather than a real
+        # zero-line document. Mark this as a failure mode.
+        zero_lines_violation = False
+        if doc_type in ("Invoice", "Quote", "Purchase_Order"):
+            total_value = (
+                header.get("total_amount") or header.get("total_amount_incl_tax")
+                or header.get("invoice_total_incl_tax") or header.get("invoice_amount")
+                or 0
+            )
+            try:
+                total_float = float(total_value or 0)
+            except (ValueError, TypeError):
+                total_float = 0
+            if (not line_items) and total_float > 0:
+                zero_lines_violation = True
+
+        # 4. Too-many-rescues invariant
+        too_many_rescues = len(rescued_fields) >= 3
+
+        failed = sorted(rejected | missing)
+        if zero_lines_violation:
+            failed.append("__lines_empty_with_total")
+        if too_many_rescues:
+            failed.append("__excessive_rescues")
+        if not failed:
+            return
+
+        try:
+            import json as _json
+            conn = self._agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    # Get the originating process_monitor row (if any)
+                    cur.execute(
+                        "SELECT id FROM proc.process_monitor WHERE file_path=%s "
+                        "ORDER BY id DESC LIMIT 1",
+                        (file_path,),
+                    )
+                    pm_row = cur.fetchone()
+                    pm_id = pm_row[0] if pm_row else None
+
+                    signals = {
+                        "rejected_critical_fields": sorted(rejected),
+                        "missing_critical_fields": sorted(missing),
+                        "rejection_reasons": [
+                            {"field": r.field,
+                             "reason": r.reason,
+                             "extracted_value": str(r.extracted_value)[:200]
+                                                  if r.extracted_value is not None else None}
+                            for r in sanitizer_rejections
+                        ],
+                        "zero_lines_violation": zero_lines_violation,
+                        "rescued_fields": sorted(rescued_fields),
+                        "rescued_count": len(rescued_fields),
+                    }
+
+                    # UPSERT — same file may be re-extracted multiple times.
+                    cur.execute(
+                        """
+                        INSERT INTO proc.extraction_review_queue
+                          (process_monitor_id, file_path, doc_type, partial_header,
+                           partial_line_items, failed_fields, parsed_text,
+                           attempt_count, last_attempt_at, signals_json)
+                        VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, 1, NOW(), %s::jsonb)
+                        """,
+                        (pm_id, file_path, doc_type,
+                         _json.dumps(header, default=str),
+                         _json.dumps(line_items, default=str),
+                         failed,
+                         (source_text or "")[:8000],
+                         _json.dumps(signals)),
+                    )
+                conn.commit()
+                logger.warning(
+                    "[ReviewQueue] %s %s enqueued — failed critical fields: %s",
+                    doc_type, file_path, failed,
+                )
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Review queue enqueue failed", exc_info=True)
+
+    def _log_sanitizer_rejections(
+        self, rejections: list, doc_type: str, pk_value: str, file_path: str,
+    ) -> None:
+        """Write sanitizer rejections to bp_discrepancy_data so cleanup
+        actions are auditable and reviewable. Best-effort — never fails
+        the extraction."""
+        if not rejections:
+            return
+        try:
+            conn = self._agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    for r in rejections:
+                        cur.execute(
+                            "INSERT INTO proc.bp_discrepancy_data "
+                            "(doc_type, record_id, field_name, rule_name, severity, "
+                            " extracted_value, message, file_path) "
+                            "VALUES (%s, %s, %s, 'sanitizer', %s, %s, %s, %s)",
+                            (doc_type, str(pk_value or ""), r.field, r.severity,
+                             str(r.extracted_value)[:500] if r.extracted_value is not None else None,
+                             r.reason, file_path),
+                        )
+                conn.commit()
+                logger.info(
+                    "[Sanitizer] %s %s: nulled %d garbage field(s): %s",
+                    doc_type, pk_value, len(rejections),
+                    ", ".join(f"{r.field}={r.reason}" for r in rejections),
+                )
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Sanitizer rejection logging failed", exc_info=True)
+
+    # Document-type labels and filename artifacts that the LLM sometimes
+    # captures as supplier_name when no real supplier is found. Block them
+    # before they pollute bp_supplier with garbage IDs.
+    _SUPPLIER_GARBAGE_PATTERNS = (
+        re.compile(r"^(invoice|quote|purchase\s*order|po|property\s+invoice|"
+                   r"resource\s+rate\s+card|estimated)\s*$", re.I),
+        re.compile(r"^(quote|invoice|po)[_\-\s]*scenario", re.I),
+        re.compile(r"_watermark|_split[_\s]+tables|_duplicate", re.I),
+        re.compile(r"^(invoice|quote)\s*no\s*[:.]?\s*\d+", re.I),
+    )
+    # Token sequences inside supplier_name that the LLM mashed together with
+    # the company name (e.g. "Duncan LLC INVOICENO: 132666"). We strip them.
+    _SUPPLIER_NOISE_RE = re.compile(
+        r"\b(invoice\s*no\.?|quote\s*no\.?|po\s*no\.?|purchase\s*order\s*no\.?|"
+        r"inv\s*no\.?|qte\s*no\.?|date|address|bill\s*to|ship\s*to)\s*[:#]?\s*[\w\-/]*",
+        re.I,
+    )
+
+    @staticmethod
+    def _canonical_supplier_key(name: str) -> str:
+        """Normalize a supplier name for fuzzy lookup: lowercase, strip suffix
+        terms (Ltd/Inc/LLC/Corp), collapse whitespace, drop punctuation."""
+        s = name.lower()
+        s = re.sub(r"\b(ltd\.?|limited|inc\.?|incorporated|llc|llp|corp\.?|"
+                   r"corporation|plc|gmbh|s\.?a\.?|co\.?|company)\b", "", s)
+        s = re.sub(r"[^a-z0-9]+", " ", s)
+        return " ".join(s.split())
+
+    @classmethod
+    def _is_garbage_supplier(cls, name: str) -> bool:
+        if not name or len(name.strip()) < 3:
+            return True
+        # Local pattern check (legacy)
+        for p in cls._SUPPLIER_GARBAGE_PATTERNS:
+            if p.search(name):
+                return True
+        # Pure digits / mostly digits — never a supplier name
+        digits = sum(c.isdigit() for c in name)
+        if digits and digits / len(name) > 0.5:
+            return True
+        # Delegate to the sanitizer's stricter check so the orchestrator
+        # and sanitizer agree on what counts as a party-name garbage.
+        # Catches things like:
+        #   "Quote Number QUT10253 Nov 2024"
+        #   "10 Redkiln Way Horsham RH13 5QH"
+        #   "PO526809"
+        try:
+            from services.extraction_sanitizer import is_garbage_party_name
+            if is_garbage_party_name(name):
+                return True
+        except Exception:
+            pass
+        # Additional: any captured supplier_name containing a recognised
+        # document-id pattern (PO12345 / INV-2024 / QUT103107) is almost
+        # always a label+value mash, not a real company.
+        if re.search(r"\b(?:PO|INV|QUT|QTE)[\-\s]?\d{4,}\b", name, re.I):
+            return True
+        # Label-with-id mashes that the original regex misses ("Number"
+        # synonym and prefix-id values).
+        if re.match(r"^\s*(invoice|quote|po|purchase\s*order)\s*"
+                    r"(?:no\.?|number|num|#|ref(?:erence)?)\s*[:#]?\s*\S+",
+                    name, re.I):
+            return True
+        return False
+
+    def _auto_create_supplier(self, header: Dict[str, Any], doc_type: str) -> Optional[str]:
+        """Resolve to canonical supplier_id. Looks up an existing canonical
+        match before creating a new row. Rejects garbage names so they never
+        become SUP-IDs. Returns the canonical supplier_id (existing or new).
+        """
+        supplier_name = (header.get("supplier_name")
+                         or header.get("supplier_id") or "").strip()
+
+        # Short-circuit: the upstream may already have given us a canonical
+        # supplier_id (starts with "SUP-"). Re-canonicalising it produces
+        # garbage like "SUP-ThriveStudiosLLC" → "SUP-SupThrivestudiosllc".
+        # Verify it exists in bp_supplier and reuse as-is, never re-slug.
+        if supplier_name.startswith("SUP-") and len(supplier_name) >= 6:
+            try:
+                conn = self._agent_nick.get_db_connection()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT 1 FROM proc.bp_supplier WHERE supplier_id=%s LIMIT 1",
+                            (supplier_name,),
+                        )
+                        if cur.fetchone():
+                            return supplier_name
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+            # Existing SUP- not in the table — return None so caller
+            # doesn't pollute by re-slugging this canonical-shaped string.
+            logger.debug(
+                "[AgentNick] supplier_id %r looks canonical but isn't in bp_supplier — skipping create",
+                supplier_name,
+            )
+            return None
+
+        # Strip embedded label noise like "Duncan LLC INVOICENO: 132666"
+        if supplier_name:
+            cleaned = self._SUPPLIER_NOISE_RE.sub("", supplier_name).strip(" ,;:-")
+            if cleaned and len(cleaned) >= 3:
+                supplier_name = cleaned
+
+        # Reject bank names captured from payment-detail footers.
+        # The supplier on a procurement document is the COMPANY ISSUING
+        # the invoice, never the bank receiving payment.
+        _bank_markers = (
+            "bank ", "bank,", "banking", " bank", "trust ", " trust",
+            "credit union", "savings", "branch", "sort code", "iban",
+            "swift", "bsb", "routing", "fedwire",
+        )
+        low = supplier_name.lower()
+        if any(m in low for m in _bank_markers):
+            logger.warning(
+                "[AgentNick] Rejected bank-name as supplier: %r", supplier_name,
+            )
+            return None
+
+        if self._is_garbage_supplier(supplier_name):
+            logger.warning(
+                "[AgentNick] Rejected garbage supplier name: %r", supplier_name,
+            )
+            return None
+
+        canonical = self._canonical_supplier_key(supplier_name)
+        if not canonical:
             return None
 
         try:
             conn = self._agent_nick.get_db_connection()
             try:
                 with conn.cursor() as cur:
+                    # 1. Exact name/trading match (case-insensitive)
                     cur.execute(
                         "SELECT supplier_id FROM proc.bp_supplier "
-                        "WHERE LOWER(supplier_name) = LOWER(%s) OR LOWER(trading_name) = LOWER(%s) "
+                        "WHERE LOWER(supplier_name)=LOWER(%s) OR LOWER(trading_name)=LOWER(%s) "
                         "LIMIT 1",
                         (supplier_name, supplier_name),
                     )
-                    if cur.fetchone():
-                        return None
+                    row = cur.fetchone()
+                    if row:
+                        return row[0]
 
-                    clean = re.sub(r"[^a-zA-Z0-9]", "", supplier_name)
-                    supplier_id = f"SUP-{clean[:20]}"
+                    # 2. Canonical-key match — same business entity under
+                    # different formatting (TechWorld vs Techworld vs TechWorld Ltd)
+                    cur.execute(
+                        "SELECT supplier_id, supplier_name FROM proc.bp_supplier "
+                        "WHERE LOWER(supplier_name) ~ %s OR LOWER(trading_name) ~ %s "
+                        "LIMIT 5",
+                        (re.escape(canonical[:40]), re.escape(canonical[:40])),
+                    )
+                    for row in cur.fetchall():
+                        existing_canon = self._canonical_supplier_key(row[1] or "")
+                        if existing_canon == canonical:
+                            logger.info(
+                                "[AgentNick] Canonicalised supplier '%s' → existing %s (%s)",
+                                supplier_name, row[0], row[1],
+                            )
+                            return row[0]
+
+                    # 3. Create new — slug derived from canonical key, not
+                    # truncated mid-word. Up to 40 chars after the SUP- prefix.
+                    slug = re.sub(r"\s+", "", canonical.title())[:40] or "Unknown"
+                    supplier_id = f"SUP-{slug}"
 
                     cur.execute("""
                         INSERT INTO proc.bp_supplier

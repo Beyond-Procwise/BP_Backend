@@ -220,7 +220,7 @@
       "agentId": 13,
       "agentType": "RAGAgent",
       "slug": "rag",
-      "class_path": "agents.base_agent.RAGAgent",
+      "class_path": "agents.rag_agent.RAGAgent",
       "description": "Retrieval-augmented generation for procurement knowledge Q&A.",
       "role": "processor",
       "capabilities": ["rag_query"],

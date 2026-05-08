@@ -53,6 +53,44 @@ def run_attempt_nlu(state: RetryState, attempt_no: int) -> AttemptOutput:
     )
 
 
+def run_attempt_langextract(state: RetryState, attempt_no: int) -> AttemptOutput:
+    """Confidence-gated narrative-field fallback via LangExtract.
+
+    Runs at attempt 5 (immediately before the free-form llm_fallback). Only
+    targets narrative fields (supplier_name, payment_terms, incoterm, notes)
+    and returns char_interval-grounded values. Anything outside the
+    allowed-field set is silently dropped by the adapter, so this attempt
+    is a no-op for PK / amount / date / geo fields — they continue to the
+    next attempt unmodified.
+    """
+    t0 = time.monotonic()
+    doc = state.doc
+    residual = list(state.unresolved - state.accepted_header.keys())
+    if not residual:
+        return AttemptOutput(
+            attempt=attempt_no, source="langextract", extracted={},
+            line_items=None, validation_failures=[], residual_unresolved=[],
+            latency_ms=0,
+        )
+    try:
+        from src.services.langextract_adapter import extract_low_confidence_fields
+        recovered = extract_low_confidence_fields(
+            source_text=doc.full_text or "",
+            fields_needed=residual,
+            doc_type=state.doc_type,
+            attempt_no=attempt_no,
+        )
+    except Exception:
+        recovered = {}
+    still_unresolved = sorted(set(residual) - recovered.keys())
+    return AttemptOutput(
+        attempt=attempt_no, source="langextract", extracted=recovered,
+        line_items=None, validation_failures=[],
+        residual_unresolved=still_unresolved,
+        latency_ms=int((time.monotonic() - t0) * 1000),
+    )
+
+
 def run_attempt_llm(state: RetryState, attempt_no: int) -> AttemptOutput:
     """Attempts 5-10: grounded LLM arbiter for residual unresolved fields."""
     t0 = time.monotonic()
