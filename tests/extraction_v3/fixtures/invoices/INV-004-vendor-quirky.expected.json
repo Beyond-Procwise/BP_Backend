@@ -1,0 +1,20 @@
+{
+  "doc_type": "invoice",
+  "header": {
+    "invoice_id": "INV-792631",
+    "supplier_name": "The Car Company Ltd",
+    "invoice_date": "2022-03-03",
+    "invoice_amount": 31921.00,
+    "tax_amount": 2861.00,
+    "tax_percent": 10.0,
+    "currency": "USD",
+    "po_id": "200154/2022"
+  },
+  "line_items": [
+    {"item_description": "Security System", "line_amount": 280.00},
+    {"item_description": "Car Cover", "line_amount": 250.00},
+    {"item_description": "Parking Sensors", "line_amount": 850.00},
+    {"item_description": "Multi Pin Car Charger", "line_amount": 250.00},
+    {"item_description": "Blind Spot Mirrors", "line_amount": 400.00}
+  ]
+}

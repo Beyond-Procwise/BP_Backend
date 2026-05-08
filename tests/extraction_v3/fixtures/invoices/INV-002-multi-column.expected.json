@@ -1,0 +1,29 @@
+{
+  "doc_type": "invoice",
+  "header": {
+    "invoice_id": "CM-2022-01",
+    "supplier_name": "Construction Masters",
+    "invoice_date": "2022-01-10",
+    "invoice_amount": 42779.00,
+    "tax_amount": 3089.00,
+    "tax_percent": 10.0,
+    "currency": "USD",
+    "po_id": "0001253"
+  },
+  "line_items": [
+    {"item_description": "Scaffoling Preparation", "line_amount": 800.00},
+    {"item_description": "Roofing Installation", "line_amount": 2520.00},
+    {"item_description": "Concrete Pouring", "line_amount": 240.00},
+    {"item_description": "Scaffoling Removal", "line_amount": 400.00},
+    {"item_description": "Foundation Carpentry", "line_amount": 1200.00},
+    {"item_description": "Window Installation", "line_amount": 640.00},
+    {"item_description": "Bricks", "line_amount": 8500.00},
+    {"item_description": "Clay", "line_amount": 600.00},
+    {"item_description": "Wood", "line_amount": 15000.00},
+    {"item_description": "Electrical cables & wiring", "line_amount": 210.00},
+    {"item_description": "Ceramics", "line_amount": 1000.00},
+    {"item_description": "Cement", "line_amount": 3480.00},
+    {"item_description": "Windows", "line_amount": 1800.00},
+    {"item_description": "Miscellaneous", "line_amount": 2500.00}
+  ]
+}

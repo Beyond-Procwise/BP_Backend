@@ -1,0 +1,29 @@
+{
+  "doc_type": "invoice",
+  "header": {
+    "invoice_id": "0526",
+    "supplier_name": "Super Family Company",
+    "invoice_date": "2026-09-01",
+    "invoice_amount": 9085.00,
+    "tax_amount": null,
+    "tax_percent": null,
+    "currency": "USD",
+    "po_id": null
+  },
+  "line_items": [
+    {"item_description": "A4 500 Sheets Package", "line_amount": 1360.00},
+    {"item_description": "Laser Printer Toner - Black", "line_amount": 440.00},
+    {"item_description": "Laser Printer Toner - Cyan", "line_amount": 220.00},
+    {"item_description": "Laser Printer Toner - Magenta", "line_amount": 220.00},
+    {"item_description": "Laser Printer Toner - Yellow", "line_amount": 220.00},
+    {"item_description": "A2 1500 Sheets Package", "line_amount": 945.00},
+    {"item_description": "New Laser Printer 250 sheets", "line_amount": 1500.00},
+    {"item_description": "4-Year Extended Warranty", "line_amount": 250.00},
+    {"item_description": "Laser Printer Delivery & Installation", "line_amount": 65.00},
+    {"item_description": "Electric, Internet, Water", "line_amount": 2500.00},
+    {"item_description": "Kitchen Remodel", "line_amount": 25.00},
+    {"item_description": "A2 1500 Sheets Package", "line_amount": 45.00},
+    {"item_description": "Inventory Testing", "line_amount": 1250.00},
+    {"item_description": "WP Admin Backup, Plugin Updates", "line_amount": 45.00}
+  ]
+}

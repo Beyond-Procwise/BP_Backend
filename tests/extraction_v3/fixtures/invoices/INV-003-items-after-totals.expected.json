@@ -1,0 +1,19 @@
+{
+  "doc_type": "invoice",
+  "header": {
+    "invoice_id": null,
+    "supplier_name": "BrightPeak Marketing Agency",
+    "invoice_date": "2025-06-13",
+    "invoice_amount": 7475.00,
+    "tax_amount": 975.00,
+    "tax_percent": 15.0,
+    "currency": "NZD",
+    "po_id": "PO-2025-1067"
+  },
+  "line_items": [
+    {"item_description": "Social Media Strategy & Content Calendar", "line_amount": 2000.00},
+    {"item_description": "SEO Optimization for Website", "line_amount": 1500.00},
+    {"item_description": "Google Ads Campaign Management (3 mo.)", "line_amount": 2250.00},
+    {"item_description": "Monthly Reporting & Analytics", "line_amount": 750.00}
+  ]
+}
