@@ -123,7 +123,7 @@ def call_grounded_last_resort(
     )
     prompt = _build_prompt(input_obj)
 
-    raw = ollama_generate(prompt, num_predict=512, temperature=0.0)
+    raw = ollama_generate(prompt, num_predict=512, temperature=0.0, retries=1, timeout=20)
     if raw is None:
         return None
 
