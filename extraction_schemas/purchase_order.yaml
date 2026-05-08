@@ -1,6 +1,352 @@
 doc_type: purchase_order
 db_table: proc.bp_purchase_order
 db_lines_table: proc.bp_po_line_items
-fields: []
-line_items: null
-document_invariants: []
+
+fields:
+  - name: po_id
+    type: string
+    required: true
+    db_column: po_id
+    canonical_labels:
+      - "Purchase Order Number"
+      - "PO Number"
+      - "PO No"
+      - "PO #"
+      - "Order Number"
+      - "Purchase Order"
+      - "Order No"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: supplier_name
+    type: string
+    required: true
+    db_column: null
+    resolves_to_db_column: supplier_id
+    canonical_labels:
+      - "Supplier"
+      - "Vendor"
+      - "From"
+      - "Sold By"
+      - "Seller"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "ORG"
+    invariants: []
+
+  - name: buyer_id
+    type: string
+    required: false
+    db_column: buyer_id
+    canonical_labels:
+      - "Bill To"
+      - "Ship To"
+      - "Customer"
+      - "Buyer"
+      - "Ordered By"
+      - "Deliver To"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: requisition_id
+    type: string
+    required: false
+    db_column: requisition_id
+    canonical_labels:
+      - "Requisition Number"
+      - "Requisition No"
+      - "Req No"
+      - "Requisition ID"
+      - "PR Number"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: requested_by
+    type: string
+    required: false
+    db_column: requested_by
+    canonical_labels:
+      - "Requested By"
+      - "Requestor"
+      - "Raised By"
+      - "Prepared By"
+      - "Created By"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "PERSON"
+    invariants: []
+
+  - name: requested_date
+    type: iso_date
+    required: false
+    db_column: requested_date
+    canonical_labels:
+      - "Requested Date"
+      - "Request Date"
+      - "Requisition Date"
+      - "Order Date"
+      - "Date"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: order_date
+    type: iso_date
+    required: false
+    db_column: order_date
+    canonical_labels:
+      - "Order Date"
+      - "PO Date"
+      - "Issue Date"
+      - "Date Issued"
+      - "Purchase Date"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: expected_delivery_date
+    type: iso_date
+    required: false
+    db_column: expected_delivery_date
+    canonical_labels:
+      - "Expected Delivery Date"
+      - "Delivery Date"
+      - "Required By"
+      - "Need By Date"
+      - "Due Date"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: payment_terms
+    type: string
+    required: false
+    db_column: payment_terms
+    canonical_labels:
+      - "Payment Terms"
+      - "Terms"
+      - "Net Terms"
+      - "Terms of Payment"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: currency
+    type: string
+    required: true
+    db_column: currency
+    canonical_labels:
+      - "Currency"
+      - "CCY"
+      - "Invoice Currency"
+      - "Billing Currency"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: total_amount
+    type: money
+    required: true
+    db_column: total_amount
+    canonical_labels:
+      - "Total Amount"
+      - "Grand Total"
+      - "Order Total"
+      - "PO Total"
+      - "Total Value"
+      - "Net Total"
+      - "Amount"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: ship_to_country
+    type: string
+    required: false
+    db_column: ship_to_country
+    canonical_labels:
+      - "Country"
+      - "Ship To Country"
+      - "Delivery Country"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "GPE"
+    invariants: []
+
+  - name: delivery_region
+    type: string
+    required: false
+    db_column: delivery_region
+    canonical_labels:
+      - "Region"
+      - "State"
+      - "Province"
+      - "Delivery Region"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+line_items:
+  primary_extractor: table_transformer
+  fallback_extractor: layoutlmv3
+  fields:
+    - name: item_description
+      type: string
+      required: true
+      db_column: item_description
+      canonical_labels:
+        - "Description"
+        - "Item Description"
+        - "Item"
+        - "Product"
+        - "Service Description"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: quantity
+      type: decimal
+      required: false
+      db_column: quantity
+      canonical_labels:
+        - "Qty"
+        - "Quantity"
+        - "Units"
+        - "No. of Units"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_price
+      type: money
+      required: false
+      db_column: unit_price
+      canonical_labels:
+        - "Unit Price"
+        - "Rate"
+        - "Price Each"
+        - "Unit Cost"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: line_amount
+      type: money
+      required: true
+      db_column: line_amount
+      canonical_labels:
+        - "Amount"
+        - "Line Amount"
+        - "Line Total"
+        - "Extended Amount"
+        - "Total"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+  invariants:
+    - line_arithmetic
+    - line_sum_closure
+
+document_invariants:
+  - grand_total_closure
+  - currency_consistency
+  - scale_mismatch

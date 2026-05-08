@@ -5,6 +5,14 @@ non-label token in proximity to the label.
 This catches synonymy that canonical_labels misses — e.g. 'Sold By:' →
 supplier_name; 'Account Number:' → buyer_id; 'Amt Due' → invoice_total_incl_tax.
 
+Improvements over baseline:
+  - Type-aware value selection: for money/decimal/iso_date/currency fields,
+    the proximity search scans up to N nearby tokens and picks the first one
+    that parses successfully, instead of blindly returning the nearest token.
+  - Tighter label detection: multi-word colon-terminated phrases
+    (e.g. "DELIVER TO:", "SHIP VIA: UPS Express") are now correctly
+    identified as labels and skipped during value selection.
+
 Substring guarantee preserved: candidate.evidence_text comes directly from a
 parsed Token, so it's a substring of parsed.full_text.
 """
@@ -23,6 +31,8 @@ MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
 MIN_COSINE = 0.55  # below this, semantic match is too weak
 RIGHT_OF_LABEL_MAX_DX = 250
 BELOW_LABEL_MAX_DY = 50
+# How many nearby candidates to inspect when type-checking
+MAX_TYPE_SCAN_RADIUS = 6
 
 _model = None
 _lock = threading.Lock()
@@ -39,29 +49,87 @@ def _get_model() -> SentenceTransformer:
 
 
 def _is_label_shaped(text: str) -> bool:
-    """Heuristic for "this token looks like a label, not a value"."""
+    """Return True if *text* looks like a field label rather than a value.
+
+    Recognises:
+      - Tokens ending with ":"  (e.g. "Invoice Number:", "BILL TO:")
+      - All-caps multi-word tokens with no digits (e.g. "DELIVER TO", "SHIP VIA")
+      - Short title-case phrases (e.g. "Invoice Date", "Due Date")
+    """
     s = text.strip()
-    if len(s) < 2 or len(s) > 60:
+    if len(s) < 2 or len(s) > 80:
         return False
-    if s.endswith(":") or s.endswith(": "):
+    # Ends with colon — unambiguous label marker
+    if s.endswith(":"):
         return True
-    # all-caps multi-word with no digits
-    words = s.replace(":", "").split()
-    if len(words) >= 1 and all(w.isupper() and w.isalpha() for w in words) and len(s) >= 3:
+    # Strip trailing colon for further checks
+    cleaned = s.rstrip(":").strip()
+    words = cleaned.split()
+    # All-caps multi-word, no digits — e.g. "DELIVER TO", "SHIP VIA", "BILL TO"
+    if words and all(w.isupper() and w.isalpha() for w in words) and len(words) >= 1 and len(s) >= 3:
         return True
     return False
 
 
-def _next_value_token(tokens: list[Token], label_tok: Token) -> Token | None:
+# ---------------------------------------------------------------------------
+# Typed-value validators (same logic as in layoutlmv3.py)
+# ---------------------------------------------------------------------------
+
+_ISO_CURRENCY_CODES = frozenset({
+    "GBP", "USD", "EUR", "JPY", "INR", "CAD", "AUD", "CHF", "CNY", "NZD",
+    "ZAR", "SGD", "HKD", "AED", "SEK", "NOK", "DKK", "PLN", "CZK",
+})
+_SYMBOL_TO_ISO = {"$": "USD", "£": "GBP", "€": "EUR", "¥": "JPY", "₹": "INR"}
+
+
+def _try_parse_money(text: str) -> bool:
+    from src.services.extraction_v2.parsers.amounts import parse_amount
+    return parse_amount(text) is not None
+
+
+def _try_parse_date(text: str) -> bool:
+    from src.services.extraction_v2.parsers.dates import parse_date
+    return parse_date(text) is not None
+
+
+def _try_parse_currency(text: str) -> bool:
+    s = text.strip()
+    if s in _SYMBOL_TO_ISO:
+        return True
+    if s.upper() in _ISO_CURRENCY_CODES:
+        return True
+    return False
+
+
+def _token_satisfies_type(token: Token, field_type: str) -> bool:
+    text = token.text.strip()
+    if not text:
+        return False
+    if field_type in ("money", "decimal"):
+        return _try_parse_money(text)
+    if field_type == "iso_date":
+        return _try_parse_date(text)
+    if field_type == "currency":
+        return _try_parse_currency(text)
+    # string: skip label-shaped tokens
+    if _is_label_shaped(text):
+        return False
+    return bool(re.search(r"[a-zA-Z]", text))
+
+
+def _next_value_token(
+    tokens: list[Token],
+    label_tok: Token,
+    field_type: str = "string",
+) -> Token | None:
     lx0, ly0, lx1, ly1 = label_tok.bbox
+    label_height = max(ly1 - ly0, 1.0)
     cands = []
     for t in tokens:
         if t is label_tok:
             continue
-        if _is_label_shaped(t.text):
-            continue  # don't pick another label as the value
         tx0, ty0, tx1, ty1 = t.bbox
-        same_line = abs(ty0 - ly0) < (ly1 - ly0) * 1.2
+        same_line = abs(ty0 - ly0) < label_height * 1.2
         dx = tx0 - lx1
         if same_line and 0 < dx < RIGHT_OF_LABEL_MAX_DX:
             cands.append((dx, t))
@@ -72,7 +140,15 @@ def _next_value_token(tokens: list[Token], label_tok: Token) -> Token | None:
     if not cands:
         return None
     cands.sort(key=lambda c: c[0])
-    return cands[0][1]
+
+    is_typed = field_type in ("money", "decimal", "iso_date", "currency")
+    scan_limit = MAX_TYPE_SCAN_RADIUS if is_typed else 3
+
+    for _, tok in cands[:scan_limit]:
+        if _token_satisfies_type(tok, field_type):
+            return tok
+
+    return None
 
 
 @register_extractor("sbert_anchor")
@@ -83,6 +159,9 @@ class SbertAnchorExtractor(Extractor):
         active_fields = [f for f in schema.fields if "sbert_anchor" in f.extractors]
         if not active_fields:
             return []
+
+        # Build a type lookup for proximity filtering
+        field_type_map: dict[str, str] = {f.name: f.type for f in active_fields}
 
         # Pre-compute canonical-label embeddings (mean over each field's labels)
         model = _get_model()
@@ -115,7 +194,11 @@ class SbertAnchorExtractor(Extractor):
                     best_score, best_field = score, fname
             if best_score < MIN_COSINE or best_field is None:
                 continue
-            value_tok = _next_value_token(parsed.pages[label_tok.page].tokens, label_tok)
+
+            field_type = field_type_map.get(best_field, "string")
+            value_tok = _next_value_token(
+                parsed.pages[label_tok.page].tokens, label_tok, field_type
+            )
             if value_tok is None:
                 continue
             value = value_tok.text.strip()

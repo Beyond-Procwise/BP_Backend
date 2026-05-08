@@ -1,6 +1,286 @@
 doc_type: quote
 db_table: proc.bp_quote
 db_lines_table: proc.bp_quote_line_items
-fields: []
-line_items: null
-document_invariants: []
+
+fields:
+  - name: quote_id
+    type: string
+    required: true
+    db_column: quote_id
+    canonical_labels:
+      - "Quote Number"
+      - "Quote No"
+      - "Quote #"
+      - "Quotation Number"
+      - "Quotation No"
+      - "Reference"
+      - "Ref No"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: supplier_name
+    type: string
+    required: true
+    db_column: null
+    resolves_to_db_column: supplier_id
+    canonical_labels:
+      - "Supplier"
+      - "Vendor"
+      - "From"
+      - "Quoted By"
+      - "Seller"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "ORG"
+    invariants: []
+
+  - name: buyer_id
+    type: string
+    required: false
+    db_column: buyer_id
+    canonical_labels:
+      - "Bill To"
+      - "Ship To"
+      - "Customer"
+      - "Buyer"
+      - "Client"
+      - "Quoted To"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: supplier_address
+    type: string
+    required: false
+    db_column: supplier_address
+    canonical_labels:
+      - "Supplier Address"
+      - "From Address"
+      - "Vendor Address"
+      - "Our Address"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: buyer_address
+    type: string
+    required: false
+    db_column: buyer_address
+    canonical_labels:
+      - "Bill To Address"
+      - "Ship To Address"
+      - "Customer Address"
+      - "Delivery Address"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: quote_date
+    type: iso_date
+    required: true
+    db_column: quote_date
+    canonical_labels:
+      - "Quote Date"
+      - "Date"
+      - "Quotation Date"
+      - "Issue Date"
+      - "Date Issued"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: validity_date
+    type: iso_date
+    required: false
+    db_column: validity_date
+    canonical_labels:
+      - "Valid Until"
+      - "Validity Date"
+      - "Expiry Date"
+      - "Quote Valid Until"
+      - "Expires On"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: payment_terms
+    type: string
+    required: false
+    db_column: payment_terms
+    canonical_labels:
+      - "Payment Terms"
+      - "Terms"
+      - "Net Terms"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: currency
+    type: string
+    required: true
+    db_column: currency
+    canonical_labels:
+      - "Currency"
+      - "CCY"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: total_amount
+    type: money
+    required: true
+    db_column: total_amount
+    canonical_labels:
+      - "Total Amount"
+      - "Grand Total"
+      - "Quote Total"
+      - "Amount Due"
+      - "Total"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+line_items:
+  primary_extractor: table_transformer
+  fallback_extractor: layoutlmv3
+  fields:
+    - name: item_description
+      type: string
+      required: true
+      db_column: item_description
+      canonical_labels:
+        - "Description"
+        - "Item Description"
+        - "Item"
+        - "Product"
+        - "Service"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: quantity
+      type: decimal
+      required: false
+      db_column: quantity
+      canonical_labels:
+        - "Qty"
+        - "Quantity"
+        - "Units"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_price
+      type: money
+      required: false
+      db_column: unit_price
+      canonical_labels:
+        - "Unit Price"
+        - "Rate"
+        - "Price Each"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: line_amount
+      type: money
+      required: true
+      db_column: line_amount
+      canonical_labels:
+        - "Amount"
+        - "Line Amount"
+        - "Line Total"
+        - "Extended Amount"
+        - "Total"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+  invariants:
+    - line_arithmetic
+    - line_sum_closure
+
+document_invariants:
+  - grand_total_closure
+  - currency_consistency
+  - scale_mismatch

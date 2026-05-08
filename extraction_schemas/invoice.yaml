@@ -132,6 +132,8 @@ fields:
       - "Billing Date"
       - "Issue Date"
       - "Date Issued"
+      - "Order Date"
+      - "Date"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -226,10 +228,15 @@ fields:
     db_column: invoice_amount
     canonical_labels:
       - "Subtotal"
+      - "Sub Total"
+      - "Sub-total"
       - "Net Amount"
       - "Invoice Amount"
       - "Amount Before Tax"
       - "Amount Due (Excl. Tax)"
+      - "Subtotal ($)"
+      - "Total Before Tax"
+      - "Net Total"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -293,6 +300,9 @@ fields:
       - "Invoice Total"
       - "Amount Due"
       - "Total Incl. Tax"
+      - "Total Amount ($)"
+      - "Total ($)"
+      - "Total"
     extractors:
       - layoutlmv3
       - sbert_anchor

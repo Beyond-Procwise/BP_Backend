@@ -8,6 +8,18 @@ as a candidate. Acts as both:
   2. an implicit negative signal — if the legacy paths picked up a value
      that's not an ORG, the L3 orchestrator can compare to spaCy's choices.
 
+Improvements over baseline:
+  - country field: GPE entities are post-processed through a city/state →
+    country lookup table so "Las Vegas" → "United States", "London" → "United
+    Kingdom", etc.  Country-shaped GPEs (e.g. "United States") pass through
+    unchanged.  Only the country-normalised value is emitted.
+  - supplier_name field: ORG entities are ranked by their position in the
+    document; entities in the top third of page 0 receive a confidence boost
+    (they are more likely the supplier header). PERSON entities at the top of
+    the document are excluded from supplier_name candidates (they belong to
+    requested_by / contacts).
+  - All other fields: behaviour unchanged.
+
 Substring guarantee: spaCy operates on parsed.full_text directly; entity
 spans are substrings by construction (ent.text is doc.text[ent.start_char:ent.end_char]).
 """
@@ -46,6 +58,246 @@ def _get_nlp():
     return _nlp
 
 
+# ---------------------------------------------------------------------------
+# City / region → country lookup table
+# Covers the most common US cities/states/regions that spaCy classifies as GPE.
+# Expand as needed based on actual document geography.
+# ---------------------------------------------------------------------------
+_CITY_REGION_TO_COUNTRY: dict[str, str] = {
+    # US cities
+    "las vegas": "United States",
+    "new york": "United States",
+    "los angeles": "United States",
+    "chicago": "United States",
+    "houston": "United States",
+    "phoenix": "United States",
+    "philadelphia": "United States",
+    "san antonio": "United States",
+    "san diego": "United States",
+    "dallas": "United States",
+    "san jose": "United States",
+    "austin": "United States",
+    "jacksonville": "United States",
+    "fort worth": "United States",
+    "columbus": "United States",
+    "charlotte": "United States",
+    "san francisco": "United States",
+    "indianapolis": "United States",
+    "seattle": "United States",
+    "denver": "United States",
+    "washington": "United States",
+    "nashville": "United States",
+    "oklahoma city": "United States",
+    "el paso": "United States",
+    "boston": "United States",
+    "portland": "United States",
+    "atlanta": "United States",
+    "miami": "United States",
+    "minneapolis": "United States",
+    "tulsa": "United States",
+    "raleigh": "United States",
+    "omaha": "United States",
+    "cleveland": "United States",
+    "colorado springs": "United States",
+    "virginia beach": "United States",
+    "long beach": "United States",
+    "tampa": "United States",
+    "new orleans": "United States",
+    "honolulu": "United States",
+    "anaheim": "United States",
+    "aurora": "United States",
+    "santa ana": "United States",
+    "corpus christi": "United States",
+    "riverside": "United States",
+    "lexington": "United States",
+    "st. louis": "United States",
+    "pittsburgh": "United States",
+    "anchorage": "United States",
+    "stockton": "United States",
+    "cincinnati": "United States",
+    "st. paul": "United States",
+    "toledo": "United States",
+    "greensboro": "United States",
+    "newark": "United States",
+    "plano": "United States",
+    "henderson": "United States",
+    "lincoln": "United States",
+    "buffalo": "United States",
+    "fort wayne": "United States",
+    "jersey city": "United States",
+    "chula vista": "United States",
+    "orlando": "United States",
+    "st. petersburg": "United States",
+    "norfolk": "United States",
+    "chandler": "United States",
+    "laredo": "United States",
+    "madison": "United States",
+    "durham": "United States",
+    "lubbock": "United States",
+    "winston-salem": "United States",
+    "garland": "United States",
+    "glendale": "United States",
+    "hialeah": "United States",
+    "reno": "United States",
+    "baton rouge": "United States",
+    "irvine": "United States",
+    "chesapeake": "United States",
+    "scottsdale": "United States",
+    "north las vegas": "United States",
+    "fremont": "United States",
+    "gilbert": "United States",
+    "san bernardino": "United States",
+    "birmingham": "United States",
+    "rochester": "United States",
+    "spokane": "United States",
+    "des moines": "United States",
+    "montgomery": "United States",
+    "modesto": "United States",
+    "fayetteville": "United States",
+    "tacoma": "United States",
+    "shreveport": "United States",
+    "fontana": "United States",
+    "moreno valley": "United States",
+    "glendale": "United States",
+    "akron": "United States",
+    "yonkers": "United States",
+    "augusta": "United States",
+    "little rock": "United States",
+    "columbus": "United States",
+    "grand rapids": "United States",
+    "ontario": "United States",  # city in CA
+    "salt lake city": "United States",
+    "huntington beach": "United States",
+    "worcester": "United States",
+    "knoxville": "United States",
+    "providence": "United States",
+    "tallahassee": "United States",
+    "oxnard": "United States",
+    "newport news": "United States",
+    "huntsville": "United States",
+    "aberdeen": "United States",
+    # US states
+    "alabama": "United States",
+    "alaska": "United States",
+    "arizona": "United States",
+    "arkansas": "United States",
+    "california": "United States",
+    "colorado": "United States",
+    "connecticut": "United States",
+    "delaware": "United States",
+    "florida": "United States",
+    "georgia": "United States",
+    "hawaii": "United States",
+    "idaho": "United States",
+    "illinois": "United States",
+    "indiana": "United States",
+    "iowa": "United States",
+    "kansas": "United States",
+    "kentucky": "United States",
+    "louisiana": "United States",
+    "maine": "United States",
+    "maryland": "United States",
+    "massachusetts": "United States",
+    "michigan": "United States",
+    "minnesota": "United States",
+    "mississippi": "United States",
+    "missouri": "United States",
+    "montana": "United States",
+    "nebraska": "United States",
+    "nevada": "United States",
+    "new hampshire": "United States",
+    "new jersey": "United States",
+    "new mexico": "United States",
+    "new york": "United States",
+    "north carolina": "United States",
+    "north dakota": "United States",
+    "ohio": "United States",
+    "oklahoma": "United States",
+    "oregon": "United States",
+    "pennsylvania": "United States",
+    "rhode island": "United States",
+    "south carolina": "United States",
+    "south dakota": "United States",
+    "tennessee": "United States",
+    "texas": "United States",
+    "utah": "United States",
+    "vermont": "United States",
+    "virginia": "United States",
+    "washington": "United States",
+    "west virginia": "United States",
+    "wisconsin": "United States",
+    "wyoming": "United States",
+    # UK cities
+    "london": "United Kingdom",
+    "manchester": "United Kingdom",
+    "birmingham": "United Kingdom",
+    "leeds": "United Kingdom",
+    "glasgow": "United Kingdom",
+    "sheffield": "United Kingdom",
+    "bradford": "United Kingdom",
+    "liverpool": "United Kingdom",
+    "edinburgh": "United Kingdom",
+    "bristol": "United Kingdom",
+    "cardiff": "United Kingdom",
+    "belfast": "United Kingdom",
+    "leicester": "United Kingdom",
+    "coventry": "United Kingdom",
+    "nottingham": "United Kingdom",
+    # UK / regions
+    "england": "United Kingdom",
+    "scotland": "United Kingdom",
+    "wales": "United Kingdom",
+    "northern ireland": "United Kingdom",
+    # Australian cities
+    "sydney": "Australia",
+    "melbourne": "Australia",
+    "brisbane": "Australia",
+    "perth": "Australia",
+    "adelaide": "Australia",
+    "gold coast": "Australia",
+    "canberra": "Australia",
+    # Canadian cities
+    "toronto": "Canada",
+    "vancouver": "Canada",
+    "montreal": "Canada",
+    "calgary": "Canada",
+    "edmonton": "Canada",
+    "ottawa": "Canada",
+    "winnipeg": "Canada",
+    "quebec city": "Canada",
+    # Known country names that spaCy tags as GPE — pass through unchanged
+    "united states": "United States",
+    "usa": "United States",
+    "united kingdom": "United Kingdom",
+    "uk": "United Kingdom",
+    "australia": "Australia",
+    "canada": "Canada",
+    "india": "India",
+    "china": "China",
+    "germany": "Germany",
+    "france": "France",
+    "japan": "Japan",
+    "brazil": "Brazil",
+    "mexico": "Mexico",
+    "south africa": "South Africa",
+    "new zealand": "New Zealand",
+    "singapore": "Singapore",
+    "hong kong": "Hong Kong",
+    "uae": "United Arab Emirates",
+    "united arab emirates": "United Arab Emirates",
+}
+
+
+def _normalise_country(raw_gpe: str) -> str | None:
+    """Map a spaCy GPE entity to a country name.
+
+    Returns a country string if we can map it, or None if the GPE is not
+    in our lookup table and doesn't look like a country on its own.
+    """
+    key = raw_gpe.strip().lower()
+    return _CITY_REGION_TO_COUNTRY.get(key)
+
+
 @register_extractor("spacy_ner")
 class SpacyNERExtractor(Extractor):
     """Emit one Candidate per named entity that matches a field's ner_type_check.
@@ -78,18 +330,107 @@ class SpacyNERExtractor(Extractor):
         for ent in doc.ents:
             ents_by_label.setdefault(ent.label_, []).append(ent)
 
+        # Compute page 0 height for position-based heuristics
+        page0_height = parsed.pages[0].height if parsed.pages else 792.0
+
         candidates: list[Candidate] = []
         for field in active:
             # YAML uses spaCy's literal label names (ORG, PERSON, GPE, LOC, …)
             spacy_label = field.judge.ner_type_check
-            for ent in ents_by_label.get(spacy_label, []):
+
+            field_ents = ents_by_label.get(spacy_label, [])
+
+            if field.name == "country":
+                # Special handling: GPE → country normalisation
+                seen_countries: set[str] = set()
+                for ent in field_ents:
+                    ent_text = ent.text.strip()
+                    country = _normalise_country(ent_text)
+                    if country is None:
+                        continue
+                    if country in seen_countries:
+                        continue
+                    seen_countries.add(country)
+                    # Substring guarantee: the original ent_text must be in full_text
+                    if ent_text not in parsed.full_text:
+                        continue
+                    bbox = _find_bbox_for_text(parsed, ent_text)
+                    page_idx, b = bbox if bbox else (0, (0.0, 0.0, 0.0, 0.0))
+                    candidates.append(Candidate(
+                        field=field.name,
+                        value=country,
+                        page=page_idx,
+                        bbox=b,
+                        evidence_text=ent_text,
+                        model="spacy_ner",
+                        confidence=0.65,
+                    ))
+                continue
+
+            if field.name == "supplier_name":
+                # Prefer ORG entities; apply a context-based exclusion to avoid
+                # picking up the buyer (Bill To) organisation.
+                # Build a set of ORG entity texts that appear within 120 chars
+                # after "bill to", "ship to", "customer", "client" in full_text.
+                full_lower = parsed.full_text.lower()
+                buyer_context_orgs: set[str] = set()
+                for buyer_kw in ("bill to", "bill to:", "customer:", "client:"):
+                    pos = full_lower.find(buyer_kw)
+                    if pos >= 0:
+                        snippet = parsed.full_text[pos:pos + 250].lower()
+                        for ent in field_ents:
+                            if ent.text.strip().lower() in snippet:
+                                buyer_context_orgs.add(ent.text.strip())
+
+                # Also find ORG entities near "vendor:", "from:", "supplier:", "seller:"
+                supplier_context_orgs: set[str] = set()
+                for supp_kw in ("vendor:", "vendor", "from:", "supplier:", "seller:", "billed from"):
+                    pos = full_lower.find(supp_kw)
+                    if pos >= 0:
+                        snippet = parsed.full_text[pos:pos + 250].lower()
+                        for ent in field_ents:
+                            if ent.text.strip().lower() in snippet:
+                                supplier_context_orgs.add(ent.text.strip())
+
+                for ent in field_ents:
+                    ent_text = ent.text.strip()
+                    if not ent_text or ent_text not in parsed.full_text:
+                        continue
+
+                    # Skip if clearly a buyer ORG (unless also in supplier context)
+                    is_buyer = ent_text in buyer_context_orgs
+                    is_supplier = ent_text in supplier_context_orgs
+                    if is_buyer and not is_supplier:
+                        continue  # skip buyer-context ORGs
+
+                    bbox = _find_bbox_for_text(parsed, ent_text)
+                    page_idx, b = bbox if bbox else (0, (0.0, 0.0, 0.0, 0.0))
+                    # Confidence boost for entities in the top 40% of page 0
+                    in_header = (page_idx == 0 and b[1] < page0_height * 0.40)
+                    # Further boost if explicitly in supplier context
+                    if is_supplier:
+                        conf = 0.90
+                    elif in_header:
+                        conf = 0.80
+                    else:
+                        conf = 0.60
+                    candidates.append(Candidate(
+                        field=field.name,
+                        value=ent_text,
+                        page=page_idx,
+                        bbox=b,
+                        evidence_text=ent_text,
+                        model="spacy_ner",
+                        confidence=conf,
+                    ))
+                continue
+
+            # Default path for all other fields (requested_by → PERSON, etc.)
+            for ent in field_ents:
                 ent_text = ent.text.strip()
                 if not ent_text:
                     continue
-                # Substring guarantee: entity text must appear in full_text.
-                # spaCy guarantees this by construction (ent.text is a slice of
-                # the input string), but the strip() could in theory break it
-                # for purely-whitespace-surrounded entities. Guard defensively.
+                # Substring guarantee
                 if ent_text not in parsed.full_text:
                     continue
 
@@ -103,7 +444,6 @@ class SpacyNERExtractor(Extractor):
                     bbox=b,
                     evidence_text=ent_text,
                     model="spacy_ner",
-                    # Base confidence; L3 merges with other models' agreement.
                     confidence=0.7,
                 ))
 

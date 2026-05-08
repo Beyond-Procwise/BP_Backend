@@ -306,12 +306,30 @@ class TableTransformerExtractor(Extractor):
          guarantee), then emit a Candidate.
     """
 
+    # Keywords that identify non-data rows (header-area / footer / address rows).
+    # If ANY cell in a row contains one of these keywords (case-insensitive),
+    # the entire row is skipped so label-shaped text never lands in data cells.
+    _SKIP_ROW_KEYWORDS = frozenset({
+        "bill to", "ship to", "deliver to", "sold to", "attention",
+        "subtotal", "sub total", "sub-total",
+        "total amount", "grand total", "invoice total", "amount due",
+        "total incl", "total excl",
+        "tax", "vat", "gst", "hst",
+        "discount", "freight", "shipping",
+        "thank you", "payment", "please",
+        "description", "item description", "product", "service",
+        "qty", "quantity", "unit price", "rate", "amount", "extended",
+        "bill to:", "ship to:", "deliver to:",
+    })
+
     def produce_candidates(
         self, parsed: ParsedDocument, schema: DocSchema
     ) -> list[Candidate]:
         if schema.line_items is None:
             return []
         line_fields = schema.line_items.fields
+        # Build a field_type lookup for type-validation of cell values
+        field_type_map: dict[str, str] = {f.name: f.type for f in line_fields}
         candidates: list[Candidate] = []
 
         for page in parsed.pages:
@@ -347,6 +365,22 @@ class TableTransformerExtractor(Extractor):
 
             # Emit candidates for data rows
             for row_idx, row in enumerate(data_rows):
+                # Collect all cell texts for this row to check for label keywords
+                row_cell_texts: list[str] = []
+                for col_idx, col_bbox in enumerate(row["columns"]):
+                    cell_bbox = _intersect(row["bbox"], col_bbox)
+                    if not _bbox_has_area(cell_bbox):
+                        row_cell_texts.append("")
+                        continue
+                    cell_tokens = _tokens_in_bbox(page.tokens, cell_bbox)
+                    cell_tokens.sort(key=lambda t: t.bbox[0])
+                    row_cell_texts.append(" ".join(t.text for t in cell_tokens).strip())
+
+                # Skip the entire row if any cell contains a non-data keyword
+                combined_row_text = " ".join(row_cell_texts).lower()
+                if self._row_is_label_like(combined_row_text):
+                    continue
+
                 for col_idx, col_bbox in enumerate(row["columns"]):
                     field = col_to_field.get(col_idx)
                     if field is None:
@@ -378,6 +412,12 @@ class TableTransformerExtractor(Extractor):
                         else:
                             continue  # no grounded text found → skip
 
+                    # Type-validation: for typed fields (money/decimal/date),
+                    # reject cell values that don't parse to the expected type.
+                    field_type = field_type_map.get(field.name, "string")
+                    if not self._cell_passes_type_check(cell_text, field_type):
+                        continue
+
                     candidates.append(
                         Candidate(
                             field=f"line_items[{row_idx}].{field.name}",
@@ -391,6 +431,24 @@ class TableTransformerExtractor(Extractor):
                     )
 
         return candidates
+
+    def _row_is_label_like(self, combined_row_text_lower: str) -> bool:
+        """Return True if this row looks like a header/footer/address row."""
+        for kw in self._SKIP_ROW_KEYWORDS:
+            if kw in combined_row_text_lower:
+                return True
+        return False
+
+    def _cell_passes_type_check(self, cell_text: str, field_type: str) -> bool:
+        """Return True if cell_text is plausible for field_type."""
+        if field_type in ("money", "decimal"):
+            from src.services.extraction_v2.parsers.amounts import parse_amount
+            return parse_amount(cell_text) is not None
+        if field_type == "iso_date":
+            from src.services.extraction_v2.parsers.dates import parse_date
+            return parse_date(cell_text) is not None
+        # string fields: just need non-empty, non-pure-label text
+        return bool(cell_text.strip())
 
     # ---------------------------------------------------------------------- #
     # Column → field matching                                                  #
