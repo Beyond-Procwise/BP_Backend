@@ -302,6 +302,20 @@ def _extract_intra_token(token_text: str, label: str, field_type: str) -> str | 
     text = token_text.strip()
     label_lower = label.lower().strip()
 
+    # Strategy 0: "Label # value" pattern (common in US-style quote/PO headers)
+    # Handles "Quotation  # WSG100025", "Invoice # INV-001", "PO # 12345"
+    # where "#" acts as separator between label and value.
+    label_escaped_0 = re.escape(label.strip().rstrip("#").strip())
+    hash_pattern = re.compile(
+        rf"(?:^|(?<=\s)){label_escaped_0}\s*#\s*(.+?)(?:\s|$)",
+        re.IGNORECASE,
+    )
+    mh = hash_pattern.search(text)
+    if mh:
+        raw_val = mh.group(1).strip()
+        if _validate_extracted_value(raw_val, field_type):
+            return raw_val
+
     # Strategy 1: explicit "Label: value" pattern within the compound token
     # Build a pattern for this specific label
     label_escaped = re.escape(label.strip())

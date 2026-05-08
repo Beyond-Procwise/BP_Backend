@@ -13,12 +13,14 @@ fields:
       - "Quote #"
       - "Quotation Number"
       - "Quotation No"
+      - "Quotation #"
       - "Reference"
       - "Ref No"
     extractors:
       - layoutlmv3
       - sbert_anchor
       - vendor_template
+      - qa_roberta
     judge:
       tiebreaker: true
       grounded_last_resort: true
