@@ -12,6 +12,7 @@ Coordinate notes (Docling 2.x):
   and the entire document is placed on a single synthetic Page(index=0).
 """
 
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -30,12 +31,15 @@ from src.services.extraction_v3.schemas.parsed_document import (
 
 # Module-level singleton — HuggingFace models load once per process / pytest session.
 _converter: DocumentConverter | None = None
+_converter_lock = threading.Lock()
 
 
 def _get_converter() -> DocumentConverter:
     global _converter
     if _converter is None:
-        _converter = DocumentConverter()
+        with _converter_lock:
+            if _converter is None:
+                _converter = DocumentConverter()
     return _converter
 
 
