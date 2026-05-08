@@ -1,0 +1,6 @@
+doc_type: purchase_order
+db_table: proc.bp_purchase_order
+db_lines_table: proc.bp_po_line_items
+fields: []
+line_items: null
+document_invariants: []

@@ -1,0 +1,6 @@
+doc_type: quote
+db_table: proc.bp_quote
+db_lines_table: proc.bp_quote_line_items
+fields: []
+line_items: null
+document_invariants: []

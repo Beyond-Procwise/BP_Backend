@@ -1,0 +1,6 @@
+doc_type: contract
+db_table: proc.bp_contracts
+db_lines_table: null
+fields: []
+line_items: null
+document_invariants: []

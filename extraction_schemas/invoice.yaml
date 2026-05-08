@@ -1,0 +1,520 @@
+doc_type: invoice
+db_table: proc.bp_invoice
+db_lines_table: proc.bp_invoice_line_items
+
+fields:
+  - name: invoice_id
+    type: string
+    required: true
+    db_column: invoice_id
+    canonical_labels:
+      - "Invoice Number"
+      - "Invoice No"
+      - "Invoice #"
+      - "Inv No"
+      - "Document Number"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: supplier_name
+    type: string
+    required: true
+    db_column: null
+    resolves_to_db_column: supplier_id
+    canonical_labels:
+      - "Supplier"
+      - "Vendor"
+      - "From"
+      - "Billed From"
+      - "Seller"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "ORG"
+    invariants: []
+
+  - name: po_id
+    type: string
+    required: false
+    db_column: po_id
+    canonical_labels:
+      - "Purchase Order"
+      - "PO Number"
+      - "PO No"
+      - "Order Reference"
+      - "PO Ref"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: buyer_id
+    type: string
+    required: false
+    db_column: buyer_id
+    canonical_labels:
+      - "Bill To"
+      - "Customer"
+      - "Buyer"
+      - "Client"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: requested_by
+    type: string
+    required: false
+    db_column: requested_by
+    canonical_labels:
+      - "Requested By"
+      - "Requestor"
+      - "Raised By"
+      - "Ordered By"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "PERSON"
+    invariants: []
+
+  - name: requested_date
+    type: iso_date
+    required: false
+    db_column: requested_date
+    canonical_labels:
+      - "Request Date"
+      - "Requested Date"
+      - "Order Date"
+      - "Requisition Date"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: invoice_date
+    type: iso_date
+    required: true
+    db_column: invoice_date
+    canonical_labels:
+      - "Invoice Date"
+      - "Date of Invoice"
+      - "Billing Date"
+      - "Issue Date"
+      - "Date Issued"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: due_date
+    type: iso_date
+    required: false
+    db_column: due_date
+    canonical_labels:
+      - "Due Date"
+      - "Payment Due"
+      - "Pay By"
+      - "Payment Due Date"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: invoice_paid_date
+    type: iso_date
+    required: false
+    db_column: invoice_paid_date
+    canonical_labels:
+      - "Paid Date"
+      - "Date Paid"
+      - "Payment Date"
+      - "Settled Date"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: payment_terms
+    type: string
+    required: false
+    db_column: payment_terms
+    canonical_labels:
+      - "Payment Terms"
+      - "Terms"
+      - "Net Terms"
+      - "Terms of Payment"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: currency
+    type: string
+    required: true
+    db_column: currency
+    canonical_labels:
+      - "Currency"
+      - "CCY"
+      - "Invoice Currency"
+      - "Billing Currency"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: invoice_amount
+    type: money
+    required: true
+    db_column: invoice_amount
+    canonical_labels:
+      - "Subtotal"
+      - "Net Amount"
+      - "Invoice Amount"
+      - "Amount Before Tax"
+      - "Amount Due (Excl. Tax)"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - subtotal_closure
+
+  - name: tax_percent
+    type: decimal
+    required: false
+    db_column: tax_percent
+    canonical_labels:
+      - "Tax Rate"
+      - "VAT Rate"
+      - "GST Rate"
+      - "Tax %"
+      - "Tax Percentage"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - tax_closure
+
+  - name: tax_amount
+    type: money
+    required: false
+    db_column: tax_amount
+    canonical_labels:
+      - "Tax Amount"
+      - "VAT Amount"
+      - "GST Amount"
+      - "Tax"
+      - "Tax Total"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - tax_closure
+
+  - name: invoice_total_incl_tax
+    type: money
+    required: false
+    db_column: invoice_total_incl_tax
+    canonical_labels:
+      - "Total Amount"
+      - "Grand Total"
+      - "Invoice Total"
+      - "Amount Due"
+      - "Total Incl. Tax"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - tax_closure
+
+  - name: exchange_rate_to_usd
+    type: decimal
+    required: false
+    db_column: exchange_rate_to_usd
+    canonical_labels:
+      - "Exchange Rate"
+      - "FX Rate"
+      - "Rate to USD"
+      - "Conversion Rate"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: converted_amount_usd
+    type: money
+    required: false
+    db_column: converted_amount_usd
+    canonical_labels:
+      - "USD Equivalent"
+      - "Amount in USD"
+      - "Converted Amount"
+      - "USD Amount"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: country
+    type: string
+    required: false
+    db_column: country
+    canonical_labels:
+      - "Country"
+      - "Billing Country"
+      - "Country of Origin"
+      - "Supplier Country"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "GPE"
+    invariants: []
+
+  - name: region
+    type: string
+    required: false
+    db_column: region
+    canonical_labels:
+      - "Region"
+      - "State"
+      - "Province"
+      - "County"
+      - "Territory"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+line_items:
+  primary_extractor: table_transformer
+  fallback_extractor: layoutlmv3
+  fields:
+    - name: item_description
+      type: string
+      required: true
+      db_column: item_description
+      canonical_labels:
+        - "Description"
+        - "Item Description"
+        - "Item"
+        - "Product"
+        - "Service Description"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: quantity
+      type: decimal
+      required: false
+      db_column: quantity
+      canonical_labels:
+        - "Qty"
+        - "Quantity"
+        - "Units"
+        - "No. of Units"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_price
+      type: money
+      required: false
+      db_column: unit_price
+      canonical_labels:
+        - "Unit Price"
+        - "Rate"
+        - "Price Each"
+        - "Unit Cost"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: line_amount
+      type: money
+      required: true
+      db_column: line_amount
+      canonical_labels:
+        - "Amount"
+        - "Line Amount"
+        - "Line Total"
+        - "Extended Amount"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: tax_percent
+      type: decimal
+      required: false
+      db_column: tax_percent
+      canonical_labels:
+        - "Tax %"
+        - "Tax Rate"
+        - "VAT %"
+        - "GST %"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: tax_amount
+      type: money
+      required: false
+      db_column: tax_amount
+      canonical_labels:
+        - "Tax"
+        - "VAT"
+        - "Tax Amount"
+        - "GST Amount"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: total_amount_incl_tax
+      type: money
+      required: false
+      db_column: total_amount_incl_tax
+      canonical_labels:
+        - "Total"
+        - "Total Incl. Tax"
+        - "Line Total (Incl. Tax)"
+        - "Amount Incl. Tax"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+  invariants:
+    - line_arithmetic
+    - line_sum_closure
+
+document_invariants:
+  - tax_closure
+  - grand_total_closure
+  - currency_consistency
+  - scale_mismatch
