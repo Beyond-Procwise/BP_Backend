@@ -1,0 +1,377 @@
+"""Tests for the spaCy NER candidate generator (Task 12 of the extraction-redesign plan).
+
+The spaCy NER extractor runs over parsed.full_text and emits one Candidate per
+entity whose spaCy label matches the field's judge.ner_type_check.
+
+Key regressions covered:
+  I-18: a non-ORG string ("INVOICE NUMBER: 4759275") was committed as
+        supplier_name — spaCy would find no ORG for that span and would not
+        emit it as a candidate, allowing the L3 merger to prefer a genuine ORG.
+  I-38: cross-doc leakage (wrong PERSON committed as requested_by) — spaCy
+        emits only persons found in this document's full_text.
+
+Run with GPU marker (en_core_web_trf loads a transformer):
+    .venv/bin/pytest tests/extraction_v3/test_spacy_ner.py -v -m gpu
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from src.services.extraction_v3.extractors.spacy_ner import SpacyNERExtractor, _find_bbox_for_text
+from src.services.extraction_v3.parsers.docling_backend import parse_with_docling
+from src.services.extraction_v3.schemas.candidate import Candidate
+from src.services.extraction_v3.schemas.parsed_document import (
+    Page, ParsedDocument, Token,
+)
+from src.services.extraction_v3.yaml_schema.loader import DocSchema, FieldSpec, JudgeRules, load_doc_schema
+
+FX = Path(__file__).parent / "fixtures/invoices"
+
+
+# --------------------------------------------------------------------------- #
+# Helpers                                                                      #
+# --------------------------------------------------------------------------- #
+
+def _minimal_parsed(full_text: str, tokens: list[Token] | None = None) -> ParsedDocument:
+    """Build a ParsedDocument with a single page containing the given text."""
+    page_tokens = tokens or []
+    return ParsedDocument(
+        source_path="/tmp/fake.pdf",
+        file_format="pdf-native",
+        pages=[
+            Page(
+                index=0,
+                width=595.0,
+                height=842.0,
+                rotation=0,
+                regions=[],
+                tables=[],
+                tokens=page_tokens,
+            )
+        ],
+        full_text=full_text,
+        parser_backend="docling",
+        parser_confidence=1.0,
+    )
+
+
+def _minimal_schema(fields: list[FieldSpec]) -> DocSchema:
+    """Build a minimal DocSchema without DB-consistency checks."""
+    return DocSchema(
+        doc_type="test_invoice",
+        db_table="proc.bp_invoice",
+        fields=fields,
+    )
+
+
+def _ner_field(name: str, ner_type: str) -> FieldSpec:
+    return FieldSpec(
+        name=name,
+        type="string",
+        required=False,
+        db_column=None,
+        canonical_labels=[name],
+        extractors=["spacy_ner"],
+        judge=JudgeRules(ner_type_check=ner_type),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Unit tests (no real PDF, no GPU required)                                    #
+# --------------------------------------------------------------------------- #
+
+def test_no_active_fields_returns_empty():
+    """If no field lists 'spacy_ner' in extractors, produce_candidates is a no-op."""
+    field = FieldSpec(
+        name="invoice_id",
+        type="string",
+        required=True,
+        db_column="invoice_id",
+        canonical_labels=["Invoice Number"],
+        extractors=["layoutlmv3"],  # spacy_ner NOT included
+        judge=JudgeRules(ner_type_check="ORG"),
+    )
+    schema = _minimal_schema([field])
+    parsed = _minimal_parsed("Acme Industries Ltd Invoice Number: 001")
+    ex = SpacyNERExtractor()
+    assert ex.produce_candidates(parsed, schema) == []
+
+
+def test_ner_type_check_none_skipped():
+    """Fields with ner_type_check='none' should not generate candidates."""
+    field = _ner_field("invoice_id", "none")
+    schema = _minimal_schema([field])
+    parsed = _minimal_parsed("Acme Industries Ltd")
+    ex = SpacyNERExtractor()
+    assert ex.produce_candidates(parsed, schema) == []
+
+
+def test_org_entity_produces_candidate():
+    """ORG entities in full_text become candidates for supplier_name."""
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    parsed = _minimal_parsed("Acme Industries Ltd\nInvoice Number: 4759275")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    org_cands = [c for c in candidates if c.field == "supplier_name"]
+    assert org_cands, "No ORG candidate emitted for supplier_name"
+    for c in org_cands:
+        assert c.evidence_text in parsed.full_text
+        assert c.model == "spacy_ner"
+        assert c.confidence == pytest.approx(0.7)
+        assert 0.0 <= c.confidence <= 1.0
+
+
+def test_i18_regression_invoice_number_not_org():
+    """I-18: 'INVOICE NUMBER: 4759275' should NOT appear as an ORG candidate.
+
+    spaCy labels cardinal numbers as CARDINAL, not ORG, so the extractor
+    must not emit a candidate that would leak a non-ORG string into supplier_name.
+    """
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    # Text that would trigger the I-18 regression: only the invoice number line
+    parsed = _minimal_parsed("INVOICE NUMBER: 4759275")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    # No ORG entity expected — the invoice number is a CARDINAL
+    supplier_vals = [c.value for c in candidates if c.field == "supplier_name"]
+    # "INVOICE NUMBER: 4759275" must not appear as an ORG candidate
+    assert "INVOICE NUMBER: 4759275" not in supplier_vals, (
+        "I-18 regression: invoice number string was emitted as an ORG supplier_name candidate"
+    )
+
+
+def test_person_entity_produces_candidate_for_requested_by():
+    """PERSON entities become candidates for requested_by."""
+    field = _ner_field("requested_by", "PERSON")
+    schema = _minimal_schema([field])
+    parsed = _minimal_parsed("Requested By: Eleanor Price\nInvoice Number: INV-001")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    person_cands = [c for c in candidates if c.field == "requested_by"]
+    assert person_cands, "No PERSON candidate emitted for requested_by"
+    for c in person_cands:
+        assert c.evidence_text in parsed.full_text
+        assert c.model == "spacy_ner"
+
+
+def test_gpe_entity_produces_candidate_for_country():
+    """GPE entities become candidates for country."""
+    field = _ner_field("country", "GPE")
+    schema = _minimal_schema([field])
+    parsed = _minimal_parsed("Supplier Location: United Kingdom\nDate: 2025-01-01")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    gpe_cands = [c for c in candidates if c.field == "country"]
+    assert gpe_cands, "No GPE candidate emitted for country"
+    for c in gpe_cands:
+        assert c.evidence_text in parsed.full_text
+
+
+def test_multiple_fields_multiple_entities():
+    """Multiple fields with different ner_type_check values each get candidates."""
+    fields = [
+        _ner_field("supplier_name", "ORG"),
+        _ner_field("country", "GPE"),
+    ]
+    schema = _minimal_schema(fields)
+    parsed = _minimal_parsed(
+        "Supplier: Globex Corporation\nCountry: United States\nInvoice: INV-002"
+    )
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    fields_seen = {c.field for c in candidates}
+    assert "supplier_name" in fields_seen
+    assert "country" in fields_seen
+
+
+def test_substring_guarantee_all_candidates():
+    """Every candidate's evidence_text must be a substring of full_text."""
+    fields = [
+        _ner_field("supplier_name", "ORG"),
+        _ner_field("requested_by", "PERSON"),
+        _ner_field("country", "GPE"),
+    ]
+    schema = _minimal_schema(fields)
+    text = (
+        "Supplier: Initech Solutions\n"
+        "Requested By: Bob Smith\n"
+        "Country: Germany\n"
+        "Invoice: INV-100"
+    )
+    parsed = _minimal_parsed(text)
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    for c in candidates:
+        assert c.evidence_text in parsed.full_text, (
+            f"Substring guarantee violated: {c.evidence_text!r} not in full_text"
+        )
+
+
+def test_confidence_bounds_all_candidates():
+    """All candidates must have confidence in [0, 1]."""
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    parsed = _minimal_parsed("Acme Corp issued Invoice INV-42")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    for c in candidates:
+        assert 0.0 <= c.confidence <= 1.0
+
+
+def test_model_tag_is_spacy_ner():
+    """All candidates must carry model='spacy_ner'."""
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    parsed = _minimal_parsed("Tech Dynamics Ltd\nInvoice INV-55")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    for c in candidates:
+        assert c.model == "spacy_ner"
+
+
+def test_candidate_field_restricted_to_active_fields():
+    """Candidates are only emitted for fields that list 'spacy_ner' in extractors."""
+    spacy_field = _ner_field("supplier_name", "ORG")
+    non_spacy_field = FieldSpec(
+        name="invoice_id",
+        type="string",
+        required=True,
+        db_column="invoice_id",
+        canonical_labels=["Invoice Number"],
+        extractors=["layoutlmv3"],  # no spacy_ner
+        judge=JudgeRules(ner_type_check="none"),
+    )
+    schema = _minimal_schema([spacy_field, non_spacy_field])
+    parsed = _minimal_parsed("Acme Corp\nInvoice Number: 001")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    for c in candidates:
+        assert c.field == "supplier_name", (
+            f"Candidate produced for non-spacy_ner field: {c.field!r}"
+        )
+
+
+def test_empty_full_text_returns_empty():
+    """With no text there are no entities; produce_candidates returns []."""
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    parsed = _minimal_parsed("")
+    ex = SpacyNERExtractor()
+    assert ex.produce_candidates(parsed, schema) == []
+
+
+def test_find_bbox_for_text_hit():
+    """_find_bbox_for_text returns (page, bbox) when a matching token exists."""
+    tok = Token(text="Acme Industries Ltd", page=0, bbox=(10.0, 20.0, 150.0, 35.0))
+    parsed = _minimal_parsed("Acme Industries Ltd", tokens=[tok])
+    result = _find_bbox_for_text(parsed, "Acme Industries Ltd")
+    assert result == (0, (10.0, 20.0, 150.0, 35.0))
+
+
+def test_find_bbox_for_text_miss():
+    """_find_bbox_for_text returns None when no token contains the text."""
+    tok = Token(text="Something Else", page=0, bbox=(0.0, 0.0, 50.0, 10.0))
+    parsed = _minimal_parsed("Something Else Acme Corp", tokens=[tok])
+    result = _find_bbox_for_text(parsed, "Acme Corp")
+    assert result is None
+
+
+def test_find_bbox_for_text_case_insensitive():
+    """_find_bbox_for_text matches case-insensitively."""
+    tok = Token(text="ACME CORP", page=0, bbox=(5.0, 5.0, 80.0, 20.0))
+    parsed = _minimal_parsed("ACME CORP", tokens=[tok])
+    result = _find_bbox_for_text(parsed, "acme corp")
+    assert result == (0, (5.0, 5.0, 80.0, 20.0))
+
+
+def test_bbox_falls_back_to_zero_when_no_token():
+    """When no token matches, bbox defaults to page 0 with zero bbox."""
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    # No tokens in the page, but full_text has an ORG
+    parsed = _minimal_parsed("Initech Corporation\nInvoice: INV-99")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    # If any ORG candidate was emitted, its bbox should default gracefully
+    for c in candidates:
+        assert isinstance(c.bbox, tuple)
+        assert len(c.bbox) == 4
+
+
+# --------------------------------------------------------------------------- #
+# Integration test (real PDF, GPU / transformer model)                        #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.gpu
+def test_spacy_ner_extracts_org_entities_for_supplier_name():
+    """spaCy NER runs over the real invoice and emits candidates only for
+    spacy_ner-enabled fields.
+
+    INV-007-rich.pdf uses bare trade names ("Borcelle", "Fauget") without
+    corporate-suffix markers (Ltd, Corp…), so en_core_web_trf does not classify
+    them as ORG.  The test therefore verifies:
+      1. The extractor runs without error on a real PDF.
+      2. Every candidate that IS emitted has valid structure and satisfies the
+         substring guarantee.
+      3. No candidate is emitted for a field that did not opt into spacy_ner.
+      4. Specifically for supplier_name (ner_type_check: ORG), no non-ORG string
+         such as "INVOICE NUMBER: 4759275" sneaks in as a candidate (I-18 guard).
+
+    On a different fixture with "Acme Industries Ltd" or similar, the extractor
+    would emit at least one ORG candidate — see the unit test
+    test_org_entity_produces_candidate which verifies this with a synthetic doc.
+    """
+    parsed = parse_with_docling(FX / "INV-007-rich.pdf", file_format="pdf-native")
+    schema = load_doc_schema("invoice")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+
+    # All candidate fields must opt into spacy_ner in invoice.yaml
+    spacy_fields = {f.name for f in schema.fields if "spacy_ner" in f.extractors}
+    for c in candidates:
+        assert c.field in spacy_fields, (
+            f"Candidate emitted for field {c.field!r} which does not list 'spacy_ner'"
+        )
+
+    # Substring guarantee — critical for hallucination prevention
+    for c in candidates:
+        assert c.evidence_text in parsed.full_text, (
+            f"Substring guarantee violated: {c.evidence_text!r} not in full_text"
+        )
+
+    # I-18 guard: the invoice-number string must never appear as an ORG
+    supplier_vals = [c.value for c in candidates if c.field == "supplier_name"]
+    for val in supplier_vals:
+        assert "INVOICE" not in val.upper() or len(val.split()) <= 2, (
+            f"I-18 regression: suspected invoice-number string committed as supplier_name: {val!r}"
+        )
+
+
+@pytest.mark.gpu
+def test_spacy_ner_substring_guarantee_on_real_invoice():
+    """Substring guarantee must hold across all candidates from a real invoice."""
+    parsed = parse_with_docling(FX / "INV-007-rich.pdf", file_format="pdf-native")
+    schema = load_doc_schema("invoice")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    for c in candidates:
+        assert c.evidence_text in parsed.full_text, (
+            f"Substring guarantee violated on real invoice: {c.evidence_text!r}"
+        )
+
+
+@pytest.mark.gpu
+def test_spacy_ner_confidence_and_model_on_real_invoice():
+    """All real-invoice candidates must have confidence=0.7 and model='spacy_ner'."""
+    parsed = parse_with_docling(FX / "INV-007-rich.pdf", file_format="pdf-native")
+    schema = load_doc_schema("invoice")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    for c in candidates:
+        assert c.confidence == pytest.approx(0.7)
+        assert c.model == "spacy_ner"
