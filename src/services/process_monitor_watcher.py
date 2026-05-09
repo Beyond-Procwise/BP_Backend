@@ -20,8 +20,6 @@ from typing import Any, Dict, List, Optional
 import psycopg2
 import psycopg2.extensions
 
-from services.agent_nick_orchestrator import AgentNickOrchestrator
-
 logger = logging.getLogger(__name__)
 
 LISTEN_CHANNEL = "process_monitor_ready"

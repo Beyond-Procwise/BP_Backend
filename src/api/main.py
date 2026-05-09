@@ -149,23 +149,6 @@ async def lifespan(app: FastAPI):
             logger.exception("extraction_v3 schema load failed; continuing without v3 schemas")
             state.extraction_v3_schemas = {}
 
-        # Configure the durable vendor-template store. The orchestrator
-        # uses this to override LLM hallucinations on supplier_name etc.
-        # for known vendor layouts and to learn templates from successful
-        # extractions.
-        try:
-            from services.db import get_conn as _db_get_conn
-            from src.services.extraction_v2.template_service import (
-                configure_template_service,
-            )
-            configure_template_service(get_conn=_db_get_conn)
-            logger.info("Vendor template service initialized (Postgres-backed)")
-        except Exception:
-            logger.exception(
-                "Vendor template service init failed — "
-                "falling back to in-memory; template learning will not persist"
-            )
-
         # Ensure provenance sidecar schema exists.
         try:
             from services.db import get_conn as _prov_db_get_conn
