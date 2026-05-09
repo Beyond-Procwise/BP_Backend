@@ -174,7 +174,12 @@ def parse_with_paddleocr(
         page_images = _rasterize_pdf_pages(p)
     else:
         from PIL import Image  # deferred
-        page_images = [np.array(Image.open(p))]
+        _img = Image.open(p)
+        # PaddleOCR normalizer expects exactly 3 channels (RGB).
+        # Convert RGBA/grayscale images to RGB to avoid IndexError.
+        if _img.mode != "RGB":
+            _img = _img.convert("RGB")
+        page_images = [np.array(_img)]
 
     pages: list[Page] = []
     # C1: full_text is built exclusively from rec_texts (per-line OCR) so that
