@@ -131,9 +131,17 @@ def test_cost_ceiling(mock_tie, mock_grounded, mock_coh):
     # field (and there are several required fields not in cands), but the call
     # itself is counted.
     result = run_judge_orchestrator(cands, schema, "")
-    # 2 tiebreaker calls + 1 coherence call + N grounded calls (mocked None)
+    # 2 tiebreaker calls (succeed, reset failure counter) + grounded calls for missing
+    # required fields (all return None → each increments consecutive_failures).
+    # Circuit breaker trips at 3 consecutive failures, so coherence is skipped if
+    # there are >= 3 missing required fields.
+    _FAIL_FAST_THRESHOLD = 3
     n_required = sum(1 for f in schema.fields if f.required)
     n_required_in_cands = sum(1 for f in schema.fields if f.required and f.name in cands)
     n_required_missing = n_required - n_required_in_cands
-    expected = 2 + n_required_missing + 1
+    # Grounded calls capped at threshold (circuit breaker), tiebreakers reset the counter
+    grounded_calls = min(n_required_missing, _FAIL_FAST_THRESHOLD)
+    # Coherence only runs if circuit breaker hasn't tripped
+    coherence_call = 1 if n_required_missing < _FAIL_FAST_THRESHOLD else 0
+    expected = 2 + grounded_calls + coherence_call
     assert result.judge_calls == expected, f"got {result.judge_calls}, expected {expected}"

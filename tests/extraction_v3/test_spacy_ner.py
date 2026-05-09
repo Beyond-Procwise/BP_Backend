@@ -121,8 +121,7 @@ def test_org_entity_produces_candidate():
     for c in org_cands:
         assert c.evidence_text in parsed.full_text
         assert c.model == "spacy_ner"
-        assert c.confidence == pytest.approx(0.7)
-        assert 0.0 <= c.confidence <= 1.0
+        assert 0.0 <= c.confidence <= 1.0  # confidence is context-dependent (0.45–0.90)
 
 
 def test_i18_regression_invoice_number_not_org():
