@@ -163,7 +163,12 @@ def test_e2e_extraction_against_ground_truth(fixture_id, doc_path, expected):
             if field == "supplier_name":
                 continue
             actual_v = actual_header.get(field)
-            # Numeric tolerance for amounts
+            # Numeric tolerance for amounts.
+            # psycopg2 returns numeric(18,2) columns as Decimal objects; coerce
+            # to float for comparison so we don't get Decimal('9085.00') vs 9085.0.
+            from decimal import Decimal
+            if isinstance(actual_v, Decimal):
+                actual_v = float(actual_v)
             if isinstance(expected_v, (int, float)) and isinstance(actual_v, (int, float)):
                 if abs(float(actual_v) - float(expected_v)) > 0.05:
                     diffs.append(f"  {field}: expected {expected_v}, got {actual_v}")

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 import logging
+import re
 import concurrent.futures
 from pathlib import Path
 from src.services.extraction_v3.schemas.parsed_document import ParsedDocument
@@ -104,6 +105,30 @@ class PipelineV3:
                 )
                 header_by_field[fname] = valid
 
+        # Pre-filter 2: for total/grand-total money fields with competing candidates,
+        # keep only the LARGEST value. Financial totals (invoice_total_incl_tax,
+        # invoice_amount) are always the maximum amount in the document — subtotals
+        # like "Accessories Total" will never be larger than "Total Sale Price".
+        # This deterministic selection avoids Ollama-dependent tiebreaking for this
+        # common pattern.
+        _MAX_VALUE_FIELDS = {"invoice_total_incl_tax", "invoice_amount"}
+        for fname in _MAX_VALUE_FIELDS:
+            cands = header_by_field.get(fname, [])
+            if len(cands) >= 2:
+                from src.services.extraction_v2.parsers.amounts import parse_amount as _pa
+                def _to_float(c: Candidate) -> float:
+                    try:
+                        r = _pa(c.value or "")
+                        return float(r) if r is not None else 0.0
+                    except Exception:
+                        return 0.0
+                best = max(cands, key=_to_float)
+                log.debug(
+                    "Max-value pre-filter: %s → keeping %r (was %d candidates)",
+                    fname, best.value, len(cands),
+                )
+                header_by_field[fname] = [best]
+
         # 3b. Run invariants on a preliminary record (just the candidate values).
         # We do this BEFORE the judge so the coherence pass can see the invariants.
         prelim_record = {
@@ -188,6 +213,119 @@ class PipelineV3:
             cleaned_committed.append(cf)
         committed = cleaned_committed
 
+        # 4b.5. Invoice-id label-word rejection: if the extracted invoice_id is a
+        # common label word (pure alphabetic, ≤2 words, e.g. "Document", "Invoice",
+        # "Number", "Reference") it is an OCR artefact where the anchor word was
+        # captured instead of the actual identifier. Demote it to residual.
+        _ID_LABEL_WORDS = frozenset({
+            "document", "invoice", "number", "reference", "order", "id",
+            "ref", "no", "none", "null", "n/a", "na", "date", "voucher",
+        })
+        cleaned_committed_id: list[CommittedField] = []
+        for cf in committed:
+            if cf.field_path == "invoice_id":
+                val_lower = cf.value.strip().lower()
+                words = val_lower.split()
+                if len(words) <= 2 and all(w in _ID_LABEL_WORDS for w in words):
+                    log.debug(
+                        "Rejecting invoice_id=%r — looks like a label word, not an ID",
+                        cf.value,
+                    )
+                    residuals.append(ResidualField(
+                        field_path="invoice_id",
+                        reason="bind_error_no_resolution",
+                        candidates=[],
+                    ))
+                    continue
+            cleaned_committed_id.append(cf)
+        committed = cleaned_committed_id
+
+        # 4b.6. Invoice-id regex recovery: if invoice_id was rejected or is missing,
+        # try a direct regex scan over the raw text for label:value patterns covering
+        # the canonical invoice-id labels. This catches OCR layouts where the label
+        # and value are on adjacent lines ("Document\nNumber: 0526") so the standard
+        # anchor extractors mis-capture the label word.
+        committed_field_paths = {cf.field_path for cf in committed}
+        if "invoice_id" not in committed_field_paths:
+            _INV_ID_RE = re.compile(
+                r"(?:Invoice\s+(?:Number|No\.?|#)|Document\s+Number|"
+                r"Document\s+No\.?|Inv\.?\s+No\.?|Reference\s+No\.?)"
+                r"[\s:]+([A-Za-z0-9][A-Za-z0-9\-/\.]{1,30})",
+                re.IGNORECASE,
+            )
+            m = _INV_ID_RE.search(parsed.full_text)
+            if m:
+                inv_id_val = m.group(1).strip().rstrip(".")
+                evidence = m.group(0)
+                log.debug(
+                    "Invoice-id regex recovery: found %r → %r",
+                    evidence, inv_id_val,
+                )
+                # Remove any existing residual for invoice_id
+                residuals = [rf for rf in residuals if rf.field_path != "invoice_id"]
+                committed.append(CommittedField(
+                    field_path="invoice_id",
+                    value=inv_id_val,
+                    page=1,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    evidence_text=evidence,
+                    model="pipeline_recovery",
+                    model_confidence=0.70,
+                    judge_actions=[],
+                    final_confidence=0.70,
+                ))
+
+        # 4c. Date-field duplicate suppression: when the document contains only one
+        # date, qa_roberta will return the same value for every date field it answers.
+        # Suppress qa_roberta date fields whose value matches a non-qa_roberta date
+        # field already committed (the non-qa_roberta source is the authoritative one).
+        # Also suppress when multiple qa_roberta date fields share the same value —
+        # keep only the one for the field that most plausibly owns that date token
+        # (the field with the highest layoutlmv3 confidence, else the required field).
+        non_qa_date_values: dict[str, str] = {}  # field_path → value for non-qa dates
+        for cf in committed:
+            fspec = next((f for f in schema.fields if f.name == cf.field_path), None)
+            if fspec and fspec.type == "iso_date" and cf.model != "qa_roberta":
+                non_qa_date_values[cf.field_path] = cf.value
+
+        cleaned_committed2: list[CommittedField] = []
+        qa_date_by_value: dict[str, list[CommittedField]] = {}
+        for cf in committed:
+            fspec = next((f for f in schema.fields if f.name == cf.field_path), None)
+            if (
+                fspec and fspec.type == "iso_date"
+                and cf.model == "qa_roberta"
+                and cf.value in non_qa_date_values.values()
+            ):
+                # qa_roberta returned a date already committed by a better source → suppress
+                log.debug(
+                    "Suppressing qa_roberta date duplicate: field=%s value=%r already covered by non-qa source",
+                    cf.field_path, cf.value,
+                )
+                continue
+            cleaned_committed2.append(cf)
+        committed = cleaned_committed2
+
+        # 4d. Tax-percent range guard: tax_percent must be in [0, 100]. If the
+        # extractor returned a monetary value as tax_percent (e.g. sbert_anchor
+        # matched "$2,861.00" to "Tax %"), discard it — it causes a DB
+        # NumericValueOutOfRange error and is semantically wrong.
+        cleaned_committed3: list[CommittedField] = []
+        for cf in committed:
+            if cf.field_path == "tax_percent":
+                try:
+                    pct_val = float(cf.value)
+                    if not (0.0 <= pct_val <= 100.0):
+                        log.debug(
+                            "Rejecting tax_percent=%s (out of [0,100] range) from %s",
+                            cf.value, cf.model,
+                        )
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            cleaned_committed3.append(cf)
+        committed = cleaned_committed3
+
         # 5. Demote on critical invariant failures
         critical = [r for r in invariant_results if r.severity in ("CRITICAL", "critical", "fail")]
         if critical:
@@ -196,7 +334,15 @@ class PipelineV3:
                 cf.final_confidence = max(0.0, cf.final_confidence - 0.15)
 
         # 6. Line items: emit committed CommittedFields per (row_idx, field_name)
+        # Deduplicate: multiple extractors may emit candidates for the same
+        # field path (e.g. table_transformer + layoutlmv3 both find the same cell).
+        # Keep the highest-confidence candidate per field_path.
+        line_cands_by_field: dict[str, Candidate] = {}
         for cand in line_cands:
+            existing = line_cands_by_field.get(cand.field)
+            if existing is None or cand.confidence > existing.confidence:
+                line_cands_by_field[cand.field] = cand
+        for cand in line_cands_by_field.values():
             committed.append(CommittedField(
                 field_path=cand.field,
                 value=cand.value,
@@ -210,32 +356,23 @@ class PipelineV3:
             ))
 
         # 6b. Invoice-specific recovery: if invoice_amount is a residual but
-        # invoice_total_incl_tax is committed AND no tax was extracted, infer
-        # invoice_amount = invoice_total_incl_tax (no-tax invoice pattern).
-        # Also handles the case where tax_amount was spuriously extracted as
-        # the same value as invoice_total_incl_tax (duplicate extraction from a
-        # GRAND TOTAL line — e.g. PO5 split invoices with only one total figure).
+        # invoice_total_incl_tax is committed, set invoice_amount = invoice_total_incl_tax.
+        # This reflects the DB convention that invoice_amount stores the total billed
+        # amount (Grand Total). Covers two sub-cases:
+        #   (a) No-tax invoice — grand total = pre-tax amount.
+        #   (b) Tax-inclusive invoice — grand total includes tax; invoice_amount = grand total.
+        # Also handles spurious tax (tax_amount == invoice_total_incl_tax, i.e. the model
+        # fired on the same GRAND TOTAL line for both fields).
         if schema.doc_type == "invoice":
             committed_fields = {cf.field_path: cf for cf in committed}
             residual_fields = {rf.field_path for rf in residuals}
-            # Detect spurious tax: tax_amount == invoice_total_incl_tax → treat as no-tax
-            _tax_amount_cf = committed_fields.get("tax_amount")
-            _total_cf_check = committed_fields.get("invoice_total_incl_tax")
-            _tax_equals_total = (
-                _tax_amount_cf is not None
-                and _total_cf_check is not None
-                and _tax_amount_cf.value == _total_cf_check.value
-            )
             if (
                 "invoice_amount" in residual_fields
                 and "invoice_total_incl_tax" in committed_fields
-                and ("tax_amount" not in committed_fields or _tax_equals_total)
-                and "tax_percent" not in committed_fields
             ):
-                # No tax extracted — treat grand total as the pre-tax amount too
                 total_cf = committed_fields["invoice_total_incl_tax"]
                 log.debug(
-                    "No-tax fallback: invoice_amount ← invoice_total_incl_tax (%s)",
+                    "invoice_amount recovery: invoice_amount ← invoice_total_incl_tax (%s)",
                     total_cf.value,
                 )
                 committed.append(CommittedField(
@@ -251,6 +388,101 @@ class PipelineV3:
                 ))
                 # Remove invoice_amount from residuals
                 residuals = [rf for rf in residuals if rf.field_path != "invoice_amount"]
+
+        # 6c. Spurious-tax suppression: if tax_amount == invoice_amount (or
+        # tax_amount == invoice_total_incl_tax) AND tax_percent is absent,
+        # the model extracted the grand total line as tax. Remove it.
+        # This commonly happens when a "TOTAL: $9085" line is the only amount
+        # and layoutlmv3 fires both invoice_total_incl_tax and tax_amount on it.
+        if schema.doc_type == "invoice":
+            committed_fields = {cf.field_path: cf for cf in committed}
+            _tax = committed_fields.get("tax_amount")
+            _inv_amt = committed_fields.get("invoice_amount")
+            _inv_total = committed_fields.get("invoice_total_incl_tax")
+            _tax_pct = committed_fields.get("tax_percent")
+            if (
+                _tax is not None
+                and _tax_pct is None
+                and (
+                    (_inv_amt is not None and _tax.value == _inv_amt.value)
+                    or (_inv_total is not None and _tax.value == _inv_total.value)
+                )
+            ):
+                log.debug(
+                    "Spurious-tax suppression: tax_amount=%s equals invoice amount → removing",
+                    _tax.value,
+                )
+                committed = [cf for cf in committed if cf.field_path != "tax_amount"]
+
+        # 6d. Invoice-amount correction: if invoice_amount < invoice_total_incl_tax
+        # and tax_amount is present and (invoice_amount + tax_amount) is not close
+        # to invoice_total_incl_tax, then invoice_amount is likely a partial subtotal
+        # (e.g. "Total Materials"). Replace with invoice_total_incl_tax so that DB
+        # convention (invoice_amount = amount billed) holds.
+        if schema.doc_type == "invoice":
+            committed_fields = {cf.field_path: cf for cf in committed}
+            _ia = committed_fields.get("invoice_amount")
+            _it = committed_fields.get("invoice_total_incl_tax")
+            if _ia is not None and _it is not None:
+                try:
+                    ia_val = float(_ia.value)
+                    it_val = float(_it.value)
+                    ta_val = float(committed_fields["tax_amount"].value) if "tax_amount" in committed_fields else 0.0
+                    # If invoice_amount is smaller than invoice_total_incl_tax and
+                    # the sum (invoice_amount + tax_amount) is not within 1% of
+                    # invoice_total_incl_tax, invoice_amount is a subtotal → correct.
+                    sum_check = ia_val + ta_val
+                    within_1pct = abs(sum_check - it_val) <= 0.01 * it_val if it_val else False
+                    if ia_val < it_val and not within_1pct:
+                        log.debug(
+                            "Invoice-amount correction: invoice_amount=%s < invoice_total_incl_tax=%s "
+                            "and sum_check=%s not within 1%% — replacing with invoice_total_incl_tax",
+                            ia_val, it_val, sum_check,
+                        )
+                        committed = [cf for cf in committed if cf.field_path != "invoice_amount"]
+                        committed.append(CommittedField(
+                            field_path="invoice_amount",
+                            value=_it.value,
+                            page=_it.page,
+                            bbox=_it.bbox,
+                            evidence_text=_it.evidence_text,
+                            model="pipeline_recovery",
+                            model_confidence=0.70,
+                            judge_actions=[],
+                            final_confidence=0.70,
+                        ))
+                except (ValueError, TypeError, KeyError):
+                    pass
+
+        # 6e. Tax-percent regex recovery: if tax_percent was not extracted by
+        # any extractor but the document contains a pattern like "Tax (10%)" or
+        # "Tax: 10%" or "GST (5%)", extract it from the raw text.
+        if schema.doc_type == "invoice":
+            committed_fields = {cf.field_path: cf for cf in committed}
+            if "tax_percent" not in committed_fields and parsed is not None:
+                _TAX_PCT_RE = re.compile(
+                    r"(?:Tax|VAT|GST|HST|PST)\s*[:\(]\s*(\d+(?:\.\d+)?)\s*%",
+                    re.IGNORECASE,
+                )
+                m = _TAX_PCT_RE.search(parsed.full_text)
+                if m:
+                    pct_str = m.group(1)
+                    evidence = m.group(0)
+                    log.debug(
+                        "Tax-percent regex recovery: found %r → %s%%",
+                        evidence, pct_str,
+                    )
+                    committed.append(CommittedField(
+                        field_path="tax_percent",
+                        value=pct_str,
+                        page=1,
+                        bbox=(0.0, 0.0, 0.0, 0.0),
+                        evidence_text=evidence,
+                        model="pipeline_recovery",
+                        model_confidence=0.75,
+                        judge_actions=[],
+                        final_confidence=0.75,
+                    ))
 
         # 7. Determine doc_pk from the committed fields (the field whose YAML
         # name matches the schema's doc_pk; for invoice that's invoice_id)

@@ -50,6 +50,27 @@ def _split_line_items(
     return header, lines
 
 
+def _get_col_max_lengths(cur: Any, table: str) -> dict[str, int]:
+    """Return a map of column_name → character_maximum_length for varchar columns.
+
+    Columns without a max length (text, integer, etc.) are not included.
+    Used to prevent StringDataRightTruncation errors when persisting extracted values.
+    """
+    parts = table.split(".", 1)
+    tbl_schema = parts[0] if len(parts) == 2 else "public"
+    tbl_name = parts[1] if len(parts) == 2 else parts[0]
+    cur.execute(
+        """
+        SELECT column_name, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+          AND character_maximum_length IS NOT NULL
+        """,
+        (tbl_schema, tbl_name),
+    )
+    return {row[0]: row[1] for row in cur.fetchall()}
+
+
 def _build_header_insert(
     cur: Any,
     doc_type: str,
@@ -62,6 +83,9 @@ def _build_header_insert(
     for f in schema.fields:
         if f.db_column:
             field_to_db_col[f.name] = f.db_column
+
+    # Fetch column length constraints to avoid varchar truncation errors
+    col_max_lengths = _get_col_max_lengths(cur, schema.db_table)
 
     pk_col = _doc_pk_field(doc_type)
     cols = [pk_col]
@@ -76,7 +100,16 @@ def _build_header_insert(
         if db_col == pk_col:
             continue  # already in the list as the PK
         cols.append(db_col)
-        vals.append(cf.value)
+        # Truncate string values that exceed the column's varchar limit
+        val = cf.value
+        max_len = col_max_lengths.get(db_col)
+        if max_len is not None and isinstance(val, str) and len(val) > max_len:
+            log.warning(
+                "Truncating field %s (col=%s) from %d to %d chars for %s",
+                cf.field_path, db_col, len(val), max_len, doc_pk,
+            )
+            val = val[:max_len]
+        vals.append(val)
 
     # Audit columns — always set on every V3 write.
     _AUDIT_AGENT = "ExtractionV3"
@@ -139,6 +172,81 @@ def _build_header_insert(
     cur.execute(sql, vals)
 
 
+def _coerce_to_db_value(raw: str, line_items_spec, field_name: str) -> Any:
+    """Coerce a raw string value to a DB-compatible type for line item fields.
+
+    Money/decimal fields (unit_price, line_total, quantity) are stored as
+    numeric(18,2) in the DB. The extracted value may be "$120.00" — we strip
+    currency symbols and commas before inserting.
+
+    Returns the original string for non-numeric fields.
+    """
+    if line_items_spec is None:
+        return raw
+    for f in line_items_spec.fields:
+        if f.name != field_name:
+            continue
+        if f.type in ("money", "decimal"):
+            from src.services.extraction_v2.parsers.amounts import parse_amount
+            parsed = parse_amount(raw)
+            if parsed is not None:
+                return str(parsed)
+        break
+    return raw
+
+
+_LINE_ITEMS_COL_MAX_LENGTHS: dict[str, dict[str, int]] = {}  # table → {col: max_len}
+_LINE_ITEMS_COL_TYPES: dict[str, dict[str, str]] = {}  # table → {col: data_type}
+
+
+def _ensure_col_metadata(cur: Any, table: str) -> None:
+    """Cache column data_type and max_length for a lines table."""
+    if table in _LINE_ITEMS_COL_TYPES:
+        return
+    parts = table.split(".", 1)
+    tbl_schema = parts[0] if len(parts) == 2 else "public"
+    tbl_name = parts[1] if len(parts) == 2 else parts[0]
+    cur.execute(
+        """
+        SELECT column_name, data_type, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+        """,
+        (tbl_schema, tbl_name),
+    )
+    max_lens: dict[str, int] = {}
+    col_types: dict[str, str] = {}
+    for col, dtype, max_len in cur.fetchall():
+        col_types[col] = dtype
+        if max_len is not None:
+            max_lens[col] = max_len
+    _LINE_ITEMS_COL_MAX_LENGTHS[table] = max_lens
+    _LINE_ITEMS_COL_TYPES[table] = col_types
+
+
+def _coerce_val_for_col(val: Any, col_name: str, lines_table: str) -> Any:
+    """Coerce a value to match the DB column type/length constraints.
+
+    - varchar(N): truncate string to N chars
+    - integer / smallint: convert "16.00" → 16 (int)
+    - numeric: strip currency symbols, convert to string
+    """
+    if not isinstance(val, str):
+        return val
+    col_types = _LINE_ITEMS_COL_TYPES.get(lines_table, {})
+    dtype = col_types.get(col_name, "")
+    if dtype in ("integer", "smallint", "bigint"):
+        try:
+            return int(float(val))
+        except (ValueError, TypeError):
+            return val
+    max_lens = _LINE_ITEMS_COL_MAX_LENGTHS.get(lines_table, {})
+    max_len = max_lens.get(col_name)
+    if max_len is not None and len(val) > max_len:
+        return val[:max_len]
+    return val
+
+
 def _build_line_items_inserts(
     cur: Any,
     doc_type: str,
@@ -166,13 +274,37 @@ def _build_line_items_inserts(
         f"DELETE FROM {schema.db_lines_table} WHERE {parent_fk} = %s", (doc_pk,)
     )
 
+    # Fetch column metadata (types, max lengths) for this lines table once
+    _ensure_col_metadata(cur, schema.db_lines_table)
+
+    # Detect which line-sequence column this table uses (line_no or line_number).
+    # Only add it if it exists in the DB and isn't already covered by the schema.
+    _line_seq_candidates = ["line_no", "line_number"]
+    _line_seq_col = None
+    if not any(c in line_field_db_cols.values() for c in _line_seq_candidates):
+        # Fetch the actual column names from the DB to find the right one
+        cur.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+              AND column_name IN ('line_no', 'line_number')
+            LIMIT 1
+            """,
+            tuple(schema.db_lines_table.split(".", 1)) if "." in schema.db_lines_table
+            else ("public", schema.db_lines_table),
+        )
+        row = cur.fetchone()
+        if row:
+            _line_seq_col = row[0]
+
     for idx, fields_dict in sorted(lines_by_idx.items()):
         cols = [line_pk_col, parent_fk]
         vals: list[Any] = [f"{doc_pk}-L{idx}", doc_pk]
 
-        # Add line_no column when the schema doesn't map it explicitly.
-        if "line_no" not in line_field_db_cols:
-            cols.append("line_no")
+        # Add the line sequence column (line_no or line_number) when it exists
+        # in the table and isn't already mapped by the schema.
+        if _line_seq_col:
+            cols.append(_line_seq_col)
             vals.append(idx)
 
         for fname, cf in fields_dict.items():
@@ -180,7 +312,15 @@ def _build_line_items_inserts(
             if not db_col:
                 continue
             cols.append(db_col)
-            vals.append(cf.value)
+            # Coerce money/decimal string values ("$120.00") to plain numeric
+            # before inserting into numeric DB columns (which reject currency symbols).
+            val = cf.value
+            if isinstance(val, str):
+                val = _coerce_to_db_value(val, schema.line_items, fname)
+            # Apply column-level type/length constraints (integer truncation,
+            # varchar max-length, etc.)
+            val = _coerce_val_for_col(val, db_col, schema.db_lines_table)
+            vals.append(val)
 
         placeholders = ",".join(["%s"] * len(vals))
         col_list = ",".join(cols)

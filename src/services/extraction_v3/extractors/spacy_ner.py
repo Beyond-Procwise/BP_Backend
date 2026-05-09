@@ -310,9 +310,44 @@ def _normalise_country(raw_gpe: str) -> str | None:
 
     Returns a country string if we can map it, or None if the GPE is not
     in our lookup table and doesn't look like a country on its own.
+
+    Handles trailing non-geographic noise like "New York Phone" by progressively
+    stripping trailing words until a match is found.
     """
-    key = raw_gpe.strip().lower()
-    return _CITY_REGION_TO_COUNTRY.get(key)
+    s = raw_gpe.strip()
+    words = s.split()
+    # Try progressively shorter prefixes (strip trailing words one at a time)
+    # so "New York Phone" → tries "New York Phone" then "New York" → matches.
+    for i in range(len(words), 0, -1):
+        candidate_key = " ".join(words[:i]).lower()
+        result = _CITY_REGION_TO_COUNTRY.get(candidate_key)
+        if result is not None:
+            return result
+    return None
+
+
+# Suffixes that follow a company name but are NOT part of the name itself.
+# spaCy often bundles "Attn", "Attn:", "Attention:" into the ORG span because
+# they appear immediately after the company name with no punctuation boundary.
+# The pattern matches:
+#  - " Attn" at end-of-string  (e.g. "TechTonic Attn")
+#  - " Attn: ..." with trailing content  (e.g. "TechTonic Attn: Mr. John Doe")
+_ATTN_SUFFIX_RE = re.compile(
+    r"\s+(?:Attn\.?|Attention|Att\.?|c/o|Care\s+of|Contact|RE:?)(?:[\s:].*)?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _clean_org_name(raw_org: str) -> str:
+    """Strip attention/contact suffixes from an ORG entity name.
+
+    "TechTonic Attn" → "TechTonic"
+    "TechTonic Attn: Mr. John Doe" → "TechTonic"
+    "ACME Ltd Attention: Finance Dept" → "ACME Ltd"
+    Strips trailing punctuation after cleaning.
+    """
+    cleaned = _ATTN_SUFFIX_RE.sub("", raw_org).strip().rstrip(",;:-").strip()
+    return cleaned if cleaned else raw_org
 
 
 @register_extractor("spacy_ner")
@@ -358,8 +393,10 @@ class SpacyNERExtractor(Extractor):
 
             field_ents = ents_by_label.get(spacy_label, [])
 
-            if field.name == "country":
-                # Special handling: GPE → country normalisation
+            if spacy_label == "GPE":
+                # Special handling for all GPE fields: normalise raw GPE entity
+                # to a country name via the city/state/region lookup table.
+                # Applies to both invoice.country and purchase_order.ship_to_country.
                 seen_countries: set[str] = set()
                 for ent in field_ents:
                     ent_text = ent.text.strip()
@@ -369,7 +406,8 @@ class SpacyNERExtractor(Extractor):
                     if country in seen_countries:
                         continue
                     seen_countries.add(country)
-                    # Substring guarantee: the original ent_text must be in full_text
+                    # Substring guarantee: the original ent_text must be in full_text.
+                    # Note: value=country may NOT be a substring; evidence_text=ent_text is.
                     if ent_text not in parsed.full_text:
                         continue
                     bbox = _find_bbox_for_text(parsed, ent_text)
@@ -440,6 +478,14 @@ class SpacyNERExtractor(Extractor):
                     if ent_text in table_context_orgs:
                         continue
 
+                    # Strip "Attn:", "Attention:" and similar suffixes that spaCy
+                    # bundles into the ORG span (e.g. "TechTonic Attn" → "TechTonic").
+                    # evidence_text keeps the raw ent_text for substring guarantee;
+                    # value carries the cleaned form.
+                    cleaned_name = _clean_org_name(ent_text)
+                    if not cleaned_name:
+                        continue
+
                     is_buyer = ent_text in buyer_context_orgs
                     is_supplier = ent_text in supplier_context_orgs
 
@@ -474,7 +520,7 @@ class SpacyNERExtractor(Extractor):
 
                     candidates.append(Candidate(
                         field=field.name,
-                        value=ent_text,
+                        value=cleaned_name,
                         page=page_idx,
                         bbox=b,
                         evidence_text=ent_text,

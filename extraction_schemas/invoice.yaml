@@ -56,6 +56,10 @@ fields:
       - "Purchase Order"
       - "PO Number"
       - "PO No"
+      - "PO No."
+      - "Purchase Order Number"
+      - "Purchase Order No"
+      - "Purchase Order No."
       - "Order Reference"
       - "PO Ref"
     extractors:
@@ -242,12 +246,6 @@ fields:
       - "Subtotal ($)"
       - "Total Before Tax"
       - "Net Total"
-      - "Total Materials"
-      - "Total Labor"
-      - "Materials Total"
-      - "Labour Total"
-      - "Services Total"
-      - "Total Services"
     extractors:
       - layoutlmv3
       - sbert_anchor

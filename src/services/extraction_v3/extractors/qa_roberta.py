@@ -32,6 +32,13 @@ _GARBAGE_RE = re.compile(r"^#+$|^[-=\*]{1,}$|^\W+$")
 # These start with a currency symbol and contain digits.
 _MONEY_SHAPED_RE = re.compile(r"^[\$£€¥₹]\s*[\d,]")
 
+# Table-column-header pattern: short ALL-CAPS phrase (2–4 words) with no digits.
+# roberta often returns column headers like "UNIT PRICE", "ITEM & DESCRIPTION",
+# "LINE TOTAL" as answers when the real answer is absent from the context.
+_TABLE_COLUMN_HEADER_RE = re.compile(
+    r"^[A-Z][A-Z\s&\/\.\-]{1,40}$"
+)
+
 _tokenizer = None
 _model = None
 _lock = threading.Lock()
@@ -175,6 +182,22 @@ class QARobertaExtractor(Extractor):
             # Reject money-shaped answers for string-type fields
             # (e.g. "$3" being returned as po_id because it's near the total amount).
             if field.type == "string" and _MONEY_SHAPED_RE.match(answer_stripped):
+                continue
+            # Reject table column headers for string-type fields.
+            # roberta returns "UNIT PRICE", "LINE TOTAL" etc. when the real
+            # answer is absent — these are short ALL-CAPS phrases inside markdown
+            # table rows.
+            if (
+                field.type == "string"
+                and _TABLE_COLUMN_HEADER_RE.match(answer_stripped)
+                and len(answer_stripped.split()) <= 4
+            ):
+                # Double-check: appears in a markdown table row (starts with "|")
+                for line in parsed.full_text.splitlines():
+                    if "|" in line and answer_stripped in line:
+                        answer = ""  # mark for rejection
+                        break
+            if not answer:
                 continue
             bbox_loc = _find_bbox_for_text(parsed, answer)
             page_idx, b = bbox_loc if bbox_loc else (0, (0.0, 0.0, 0.0, 0.0))

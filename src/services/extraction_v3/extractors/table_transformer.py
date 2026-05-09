@@ -30,6 +30,7 @@ before token intersection so that the coordinate systems are aligned.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
 from typing import Sequence
@@ -42,6 +43,8 @@ from src.services.extraction_v3.schemas.candidate import Candidate
 from src.services.extraction_v3.schemas.parsed_document import ParsedDocument, Token, Page
 from src.services.extraction_v3.yaml_schema.loader import DocSchema, FieldSpec
 from src.services.extraction_v3.yaml_schema.registry import register_extractor
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Model constants
@@ -332,6 +335,20 @@ class TableTransformerExtractor(Extractor):
         field_type_map: dict[str, str] = {f.name: f.type for f in line_fields}
         candidates: list[Candidate] = []
 
+        # --- Fast path: use docling-parsed tables when available ---
+        # Docling produces structured Table/Cell objects with pre-extracted text
+        # and bboxes. When these are present, skip the expensive ML rasterization
+        # path and extract line items directly from the cell grid.
+        docling_candidates = self._extract_from_docling_tables(
+            parsed, schema, line_fields, field_type_map
+        )
+        if docling_candidates:
+            log.debug(
+                "table_transformer: using docling tables (%d candidates)",
+                len(docling_candidates),
+            )
+            return docling_candidates
+
         for page in parsed.pages:
             try:
                 img = _rasterize_page(parsed, page.index)
@@ -487,3 +504,121 @@ class TableTransformerExtractor(Extractor):
                 out[col_idx] = best_field
 
         return out
+
+    # ---------------------------------------------------------------------- #
+    # Docling-table fast path                                                  #
+    # ---------------------------------------------------------------------- #
+
+    def _extract_from_docling_tables(
+        self,
+        parsed: ParsedDocument,
+        schema: DocSchema,
+        line_fields: list[FieldSpec],
+        field_type_map: dict[str, str],
+    ) -> list[Candidate]:
+        """Extract line-item candidates directly from docling-parsed Table/Cell objects.
+
+        Docling already identifies table structure and extracts cell text with
+        individual bboxes.  When this structured data is present, we use it
+        directly instead of re-detecting structure via the ML model.
+
+        Strategy:
+          - Row 0 (header_row_index) provides column labels → map to schema fields.
+          - Remaining rows are data rows → emit one candidate per (col, field) pair.
+          - Cell text must appear in parsed.full_text (substring guarantee); if the
+            combined cell text doesn't appear, try individual words.
+        """
+        from rapidfuzz import fuzz
+
+        candidates: list[Candidate] = []
+        row_offset = 0  # global row index across all tables on all pages
+
+        for page in parsed.pages:
+            for tbl in page.tables:
+                if not tbl.rows:
+                    continue
+
+                # Identify header row
+                header_row_idx = tbl.header_row_index if tbl.header_row_index is not None else 0
+                if header_row_idx >= len(tbl.rows):
+                    continue
+                header_cells = tbl.rows[header_row_idx]
+
+                # Map column index → schema field via fuzzy label matching
+                col_to_field: dict[int, FieldSpec] = {}
+                for col_idx, cell in enumerate(header_cells):
+                    header_text = cell.text.strip().lower()
+                    if not header_text:
+                        continue
+                    best_field = None
+                    best_score = 0.0
+                    for field in line_fields:
+                        labels = field.canonical_labels or [field.name.replace("_", " ")]
+                        for label in labels:
+                            score = float(fuzz.partial_ratio(header_text, label.lower()))
+                            if score > best_score:
+                                best_score = score
+                                best_field = field
+                    if best_field is not None and best_score >= _COL_MATCH_MIN_SCORE:
+                        col_to_field[col_idx] = best_field
+
+                if not col_to_field:
+                    continue
+
+                # Process data rows (skip header row)
+                data_row_counter = 0
+                for row_idx, row_cells in enumerate(tbl.rows):
+                    if row_idx == header_row_idx:
+                        continue
+
+                    # Skip label-like rows (total, subtotal, etc.)
+                    combined_row_text = " ".join(c.text for c in row_cells).lower()
+                    if self._row_is_label_like(combined_row_text):
+                        continue
+
+                    for col_idx, cell in enumerate(row_cells):
+                        field = col_to_field.get(col_idx)
+                        if field is None:
+                            continue
+
+                        cell_text = cell.text.strip()
+                        if not cell_text:
+                            continue
+
+                        # Substring guarantee: cell_text must appear in full_text.
+                        # Docling markdown-escapes "|" as "&#124;" in table cells,
+                        # so the raw cell.text has "|" but full_text has "&#124;".
+                        # We try both the raw form and the HTML-escaped form.
+                        evidence_text = cell_text
+                        if cell_text not in parsed.full_text:
+                            html_escaped = cell_text.replace("|", "&#124;")
+                            if html_escaped in parsed.full_text:
+                                evidence_text = html_escaped
+                            else:
+                                # Try just the first word (last resort fallback)
+                                first_word = cell_text.split()[0] if cell_text.split() else ""
+                                if first_word and first_word in parsed.full_text:
+                                    evidence_text = first_word
+                                    cell_text = first_word
+                                else:
+                                    continue
+
+                        # Type validation
+                        field_type = field_type_map.get(field.name, "string")
+                        if not self._cell_passes_type_check(cell_text, field_type):
+                            continue
+
+                        candidates.append(Candidate(
+                            field=f"line_items[{data_row_counter}].{field.name}",
+                            value=cell_text,
+                            page=page.index,
+                            bbox=cell.bbox,
+                            evidence_text=evidence_text,
+                            model="table_transformer",
+                            confidence=0.85,
+                        ))
+
+                    data_row_counter += 1
+                row_offset += data_row_counter
+
+        return candidates
