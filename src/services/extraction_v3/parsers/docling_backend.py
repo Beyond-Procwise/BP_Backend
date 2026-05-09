@@ -16,7 +16,9 @@ import threading
 from pathlib import Path
 from typing import Literal
 
-from docling.document_converter import DocumentConverter
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.accelerator_options import AcceleratorOptions, AcceleratorDevice
 from docling_core.types.doc.base import CoordOrigin
 
 from src.services.extraction_v3.schemas.parsed_document import (
@@ -39,7 +41,20 @@ def _get_converter() -> DocumentConverter:
     if _converter is None:
         with _converter_lock:
             if _converter is None:
-                _converter = DocumentConverter()
+                # Force CPU for docling's layout model so it does not compete
+                # for cuDNN context with the LayoutLMv3 / other GPU extractors
+                # that run concurrently in the same process.
+                pipeline_options = PdfPipelineOptions(
+                    accelerator_options=AcceleratorOptions(
+                        num_threads=4,
+                        device=AcceleratorDevice.CPU,
+                    )
+                )
+                _converter = DocumentConverter(
+                    format_options={
+                        "pdf": PdfFormatOption(pipeline_options=pipeline_options),
+                    }
+                )
     return _converter
 
 
