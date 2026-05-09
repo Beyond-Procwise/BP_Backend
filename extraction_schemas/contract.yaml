@@ -1,6 +1,371 @@
 doc_type: contract
 db_table: proc.bp_contracts
 db_lines_table: null
-fields: []
+
+fields:
+  - name: contract_id
+    type: string
+    required: true
+    db_column: contract_id
+    canonical_labels:
+      - "Contract Number"
+      - "Contract No"
+      - "Contract #"
+      - "Agreement Number"
+      - "Agreement No"
+      - "Contract Reference"
+      - "Contract ID"
+      - "Reference Number"
+      - "Ref No"
+      - "Document Number"
+      - "Agreement Reference"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: contract_title
+    type: string
+    required: false
+    db_column: contract_title
+    canonical_labels:
+      - "Contract Title"
+      - "Agreement Title"
+      - "Subject"
+      - "Contract Name"
+      - "Agreement Name"
+      - "Title"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: contract_type
+    type: string
+    required: false
+    db_column: contract_type
+    canonical_labels:
+      - "Contract Type"
+      - "Agreement Type"
+      - "Type of Agreement"
+      - "Document Type"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: supplier_id
+    type: string
+    required: true
+    db_column: supplier_id
+    resolves_to_db_column: supplier_id
+    canonical_labels:
+      - "Supplier"
+      - "Vendor"
+      - "Contractor"
+      - "Service Provider"
+      - "Party A"
+      - "Seller"
+      - "Counterparty"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "ORG"
+    invariants: []
+
+  - name: buyer_org_id
+    type: string
+    required: false
+    db_column: buyer_org_id
+    canonical_labels:
+      - "Buyer"
+      - "Client"
+      - "Customer"
+      - "Party B"
+      - "Purchaser"
+      - "Company"
+      - "Organisation"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "ORG"
+    invariants: []
+
+  - name: contract_start_date
+    type: iso_date
+    required: true
+    db_column: contract_start_date
+    canonical_labels:
+      - "Effective Date"
+      - "Start Date"
+      - "Commencement Date"
+      - "Contract Start Date"
+      - "Date of Agreement"
+      - "Agreement Date"
+      - "Contract Date"
+      - "Signed Date"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: contract_end_date
+    type: iso_date
+    required: false
+    db_column: contract_end_date
+    canonical_labels:
+      - "Expiry Date"
+      - "End Date"
+      - "Termination Date"
+      - "Contract End Date"
+      - "Expiration Date"
+      - "Valid Until"
+      - "Expires On"
+      - "Term End"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - date_sanity
+
+  - name: currency
+    type: string
+    required: false
+    db_column: currency
+    canonical_labels:
+      - "Currency"
+      - "CCY"
+      - "Contract Currency"
+      - "Payment Currency"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: total_contract_value
+    type: money
+    required: false
+    db_column: total_contract_value
+    canonical_labels:
+      - "Contract Value"
+      - "Total Contract Value"
+      - "Agreement Value"
+      - "Total Value"
+      - "Contract Amount"
+      - "Total Amount"
+      - "Consideration"
+      - "Maximum Contract Value"
+      - "Not to Exceed"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: spend_category
+    type: string
+    required: false
+    db_column: spend_category
+    canonical_labels:
+      - "Category"
+      - "Spend Category"
+      - "Service Category"
+      - "Product Category"
+      - "Category of Services"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: payment_terms
+    type: string
+    required: false
+    db_column: payment_terms
+    canonical_labels:
+      - "Payment Terms"
+      - "Terms of Payment"
+      - "Payment Conditions"
+      - "Net Terms"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: jurisdiction
+    type: string
+    required: false
+    db_column: jurisdiction
+    canonical_labels:
+      - "Jurisdiction"
+      - "Governing Jurisdiction"
+      - "Place of Jurisdiction"
+      - "Legal Jurisdiction"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "GPE"
+    invariants: []
+
+  - name: governing_law
+    type: string
+    required: false
+    db_column: governing_law
+    canonical_labels:
+      - "Governing Law"
+      - "Applicable Law"
+      - "Law"
+      - "Choice of Law"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: contract_signatory_name
+    type: string
+    required: false
+    db_column: contract_signatory_name
+    canonical_labels:
+      - "Signatory"
+      - "Authorised Signatory"
+      - "Signed By"
+      - "Authorised By"
+      - "Signature"
+      - "Name"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "PERSON"
+    invariants: []
+
+  - name: contract_signatory_role
+    type: string
+    required: false
+    db_column: contract_signatory_role
+    canonical_labels:
+      - "Title"
+      - "Role"
+      - "Position"
+      - "Designation"
+      - "Job Title"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: auto_renew_flag
+    type: string
+    required: false
+    db_column: auto_renew_flag
+    canonical_labels:
+      - "Auto Renew"
+      - "Automatic Renewal"
+      - "Auto-renewal"
+      - "Renewal"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: renewal_term
+    type: string
+    required: false
+    db_column: renewal_term
+    canonical_labels:
+      - "Renewal Term"
+      - "Renewal Period"
+      - "Term"
+      - "Contract Term"
+      - "Contract Duration"
+      - "Period"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
 line_items: null
-document_invariants: []
+
+document_invariants:
+  - currency_consistency

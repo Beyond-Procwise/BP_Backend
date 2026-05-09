@@ -14,8 +14,13 @@ fields:
       - "Quotation Number"
       - "Quotation No"
       - "Quotation #"
-      - "Reference"
+      - "Reference No"
+      - "Reference Number"
       - "Ref No"
+      - "RFQ Reference"
+      - "RFQ No"
+      - "Document Number"
+      - "Quote Reference"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -25,6 +30,29 @@ fields:
       tiebreaker: true
       grounded_last_resort: true
       ner_type_check: "none"
+    invariants: []
+
+  - name: supplier_id
+    type: string
+    required: false
+    db_column: supplier_id
+    resolves_to_db_column: supplier_id
+    canonical_labels:
+      - "Supplier"
+      - "Vendor"
+      - "From"
+      - "Quoted By"
+      - "Seller"
+      - "Issued By"
+    extractors:
+      - layoutlmv3
+      - spacy_ner
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "ORG"
     invariants: []
 
   - name: buyer_id
@@ -38,6 +66,7 @@ fields:
       - "Buyer"
       - "Client"
       - "Quoted To"
+      - "Attention"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -56,6 +85,7 @@ fields:
       - "From Address"
       - "Vendor Address"
       - "Our Address"
+      - "Remit To"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -74,6 +104,7 @@ fields:
       - "Ship To Address"
       - "Customer Address"
       - "Delivery Address"
+      - "Buyer Address"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -93,6 +124,8 @@ fields:
       - "Quotation Date"
       - "Issue Date"
       - "Date Issued"
+      - "Date of Quote"
+      - "Prepared Date"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -111,9 +144,13 @@ fields:
     canonical_labels:
       - "Valid Until"
       - "Validity Date"
-      - "Expiry Date"
       - "Quote Valid Until"
+      - "Valid Through"
+      - "Expiry Date"
       - "Expires On"
+      - "Offer Valid Until"
+      - "Quotation Valid Until"
+      - "Validity Period"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -125,6 +162,25 @@ fields:
     invariants:
       - date_sanity
 
+  - name: po_id
+    type: string
+    required: false
+    db_column: po_id
+    canonical_labels:
+      - "Purchase Order"
+      - "PO Number"
+      - "PO No"
+      - "Order Reference"
+      - "PO Ref"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
   - name: currency
     type: string
     required: true
@@ -132,6 +188,8 @@ fields:
     canonical_labels:
       - "Currency"
       - "CCY"
+      - "Invoice Currency"
+      - "Quote Currency"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -144,16 +202,19 @@ fields:
 
   - name: total_amount
     type: money
-    required: true
+    required: false
     db_column: total_amount
     canonical_labels:
-      - "Total Amount"
-      - "Grand Total"
-      - "Quote Total"
-      - "Amount Due"
-      - "Total"
       - "Subtotal"
+      - "Sub Total"
+      - "Sub-total"
+      - "Net Amount"
       - "Net Total"
+      - "Amount Before Tax"
+      - "Total Before Tax"
+      - "Total (Excl. Tax)"
+      - "Total Materials"
+      - "Total Services"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -162,7 +223,78 @@ fields:
       tiebreaker: true
       grounded_last_resort: true
       ner_type_check: "none"
-    invariants: []
+    invariants:
+      - subtotal_closure
+
+  - name: tax_percent
+    type: decimal
+    required: false
+    db_column: tax_percent
+    canonical_labels:
+      - "Tax Rate"
+      - "VAT Rate"
+      - "GST Rate"
+      - "Tax %"
+      - "Tax Percentage"
+      - "GST %"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - tax_closure
+
+  - name: tax_amount
+    type: money
+    required: false
+    db_column: tax_amount
+    canonical_labels:
+      - "Tax Amount"
+      - "VAT Amount"
+      - "GST Amount"
+      - "Tax"
+      - "Tax Total"
+      - "GST"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - qa_roberta
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - tax_closure
+
+  - name: total_amount_incl_tax
+    type: money
+    required: true
+    db_column: total_amount_incl_tax
+    canonical_labels:
+      - "Total Amount"
+      - "Grand Total"
+      - "Quote Total"
+      - "Total Incl. Tax"
+      - "Total Incl Tax"
+      - "Total (Incl. GST)"
+      - "Total (Incl. Tax)"
+      - "Amount Due"
+      - "Total"
+      - "Total Quoted"
+    extractors:
+      - layoutlmv3
+      - sbert_anchor
+      - vendor_template
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants:
+      - tax_closure
 
   - name: country
     type: string
@@ -172,6 +304,7 @@ fields:
       - "Country"
       - "Billing Country"
       - "Country of Origin"
+      - "Supplier Country"
     extractors:
       - layoutlmv3
       - spacy_ner
@@ -191,6 +324,7 @@ fields:
       - "State"
       - "Province"
       - "County"
+      - "Territory"
     extractors:
       - layoutlmv3
       - sbert_anchor
@@ -214,6 +348,8 @@ line_items:
         - "Item"
         - "Product"
         - "Service"
+        - "Product / Service"
+        - "Details"
       extractors:
         - table_transformer
         - layoutlmv3
@@ -231,6 +367,26 @@ line_items:
         - "Qty"
         - "Quantity"
         - "Units"
+        - "No. of Units"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_of_measure
+      type: string
+      required: false
+      db_column: unit_of_measure
+      canonical_labels:
+        - "UOM"
+        - "Unit"
+        - "Unit of Measure"
+        - "U/M"
+        - "Measure"
       extractors:
         - table_transformer
         - layoutlmv3
@@ -248,6 +404,8 @@ line_items:
         - "Unit Price"
         - "Rate"
         - "Price Each"
+        - "Unit Cost"
+        - "Price per Unit"
       extractors:
         - table_transformer
         - layoutlmv3
@@ -267,6 +425,63 @@ line_items:
         - "Line Total"
         - "Extended Amount"
         - "Total"
+        - "Net"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: tax_percent
+      type: decimal
+      required: false
+      db_column: tax_percent
+      canonical_labels:
+        - "Tax %"
+        - "Tax Rate"
+        - "VAT %"
+        - "GST %"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: tax_amount
+      type: money
+      required: false
+      db_column: tax_amount
+      canonical_labels:
+        - "Tax"
+        - "VAT"
+        - "Tax Amount"
+        - "GST Amount"
+        - "GST"
+      extractors:
+        - table_transformer
+        - layoutlmv3
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: total_amount
+      type: money
+      required: false
+      db_column: total_amount
+      canonical_labels:
+        - "Total"
+        - "Total Incl. Tax"
+        - "Line Total (Incl. Tax)"
+        - "Amount Incl. Tax"
+        - "Total (Incl. GST)"
       extractors:
         - table_transformer
         - layoutlmv3
@@ -281,6 +496,7 @@ line_items:
     - line_sum_closure
 
 document_invariants:
+  - tax_closure
   - grand_total_closure
   - currency_consistency
   - scale_mismatch
