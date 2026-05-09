@@ -64,6 +64,12 @@ def _is_label_shaped(text: str) -> bool:
     # Ends with colon — unambiguous label marker
     if s.endswith(":"):
         return True
+    # Labels like "Sales Tax (12%)" or "Discount (10%)" — strip the parenthetical
+    # percentage annotation before checking label structure.
+    _pct_stripped = re.sub(r"\s*\(\s*\d+(?:\.\d+)?\s*%\s*\)\s*$", "", s).strip()
+    if _pct_stripped != s and _pct_stripped:
+        # Recurse on the stripped form — if that's a valid label shape, accept it.
+        return _is_label_shaped(_pct_stripped)
     # Strip trailing colon for further checks
     cleaned = s.rstrip(":").strip()
     words = cleaned.split()

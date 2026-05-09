@@ -78,11 +78,56 @@ def _build_header_insert(
         cols.append(db_col)
         vals.append(cf.value)
 
-    placeholders = ",".join(["%s"] * len(vals))
+    # Audit columns — always set on every V3 write.
+    _AUDIT_AGENT = "ExtractionV3"
+    for audit_col in ("created_date", "last_modified_date"):
+        if audit_col not in cols:
+            cols.append(audit_col)
+            vals.append("NOW()")  # placeholder — swapped below
+    for audit_col in ("created_by", "last_modified_by"):
+        if audit_col not in cols:
+            cols.append(audit_col)
+            vals.append(_AUDIT_AGENT)
+    # Replace the "NOW()" placeholder strings with a SQL NOW() expression by
+    # switching to a parameterised query that has a literal NOW() in the SQL.
+    # We do this by building the values list without NOW() and injecting it
+    # directly into the SQL string for those two cols.
+    _now_cols = {"created_date", "last_modified_date"}
+    final_cols = []
+    final_vals = []
+    now_col_positions = []
+    for i, (c, v) in enumerate(zip(cols, vals)):
+        if c in _now_cols:
+            now_col_positions.append(len(final_cols))
+            final_cols.append(c)
+            # value slot will be filled by NOW() in SQL, not a parameter
+        else:
+            final_cols.append(c)
+            final_vals.append(v)
+
+    # Build placeholders: %s for params, NOW() for timestamp cols
+    ph_parts = []
+    param_idx = 0
+    for c in final_cols:
+        if c in _now_cols:
+            ph_parts.append("NOW()")
+        else:
+            ph_parts.append("%s")
+    cols = final_cols
+    vals = final_vals
+
+    placeholders = ",".join(ph_parts)  # mix of %s and NOW()
     col_list = ",".join(cols)
     update_cols = [c for c in cols if c != pk_col]
     if update_cols:
-        update_set = ",".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
+        # For ON CONFLICT SET, use NOW() for timestamp audit columns
+        set_parts = []
+        for c in update_cols:
+            if c in _now_cols:
+                set_parts.append(f"{c}=NOW()")
+            else:
+                set_parts.append(f"{c}=EXCLUDED.{c}")
+        update_set = ",".join(set_parts)
         conflict_clause = f"ON CONFLICT ({pk_col}) DO UPDATE SET {update_set}"
     else:
         # Only the PK is being inserted; nothing to update on conflict.

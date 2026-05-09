@@ -385,17 +385,37 @@ def _extract_intra_token(token_text: str, label: str, field_type: str) -> str | 
         pos = text.lower().find(label_lower)
         if pos >= 0:
             after = text[pos + len(label):].lstrip(": \t")
-            # Scan for first parseable money token in the remainder
-            # Split on whitespace and look for amounts
+            # Scan for first parseable money token in the remainder.
+            # Skip numbers that look like percentages: a bare integer ≤ 100 followed
+            # by "%" in the original token text, or numbers embedded in a "(N%)"
+            # pattern.  These are tax rates, not dollar amounts.
+            _pct_in_parens_re = re.compile(r"\(\s*(\d+(?:\.\d+)?)\s*%\s*\)")
+            pct_values: set[str] = {m.group(1) for m in _pct_in_parens_re.finditer(after)}
+
             parts = re.split(r"\s+", after)
             for part in parts[:8]:  # look at next 8 words
                 part_clean = re.sub(r"[,\s]$", "", part.strip())
-                if part_clean and parse_amount(part_clean) is not None:
+                if not part_clean:
+                    continue
+                # Skip if this token is a percentage marker like "(12%)" or "12%"
+                if part_clean.endswith("%") or re.fullmatch(r"\(\d+(?:\.\d+)?%\)", part_clean):
+                    continue
+                # Skip bare integers that match a "(%)" value in the text
+                if part_clean in pct_values:
+                    continue
+                if parse_amount(part_clean) is not None:
                     return part_clean
-            # Also try the first "amount-shaped" substring using regex
-            amt_m = re.search(r"[\$£€]?\d[\d,\.]+(?:\.\d{2})?", after)
-            if amt_m:
+            # Also try the first amount-shaped substring using regex, skipping % contexts
+            for amt_m in re.finditer(r"[\$£€]?\d[\d,\.]+(?:\.\d{2})?", after):
                 raw_val = amt_m.group(0).strip()
+                # Check if this match is immediately followed by % in original text
+                end_pos = amt_m.end()
+                following = after[end_pos:end_pos + 2].strip()
+                if following.startswith("%"):
+                    continue
+                # Check if this match appears inside a (N%) pattern
+                if raw_val in pct_values:
+                    continue
                 if parse_amount(raw_val) is not None:
                     return raw_val
 

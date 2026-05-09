@@ -38,10 +38,15 @@ from src.services.extraction_v3.yaml_schema.registry import register_extractor
 
 # Transformer-based model for best accuracy. Falls back to en_core_web_sm if
 # the transformer model is not installed (e.g. CPU-only environments).
-MODEL_NAME = "en_core_web_trf"
+# en_core_web_sm is used deliberately over en_core_web_trf: the transformer
+# model misclassifies personal names as ORG in invoice/PO document layouts
+# (e.g. "John Smith" → ORG). The small model is more conservative and correct
+# for these structured financial documents.
+MODEL_NAME = "en_core_web_sm"
 
 _nlp = None
 _lock = threading.Lock()
+_call_lock = threading.Lock()  # serialize nlp() calls: en_core_web_sm internals not thread-safe
 
 
 def _get_nlp():
@@ -57,6 +62,17 @@ def _get_nlp():
                 # In production, install en_core_web_trf for best accuracy.
                 _nlp = spacy.load("en_core_web_sm")
     return _nlp
+
+
+def _run_nlp(text: str):
+    """Run spaCy NLP pipeline on text with a serialization lock.
+
+    en_core_web_sm uses Cython internals that are not thread-safe when
+    called concurrently from the extraction pipeline's ThreadPoolExecutor.
+    This wrapper serializes calls to prevent non-deterministic NER results.
+    """
+    with _call_lock:
+        return _get_nlp()(text)
 
 
 # ---------------------------------------------------------------------------
@@ -322,9 +338,10 @@ class SpacyNERExtractor(Extractor):
         if not active:
             return []
 
-        # Run NER over the full document text once
-        nlp = _get_nlp()
-        doc = nlp(parsed.full_text)
+        # Run NER over the full document text once.
+        # _run_nlp uses a serialization lock to prevent non-deterministic
+        # results when called from concurrent threads (ThreadPoolExecutor).
+        doc = _run_nlp(parsed.full_text)
 
         # Group entities by spaCy label for O(1) lookup per field
         ents_by_label: dict[str, list] = {}
@@ -375,7 +392,12 @@ class SpacyNERExtractor(Extractor):
                 # after "bill to", "ship to", "customer", "client" in full_text.
                 full_lower = parsed.full_text.lower()
                 buyer_context_orgs: set[str] = set()
-                for buyer_kw in ("bill to", "bill to:", "customer:", "client:"):
+                for buyer_kw in (
+                    "bill to", "bill to:", "customer:", "client:",
+                    "deliver to", "deliver to:", "delivered to:",
+                    "ship to", "ship to:", "delivery address",
+                    "ship via", "ship via:", "shipped via", "carrier:",
+                ):
                     pos = full_lower.find(buyer_kw)
                     if pos >= 0:
                         snippet = parsed.full_text[pos:pos + 250].lower()
@@ -393,27 +415,54 @@ class SpacyNERExtractor(Extractor):
                             if ent.text.strip().lower() in snippet:
                                 supplier_context_orgs.add(ent.text.strip())
 
+                # Build a set of ORG texts that appear in table rows (markdown
+                # or structured tables): these are typically product descriptions,
+                # not company names, and should be excluded from supplier_name.
+                table_context_orgs: set[str] = set()
+                for ent in field_ents:
+                    et = ent.text.strip()
+                    if not et:
+                        continue
+                    # Check if entity text appears inside a markdown table row
+                    # (line that starts with "|")
+                    for line in parsed.full_text.splitlines():
+                        if "|" in line and et in line:
+                            table_context_orgs.add(et)
+                            break
+
                 for ent in field_ents:
                     ent_text = ent.text.strip()
                     if not ent_text or ent_text not in parsed.full_text:
+                        continue
+
+                    # Skip entities that appear in table rows (product descriptions,
+                    # line items, etc. — not company names)
+                    if ent_text in table_context_orgs:
                         continue
 
                     is_buyer = ent_text in buyer_context_orgs
                     is_supplier = ent_text in supplier_context_orgs
 
                     bbox = _find_bbox_for_text(parsed, ent_text)
+                    # bbox is None when the entity text wasn't found in parsed tokens
+                    # (e.g. table cell text in markdown rendering). Don't treat
+                    # position-unknown entities as header entities.
+                    bbox_known = bbox is not None
                     page_idx, b = bbox if bbox else (0, (0.0, 0.0, 0.0, 0.0))
-                    in_header = (page_idx == 0 and b[1] < page0_height * 0.40)
+                    in_header = (bbox_known and page_idx == 0 and b[1] < page0_height * 0.40)
 
                     # Confidence assignment:
                     # - Explicitly in supplier context (near Vendor:/From:): 0.90
                     # - In page header, not in buyer context: 0.80
                     # - In page header, but also in buyer context: 0.55 (ambiguous)
+                    # - Position unknown (no token bbox): 0.50 — less trustworthy
                     # - Elsewhere, not in buyer context: 0.65
                     # - Elsewhere, in buyer context: 0.45 (last resort — may be
                     #   the only org in doc; don't exclude entirely)
                     if is_supplier:
                         conf = 0.90
+                    elif not bbox_known:
+                        conf = 0.50  # no positional evidence — table cell or unlocatable entity
                     elif in_header and not is_buyer:
                         conf = 0.80
                     elif in_header and is_buyer:
