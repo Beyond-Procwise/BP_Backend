@@ -1100,6 +1100,35 @@ class LayoutLMv3Extractor(Extractor):
                     confidence=0.50,  # VAT number is strong evidence
                 )
 
+        # Pass 4: US address indicators — ZIP code (5 digits or ZIP+4) preceded by a
+        # US state abbreviation (e.g. "CA 90210", "NY 10001-0001", "OK 73119").
+        # This catches US addresses that don't include "United States" explicitly.
+        _US_ZIP_RE = re.compile(
+            r"\b([A-Z]{2})\s+(\d{5})(?:-\d{4})?\b"
+        )
+        _US_STATES = frozenset({
+            "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+            "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+            "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+            "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+            "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+            "DC",
+        })
+        for m_zip in _US_ZIP_RE.finditer(parsed.full_text):
+            state_code = m_zip.group(1)
+            if state_code in _US_STATES:
+                evidence = m_zip.group(0)
+                if evidence in parsed.full_text:
+                    return Candidate(
+                        field=field.name,
+                        value="United States",
+                        page=0,
+                        bbox=(0.0, 0.0, 0.0, 0.0),
+                        evidence_text=evidence,
+                        model="layoutlmv3",
+                        confidence=0.45,  # ZIP+state is good US evidence
+                    )
+
         return None
 
     def _page_header_supplier(
