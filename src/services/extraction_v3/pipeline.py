@@ -306,19 +306,23 @@ class PipelineV3:
             cleaned_committed2.append(cf)
         committed = cleaned_committed2
 
-        # 4d. Tax-percent range guard: tax_percent must be in [0, 100]. If the
-        # extractor returned a monetary value as tax_percent (e.g. sbert_anchor
-        # matched "$2,861.00" to "Tax %"), discard it — it causes a DB
-        # NumericValueOutOfRange error and is semantically wrong.
+        # 4d. Tax-percent range guard: tax_percent must be in [0, 50].
+        # Real-world tax rates never exceed 50% (most are 0–25%).
+        # If an extractor returns 87.0 or 95.41, it captured a monetary amount
+        # (e.g. qa_roberta answering "What is the Tax Rate?" with "$87.00" → 87.0).
+        # The previous upper bound of 100 was too permissive; tightened to 50
+        # to eliminate these monetary-value false positives while accepting all
+        # legitimate tax rates (GST 10%, VAT 20%, HST 13%, etc.).
+        _TAX_PCT_MAX = 50.0
         cleaned_committed3: list[CommittedField] = []
         for cf in committed:
             if cf.field_path == "tax_percent":
                 try:
                     pct_val = float(cf.value)
-                    if not (0.0 <= pct_val <= 100.0):
+                    if not (0.0 <= pct_val <= _TAX_PCT_MAX):
                         log.debug(
-                            "Rejecting tax_percent=%s (out of [0,100] range) from %s",
-                            cf.value, cf.model,
+                            "Rejecting tax_percent=%s (out of [0,%s] range) from %s",
+                            cf.value, _TAX_PCT_MAX, cf.model,
                         )
                         continue
                 except (ValueError, TypeError):

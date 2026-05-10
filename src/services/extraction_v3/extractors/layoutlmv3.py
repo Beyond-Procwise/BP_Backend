@@ -378,6 +378,39 @@ def _extract_intra_token(token_text: str, label: str, field_type: str) -> str | 
         raw_val = m.group(1).strip()
         if _validate_extracted_value(raw_val, field_type):
             return raw_val
+        # The captured value is itself a label word (e.g. "SHIP" from "BILL TO: SHIP TO: BUYER").
+        # Walk forward through the text: skip consecutive "WORD(S):" label segments and
+        # return the first multi-word string as the buyer/party name.
+        # This handles the common two-column layout "BILL TO: SHIP TO: <buyer_name>"
+        # where both label columns appear in a single merged token block.
+        if not raw_val or _is_label_shaped(raw_val) or re.fullmatch(r"[A-Z]{2,}(\s+[A-Z]{2,})*", raw_val):
+            # Find the position after the matched label and advance past all "LABEL:" sequences
+            after_label = text[m.end():].strip()
+            # Skip additional "WORD(S):" sequences
+            _skip_label_re = re.compile(r"^[A-Z][A-Za-z\s]{1,30}:\s*", re.IGNORECASE)
+            skip_count = 0
+            while skip_count < 5:
+                sm = _skip_label_re.match(after_label)
+                if sm:
+                    after_label = after_label[sm.end():].strip()
+                    skip_count += 1
+                else:
+                    break
+            # Now take the first "name-sized" segment as the value (up to 60 chars).
+            # Split on address/punctuation delimiters: double space, newline, or
+            # the point where a street number begins (2+ digit number followed by
+            # a word, indicating "123 Main St" style address boundaries).
+            # Company names can be ALL-CAPS (e.g. "FASHION QUEEN FASHION ITEMS INC")
+            # so we DON'T use _validate_extracted_value (which rejects all-caps strings)
+            # — instead apply a looser check: has alphanumeric content and isn't empty.
+            first_value = re.split(r"\s{2,}|\n|(?<=[A-Za-z])\s+(?=\d{2,}\s+[A-Za-z])", after_label)[0].strip()
+            # Truncate to a reasonable name length (ignore trailing address info)
+            if len(first_value) > 60:
+                first_value = first_value[:60].rsplit(" ", 1)[0].strip()
+            if first_value and re.search(r"[a-zA-Z]", first_value) and len(first_value) >= 2:
+                # Substring guarantee: must be present in the original token text
+                if first_value in text:
+                    return first_value
 
     # Strategy 2: for money fields, find label mention then parse nearest amount
     if field_type in ("money", "decimal"):
@@ -518,6 +551,15 @@ class LayoutLMv3Extractor(Extractor):
                 header_cand = self._page_header_supplier(parsed, field)
                 if header_cand:
                     candidates.append(header_cand)
+
+            # country fallback: if no label-proximate country candidate was found,
+            # scan the full_text for known country names embedded in addresses.
+            # This handles layouts where country appears in an address block without
+            # an explicit "Country:" field label (e.g. "Coventry, UK" at end of address).
+            if field.name == "country" and not field_cands:
+                country_cand = self._country_address_scan(parsed, field)
+                if country_cand:
+                    candidates.append(country_cand)
 
         return candidates
 
@@ -941,6 +983,123 @@ class LayoutLMv3Extractor(Extractor):
             ))
 
         return out
+
+    # Ordered list of (search_text_lower, canonical_country_name) for address scanning.
+    # Short codes like "uk" must match word-boundaries to avoid matching "bulk", "duke" etc.
+    _COUNTRY_PATTERNS: list[tuple[re.Pattern, str]] = [
+        (re.compile(r"\bUnited Kingdom\b", re.IGNORECASE), "United Kingdom"),
+        (re.compile(r"\bEngland\b", re.IGNORECASE), "United Kingdom"),
+        (re.compile(r"\bScotland\b", re.IGNORECASE), "United Kingdom"),
+        (re.compile(r"\bWales\b", re.IGNORECASE), "United Kingdom"),
+        (re.compile(r"\bUnited States\b", re.IGNORECASE), "United States"),
+        (re.compile(r"\bUSA\b"), "United States"),
+        (re.compile(r"\bU\.S\.A\.\b"), "United States"),
+        (re.compile(r"\bAustralia\b", re.IGNORECASE), "Australia"),
+        (re.compile(r"\bCanada\b", re.IGNORECASE), "Canada"),
+        (re.compile(r"\bIndia\b", re.IGNORECASE), "India"),
+        (re.compile(r"\bGermany\b", re.IGNORECASE), "Germany"),
+        (re.compile(r"\bFrance\b", re.IGNORECASE), "France"),
+        (re.compile(r"\bItaly\b", re.IGNORECASE), "Italy"),
+        (re.compile(r"\bSpain\b", re.IGNORECASE), "Spain"),
+        (re.compile(r"\bNetherlands\b", re.IGNORECASE), "Netherlands"),
+        (re.compile(r"\bChina\b", re.IGNORECASE), "China"),
+        (re.compile(r"\bJapan\b", re.IGNORECASE), "Japan"),
+        (re.compile(r"\bSingapore\b", re.IGNORECASE), "Singapore"),
+        (re.compile(r"\bUAE\b"), "United Arab Emirates"),
+        (re.compile(r"\bU\.A\.E\.\b"), "United Arab Emirates"),
+        (re.compile(r"\bNew Zealand\b", re.IGNORECASE), "New Zealand"),
+        (re.compile(r"\bSouth Africa\b", re.IGNORECASE), "South Africa"),
+        (re.compile(r"\bUK\b"), "United Kingdom"),
+        (re.compile(r"\bU\.K\.\b"), "United Kingdom"),
+        (re.compile(r"\bUS\b"), "United States"),
+    ]
+
+    # Domain suffix → (canonical_country, confidence)
+    _DOMAIN_COUNTRY: list[tuple[re.Pattern, str, float]] = [
+        (re.compile(r"\.co\.uk\b", re.IGNORECASE), "United Kingdom", 0.40),
+        (re.compile(r"\.gov\.uk\b", re.IGNORECASE), "United Kingdom", 0.40),
+        (re.compile(r"\.org\.uk\b", re.IGNORECASE), "United Kingdom", 0.40),
+        (re.compile(r"\.co\.au\b", re.IGNORECASE), "Australia", 0.40),
+        (re.compile(r"\.com\.au\b", re.IGNORECASE), "Australia", 0.40),
+        (re.compile(r"\.co\.nz\b", re.IGNORECASE), "New Zealand", 0.40),
+        (re.compile(r"\.co\.za\b", re.IGNORECASE), "South Africa", 0.40),
+        (re.compile(r"\.co\.in\b", re.IGNORECASE), "India", 0.40),
+    ]
+
+    # UK VAT number pattern (GB followed by 9-12 digits) in address blocks
+    _UK_VAT_RE = re.compile(r"\bGB\s*\d{9,12}\b")
+    # UK postcode pattern: e.g. "SW1A 1AA", "EC1A 1BB", "W1A 0AX"
+    _UK_POSTCODE_RE = re.compile(
+        r"\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b"
+    )
+
+    def _country_address_scan(
+        self,
+        parsed: ParsedDocument,
+        field: FieldSpec,
+    ) -> "Candidate | None":
+        """Scan full_text for country names embedded in address blocks.
+
+        Pass 1: Explicit country name / abbreviation (UK, USA, United Kingdom…).
+        Pass 2: Country-specific domain suffix (.co.uk → United Kingdom).
+        Pass 3: Country-specific identifiers (UK VAT number GB123456789, UK postcode pattern).
+
+        Handles layouts where the country appears in an address block without an
+        explicit "Country:" label. Emits at confidence 0.45 for explicit name matches,
+        0.40 for domain/identifier inference.
+
+        Substring guarantee: evidence_text is a literal match from full_text.
+        """
+        # Pass 1: explicit country names / abbreviations
+        for pattern, canonical_name in self._COUNTRY_PATTERNS:
+            m = pattern.search(parsed.full_text)
+            if m:
+                evidence = m.group(0)
+                if evidence not in parsed.full_text:
+                    continue
+                return Candidate(
+                    field=field.name,
+                    value=canonical_name,
+                    page=0,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    evidence_text=evidence,
+                    model="layoutlmv3",
+                    confidence=0.45,
+                )
+
+        # Pass 2: country-specific email domain suffixes
+        for pattern, canonical_name, conf in self._DOMAIN_COUNTRY:
+            m = pattern.search(parsed.full_text)
+            if m:
+                evidence = m.group(0)
+                if evidence not in parsed.full_text:
+                    continue
+                return Candidate(
+                    field=field.name,
+                    value=canonical_name,
+                    page=0,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    evidence_text=evidence,
+                    model="layoutlmv3",
+                    confidence=conf,
+                )
+
+        # Pass 3: UK-specific identifiers (VAT number GB..., UK postcode)
+        m_vat = self._UK_VAT_RE.search(parsed.full_text)
+        if m_vat:
+            evidence = m_vat.group(0)
+            if evidence in parsed.full_text:
+                return Candidate(
+                    field=field.name,
+                    value="United Kingdom",
+                    page=0,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    evidence_text=evidence,
+                    model="layoutlmv3",
+                    confidence=0.50,  # VAT number is strong evidence
+                )
+
+        return None
 
     def _page_header_supplier(
         self,
