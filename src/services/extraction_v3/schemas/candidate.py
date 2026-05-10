@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from .parsed_document import BBox
 
 ExtractorName = Literal[
-    "layoutlmv3", "table_transformer", "sbert_anchor",
+    "layoutlmv3", "layoutlmv3_finetuned", "table_transformer", "sbert_anchor",
     "spacy_ner", "qa_roberta", "vendor_template"
 ]
 

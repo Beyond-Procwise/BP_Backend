@@ -23,12 +23,13 @@ from src.services.extraction_v3.binding.invariants_runner import run_invariants
 from src.services.extraction_v3.judge.orchestrator import run_judge_orchestrator
 from src.services.extraction_v3.judge.contracts import InvariantResultSummary
 # Side-effect imports — registers each extractor at module load
-import src.services.extraction_v3.extractors.layoutlmv3       # noqa
-import src.services.extraction_v3.extractors.table_transformer  # noqa
-import src.services.extraction_v3.extractors.sbert_anchor      # noqa
-import src.services.extraction_v3.extractors.spacy_ner         # noqa
-import src.services.extraction_v3.extractors.qa_roberta        # noqa
-import src.services.extraction_v3.extractors.vendor_template   # noqa
+import src.services.extraction_v3.extractors.layoutlmv3           # noqa
+import src.services.extraction_v3.extractors.layoutlmv3_finetuned  # noqa
+import src.services.extraction_v3.extractors.table_transformer      # noqa
+import src.services.extraction_v3.extractors.sbert_anchor          # noqa
+import src.services.extraction_v3.extractors.spacy_ner             # noqa
+import src.services.extraction_v3.extractors.qa_roberta            # noqa
+import src.services.extraction_v3.extractors.vendor_template       # noqa
 
 log = logging.getLogger(__name__)
 
