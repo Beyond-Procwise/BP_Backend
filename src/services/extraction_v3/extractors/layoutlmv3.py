@@ -556,7 +556,8 @@ class LayoutLMv3Extractor(Extractor):
             # scan the full_text for known country names embedded in addresses.
             # This handles layouts where country appears in an address block without
             # an explicit "Country:" field label (e.g. "Coventry, UK" at end of address).
-            if field.name == "country" and not field_cands:
+            # Also applies to ship_to_country (PO schema) which has the same pattern.
+            if field.name in ("country", "ship_to_country") and not field_cands:
                 country_cand = self._country_address_scan(parsed, field)
                 if country_cand:
                     candidates.append(country_cand)

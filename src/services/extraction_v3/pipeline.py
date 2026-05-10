@@ -489,6 +489,49 @@ class PipelineV3:
                         final_confidence=0.75,
                     ))
 
+        # 6f. Tax-amount derivation: if tax_amount is missing but BOTH tax_percent
+        # and invoice_total_incl_tax are committed, derive tax_amount as:
+        #   tax_amount = total - (total / (1 + pct/100))
+        # This accurately recovers the tax dollar amount for invoices that show
+        # "Tax (10%)" + grand total without printing a separate tax_amount line.
+        # Only fire when invoice_total_incl_tax > 0 and pct in (0, 50].
+        if schema.doc_type == "invoice":
+            committed_fields = {cf.field_path: cf for cf in committed}
+            if (
+                "tax_amount" not in committed_fields
+                and "tax_percent" in committed_fields
+                and "invoice_total_incl_tax" in committed_fields
+            ):
+                try:
+                    pct = float(committed_fields["tax_percent"].value)
+                    total = float(committed_fields["invoice_total_incl_tax"].value)
+                    if 0 < pct <= 50.0 and total > 0:
+                        pretax = total / (1.0 + pct / 100.0)
+                        tax_derived = round(total - pretax, 2)
+                        # Evidence must be a substring of full_text.
+                        # Use the tax_percent evidence (which IS in the text) as the
+                        # provenance anchor for this derived field.
+                        evidence_str = committed_fields["tax_percent"].evidence_text
+                        log.debug(
+                            "Tax-amount derivation: total=%s pct=%s%% → tax_amount=%s",
+                            total, pct, tax_derived,
+                        )
+                        committed.append(CommittedField(
+                            field_path="tax_amount",
+                            value=str(tax_derived),
+                            page=committed_fields["invoice_total_incl_tax"].page,
+                            bbox=(0.0, 0.0, 0.0, 0.0),
+                            evidence_text=evidence_str,
+                            model="pipeline_recovery",
+                            model_confidence=0.70,
+                            judge_actions=[],
+                            final_confidence=0.70,
+                        ))
+                        # Remove any residual for tax_amount
+                        residuals = [rf for rf in residuals if rf.field_path != "tax_amount"]
+                except (ValueError, TypeError, KeyError):
+                    pass
+
         # 7. Determine doc_pk from the committed fields (the field whose YAML
         # name matches the schema's doc_pk; for invoice that's invoice_id)
         doc_pk = next(

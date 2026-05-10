@@ -37,6 +37,11 @@ fields:
       - "From"
       - "Billed From"
       - "Seller"
+      - "Store Name"
+      - "Company"
+      - "Company Name"
+      - "Issued By"
+      - "Invoice From"
     extractors:
       - layoutlmv3
       - spacy_ner
