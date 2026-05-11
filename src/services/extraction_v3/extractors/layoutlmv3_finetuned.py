@@ -419,9 +419,20 @@ class LayoutLMv3FinetunedExtractor(Extractor):
         parsed: ParsedDocument,
         schema: DocSchema,
     ) -> list[Candidate]:
-        # Only run if 'layoutlmv3_finetuned' is requested by any field in the schema
+        # Only run if 'layoutlmv3_finetuned' is requested by any HEADER field in the
+        # schema.  Line-item fields (starting with "line_items") are explicitly excluded
+        # here and again at candidate emission (defensive double-guard).
+        #
+        # The jinhybr/OCR-LayoutLMv3-Invoice model was trained on wild_receipt (retail
+        # receipts) and misclassifies header-area company names as product-item labels.
+        # Line-item extraction is handled exclusively by table_transformer + layoutlmv3.
+        # Even if a future schema YAML accidentally adds layoutlmv3_finetuned to a
+        # line_items field extractor list, this extractor will refuse to emit those
+        # candidates.
         active_fields = [
-            f for f in schema.fields if "layoutlmv3_finetuned" in f.extractors
+            f for f in schema.fields
+            if "layoutlmv3_finetuned" in f.extractors
+            and not f.name.startswith("line_items")
         ]
         if not active_fields:
             return []
@@ -484,7 +495,20 @@ class LayoutLMv3FinetunedExtractor(Extractor):
                     page_idx, parsed.source_path, exc,
                 )
 
-        return candidates
+        # Defensive emission guard: drop any line_items[N].* candidates.
+        # This extractor must NEVER emit line-item candidates regardless of
+        # the model type (jinhybr, CORD, or custom) or the schema YAML contents.
+        # Line item extraction is owned exclusively by table_transformer + layoutlmv3.
+        filtered: list[Candidate] = []
+        for cand in candidates:
+            if cand.field.startswith("line_items["):
+                log.debug(
+                    "layoutlmv3_finetuned: refusing line-item candidate field=%s value=%r",
+                    cand.field, cand.value,
+                )
+            else:
+                filtered.append(cand)
+        return filtered
 
     def _run_page(
         self,
