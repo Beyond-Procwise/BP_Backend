@@ -666,31 +666,43 @@ class LayoutLMv3FinetunedExtractor(Extractor):
         Maps jinhybr/OCR-LayoutLMv3-Invoice labels → procurement schema fields.
         Flat label model (no BIO prefix) — spans are produced by _merge_flat_spans.
 
-        Label mapping:
+        Header field mapping (emitted as candidates):
           Store_name_value  → supplier_name
-          Date_value        → invoice_date (first occurrence)
+          Date_value        → invoice_date (first occurrence) / due_date (second)
           Subtotal_value    → invoice_amount
           Tax_value         → tax_amount
           Total_value       → invoice_total_incl_tax
-          Prod_item_value   → line_items[*].item_description
-          Prod_quantity_value → line_items[*].quantity
-          Prod_price_value  → line_items[*].unit_price
+
+        Line item fields (Prod_item_value, Prod_quantity_value, Prod_price_value)
+        are intentionally NOT emitted as line item candidates. The jinhybr model
+        was trained on wild_receipt (retail receipts, not structured invoices) and
+        tends to misclassify header-area company names as Prod_item_value. Line
+        item extraction is handled more accurately by table_transformer + layoutlmv3.
+        This may be revisited if jinhybr is fine-tuned on formal invoice layouts.
         """
         candidates: list[Candidate] = []
+
+        # Header-only labels: fields to extract from the jinhybr output.
+        # Line item labels (Prod_*) are explicitly excluded — see docstring.
+        _HEADER_ONLY_LABELS = frozenset({
+            "Store_name_value", "Date_value",
+            "Subtotal_value", "Tax_value", "Total_value",
+        })
 
         # Track which date fields have been emitted to handle multiple dates
         # (invoice_date vs due_date — jinhybr labels them all as Date_value)
         date_count = 0
 
-        # Line item accumulation (group by sequential appearance)
-        line_item_groups: list[dict[str, tuple[str, float]]] = []
-
         for jinhybr_label, span_text, prob in spans:
             if prob < MIN_TOKEN_CONFIDENCE:
                 continue
 
+            # Only process header-only labels — skip Prod_* line item labels
+            if jinhybr_label not in _HEADER_ONLY_LABELS:
+                continue
+
             if jinhybr_label not in _JINHYBR_LABEL_TO_FIELD:
-                continue  # skip Others, Ignore, Store_addr, Tel, Time, Tips
+                continue
 
             field_name, applicable_doc_types = _JINHYBR_LABEL_TO_FIELD[jinhybr_label]
             if doc_type not in applicable_doc_types:
@@ -732,45 +744,21 @@ class LayoutLMv3FinetunedExtractor(Extractor):
                     continue
                 field_name = actual_field
 
+            # Skip any field that mapped to a line-item sub-field
+            # (defensive check in case _JINHYBR_LABEL_TO_FIELD is extended)
             if field_name in _LINE_ITEM_FIELDS:
-                # Accumulate line items by sequential appearance
-                sub_field = field_name.replace("line_item_", "")
-                if sub_field == "description":
-                    line_item_groups.append({})
-                if line_item_groups:
-                    line_item_groups[-1][sub_field] = (evidence, prob)
-            else:
-                # Confidence: jinhybr is invoice-trained, so we trust it more
-                # than CORD (which was trained on receipts). Scale factor: 0.92.
-                candidates.append(Candidate(
-                    field=field_name,
-                    value=evidence,
-                    page=page_idx,
-                    bbox=bbox,
-                    evidence_text=evidence,
-                    model="layoutlmv3_finetuned",
-                    confidence=min(0.92, prob * 0.92),
-                ))
+                continue
 
-        # Emit line item candidates from jinhybr
-        for row_idx, group in enumerate(line_item_groups):
-            jinhybr_field_map = {
-                "description": "item_description",
-                "unit_price": "unit_price",
-                "quantity": "quantity",
-            }
-            for sub_field, db_field in jinhybr_field_map.items():
-                if sub_field in group:
-                    evidence, prob = group[sub_field]
-                    if evidence in parsed.full_text:
-                        candidates.append(Candidate(
-                            field=f"line_items[{row_idx}].{db_field}",
-                            value=evidence,
-                            page=page_idx,
-                            bbox=(0.0, 0.0, 0.0, 0.0),
-                            evidence_text=evidence,
-                            model="layoutlmv3_finetuned",
-                            confidence=min(0.88, prob * 0.90),
-                        ))
+            # Confidence: jinhybr is invoice-trained (F1=0.8789), so we trust
+            # it at par with the CORD-based extractor. Scale factor: 0.92.
+            candidates.append(Candidate(
+                field=field_name,
+                value=evidence,
+                page=page_idx,
+                bbox=bbox,
+                evidence_text=evidence,
+                model="layoutlmv3_finetuned",
+                confidence=min(0.92, prob * 0.92),
+            ))
 
         return candidates
