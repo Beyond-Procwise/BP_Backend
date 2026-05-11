@@ -130,6 +130,69 @@ class PipelineV3:
                 )
                 header_by_field[fname] = [best]
 
+        # Pre-filter 3: NER-type veto for ORG-typed fields.
+        # For fields with ner_type_check="ORG", run spaCy on each candidate
+        # value to check if it is classified as PERSON. If so, drop the
+        # candidate — a person name is never a valid buyer/supplier organisation.
+        # This prevents layoutlmv3 from committing "John Smith" as buyer_id
+        # when the BILL TO block only contains a contact name (no company found).
+        #
+        # Only fires when ner_type_check=="ORG" AND there is NO competing
+        # spacy_ner candidate (if spacy_ner found an ORG, it handles the
+        # disambiguation itself at higher confidence).
+        org_check_fields = {
+            f.name for f in schema.fields
+            if f.judge.ner_type_check == "ORG" and "spacy_ner" in f.extractors
+        }
+        if org_check_fields:
+            try:
+                from src.services.extraction_v3.extractors.spacy_ner import _run_nlp as _spacy_run
+                for fname in org_check_fields:
+                    cands = header_by_field.get(fname, [])
+                    if not cands:
+                        continue
+                    # Only apply veto when there is no spacy_ner candidate already
+                    has_spacy = any(c.model == "spacy_ner" for c in cands)
+                    if has_spacy:
+                        continue  # spacy_ner already voted — trust its output
+                    # Check each non-spacy candidate's value against spaCy NER
+                    vetoed: list[Candidate] = []
+                    surviving: list[Candidate] = []
+                    for cand in cands:
+                        if not cand.value:
+                            surviving.append(cand)
+                            continue
+                        try:
+                            _doc = _spacy_run(cand.value.strip())
+                            person_labels = {e.label_ for e in _doc.ents}
+                            is_person_only = (
+                                bool(person_labels)
+                                and "ORG" not in person_labels
+                                and "PERSON" in person_labels
+                            )
+                            if is_person_only:
+                                log.debug(
+                                    "NER-type veto: dropping %s=%r from %s (spaCy=PERSON, expected ORG)",
+                                    fname, cand.value, cand.model,
+                                )
+                                vetoed.append(cand)
+                            else:
+                                surviving.append(cand)
+                        except Exception:
+                            surviving.append(cand)  # veto failed — keep candidate
+                    if surviving:
+                        header_by_field[fname] = surviving
+                    elif vetoed:
+                        # All candidates vetoed — remove the field entirely
+                        # (leaves buyer_id as residual/NULL rather than committing a person)
+                        header_by_field.pop(fname, None)
+                        log.debug(
+                            "NER-type veto: all candidates for %s were PERSON — field left as residual",
+                            fname,
+                        )
+            except Exception as _ner_veto_exc:
+                log.debug("NER-type veto skipped (import error): %s", _ner_veto_exc)
+
         # 3b. Run invariants on a preliminary record (just the candidate values).
         # We do this BEFORE the judge so the coherence pass can see the invariants.
         prelim_record = {

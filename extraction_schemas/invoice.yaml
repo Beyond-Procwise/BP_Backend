@@ -90,11 +90,12 @@ fields:
       - "Billed To"
     extractors:
       - layoutlmv3
+      - spacy_ner
       - sbert_anchor
     judge:
       tiebreaker: true
       grounded_last_resort: true
-      ner_type_check: "none"
+      ner_type_check: "ORG"
     invariants: []
 
   - name: requested_by
