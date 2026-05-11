@@ -130,26 +130,31 @@ class PipelineV3:
                 )
                 header_by_field[fname] = [best]
 
-        # Pre-filter 3: NER-type veto for ORG-typed fields.
-        # For fields with ner_type_check="ORG", run spaCy on each candidate
-        # value to check if it is classified as a non-ORG entity type. If the
+        # Pre-filter 3: Universal NER-type veto for ORG-typed fields.
+        # For ALL candidates for fields with ner_type_check="ORG", run spaCy on
+        # each non-spacy-ner candidate value to check its entity type. If the
         # value is classified as PERSON, DATE, CARDINAL, ORDINAL, or similar
         # non-organisation types, drop it — those are never valid buyer/supplier IDs.
-        # This prevents layoutlmv3 from committing "John Smith" or "June 5, 2025"
-        # as buyer_id when the BILL TO block contains only a contact name.
+        # This prevents layoutlmv3 (canonical-label proximity), layoutlmv3_finetuned
+        # (jinhybr), sbert_anchor, or any other extractor from committing
+        # "John Smith" or "June 5, 2025" as buyer_id when the BILL TO block
+        # contains only a contact name.
         #
         # Veto logic (for buyer_id and other ORG-typed fields):
+        #   - spacy_ner candidates: always kept (they already did ORG disambiguation)
         #   - PERSON-only → veto (person name is not a company)
         #   - DATE / TIME / CARDINAL / ORDINAL only → veto (temporal/numeric is not a company)
         #   - ORG present → keep (even if also other types)
         #   - No entities recognised → keep (could be unknown company name)
         #
-        # Only fires when ner_type_check=="ORG" AND there is NO competing
-        # spacy_ner candidate (spacy_ner handles its own disambiguation).
+        # Fires for ALL non-spacy candidates, regardless of whether spacy_ner
+        # also produced a candidate for the same field. This is the universal fix:
+        # it works even when layoutlmv3 at conf=0.90 would otherwise beat the
+        # spacy_ner ORG candidate in the tiebreaker.
         _ORG_VETO_TYPES = frozenset({"PERSON", "DATE", "TIME", "CARDINAL", "ORDINAL", "MONEY", "PERCENT"})
         org_check_fields = {
             f.name for f in schema.fields
-            if f.judge.ner_type_check == "ORG" and "spacy_ner" in f.extractors
+            if f.judge.ner_type_check == "ORG"
         }
         if org_check_fields:
             try:
@@ -158,14 +163,16 @@ class PipelineV3:
                     cands = header_by_field.get(fname, [])
                     if not cands:
                         continue
-                    # Only apply veto when there is no spacy_ner candidate already
-                    has_spacy = any(c.model == "spacy_ner" for c in cands)
-                    if has_spacy:
-                        continue  # spacy_ner already voted — trust its output
-                    # Check each non-spacy candidate's value against spaCy NER
+                    # Check each non-spacy_ner candidate's value against spaCy NER.
+                    # spacy_ner candidates are always kept — they produced ORG-shaped
+                    # values through their own disambiguation logic.
                     vetoed: list[Candidate] = []
                     surviving: list[Candidate] = []
                     for cand in cands:
+                        # Always keep spacy_ner's own candidates unchanged
+                        if cand.model == "spacy_ner":
+                            surviving.append(cand)
+                            continue
                         if not cand.value:
                             surviving.append(cand)
                             continue
