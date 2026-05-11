@@ -13,11 +13,20 @@ Improvements over baseline:
     country lookup table so "Las Vegas" → "United States", "London" → "United
     Kingdom", etc.  Country-shaped GPEs (e.g. "United States") pass through
     unchanged.  Only the country-normalised value is emitted.
-  - supplier_name field: ORG entities are ranked by their position in the
-    document; entities in the top third of page 0 receive a confidence boost
-    (they are more likely the supplier header). PERSON entities at the top of
-    the document are excluded from supplier_name candidates (they belong to
-    requested_by / contacts).
+  - supplier_name field: ORG entities are filtered by position and context:
+      * Carrier blocklist: known shipping carriers (UPS, FedEx, DHL, etc.)
+        are dropped entirely — they are never the invoice issuer.
+      * Header-band filter: only ORG entities in the top 30% of page 0 (the
+        document masthead) OR explicitly in a "Vendor/From/Supplier/Issuer"
+        labeled block are accepted. Entities appearing only below the header
+        band and not near a vendor label are dropped rather than emitted at
+        low confidence.
+      * Carrier-context ORGs (near "SHIP VIA:", "CARRIER:", etc.) are
+        dropped before the header-band check.
+  - buyer_id field: looks in the "BILL TO" / "Sold To" / "Customer" block
+    for ORG entities exclusively. If only PERSON entities are found in that
+    block, no candidate is emitted (buyer_id remains NULL/residual — better
+    than committing a person name as a buyer identifier).
   - All other fields: behaviour unchanged.
 
 Substring guarantee: spaCy operates on parsed.full_text directly; entity
@@ -30,6 +39,7 @@ import threading
 
 import spacy
 
+from src.services.extraction_v3.extractors._carrier_blocklist import is_carrier
 from src.services.extraction_v3.extractors.base import Extractor
 from src.services.extraction_v3.schemas.candidate import Candidate
 from src.services.extraction_v3.schemas.parsed_document import ParsedDocument
@@ -424,17 +434,42 @@ class SpacyNERExtractor(Extractor):
                 continue
 
             if field.name == "supplier_name":
-                # Prefer ORG entities; apply a context-based exclusion to avoid
-                # picking up the buyer (Bill To) organisation.
-                # Build a set of ORG entity texts that appear within 120 chars
-                # after "bill to", "ship to", "customer", "client" in full_text.
+                # --- supplier_name: position-aware + carrier-filtered ORG extraction ---
+                #
+                # Strategy (in order of precedence):
+                #   1. Known carrier blocklist: DROP immediately — carriers are never issuers.
+                #   2. Carrier-context ORGs (near "SHIP VIA:", "CARRIER:"): DROP.
+                #   3. Buyer-context ORGs (near "BILL TO:", "CUSTOMER:"): LOW or DROP.
+                #   4. Explicitly vendor-context ORGs (near "FROM:", "VENDOR:", etc.): HIGH.
+                #   5. Header-band ORGs (top 30% of page 0): MEDIUM-HIGH.
+                #   6. Non-header, non-vendor ORGs: DROP (better NULL than wrong).
+                #
+                # The 30% threshold covers the typical supplier masthead on page 1
+                # while excluding the BILL TO, SHIP TO, and line-item sections that
+                # occupy the middle and lower portions of the page.
                 full_lower = parsed.full_text.lower()
+
+                # 2a. Carrier-context: ORGs appearing near shipping/carrier keywords
+                #     are blocklisted regardless of position.
+                carrier_context_orgs: set[str] = set()
+                for carrier_kw in (
+                    "ship via", "ship via:", "shipped via", "shipped by",
+                    "carrier:", "carrier", "via:", "delivered by", "delivery by",
+                    "shipping method", "shipping carrier",
+                ):
+                    pos = full_lower.find(carrier_kw)
+                    if pos >= 0:
+                        snippet = parsed.full_text[pos:pos + 200].lower()
+                        for ent in field_ents:
+                            if ent.text.strip().lower() in snippet:
+                                carrier_context_orgs.add(ent.text.strip())
+
+                # 2b. Buyer-context: ORGs in "BILL TO:", "CUSTOMER:", etc.
                 buyer_context_orgs: set[str] = set()
                 for buyer_kw in (
                     "bill to", "bill to:", "customer:", "client:",
                     "deliver to", "deliver to:", "delivered to:",
                     "ship to", "ship to:", "delivery address",
-                    "ship via", "ship via:", "shipped via", "carrier:",
                 ):
                     pos = full_lower.find(buyer_kw)
                     if pos >= 0:
@@ -443,9 +478,13 @@ class SpacyNERExtractor(Extractor):
                             if ent.text.strip().lower() in snippet:
                                 buyer_context_orgs.add(ent.text.strip())
 
-                # Also find ORG entities near "vendor:", "from:", "supplier:", "seller:"
+                # 2c. Vendor-context: ORGs near explicit "FROM:", "VENDOR:", etc.
                 supplier_context_orgs: set[str] = set()
-                for supp_kw in ("vendor:", "vendor", "from:", "supplier:", "seller:", "billed from"):
+                for supp_kw in (
+                    "vendor:", "vendor", "from:", "supplier:", "seller:",
+                    "billed from", "issued by", "issued from", "issuer:",
+                    "invoice from", "bill from",
+                ):
                     pos = full_lower.find(supp_kw)
                     if pos >= 0:
                         snippet = parsed.full_text[pos:pos + 250].lower()
@@ -453,16 +492,13 @@ class SpacyNERExtractor(Extractor):
                             if ent.text.strip().lower() in snippet:
                                 supplier_context_orgs.add(ent.text.strip())
 
-                # Build a set of ORG texts that appear in table rows (markdown
-                # or structured tables): these are typically product descriptions,
-                # not company names, and should be excluded from supplier_name.
+                # 2d. Table-context: ORGs inside markdown table rows (product
+                #     descriptions / line items) — exclude these.
                 table_context_orgs: set[str] = set()
                 for ent in field_ents:
                     et = ent.text.strip()
                     if not et:
                         continue
-                    # Check if entity text appears inside a markdown table row
-                    # (line that starts with "|")
                     for line in parsed.full_text.splitlines():
                         if "|" in line and et in line:
                             table_context_orgs.add(et)
@@ -473,50 +509,62 @@ class SpacyNERExtractor(Extractor):
                     if not ent_text or ent_text not in parsed.full_text:
                         continue
 
-                    # Skip entities that appear in table rows (product descriptions,
-                    # line items, etc. — not company names)
+                    # --- Carrier blocklist: drop known shipping carriers ---
+                    # Checked before position logic; carriers are never issuers.
+                    if is_carrier(ent_text):
+                        continue
+
+                    # --- Carrier-context: drop ORGs found near shipping keywords ---
+                    if ent_text in carrier_context_orgs:
+                        continue
+
+                    # --- Table-context: skip product/line-item strings ---
                     if ent_text in table_context_orgs:
                         continue
 
-                    # Strip "Attn:", "Attention:" and similar suffixes that spaCy
-                    # bundles into the ORG span (e.g. "TechTonic Attn" → "TechTonic").
-                    # evidence_text keeps the raw ent_text for substring guarantee;
-                    # value carries the cleaned form.
+                    # Strip "Attn:", "Attention:" suffixes (e.g. "TechTonic Attn" → "TechTonic").
                     cleaned_name = _clean_org_name(ent_text)
                     if not cleaned_name:
+                        continue
+
+                    # --- Carrier blocklist on cleaned name too ---
+                    if is_carrier(cleaned_name):
                         continue
 
                     is_buyer = ent_text in buyer_context_orgs
                     is_supplier = ent_text in supplier_context_orgs
 
                     bbox = _find_bbox_for_text(parsed, ent_text)
-                    # bbox is None when the entity text wasn't found in parsed tokens
-                    # (e.g. table cell text in markdown rendering). Don't treat
-                    # position-unknown entities as header entities.
                     bbox_known = bbox is not None
                     page_idx, b = bbox if bbox else (0, (0.0, 0.0, 0.0, 0.0))
-                    in_header = (bbox_known and page_idx == 0 and b[1] < page0_height * 0.40)
+                    # Header band: top 30% of page 0 (down from 40%; tighter = more precise)
+                    in_header = (bbox_known and page_idx == 0 and b[1] < page0_height * 0.30)
 
-                    # Confidence assignment:
-                    # - Explicitly in supplier context (near Vendor:/From:): 0.90
-                    # - In page header, not in buyer context: 0.80
-                    # - In page header, but also in buyer context: 0.55 (ambiguous)
-                    # - Position unknown (no token bbox): 0.50 — less trustworthy
-                    # - Elsewhere, not in buyer context: 0.65
-                    # - Elsewhere, in buyer context: 0.45 (last resort — may be
-                    #   the only org in doc; don't exclude entirely)
+                    # --- Strict position gate ---
+                    # Only emit if: explicitly in vendor context OR in page header.
+                    # Non-header, non-vendor ORGs are DROPPED (prefer NULL over wrong).
+                    # Exception: if the only ORG in the doc is in buyer context but not
+                    # in the header band, we still suppress it (buyer ≠ supplier).
+                    if not is_supplier and not in_header:
+                        # This ORG is neither near a vendor label nor in the masthead.
+                        # Dropping it is safer than emitting it at low confidence.
+                        continue
+
+                    # --- Confidence assignment ---
+                    # Vendor-context (near FROM:/VENDOR:): highest — explicit label
+                    # Header-band only, not buyer context: strong positional evidence
+                    # Header-band but also in buyer context: ambiguous — moderate
+                    # Vendor-context overrides buyer context (explicit label wins)
                     if is_supplier:
                         conf = 0.90
-                    elif not bbox_known:
-                        conf = 0.50  # no positional evidence — table cell or unlocatable entity
                     elif in_header and not is_buyer:
                         conf = 0.80
                     elif in_header and is_buyer:
                         conf = 0.55
-                    elif not is_buyer:
-                        conf = 0.65
                     else:
-                        conf = 0.45  # buyer context but may be only option
+                        # is_supplier is True (guaranteed by gate above), so this
+                        # branch only fires if the position gate logic changes.
+                        conf = 0.70
 
                     candidates.append(Candidate(
                         field=field.name,
@@ -535,6 +583,82 @@ class SpacyNERExtractor(Extractor):
                     _emit_company_suffix_candidates(
                         parsed, field, candidates, buyer_context_orgs, page0_height
                     )
+
+                continue
+
+            if field.name == "buyer_id":
+                # --- buyer_id: prefer ORG over PERSON in BILL TO block ---
+                #
+                # The BILL TO block structure is typically:
+                #   BILL TO:
+                #   <Company Name>   ← ORG → buyer_id
+                #   <Contact Name>   ← PERSON → NOT buyer_id
+                #   <Address>
+                #
+                # Strategy:
+                #   1. Locate the BILL TO / Sold To / Customer / Buyer block.
+                #   2. Within that block, collect ORG entities.
+                #   3. If ORG found → emit the first ORG at high confidence.
+                #   4. If no ORG found → emit nothing (buyer_id stays NULL).
+                #      Never emit PERSON names for buyer_id.
+                full_lower = parsed.full_text.lower()
+
+                # Find the start of the buyer block
+                buyer_block_start: int = -1
+                for bill_kw in (
+                    "bill to:", "bill to", "sold to:", "sold to",
+                    "customer:", "buyer:", "client:", "billed to:", "invoice to:",
+                ):
+                    pos = full_lower.find(bill_kw)
+                    if pos >= 0:
+                        buyer_block_start = pos
+                        break
+
+                if buyer_block_start < 0:
+                    # No BILL TO block found — cannot reliably identify the buyer org.
+                    continue
+
+                # Extract a window of text after the BILL TO keyword (300 chars covers
+                # a typical address block: company + contact + street + city/state/zip)
+                buyer_block_text = parsed.full_text[buyer_block_start:buyer_block_start + 300]
+                buyer_block_lower = buyer_block_text.lower()
+
+                # Collect ORG entities from ALL spaCy entities (not just field_ents
+                # which are filtered to the field's ner_type_check=ORG)
+                all_ents_by_label = ents_by_label  # already computed above
+
+                # ORG entities in the buyer block
+                org_ents_in_block: list = []
+                for ent in all_ents_by_label.get("ORG", []):
+                    et = ent.text.strip()
+                    if et and et.lower() in buyer_block_lower and et in parsed.full_text:
+                        org_ents_in_block.append(ent)
+
+                if not org_ents_in_block:
+                    # No ORG in BILL TO block — leave buyer_id as residual (NULL).
+                    # Better NULL than a person name.
+                    continue
+
+                # Emit the first ORG found in the buyer block (leftmost / topmost)
+                best_ent = org_ents_in_block[0]
+                ent_text = best_ent.text.strip()
+                cleaned_org = _clean_org_name(ent_text)
+                if not cleaned_org or cleaned_org not in parsed.full_text:
+                    # Cleaned name is no longer a substring — use raw for safety
+                    cleaned_org = ent_text
+
+                bbox = _find_bbox_for_text(parsed, ent_text)
+                page_idx, b = bbox if bbox else (0, (0.0, 0.0, 0.0, 0.0))
+
+                candidates.append(Candidate(
+                    field=field.name,
+                    value=cleaned_org,
+                    page=page_idx,
+                    bbox=b,
+                    evidence_text=ent_text,
+                    model="spacy_ner",
+                    confidence=0.85,  # high confidence: explicit ORG in BILL TO block
+                ))
 
                 continue
 

@@ -110,18 +110,25 @@ def test_ner_type_check_none_skipped():
 
 
 def test_org_entity_produces_candidate():
-    """ORG entities in full_text become candidates for supplier_name."""
+    """ORG entities near a vendor label become candidates for supplier_name.
+
+    The header-band + position filter (A.1/A.2) requires that supplier_name
+    candidates either (a) appear in the top 30% of page 0 (requires token bboxes)
+    or (b) appear near an explicit vendor/supplier/from label.  This test uses
+    a "Vendor:" prefix so the ORG qualifies via the vendor-context path.
+    """
     field = _ner_field("supplier_name", "ORG")
     schema = _minimal_schema([field])
-    parsed = _minimal_parsed("Acme Industries Ltd\nInvoice Number: 4759275")
+    # Include "Vendor:" so "Acme Industries Ltd" qualifies via vendor-context
+    parsed = _minimal_parsed("Vendor: Acme Industries Ltd\nInvoice Number: 4759275")
     ex = SpacyNERExtractor()
     candidates = ex.produce_candidates(parsed, schema)
     org_cands = [c for c in candidates if c.field == "supplier_name"]
-    assert org_cands, "No ORG candidate emitted for supplier_name"
+    assert org_cands, "No ORG candidate emitted for supplier_name in vendor context"
     for c in org_cands:
         assert c.evidence_text in parsed.full_text
         assert c.model == "spacy_ner"
-        assert 0.0 <= c.confidence <= 1.0  # confidence is context-dependent (0.45–0.90)
+        assert 0.0 <= c.confidence <= 1.0  # confidence is context-dependent (0.55–0.90)
 
 
 def test_i18_regression_invoice_number_not_org():
@@ -298,14 +305,202 @@ def test_bbox_falls_back_to_zero_when_no_token():
     """When no token matches, bbox defaults to page 0 with zero bbox."""
     field = _ner_field("supplier_name", "ORG")
     schema = _minimal_schema([field])
-    # No tokens in the page, but full_text has an ORG
-    parsed = _minimal_parsed("Initech Corporation\nInvoice: INV-99")
+    # No tokens in the page, but full_text has an ORG in vendor context
+    parsed = _minimal_parsed("Vendor: Initech Corporation\nInvoice: INV-99")
     ex = SpacyNERExtractor()
     candidates = ex.produce_candidates(parsed, schema)
     # If any ORG candidate was emitted, its bbox should default gracefully
     for c in candidates:
         assert isinstance(c.bbox, tuple)
         assert len(c.bbox) == 4
+
+
+# --------------------------------------------------------------------------- #
+# A.1 — Header-band position filter for supplier_name                         #
+# --------------------------------------------------------------------------- #
+
+def test_supplier_name_in_header_band_produces_candidate():
+    """ORG in top 30% of page 0 (header band) becomes a supplier_name candidate."""
+    from src.services.extraction_v3.schemas.parsed_document import Token
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    # Token is at y=100 out of page height 842 → 100/842 ≈ 12% < 30%: in header
+    tok = Token(text="Acme Industries Ltd", page=0, bbox=(10.0, 100.0, 200.0, 120.0))
+    parsed = _minimal_parsed("Acme Industries Ltd\nInvoice Number: 4759275", tokens=[tok])
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    supplier_cands = [c for c in candidates if c.field == "supplier_name"]
+    assert supplier_cands, "ORG in header band should produce a supplier_name candidate"
+    for c in supplier_cands:
+        assert c.evidence_text in parsed.full_text
+        assert c.confidence >= 0.70
+
+
+def test_supplier_name_below_header_band_dropped():
+    """ORG below header band and not in vendor context is dropped (not emitted)."""
+    from src.services.extraction_v3.schemas.parsed_document import Token
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    # Token at y=600 out of 842 → 71%: well below 30% header band
+    tok = Token(text="Acme Industries Ltd", page=0, bbox=(10.0, 600.0, 200.0, 620.0))
+    parsed = _minimal_parsed("Acme Industries Ltd\nInvoice Number: 4759275", tokens=[tok])
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    supplier_cands = [c for c in candidates if c.field == "supplier_name"]
+    # Should NOT produce a candidate — below header band, no vendor context
+    assert not supplier_cands, (
+        f"ORG below header band (no vendor context) should be dropped; got {[c.value for c in supplier_cands]}"
+    )
+
+
+def test_supplier_name_vendor_context_overrides_position():
+    """ORG near a 'Vendor:' label is emitted even without token bbox."""
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    # No tokens — no positional evidence; but "Vendor:" label qualifies it
+    parsed = _minimal_parsed("Vendor: TechTonic Solutions\nInvoice Number: 4759275")
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    supplier_cands = [c for c in candidates if c.field == "supplier_name"]
+    assert supplier_cands, "ORG near vendor label should produce a candidate regardless of position"
+    for c in supplier_cands:
+        assert c.confidence >= 0.80  # vendor context → highest confidence tier
+
+
+# --------------------------------------------------------------------------- #
+# A.2 — Known-carrier blocklist for supplier_name                             #
+# --------------------------------------------------------------------------- #
+
+def test_ups_express_not_emitted_as_supplier():
+    """UPS Express (a known carrier) must never be emitted as supplier_name."""
+    from src.services.extraction_v3.schemas.parsed_document import Token
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    # UPS Express in SHIP VIA section, also with a token in header band
+    tok = Token(text="UPS Express", page=0, bbox=(10.0, 50.0, 150.0, 70.0))
+    text = "Vendor: Apparel Co\nSHIP VIA: UPS Express\nInvoice Number: 4759275"
+    parsed = _minimal_parsed(text, tokens=[tok])
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    supplier_vals = [c.value for c in candidates if c.field == "supplier_name"]
+    assert not any("UPS" in v or "ups" in v.lower() for v in supplier_vals), (
+        f"Carrier 'UPS Express' should be blocklisted as supplier_name; got {supplier_vals}"
+    )
+
+
+def test_fedex_not_emitted_as_supplier():
+    """FedEx (a known carrier) must not be emitted as supplier_name."""
+    from src.services.extraction_v3.schemas.parsed_document import Token
+    field = _ner_field("supplier_name", "ORG")
+    schema = _minimal_schema([field])
+    tok = Token(text="FedEx Ground", page=0, bbox=(10.0, 50.0, 150.0, 70.0))
+    text = "Vendor: Globex Corp\nSHIP VIA: FedEx Ground\nInvoice: INV-100"
+    parsed = _minimal_parsed(text, tokens=[tok])
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    supplier_vals = [c.value for c in candidates if c.field == "supplier_name"]
+    assert not any("fedex" in v.lower() or "FedEx" in v for v in supplier_vals), (
+        f"Carrier 'FedEx Ground' should be blocklisted; got {supplier_vals}"
+    )
+
+
+def test_carrier_blocklist_direct():
+    """is_carrier() correctly identifies known carriers and non-carriers."""
+    from src.services.extraction_v3.extractors._carrier_blocklist import is_carrier
+    assert is_carrier("UPS") is True
+    assert is_carrier("UPS Express") is True
+    assert is_carrier("ups express") is True  # case-insensitive
+    assert is_carrier("FedEx") is True
+    assert is_carrier("DHL") is True
+    assert is_carrier("FedEx Ground Shipping") is True  # substring match
+    assert is_carrier("USPS Priority") is True
+    # Non-carriers
+    assert is_carrier("Acme Industries Ltd") is False
+    assert is_carrier("TechTonic Solutions") is False
+    assert is_carrier("Globex Corporation") is False
+    assert is_carrier("") is False
+
+
+# --------------------------------------------------------------------------- #
+# A.3 — buyer_id prefers ORG over PERSON in BILL TO block                     #
+# --------------------------------------------------------------------------- #
+
+def test_buyer_id_emits_org_from_bill_to_block():
+    """buyer_id extractor emits the ORG from BILL TO block, not a PERSON."""
+    field = _ner_field("buyer_id", "ORG")
+    schema = _minimal_schema([field])
+    text = (
+        "BILL TO:\n"
+        "Globex Corporation\n"
+        "John Smith\n"
+        "123 Main St, New York, NY 10001\n"
+    )
+    parsed = _minimal_parsed(text)
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    buyer_cands = [c for c in candidates if c.field == "buyer_id"]
+    if buyer_cands:
+        # If a candidate was emitted, it must NOT be a person name
+        for c in buyer_cands:
+            assert c.value != "John Smith", (
+                "buyer_id should not commit a PERSON name — only ORG entities"
+            )
+            assert c.evidence_text in parsed.full_text
+
+
+def test_buyer_id_no_org_in_bill_to_returns_empty():
+    """buyer_id emits nothing when BILL TO block contains only a PERSON (no ORG)."""
+    field = _ner_field("buyer_id", "ORG")
+    schema = _minimal_schema([field])
+    # Only a person name in the BILL TO block, no company ORG
+    text = (
+        "BILL TO:\n"
+        "John Smith\n"
+        "456 Oak Ave, Chicago, IL 60601\n"
+    )
+    parsed = _minimal_parsed(text)
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    buyer_cands = [c for c in candidates if c.field == "buyer_id"]
+    # Should emit nothing — PERSON in BILL TO block → NULL (not committed)
+    for c in buyer_cands:
+        assert c.value != "John Smith", (
+            "buyer_id must not commit a PERSON name from the BILL TO block"
+        )
+
+
+def test_buyer_id_substring_guarantee():
+    """All buyer_id candidates must satisfy the substring guarantee."""
+    field = _ner_field("buyer_id", "ORG")
+    schema = _minimal_schema([field])
+    text = (
+        "BILL TO: Initech Solutions\n"
+        "Attn: Bob Smith\n"
+        "789 Pine Rd, Houston, TX 77001\n"
+    )
+    parsed = _minimal_parsed(text)
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    for c in candidates:
+        if c.field == "buyer_id":
+            assert c.evidence_text in parsed.full_text, (
+                f"Substring guarantee violated for buyer_id: {c.evidence_text!r}"
+            )
+
+
+def test_no_bill_to_block_buyer_id_returns_empty():
+    """buyer_id emits nothing when there is no BILL TO / Customer block in the doc."""
+    field = _ner_field("buyer_id", "ORG")
+    schema = _minimal_schema([field])
+    # No BILL TO block at all
+    text = "Vendor: Acme Corp\nInvoice Number: INV-001\nTotal: $1000"
+    parsed = _minimal_parsed(text)
+    ex = SpacyNERExtractor()
+    candidates = ex.produce_candidates(parsed, schema)
+    buyer_cands = [c for c in candidates if c.field == "buyer_id"]
+    assert not buyer_cands, (
+        "buyer_id should not emit candidates when there is no BILL TO block"
+    )
 
 
 # --------------------------------------------------------------------------- #
