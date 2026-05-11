@@ -132,14 +132,21 @@ class PipelineV3:
 
         # Pre-filter 3: NER-type veto for ORG-typed fields.
         # For fields with ner_type_check="ORG", run spaCy on each candidate
-        # value to check if it is classified as PERSON. If so, drop the
-        # candidate — a person name is never a valid buyer/supplier organisation.
-        # This prevents layoutlmv3 from committing "John Smith" as buyer_id
-        # when the BILL TO block only contains a contact name (no company found).
+        # value to check if it is classified as a non-ORG entity type. If the
+        # value is classified as PERSON, DATE, CARDINAL, ORDINAL, or similar
+        # non-organisation types, drop it — those are never valid buyer/supplier IDs.
+        # This prevents layoutlmv3 from committing "John Smith" or "June 5, 2025"
+        # as buyer_id when the BILL TO block contains only a contact name.
+        #
+        # Veto logic (for buyer_id and other ORG-typed fields):
+        #   - PERSON-only → veto (person name is not a company)
+        #   - DATE / TIME / CARDINAL / ORDINAL only → veto (temporal/numeric is not a company)
+        #   - ORG present → keep (even if also other types)
+        #   - No entities recognised → keep (could be unknown company name)
         #
         # Only fires when ner_type_check=="ORG" AND there is NO competing
-        # spacy_ner candidate (if spacy_ner found an ORG, it handles the
-        # disambiguation itself at higher confidence).
+        # spacy_ner candidate (spacy_ner handles its own disambiguation).
+        _ORG_VETO_TYPES = frozenset({"PERSON", "DATE", "TIME", "CARDINAL", "ORDINAL", "MONEY", "PERCENT"})
         org_check_fields = {
             f.name for f in schema.fields
             if f.judge.ner_type_check == "ORG" and "spacy_ner" in f.extractors
@@ -164,19 +171,21 @@ class PipelineV3:
                             continue
                         try:
                             _doc = _spacy_run(cand.value.strip())
-                            person_labels = {e.label_ for e in _doc.ents}
-                            is_person_only = (
-                                bool(person_labels)
-                                and "ORG" not in person_labels
-                                and "PERSON" in person_labels
-                            )
-                            if is_person_only:
+                            ent_labels = {e.label_ for e in _doc.ents}
+                            # Keep if ORG is present in the recognised labels
+                            if "ORG" in ent_labels:
+                                surviving.append(cand)
+                                continue
+                            # Veto if any entity type is a clear non-ORG type
+                            if ent_labels & _ORG_VETO_TYPES:
                                 log.debug(
-                                    "NER-type veto: dropping %s=%r from %s (spaCy=PERSON, expected ORG)",
-                                    fname, cand.value, cand.model,
+                                    "NER-type veto: dropping %s=%r from %s (spaCy=%r, expected ORG)",
+                                    fname, cand.value, cand.model, ent_labels,
                                 )
                                 vetoed.append(cand)
                             else:
+                                # No entities recognised OR non-vetoed types → keep
+                                # (unknown company names often have no spaCy entity)
                                 surviving.append(cand)
                         except Exception:
                             surviving.append(cand)  # veto failed — keep candidate
@@ -184,10 +193,11 @@ class PipelineV3:
                         header_by_field[fname] = surviving
                     elif vetoed:
                         # All candidates vetoed — remove the field entirely
-                        # (leaves buyer_id as residual/NULL rather than committing a person)
+                        # (leaves buyer_id as residual/NULL rather than committing
+                        # a person name or date string)
                         header_by_field.pop(fname, None)
                         log.debug(
-                            "NER-type veto: all candidates for %s were PERSON — field left as residual",
+                            "NER-type veto: all candidates for %s were non-ORG — field left as residual",
                             fname,
                         )
             except Exception as _ner_veto_exc:

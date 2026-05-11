@@ -594,12 +594,16 @@ class SpacyNERExtractor(Extractor):
                 #   <Company Name>   ← ORG → buyer_id
                 #   <Contact Name>   ← PERSON → NOT buyer_id
                 #   <Address>
+                #   [optional shipping section starts after the address]
                 #
                 # Strategy:
                 #   1. Locate the BILL TO / Sold To / Customer / Buyer block.
-                #   2. Within that block, collect ORG entities.
-                #   3. If ORG found → emit the first ORG at high confidence.
-                #   4. If no ORG found → emit nothing (buyer_id stays NULL).
+                #   2. Clip the window to the first shipping section marker
+                #      (SHIP VIA:, CARRIER:, TERMS:) to avoid including carrier names.
+                #   3. Within that clipped block, collect ORG entities.
+                #   4. Apply the carrier blocklist — carriers are never buyers.
+                #   5. If ORG found → emit the first ORG at high confidence.
+                #   6. If no ORG found → emit nothing (buyer_id stays NULL).
                 #      Never emit PERSON names for buyer_id.
                 full_lower = parsed.full_text.lower()
 
@@ -618,21 +622,46 @@ class SpacyNERExtractor(Extractor):
                     # No BILL TO block found — cannot reliably identify the buyer org.
                     continue
 
-                # Extract a window of text after the BILL TO keyword (300 chars covers
-                # a typical address block: company + contact + street + city/state/zip)
-                buyer_block_text = parsed.full_text[buyer_block_start:buyer_block_start + 300]
+                # Extract a window of text after the BILL TO keyword.
+                # Use 300 chars as max; clip to the first shipping section marker
+                # (SHIP VIA:, CARRIER:, TERMS:) to prevent carrier names from
+                # leaking into the buyer block.
+                raw_window = parsed.full_text[buyer_block_start:buyer_block_start + 300]
+                raw_window_lower = raw_window.lower()
+
+                # Find the earliest shipping/terms section boundary within the window
+                clip_pos = len(raw_window)  # default: no clipping
+                for boundary_kw in (
+                    "ship via", "ship via:", "carrier:", "terms:", "shipped via",
+                    "shipping method", "tracking", "delivery method",
+                ):
+                    bpos = raw_window_lower.find(boundary_kw)
+                    if bpos >= 0 and bpos < clip_pos:
+                        clip_pos = bpos
+
+                buyer_block_text = raw_window[:clip_pos]
                 buyer_block_lower = buyer_block_text.lower()
 
                 # Collect ORG entities from ALL spaCy entities (not just field_ents
                 # which are filtered to the field's ner_type_check=ORG)
                 all_ents_by_label = ents_by_label  # already computed above
 
-                # ORG entities in the buyer block
+                # ORG entities in the clipped buyer block (carrier-filtered)
                 org_ents_in_block: list = []
                 for ent in all_ents_by_label.get("ORG", []):
                     et = ent.text.strip()
-                    if et and et.lower() in buyer_block_lower and et in parsed.full_text:
-                        org_ents_in_block.append(ent)
+                    if not et:
+                        continue
+                    # Must be in the clipped buyer block
+                    if et.lower() not in buyer_block_lower:
+                        continue
+                    # Must be a substring of the original full_text
+                    if et not in parsed.full_text:
+                        continue
+                    # Apply carrier blocklist — carriers are never buyers
+                    if is_carrier(et):
+                        continue
+                    org_ents_in_block.append(ent)
 
                 if not org_ents_in_block:
                     # No ORG in BILL TO block — leave buyer_id as residual (NULL).
