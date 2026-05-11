@@ -44,6 +44,7 @@ fields:
       - "Invoice From"
     extractors:
       - layoutlmv3
+      - layoutlmv3_finetuned
       - spacy_ner
       - sbert_anchor
       - vendor_template
@@ -151,6 +152,7 @@ fields:
       - "Date"
     extractors:
       - layoutlmv3
+      - layoutlmv3_finetuned
       - sbert_anchor
       - vendor_template
     judge:
@@ -171,6 +173,7 @@ fields:
       - "Payment Due Date"
     extractors:
       - layoutlmv3
+      - layoutlmv3_finetuned
       - sbert_anchor
       - qa_roberta
     judge:
@@ -254,6 +257,7 @@ fields:
       - "Net Total"
     extractors:
       - layoutlmv3
+      - layoutlmv3_finetuned
       - sbert_anchor
       - vendor_template
     judge:
@@ -296,6 +300,7 @@ fields:
       - "Tax Total"
     extractors:
       - layoutlmv3
+      - layoutlmv3_finetuned
       - sbert_anchor
       - qa_roberta
     judge:
@@ -320,6 +325,7 @@ fields:
       - "Total"
     extractors:
       - layoutlmv3
+      - layoutlmv3_finetuned
       - sbert_anchor
       - vendor_template
     judge:

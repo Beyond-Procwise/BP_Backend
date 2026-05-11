@@ -3,11 +3,27 @@
 Loads a fine-tuned LayoutLMv3ForTokenClassification checkpoint and runs it
 on rasterized page images. The model is controlled by an environment variable:
 
-  LAYOUTLMV3_FINETUNED_CHECKPOINT  (default: "nielsr/layoutlmv3-finetuned-cord")
+  LAYOUTLMV3_FINETUNED_CHECKPOINT  (default: "jinhybr/OCR-LayoutLMv3-Invoice")
 
 Supported checkpoints and their label-to-field mappings:
-  - "nielsr/layoutlmv3-finetuned-cord" (CORD receipt dataset):
+
+  - "jinhybr/OCR-LayoutLMv3-Invoice" (DEFAULT — actually invoice-trained):
+    Fine-tuned on wild_receipt dataset, F1=0.8789 on token classification.
+    Uses flat (non-BIO) labels: Store_name_value, Date_value, Subtotal_value,
+    Tax_value, Total_value, Prod_item_value, Prod_quantity_value, Prod_price_value.
+    Label set (26 labels, IDs 0-25, no BIO prefixes):
+      Store_name_value → supplier_name
+      Date_value       → invoice_date (first occurrence) or due_date (subsequent)
+      Subtotal_value   → invoice_amount
+      Tax_value        → tax_amount
+      Total_value      → invoice_total_incl_tax
+      Prod_item_value  → line_items[*].item_description
+      Prod_quantity_value → line_items[*].quantity
+      Prod_price_value → line_items[*].unit_price (per-item price)
+
+  - "nielsr/layoutlmv3-finetuned-cord" (CORD receipt dataset — legacy):
     Maps receipt labels → procurement schema fields for invoices.
+
   - Any local path to a fine-tuned checkpoint from Phase B self-training.
 
 CORD label → schema field mapping (invoice doc type):
@@ -57,11 +73,11 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 DEFAULT_CHECKPOINT = os.environ.get(
     "LAYOUTLMV3_FINETUNED_CHECKPOINT",
-    "nielsr/layoutlmv3-finetuned-cord",
+    "jinhybr/OCR-LayoutLMv3-Invoice",  # invoice-trained (F1=0.8789 on wild_receipt)
 )
 INVOICE_FINETUNE_PATH = os.environ.get("LAYOUTLMV3_INVOICE_FINETUNE_PATH", "")
 
-# If set, use the Phase B self-trained invoice checkpoint over CORD
+# If set, use the Phase B self-trained invoice checkpoint over default
 CHECKPOINT = INVOICE_FINETUNE_PATH if INVOICE_FINETUNE_PATH else DEFAULT_CHECKPOINT
 
 MAX_PAGES_PER_DOC = int(os.environ.get("LAYOUTLMV3_FINETUNED_MAX_PAGES", "4"))
@@ -81,6 +97,28 @@ _CORD_LABEL_TO_FIELD: dict[str, tuple[str, set[str]]] = {
     "MENU.PRICE":               ("line_item_line_amount",  {"invoice"}),
 }
 
+# ---------------------------------------------------------------------------
+# jinhybr/OCR-LayoutLMv3-Invoice label mapping
+# Flat (non-BIO) labels — no B-/I- prefix stripping required.
+# Label set: 26 labels (IDs 0-25) from wild_receipt fine-tuning.
+# ---------------------------------------------------------------------------
+_JINHYBR_LABEL_TO_FIELD: dict[str, tuple[str, set[str]]] = {
+    "Store_name_value":    ("supplier_name",           {"invoice"}),
+    "Date_value":          ("invoice_date",            {"invoice"}),  # first occurrence → invoice_date
+    "Subtotal_value":      ("invoice_amount",          {"invoice"}),
+    "Tax_value":           ("tax_amount",              {"invoice"}),
+    "Total_value":         ("invoice_total_incl_tax",  {"invoice"}),
+    "Prod_item_value":     ("line_item_description",   {"invoice"}),
+    "Prod_quantity_value": ("line_item_quantity",      {"invoice"}),
+    "Prod_price_value":    ("line_item_unit_price",    {"invoice"}),
+    # The following labels have no direct procurement schema equivalent but
+    # are kept for completeness; they will be skipped during candidate assembly.
+    # "Store_addr_value": no schema field for supplier address in bp_invoice
+    # "Tel_value": no schema field for telephone
+    # "Time_value": no schema field for time
+    # "Tips_value": no schema field for tips/gratuity
+}
+
 # Line-item special fields (assembled separately, not via schema field names)
 _LINE_ITEM_FIELDS = {
     "line_item_description", "line_item_unit_price",
@@ -97,10 +135,19 @@ _model_label_type: str | None = None  # "cord" or "funsd" or "custom"
 
 
 def _detect_model_type(config) -> str:
-    """Detect the type of fine-tuned model from its label set."""
+    """Detect the type of fine-tuned model from its label set.
+
+    Returns:
+      "cord"     — CORD receipt dataset (MENU.NM, TOTAL.TOTAL_PRICE, etc.)
+      "jinhybr"  — jinhybr/OCR-LayoutLMv3-Invoice (Store_name_value, etc.)
+      "funsd"    — FUNSD form understanding (ANSWER, QUESTION labels)
+      "custom"   — unknown / local checkpoint
+    """
     labels = set(config.id2label.values())
     if any("MENU" in lbl for lbl in labels):
         return "cord"
+    if any("Store_name" in lbl or "Prod_item" in lbl for lbl in labels):
+        return "jinhybr"
     if any("ANSWER" in lbl or "QUESTION" in lbl for lbl in labels):
         return "funsd"
     return "custom"
@@ -300,6 +347,62 @@ def _merge_bio_spans(
     return spans
 
 
+def _merge_flat_spans(
+    tokens: list,
+    labels: list[str],
+    probs: list[float],
+    ignore_labels: frozenset[str] = frozenset({"Ignore", "Others"}),
+) -> list[tuple[str, str, float]]:
+    """Merge consecutive flat-label tokens into (label, text, max_prob) tuples.
+
+    Unlike BIO spans, flat labels have no B-/I- prefix. Consecutive tokens
+    with the same non-ignore label are merged into a single span.
+
+    Used for the jinhybr/OCR-LayoutLMv3-Invoice model which uses flat labels
+    (Store_name_value, Date_value, etc.) without BIO prefixes.
+
+    Args:
+        tokens: list of word strings
+        labels: list of label strings (same length as tokens)
+        probs: list of confidence probabilities (same length as tokens)
+        ignore_labels: labels to skip (not merged into spans)
+
+    Returns:
+        list of (label, text, max_confidence) tuples
+    """
+    spans: list[tuple[str, str, float]] = []
+    current_label: str | None = None
+    current_tokens: list[str] = []
+    current_prob: float = 0.0
+
+    for tok, lbl, prob in zip(tokens, labels, probs):
+        if lbl in ignore_labels:
+            # Flush current span if we encounter an ignore label
+            if current_label and current_tokens:
+                spans.append((current_label, " ".join(current_tokens), current_prob))
+            current_label = None
+            current_tokens = []
+            current_prob = 0.0
+            continue
+
+        if lbl == current_label:
+            # Continue current span
+            current_tokens.append(tok)
+            current_prob = max(current_prob, prob)
+        else:
+            # New label — flush current span
+            if current_label and current_tokens:
+                spans.append((current_label, " ".join(current_tokens), current_prob))
+            current_label = lbl
+            current_tokens = [tok]
+            current_prob = prob
+
+    if current_label and current_tokens:
+        spans.append((current_label, " ".join(current_tokens), current_prob))
+
+    return spans
+
+
 @register_extractor("layoutlmv3_finetuned")
 class LayoutLMv3FinetunedExtractor(Extractor):
     """Plan 2 Phase A: fine-tuned LayoutLMv3 token classifier.
@@ -426,7 +529,7 @@ class LayoutLMv3FinetunedExtractor(Extractor):
             if word_idx not in word_labels or prob > word_labels[word_idx][1]:
                 word_labels[word_idx] = (lbl, prob)
 
-        # Build parallel lists for BIO merging
+        # Build parallel lists for span merging
         word_label_list = []
         word_prob_list = []
         for widx in range(len(words)):
@@ -434,13 +537,18 @@ class LayoutLMv3FinetunedExtractor(Extractor):
             word_label_list.append(lbl)
             word_prob_list.append(prob)
 
-        # Merge BIO spans
-        spans = _merge_bio_spans(words, word_label_list, word_prob_list)
-
         # Map spans to candidates
         candidates: list[Candidate] = []
         if model_type == "cord":
+            # BIO prefix labels — use BIO merging
+            spans = _merge_bio_spans(words, word_label_list, word_prob_list)
             candidates = self._cord_spans_to_candidates(
+                spans, doc_type, raw_tokens, parsed, page_idx,
+            )
+        elif model_type == "jinhybr":
+            # Flat labels (no BIO prefix) — use flat merging
+            spans = _merge_flat_spans(words, word_label_list, word_prob_list)
+            candidates = self._jinhybr_spans_to_candidates(
                 spans, doc_type, raw_tokens, parsed, page_idx,
             )
         # FUNSD and custom model types: skip (too generic for our fields)
@@ -530,6 +638,128 @@ class LayoutLMv3FinetunedExtractor(Extractor):
                 "line_amount": "line_amount",
             }
             for sub_field, db_field in field_map.items():
+                if sub_field in group:
+                    evidence, prob = group[sub_field]
+                    if evidence in parsed.full_text:
+                        candidates.append(Candidate(
+                            field=f"line_items[{row_idx}].{db_field}",
+                            value=evidence,
+                            page=page_idx,
+                            bbox=(0.0, 0.0, 0.0, 0.0),
+                            evidence_text=evidence,
+                            model="layoutlmv3_finetuned",
+                            confidence=min(0.88, prob * 0.90),
+                        ))
+
+        return candidates
+
+    def _jinhybr_spans_to_candidates(
+        self,
+        spans: list[tuple[str, str, float]],
+        doc_type: str,
+        raw_tokens,
+        parsed: ParsedDocument,
+        page_idx: int,
+    ) -> list[Candidate]:
+        """Convert jinhybr flat-label spans to Candidate objects.
+
+        Maps jinhybr/OCR-LayoutLMv3-Invoice labels → procurement schema fields.
+        Flat label model (no BIO prefix) — spans are produced by _merge_flat_spans.
+
+        Label mapping:
+          Store_name_value  → supplier_name
+          Date_value        → invoice_date (first occurrence)
+          Subtotal_value    → invoice_amount
+          Tax_value         → tax_amount
+          Total_value       → invoice_total_incl_tax
+          Prod_item_value   → line_items[*].item_description
+          Prod_quantity_value → line_items[*].quantity
+          Prod_price_value  → line_items[*].unit_price
+        """
+        candidates: list[Candidate] = []
+
+        # Track which date fields have been emitted to handle multiple dates
+        # (invoice_date vs due_date — jinhybr labels them all as Date_value)
+        date_count = 0
+
+        # Line item accumulation (group by sequential appearance)
+        line_item_groups: list[dict[str, tuple[str, float]]] = []
+
+        for jinhybr_label, span_text, prob in spans:
+            if prob < MIN_TOKEN_CONFIDENCE:
+                continue
+
+            if jinhybr_label not in _JINHYBR_LABEL_TO_FIELD:
+                continue  # skip Others, Ignore, Store_addr, Tel, Time, Tips
+
+            field_name, applicable_doc_types = _JINHYBR_LABEL_TO_FIELD[jinhybr_label]
+            if doc_type not in applicable_doc_types:
+                continue
+
+            evidence = span_text.strip()
+            if not evidence:
+                continue
+
+            # Substring guarantee: evidence must be in parsed.full_text
+            if evidence not in parsed.full_text:
+                evidence_compact = re.sub(r"\s+", "", evidence)
+                if evidence_compact and evidence_compact in parsed.full_text:
+                    evidence = evidence_compact
+                else:
+                    log.debug(
+                        "jinhybr span %r not in full_text (label=%s), skipping",
+                        evidence[:30], jinhybr_label,
+                    )
+                    continue
+
+            # Locate the best bbox from raw tokens
+            bbox = (0.0, 0.0, 0.0, 0.0)
+            for tok in raw_tokens:
+                if tok.text.strip() and tok.text.strip() in evidence:
+                    bbox = tok.bbox
+                    break
+
+            # Handle Date_value: first = invoice_date, second = due_date
+            if jinhybr_label == "Date_value":
+                if date_count == 0:
+                    actual_field = "invoice_date"
+                elif date_count == 1:
+                    actual_field = "due_date"
+                else:
+                    actual_field = None  # more than 2 dates — skip
+                date_count += 1
+                if actual_field is None:
+                    continue
+                field_name = actual_field
+
+            if field_name in _LINE_ITEM_FIELDS:
+                # Accumulate line items by sequential appearance
+                sub_field = field_name.replace("line_item_", "")
+                if sub_field == "description":
+                    line_item_groups.append({})
+                if line_item_groups:
+                    line_item_groups[-1][sub_field] = (evidence, prob)
+            else:
+                # Confidence: jinhybr is invoice-trained, so we trust it more
+                # than CORD (which was trained on receipts). Scale factor: 0.92.
+                candidates.append(Candidate(
+                    field=field_name,
+                    value=evidence,
+                    page=page_idx,
+                    bbox=bbox,
+                    evidence_text=evidence,
+                    model="layoutlmv3_finetuned",
+                    confidence=min(0.92, prob * 0.92),
+                ))
+
+        # Emit line item candidates from jinhybr
+        for row_idx, group in enumerate(line_item_groups):
+            jinhybr_field_map = {
+                "description": "item_description",
+                "unit_price": "unit_price",
+                "quantity": "quantity",
+            }
+            for sub_field, db_field in jinhybr_field_map.items():
                 if sub_field in group:
                     evidence, prob = group[sub_field]
                     if evidence in parsed.full_text:
