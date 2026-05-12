@@ -226,7 +226,11 @@ class PipelineV3:
 
         # 3c. Run judge orchestrator on header
         orch = run_judge_orchestrator(
-            header_by_field, schema, parsed.full_text, invariant_summaries,
+            header_by_field,
+            schema,
+            parsed.full_text,
+            invariant_summaries,
+            file_path=str(path),
         )
 
         # 4. Build the ExtractionResult

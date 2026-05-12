@@ -56,6 +56,7 @@ def run_judge_orchestrator(
     schema: DocSchema,
     parsed_full_text: str,
     invariant_results: list[InvariantResultSummary] | None = None,
+    file_path: str | None = None,
 ) -> OrchestratorResult:
     """Decide per-field outcomes and run the coherence pass.
 
@@ -84,7 +85,7 @@ def run_judge_orchestrator(
         if len(cands) == 0:
             # No candidates: if required, try grounded last-resort
             if field_spec.required and field_spec.judge.grounded_last_resort and _judge_open():
-                grounded = call_grounded_last_resort(field_spec, parsed_full_text)
+                grounded = call_grounded_last_resort(field_spec, parsed_full_text, file_path=file_path)
                 judge_calls += 1
                 if grounded is not None:
                     out.chosen = grounded
@@ -125,7 +126,11 @@ def run_judge_orchestrator(
     coherence: CoherenceOutput | None = None
     if record_dict and _judge_open():
         coherence = call_coherence_judge(
-            schema.doc_type, record_dict, invariant_results=invariant_results,
+            schema.doc_type,
+            record_dict,
+            invariant_results=invariant_results,
+            file_path=file_path,
+            doc_full_text=parsed_full_text,
         )
         if coherence is not None:
             judge_calls += 1
