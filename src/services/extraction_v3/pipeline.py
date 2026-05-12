@@ -668,6 +668,56 @@ class PipelineV3:
             None,
         )
 
+        # 7b. Synthetic invoice_id fallback: if invoice_id could not be extracted,
+        # generate a deterministic synthetic ID so the row can be persisted and
+        # routed to the manual review queue (rather than silently dropped).
+        # Format: SYN-{vendor_slug}-{date_iso}-{file_hash[:6]}
+        # where vendor_slug = first 12 chars of supplier_name (if available)
+        #       date_iso    = invoice_date if committed, else today (YYYY-MM-DD)
+        #       file_hash   = sha256 of the source file bytes, first 6 hex chars
+        if doc_pk is None and schema.doc_type == "invoice":
+            try:
+                import hashlib
+                from datetime import date as _date
+
+                # Compute file hash
+                file_bytes = path.read_bytes()
+                file_hash = hashlib.sha256(file_bytes).hexdigest()[:6]
+
+                # Get vendor slug from committed supplier_name
+                committed_map = {cf.field_path: cf.value for cf in committed}
+                supplier_raw = committed_map.get("supplier_name", "")
+                vendor_slug = re.sub(r'[^A-Za-z0-9]', '', supplier_raw.title())[:12] or "Unknown"
+
+                # Get date: use invoice_date if committed, else today
+                date_iso = committed_map.get("invoice_date", str(_date.today()))
+                # Normalise date to YYYY-MM-DD (drop anything after the date)
+                date_iso = date_iso[:10] if len(date_iso) >= 10 else str(_date.today())
+
+                syn_id = f"SYN-{vendor_slug}-{date_iso}-{file_hash}"
+                doc_pk = syn_id
+
+                # Inject into committed so persistence writes invoice_id
+                committed.append(CommittedField(
+                    field_path="invoice_id",
+                    value=syn_id,
+                    page=1,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    evidence_text=f"synthetic_invoice_id:{syn_id}",
+                    model="pipeline_recovery",
+                    model_confidence=0.30,
+                    judge_actions=[],
+                    final_confidence=0.30,
+                ))
+                # Remove any residual for invoice_id
+                residuals = [rf for rf in residuals if rf.field_path != "invoice_id"]
+                log.warning(
+                    "Synthetic invoice_id generated for %s: %s (no extractable invoice_id found)",
+                    path.name, syn_id,
+                )
+            except Exception:
+                log.exception("Failed to generate synthetic invoice_id for %s", path)
+
         return ExtractionResult(
             doc_type=schema.doc_type,
             doc_pk=doc_pk,
