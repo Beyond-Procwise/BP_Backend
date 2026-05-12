@@ -97,7 +97,7 @@ def dispatch_document(
         result = PipelineV3().run(file_path, doc_type)
         adapted = _adapt_v3_result(result)
         if adapted["header_persisted"]:
-            persist_v3(result)
+            persist_v3(result, source_file=file_path)
         return adapted
     except Exception as exc:
         log.exception("extraction_v3 pipeline failed for %s", file_path)
