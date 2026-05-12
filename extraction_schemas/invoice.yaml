@@ -1,6 +1,6 @@
 doc_type: invoice
-db_table: proc.bp_invoice
-db_lines_table: proc.bp_invoice_line_items
+db_table: proc.bp_invoice_stg
+db_lines_table: proc.bp_invoice_line_items_stg
 
 fields:
   - name: invoice_id

@@ -1,6 +1,6 @@
 doc_type: purchase_order
-db_table: proc.bp_purchase_order
-db_lines_table: proc.bp_po_line_items
+db_table: proc.bp_purchase_order_stg
+db_lines_table: proc.bp_po_line_items_stg
 
 fields:
   - name: po_id

@@ -303,3 +303,34 @@ CREATE TABLE IF NOT EXISTS proc.bp_extraction_provenance (
     extracted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_prov_parent ON proc.bp_extraction_provenance (parent_table, parent_pk);
+
+-- 3i. bp_contracts (contract pipeline target table)
+CREATE TABLE IF NOT EXISTS proc.bp_contracts (
+    contract_id               TEXT,
+    contract_title            TEXT,
+    contract_type             TEXT,
+    supplier_id               TEXT,
+    buyer_org_id              TEXT,
+    contract_start_date       DATE,
+    contract_end_date         DATE,
+    currency                  TEXT,
+    total_contract_value      NUMERIC(18,2),
+    spend_category            TEXT,
+    business_unit_id          TEXT,
+    cost_centre_id            TEXT,
+    is_amendment              TEXT,
+    parent_contract_id        TEXT,
+    auto_renew_flag           TEXT,
+    renewal_term              TEXT,
+    contract_lifecycle_status TEXT,
+    jurisdiction              TEXT,
+    governing_law             TEXT,
+    contract_signatory_name   TEXT,
+    contract_signatory_role   TEXT,
+    payment_terms             TEXT,
+    risk_assessment_completed TEXT,
+    created_date              TIMESTAMP WITHOUT TIME ZONE,
+    created_by                TEXT,
+    last_modified_by          TEXT,
+    last_modified_date        TIMESTAMP WITHOUT TIME ZONE
+);
