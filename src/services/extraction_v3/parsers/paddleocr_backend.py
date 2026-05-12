@@ -81,15 +81,17 @@ def _get_pipeline():
         with _pipeline_lock:
             if _pipeline is None:
                 import paddle
-                # Force CPU to avoid cuDNN handle conflict with Qwen GPU worker.
+                # Force CPU: set_device sets the global default, but static inference
+                # runners read device from the pipeline config ('device' kwarg).
+                # Both must be set to guarantee CPU inference.
                 paddle.device.set_device("cpu")
                 logger.info(
-                    "PaddleOCR: forcing CPU mode (device=%s) to avoid cuDNN "
-                    "conflict with Qwen2.5-VL GPU worker thread.",
-                    paddle.device.get_device(),
+                    "PaddleOCR: forcing CPU mode to avoid cuDNN conflict with Qwen GPU worker.",
                 )
                 from paddleocr import PPStructureV3  # deferred import — no GPU at collection time
-                _pipeline = PPStructureV3()
+                # Pass device="cpu" explicitly so the PaddleX static runner uses
+                # CPU config instead of enabling GPU via config.enable_use_gpu().
+                _pipeline = PPStructureV3(device="cpu")
     return _pipeline
 
 
