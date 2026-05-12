@@ -160,7 +160,7 @@ class PipelineV3:
             _INV_ID_RE = re.compile(
                 r"(?:Invoice\s+(?:Number|No\.?|#)|Document\s+Number|"
                 r"Document\s+No\.?|Inv\.?\s+No\.?|Reference\s+No\.?)"
-                r"[\s:]+([A-Za-z0-9][A-Za-z0-9\-/\.]{1,30})",
+                r"[\s:]+([#A-Za-z0-9][A-Za-z0-9\-/\.\#]{1,30})",
                 re.IGNORECASE,
             )
             m = _INV_ID_RE.search(parsed.full_text)
@@ -204,7 +204,7 @@ class PipelineV3:
                     r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[-/]\d{2,4}"
                     r"|\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
                     r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
-                    r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}"
+                    r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?),?\s+\d{4}"
                     r"|\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})",
                     re.IGNORECASE,
                 )
