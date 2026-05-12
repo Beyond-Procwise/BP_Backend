@@ -187,6 +187,27 @@ def _compute_derived_values(result: ExtractionResult, conn: Any) -> ExtractionRe
     committed = list(result.committed)
     committed_map = {cf.field_path: cf for cf in committed}
 
+    # --- Sanitise extracted region values (reject garbage before any derivation) ---
+    # The 'region' canonical_labels are broad (Region, State, Province, County,
+    # Territory) and frequently match non-geographic text. Null-out values that
+    # are clearly not geographic region names.
+    _region_cf = committed_map.get("region")
+    if _region_cf is not None:
+        _rv = (_region_cf.value or "").strip()
+        _is_garbage_region = (
+            len(_rv) > 40              # full address blocks, company+address, etc.
+            or "@" in _rv              # email addresses
+            or _rv.count(" ") > 5     # multi-word = likely full address line
+            or any(ch.isdigit() for ch in _rv)  # digits → serial, address, postcode
+        )
+        if _is_garbage_region:
+            log.info(
+                "compute_derived: dropping garbage region value %r for %s",
+                _rv, result.doc_pk,
+            )
+            committed = [cf for cf in committed if cf.field_path != "region"]
+            committed_map = {cf.field_path: cf for cf in committed}
+
     # --- Region from postcode / postal_code ---
     _postcode_field_names = ("postal_code", "postcode")
     postcode_cf: CommittedField | None = None
@@ -218,6 +239,46 @@ def _compute_derived_values(result: ExtractionResult, conn: Any) -> ExtractionRe
                 committed_map = {cf.field_path: cf for cf in committed}
         except Exception as exc:
             log.debug("compute_derived: postcode→region failed: %s", exc)
+
+    # --- Region from country (for invoices without a postal_code field) ---
+    # Invoice schema has no postal_code extraction target. When country is
+    # present and region is still absent, derive region from the country name
+    # for single-region countries, or leave NULL for ambiguous multi-region ones.
+    # For US/AU/CA/GB where region=state/province matters, extract from the
+    # supplier address block if country is known.
+    if "region" not in committed_map and result.doc_type == "invoice":
+        _country_cf = committed_map.get("country")
+        if _country_cf is not None:
+            _country_val = (_country_cf.value or "").strip()
+            # Single-region/territory countries → country IS the region
+            _SINGLE_REGION_COUNTRIES = {
+                "Singapore": "Singapore",
+                "Hong Kong": "Hong Kong",
+                "New Zealand": "New Zealand",
+                "Ireland": "Ireland",
+                "Luxembourg": "Luxembourg",
+                "Malta": "Malta",
+                "Iceland": "Iceland",
+                "Cyprus": "Cyprus",
+            }
+            _derived_region = _SINGLE_REGION_COUNTRIES.get(_country_val)
+            if _derived_region:
+                log.info(
+                    "compute_derived: single-region country %r → region=%r for %s",
+                    _country_val, _derived_region, result.doc_pk,
+                )
+                committed.append(CommittedField(
+                    field_path="region",
+                    value=_derived_region,
+                    page=_country_cf.page,
+                    bbox=_country_cf.bbox,
+                    evidence_text=_country_cf.evidence_text,
+                    model="derived:country",
+                    model_confidence=0.75,
+                    judge_actions=[],
+                    final_confidence=0.75,
+                ))
+                committed_map = {cf.field_path: cf for cf in committed}
 
     # --- Tax-exempt detection: derive tax_amount=0 and tax_percent=0 ---
     # When invoice_amount == invoice_total_incl_tax (within 1% tolerance) and
