@@ -241,6 +241,34 @@ def parse_with_docling(
     if floating_parts:
         full_text = full_text + "\n" + "\n".join(floating_parts)
 
+    # ------------------------------------------------------------------ #
+    # DOCX augmentation: python-docx supplemental table scan             #
+    # Docling sometimes renders DOCX tables as empty cells (e.g. when    #
+    # cell content is computed via OOXML formulas or has complex          #
+    # formatting). python-docx reads the raw XML cell text directly and  #
+    # is unaffected by this. We append any cell values that Docling       #
+    # missed so that financial totals (Subtotal, Tax, Grand Total) are   #
+    # present in full_text and can be matched by the regex recovery steps.#
+    # ------------------------------------------------------------------ #
+    if file_format == "docx":
+        try:
+            from docx import Document as _DocxDocument
+            _docx_doc = _DocxDocument(p)
+            _docx_extras: list[str] = []
+            for _tbl in _docx_doc.tables:
+                for _row in _tbl.rows:
+                    for _cell in _row.cells:
+                        _cell_text = (_cell.text or "").strip()
+                        if _cell_text and _cell_text not in full_text:
+                            _docx_extras.append(_cell_text)
+            if _docx_extras:
+                full_text = full_text + "\n" + "\n".join(_docx_extras)
+        except Exception as _e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "docling_backend: python-docx augmentation failed for %s: %s", p, _e
+            )
+
     return ParsedDocument(
         source_path=str(p),
         file_format=file_format,

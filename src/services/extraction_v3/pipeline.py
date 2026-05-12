@@ -209,6 +209,22 @@ class PipelineV3:
                     re.IGNORECASE,
                 )
                 m = _DATE_LABEL_RE.search(parsed.full_text)
+                if m is None:
+                    # Fallback: OCR-fuzzy date pattern — captures DD <3-letter-word>, YYYY
+                    # where the month token may be OCR-corrupted (e.g. "Jon" for "Jan",
+                    # "Jol" for "Jul"). Anchored to a date label so false positives are rare.
+                    _DATE_FUZZY_RE = re.compile(
+                        r"(?:Invoice\s*Date|Date|Dated|Issue\s*Date|Billing\s*Date)"
+                        r"[\s:–-]*"
+                        r"(\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})",
+                        re.IGNORECASE,
+                    )
+                    m = _DATE_FUZZY_RE.search(parsed.full_text)
+                    if m:
+                        log.info(
+                            "Invoice-date fuzzy OCR recovery: found %r for %s",
+                            m.group(0), path.name,
+                        )
                 if m:
                     date_raw = m.group(1).strip()
                     evidence = m.group(0)
@@ -241,11 +257,28 @@ class PipelineV3:
                     re.IGNORECASE,
                 )
                 m = _AMT_LABEL_RE.search(parsed.full_text)
-                if m:
-                    amt_raw = m.group(1).strip()
+                _amt_raw_override: str | None = None
+                _amt_evidence_override: str | None = None
+                if m is None:
+                    # Fallback: three consecutive currency amounts on separate lines
+                    # (subtotal / tax / grand-total pattern, as seen in DOCX python-docx extras).
+                    # We take the FIRST amount as the subtotal (invoice_amount).
+                    _AMT_TRIPLET_RE = re.compile(
+                        r"([£€\$¥₹][\d,\.]+)\n([£€\$¥₹][\d,\.]+)\n([£€\$¥₹][\d,\.]+)"
+                    )
+                    mt = _AMT_TRIPLET_RE.search(parsed.full_text)
+                    if mt:
+                        log.info(
+                            "Invoice-amount triplet recovery (no label): %r / %r / %r for %s",
+                            mt.group(1), mt.group(2), mt.group(3), path.name,
+                        )
+                        _amt_raw_override = mt.group(1)  # first = subtotal
+                        _amt_evidence_override = mt.group(1)
+                if m or _amt_raw_override:
+                    amt_raw = (_amt_raw_override if _amt_raw_override is not None else m.group(1)).strip()
                     # Strip leading/trailing currency symbols, keep numeric+comma+period
                     amt_numeric = re.sub(r"^[£€\$¥₹\s]+|[£€\$¥₹\s]+$", "", amt_raw).strip()
-                    evidence = m.group(0)
+                    evidence = _amt_evidence_override if _amt_evidence_override is not None else m.group(0)
                     if amt_numeric and any(ch.isdigit() for ch in amt_numeric):
                         # Normalise through parse_amount so the DB gets a plain decimal
                         # ("129,200" → "129200.0"). The evidence_text keeps the raw match
