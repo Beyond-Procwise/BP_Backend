@@ -92,12 +92,22 @@ def _build_header_insert(
     cols = [pk_col]
     vals: list[Any] = [doc_pk]
 
+    # Build a reverse lookup for synthetic resolved fields:
+    # resolves_to_db_column values are DB column names injected by _resolve_supplier_fields.
+    resolved_cols: set[str] = {
+        f.resolves_to_db_column for f in schema.fields if f.resolves_to_db_column
+    }
+
     for cf in header_cfs:
         db_col = field_to_db_col.get(cf.field_path)
         if not db_col:
-            # Field doesn't map directly to a column (e.g. supplier_name →
-            # resolves to supplier_id via a lookup; not handled in Plan 1).
-            continue
+            # Synthetic resolved field: field_path IS the DB column name
+            # (e.g. "supplier_id" injected by _resolve_supplier_fields).
+            if cf.field_path in resolved_cols:
+                db_col = cf.field_path
+            else:
+                # Field doesn't map to any DB column — skip.
+                continue
         if db_col == pk_col:
             continue  # already in the list as the PK
         cols.append(db_col)
