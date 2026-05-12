@@ -179,7 +179,7 @@ def _write_raw(result: ExtractionResult, source_file: str, conn: Any) -> int:
 # ---------------------------------------------------------------------------
 
 def _compute_derived_values(result: ExtractionResult, conn: Any) -> ExtractionResult:
-    """Fill derived fields: region from postcode, USD conversion.
+    """Fill derived fields: region from postcode, USD conversion, zero-tax.
 
     Operates purely on already-committed fields — does NOT fabricate values
     from thin air. Only computes when the source data is present.
@@ -218,6 +218,48 @@ def _compute_derived_values(result: ExtractionResult, conn: Any) -> ExtractionRe
                 committed_map = {cf.field_path: cf for cf in committed}
         except Exception as exc:
             log.debug("compute_derived: postcode→region failed: %s", exc)
+
+    # --- Tax-exempt detection: derive tax_amount=0 and tax_percent=0 ---
+    # When invoice_amount == invoice_total_incl_tax (within 1% tolerance) and
+    # neither tax_amount nor tax_percent was extracted, the document is
+    # tax-exempt. Setting them to "0.0" prevents NULL on key columns.
+    if result.doc_type == "invoice":
+        invoice_amount_cf = committed_map.get("invoice_amount")
+        total_cf = committed_map.get("invoice_total_incl_tax")
+        tax_cf = committed_map.get("tax_amount")
+        tax_pct_cf = committed_map.get("tax_percent")
+        if (
+            invoice_amount_cf is not None
+            and total_cf is not None
+            and tax_cf is None
+            and tax_pct_cf is None
+        ):
+            try:
+                amt = float(invoice_amount_cf.value)
+                tot = float(total_cf.value)
+                # Within 1% tolerance: tax-exempt invoice
+                if amt > 0 and abs(amt - tot) / max(amt, 1.0) < 0.01:
+                    log.info(
+                        "compute_derived: tax-exempt invoice detected for %s "
+                        "(invoice_amount=%.2f == total=%.2f); setting tax_amount=0 tax_percent=0",
+                        result.doc_pk, amt, tot,
+                    )
+                    # Use invoice_amount_cf as anchor (its bbox/page/evidence are reliable)
+                    for fp, label_val in (("tax_amount", "0.0"), ("tax_percent", "0.0")):
+                        committed.append(CommittedField(
+                            field_path=fp,
+                            value=label_val,
+                            page=invoice_amount_cf.page,
+                            bbox=invoice_amount_cf.bbox,
+                            evidence_text="derived:tax-exempt (invoice_amount==total)",
+                            model="derived:tax_exempt",
+                            model_confidence=0.80,
+                            judge_actions=[],
+                            final_confidence=0.80,
+                        ))
+                    committed_map = {cf.field_path: cf for cf in committed}
+            except (ValueError, TypeError):
+                pass
 
     # --- USD conversion ---
     # If currency is not USD and we have invoice_amount / total_amount,
