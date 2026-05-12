@@ -13,6 +13,7 @@ from typing import Any
 from src.services.extraction_v3.schemas.result import ExtractionResult, CommittedField
 from src.services.extraction_v3.yaml_schema.loader import load_doc_schema, DocSchema
 from src.services.db import get_conn
+from src.services.extraction_v3.supplier_resolver import resolve_or_create_supplier
 
 log = logging.getLogger(__name__)
 
@@ -375,6 +376,74 @@ def _build_provenance_inserts(
     )
 
 
+def _resolve_supplier_fields(
+    schema: DocSchema,
+    header_cfs: list[CommittedField],
+    conn: Any,
+) -> list[CommittedField]:
+    """For any field with resolves_to_db_column, call supplier resolver and
+    inject a synthetic CommittedField for the resolved column.
+
+    Specifically: when ``supplier_name`` is committed AND ``supplier_id`` is
+    NOT already committed, call resolve_or_create_supplier to get a canonical
+    supplier_id and inject it into header_cfs.
+
+    supplier_name itself is NOT written to bp_invoice (it has db_column=null).
+    This function does NOT remove it from header_cfs; _build_header_insert
+    already skips fields with no db_column mapping.
+    """
+    # Build lookup of field_path → resolves_to_db_column for schema fields
+    resolves_map: dict[str, str] = {}
+    for f in schema.fields:
+        if f.resolves_to_db_column:
+            resolves_map[f.name] = f.resolves_to_db_column
+
+    if not resolves_map:
+        return header_cfs
+
+    # Check what's already in header_cfs (avoid overwriting an existing supplier_id)
+    existing_field_paths = {cf.field_path for cf in header_cfs}
+
+    extra: list[CommittedField] = []
+    for cf in header_cfs:
+        target_col = resolves_map.get(cf.field_path)
+        if not target_col:
+            continue
+        # target_col is e.g. "supplier_id". Skip if already committed.
+        if target_col in existing_field_paths:
+            log.debug(
+                "persist: %s already committed — skipping resolver", target_col
+            )
+            continue
+
+        # Call the resolver (supplier_name → supplier_id)
+        resolved_id = resolve_or_create_supplier(cf.value, conn)
+        if resolved_id:
+            log.info(
+                "persist: resolved %s='%s' → %s='%s'",
+                cf.field_path, cf.value, target_col, resolved_id,
+            )
+            synthetic = CommittedField(
+                field_path=target_col,
+                value=resolved_id,
+                page=cf.page,
+                bbox=cf.bbox,
+                evidence_text=cf.evidence_text,
+                model=cf.model,
+                model_confidence=cf.model_confidence,
+                judge_actions=cf.judge_actions,
+                final_confidence=cf.final_confidence,
+            )
+            extra.append(synthetic)
+        else:
+            log.warning(
+                "persist: supplier resolver returned None for '%s' — supplier_id will be NULL",
+                cf.value,
+            )
+
+    return header_cfs + extra
+
+
 def persist(result: ExtractionResult) -> None:
     """Persist an ExtractionResult atomically. Any failure rolls back everything.
 
@@ -402,6 +471,10 @@ def persist(result: ExtractionResult) -> None:
         prior_autocommit = conn.autocommit
         conn.autocommit = False
         try:
+            # --- Supplier resolution (runs inside transaction so any INSERT
+            #     into bp_supplier is rolled back on failure) ---
+            header_cfs = _resolve_supplier_fields(schema, header_cfs, conn)
+
             with conn.cursor() as cur:
                 _build_header_insert(
                     cur, result.doc_type, result.doc_pk, schema, header_cfs
