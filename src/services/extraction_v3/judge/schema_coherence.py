@@ -181,9 +181,15 @@ def _rasterize_first_page(file_path: str | None):
     try:
         if suffix in (".pdf",):
             from pdf2image import convert_from_path
-            images = convert_from_path(str(p), dpi=150, first_page=1, last_page=1)
+            images = convert_from_path(str(p), dpi=96, first_page=1, last_page=1)
             if images:
-                return images[0].convert("RGB")
+                img = images[0].convert("RGB")
+                w, h = img.size
+                if max(w, h) > 1024:
+                    from PIL import Image as _PIL
+                    scale = 1024 / max(w, h)
+                    img = img.resize((int(w * scale), int(h * scale)), _PIL.LANCZOS)
+                return img
         elif suffix in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"):
             from PIL import Image
             return Image.open(p).convert("RGB")

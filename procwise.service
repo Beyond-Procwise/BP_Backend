@@ -9,8 +9,9 @@ Requires=docker.service
 Type=simple
 User=muthu
 Group=muthu
-WorkingDirectory=/home/muthu/PycharmProjects/BP_Backend/src
+WorkingDirectory=/home/muthu/PycharmProjects/BP_Backend
 Environment=PYTHONPATH=/home/muthu/PycharmProjects/BP_Backend:/home/muthu/PycharmProjects/BP_Backend/src
+Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 EnvironmentFile=/home/muthu/PycharmProjects/BP_Backend/.env
 
 ExecStartPre=/usr/bin/docker compose --env-file /home/muthu/PycharmProjects/BP_Backend/.env -f /home/muthu/PycharmProjects/BP_Backend/procurement_knowledge_graph/docker-compose.yml up -d neo4j

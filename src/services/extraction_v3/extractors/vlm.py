@@ -7,12 +7,17 @@ Replaces the 6-extractor parallel stack with a single Qwen call per document.
 The model reads the rasterized document page(s) and returns a structured JSON
 object. Every extracted value is substring-checked against the parsed full_text
 to enforce the hallucination-rejection contract before becoming a Candidate.
+
+Thread safety: Qwen's visual encoder (conv3d) and CUDA cuDNN context are not
+thread-safe across simultaneous inference calls. _VLM_LOCK ensures only one
+Qwen inference runs at a time across all worker threads.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 
 from src.services.extraction_v3.extractors.base import Extractor
@@ -23,6 +28,10 @@ from src.services.extraction_v3.yaml_schema.registry import register_extractor
 from src.services.extraction_v3.judge.qwen_vl import qwen_vl_extract
 
 log = logging.getLogger(__name__)
+
+# Global lock: only one Qwen inference at a time to avoid cuDNN context conflicts
+# when multiple worker threads try to run GPU ops simultaneously.
+_VLM_LOCK = threading.Lock()
 
 MAX_PAGES = 3  # invoices/POs/quotes usually fit in 1-3 pages
 
@@ -79,11 +88,29 @@ def _rasterize_page(source_file: str, page_idx: int):
     try:
         if suffix == ".pdf":
             from pdf2image import convert_from_path
-            imgs = convert_from_path(str(p), dpi=150, first_page=page_idx + 1, last_page=page_idx + 1)
-            return imgs[0].convert("RGB") if imgs else None
+            from PIL import Image as _PIL
+            # 96 dpi — sufficient for Qwen2.5-VL text recognition while keeping
+            # image token count low enough to avoid CUDA OOM on the A10G.
+            imgs = convert_from_path(str(p), dpi=96, first_page=page_idx + 1, last_page=page_idx + 1)
+            if not imgs:
+                return None
+            img = imgs[0].convert("RGB")
+            # Cap at 1024px on the long side — reduces token count significantly
+            w, h = img.size
+            max_side = 1024
+            if max(w, h) > max_side:
+                scale = max_side / max(w, h)
+                img = img.resize((int(w * scale), int(h * scale)), _PIL.LANCZOS)
+            return img
         if suffix in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"):
-            from PIL import Image
-            return Image.open(p).convert("RGB")
+            from PIL import Image as _PIL
+            img = _PIL.open(p).convert("RGB")
+            w, h = img.size
+            max_side = 1024
+            if max(w, h) > max_side:
+                scale = max_side / max(w, h)
+                img = img.resize((int(w * scale), int(h * scale)), _PIL.LANCZOS)
+            return img
         # DOCX / other formats — no rasterization available; caller falls back to text-only
         return None
     except Exception as exc:
@@ -191,7 +218,10 @@ def extract_with_vlm(
             return []
 
     prompt = _build_schema_prompt(schema)
-    raw_response = qwen_vl_extract(image, prompt, max_new_tokens=2048)
+    # Serialize Qwen inference — only one call at a time to prevent cuDNN
+    # context conflicts when multiple worker threads compete for the GPU.
+    with _VLM_LOCK:
+        raw_response = qwen_vl_extract(image, prompt, max_new_tokens=1024)
 
     if not raw_response:
         log.warning("vlm_extractor: empty response for %s", source_file)

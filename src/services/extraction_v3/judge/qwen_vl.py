@@ -1,19 +1,22 @@
-"""Qwen2.5-VL-7B-Instruct inference module — lazy-loaded singleton.
+"""Qwen2.5-VL-7B-Instruct inference module — dedicated GPU thread.
 
 Provides ``qwen_vl_extract(image, prompt, max_new_tokens) -> str`` for
 document-understanding tasks. Used by the schema-coherence judge and the
 grounded last-resort judge when EXTRACTION_V3_JUDGE_MODEL=qwen (default).
 
-Memory budget: ~14 GB BF16. If CUDA OOM occurs, falls back to Q4 via
-bitsandbytes. If OOM persists after retry, raises RuntimeError (loud failure
-so the pipeline can demote to residual rather than silently skip).
+Thread safety: ALL CUDA operations run on a single dedicated daemon thread
+(_GPU_THREAD) that owns the CUDA context. Callers from any thread submit
+work via a queue and block until the result is ready. This prevents
+CUDNN_STATUS_NOT_INITIALIZED errors that occur when CUDA is used from
+multiple threads simultaneously.
 
-Thread safety: double-checked lock around singleton initialisation.
+Memory budget: Q4 quantization first (~4-5 GiB), falls back to BF16 (~14 GiB).
+On the 22 GiB A10G, Q4 leaves ample headroom for KV cache during generation.
 """
 from __future__ import annotations
 
 import logging
-import os
+import queue
 import threading
 from typing import TYPE_CHECKING
 
@@ -23,43 +26,124 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
-_LOCK = threading.Lock()
 
-# Module-level singletons — None until first call.
-_model = None
-_processor = None
-_load_error: Exception | None = None  # cached failure — don't retry on OOM
+# --------------------------------------------------------------------------
+# Dedicated GPU thread — owns the CUDA context exclusively.
+# --------------------------------------------------------------------------
+_GPU_QUEUE: queue.Queue = queue.Queue()
+_GPU_THREAD: threading.Thread | None = None
+_GPU_THREAD_LOCK = threading.Lock()
 
 
-def _load_model_bf16():
-    """Load model in bfloat16 on CUDA without Flash Attention 2."""
+def _gpu_worker():
+    """Worker that runs on the dedicated GPU thread. Processes inference tasks."""
     import torch
-    from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 
-    log.info("Loading %s in bfloat16 on CUDA (this takes ~60 s)…", _MODEL_ID)
-    processor = AutoProcessor.from_pretrained(_MODEL_ID, trust_remote_code=True)
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        _MODEL_ID,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda",
-        attn_implementation="sdpa",      # SDPA; Flash Attention 2 off by default
-        trust_remote_code=True,
-    )
-    model.eval()
-    return model, processor
+    log.info("Qwen GPU worker thread started — initializing CUDA context.")
+    # Initialize CUDA context on THIS thread, which will own it permanently.
+    torch.cuda.init()
+
+    model = None
+    processor = None
+    load_error = None
+
+    while True:
+        try:
+            task = _GPU_QUEUE.get(timeout=30)
+        except queue.Empty:
+            continue
+
+        if task is None:
+            # Shutdown signal
+            log.info("Qwen GPU worker thread shutting down.")
+            break
+
+        image, prompt, max_new_tokens, result_event, result_holder = task
+
+        if load_error is not None:
+            result_holder.append(("error", load_error))
+            result_event.set()
+            continue
+
+        # Load model on first use
+        if model is None:
+            try:
+                model, processor = _load_model_q4_internal()
+                log.info("Qwen2.5-VL loaded in Q4 on GPU worker thread.")
+            except Exception as e1:
+                log.warning("Q4 load failed: %s — trying BF16", e1)
+                try:
+                    model, processor = _load_model_bf16_internal()
+                    log.info("Qwen2.5-VL loaded in BF16 on GPU worker thread.")
+                except Exception as e2:
+                    load_error = e2
+                    log.error("Qwen2.5-VL failed to load: %s", e2)
+                    result_holder.append(("error", e2))
+                    result_event.set()
+                    continue
+
+        # Run inference
+        try:
+            import torch
+            torch.cuda.empty_cache()
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
+            text = processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = processor(
+                text=[text],
+                images=[image],
+                padding=True,
+                return_tensors="pt",
+            ).to("cuda")
+
+            with torch.inference_mode():
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    temperature=None,
+                    top_p=None,
+                )
+
+            input_len = inputs["input_ids"].shape[1]
+            generated = output_ids[:, input_len:]
+            response = processor.batch_decode(
+                generated,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0]
+            result_holder.append(("ok", response.strip()))
+
+        except torch.cuda.OutOfMemoryError as oom:
+            log.error("Qwen2.5-VL CUDA OOM during inference: %s", oom)
+            torch.cuda.empty_cache()
+            result_holder.append(("ok", ""))
+
+        except Exception as exc:
+            log.exception("Qwen2.5-VL inference error: %s", exc)
+            result_holder.append(("ok", ""))
+
+        finally:
+            result_event.set()
 
 
-def _load_model_q4():
-    """Load model in Q4 via bitsandbytes as OOM fallback."""
+def _load_model_q4_internal():
+    """Load model in Q4 quantization (bitsandbytes NF4, ~4-5 GiB)."""
     import torch
     from transformers import (
         Qwen2_5_VLForConditionalGeneration,
         AutoProcessor,
         BitsAndBytesConfig,
-    )
-
-    log.warning(
-        "BF16 OOM — retrying %s with Q4 quantization (bitsandbytes)", _MODEL_ID
     )
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -78,46 +162,44 @@ def _load_model_q4():
     return model, processor
 
 
-def _ensure_loaded() -> tuple:
-    """Double-checked lock: load model exactly once.
+def _load_model_bf16_internal():
+    """Load model in bfloat16 (SDPA attention, ~14 GiB)."""
+    import torch
+    from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+    log.info("Loading %s in bfloat16 on CUDA (this takes ~60 s)…", _MODEL_ID)
+    processor = AutoProcessor.from_pretrained(_MODEL_ID, trust_remote_code=True)
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        _MODEL_ID,
+        torch_dtype=torch.bfloat16,
+        device_map="cuda",
+        attn_implementation="sdpa",
+        trust_remote_code=True,
+    )
+    model.eval()
+    return model, processor
 
-    Returns (model, processor) or raises RuntimeError on OOM after retry.
-    """
-    global _model, _processor, _load_error
 
-    if _model is not None:
-        return _model, _processor  # fast path
+def _ensure_gpu_thread():
+    """Start the GPU worker thread if not already running."""
+    global _GPU_THREAD
+    if _GPU_THREAD is not None and _GPU_THREAD.is_alive():
+        return
+    with _GPU_THREAD_LOCK:
+        if _GPU_THREAD is not None and _GPU_THREAD.is_alive():
+            return
+        t = threading.Thread(
+            target=_gpu_worker,
+            name="qwen-vl-gpu-worker",
+            daemon=True,
+        )
+        t.start()
+        _GPU_THREAD = t
+        log.info("Qwen GPU worker thread launched.")
 
-    if _load_error is not None:
-        raise RuntimeError(f"Qwen2.5-VL failed to load earlier: {_load_error}") from _load_error
 
-    with _LOCK:
-        # Re-check inside lock
-        if _model is not None:
-            return _model, _processor
-        if _load_error is not None:
-            raise RuntimeError(f"Qwen2.5-VL failed to load: {_load_error}") from _load_error
-
-        try:
-            _model, _processor = _load_model_bf16()
-            log.info("Qwen2.5-VL loaded successfully in BF16.")
-        except Exception as e:
-            if "CUDA out of memory" in str(e) or "OutOfMemoryError" in str(e):
-                log.warning("BF16 OOM: %s — trying Q4 quantization", e)
-                try:
-                    _model, _processor = _load_model_q4()
-                    log.info("Qwen2.5-VL loaded in Q4 (OOM fallback).")
-                except Exception as e2:
-                    _load_error = e2
-                    raise RuntimeError(
-                        f"Qwen2.5-VL OOM even with Q4. Cannot load. Error: {e2}"
-                    ) from e2
-            else:
-                _load_error = e
-                raise RuntimeError(f"Qwen2.5-VL load failed: {e}") from e
-
-    return _model, _processor
-
+# --------------------------------------------------------------------------
+# Public API
+# --------------------------------------------------------------------------
 
 def qwen_vl_extract(
     image: "Image",
@@ -126,6 +208,9 @@ def qwen_vl_extract(
 ) -> str:
     """Run Qwen2.5-VL-7B-Instruct on a document page image with a text prompt.
 
+    Thread-safe: routes inference through a dedicated GPU thread to avoid
+    CUDA cuDNN context conflicts when called from multiple worker threads.
+
     Args:
         image: PIL.Image of the document page (RGB).
         prompt: Instruction text. The model sees both image and prompt.
@@ -133,63 +218,26 @@ def qwen_vl_extract(
 
     Returns:
         Decoded assistant response text (may be empty string on failure).
-
-    Raises:
-        RuntimeError: if the model failed to load (OOM / missing weights).
     """
-    import torch
+    _ensure_gpu_thread()
 
-    model, processor = _ensure_loaded()
+    result_holder: list = []
+    result_event = threading.Event()
 
-    # Build the chat-style messages expected by Qwen2.5-VL
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": prompt},
-            ],
-        }
-    ]
+    _GPU_QUEUE.put((image, prompt, max_new_tokens, result_event, result_holder))
 
-    try:
-        # Apply chat template to get the formatted text
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        # Process inputs — image + text together
-        inputs = processor(
-            text=[text],
-            images=[image],
-            padding=True,
-            return_tensors="pt",
-        ).to("cuda")
-
-        with torch.inference_mode():
-            output_ids = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=None,
-                top_p=None,
-            )
-
-        # Decode only the newly generated tokens (strip the prompt)
-        input_len = inputs["input_ids"].shape[1]
-        generated = output_ids[:, input_len:]
-        response = processor.batch_decode(
-            generated,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )[0]
-
-        return response.strip()
-
-    except torch.cuda.OutOfMemoryError as oom:
-        log.error("Qwen2.5-VL CUDA OOM during inference: %s", oom)
-        # Clear CUDA cache and return empty — the judge returns None when we return ""
-        torch.cuda.empty_cache()
+    # Wait up to 3 minutes for inference to complete
+    completed = result_event.wait(timeout=180.0)
+    if not completed:
+        log.error("Qwen2.5-VL inference timed out after 180s")
         return ""
-    except Exception as exc:
-        log.exception("Qwen2.5-VL inference error: %s", exc)
+
+    if not result_holder:
+        log.error("Qwen2.5-VL: no result in holder after event set")
         return ""
+
+    status, value = result_holder[0]
+    if status == "error":
+        log.error("Qwen2.5-VL GPU worker error: %s", value)
+        return ""
+    return value or ""
