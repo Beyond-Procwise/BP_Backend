@@ -28,7 +28,7 @@ fields:
 
   - name: supplier_name
     type: string
-    required: true
+    required: false
     db_column: null
     resolves_to_db_column: supplier_id
     canonical_labels:
