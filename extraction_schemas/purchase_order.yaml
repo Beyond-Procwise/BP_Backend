@@ -20,10 +20,7 @@ fields:
       - "Invoice #"
       - "Invoice"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - vendor_template
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -41,10 +38,7 @@ fields:
       - "Sold By"
       - "Seller"
     extractors:
-      - layoutlmv3
-      - spacy_ner
-      - sbert_anchor
-      - vendor_template
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -63,8 +57,7 @@ fields:
       - "Ordered By"
       - "Deliver To"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -82,8 +75,7 @@ fields:
       - "Requisition ID"
       - "PR Number"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -101,9 +93,7 @@ fields:
       - "Prepared By"
       - "Created By"
     extractors:
-      - layoutlmv3
-      - spacy_ner
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -119,9 +109,7 @@ fields:
       - "Request Date"
       - "Requisition Date"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -141,8 +129,7 @@ fields:
       - "Date"
       - "Purchase Date"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -162,9 +149,7 @@ fields:
       - "Due Date"
       - "Delivery Deadline"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -182,9 +167,7 @@ fields:
       - "Net Terms"
       - "Terms of Payment"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -201,9 +184,7 @@ fields:
       - "Invoice Currency"
       - "Billing Currency"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - vendor_template
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -225,9 +206,7 @@ fields:
       - "Sub Total"
       - "Subtotal"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - vendor_template
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -243,9 +222,7 @@ fields:
       - "Ship To Country"
       - "Delivery Country"
     extractors:
-      - layoutlmv3
-      - spacy_ner
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -262,8 +239,7 @@ fields:
       - "Province"
       - "Delivery Region"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -271,8 +247,7 @@ fields:
     invariants: []
 
 line_items:
-  primary_extractor: table_transformer
-  fallback_extractor: layoutlmv3
+  primary_extractor: qwen_vlm
   fields:
     - name: item_description
       type: string
@@ -285,8 +260,7 @@ line_items:
         - "Product"
         - "Service Description"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -303,8 +277,7 @@ line_items:
         - "Units"
         - "No. of Units"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -321,8 +294,7 @@ line_items:
         - "Price Each"
         - "Unit Cost"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -340,8 +312,7 @@ line_items:
         - "Extended Amount"
         - "Total"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true

@@ -1,12 +1,16 @@
 """Pipeline V3 orchestrator. Sequence:
    1. Layer 1: parse the doc → ParsedDocument
-   2. Layer 2: run all extractors named in the schema (parallel) → candidates
-   3. Layer 3: type-bind, run invariants, judge-orchestrate, assemble result.
+   2. Layer 2: single Qwen-VL call (qwen_vlm extractor) → candidates
+   3. Layer 3: type-bind, run invariants, judge-orchestrate (coherence only), assemble result.
+
+   The 6-extractor parallel stack has been replaced by one Qwen2.5-VL-7B-Instruct
+   call per document. There are no disagreements to break — the VLM is the sole
+   extraction source. The judge orchestrator still runs schema-coherence as a
+   final cross-field validation pass.
 """
 from __future__ import annotations
 import logging
 import re
-import concurrent.futures
 from pathlib import Path
 from src.services.extraction_v3.schemas.parsed_document import ParsedDocument
 from src.services.extraction_v3.schemas.candidate import Candidate
@@ -15,37 +19,17 @@ from src.services.extraction_v3.schemas.result import (
 )
 from src.services.extraction_v3.parsers.router import parse as parse_document
 from src.services.extraction_v3.yaml_schema.loader import load_doc_schema, DocSchema
-from src.services.extraction_v3.yaml_schema.registry import (
-    get_extractor, known_extractors,
-)
 from src.services.extraction_v3.binding.type_binder import bind_typed
 from src.services.extraction_v3.binding.invariants_runner import run_invariants
 from src.services.extraction_v3.judge.orchestrator import run_judge_orchestrator
 from src.services.extraction_v3.judge.contracts import InvariantResultSummary
-# Side-effect imports — registers each extractor at module load
-import src.services.extraction_v3.extractors.layoutlmv3           # noqa
-import src.services.extraction_v3.extractors.layoutlmv3_finetuned  # noqa
-import src.services.extraction_v3.extractors.table_transformer      # noqa
-import src.services.extraction_v3.extractors.sbert_anchor          # noqa
-import src.services.extraction_v3.extractors.spacy_ner             # noqa
-import src.services.extraction_v3.extractors.qa_roberta            # noqa
-import src.services.extraction_v3.extractors.vendor_template       # noqa
+# Register the VLM extractor in the registry
+import src.services.extraction_v3.extractors.vlm  # noqa
 
 log = logging.getLogger(__name__)
 
-PIPELINE_VERSION = "v3.1.0"
+PIPELINE_VERSION = "v3.2.0"
 HEADER_LINE_ITEM_PREFIX = "line_items["
-
-
-def _all_extractor_names_for_schema(schema: DocSchema) -> set[str]:
-    names: set[str] = set()
-    for f in schema.fields:
-        names.update(f.extractors)
-    if schema.line_items:
-        names.add(schema.line_items.primary_extractor)
-        if schema.line_items.fallback_extractor:
-            names.add(schema.line_items.fallback_extractor)
-    return names
 
 
 def _group_candidates_by_field(candidates: list[Candidate]) -> dict[str, list[Candidate]]:
@@ -65,151 +49,20 @@ class PipelineV3:
         parsed: ParsedDocument = parse_document(path)
         schema: DocSchema = load_doc_schema(doc_type)
 
-        # 2. Run all extractors in parallel (Layer 2)
-        extractor_names = _all_extractor_names_for_schema(schema) & known_extractors()
-        all_candidates: list[Candidate] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {
-                pool.submit(self._safe_run_extractor, name, parsed, schema): name
-                for name in extractor_names
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                name = futures[fut]
-                try:
-                    all_candidates.extend(fut.result())
-                except Exception:
-                    log.exception("extractor %s failed", name)
-
-        log.info("Pipeline V3: %d candidates from %d extractors", len(all_candidates), len(extractor_names))
+        # 2. Single Qwen-VL extraction call (Layer 2)
+        # One model call per document — no parallel extractor stack needed.
+        from src.services.extraction_v3.extractors.vlm import extract_with_vlm
+        all_candidates: list[Candidate] = extract_with_vlm(parsed, schema, source_file=str(path))
+        log.info("Pipeline V3: %d candidates from qwen_vlm for %s", len(all_candidates), path.name)
 
         # Split header candidates from line-item candidates
         header_cands = [c for c in all_candidates if not c.field.startswith(HEADER_LINE_ITEM_PREFIX)]
         line_cands = [c for c in all_candidates if c.field.startswith(HEADER_LINE_ITEM_PREFIX)]
 
         # 3a. Header candidates → judge orchestrator
+        # With a single VLM source there are no disagreements, so the orchestrator
+        # mostly passes through candidates and runs schema-coherence as a final pass.
         header_by_field = _group_candidates_by_field(header_cands)
-
-        # Pre-filter: drop candidates that fail type-binding when valid
-        # alternatives exist for the same field.  This prevents qa_roberta
-        # multi-line / over-extracted values (e.g. "$27.00\n\nShipping…")
-        # from winning the tiebreaker over a correctly-typed candidate.
-        fields_by_name = {f.name: f for f in schema.fields}
-        for fname, cands in list(header_by_field.items()):
-            fspec = fields_by_name.get(fname)
-            if not fspec or len(cands) < 2:
-                continue
-            valid = [c for c in cands if not bind_typed(c, fspec.type).bind_error]
-            if valid and len(valid) < len(cands):
-                log.debug(
-                    "Pre-filter: dropping %d non-binding candidates for %s",
-                    len(cands) - len(valid), fname,
-                )
-                header_by_field[fname] = valid
-
-        # Pre-filter 2: for the grand-total field, keep only the LARGEST value when
-        # multiple candidates compete. invoice_total_incl_tax is always the maximum
-        # monetary amount on the page — subtotals will never exceed the grand total.
-        # NOTE: invoice_amount is intentionally excluded from this filter. That field
-        # maps to the SUBTOTAL / NET amount (before tax), which is smaller than the
-        # grand total. Applying a max-value filter to invoice_amount would cause it to
-        # capture the grand total instead of the subtotal.
-        _MAX_VALUE_FIELDS = {"invoice_total_incl_tax"}
-        for fname in _MAX_VALUE_FIELDS:
-            cands = header_by_field.get(fname, [])
-            if len(cands) >= 2:
-                from src.services.extraction_v2.parsers.amounts import parse_amount as _pa
-                def _to_float(c: Candidate) -> float:
-                    try:
-                        r = _pa(c.value or "")
-                        return float(r) if r is not None else 0.0
-                    except Exception:
-                        return 0.0
-                best = max(cands, key=_to_float)
-                log.debug(
-                    "Max-value pre-filter: %s → keeping %r (was %d candidates)",
-                    fname, best.value, len(cands),
-                )
-                header_by_field[fname] = [best]
-
-        # Pre-filter 3: Universal NER-type veto for ORG-typed fields.
-        # For ALL candidates for fields with ner_type_check="ORG", run spaCy on
-        # each non-spacy-ner candidate value to check its entity type. If the
-        # value is classified as PERSON, DATE, CARDINAL, ORDINAL, or similar
-        # non-organisation types, drop it — those are never valid buyer/supplier IDs.
-        # This prevents layoutlmv3 (canonical-label proximity), layoutlmv3_finetuned
-        # (jinhybr), sbert_anchor, or any other extractor from committing
-        # "John Smith" or "June 5, 2025" as buyer_id when the BILL TO block
-        # contains only a contact name.
-        #
-        # Veto logic (for buyer_id and other ORG-typed fields):
-        #   - spacy_ner candidates: always kept (they already did ORG disambiguation)
-        #   - PERSON-only → veto (person name is not a company)
-        #   - DATE / TIME / CARDINAL / ORDINAL only → veto (temporal/numeric is not a company)
-        #   - ORG present → keep (even if also other types)
-        #   - No entities recognised → keep (could be unknown company name)
-        #
-        # Fires for ALL non-spacy candidates, regardless of whether spacy_ner
-        # also produced a candidate for the same field. This is the universal fix:
-        # it works even when layoutlmv3 at conf=0.90 would otherwise beat the
-        # spacy_ner ORG candidate in the tiebreaker.
-        _ORG_VETO_TYPES = frozenset({"PERSON", "DATE", "TIME", "CARDINAL", "ORDINAL", "MONEY", "PERCENT"})
-        org_check_fields = {
-            f.name for f in schema.fields
-            if f.judge.ner_type_check == "ORG"
-        }
-        if org_check_fields:
-            try:
-                from src.services.extraction_v3.extractors.spacy_ner import _run_nlp as _spacy_run
-                for fname in org_check_fields:
-                    cands = header_by_field.get(fname, [])
-                    if not cands:
-                        continue
-                    # Check each non-spacy_ner candidate's value against spaCy NER.
-                    # spacy_ner candidates are always kept — they produced ORG-shaped
-                    # values through their own disambiguation logic.
-                    vetoed: list[Candidate] = []
-                    surviving: list[Candidate] = []
-                    for cand in cands:
-                        # Always keep spacy_ner's own candidates unchanged
-                        if cand.model == "spacy_ner":
-                            surviving.append(cand)
-                            continue
-                        if not cand.value:
-                            surviving.append(cand)
-                            continue
-                        try:
-                            _doc = _spacy_run(cand.value.strip())
-                            ent_labels = {e.label_ for e in _doc.ents}
-                            # Keep if ORG is present in the recognised labels
-                            if "ORG" in ent_labels:
-                                surviving.append(cand)
-                                continue
-                            # Veto if any entity type is a clear non-ORG type
-                            if ent_labels & _ORG_VETO_TYPES:
-                                log.debug(
-                                    "NER-type veto: dropping %s=%r from %s (spaCy=%r, expected ORG)",
-                                    fname, cand.value, cand.model, ent_labels,
-                                )
-                                vetoed.append(cand)
-                            else:
-                                # No entities recognised OR non-vetoed types → keep
-                                # (unknown company names often have no spaCy entity)
-                                surviving.append(cand)
-                        except Exception:
-                            surviving.append(cand)  # veto failed — keep candidate
-                    if surviving:
-                        header_by_field[fname] = surviving
-                    elif vetoed:
-                        # All candidates vetoed — remove the field entirely
-                        # (leaves buyer_id as residual/NULL rather than committing
-                        # a person name or date string)
-                        header_by_field.pop(fname, None)
-                        log.debug(
-                            "NER-type veto: all candidates for %s were non-ORG — field left as residual",
-                            fname,
-                        )
-            except Exception as _ner_veto_exc:
-                log.debug("NER-type veto skipped (import error): %s", _ner_veto_exc)
 
         # 3b. Run invariants on a preliminary record (just the candidate values).
         # We do this BEFORE the judge so the coherence pass can see the invariants.
@@ -269,35 +122,6 @@ class PipelineV3:
                     field_path=fname, reason=outcome.residual_reason,
                     candidates=outcome.candidates_seen,
                 ))
-
-        # 4b. Cross-field duplicate suppression: if a qa_roberta-only candidate's
-        # committed value is identical to a higher-confidence candidate already
-        # committed for a DIFFERENT required field, discard it (return to residual).
-        # This prevents "PO id = 01-2024-001" from bleeding into payment_terms.
-        required_field_values: dict[str, str] = {}
-        for cf in list(committed):
-            fspec = next((f for f in schema.fields if f.name == cf.field_path), None)
-            if fspec and fspec.required:
-                required_field_values[cf.field_path] = cf.value
-
-        cleaned_committed: list[CommittedField] = []
-        for cf in committed:
-            fspec = next((f for f in schema.fields if f.name == cf.field_path), None)
-            if (
-                fspec and not fspec.required
-                and cf.model == "qa_roberta"
-                and cf.value in required_field_values.values()
-                and cf.field_path not in required_field_values
-            ):
-                # This non-required field's qa_roberta value duplicates a required
-                # field's committed value → suppress it (leave as residual / absent)
-                log.debug(
-                    "Suppressing qa_roberta duplicate: field=%s value=%r mirrors a required field",
-                    cf.field_path, cf.value
-                )
-                continue
-            cleaned_committed.append(cf)
-        committed = cleaned_committed
 
         # 4b.5. Invoice-id label-word rejection: if the extracted invoice_id is a
         # common label word (pure alphabetic, ≤2 words, e.g. "Document", "Invoice",
@@ -360,37 +184,6 @@ class PipelineV3:
                     judge_actions=[],
                     final_confidence=0.70,
                 ))
-
-        # 4c. Date-field duplicate suppression: when the document contains only one
-        # date, qa_roberta will return the same value for every date field it answers.
-        # Suppress qa_roberta date fields whose value matches a non-qa_roberta date
-        # field already committed (the non-qa_roberta source is the authoritative one).
-        # Also suppress when multiple qa_roberta date fields share the same value —
-        # keep only the one for the field that most plausibly owns that date token
-        # (the field with the highest layoutlmv3 confidence, else the required field).
-        non_qa_date_values: dict[str, str] = {}  # field_path → value for non-qa dates
-        for cf in committed:
-            fspec = next((f for f in schema.fields if f.name == cf.field_path), None)
-            if fspec and fspec.type == "iso_date" and cf.model != "qa_roberta":
-                non_qa_date_values[cf.field_path] = cf.value
-
-        cleaned_committed2: list[CommittedField] = []
-        qa_date_by_value: dict[str, list[CommittedField]] = {}
-        for cf in committed:
-            fspec = next((f for f in schema.fields if f.name == cf.field_path), None)
-            if (
-                fspec and fspec.type == "iso_date"
-                and cf.model == "qa_roberta"
-                and cf.value in non_qa_date_values.values()
-            ):
-                # qa_roberta returned a date already committed by a better source → suppress
-                log.debug(
-                    "Suppressing qa_roberta date duplicate: field=%s value=%r already covered by non-qa source",
-                    cf.field_path, cf.value,
-                )
-                continue
-            cleaned_committed2.append(cf)
-        committed = cleaned_committed2
 
         # 4d. Tax-percent range guard: tax_percent must be in [0, 50].
         # Real-world tax rates never exceed 50% (most are 0–25%).
@@ -752,11 +545,6 @@ class PipelineV3:
             judge_calls=orch.judge_calls,
             pipeline_version=PIPELINE_VERSION,
         )
-
-    def _safe_run_extractor(self, name: str, parsed: ParsedDocument, schema: DocSchema) -> list[Candidate]:
-        cls = get_extractor(name)
-        instance = cls()
-        return instance.produce_candidates(parsed, schema)
 
     def _build_prelim_lines(self, line_cands: list[Candidate]) -> list[dict]:
         """Group line-item candidates by row index → list of dicts."""

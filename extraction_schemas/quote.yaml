@@ -22,10 +22,7 @@ fields:
       - "Document Number"
       - "Quote Reference"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - vendor_template
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -45,10 +42,7 @@ fields:
       - "Seller"
       - "Issued By"
     extractors:
-      - layoutlmv3
-      - spacy_ner
-      - sbert_anchor
-      - vendor_template
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -68,8 +62,7 @@ fields:
       - "Quoted To"
       - "Attention"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -87,8 +80,7 @@ fields:
       - "Our Address"
       - "Remit To"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -106,8 +98,7 @@ fields:
       - "Delivery Address"
       - "Buyer Address"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -127,9 +118,7 @@ fields:
       - "Date of Quote"
       - "Prepared Date"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - vendor_template
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -152,9 +141,7 @@ fields:
       - "Quotation Valid Until"
       - "Validity Period"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -173,8 +160,7 @@ fields:
       - "Order Reference"
       - "PO Ref"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -191,9 +177,7 @@ fields:
       - "Invoice Currency"
       - "Quote Currency"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - vendor_template
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -216,9 +200,7 @@ fields:
       - "Total Materials"
       - "Total Services"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - vendor_template
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -238,9 +220,7 @@ fields:
       - "Tax Percentage"
       - "GST %"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -260,9 +240,7 @@ fields:
       - "Tax Total"
       - "GST"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - qa_roberta
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -286,9 +264,7 @@ fields:
       - "Total"
       - "Total Quoted"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
-      - vendor_template
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -306,9 +282,7 @@ fields:
       - "Country of Origin"
       - "Supplier Country"
     extractors:
-      - layoutlmv3
-      - spacy_ner
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -326,8 +300,7 @@ fields:
       - "County"
       - "Territory"
     extractors:
-      - layoutlmv3
-      - sbert_anchor
+      - qwen_vlm
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -335,8 +308,7 @@ fields:
     invariants: []
 
 line_items:
-  primary_extractor: table_transformer
-  fallback_extractor: layoutlmv3
+  primary_extractor: qwen_vlm
   fields:
     - name: item_description
       type: string
@@ -351,8 +323,7 @@ line_items:
         - "Product / Service"
         - "Details"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -369,8 +340,7 @@ line_items:
         - "Units"
         - "No. of Units"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -388,8 +358,7 @@ line_items:
         - "U/M"
         - "Measure"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -407,8 +376,7 @@ line_items:
         - "Unit Cost"
         - "Price per Unit"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -427,8 +395,7 @@ line_items:
         - "Total"
         - "Net"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -445,8 +412,7 @@ line_items:
         - "VAT %"
         - "GST %"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -464,8 +430,7 @@ line_items:
         - "GST Amount"
         - "GST"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
@@ -483,8 +448,7 @@ line_items:
         - "Amount Incl. Tax"
         - "Total (Incl. GST)"
       extractors:
-        - table_transformer
-        - layoutlmv3
+      - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
