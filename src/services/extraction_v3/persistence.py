@@ -260,14 +260,7 @@ def _compute_derived_values(result: ExtractionResult, conn: Any) -> ExtractionRe
         except (ValueError, TypeError):
             pass
 
-    return ExtractionResult(
-        doc_type=result.doc_type,
-        doc_pk=result.doc_pk,
-        committed=committed,
-        residuals=result.residuals,
-        judge_calls=result.judge_calls,
-        pipeline_version=result.pipeline_version,
-    )
+    return result.model_copy(update={"committed": committed})
 
 
 # ---------------------------------------------------------------------------
