@@ -106,13 +106,14 @@ class PipelineV3:
                 )
                 header_by_field[fname] = valid
 
-        # Pre-filter 2: for total/grand-total money fields with competing candidates,
-        # keep only the LARGEST value. Financial totals (invoice_total_incl_tax,
-        # invoice_amount) are always the maximum amount in the document — subtotals
-        # like "Accessories Total" will never be larger than "Total Sale Price".
-        # This deterministic selection avoids Ollama-dependent tiebreaking for this
-        # common pattern.
-        _MAX_VALUE_FIELDS = {"invoice_total_incl_tax", "invoice_amount"}
+        # Pre-filter 2: for the grand-total field, keep only the LARGEST value when
+        # multiple candidates compete. invoice_total_incl_tax is always the maximum
+        # monetary amount on the page — subtotals will never exceed the grand total.
+        # NOTE: invoice_amount is intentionally excluded from this filter. That field
+        # maps to the SUBTOTAL / NET amount (before tax), which is smaller than the
+        # grand total. Applying a max-value filter to invoice_amount would cause it to
+        # capture the grand total instead of the subtotal.
+        _MAX_VALUE_FIELDS = {"invoice_total_incl_tax"}
         for fname in _MAX_VALUE_FIELDS:
             cands = header_by_field.get(fname, [])
             if len(cands) >= 2:
@@ -444,14 +445,88 @@ class PipelineV3:
                 final_confidence=cand.confidence,
             ))
 
+        # 6e. Tax-percent regex recovery: run BEFORE 6b so that invoice_amount
+        # recovery has access to the tax rate when computing the pre-tax subtotal.
+        # If tax_percent was not extracted by any extractor but the document
+        # contains a pattern like "Tax (10%)" or "GST (15%)", extract it from raw text.
+        if schema.doc_type == "invoice":
+            committed_fields = {cf.field_path: cf for cf in committed}
+            if "tax_percent" not in committed_fields and parsed is not None:
+                _TAX_PCT_RE = re.compile(
+                    r"(?:Tax|VAT|GST|HST|PST)\s*[:\(]\s*(\d+(?:\.\d+)?)\s*%",
+                    re.IGNORECASE,
+                )
+                m = _TAX_PCT_RE.search(parsed.full_text)
+                if m:
+                    pct_str = m.group(1)
+                    evidence = m.group(0)
+                    log.debug(
+                        "Tax-percent regex recovery (early): found %r → %s%%",
+                        evidence, pct_str,
+                    )
+                    committed.append(CommittedField(
+                        field_path="tax_percent",
+                        value=pct_str,
+                        page=1,
+                        bbox=(0.0, 0.0, 0.0, 0.0),
+                        evidence_text=evidence,
+                        model="pipeline_recovery",
+                        model_confidence=0.75,
+                        judge_actions=[],
+                        final_confidence=0.75,
+                    ))
+
+        # 6f. Tax-amount derivation (early): run BEFORE 6b so invoice_amount
+        # recovery can use tax_amount to compute the pre-tax subtotal.
+        # If tax_amount is missing but BOTH tax_percent and invoice_total_incl_tax
+        # are committed, derive tax_amount = total - (total / (1 + pct/100)).
+        if schema.doc_type == "invoice":
+            committed_fields = {cf.field_path: cf for cf in committed}
+            if (
+                "tax_amount" not in committed_fields
+                and "tax_percent" in committed_fields
+                and "invoice_total_incl_tax" in committed_fields
+            ):
+                try:
+                    pct = float(committed_fields["tax_percent"].value)
+                    total = float(committed_fields["invoice_total_incl_tax"].value)
+                    if 0 < pct <= 50.0 and total > 0:
+                        pretax = total / (1.0 + pct / 100.0)
+                        tax_derived = round(total - pretax, 2)
+                        evidence_str = committed_fields["tax_percent"].evidence_text
+                        log.debug(
+                            "Tax-amount derivation (early): total=%s pct=%s%% → tax_amount=%s",
+                            total, pct, tax_derived,
+                        )
+                        committed.append(CommittedField(
+                            field_path="tax_amount",
+                            value=str(tax_derived),
+                            page=committed_fields["invoice_total_incl_tax"].page,
+                            bbox=(0.0, 0.0, 0.0, 0.0),
+                            evidence_text=evidence_str,
+                            model="pipeline_recovery",
+                            model_confidence=0.70,
+                            judge_actions=[],
+                            final_confidence=0.70,
+                        ))
+                        residuals = [rf for rf in residuals if rf.field_path != "tax_amount"]
+                except (ValueError, TypeError, KeyError):
+                    pass
+
         # 6b. Invoice-specific recovery: if invoice_amount is a residual but
-        # invoice_total_incl_tax is committed, set invoice_amount = invoice_total_incl_tax.
-        # This reflects the DB convention that invoice_amount stores the total billed
-        # amount (Grand Total). Covers two sub-cases:
-        #   (a) No-tax invoice — grand total = pre-tax amount.
-        #   (b) Tax-inclusive invoice — grand total includes tax; invoice_amount = grand total.
-        # Also handles spurious tax (tax_amount == invoice_total_incl_tax, i.e. the model
-        # fired on the same GRAND TOTAL line for both fields).
+        # invoice_total_incl_tax is committed, derive invoice_amount.
+        #
+        # Runs AFTER 6e/6f so that tax data is available for accurate subtotal derivation.
+        # Two cases:
+        #   (a) No-tax invoice (no tax_amount and no tax_percent committed):
+        #       invoice_amount = invoice_total_incl_tax (grand total = net amount).
+        #   (b) Taxed invoice (tax_amount OR tax_percent committed):
+        #       invoice_amount = invoice_total_incl_tax - tax_amount (net subtotal).
+        #       If tax_amount is not committed but tax_percent is, derive:
+        #       invoice_amount = total / (1 + pct/100).
+        #
+        # This ensures invoice_amount always reflects the PRE-TAX subtotal on
+        # invoices that have tax, not the grand total.
         if schema.doc_type == "invoice":
             committed_fields = {cf.field_path: cf for cf in committed}
             residual_fields = {rf.field_path for rf in residuals}
@@ -460,20 +535,56 @@ class PipelineV3:
                 and "invoice_total_incl_tax" in committed_fields
             ):
                 total_cf = committed_fields["invoice_total_incl_tax"]
-                log.debug(
-                    "invoice_amount recovery: invoice_amount ← invoice_total_incl_tax (%s)",
-                    total_cf.value,
-                )
+                _tax_amt_cf = committed_fields.get("tax_amount")
+                _tax_pct_cf = committed_fields.get("tax_percent")
+
+                derived_value = total_cf.value  # default: use total (no-tax case)
+                recovery_conf = 0.60
+
+                if _tax_amt_cf is not None:
+                    # Case (b1): subtract known tax_amount from total
+                    try:
+                        subtotal = round(float(total_cf.value) - float(_tax_amt_cf.value), 2)
+                        if subtotal > 0:
+                            derived_value = str(subtotal)
+                            recovery_conf = 0.70
+                            log.debug(
+                                "invoice_amount recovery (tax-aware): %s - %s = %s",
+                                total_cf.value, _tax_amt_cf.value, derived_value,
+                            )
+                    except (ValueError, TypeError):
+                        pass
+                elif _tax_pct_cf is not None:
+                    # Case (b2): back-calculate subtotal from tax rate
+                    try:
+                        pct = float(_tax_pct_cf.value)
+                        total = float(total_cf.value)
+                        if 0 < pct <= 50.0 and total > 0:
+                            subtotal = round(total / (1.0 + pct / 100.0), 2)
+                            derived_value = str(subtotal)
+                            recovery_conf = 0.65
+                            log.debug(
+                                "invoice_amount recovery (tax-pct): %s / (1+%s%%) = %s",
+                                total, pct, derived_value,
+                            )
+                    except (ValueError, TypeError):
+                        pass
+                else:
+                    log.debug(
+                        "invoice_amount recovery (no-tax): invoice_amount ← invoice_total_incl_tax (%s)",
+                        total_cf.value,
+                    )
+
                 committed.append(CommittedField(
                     field_path="invoice_amount",
-                    value=total_cf.value,
+                    value=derived_value,
                     page=total_cf.page,
                     bbox=total_cf.bbox,
                     evidence_text=total_cf.evidence_text,
                     model="pipeline_recovery",
-                    model_confidence=0.60,
+                    model_confidence=recovery_conf,
                     judge_actions=[],
-                    final_confidence=0.60,
+                    final_confidence=recovery_conf,
                 ))
                 # Remove invoice_amount from residuals
                 residuals = [rf for rf in residuals if rf.field_path != "invoice_amount"]
@@ -503,30 +614,37 @@ class PipelineV3:
                 )
                 committed = [cf for cf in committed if cf.field_path != "tax_amount"]
 
-        # 6d. Invoice-amount correction: if invoice_amount < invoice_total_incl_tax
-        # and tax_amount is present and (invoice_amount + tax_amount) is not close
-        # to invoice_total_incl_tax, then invoice_amount is likely a partial subtotal
-        # (e.g. "Total Materials"). Replace with invoice_total_incl_tax so that DB
-        # convention (invoice_amount = amount billed) holds.
+        # 6d. Invoice-amount correction (no-tax invoices only):
+        # When invoice_amount < invoice_total_incl_tax AND there is no tax evidence
+        # (no tax_amount and no tax_percent committed), the two fields are likely
+        # capturing the same "single total" line from different label anchors.
+        # In that case, invoice_amount should equal invoice_total_incl_tax.
+        #
+        # When tax IS present (tax_amount or tax_percent committed), invoice_amount
+        # is intentionally the net/pre-tax subtotal — do NOT override it.
+        # The schema canonical_labels for invoice_amount ("Subtotal", "Net Amount",
+        # "Amount Before Tax") are mutually exclusive with invoice_total_incl_tax
+        # labels ("Grand Total", "Total", "Amount Due"), so the proximity extractor
+        # should find the correct value for each field independently.
         if schema.doc_type == "invoice":
             committed_fields = {cf.field_path: cf for cf in committed}
             _ia = committed_fields.get("invoice_amount")
             _it = committed_fields.get("invoice_total_incl_tax")
-            if _ia is not None and _it is not None:
+            _tax_amt = committed_fields.get("tax_amount")
+            _tax_pct = committed_fields.get("tax_percent")
+            # Only correct when no tax is indicated at all
+            tax_present = (_tax_amt is not None) or (_tax_pct is not None)
+            if _ia is not None and _it is not None and not tax_present:
                 try:
                     ia_val = float(_ia.value)
                     it_val = float(_it.value)
-                    ta_val = float(committed_fields["tax_amount"].value) if "tax_amount" in committed_fields else 0.0
-                    # If invoice_amount is smaller than invoice_total_incl_tax and
-                    # the sum (invoice_amount + tax_amount) is not within 1% of
-                    # invoice_total_incl_tax, invoice_amount is a subtotal → correct.
-                    sum_check = ia_val + ta_val
-                    within_1pct = abs(sum_check - it_val) <= 0.01 * it_val if it_val else False
-                    if ia_val < it_val and not within_1pct:
+                    # No-tax invoice: invoice_amount should equal invoice_total_incl_tax.
+                    # Only correct if they differ (within-rounding tolerance 0.5%).
+                    if ia_val < it_val and abs(ia_val - it_val) > 0.005 * it_val:
                         log.debug(
-                            "Invoice-amount correction: invoice_amount=%s < invoice_total_incl_tax=%s "
-                            "and sum_check=%s not within 1%% — replacing with invoice_total_incl_tax",
-                            ia_val, it_val, sum_check,
+                            "Invoice-amount no-tax correction: invoice_amount=%s != invoice_total_incl_tax=%s "
+                            "and no tax found — setting invoice_amount = invoice_total_incl_tax",
+                            ia_val, it_val,
                         )
                         committed = [cf for cf in committed if cf.field_path != "invoice_amount"]
                         committed.append(CommittedField(
@@ -540,80 +658,7 @@ class PipelineV3:
                             judge_actions=[],
                             final_confidence=0.70,
                         ))
-                except (ValueError, TypeError, KeyError):
-                    pass
-
-        # 6e. Tax-percent regex recovery: if tax_percent was not extracted by
-        # any extractor but the document contains a pattern like "Tax (10%)" or
-        # "Tax: 10%" or "GST (5%)", extract it from the raw text.
-        if schema.doc_type == "invoice":
-            committed_fields = {cf.field_path: cf for cf in committed}
-            if "tax_percent" not in committed_fields and parsed is not None:
-                _TAX_PCT_RE = re.compile(
-                    r"(?:Tax|VAT|GST|HST|PST)\s*[:\(]\s*(\d+(?:\.\d+)?)\s*%",
-                    re.IGNORECASE,
-                )
-                m = _TAX_PCT_RE.search(parsed.full_text)
-                if m:
-                    pct_str = m.group(1)
-                    evidence = m.group(0)
-                    log.debug(
-                        "Tax-percent regex recovery: found %r → %s%%",
-                        evidence, pct_str,
-                    )
-                    committed.append(CommittedField(
-                        field_path="tax_percent",
-                        value=pct_str,
-                        page=1,
-                        bbox=(0.0, 0.0, 0.0, 0.0),
-                        evidence_text=evidence,
-                        model="pipeline_recovery",
-                        model_confidence=0.75,
-                        judge_actions=[],
-                        final_confidence=0.75,
-                    ))
-
-        # 6f. Tax-amount derivation: if tax_amount is missing but BOTH tax_percent
-        # and invoice_total_incl_tax are committed, derive tax_amount as:
-        #   tax_amount = total - (total / (1 + pct/100))
-        # This accurately recovers the tax dollar amount for invoices that show
-        # "Tax (10%)" + grand total without printing a separate tax_amount line.
-        # Only fire when invoice_total_incl_tax > 0 and pct in (0, 50].
-        if schema.doc_type == "invoice":
-            committed_fields = {cf.field_path: cf for cf in committed}
-            if (
-                "tax_amount" not in committed_fields
-                and "tax_percent" in committed_fields
-                and "invoice_total_incl_tax" in committed_fields
-            ):
-                try:
-                    pct = float(committed_fields["tax_percent"].value)
-                    total = float(committed_fields["invoice_total_incl_tax"].value)
-                    if 0 < pct <= 50.0 and total > 0:
-                        pretax = total / (1.0 + pct / 100.0)
-                        tax_derived = round(total - pretax, 2)
-                        # Evidence must be a substring of full_text.
-                        # Use the tax_percent evidence (which IS in the text) as the
-                        # provenance anchor for this derived field.
-                        evidence_str = committed_fields["tax_percent"].evidence_text
-                        log.debug(
-                            "Tax-amount derivation: total=%s pct=%s%% → tax_amount=%s",
-                            total, pct, tax_derived,
-                        )
-                        committed.append(CommittedField(
-                            field_path="tax_amount",
-                            value=str(tax_derived),
-                            page=committed_fields["invoice_total_incl_tax"].page,
-                            bbox=(0.0, 0.0, 0.0, 0.0),
-                            evidence_text=evidence_str,
-                            model="pipeline_recovery",
-                            model_confidence=0.70,
-                            judge_actions=[],
-                            final_confidence=0.70,
-                        ))
-                        # Remove any residual for tax_amount
-                        residuals = [rf for rf in residuals if rf.field_path != "tax_amount"]
-                except (ValueError, TypeError, KeyError):
+                except (ValueError, TypeError):
                     pass
 
         # 7. Determine doc_pk from the committed fields (the field whose YAML
