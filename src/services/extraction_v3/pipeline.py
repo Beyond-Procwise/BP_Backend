@@ -228,22 +228,36 @@ class PipelineV3:
                 if m:
                     date_raw = m.group(1).strip()
                     evidence = m.group(0)
-                    log.info(
-                        "Invoice-date regex recovery: found %r → %r for %s",
-                        evidence, date_raw, path.name,
-                    )
-                    residuals = [rf for rf in residuals if rf.field_path != "invoice_date"]
-                    committed.append(CommittedField(
-                        field_path="invoice_date",
-                        value=date_raw,
-                        page=1,
-                        bbox=(0.0, 0.0, 0.0, 0.0),
-                        evidence_text=evidence,
-                        model="pipeline_recovery",
-                        model_confidence=0.72,
-                        judge_actions=[],
-                        final_confidence=0.72,
-                    ))
+                    # Convert the raw date string to ISO format through parse_date so the
+                    # DB receives a valid date string. evidence_text keeps the raw match
+                    # (verbatim substring of full_text) for provenance. OCR-corrupted months
+                    # (e.g. "Jon" → June) produce a parseable but possibly wrong-month date —
+                    # this is preferable to a persist failure on an invalid date string.
+                    from src.services.extraction_v2.parsers.dates import parse_date as _pd
+                    _parsed_date = _pd(date_raw)
+                    if _parsed_date is None:
+                        log.warning(
+                            "Invoice-date regex recovery: parse_date could not parse %r — skipping",
+                            date_raw,
+                        )
+                    else:
+                        date_iso = _parsed_date.isoformat()
+                        log.info(
+                            "Invoice-date regex recovery: found %r → %r (iso=%s) for %s",
+                            evidence, date_raw, date_iso, path.name,
+                        )
+                        residuals = [rf for rf in residuals if rf.field_path != "invoice_date"]
+                        committed.append(CommittedField(
+                            field_path="invoice_date",
+                            value=date_iso,
+                            page=1,
+                            bbox=(0.0, 0.0, 0.0, 0.0),
+                            evidence_text=evidence,
+                            model="pipeline_recovery",
+                            model_confidence=0.72,
+                            judge_actions=[],
+                            final_confidence=0.72,
+                        ))
 
         # 4b.8. Invoice-amount regex recovery: if invoice_amount is missing, scan for
         # a Subtotal or Net Amount label followed by a monetary value in the text.
