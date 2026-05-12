@@ -42,15 +42,19 @@ def _normalise_category(category: str) -> str:
 
 def _adapt_v3_result(result: ExtractionResult) -> dict[str, Any]:
     """Convert ExtractionResult into the legacy dict shape the watcher expects."""
-    has_required_residual = any(
+    # doc_pk=None means the primary key field was not extracted — cannot persist.
+    pk_missing = result.doc_pk is None
+    has_required_residual = pk_missing or any(
         r.reason in (
             "required_field_missing_no_grounding",
             "invariant_critical_failed",
             "judge_incoherent",
-            "bind_error_no_resolution",
         )
         for r in result.residuals
     )
+    # bind_error_no_resolution on a non-PK field should not block persistence —
+    # the affected field is simply omitted from the header row. Only a missing
+    # PK (doc_pk=None) is truly unrecoverable.
     status = "partial" if has_required_residual else "ok"
     avg_conf = (
         sum(cf.final_confidence for cf in result.committed) / len(result.committed)
