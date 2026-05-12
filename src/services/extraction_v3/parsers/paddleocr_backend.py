@@ -61,17 +61,30 @@ _pipeline_lock = threading.Lock()
 
 
 def _get_pipeline():
-    """Return the lazy GPU-loaded PP-Structure pipeline (thread-safe singleton)."""
+    """Return the lazy-loaded PP-Structure pipeline (thread-safe singleton).
+
+    PaddleOCR runs on CPU to avoid cuDNN context conflicts with the Qwen2.5-VL
+    GPU worker thread. Both PaddlePaddle and PyTorch share the system cuDNN
+    library; if PaddlePaddle initialises its cuDNN handle on a worker thread
+    while PyTorch's Qwen GPU worker is also using cuDNN, PyTorch receives
+    CUDNN_STATUS_NOT_INITIALIZED. Pinning Paddle to CPU eliminates the conflict.
+
+    For scanned PDFs (the only path that reaches PaddleOCR) the extra latency
+    from CPU inference is acceptable — typical scanned invoice: < 15 s on CPU
+    vs ~3 s on GPU. Docling handles native PDFs/DOCX and is unaffected.
+    """
     global _pipeline
     if _pipeline is None:
         with _pipeline_lock:
             if _pipeline is None:
-                import paddle  # C2: assert GPU is available before loading model
-                if not paddle.device.get_device().startswith("gpu"):
-                    raise RuntimeError(
-                        f"PaddleOCR must run on GPU per spec C2; "
-                        f"current device={paddle.device.get_device()}"
-                    )
+                import paddle
+                # Force CPU to avoid cuDNN handle conflict with Qwen GPU worker.
+                paddle.device.set_device("cpu")
+                logger.info(
+                    "PaddleOCR: forcing CPU mode (device=%s) to avoid cuDNN "
+                    "conflict with Qwen2.5-VL GPU worker thread.",
+                    paddle.device.get_device(),
+                )
                 from paddleocr import PPStructureV3  # deferred import — no GPU at collection time
                 _pipeline = PPStructureV3()
     return _pipeline

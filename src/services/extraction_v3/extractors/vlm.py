@@ -36,8 +36,15 @@ _VLM_LOCK = threading.Lock()
 MAX_PAGES = 3  # invoices/POs/quotes usually fit in 1-3 pages
 
 
-def _build_schema_prompt(schema: DocSchema) -> str:
-    """Build a schema-aware extraction prompt listing every field + type + canonical labels."""
+def _build_schema_prompt(schema: DocSchema, doc_text: str | None = None) -> str:
+    """Build a schema-aware extraction prompt listing every field + type + canonical labels.
+
+    Args:
+        schema: The DocSchema describing fields to extract.
+        doc_text: If provided, the full document text is embedded directly in the
+            prompt (text-only mode for DOCX / rasterization failures). When None
+            the model reads the image visually.
+    """
     fields_block = []
     for f in schema.fields:
         labels = ", ".join(f.canonical_labels[:5]) if f.canonical_labels else ""
@@ -51,6 +58,35 @@ def _build_schema_prompt(schema: DocSchema) -> str:
         )
         line_block = f"\n\nline_items: array of {{{line_fields}}}"
 
+    if doc_text is not None:
+        # Text-only mode: embed document text directly (DOCX or rasterization failure)
+        # Cap at 6 000 chars to stay within Qwen's context budget.
+        text_snippet = doc_text[:6000].strip()
+        return f"""You are extracting data from a {schema.doc_type} document.
+
+The full document text is provided below. Extract the requested fields.
+
+DOCUMENT TEXT:
+{text_snippet}
+
+Return ONLY a JSON object with these fields:
+
+{chr(10).join(fields_block)}{line_block}
+
+Rules:
+- Use ONLY values that appear verbatim in the DOCUMENT TEXT above
+- If a field is not present in the document text, return null for that field
+- For monetary amounts: return just the number (no currency symbol), e.g. 1234.50
+- For dates: return YYYY-MM-DD format if possible, otherwise as printed
+- For currency: return 3-letter ISO code (USD, GBP, EUR, NZD, AUD, CAD, etc.)
+- For supplier_name: return the company name exactly as it appears in the text
+- For region: return the state/province code or name from the supplier address
+- Do NOT invent values. Do NOT paraphrase. Values must be substrings of the text above.
+- line_items should be an array of objects; return [] if no line items are present
+
+Respond with ONLY the JSON object. No prose, no markdown code fences."""
+
+    # Visual mode: model reads the rasterized document image
     return f"""You are extracting data from a {schema.doc_type} document.
 
 Read the document image and return ONLY a JSON object with these fields:
@@ -204,12 +240,15 @@ def extract_with_vlm(
                 image = img
                 break
 
-    if image is None:
-        # DOCX or rasterization failure — use a blank placeholder so Qwen can
-        # still read the document via the text-only path (processor handles text).
-        # In practice the model won't see visual content but can still use
-        # parsed.full_text (injected via prompt for text-only fallback).
-        log.warning("vlm_extractor: no image for %s — using blank placeholder", source_file)
+    text_only = image is None
+    if text_only:
+        # DOCX or rasterization failure — inject the parsed full text into the
+        # prompt so Qwen extracts from text, not from a blank/meaningless image.
+        # A minimal 32x32 white image is still required by the VL processor API.
+        log.info(
+            "vlm_extractor: no image for %s — using text-only mode (full_text injected into prompt)",
+            source_file,
+        )
         try:
             from PIL import Image as _PIL
             image = _PIL.new("RGB", (32, 32), color=(255, 255, 255))
@@ -217,7 +256,10 @@ def extract_with_vlm(
             log.error("vlm_extractor: PIL not available, cannot build placeholder")
             return []
 
-    prompt = _build_schema_prompt(schema)
+    # Build prompt: text-only mode embeds full_text; visual mode reads the image.
+    doc_text_for_prompt = parsed.full_text if text_only else None
+    prompt = _build_schema_prompt(schema, doc_text=doc_text_for_prompt)
+
     # Serialize Qwen inference — only one call at a time to prevent cuDNN
     # context conflicts when multiple worker threads compete for the GPU.
     with _VLM_LOCK:

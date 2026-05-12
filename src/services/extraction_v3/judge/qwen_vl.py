@@ -40,8 +40,24 @@ def _gpu_worker():
     import torch
 
     log.info("Qwen GPU worker thread started — initializing CUDA context.")
-    # Initialize CUDA context on THIS thread, which will own it permanently.
+    # Initialize CUDA context on THIS thread.
     torch.cuda.init()
+
+    # Disable cuDNN for this thread.
+    #
+    # Background: sentence_transformers (loaded by RAGPipeline at procwise startup)
+    # calls `torch.cuda.init()` or equivalent on the MAIN thread, which causes
+    # cuDNN to create its internal handles bound to the main thread's CUDA context.
+    # When our GPU worker thread (a separate daemon thread) subsequently tries to
+    # call cuDNN ops (specifically conv3d in Qwen's visual patch encoder), cuDNN
+    # reports CUDNN_STATUS_NOT_INITIALIZED because it has no handle for this thread.
+    #
+    # With cuDNN disabled, PyTorch falls back to its own native CUDA kernels for
+    # conv3d. These do NOT require a thread-bound cuDNN handle and work correctly
+    # from any thread. The performance impact on the visual encoder (a small conv3d)
+    # is negligible relative to the LLM generation time (~50–100 ms vs. 30–60 s).
+    torch.backends.cudnn.enabled = False
+    log.info("Qwen GPU worker: cuDNN disabled (using PyTorch native CUDA conv3d).")
 
     model = None
     processor = None

@@ -28,7 +28,7 @@ import src.services.extraction_v3.extractors.vlm  # noqa
 
 log = logging.getLogger(__name__)
 
-PIPELINE_VERSION = "v3.2.0"
+PIPELINE_VERSION = "v3.2.1"
 HEADER_LINE_ITEM_PREFIX = "line_items["
 
 
@@ -183,6 +183,160 @@ class PipelineV3:
                     model_confidence=0.70,
                     judge_actions=[],
                     final_confidence=0.70,
+                ))
+
+        # 4b.7. Invoice-date regex recovery: if invoice_date is missing, scan the text
+        # for a date pattern near a DATE label. This catches documents where Qwen
+        # reformats the date (e.g. "10/20/2025" → "2025-10-20" ISO) so the substring
+        # check rejects the normalised value. We extract the raw date string so it IS
+        # a literal substring of the document text.
+        if schema.doc_type == "invoice":
+            committed_field_paths = {cf.field_path for cf in committed}
+            if "invoice_date" not in committed_field_paths:
+                # Match: DATE<sep><date> or Invoice Date<sep><date>
+                _DATE_LABEL_RE = re.compile(
+                    r"(?:Invoice\s*Date|Date|Dated|Issue\s*Date|Billing\s*Date)"
+                    r"[\s:–-]*"
+                    r"(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}"
+                    r"|\d{4}[/\-\.]\d{1,2}[/\-\.]\d{1,2}"
+                    r"|\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
+                    r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
+                    r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}"
+                    r"|\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})",
+                    re.IGNORECASE,
+                )
+                m = _DATE_LABEL_RE.search(parsed.full_text)
+                if m:
+                    date_raw = m.group(1).strip()
+                    evidence = m.group(0)
+                    log.info(
+                        "Invoice-date regex recovery: found %r → %r for %s",
+                        evidence, date_raw, path.name,
+                    )
+                    residuals = [rf for rf in residuals if rf.field_path != "invoice_date"]
+                    committed.append(CommittedField(
+                        field_path="invoice_date",
+                        value=date_raw,
+                        page=1,
+                        bbox=(0.0, 0.0, 0.0, 0.0),
+                        evidence_text=evidence,
+                        model="pipeline_recovery",
+                        model_confidence=0.72,
+                        judge_actions=[],
+                        final_confidence=0.72,
+                    ))
+
+        # 4b.8. Invoice-amount regex recovery: if invoice_amount is missing, scan for
+        # a Subtotal or Net Amount label followed by a monetary value in the text.
+        # Extracts the raw substring so the value passes the substring guarantee.
+        if schema.doc_type == "invoice":
+            committed_field_paths = {cf.field_path for cf in committed}
+            if "invoice_amount" not in committed_field_paths:
+                _AMT_LABEL_RE = re.compile(
+                    r"(?:Subtotal|Sub-total|Net\s*Amount|Amount\s*(?:Before\s*Tax|Excl\.?\s*Tax|Excl\.?\s*VAT|Net))"
+                    r"[\s:|\|]*([£€\$¥₹]?\s*[\d,\.]+(?:\s*[£€\$¥₹])?)",
+                    re.IGNORECASE,
+                )
+                m = _AMT_LABEL_RE.search(parsed.full_text)
+                if m:
+                    amt_raw = m.group(1).strip()
+                    # Strip leading/trailing currency symbols, keep numeric+comma+period
+                    amt_numeric = re.sub(r"^[£€\$¥₹\s]+|[£€\$¥₹\s]+$", "", amt_raw).strip()
+                    evidence = m.group(0)
+                    if amt_numeric and any(ch.isdigit() for ch in amt_numeric):
+                        log.info(
+                            "Invoice-amount regex recovery: found %r → %r for %s",
+                            evidence, amt_numeric, path.name,
+                        )
+                        residuals = [rf for rf in residuals if rf.field_path != "invoice_amount"]
+                        committed.append(CommittedField(
+                            field_path="invoice_amount",
+                            value=amt_numeric,
+                            page=1,
+                            bbox=(0.0, 0.0, 0.0, 0.0),
+                            evidence_text=evidence,
+                            model="pipeline_recovery",
+                            model_confidence=0.72,
+                            judge_actions=[],
+                            final_confidence=0.72,
+                        ))
+
+        # 4c. Currency symbol recovery: if currency is missing or in residuals but
+        # the document contains an unambiguous currency symbol (£, €, ¥, etc.),
+        # derive the ISO code from the symbol. The symbol IS in the text (evidence
+        # is the matched character) so this is not fabrication.
+        #
+        # Priority order: explicit ISO code in text (e.g. "USD", "GBP") first,
+        # then fallback to symbol. We only add recovery if currency is absent.
+        _CURRENCY_SYMBOL_MAP = {
+            "£": "GBP",
+            "€": "EUR",
+            "¥": "JPY",
+            "₹": "INR",
+            "₩": "KRW",
+            "₣": "CHF",
+            "A$": "AUD",
+            "C$": "CAD",
+            "NZ$": "NZD",
+            "S$": "SGD",
+            "HK$": "HKD",
+            "R$": "BRL",
+            "₽": "RUB",
+            "฿": "THB",
+            "₺": "TRY",
+            "Rp": "IDR",
+        }
+        _CURRENCY_TEXT_MAP = {
+            "british pound": "GBP", "pounds sterling": "GBP", "sterling": "GBP",
+            "euro": "EUR", "euros": "EUR",
+            "us dollar": "USD", "u.s. dollar": "USD", "american dollar": "USD",
+            "canadian dollar": "CAD",
+            "australian dollar": "AUD",
+            "swiss franc": "CHF",
+            "japanese yen": "JPY",
+            "chinese yuan": "CNY",
+            "indian rupee": "INR",
+        }
+        committed_fields_set = {cf.field_path for cf in committed}
+        if "currency" not in committed_fields_set and parsed is not None:
+            _text = parsed.full_text
+            _recovered_currency: str | None = None
+            _recovered_evidence: str | None = None
+
+            # Try named currency first (higher confidence)
+            _text_lower = _text.lower()
+            for phrase, iso in _CURRENCY_TEXT_MAP.items():
+                if phrase in _text_lower:
+                    _recovered_currency = iso
+                    _recovered_evidence = phrase
+                    break
+
+            # Fall back to symbol scan if no text match
+            if _recovered_currency is None:
+                # Multi-char symbols first (A$, C$, etc.) to avoid $ ambiguity
+                for symbol in sorted(_CURRENCY_SYMBOL_MAP, key=len, reverse=True):
+                    if symbol in _text:
+                        _recovered_currency = _CURRENCY_SYMBOL_MAP[symbol]
+                        _recovered_evidence = symbol
+                        break
+
+            if _recovered_currency is not None:
+                log.info(
+                    "Currency symbol recovery: %r → %s for %s",
+                    _recovered_evidence, _recovered_currency, path.name,
+                )
+                # Remove any currency residual
+                residuals = [rf for rf in residuals if rf.field_path != "currency"]
+                committed.append(CommittedField(
+                    field_path="currency",
+                    value=_recovered_currency,
+                    page=1,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                    evidence_text=_recovered_evidence or "",
+                    model="pipeline_recovery",
+                    model_confidence=0.85,
+                    judge_actions=[],
+                    final_confidence=0.85,
                 ))
 
         # 4d. Tax-percent range guard: tax_percent must be in [0, 50].
