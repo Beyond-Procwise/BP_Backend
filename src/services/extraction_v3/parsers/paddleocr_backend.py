@@ -58,6 +58,9 @@ from src.services.extraction_v3.schemas.parsed_document import (
 
 _pipeline = None
 _pipeline_lock = threading.Lock()
+# PPStructureV3 is NOT thread-safe — concurrent calls to predict() cause SIGSEGV.
+# Serialize all calls through a single mutex so only one thread runs inference at a time.
+_predict_lock = threading.Lock()
 
 
 def _get_pipeline():
@@ -203,7 +206,10 @@ def parse_with_paddleocr(
     for pg_idx, img in enumerate(page_images):
         # PP-Structure predict returns a list with one item per input image
         # paddleocr 3.5.0 returns: list[LayoutParsingResultV2]
-        result = pipeline.predict(img)
+        # Serialize calls: PPStructureV3 is not thread-safe; concurrent predict()
+        # calls cause SIGSEGV. One thread at a time through _predict_lock.
+        with _predict_lock:
+            result = pipeline.predict(img)
         page_result = result[0]  # single image → single result
 
         # --- Dimensions ---
