@@ -128,6 +128,22 @@ _NOISE_LOWER = (
     "bill to", "remit", "payable", "payment",
 )
 
+# Label/header phrases that are never supplier names (extracted from table headers / form labels).
+_LABEL_PHRASES_LOWER = frozenset({
+    "client information", "order details", "billing information",
+    "contact information", "account information", "supplier information",
+    "vendor information", "company information", "customer information",
+    "ship to", "delivered to", "sold to", "attention", "attn:",
+    "order summary", "invoice details", "billing details",
+    "item description", "product description", "service description",
+})
+
+# Document-reference patterns — strings that look like doc IDs (INV-…, PO-…, etc.)
+_DOC_REF_RE = re.compile(
+    r'^\s*(INV|PO|REC|ORD|REF|DOC|SER|QUOT?|BILL|RFQ)\s*[-#]?\s*[\d\-A-Z/]{3,}',
+    re.IGNORECASE,
+)
+
 # ---------------------------------------------------------------------------
 # Street keyword detection — used by _is_address_contaminated
 # ---------------------------------------------------------------------------
@@ -327,6 +343,14 @@ def _is_garbage_name(name: str) -> bool:
 
     # Money-like string
     if _MONEY_RE.match(stripped):
+        return True
+
+    # Label / header phrases (e.g. "Client Information", "Order Details")
+    if lo in _LABEL_PHRASES_LOWER or any(lo == phrase for phrase in _LABEL_PHRASES_LOWER):
+        return True
+
+    # Document-reference strings (e.g. "INV-B-23476 PO", "PO-12345")
+    if _DOC_REF_RE.match(stripped):
         return True
 
     # Single word that is a generic attention/label word
