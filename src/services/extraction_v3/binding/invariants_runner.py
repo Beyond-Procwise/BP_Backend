@@ -29,6 +29,7 @@ from src.services.extraction_v2.invariants import (
     VendorIdentity,
     QuantitySign,
     RoundOffBucket,
+    TaxTotalConfusion,
 )
 from src.services.extraction_v3.binding.scale_mismatch import ScaleMismatch
 from src.services.extraction_v3.yaml_schema.loader import DocSchema
@@ -56,6 +57,7 @@ _VALIDATORS: dict[str, type[Validator]] = {
     "quantity_sign": QuantitySign,
     "round_off_bucket": RoundOffBucket,
     "scale_mismatch": ScaleMismatch,
+    "tax_total_confusion": TaxTotalConfusion,
 }
 
 

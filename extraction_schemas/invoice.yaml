@@ -296,8 +296,10 @@ fields:
       - "Tax Amount"
       - "VAT Amount"
       - "GST Amount"
+      - "Sales Tax"
       - "Tax"
-      - "Tax Total"
+      - "VAT"
+      - "GST"
     extractors:
       - layoutlmv3
       - layoutlmv3_finetuned
@@ -322,6 +324,7 @@ fields:
       - "Total Incl. Tax"
       - "Total Amount ($)"
       - "Total ($)"
+      - "Total Payable"
       - "Total"
     extractors:
       - layoutlmv3
@@ -546,6 +549,7 @@ line_items:
     - line_sum_closure
 
 document_invariants:
+  - tax_total_confusion
   - tax_closure
   - grand_total_closure
   - currency_consistency

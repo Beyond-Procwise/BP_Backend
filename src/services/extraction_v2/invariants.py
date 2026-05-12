@@ -29,7 +29,7 @@ __all__ = [
     "ValidatorChain", "DEFAULT_VALIDATORS",
     "LineArithmetic", "SubtotalClosure", "TaxClosure", "GrandTotalClosure",
     "CurrencyConsistency", "DateSanity", "VendorIdentity",
-    "QuantitySign", "RoundOffBucket",
+    "QuantitySign", "RoundOffBucket", "TaxTotalConfusion",
 ]
 
 
@@ -498,6 +498,47 @@ class RoundOffBucket(Validator):
                 residual=diff, message=f"round_off_diff={diff:.2f}",
             )
         return ValidatorResult.ok(self.name)
+
+
+class TaxTotalConfusion(Validator):
+    """Detect when tax_amount == invoice_total_incl_tax — structurally impossible.
+
+    If tax_amount equals the grand total and both are > 0, the extractor has
+    assigned the grand-total token to the tax_amount field. This is a critical
+    extraction error: tax can never equal the total (it would imply 0 subtotal).
+
+    Fix: null-out tax_amount and flag for re-extraction.
+    """
+    name = "tax_total_confusion"
+
+    def applicable(self, doc_type: str) -> bool:
+        return doc_type in ("invoice", "quote")
+
+    def check(self, header, line_items, doc_type):
+        tax = _tax_amount(header)
+        total = _f(header.get("invoice_total_incl_tax") or header.get("total_amount_incl_tax"))
+        subtotal = _subtotal(header)
+        if tax is None or total is None or tax <= 0 or total <= 0:
+            return ValidatorResult.na(self.name)
+        # Identical values: tax assigned the grand-total token
+        if abs(tax - total) < 0.01:
+            return ValidatorResult.fail(
+                self.name,
+                f"tax_amount ({tax:.2f}) == invoice_total_incl_tax ({total:.2f}) — "
+                "extractor confused grand-total token with tax field; tax cannot equal total",
+                severity=Severity.CRITICAL,
+                fields=("tax_amount", "invoice_total_incl_tax"),
+            )
+        # Sanity: tax > subtotal (would mean negative net, impossible for normal invoices)
+        if subtotal is not None and subtotal > 0 and tax >= subtotal:
+            return ValidatorResult.fail(
+                self.name,
+                f"tax_amount ({tax:.2f}) >= subtotal ({subtotal:.2f}) — "
+                "tax cannot exceed or equal the pre-tax subtotal",
+                severity=Severity.CRITICAL,
+                fields=("tax_amount", "invoice_amount"),
+            )
+        return ValidatorResult.ok(self.name, fields=("tax_amount",))
 
 
 # -- default chain (PO linkage lives in po_linkage.py because it does DB I/O) --
