@@ -199,6 +199,9 @@ class PipelineV3:
                     r"[\s:–-]*"
                     r"(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}"
                     r"|\d{4}[/\-\.]\d{1,2}[/\-\.]\d{1,2}"
+                    r"|\d{1,2}[-/](?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
+                    r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
+                    r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[-/]\d{2,4}"
                     r"|\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
                     r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
                     r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}"
@@ -295,6 +298,7 @@ class PipelineV3:
             "฿": "THB",
             "₺": "TRY",
             "Rp": "IDR",
+            "$": "USD",  # plain dollar — lowest priority (checked after multi-char variants)
         }
         _CURRENCY_TEXT_MAP = {
             "british pound": "GBP", "pounds sterling": "GBP", "sterling": "GBP",
