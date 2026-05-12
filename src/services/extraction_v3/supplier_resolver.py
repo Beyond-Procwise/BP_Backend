@@ -29,18 +29,219 @@ _NOISE_LOWER = (
     "bill to", "remit", "payable", "payment",
 )
 
+# ---------------------------------------------------------------------------
+# Street keyword detection — used by _is_address_contaminated
+# ---------------------------------------------------------------------------
+_STREET_KEYWORDS = frozenset({
+    "street", "st.", " st ", "road", "rd.", " rd ", "avenue", "ave.", " ave ",
+    "drive", "dr.", " dr ", "boulevard", "blvd.", " blvd ", "lane", "ln.",
+    " ln ", "way", "court", "ct.", " ct ", "plaza", "place", "pl.",
+    "parkway", "pkwy", "highway", "hwy", "terrace", "trail", "close",
+    "crescent", "grove", "mews", "row", "square", "walk",
+})
+
+# Footer / closing phrases that appear on invoices but are NOT supplier names.
+_FOOTER_PHRASES_LOWER = (
+    "thank you for your business",
+    "thank you for your order",
+    "thank you for choosing",
+    "thanks for your business",
+    "please remit",
+    "please make payment",
+    "make payable to",
+    "make checks payable",
+    "payment due",
+    "please pay",
+    "for inquiries",
+    "for questions",
+)
+
+# City-state patterns (word, comma, 2-letter state code)
+_CITY_STATE_RE = re.compile(
+    r"^[A-Za-z\s]{3,30},\s*[A-Z]{2}$"
+)
+
+# Date-like strings
+_DATE_RE = re.compile(
+    r"^\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}$"
+    r"|^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4}$",
+    re.IGNORECASE,
+)
+
+# Money-like string
+_MONEY_RE = re.compile(r"^[\$£€¥₹]?\s*[\d,]+(\.\d{1,2})?$")
+
+# Email address
+_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+# Single attention/generic words that are never supplier names
+_SINGLE_GARBAGE_WORDS = frozenset({
+    "attn", "attention", "from", "vendor", "supplier", "company",
+    "name", "sender", "bill", "invoice", "to", "re", "ref",
+})
+
+
+def _is_address_contaminated(name: str) -> bool:
+    """Return True if the candidate contains street/address keywords with digits
+    or other address-indicating patterns.
+
+    This catches cases like:
+    - "Mill St. Main" (street keyword)
+    - "Construction Masters 270 Construction Road Drive Dayton, OH 25143" (street + digit)
+    - "Hott Street Oklahoma City" (street keyword + known pattern)
+    - "Co. Unit 7" (unit number indicator)
+    """
+    lo = name.lower()
+    has_street_kw = any(kw in lo for kw in _STREET_KEYWORDS)
+    has_digit = bool(re.search(r'\d', name))
+
+    # Street keyword with digit → definitely an address
+    if has_street_kw and has_digit:
+        return True
+
+    # Long string with a street keyword is very likely an address line
+    if has_street_kw and len(name) > 30:
+        return True
+
+    # Street keyword present in a short string but followed by non-company text.
+    # e.g. "Mill St. Main" — "St." is followed by a bare word (no company suffix).
+    # Accept "Main St." as a potential company name (starts with word, ends with St.)
+    # but reject "Mill St. Main" (street keyword in the middle).
+    # Corporate suffix words — if a street keyword is followed by one of these,
+    # the string is likely a COMPANY NAME not an address (e.g. "Main Street Solutions LLC").
+    _CORP_SUFFIX_WORDS = frozenset({
+        "inc", "inc.", "ltd", "ltd.", "llc", "corp", "corp.", "gmbh", "sa",
+        "limited", "industries", "group", "holdings", "studios", "services",
+        "systems", "solutions", "enterprises", "consulting", "technology",
+        "technologies", "partners", "associates", "agency", "company", "co.",
+        "international", "global", "digital", "media", "design", "creative",
+    })
+
+    if has_street_kw:
+        # Use word-boundary aware search for each street keyword to avoid
+        # matching "st" inside "street" or "solution". Build a regex for
+        # the full keyword (as a word) then check what follows it.
+        for kw in _STREET_KEYWORDS:
+            kw_core = kw.strip()
+            if not kw_core:
+                continue
+            # Build a word-boundary-aware pattern. For keywords that end with
+            # a non-word char (like "st." "rd."), only anchor the START with \b
+            # since \b before a trailing dot/punctuation doesn't work.
+            if kw_core[-1].isalnum():
+                kw_pattern = re.compile(
+                    r'\b' + re.escape(kw_core) + r'\b', re.IGNORECASE
+                )
+            else:
+                kw_pattern = re.compile(
+                    r'\b' + re.escape(kw_core), re.IGNORECASE
+                )
+            m = kw_pattern.search(lo)
+            if not m:
+                continue
+            after = lo[m.end():].strip()
+            if after and not after.startswith(('.', ',')):
+                # Check if the text after the street keyword starts with a corporate
+                # suffix word (e.g. "Main Street Solutions LLC" → keep as valid company)
+                words_after = after.split()
+                first_word_after = words_after[0].rstrip('.,') if words_after else ''
+                if first_word_after in _CORP_SUFFIX_WORDS:
+                    continue  # legitimate company name — not an address
+
+                # Short string where the street keyword appears in the MIDDLE (not last).
+                # Heuristic: abbreviated street types (St., Rd., Ave., Dr., Blvd., Ln., Ct., Pl.)
+                # in the middle of a 3-word string usually indicate an address fragment
+                # (e.g. "Mill St. Main", "123 Rd. Fork"). BUT non-abbreviated forms
+                # (Lane, Drive, Road, Avenue) commonly appear in company names
+                # (e.g. "Lane Bryant", "Park Avenue Group"). Accept ambiguous non-abbreviated
+                # short strings without digits as company names.
+                _ABBREV_STREET_KWS = frozenset({
+                    'st.', 'rd.', 'ave.', 'dr.', 'blvd.', 'ln.', 'ct.', 'pl.',
+                    'pkwy', 'hwy',
+                })
+                total_words = len(lo.split())
+                if total_words <= 3 and not has_digit:
+                    if kw_core.lower() not in _ABBREV_STREET_KWS:
+                        continue  # non-abbreviated street word in short string — keep as company name
+                    # Abbreviated street type in middle of 3-word string → address fragment
+
+                # More text after the street keyword with no corporate suffix → address
+                return True
+
+    # Unit number indicator: "Unit N", "Suite N", "Apt N", "Bldg N" with digit
+    _UNIT_RE = re.compile(r'\b(unit|suite|apt|bldg|floor|fl\.?|building|rm\.?|room)\s*[\d#]+', re.IGNORECASE)
+    if _UNIT_RE.search(name):
+        return True
+
+    return False
+
 
 def _is_garbage_name(name: str) -> bool:
-    """Return True if `name` is obviously not a real supplier name."""
-    lo = name.lower().strip()
+    """Return True if `name` is obviously not a real supplier name.
+
+    Rejects:
+    - Too short (< 3 chars)
+    - All digits / punctuation
+    - Known noise tokens (bank, routing, etc.)
+    - Email addresses
+    - Address-contaminated strings (street keyword + digit)
+    - Footer / closing phrases
+    - City+state patterns (e.g. "Oklahoma City, OK")
+    - Pure date strings
+    - Pure money strings
+    - Single generic/attention words
+    """
+    stripped = name.strip()
+    lo = stripped.lower()
+
+    # Length guard
     if len(lo) < _MIN_NAME_LEN:
         return True
+
     # All digits / punctuation
     if re.match(r'^[\d\W_]+$', lo):
         return True
-    # Noise markers
+
+    # Email address
+    if _EMAIL_RE.search(stripped):
+        return True
+
+    # Noise markers (legacy list)
     if any(m in lo for m in _NOISE_LOWER):
         return True
+
+    # Address contamination (street keyword with number OR long address)
+    if _is_address_contaminated(stripped):
+        return True
+
+    # Footer / closing phrases
+    if any(lo.startswith(fp) or fp in lo for fp in _FOOTER_PHRASES_LOWER):
+        return True
+
+    # City+state pattern ("Oklahoma City, OK")
+    if _CITY_STATE_RE.match(stripped):
+        return True
+
+    # Date-like string
+    if _DATE_RE.match(stripped):
+        return True
+
+    # Money-like string
+    if _MONEY_RE.match(stripped):
+        return True
+
+    # Single word that is a generic attention/label word
+    words = stripped.split()
+    if len(words) == 1 and lo in _SINGLE_GARBAGE_WORDS:
+        return True
+
+    # Very short single word (≤3 chars) with no corporate suffix
+    _CORP_SUFFIXES = ("inc", "ltd", "llc", "corp", "gmbh", "sa", "co.", "co,",
+                      "limited", "industries", "group", "holdings", "studios",
+                      "services", "systems", "solutions", "enterprises")
+    if len(lo) <= 3 and not any(lo.endswith(s) for s in _CORP_SUFFIXES):
+        return True
+
     return False
 
 
