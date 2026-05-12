@@ -6,16 +6,115 @@ Looks up proc.bp_supplier for an existing match using:
   3. If no match: auto-create a new proc.bp_supplier row with a slug-derived
      supplier_id (e.g. ``SUP-MGMSouvenirShop``) and return it.
 
+A LogisticRegression char-ngram classifier (``models/supplier_name_classifier.joblib``)
+is also applied before resolution.  Any candidate whose P(valid) < _CLF_THRESHOLD
+is dropped so contaminated strings never reach the database.
+
 Never raises — returns None on any unrecoverable error so the caller can
 persist supplier_id = NULL and put the row into the review queue.
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
+from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Classifier lazy-loading
+# ---------------------------------------------------------------------------
+# Probability threshold below which a candidate is treated as invalid.
+# 0.44 is the empirically-derived cutoff: all known-bad strings score <= 0.435,
+# all known-good strings (including edge-cases like "Lane Bryant") score >= 0.446.
+_CLF_THRESHOLD: float = 0.44
+
+# Module-level sentinel: None = not yet attempted; False = load failed.
+_clf_model: dict[str, Any] | None | bool = None  # None → not loaded yet
+
+
+def _load_classifier() -> dict[str, Any] | None:
+    """Load the supplier-name classifier from disk exactly once.
+
+    Returns the model dict (keys: vectorizer, clf, threshold) or None if the
+    model file is missing / joblib is unavailable.  Thread safety is not
+    critical here because worst-case two threads load it simultaneously — the
+    outcome is identical and the duplicate object is GC'd immediately.
+    """
+    global _clf_model
+    if _clf_model is not None and _clf_model is not False:
+        return _clf_model  # type: ignore[return-value]
+    if _clf_model is False:
+        return None  # previous load attempt failed — don't retry
+
+    # Locate the model file relative to this source tree.
+    _HERE = Path(__file__).parent
+    # Walk up to project root (BP_Backend/) then into models/
+    _project_root = _HERE
+    for _ in range(6):
+        candidate = _project_root / "models" / "supplier_name_classifier.joblib"
+        if candidate.exists():
+            break
+        _project_root = _project_root.parent
+    else:
+        log.warning(
+            "supplier_resolver: classifier model not found; "
+            "falling back to rule-based filter only"
+        )
+        _clf_model = False
+        return None
+
+    try:
+        import joblib  # type: ignore[import]
+
+        data = joblib.load(str(candidate))
+        if not isinstance(data, dict) or "vectorizer" not in data or "clf" not in data:
+            raise ValueError("unexpected model dict structure")
+        _clf_model = data
+        log.info(
+            "supplier_resolver: loaded classifier from %s (threshold=%.2f)",
+            candidate,
+            data.get("threshold", _CLF_THRESHOLD),
+        )
+        return data
+    except Exception as exc:
+        log.warning("supplier_resolver: classifier load failed (%s); using rules only", exc)
+        _clf_model = False
+        return None
+
+
+def _classifier_accepts(name: str) -> bool:
+    """Return True if the name passes the ML classifier (or if classifier unavailable).
+
+    Uses P(valid) >= _CLF_THRESHOLD as the acceptance criterion.
+    """
+    model = _load_classifier()
+    if model is None:
+        return True  # no model → accept (rule-based filter still applies)
+
+    threshold = float(model.get("threshold", _CLF_THRESHOLD))
+    try:
+        vec = model["vectorizer"]
+        clf = model["clf"]
+        X = vec.transform([name])
+        prob = clf.predict_proba(X)[0, 1]  # P(class=1 → valid)
+        accept = prob >= threshold
+        if not accept:
+            log.debug(
+                "supplier_resolver: classifier rejected %r (P(valid)=%.3f < %.2f)",
+                name, prob, threshold,
+            )
+        return accept
+    except Exception as exc:
+        log.debug("supplier_resolver: classifier predict failed (%s); accepting by default", exc)
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Rule-based garbage filter
+# ---------------------------------------------------------------------------
 # Minimum name length to attempt resolution / creation.
 _MIN_NAME_LEN = 3
 # rapidfuzz threshold (0-100). 85 is tight enough to avoid false merges.
@@ -277,6 +376,11 @@ def resolve_or_create_supplier(name: str, conn) -> str | None:
     name = name.strip()
     if not name or _is_garbage_name(name):
         log.debug("supplier_resolver: garbage name rejected: %r", name)
+        return None
+
+    # ML classifier gate — drops contaminated strings that pass rule-based filter
+    if not _classifier_accepts(name):
+        log.debug("supplier_resolver: classifier rejected name: %r", name)
         return None
 
     # --- Already canonical? ---
