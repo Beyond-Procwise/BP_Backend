@@ -416,6 +416,32 @@ class PipelineV3:
             cleaned_committed3.append(cf)
         committed = cleaned_committed3
 
+        # 4e. Supplier-name garbage rejection.
+        # The supplier_name field uses broad canonical labels and multiple
+        # extractors, which frequently pick up footer text, email addresses,
+        # address blocks, label words, and other non-company-name content.
+        # Apply the resolver's own _is_garbage_name logic here so that garbage
+        # values don't make it into provenance at all (the resolver would reject
+        # them, leaving supplier_id NULL — but provenance would still show the
+        # bad extraction). Removing them here means provenance is clean and the
+        # next extraction attempt has a fresh chance.
+        cleaned_committed_sup: list[CommittedField] = []
+        for cf in committed:
+            if cf.field_path in ("supplier_name", "buyer_id"):
+                try:
+                    from src.services.extraction_v3.supplier_resolver import _is_garbage_name
+                    val = (cf.value or "").strip()
+                    if val and _is_garbage_name(val):
+                        log.info(
+                            "Pipeline: dropping garbage supplier/buyer name %r (field=%s model=%s)",
+                            val, cf.field_path, cf.model,
+                        )
+                        continue  # drop — leave field as residual/absent
+                except Exception:
+                    pass  # if import fails, keep the candidate unchanged
+            cleaned_committed_sup.append(cf)
+        committed = cleaned_committed_sup
+
         # 5. Demote on critical invariant failures
         critical = [r for r in invariant_results if r.severity in ("CRITICAL", "critical", "fail")]
         if critical:

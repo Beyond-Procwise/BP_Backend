@@ -34,14 +34,14 @@ fields:
     canonical_labels:
       - "Supplier"
       - "Vendor"
-      - "From"
       - "Billed From"
       - "Seller"
       - "Store Name"
-      - "Company"
       - "Company Name"
       - "Issued By"
       - "Invoice From"
+      - "Remit To"
+      - "Service Provider"
     extractors:
       - layoutlmv3
       - layoutlmv3_finetuned
