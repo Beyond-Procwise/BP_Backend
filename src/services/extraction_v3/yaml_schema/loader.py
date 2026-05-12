@@ -33,7 +33,7 @@ class FieldSpec(BaseModel):
 
 
 class LineItemsSpec(BaseModel):
-    primary_extractor: Literal["table_transformer", "layoutlmv3"]
+    primary_extractor: Literal["table_transformer", "layoutlmv3", "qwen_vlm"]
     fallback_extractor: str | None = None
     fields: list[FieldSpec]
     invariants: list[str] = []

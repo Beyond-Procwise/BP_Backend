@@ -4,7 +4,7 @@ from .parsed_document import BBox
 
 ExtractorName = Literal[
     "layoutlmv3", "layoutlmv3_finetuned", "table_transformer", "sbert_anchor",
-    "spacy_ner", "qa_roberta", "vendor_template"
+    "spacy_ner", "qa_roberta", "vendor_template", "qwen_vlm"
 ]
 
 class Candidate(BaseModel):
