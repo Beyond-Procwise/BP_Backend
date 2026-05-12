@@ -311,8 +311,29 @@ class PipelineV3:
             "chinese yuan": "CNY",
             "indian rupee": "INR",
         }
+        # Step 4c checks two cases:
+        # (a) currency field missing entirely → recover from symbol / text
+        # (b) currency field committed but value is a raw symbol (e.g. "$", "£") not an ISO code
+        #     → replace with the ISO code (the grounded judge may have returned the symbol verbatim)
+        _ISO_CURRENCY_RE = re.compile(r'^[A-Z]{3}$')
+
         committed_fields_set = {cf.field_path for cf in committed}
-        if "currency" not in committed_fields_set and parsed is not None:
+        _existing_currency_is_raw_symbol = False
+        _existing_currency_cf: CommittedField | None = None
+        for _cf in committed:
+            if _cf.field_path == "currency":
+                _existing_currency_cf = _cf
+                if not _ISO_CURRENCY_RE.match((_cf.value or "").strip()):
+                    # Value is not a 3-letter ISO code (e.g. "$", "£", "USD$", etc.)
+                    _existing_currency_is_raw_symbol = True
+                break
+
+        _need_currency_recovery = (
+            "currency" not in committed_fields_set
+            or _existing_currency_is_raw_symbol
+        )
+
+        if _need_currency_recovery and parsed is not None:
             _text = parsed.full_text
             _recovered_currency: str | None = None
             _recovered_evidence: str | None = None
@@ -339,7 +360,8 @@ class PipelineV3:
                     "Currency symbol recovery: %r → %s for %s",
                     _recovered_evidence, _recovered_currency, path.name,
                 )
-                # Remove any currency residual
+                # Remove any existing currency committed field and residuals
+                committed = [cf for cf in committed if cf.field_path != "currency"]
                 residuals = [rf for rf in residuals if rf.field_path != "currency"]
                 committed.append(CommittedField(
                     field_path="currency",
