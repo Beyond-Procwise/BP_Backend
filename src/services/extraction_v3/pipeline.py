@@ -244,6 +244,16 @@ class PipelineV3:
                     amt_numeric = re.sub(r"^[£€\$¥₹\s]+|[£€\$¥₹\s]+$", "", amt_raw).strip()
                     evidence = m.group(0)
                     if amt_numeric and any(ch.isdigit() for ch in amt_numeric):
+                        # Normalise through parse_amount so the DB gets a plain decimal
+                        # ("129,200" → "129200.0"). The evidence_text keeps the raw match
+                        # so provenance is traceable.
+                        try:
+                            from src.services.extraction_v2.parsers.amounts import parse_amount as _parse_amt
+                            _parsed_amt = _parse_amt(amt_numeric)
+                            if _parsed_amt is not None:
+                                amt_numeric = str(_parsed_amt)
+                        except Exception:
+                            pass
                         log.info(
                             "Invoice-amount regex recovery: found %r → %r for %s",
                             evidence, amt_numeric, path.name,
