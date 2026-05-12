@@ -262,8 +262,11 @@ def extract_with_vlm(
 
     # Serialize Qwen inference — only one call at a time to prevent cuDNN
     # context conflicts when multiple worker threads compete for the GPU.
+    # max_new_tokens=2048 to cover documents with many line items (9 service
+    # lines × 7 fields × ~15 tokens each ≈ 945 tokens, plus header ≈ 300,
+    # total ~1250 — 2048 gives headroom for verbose field values).
     with _VLM_LOCK:
-        raw_response = qwen_vl_extract(image, prompt, max_new_tokens=1024)
+        raw_response = qwen_vl_extract(image, prompt, max_new_tokens=2048)
 
     if not raw_response:
         log.warning("vlm_extractor: empty response for %s", source_file)
@@ -307,6 +310,11 @@ def extract_with_vlm(
     # Line items
     if schema.line_items:
         lines = data.get("line_items")
+        log.debug(
+            "vlm_extractor: line_items raw from Qwen=%r for %s",
+            type(lines).__name__ + (f"[{len(lines)}]" if isinstance(lines, list) else ""),
+            source_file,
+        )
         if isinstance(lines, list):
             for idx, line in enumerate(lines):
                 if not isinstance(line, dict):
