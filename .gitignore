@@ -12,3 +12,6 @@ artifacts/llm_failures/
 artifacts/log_monitor/v3_iter*.jsonl
 artifacts/log_monitor/v3_live_*.jsonl
 artifacts/log_monitor/extraction_v3_smoke_*.json
+
+# Sample documents — keep out of repo
+documents/
