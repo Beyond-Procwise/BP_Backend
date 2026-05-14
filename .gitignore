@@ -15,3 +15,9 @@ artifacts/log_monitor/extraction_v3_smoke_*.json
 
 # Sample documents — keep out of repo
 documents/
+
+# Session-generated analysis / specs — kept offline only, not part of repo
+artifacts/extraction_analysis/
+artifacts/log_monitor/*.md
+docs/superpowers/
+src/docs/model_tuning/phi4_humanization_plan.md
