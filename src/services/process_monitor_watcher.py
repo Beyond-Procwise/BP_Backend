@@ -380,13 +380,23 @@ class ProcessMonitorWatcher:
                 raise RuntimeError(
                     f"Extraction {status}: {result.get('error', 'unknown')}"
                 )
-            # "partial" means the orchestrator could not persist the header —
-            # the bp_ table has no row for this document. Marking it Extracted
-            # here would hide a real data gap behind a green status.
-            if status == "partial" or not result.get("header_persisted", True):
+            # "no_pk" is a soft-success: _raw row was written (raw_persisted=True)
+            # but no doc_pk could be extracted. Manual review needed via the
+            # _raw row (promotion_status='no_pk'). Treat as Extracted because
+            # the data IS preserved — just not promoted to _stg.
+            if status == "no_pk" and result.get("raw_persisted"):
+                logger.warning(
+                    "Extraction completed without PK for record %s "
+                    "(raw_id=%s) — review proc.bp_*_raw promotion_status='no_pk'",
+                    record_id, result.get("raw_id"),
+                )
+            # "partial" with no raw_persisted is a hard failure — nothing
+            # made it to the DB at all.
+            elif status == "partial" and not result.get("raw_persisted"):
                 raise RuntimeError(
-                    "Header persist failed (status=%s header_persisted=%s pk=%s)"
-                    % (status, result.get("header_persisted"), result.get("pk"))
+                    "Header persist failed (status=%s header_persisted=%s pk=%s raw_persisted=%s)"
+                    % (status, result.get("header_persisted"),
+                       result.get("pk"), result.get("raw_persisted"))
                 )
             self._mark_extracted(record_id)
             confidence = result.get("confidence", 0)

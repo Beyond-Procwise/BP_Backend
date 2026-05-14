@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -596,7 +597,22 @@ def _coerce_val_for_col(val: Any, col_name: str, lines_table: str) -> Any:
         try:
             return int(float(val))
         except (ValueError, TypeError):
-            return val
+            # Garbage extracted into an integer column (e.g. quantity='sets',
+            # quantity='2 Total: 11,555.50'). Returning the raw string would
+            # crash the INSERT and roll back the whole transaction. Drop to
+            # NULL instead so the row still lands and the bad cell is visible
+            # for downstream review.
+            return None
+    if dtype in ("numeric", "real", "double precision", "decimal"):
+        # Strip currency symbols / commas before letting Postgres parse.
+        cleaned = re.sub(r"[£$€¥₹£,\s]", "", val).strip()
+        if not cleaned:
+            return None
+        try:
+            float(cleaned)
+            return cleaned
+        except ValueError:
+            return None
     max_lens = _LINE_ITEMS_COL_MAX_LENGTHS.get(lines_table, {})
     max_len = max_lens.get(col_name)
     if max_len is not None and len(val) > max_len:
@@ -805,6 +821,7 @@ def _build_line_items_inserts(
         if row:
             _line_seq_col = row[0]
 
+    bad_rows = 0
     for idx, fields_dict in sorted(lines_by_idx.items()):
         cols = [line_pk_col, parent_fk]
         vals: list[Any] = [f"{doc_pk}-L{idx}", doc_pk]
@@ -830,7 +847,26 @@ def _build_line_items_inserts(
             f"INSERT INTO {schema.db_lines_table} ({col_list}) VALUES ({placeholders}) "
             f"ON CONFLICT ({line_pk_col}) DO NOTHING"
         )
-        cur.execute(sql, vals)
+        # Per-row resilience: a single bad line shouldn't kill the others.
+        # Use a savepoint so an INSERT failure rolls back only this row, not
+        # the whole _stg promotion. The header + good lines still land.
+        cur.execute(f"SAVEPOINT line_{idx}")
+        try:
+            cur.execute(sql, vals)
+            cur.execute(f"RELEASE SAVEPOINT line_{idx}")
+        except Exception as exc:
+            cur.execute(f"ROLLBACK TO SAVEPOINT line_{idx}")
+            cur.execute(f"RELEASE SAVEPOINT line_{idx}")
+            bad_rows += 1
+            log.warning(
+                "_build_line_items_inserts: skipping bad line %d for %s/%s: %s -- vals=%r",
+                idx, doc_type, doc_pk, exc, vals,
+            )
+    if bad_rows:
+        log.warning(
+            "_build_line_items_inserts: %d/%d line rows skipped for %s/%s",
+            bad_rows, len(lines_by_idx), doc_type, doc_pk,
+        )
 
 
 def _build_provenance_inserts(
@@ -889,9 +925,13 @@ def _promote_to_stg(
         _build_provenance_inserts(
             cur, result.doc_type, result.doc_pk, result.committed, result.pipeline_version
         )
-        # Clean promotion: delete the _raw row
+        # Mark _raw as promoted (KEEP the row for audit). Previous behaviour
+        # deleted the _raw row on clean promotion; user requirement is that
+        # _raw permanently holds the engine's raw output so _stg's computed
+        # values can always be recomputed from source.
         cur.execute(
-            f"DELETE FROM {_raw_table(result.doc_type)} WHERE raw_id = %s",
+            f"UPDATE {_raw_table(result.doc_type)} "
+            f"SET promotion_status = 'promoted' WHERE raw_id = %s",
             (raw_id,),
         )
 
@@ -954,56 +994,107 @@ def _flag_with_discrepancies(
 # Public entry point: persist (two-stage)
 # ---------------------------------------------------------------------------
 
-def persist(result: ExtractionResult, source_file: str = "") -> None:
-    """Persist an ExtractionResult via the two-stage pipeline.
+def _mark_raw_status(doc_type: str, raw_id: int, status: str, note: str = "") -> None:
+    """Best-effort: open a fresh tx, update _raw promotion_status. Never raises."""
+    try:
+        with get_conn() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE {_raw_table(doc_type)} "
+                    f"SET promotion_status = %s WHERE raw_id = %s",
+                    (status, raw_id),
+                )
+        if note:
+            log.info("_raw status set: doc_type=%s raw_id=%d -> %s (%s)",
+                     doc_type, raw_id, status, note)
+    except Exception as exc:
+        log.warning("_mark_raw_status failed for raw_id=%d: %s", raw_id, exc)
 
-    Stage 1: write_raw — always succeeds (stores JSONB)
-    Stage 2: validate → promote to _stg (clean) or flag (discrepancy)
 
-    Raises ValueError if doc_pk is None.
-    All DB writes happen in a single transaction.
+def persist(result: ExtractionResult, source_file: str = "") -> int | None:
+    """Persist an ExtractionResult via two independent transactions.
+
+    Tx1 (always commits, even if doc_pk is None):
+        write _raw row (JSONB payload of engine output). doc_pk_candidate
+        is nullable; rows without a PK land with promotion_status='no_pk'
+        so they're queryable for manual review.
+
+    Tx2 (best-effort; only runs when doc_pk is present; failure does NOT
+        lose _raw):
+        compute derived values → detect discrepancies →
+        promote to _stg (no critical) OR flag with discrepancies.
+        On Tx2 exception, _raw is marked promotion_status='failed' via a
+        third small Tx so failures are queryable.
+
+    Returns the raw_id of the written _raw row, or None if Tx1 itself fails
+    (DB unreachable, constraint violation, etc.). Even an extractor that
+    produced no PK results in a _raw row whose raw_id is returned.
     """
-    if result.doc_pk is None:
-        raise ValueError(
-            f"cannot persist ExtractionResult without doc_pk for {result.doc_type}"
-        )
-
     schema = load_doc_schema(result.doc_type)
 
+    # ===== Tx1: write _raw and commit =====================================
     with get_conn() as conn:
         prior_autocommit = conn.autocommit
         conn.autocommit = False
         try:
-            # Stage 1: raw landing
             raw_id = _write_raw(result, source_file, conn)
-
-            # Stage 2a: compute derived values
-            result = _compute_derived_values(result, conn)
-
-            # Stage 2b: detect discrepancies
-            discrepancies = _detect_discrepancies(result, schema)
-            critical_count = sum(1 for d in discrepancies if d.severity == "critical")
-
-            if critical_count == 0:
-                # Stage 2c: promote to _stg
-                _promote_to_stg(result, raw_id, schema, conn)
-            else:
-                # Stage 2d: flag — keep _raw, write discrepancy rows
-                _flag_with_discrepancies(result, raw_id, source_file, discrepancies, conn)
-
             conn.commit()
-            log.info(
-                "persist OK doc_type=%s doc_pk=%s fields=%d "
-                "discrepancies=%d critical=%d promoted=%s",
-                result.doc_type, result.doc_pk, len(result.committed),
-                len(discrepancies), critical_count, critical_count == 0,
-            )
         except Exception:
             conn.rollback()
             log.exception(
-                "persist ROLLBACK doc_type=%s doc_pk=%s",
+                "persist Tx1 (write_raw) ROLLBACK doc_type=%s doc_pk=%s",
                 result.doc_type, result.doc_pk,
             )
             raise
         finally:
             conn.autocommit = prior_autocommit
+
+    # No PK → can't promote. Mark _raw and stop here.
+    if result.doc_pk is None:
+        log.warning(
+            "persist: no doc_pk extracted for %s -- _raw raw_id=%d preserved, "
+            "marked promotion_status='no_pk' for manual review (source=%s)",
+            result.doc_type, raw_id, source_file,
+        )
+        _mark_raw_status(result.doc_type, raw_id, "no_pk", source_file)
+        return raw_id
+
+    # ===== Tx2: compute, detect, promote or flag ==========================
+    # If Tx2 fails, _raw is still in place (Tx1 already committed). Mark
+    # _raw status='failed' via a third small Tx so the failure is queryable.
+    with get_conn() as conn:
+        prior_autocommit = conn.autocommit
+        conn.autocommit = False
+        try:
+            result = _compute_derived_values(result, conn)
+            discrepancies = _detect_discrepancies(result, schema)
+            critical_count = sum(1 for d in discrepancies if d.severity == "critical")
+
+            if critical_count == 0:
+                _promote_to_stg(result, raw_id, schema, conn)
+            else:
+                _flag_with_discrepancies(result, raw_id, source_file, discrepancies, conn)
+
+            conn.commit()
+            log.info(
+                "persist OK doc_type=%s doc_pk=%s raw_id=%d fields=%d "
+                "discrepancies=%d critical=%d promoted=%s",
+                result.doc_type, result.doc_pk, raw_id, len(result.committed),
+                len(discrepancies), critical_count, critical_count == 0,
+            )
+        except Exception as exc:
+            conn.rollback()
+            log.exception(
+                "persist Tx2 (compute/detect/promote) FAILED -- _raw is preserved "
+                "doc_type=%s doc_pk=%s raw_id=%d",
+                result.doc_type, result.doc_pk, raw_id,
+            )
+            # Mark _raw as failed in a fresh tx so it's queryable
+            _mark_raw_status(result.doc_type, raw_id, "failed", str(exc)[:200])
+            # Don't re-raise: _raw is preserved; caller treats this as "ok"
+            # for the purpose of process_monitor status (extraction landed).
+        finally:
+            conn.autocommit = prior_autocommit
+
+    return raw_id
