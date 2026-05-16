@@ -1,0 +1,177 @@
+"""Promotion: copy a _raw row's field columns into _stg, run supplier
+resolution, delete the _raw row.
+
+Triggered automatically on a clean extraction (no blocking discrepancy)
+and on HITL fix completion via NOTIFY on
+'extraction_raw_ready_for_promotion'.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import select
+from typing import Any
+
+import psycopg2
+
+from config.settings import Settings
+from src.services.db import get_conn
+
+log = logging.getLogger(__name__)
+
+_RAW_TO_STG = {
+    "invoice": ("proc.bp_invoice_raw", "proc.bp_invoice_stg"),
+    "purchase_order": ("proc.bp_purchase_order_raw", "proc.bp_purchase_order_stg"),
+    "quote": ("proc.bp_quote_raw", "proc.bp_quote_stg"),
+    "contract": ("proc.bp_contract_raw", "proc.bp_contracts"),
+}
+
+# Control columns on _raw that must NOT be copied to _stg
+_CONTROL_COLS = {
+    "raw_id", "doc_pk_candidate", "source_file", "process_monitor_id",
+    "pipeline_version", "extracted_at", "parser_snapshot", "promotion_status",
+    "promoted_at", "trace_id", "raw_payload",
+}
+
+
+def _stg_columns(cur, stg_table: str) -> list[str]:
+    schema, table = stg_table.split(".")
+    cur.execute(
+        """SELECT column_name FROM information_schema.columns
+            WHERE table_schema=%s AND table_name=%s""",
+        (schema, table),
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
+    """Copy _raw flat columns into _stg, delete _raw, update audit cols.
+
+    Returns {ok: bool, doc_pk: str | None, reason: str | None}.
+    """
+    raw_t, stg_t = _RAW_TO_STG[doc_type]
+    with get_conn() as conn:
+        conn.autocommit = False
+        cur = conn.cursor()
+        try:
+            # 1. Read _raw row
+            cur.execute(f"SELECT * FROM {raw_t} WHERE raw_id = %s", (raw_id,))
+            row = cur.fetchone()
+            if row is None:
+                conn.rollback()
+                return {"ok": False, "reason": "raw_row_missing"}
+            col_names = [d.name for d in cur.description]
+            raw_data = dict(zip(col_names, row))
+
+            # 2. Intersect with _stg columns
+            stg_cols = _stg_columns(cur, stg_t)
+            target_cols = [c for c in stg_cols if c in raw_data and c not in _CONTROL_COLS]
+            target_vals = [raw_data[c] for c in target_cols]
+            # Skip if nothing to promote
+            if not target_cols:
+                conn.rollback()
+                return {"ok": False, "reason": "no_overlapping_columns"}
+
+            placeholders = ", ".join(["%s"] * len(target_cols))
+            col_clause = ", ".join(target_cols)
+            sql = f"INSERT INTO {stg_t} ({col_clause}) VALUES ({placeholders})"
+            cur.execute(sql, target_vals)
+
+            # 3. Update _raw to promoted (audit) then delete
+            cur.execute(
+                f"UPDATE {raw_t} SET promotion_status='promoted', promoted_at=NOW() "
+                f"WHERE raw_id=%s", (raw_id,),
+            )
+            # Keep the _raw row as an audit trail OR delete? Spec says delete on
+            # clean promotion; keep on discrepancy. Delete here — the data is
+            # now in _stg, and provenance_v3 retains the bbox/evidence.
+            cur.execute(f"DELETE FROM {raw_t} WHERE raw_id=%s", (raw_id,))
+
+            conn.commit()
+            return {"ok": True, "doc_pk": raw_data.get("doc_pk_candidate")}
+        except Exception as exc:
+            conn.rollback()
+            log.exception("promotion failed for raw_id=%s doc_type=%s: %s",
+                          raw_id, doc_type, exc)
+            return {"ok": False, "reason": str(exc)}
+
+
+def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
+    """Read all resolved discrepancies for this raw_id, apply their
+    resolved_value updates to the _raw row, then promote.
+
+    Called by the NOTIFY listener when the DB trigger fires
+    'extraction_raw_ready_for_promotion'.
+    """
+    raw_t = _RAW_TO_STG[doc_type][0]
+    with get_conn() as conn:
+        conn.autocommit = False
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT field_name, resolved_value, resolution_action
+                  FROM proc.bp_extraction_discrepancy
+                 WHERE raw_id=%s AND status='resolved'
+                   AND blocks_promotion=TRUE
+            """, (raw_id,))
+            fixes = cur.fetchall()
+            for field_name, resolved_value, action in fixes:
+                if action == "apply_value":
+                    cur.execute(
+                        f"UPDATE {raw_t} SET {field_name} = %s WHERE raw_id=%s",
+                        (resolved_value, raw_id),
+                    )
+                elif action == "keep_null":
+                    cur.execute(
+                        f"UPDATE {raw_t} SET {field_name} = NULL WHERE raw_id=%s",
+                        (raw_id,),
+                    )
+                # 'dismiss' does nothing to _raw
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            log.exception("apply_hitl_fixes failed: %s", exc)
+            return {"ok": False, "reason": str(exc)}
+
+    # Now promote
+    return promote(raw_id, doc_type)
+
+
+def run_listener(stop_event=None) -> None:
+    """Listen on 'extraction_raw_ready_for_promotion' channel and process
+    NOTIFY events sequentially. Run in a dedicated worker."""
+    s = Settings()
+    conn = psycopg2.connect(
+        host=s.db_host, dbname=s.db_name, user=s.db_user,
+        password=s.db_password, port=s.db_port,
+    )
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute("LISTEN extraction_raw_ready_for_promotion;")
+    log.info("promotion listener armed on channel extraction_raw_ready_for_promotion")
+    try:
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                break
+            if not select.select([conn], [], [], 1.0)[0]:
+                continue
+            conn.poll()
+            while conn.notifies:
+                notify = conn.notifies.pop(0)
+                try:
+                    payload = json.loads(notify.payload)
+                except Exception:
+                    log.warning("malformed notify payload: %r", notify.payload)
+                    continue
+                doc_type = payload.get("doc_type")
+                raw_id = payload.get("raw_id")
+                if not (doc_type and raw_id):
+                    continue
+                log.info("notify received: raw_id=%s doc_type=%s", raw_id, doc_type)
+                result = apply_hitl_fixes_and_promote(int(raw_id), doc_type)
+                log.info("promotion result: %s", result)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
