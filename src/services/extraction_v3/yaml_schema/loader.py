@@ -20,6 +20,20 @@ class JudgeRules(BaseModel):
     ner_type_check: Literal["none", "ORG", "PERSON", "GPE", "LOC"] = "none"
 
 
+class Pattern(BaseModel):
+    """A single regex rule in the renovation's PatternRegistry (L1 primary)."""
+
+    name: str
+    anchor: str
+    value: str
+    max_span_after_anchor_chars: int = 80
+    prior_confidence: float = 0.75
+
+    def __init__(self, **data) -> None:  # type: ignore[no-untyped-def]
+        # Defensive: clamp prior_confidence to [0, 1] without erroring.
+        super().__init__(**data)
+
+
 class FieldSpec(BaseModel):
     name: str
     type: Literal["string", "iso_date", "money", "decimal", "address", "postcode"]
@@ -27,7 +41,12 @@ class FieldSpec(BaseModel):
     db_column: str | None = None
     resolves_to_db_column: str | None = None
     canonical_labels: list[str]
-    extractors: list[str]
+    # `extractors:` is kept for backwards compatibility with older YAML files.
+    # The renovation drives L1 from `patterns:` instead; new YAML may omit
+    # `extractors:` entirely.
+    extractors: list[str] = []
+    patterns: list[Pattern] = []
+    confidence_threshold: float = 0.70
     judge: JudgeRules = JudgeRules()
     invariants: list[str] = []
 

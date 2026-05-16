@@ -16,8 +16,30 @@ fields:
       - "Document Number"
       - "Document No"
       - "Document No."
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.70
+    patterns:
+      # Mandatory separator after the label avoids markdown-header false matches
+      # like "## INVOICE\n\n## VENDOR" where # would otherwise satisfy the alt.
+      - name: anchored_invoice_no
+        anchor: '(?i)\binvoice\s*(?:number|no\.?)\s*[:\-]\s*'
+        value: '([A-Z0-9][A-Z0-9\-\/\.]{2,30})'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.88
+      - name: anchored_invoice_hash
+        anchor: '(?i)\binvoice\s*#\s*'
+        value: '([A-Z0-9][A-Z0-9\-\/\.]{2,30})'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.84
+      - name: anchored_document_no
+        anchor: '(?i)\bdocument\s*(?:number|no\.?)\s*[:\-]\s*'
+        value: '([A-Z0-9][A-Z0-9\-\/\.]{2,30})'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.78
+      - name: inv_prefixed_id
+        anchor: '(?<![A-Z])(?:INV|INVOICE)[\-\:#]'
+        value: '([A-Z]{0,4}[0-9]{4,12})'
+        max_span_after_anchor_chars: 20
+        prior_confidence: 0.72
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -40,8 +62,18 @@ fields:
       - "Invoice From"
       - "Remit To"
       - "Service Provider"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.65
+    patterns:
+      - name: anchored_supplier
+        anchor: '(?im)^\s*(?:supplier|vendor|billed\s+from|seller|invoice\s+from|remit\s+to)\s*[:\-]\s*'
+        value: '([A-Z][^\n]{2,80})'
+        max_span_after_anchor_chars: 120
+        prior_confidence: 0.78
+      - name: anchored_from
+        anchor: '(?im)^\s*from\s*[:\-]\s*'
+        value: '([A-Z][^\n]{2,80})'
+        max_span_after_anchor_chars: 120
+        prior_confidence: 0.72
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -230,8 +262,54 @@ fields:
       - "Subtotal ($)"
       - "Total Before Tax"
       - "Net Total"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.70
+    patterns:
+      # Highest-prior: very specific labels for the final payable/grand amount
+      - name: grand_total
+        anchor: '(?i)\bgrand\s+total\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.90
+      - name: total_amount_payable
+        anchor: '(?i)\btotal\s+amount\s+payable\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.89
+      # "Amount Due" is unambiguous gross when no down-payment line follows;
+      # in docs with down-payments / partial payments it equals the net balance,
+      # which is NOT invoice_amount. We split it lower than total_sale.
+      - name: anchored_subtotal
+        anchor: '(?i)\b(?:sub\s*-?\s*total|net\s+amount|amount\s+before\s+tax|net\s+total)\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.87
+      - name: total_sale_or_contract
+        anchor: '(?i)\btotal\s+(?:sale\s+price|contract\s+value)\s*[:\-]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.86
+      - name: anchored_invoice_amount
+        anchor: '(?i)\binvoice\s+amount\s*[:\-]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.84
+      - name: amount_due
+        anchor: '(?i)\bamount\s+due\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.80
+      - name: balance_due
+        anchor: '(?i)\bbalance\s+due\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.75
+      # Lowest-prior: bareword "Total: $X" — requires currency symbol immediately
+      # before the value to avoid line-total false matches in tables.
+      - name: total_with_currency
+        anchor: '(?i)(?<!grand\s)(?<!\bsub\s)(?<!\bsub-)\btotal\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.78
     judge:
       tiebreaker: true
       grounded_last_resort: true
