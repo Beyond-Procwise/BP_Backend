@@ -21,8 +21,23 @@ fields:
       - "RFQ No"
       - "Document Number"
       - "Quote Reference"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.65
+    patterns:
+      - name: anchored_quote_no
+        anchor: '(?i)\b(?:quot(?:e|ation)\s*(?:number|no\.?)|quot(?:e|ation)\s*reference|reference\s*(?:number|no\.?)|rfq\s*(?:reference|no\.?)|document\s*(?:number|no\.?))\s*[:\-]\s*'
+        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.90
+      - name: quote_hash
+        anchor: '(?i)\bquot(?:e|ation)\s*#\s*'
+        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.85
+      - name: bare_quote_colon
+        anchor: '(?i)\bquot(?:e|ation)\s*[:\-]\s*'
+        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.78
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -117,6 +132,13 @@ fields:
       - "Date Issued"
       - "Date of Quote"
       - "Prepared Date"
+    confidence_threshold: 0.65
+    patterns:
+      - name: anchored_quote_date
+        anchor: '(?i)\b(?:quot(?:e|ation)\s+date|date\s+of\s+quot(?:e|ation)|issue\s+date|date\s+issued|prepared\s+date)\s*[:\-]\s*'
+        value: '(\d{1,2}[/\-\.\s]\d{1,2}[/\-\.\s]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}|\d{1,2}[\-\s][A-Za-z]{3,9}[\-\s]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.88
     extractors:
       - qwen_vlm
     judge:
@@ -168,7 +190,7 @@ fields:
     invariants: []
 
   - name: currency
-    type: string
+    type: currency
     required: true
     db_column: currency
     canonical_labels:
@@ -176,8 +198,28 @@ fields:
       - "CCY"
       - "Invoice Currency"
       - "Quote Currency"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.55
+    patterns:
+      - name: anchored_currency_iso
+        anchor: '(?i)\b(?:currency|ccy)\s*[:\-]\s*'
+        value: '\b(USD|GBP|EUR|JPY|AUD|CAD|INR|SGD|HKD|CHF|NZD)\b'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.92
+      - name: iso_in_text
+        anchor: '(?:^|\n|\s)'
+        value: '\b(USD|GBP|EUR|JPY|AUD|CAD|INR|SGD|HKD|CHF|NZD)\b'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.70
+      - name: pound_symbol
+        anchor: '(?:^|\s)'
+        value: '(£)'
+        max_span_after_anchor_chars: 5
+        prior_confidence: 0.60
+      - name: dollar_symbol
+        anchor: '(?:^|\s)'
+        value: '(\$)'
+        max_span_after_anchor_chars: 5
+        prior_confidence: 0.58
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -199,6 +241,23 @@ fields:
       - "Total (Excl. Tax)"
       - "Total Materials"
       - "Total Services"
+    confidence_threshold: 0.65
+    patterns:
+      - name: grand_total
+        anchor: '(?i)\bgrand\s+total\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.90
+      - name: anchored_subtotal
+        anchor: '(?i)\b(?:sub\s*-?\s*total|net\s+amount|net\s+total|amount\s+before\s+tax|total\s+before\s+tax)\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.85
+      - name: quote_total
+        anchor: '(?i)\b(?:quote\s+total|quotation\s+total|total\s+(?:quote|quotation))\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.86
     extractors:
       - qwen_vlm
     judge:
