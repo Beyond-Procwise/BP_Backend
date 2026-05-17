@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.services.extraction import persistence, promotion
+from src.services.extraction.engineered.ner_validator import fill_ner_gaps
 from src.services.extraction.parser import parse as parse_document
 from src.services.extraction.pattern_extractor import run_pattern_extractor
 from src.services.extraction.pattern_registry import get_registry
@@ -67,12 +68,24 @@ def dispatch_document(
     # L1
     candidates = run_pattern_extractor(parsed, doc_type)
 
+    # L2 — engineered fallbacks for NER-typed fields the L1 regex missed.
+    # Only fires for fields with judge.ner_type_check != 'none'.
+    registry = get_registry(doc_type)
+    l1_fields = {c.field for c in candidates}
+    try:
+        ner_candidates = fill_ner_gaps(
+            parsed=parsed,
+            schema=registry.schema,
+            existing_fields=l1_fields,
+        )
+        candidates.extend(ner_candidates)
+    except Exception as exc:
+        log.warning("NER gap-fill failed: %s", exc)
+
     # L3 — substring grounding gate (all candidates must already be substrings
     # by construction, but defensive enforce here so any future source that
     # bypasses construction still gets caught)
     grounded = [c for c in candidates if c.span.text in parsed.full_text]
-
-    registry = get_registry(doc_type)
 
     # Build header record + provenance picks
     columns, picked, bind_errors = persistence.build_header_record(grounded, registry)

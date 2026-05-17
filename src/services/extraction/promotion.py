@@ -57,8 +57,13 @@ def _stg_columns(cur, stg_table: str) -> list[str]:
 def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
     """Copy _raw flat columns into _stg, delete _raw, update audit cols.
 
+    Resolves supplier_name → supplier_id via the existing
+    supplier_resolver when supplier_id is unset and supplier_name is present.
+
     Returns {ok: bool, doc_pk: str | None, reason: str | None}.
     """
+    from src.services.extraction_v3.supplier_resolver import resolve_or_create_supplier
+
     raw_t, stg_t = _RAW_TO_STG[doc_type]
     with get_conn() as conn:
         conn.autocommit = False
@@ -72,6 +77,19 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                 return {"ok": False, "reason": "raw_row_missing"}
             col_names = [d.name for d in cur.description]
             raw_data = dict(zip(col_names, row))
+
+            # Resolve supplier_name → supplier_id when needed
+            if (
+                raw_data.get("supplier_id") is None
+                and raw_data.get("supplier_name")
+            ):
+                try:
+                    sid = resolve_or_create_supplier(raw_data["supplier_name"], conn)
+                    if sid:
+                        raw_data["supplier_id"] = sid
+                except Exception as exc:
+                    log.warning("supplier resolve failed for %r: %s",
+                                raw_data.get("supplier_name"), exc)
 
             # 2. Intersect with _stg columns
             stg_cols = _stg_columns(cur, stg_t)

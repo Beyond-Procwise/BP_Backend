@@ -15,12 +15,24 @@ fields:
       - "Order Number"
       - "Purchase Order"
       - "Order No"
-      - "Invoice Number"
-      - "Invoice No"
-      - "Invoice #"
-      - "Invoice"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.65
+    patterns:
+      - name: anchored_po_number
+        anchor: '(?i)\b(?:purchase\s+order\s+(?:number|no\.?)|po\s*(?:number|no\.?)|order\s+number|order\s+no\.?)\s*[:\-]\s*'
+        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.90
+      - name: anchored_po_hash
+        anchor: '(?i)\bpo\s*#\s*'
+        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.85
+      # "PURCHASE ORDER: 01-2024-001" without explicit Number/No keyword
+      - name: bare_purchase_order_colon
+        anchor: '(?i)\bpurchase\s+order\s*[:\-]\s*'
+        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.82
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -128,8 +140,13 @@ fields:
       - "Date Issued"
       - "Date"
       - "Purchase Date"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.65
+    patterns:
+      - name: anchored_order_date
+        anchor: '(?i)\b(?:order\s+date|po\s+date|issue\s+date|date\s+issued|purchase\s+date)\s*[:\-]\s*'
+        value: '(\d{1,2}[/\-\.\s]\d{1,2}[/\-\.\s]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}|\d{1,2}[\-\s][A-Za-z]{3,9}[\-\s]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.88
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -148,8 +165,13 @@ fields:
       - "Need By Date"
       - "Due Date"
       - "Delivery Deadline"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.65
+    patterns:
+      - name: anchored_delivery_date
+        anchor: '(?i)\b(?:expected\s+delivery\s+date|delivery\s+date|delivery\s+deadline|required\s+by|need\s+by(?:\s+date)?)\s*[:\-]\s*'
+        value: '(\d{1,2}[/\-\.\s]\d{1,2}[/\-\.\s]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}|\d{1,2}[\-\s][A-Za-z]{3,9}[\-\s]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.86
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -175,7 +197,7 @@ fields:
     invariants: []
 
   - name: currency
-    type: string
+    type: currency
     required: true
     db_column: currency
     canonical_labels:
@@ -183,8 +205,33 @@ fields:
       - "CCY"
       - "Invoice Currency"
       - "Billing Currency"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.55
+    patterns:
+      - name: anchored_currency_iso
+        anchor: '(?i)\b(?:currency|ccy)\s*[:\-]\s*'
+        value: '\b(USD|GBP|EUR|JPY|AUD|CAD|INR|SGD|HKD|CHF|NZD)\b'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.92
+      - name: iso_in_text
+        anchor: '(?:^|\n|\s)'
+        value: '\b(USD|GBP|EUR|JPY|AUD|CAD|INR|SGD|HKD|CHF|NZD)\b'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.70
+      - name: pound_symbol
+        anchor: '(?:^|\s)'
+        value: '(£)'
+        max_span_after_anchor_chars: 5
+        prior_confidence: 0.60
+      - name: euro_symbol
+        anchor: '(?:^|\s)'
+        value: '(€)'
+        max_span_after_anchor_chars: 5
+        prior_confidence: 0.60
+      - name: dollar_symbol
+        anchor: '(?:^|\s)'
+        value: '(\$)'
+        max_span_after_anchor_chars: 5
+        prior_confidence: 0.58
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -205,8 +252,28 @@ fields:
       - "Amount"
       - "Sub Total"
       - "Subtotal"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.65
+    patterns:
+      - name: grand_total
+        anchor: '(?i)\bgrand\s+total\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.92
+      - name: po_or_order_total
+        anchor: '(?i)\b(?:po\s+total|order\s+total|total\s+value|total\s+amount)\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.88
+      - name: subtotal_net
+        anchor: '(?i)\b(?:sub\s*-?\s*total|net\s+total|net\s+amount)\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.85
+      - name: bare_total_currency
+        anchor: '(?i)(?<!grand\s)(?<!sub\s)(?<!\bsub-)\btotal\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.78
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -243,6 +310,162 @@ fields:
     judge:
       tiebreaker: true
       grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: supplier_id
+    type: string
+    required: false
+    db_column: supplier_id
+    canonical_labels:
+      - "Supplier ID"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: false
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: tax_percent
+    type: decimal
+    required: false
+    db_column: tax_percent
+    canonical_labels:
+      - "Tax Percent"
+      - "Tax %"
+      - "VAT %"
+      - "GST %"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: tax_amount
+    type: money
+    required: false
+    db_column: tax_amount
+    canonical_labels:
+      - "Tax"
+      - "Tax Amount"
+      - "VAT"
+      - "GST"
+      - "Sales Tax"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: total_amount_incl_tax
+    type: money
+    required: false
+    db_column: total_amount_incl_tax
+    canonical_labels:
+      - "Grand Total"
+      - "Total Including Tax"
+      - "Total (incl. tax)"
+      - "Amount Due"
+      - "Total Payable"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: delivery_address_line1
+    type: string
+    required: false
+    db_column: delivery_address_line1
+    canonical_labels:
+      - "Delivery Address"
+      - "Ship To Address"
+      - "Address Line 1"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: false
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: delivery_address_line2
+    type: string
+    required: false
+    db_column: delivery_address_line2
+    canonical_labels:
+      - "Address Line 2"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: false
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: delivery_city
+    type: string
+    required: false
+    db_column: delivery_city
+    canonical_labels:
+      - "City"
+      - "Town"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: false
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: postal_code
+    type: string
+    required: false
+    db_column: postal_code
+    canonical_labels:
+      - "Postal Code"
+      - "Postcode"
+      - "Zip"
+      - "ZIP Code"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: false
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: exchange_rate_to_usd
+    type: decimal
+    required: false
+    db_column: exchange_rate_to_usd
+    canonical_labels:
+      - "Exchange Rate"
+    extractors: []
+    judge:
+      tiebreaker: false
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: converted_amount_usd
+    type: money
+    required: false
+    db_column: converted_amount_usd
+    canonical_labels:
+      - "USD Amount"
+      - "Total in USD"
+    extractors: []
+    judge:
+      tiebreaker: false
+      grounded_last_resort: false
       ner_type_check: "none"
     invariants: []
 
