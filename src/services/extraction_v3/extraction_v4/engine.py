@@ -1238,6 +1238,24 @@ def find_discount(text: str) -> Optional[str]:
     return _extract_amount(_DISCOUNT_PATTERNS, text)
 
 
+_SHIPPING_PATTERNS = [
+    re.compile(
+        rf"(?:shipping(?:\s*(?:fee|charges?|cost))?|freight|delivery\s*(?:fee|charges?|cost))"
+        rf"\s*(?:\([\d.]+%\))?[\s:]*\n\s*({_CURR}\s*[\d,]+\.?\d*)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?:shipping(?:\s*(?:fee|charges?|cost))?|freight|delivery\s*(?:fee|charges?|cost))"
+        rf"\s*(?:\([\d.]+%\))?\s*[:\s]+({_CURR}\s*[\d,]+\.?\d*)",
+        re.IGNORECASE,
+    ),
+]
+
+
+def find_shipping_fee(text: str) -> Optional[str]:
+    return _extract_amount(_SHIPPING_PATTERNS, text)
+
+
 _BILL_TO_PATTERN = re.compile(
     r"(?:bill(?:ing)?\s*(?:to|ed\s*to)|customer\s*information)\s*[:\s]*\n?((?:.+\n?){1,10})",
     re.IGNORECASE,
@@ -1706,6 +1724,34 @@ _PO_DATE_PATTERNS = [
 
 def find_po_date(text: str) -> Optional[str]:
     for pat in _PO_DATE_PATTERNS:
+        m = pat.search(text)
+        if m:
+            raw = m.group(1).strip()
+            for dp in _DATE_PATTERNS:
+                dm = dp.search(raw)
+                if dm:
+                    return dm.group(1)
+    return None
+
+
+_EXPECTED_DELIVERY_PATTERNS = [
+    re.compile(r"(?:expected\s+delivery(?:\s+date)?)\s*[:\-]?\s*\n?\s*(.{1,80})", re.IGNORECASE),
+    re.compile(r"(?:delivery\s+deadline)\s*[:\-]?\s*\n?\s*(.{1,80})", re.IGNORECASE),
+    re.compile(r"(?:promised\s+date)\s*[:\-]?\s*\n?\s*(.{1,80})", re.IGNORECASE),
+    re.compile(r"(?:required\s+(?:by|delivery)\s+date)\s*[:\-]?\s*\n?\s*(.{1,80})", re.IGNORECASE),
+    re.compile(r"(?:delivery\s+date)\s*[:\-]?\s*\n?\s*(.{1,80})", re.IGNORECASE),
+    re.compile(r"(?:ship(?:ping)?\s+date)\s*[:\-]?\s*\n?\s*(.{1,80})", re.IGNORECASE),
+    re.compile(r"(?:need(?:ed)?\s+by)\s*[:\-]?\s*\n?\s*(.{1,80})", re.IGNORECASE),
+]
+
+
+def find_expected_delivery_date(text: str) -> Optional[str]:
+    """Best-effort expected-delivery-date extraction from PO text.
+
+    Looks for labels like 'Delivery Deadline', 'Expected Delivery', 'Promised
+    Date', etc., then pulls the first parseable date from the trailing chunk.
+    """
+    for pat in _EXPECTED_DELIVERY_PATTERNS:
         m = pat.search(text)
         if m:
             raw = m.group(1).strip()
@@ -2870,6 +2916,13 @@ class InvoiceExtractor(BaseExtractor):
         result["ship_to"] = self._extract_ship_to(text, spacy_ents, nuext_ents)
         result["subtotal"] = self._extract_subtotal(text, spacy_ents, nuext_ents, layout_fields)
         result["tax"] = self._extract_tax(text, spacy_ents, nuext_ents, layout_fields)
+        result["shipping_fee"] = ""
+        flat_text = layout_fields.get("_flat_text", text) if layout_fields else text
+        for t in ([text, flat_text] if flat_text != text else [text]):
+            sf = find_shipping_fee(t)
+            if sf:
+                result["shipping_fee"] = sf
+                break
         result["total_amount"] = self._extract_total(text, spacy_ents, nuext_ents, layout_fields)
         result["discount"] = self._extract_discount(text, layout_fields)
         result["line_items"] = self._extract_line_items(text, word_boxes, layout_fields)
@@ -3413,11 +3466,13 @@ class PurchaseOrderExtractor:
         result["buyer_name"] = self._extract_buyer_name(text, spacy_ents, nuext_ents, layout_fields)
         result["buyer_address"] = self._extract_buyer_address(text, nuext_ents, layout_fields)
         result["order_date"] = self._extract_order_date(text, spacy_ents, nuext_ents, layout_fields)
+        result["expected_delivery_date"] = self._extract_expected_delivery_date(text, nuext_ents, layout_fields)
         result["quote_number"] = self._extract_quote_number(text, nuext_ents, layout_fields)
         result["currency"] = self._extract_currency(text, nuext_ents)
         result["subtotal"] = self._extract_subtotal(text, spacy_ents, nuext_ents, layout_fields)
         result["discount"] = self._extract_discount(text, nuext_ents, layout_fields)
         result["tax"] = self._extract_tax(text, spacy_ents, nuext_ents, layout_fields)
+        result["shipping_fee"] = self._extract_shipping_fee(text, layout_fields)
         result["total_amount"] = self._extract_total(text, spacy_ents, nuext_ents, layout_fields)
         result["line_items"] = self._extract_line_items(text, word_boxes, layout_fields)
         result["payment_terms"] = self._extract_payment_terms(text, nuext_ents)
@@ -3425,21 +3480,45 @@ class PurchaseOrderExtractor:
         result["ship_to"] = find_ship_to(text) or ""
         return result
 
+    def _extract_shipping_fee(self, text, layout_fields=None):
+        layout_fields = layout_fields or {}
+        flat_text = layout_fields.get("_flat_text", text)
+        for t in ([text, flat_text] if flat_text != text else [text]):
+            sf = find_shipping_fee(t)
+            if sf:
+                return sf
+        return ""
+
     def _extract_po_number(self, text, spacy_ents, nuext_ents, layout_fields=None):
         candidates: list[Candidate] = []
         layout_fields = layout_fields or {}
+        flat_text = layout_fields.get("_flat_text", text)
+        full_text_for_check = (text or "") + "\n" + (flat_text or "")
+
+        def _is_invoice_number_value(candidate: str) -> bool:
+            # True if `candidate` appears in source text immediately following an
+            # 'Invoice Number/Invoice #/Invoice No' label. Some PO test docs
+            # leave a bogus 'Invoice Number: 1234567890' field; we must NOT
+            # adopt that as the PO number.
+            if not candidate:
+                return False
+            pat = re.compile(
+                r"invoice\s*(?:number|no\.?|#)\s*[:\s]\s*" + re.escape(candidate.strip()) + r"\b",
+                re.IGNORECASE,
+            )
+            return bool(pat.search(full_text_for_check))
+
         layout_po = layout_fields.get("po_number", "")
-        if layout_po and _has_digits(layout_po):
+        if layout_po and _has_digits(layout_po) and not _is_invoice_number_value(layout_po):
             candidates.append(Candidate(_clean_value(layout_po), base_score("layout"), "layout"))
         for v in nuext_ents.get("po_number", []):
-            if _is_clean_ner(v) and _has_digits(v):
+            if _is_clean_ner(v) and _has_digits(v) and not _is_invoice_number_value(v):
                 candidates.append(Candidate(_clean_value(v), base_score("nuextract"), "nuextract"))
         # Layout reconstruction sometimes drops the PURCHASE ORDER label section
         # entirely. Mirror the invoice path: try flat text as fallback.
-        flat_text = layout_fields.get("_flat_text", text)
         for t in ([text, flat_text] if flat_text != text else [text]):
             po = find_po_number(t)
-            if po:
+            if po and not _is_invoice_number_value(po):
                 candidates.append(Candidate(po, base_score("regex_context"), "regex_context"))
                 break
         candidates = [adjust_invoice_number(c) for c in candidates]
@@ -3662,6 +3741,29 @@ class PurchaseOrderExtractor:
         quote = find_quote_number(text)
         if quote:
             candidates.append(Candidate(quote, base_score("regex_context"), "regex_context"))
+        return pick_best(candidates)
+
+    def _extract_expected_delivery_date(self, text, nuext_ents, layout_fields=None):
+        candidates: list[Candidate] = []
+        layout_fields = layout_fields or {}
+        layout_d = (
+            layout_fields.get("expected_delivery_date", "")
+            or layout_fields.get("delivery_deadline", "")
+            or layout_fields.get("delivery_date", "")
+        )
+        if layout_d and _looks_like_date(layout_d):
+            candidates.append(Candidate(_clean_value(layout_d), base_score("layout"), "layout"))
+        for k in ("expected_delivery_date", "delivery_deadline", "delivery_date"):
+            for d in nuext_ents.get(k, []):
+                if _looks_like_date(d):
+                    candidates.append(Candidate(_clean_value(d), base_score("nuextract"), "nuextract"))
+        flat_text = layout_fields.get("_flat_text", text)
+        for t in ([text, flat_text] if flat_text != text else [text]):
+            d = find_expected_delivery_date(t)
+            if d:
+                candidates.append(Candidate(d, base_score("regex_context") + 0.05, "regex_context"))
+                break
+        candidates = [adjust_date(c) for c in candidates]
         return pick_best(candidates)
 
     def _extract_currency(self, text, nuext_ents):
@@ -4281,11 +4383,69 @@ def _extract_address_parts(address):
     parts = {"line1": "", "line2": "", "city": "", "postal_code": "", "country": ""}
     if not address:
         return parts
+    # Strip leading section-label fragments that often leak in from layout
+    # extraction (e.g. 'Vendor Name Ingoude Company\nAddress 123 Anywhere...').
+    # Drop the prefix up to and including the label word, keep the rest.
+    _LABEL_PREFIX = re.compile(
+        r"^\s*(?:vendor\s+name|vendor\s+information|client\s+information|"
+        r"company\s+name|supplier\s+name|supplier\s+information|"
+        r"bill\s*to|ship\s*to|deliver\s*to|sold\s*to|"
+        r"address|delivery\s+address|shipping\s+address|"
+        r"name|contact|details)\s*:?\s*",
+        re.IGNORECASE,
+    )
+    # Repeat a few times in case multiple labels stack
+    for _ in range(4):
+        new_addr = _LABEL_PREFIX.sub("", address).strip()
+        if new_addr == address:
+            break
+        address = new_addr
+    # Also strip any line that is JUST a section label or a company name
+    # followed by 'Address' label on the next line.
+    _LABEL_LINE = re.compile(
+        r"^\s*(?:vendor\s+(?:name|information)|client\s+information|"
+        r"company\s+name|supplier\s+(?:name|information)|"
+        r"bill\s*to|ship\s*to|deliver\s*to|sold\s*to|"
+        r"address|delivery\s+address|shipping\s+address|"
+        r"contact|attention|phone|email|name|details)\s*:?\s*$",
+        re.IGNORECASE,
+    )
+    addr_lines = []
+    for ln in re.split(r"[\n\r]+", address):
+        ln = ln.strip()
+        if not ln or _LABEL_LINE.match(ln):
+            continue
+        # Strip an inline label prefix from this line too
+        for _ in range(3):
+            new_ln = _LABEL_PREFIX.sub("", ln).strip()
+            if new_ln == ln:
+                break
+            ln = new_ln
+        if ln:
+            addr_lines.append(ln)
+    address = ", ".join(addr_lines) if addr_lines else address
     _non_addr = re.compile(r"^(recipient|supplier|vendor|bill\s*to|ship\s*to)\s*:?\s*$", re.IGNORECASE)
-    segments = [s.strip() for s in address.split(",")
-                if s.strip() and not _non_addr.match(s.strip())
-                and not re.match(r"^[\d\+\-\(\)\s]{7,}$", s.strip())
-                and "@" not in s]
+    # Per-segment label strip + filter
+    cleaned_segments = []
+    for s in address.split(","):
+        s = s.strip()
+        if not s:
+            continue
+        if _non_addr.match(s):
+            continue
+        if re.match(r"^[\d\+\-\(\)\s]{7,}$", s):
+            continue
+        if "@" in s:
+            continue
+        # Strip inline label prefix from this segment ('Address 123 Main St' -> '123 Main St')
+        for _ in range(3):
+            new_s = _LABEL_PREFIX.sub("", s).strip()
+            if new_s == s:
+                break
+            s = new_s
+        if s:
+            cleaned_segments.append(s)
+    segments = cleaned_segments
     if len(segments) >= 2:
         parts["line1"] = segments[0]
         parts["line2"] = ", ".join(segments[1:])
@@ -4349,6 +4509,12 @@ def _extract_address_parts(address):
             parts["country"] = "United States"
     if not parts["country"] and postcode_match:
         parts["country"] = "United Kingdom"
+    # Heuristic: 2-letter token + 5-digit ZIP = US-format even if state code
+    # isn't a real US state (test docs use 'ST' as a placeholder).
+    if not parts["country"]:
+        m = re.search(r"\b([A-Z]{2})\s+(\d{5})(?:-\d{4})?\b", address)
+        if m:
+            parts["country"] = "United States"
     city_match = re.search(
         r"\b(London|Birmingham|Manchester|Leeds|Liverpool|Bristol|Brighton|"
         r"Newport|Horsham|Sheffield|Edinburgh|Glasgow|Cardiff|Belfast|"
@@ -4359,6 +4525,22 @@ def _extract_address_parts(address):
     )
     if city_match:
         parts["city"] = city_match.group(1).title()
+    # Generic city extraction from US-style "<City> <STATE> <ZIP>" tail when
+    # the city isn't in the hardcoded list.
+    if not parts["city"]:
+        m = re.search(
+            r"([A-Za-z][A-Za-z\s\.\-']{1,40}?)\s+([A-Z]{2})\s+\d{5}(?:-\d{4})?\b",
+            address,
+        )
+        if m:
+            cand = m.group(1).strip().rstrip(",")
+            if cand and not re.fullmatch(r"[\d\s\.,\-]+", cand) and len(cand) >= 2:
+                if "," in cand:
+                    cand = cand.split(",")[-1].strip()
+                # Filter out street-suffix words that would land in city
+                if not re.match(r"^(St|Ave|Avenue|Street|Rd|Road|Blvd|Way|Dr|Drive|Ln|Lane|Ct|Court)\.?$",
+                                cand, re.IGNORECASE):
+                    parts["city"] = cand.title()
     return parts
 
 
@@ -4380,23 +4562,90 @@ def _detect_region(address):
     for abbr, full_name in _US_STATE_ABBREVS.items():
         if re.search(r"\b" + re.escape(full_name) + r"\b", normalized, re.IGNORECASE):
             return full_name
+    # Last-resort: any 2-letter token immediately before a 5-digit ZIP
+    # (preserves the printed state code even when it isn't a real US one,
+    # so downstream sees the document's literal value).
+    m = re.search(r"\b([A-Z]{2})\s+\d{5}(?:-\d{4})?\b", normalized)
+    if m:
+        return m.group(1)
     return ""
 
 
 def _validate_tax(subtotal, discount, tax, total):
+    """Return the printed tax value; do NOT auto-correct on mismatch.
+
+    Per project policy: if the printed sub+tax differs from the printed total
+    (e.g. there's a separate shipping fee), capture that as a discrepancy
+    downstream — never silently override the printed tax with a derived value.
+    Only fallback when no tax was extracted at all but sub+total are present.
+    """
+    if tax:
+        return _parse_numeric(tax)
+    # Fallback: no tax extracted, but sub + total present → derive
     try:
         sub_val = float(_parse_numeric(subtotal))
         disc_val = float(_parse_numeric(discount)) if discount else 0.0
         tot_val = float(_parse_numeric(total)) if total else 0.0
-        tax_val = float(_parse_numeric(tax)) if tax else 0.0
         if sub_val > 0 and tot_val > 0:
-            derived_tax = tot_val - (sub_val - disc_val)
-            if derived_tax >= 0:
-                if abs(derived_tax - tax_val) > 1.0:
-                    return f"{derived_tax:.2f}"
+            derived = tot_val - (sub_val - disc_val)
+            if derived > 0:
+                return f"{derived:.2f}"
     except (ValueError, ZeroDivisionError):
         pass
-    return _parse_numeric(tax) if tax else ""
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Foreign-exchange table — static rates relative to USD.
+# Used when no FX feed is configured; values are illustrative defaults
+# updated 2025-01. For production, swap for an FX-API call.
+# ---------------------------------------------------------------------------
+_FX_RATES_TO_USD: dict[str, float] = {
+    "USD": 1.0000,
+    "GBP": 1.2700,
+    "EUR": 1.0800,
+    "INR": 0.0120,
+    "CAD": 0.7400,
+    "AUD": 0.6600,
+    "JPY": 0.0067,
+    "CNY": 0.1380,
+    "SGD": 0.7400,
+    "CHF": 1.1000,
+    "HKD": 0.1280,
+    "NZD": 0.6100,
+    "SEK": 0.0950,
+    "NOK": 0.0930,
+    "DKK": 0.1450,
+    "ZAR": 0.0540,
+    "AED": 0.2723,
+    "SAR": 0.2667,
+    "MXN": 0.0500,
+    "BRL": 0.1700,
+}
+
+
+def fx_rate_to_usd(currency: str) -> str:
+    """Return the rate as a 6-dp string, or '' if currency unknown."""
+    if not currency:
+        return ""
+    rate = _FX_RATES_TO_USD.get(currency.strip().upper())
+    if rate is None:
+        return ""
+    return f"{rate:.6f}"
+
+
+def convert_to_usd(amount: str, currency: str) -> str:
+    """Return USD-converted amount (2dp) or '' if conversion not possible."""
+    if not amount or not currency:
+        return ""
+    rate = _FX_RATES_TO_USD.get(currency.strip().upper())
+    if rate is None:
+        return ""
+    try:
+        usd = float(_parse_numeric(amount)) * rate
+        return f"{usd:.2f}"
+    except (ValueError, TypeError):
+        return ""
 
 
 def _compute_tax_percent_po(subtotal: str, tax: str, discount: str = "") -> str:
@@ -4570,6 +4819,19 @@ def map_invoice(result: dict[str, Any]) -> dict[str, str]:
             addr_parts["country"] = "United States"
         elif re.search(r"[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}", all_addresses, re.IGNORECASE):
             addr_parts["country"] = "United Kingdom"
+    # requested_date policy:
+    #  - If extracted explicitly by regex/LLM, use that.
+    #  - Else, default to the date the invoice was raised (invoice_date).
+    #  - Do NOT derive from payment_terms (per user policy 2026-05-15).
+    requested_date_raw = result.get("requested_date", "")
+    if requested_date_raw:
+        requested_date = _normalize_date_invoice(requested_date_raw)
+    else:
+        requested_date = invoice_date or ""
+    # FX
+    invoice_currency = result.get("currency", "")
+    fx_rate = fx_rate_to_usd(invoice_currency)
+    usd_amount = convert_to_usd(_round_money(_parse_numeric(total)), invoice_currency)
     return {
         "invoice_id": result.get("invoice_number", ""),
         "po_id": result.get("po_number", ""),
@@ -4581,18 +4843,19 @@ def map_invoice(result: dict[str, Any]) -> dict[str, str]:
         "buyer_id": buyer_name,
         "requisition_id": "",
         "requested_by": "",
-        "requested_date": "",
+        "requested_date": requested_date,
         "invoice_date": invoice_date,
         "due_date": due_date,
         "invoice_paid_date": "",
         "payment_terms": payment_terms,
-        "currency": result.get("currency", ""),
+        "currency": invoice_currency,
         "invoice_amount": _round_money(_parse_numeric(effective_subtotal)),
         "tax_percent": tax_pct,
         "tax_amount": _round_money(_parse_numeric(tax)),
         "invoice_total_incl_tax": _round_money(_parse_numeric(total)),
-        "exchange_rate_to_usd": "",
-        "converted_amount_usd": "",
+        "shipping_fee": _round_money(_parse_numeric(result.get("shipping_fee", ""))) if result.get("shipping_fee") else "",
+        "exchange_rate_to_usd": fx_rate,
+        "converted_amount_usd": usd_amount,
         "country": _scrub_country(addr_parts["country"]),
         "region": region,
         "invoice_status": "",
@@ -4690,19 +4953,44 @@ def map_purchase_order(result: dict[str, Any]) -> dict[str, str]:
     subtotal = result.get("subtotal", "")
     discount = result.get("discount", "")
     tax_raw = result.get("tax", "")
+    shipping_fee_raw = result.get("shipping_fee", "")
     total_raw = result.get("total_amount", "")
+    # Use printed tax as-is. _validate_tax now only fills if no tax extracted.
     tax = _validate_tax(subtotal, discount, tax_raw, total_raw)
     tax_pct = _compute_tax_percent_po(subtotal, tax, discount)
-    try:
-        sub_val = float(_parse_numeric(subtotal)) if subtotal else 0.0
-        disc_val = float(_parse_numeric(discount)) if discount else 0.0
-        tax_val = float(tax) if tax else 0.0
-        computed_total = (sub_val - disc_val) + tax_val
-        final_total = f"{computed_total:.2f}"
-    except (ValueError, ZeroDivisionError):
-        final_total = _parse_numeric(total_raw)
+    # Grand total: prefer the printed total; else compute sub+tax+shipping-discount.
+    if total_raw:
+        grand_total = _parse_numeric(total_raw)
+    else:
+        try:
+            sub_val = float(_parse_numeric(subtotal)) if subtotal else 0.0
+            disc_val = float(_parse_numeric(discount)) if discount else 0.0
+            tax_val = float(tax) if tax else 0.0
+            ship_val = float(_parse_numeric(shipping_fee_raw)) if shipping_fee_raw else 0.0
+            grand_total = f"{(sub_val - disc_val) + tax_val + ship_val:.2f}"
+        except (ValueError, ZeroDivisionError):
+            grand_total = ""
+    # Pre-tax: prefer extracted subtotal; else derive grand-tax-shipping+discount.
+    if subtotal:
+        pre_tax = _parse_numeric(subtotal)
+    else:
+        try:
+            grand_val = float(grand_total) if grand_total else 0.0
+            tax_v = float(tax) if tax else 0.0
+            disc_v = float(_parse_numeric(discount)) if discount else 0.0
+            ship_v = float(_parse_numeric(shipping_fee_raw)) if shipping_fee_raw else 0.0
+            derived_pre = grand_val - tax_v - ship_v + disc_v
+            pre_tax = f"{derived_pre:.2f}" if derived_pre > 0 else _parse_numeric(total_raw)
+        except (ValueError, ZeroDivisionError):
+            pre_tax = _parse_numeric(total_raw)
     order_date_raw = result.get("order_date", "")
     order_date = _normalize_date_po(order_date_raw)
+    expected_delivery_raw = (
+        result.get("expected_delivery_date", "")
+        or result.get("delivery_deadline", "")
+        or result.get("delivery_date", "")
+    )
+    expected_delivery = _normalize_date_po(expected_delivery_raw) if expected_delivery_raw else ""
     currency = result.get("currency", "")
     delivery_addr = result.get("delivery_address", "") or result.get("ship_to", "")
     if delivery_addr:
@@ -4715,21 +5003,32 @@ def map_purchase_order(result: dict[str, Any]) -> dict[str, str]:
     addr_parts = _extract_address_parts(addr_to_parse)
     region = _detect_region(addr_to_parse)
     payment_terms = result.get("payment_terms", "")
+    # requested_date policy: use the date the PO was raised (order_date) when
+    # there's no explicit requested_date. Do NOT derive from terms.
+    requested_date_raw = result.get("requested_date", "")
+    requested_date = _normalize_date_po(requested_date_raw) if requested_date_raw else order_date
+    # FX conversion: rate based on doc currency, USD amount on grand total.
+    fx_rate = fx_rate_to_usd(currency)
+    usd_amount = convert_to_usd(grand_total, currency)
     return {
         "po_id": result.get("po_number", ""),
         "supplier_name": result.get("supplier_name", ""),
         "buyer_id": result.get("buyer_name", ""),
         "requisition_id": "",
         "requested_by": "",
-        "requested_date": "",
+        "requested_date": requested_date,
         "currency_code": currency,
         "order_date": order_date,
-        "expected_delivery_date": "",
+        "expected_delivery_date": expected_delivery,
         "ship_to_country": _scrub_country(addr_parts["country"]),
         "delivery_region": region,
         "incoterm_code": "",
         "incoterm_responsibility": "",
-        "total_amount": final_total,
+        "total_amount": _round_money(pre_tax),
+        "tax_percent": tax_pct,
+        "tax_amount": _round_money(_parse_numeric(tax)) if tax else "",
+        "total_amount_incl_tax": _round_money(grand_total),
+        "shipping_fee": _round_money(_parse_numeric(shipping_fee_raw)) if shipping_fee_raw else "",
         "delivery_address_line1": addr_parts["line1"],
         "delivery_address_line2": addr_parts["line2"],
         "delivery_city": addr_parts["city"],
@@ -4737,8 +5036,9 @@ def map_purchase_order(result: dict[str, Any]) -> dict[str, str]:
         "base_currency": currency,
         "po_status": "",
         "payment_terms": payment_terms,
-        "exchange_rate_to_usd": "",
-        "total_amount_usd": "",
+        "exchange_rate_to_usd": fx_rate,
+        "converted_amount_usd": usd_amount,
+        "total_amount_usd": usd_amount,  # legacy alias
         "ai_flag_required": "",
         "trigger_type": "",
         "trigger_context_description": "",
@@ -5617,6 +5917,13 @@ class QuoteExtractor(BaseExtractor):
         result["subtotal"] = self._extract_subtotal(text, spacy_ents, nuext_ents, layout_fields, raw_text)
         result["discount"] = self._extract_discount(text, nuext_ents, layout_fields)
         result["tax"] = self._extract_tax(text, spacy_ents, nuext_ents, layout_fields, raw_text)
+        result["shipping_fee"] = ""
+        flat_text_q = layout_fields.get("_flat_text", text) if layout_fields else text
+        for t in ([text, flat_text_q, raw_text] if raw_text else ([text, flat_text_q] if flat_text_q != text else [text])):
+            sf = find_shipping_fee(t)
+            if sf:
+                result["shipping_fee"] = sf
+                break
         result["total_amount"] = self._extract_total(text, spacy_ents, nuext_ents, layout_fields, raw_text)
         result["line_items"] = self._extract_line_items(text, word_boxes, layout_fields, raw_text)
         result["payment_terms"] = self._extract_payment_terms(text, nuext_ents)

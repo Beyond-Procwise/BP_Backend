@@ -36,7 +36,7 @@ class Pattern(BaseModel):
 
 class FieldSpec(BaseModel):
     name: str
-    type: Literal["string", "iso_date", "money", "decimal", "address", "postcode"]
+    type: Literal["string", "iso_date", "money", "decimal", "address", "postcode", "currency"]
     required: bool
     db_column: str | None = None
     resolves_to_db_column: str | None = None

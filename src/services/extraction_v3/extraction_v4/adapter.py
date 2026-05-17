@@ -113,6 +113,8 @@ _INVOICE_HEADER_RENAME = {
 _PO_HEADER_RENAME = {
     "po_id": "po_id",
     "supplier_name": "supplier_name",
+    # supplier_id is resolved from supplier_name by dispatch._resolve_supplier
+    # (writes the SUP- id back as a separate committed field).
     "buyer_id": "buyer_id",
     "requisition_id": "requisition_id",
     "requested_by": "requested_by",
@@ -122,8 +124,17 @@ _PO_HEADER_RENAME = {
     "payment_terms": "payment_terms",
     "currency_code": "currency",  # rename
     "total_amount": "total_amount",
+    "tax_percent": "tax_percent",
+    "tax_amount": "tax_amount",
+    "total_amount_incl_tax": "total_amount_incl_tax",
     "ship_to_country": "ship_to_country",
     "delivery_region": "delivery_region",
+    "delivery_address_line1": "delivery_address_line1",
+    "delivery_address_line2": "delivery_address_line2",
+    "delivery_city": "delivery_city",
+    "postal_code": "postal_code",
+    "exchange_rate_to_usd": "exchange_rate_to_usd",
+    "converted_amount_usd": "converted_amount_usd",
 }
 
 _QUOTE_HEADER_RENAME = {

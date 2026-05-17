@@ -183,6 +183,8 @@ def _run_hybrid_v4(file_path: str, doc_type: str) -> ExtractionResult:
     result = to_extraction_result(raw_full, doc_type, source_file=file_path)
     if doc_type == "quote":
         result = _resolve_quote_supplier(result)
+    elif doc_type == "purchase_order":
+        result = _resolve_po_supplier(result)
 
     # Auto-reroute on type mismatch: if no PK, sniff content; if it disagrees
     # with the requested category and the new type is different, retry.
@@ -249,6 +251,51 @@ def _resolve_quote_supplier(result: ExtractionResult) -> ExtractionResult:
         log.warning("quote supplier pre-resolve failed: %s -- using raw value", exc)
         return result
     return result.model_copy(update={"committed": new_committed})
+
+
+def _resolve_po_supplier(result: ExtractionResult) -> ExtractionResult:
+    """Resolve PO supplier_name -> SUP- id and add as supplier_id field.
+
+    Unlike quote (where supplier_id field starts as a name), PO carries
+    supplier_name only — supplier_id is absent. This adds it as a new
+    committed field by looking up the supplier by name.
+    """
+    supplier_name = None
+    has_supplier_id = False
+    for cf in result.committed:
+        if cf.field_path == "supplier_name" and cf.value:
+            supplier_name = cf.value
+        elif cf.field_path == "supplier_id" and cf.value:
+            has_supplier_id = True
+    if not supplier_name or has_supplier_id:
+        return result
+    try:
+        from src.services.db import get_conn
+        from src.services.extraction_v3.schemas.result import CommittedField
+        from src.services.extraction_v3.supplier_resolver import (
+            resolve_or_create_supplier,
+        )
+        with get_conn() as conn:
+            resolved = resolve_or_create_supplier(supplier_name, conn)
+            conn.commit()
+        if not resolved:
+            return result
+        log.info("PO pre-resolve: supplier_id derived '%s' from name '%s'", resolved, supplier_name)
+        new_cf = CommittedField(
+            field_path="supplier_id",
+            value=resolved,
+            page=1,
+            bbox=(0.0, 0.0, 0.0, 0.0),
+            evidence_text=supplier_name,
+            model="supplier_resolver",
+            model_confidence=0.95,
+            judge_actions=[],
+            final_confidence=0.95,
+        )
+        return result.model_copy(update={"committed": list(result.committed) + [new_cf]})
+    except Exception as exc:
+        log.warning("PO supplier pre-resolve failed: %s -- skipping", exc)
+        return result
 
 
 def _run_qwen_vlm(file_path: str, doc_type: str) -> ExtractionResult:

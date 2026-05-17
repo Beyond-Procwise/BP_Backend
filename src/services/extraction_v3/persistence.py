@@ -553,7 +553,90 @@ def _detect_discrepancies(
     except Exception as exc:
         log.warning("_detect_discrepancies: invariant runner failed: %s", exc)
 
+    # --- 6. Total-amount reconciliation (warning, never blocks promotion) ---
+    # User policy: capture mismatch in discrepancy table, do NOT auto-correct.
+    # Pull subtotal/tax/shipping_fee/total_amount_incl_tax from committed.
+    def _f(name: str) -> float | None:
+        cf = committed_map.get(name)
+        if cf is None or not cf.value:
+            return None
+        try:
+            return float(cf.value)
+        except (ValueError, TypeError):
+            return None
+
+    # Field names per doc type
+    if result.doc_type in ("invoice",):
+        total_field = "invoice_total_incl_tax"
+        sub_field = "invoice_amount"  # pre-tax invoice amount
+    elif result.doc_type in ("purchase_order", "po"):
+        total_field = "total_amount_incl_tax"
+        sub_field = "total_amount"  # in PO mapper, pre-tax sits in total_amount
+    elif result.doc_type == "quote":
+        total_field = "total_amount_incl_tax"
+        sub_field = "total_amount"
+    else:
+        total_field = sub_field = None
+
+    if total_field and sub_field:
+        sub = _f(sub_field)
+        tax = _f("tax_amount")
+        shipping = _f("shipping_fee")
+        total = _f(total_field)
+        if sub is not None and total is not None:
+            expected = sub + (tax or 0.0) + (shipping or 0.0)
+            if abs(expected - total) > 1.0:
+                bits = [f"subtotal={sub:.2f}"]
+                if tax is not None: bits.append(f"tax={tax:.2f}")
+                if shipping is not None: bits.append(f"shipping={shipping:.2f}")
+                bits.append(f"sum={expected:.2f}")
+                bits.append(f"printed_total={total:.2f}")
+                discrepancies.append(Discrepancy(
+                    field_name=total_field,
+                    raw_value=str(total),
+                    expected_value=f"{expected:.2f}",
+                    computed_value=f"{expected - total:+.2f}",
+                    issue_type="amount_mismatch",
+                    severity="warning",
+                    notes="Reconciliation: " + ", ".join(bits) +
+                          " — discrepancy captured, values NOT auto-corrected.",
+                ))
+
     return discrepancies
+
+
+def _write_discrepancies_only(
+    result: ExtractionResult,
+    raw_id: int,
+    source_file: str,
+    discrepancies: list[Discrepancy],
+    conn: Any,
+) -> None:
+    """Write discrepancy rows WITHOUT changing promotion_status.
+
+    Used when promotion succeeded (no critical) but warning/info-level
+    discrepancies exist that should still be visible in the discrepancy table.
+    """
+    if not discrepancies:
+        return
+    with conn.cursor() as cur:
+        for d in discrepancies:
+            cur.execute(
+                """
+                INSERT INTO proc.bp_extraction_discrepancy
+                    (doc_type, raw_id, source_file, doc_pk_candidate,
+                     field_name, raw_value, expected_value, computed_value,
+                     issue_type, severity, status, notes)
+                VALUES (%s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, 'open', %s)
+                """,
+                (
+                    result.doc_type, raw_id, source_file, result.doc_pk,
+                    d.field_name, d.raw_value, d.expected_value, d.computed_value,
+                    d.issue_type, d.severity, d.notes,
+                ),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1156,11 @@ def persist(result: ExtractionResult, source_file: str = "") -> int | None:
 
             if critical_count == 0:
                 _promote_to_stg(result, raw_id, schema, conn)
+                # Still surface warning/info discrepancies (e.g. amount_mismatch)
+                # so they're queryable even on a successful promotion.
+                non_critical = [d for d in discrepancies if d.severity != "critical"]
+                if non_critical:
+                    _write_discrepancies_only(result, raw_id, source_file, non_critical, conn)
             else:
                 _flag_with_discrepancies(result, raw_id, source_file, discrepancies, conn)
 

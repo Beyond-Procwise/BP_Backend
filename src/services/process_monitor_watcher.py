@@ -368,13 +368,35 @@ class ProcessMonitorWatcher:
                 logger.debug("Duplicate check failed", exc_info=True)
 
         try:
-            from src.services.extraction_v3.dispatch import dispatch_document
-            result = dispatch_document(
-                agent_nick=self._agent_nick,
-                file_path=file_path,
-                category=category,
-                user_id=str(user_id) if user_id is not None else None,
-            )
+            # Renovation feature flag: when set, route through the new
+            # single-flow extraction pipeline (extraction/dispatch.py) which
+            # uses regex-primary L1, engineered L2, judge L3, flat-column _raw.
+            # When unset, the legacy extraction_v3.dispatch path runs.
+            if os.environ.get("EXTRACTION_RENOVATION_ENABLED", "").strip() in ("1", "true", "True"):
+                from src.services.extraction.dispatch import dispatch_document as _renov_dispatch
+                doc_type_map = {
+                    "invoice": "invoice", "Invoice": "invoice",
+                    "purchase_order": "purchase_order", "PurchaseOrder": "purchase_order",
+                    "po": "purchase_order", "PO": "purchase_order",
+                    "quote": "quote", "Quote": "quote",
+                    "contract": "contract", "Contract": "contract",
+                }
+                doc_type = doc_type_map.get(category, category.lower() if category else "")
+                if doc_type not in ("invoice", "purchase_order", "quote", "contract"):
+                    raise RuntimeError(f"unsupported doc_type for renovation: {category!r}")
+                result = _renov_dispatch(
+                    process_monitor_id=record_id,
+                    file_path=file_path,
+                    doc_type=doc_type,
+                )
+            else:
+                from src.services.extraction_v3.dispatch import dispatch_document
+                result = dispatch_document(
+                    agent_nick=self._agent_nick,
+                    file_path=file_path,
+                    category=category,
+                    user_id=str(user_id) if user_id is not None else None,
+                )
             status = str(result.get("status", "error")).lower()
             if status in ("error", "failed"):
                 raise RuntimeError(

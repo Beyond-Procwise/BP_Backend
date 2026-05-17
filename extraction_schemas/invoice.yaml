@@ -168,8 +168,18 @@ fields:
       - "Date Issued"
       - "Order Date"
       - "Date"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.65
+    patterns:
+      - name: anchored_invoice_date
+        anchor: '(?i)\b(?:invoice\s+date|date\s+of\s+invoice|billing\s+date|issue\s+date|date\s+issued)\s*[:\-]\s*'
+        value: '(\d{1,2}[/\-\.\s]\d{1,2}[/\-\.\s]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}|\d{1,2}[\-\s][A-Za-z]{3,9}[\-\s]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.88
+      - name: anchored_document_date
+        anchor: '(?i)\b(?:document\s+date|date)\s*[:\-]\s*'
+        value: '(\d{1,2}[/\-\.\s]\d{1,2}[/\-\.\s]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}|\d{1,2}[\-\s][A-Za-z]{3,9}[\-\s]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.72
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -231,7 +241,7 @@ fields:
     invariants: []
 
   - name: currency
-    type: string
+    type: currency
     required: true
     db_column: currency
     canonical_labels:
@@ -239,8 +249,33 @@ fields:
       - "CCY"
       - "Invoice Currency"
       - "Billing Currency"
-    extractors:
-      - qwen_vlm
+    confidence_threshold: 0.55
+    patterns:
+      - name: anchored_currency_iso
+        anchor: '(?i)\b(?:currency|ccy|invoice\s+currency|billing\s+currency)\s*[:\-]\s*'
+        value: '\b(USD|GBP|EUR|JPY|AUD|CAD|INR|SGD|HKD|CHF|NZD)\b'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.92
+      - name: iso_code_in_text
+        anchor: '(?:^|\n|\s)'
+        value: '\b(USD|GBP|EUR|JPY|AUD|CAD|INR|SGD|HKD|CHF|NZD)\b'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.70
+      - name: pound_symbol
+        anchor: '(?:^|\s)\(?'
+        value: '(£)'
+        max_span_after_anchor_chars: 5
+        prior_confidence: 0.60
+      - name: euro_symbol
+        anchor: '(?:^|\s)\(?'
+        value: '(€)'
+        max_span_after_anchor_chars: 5
+        prior_confidence: 0.60
+      - name: dollar_symbol
+        anchor: '(?:^|\s)\(?'
+        value: '(\$)'
+        max_span_after_anchor_chars: 5
+        prior_confidence: 0.58
     judge:
       tiebreaker: true
       grounded_last_resort: true

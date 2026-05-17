@@ -26,6 +26,16 @@ _RAW_TO_STG = {
     "contract": ("proc.bp_contract_raw", "proc.bp_contracts"),
 }
 
+# The column that uniquely identifies a document in _stg (used by ON CONFLICT).
+# Re-extraction of an existing invoice/PO/quote/contract upserts the _stg row
+# rather than failing the promotion.
+_STG_PK = {
+    "invoice": "invoice_id",
+    "purchase_order": "po_id",
+    "quote": "quote_id",
+    "contract": "contract_id",
+}
+
 # Control columns on _raw that must NOT be copied to _stg
 _CONTROL_COLS = {
     "raw_id", "doc_pk_candidate", "source_file", "process_monitor_id",
@@ -74,7 +84,23 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
 
             placeholders = ", ".join(["%s"] * len(target_cols))
             col_clause = ", ".join(target_cols)
-            sql = f"INSERT INTO {stg_t} ({col_clause}) VALUES ({placeholders})"
+            # Upsert: re-extraction updates the existing _stg row rather than
+            # failing on PK collision. ON CONFLICT requires a unique column;
+            # we use _STG_PK (doc-type's pk column).
+            pk_col = _STG_PK[doc_type]
+            updates = ", ".join(
+                f"{c} = EXCLUDED.{c}" for c in target_cols if c != pk_col
+            )
+            if updates:
+                sql = (
+                    f"INSERT INTO {stg_t} ({col_clause}) VALUES ({placeholders}) "
+                    f"ON CONFLICT ({pk_col}) DO UPDATE SET {updates}"
+                )
+            else:
+                sql = (
+                    f"INSERT INTO {stg_t} ({col_clause}) VALUES ({placeholders}) "
+                    f"ON CONFLICT ({pk_col}) DO NOTHING"
+                )
             cur.execute(sql, target_vals)
 
             # 3. Update _raw to promoted (audit) then delete

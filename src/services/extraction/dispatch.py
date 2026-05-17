@@ -12,7 +12,7 @@ import subprocess
 from typing import Any
 from uuid import uuid4
 
-from src.services.extraction import persistence
+from src.services.extraction import persistence, promotion
 from src.services.extraction.parser import parse as parse_document
 from src.services.extraction.pattern_extractor import run_pattern_extractor
 from src.services.extraction.pattern_registry import get_registry
@@ -148,14 +148,35 @@ def dispatch_document(
         registry=registry,
     )
 
+    doc_pk = columns.get(persistence._DOC_PK_FIELD[doc_type])
+
+    # Auto-promote when clean (no blocking discrepancy) and we have a doc_pk.
+    # Discrepancy rows wait for HITL → trigger → listener.
+    final_status = promotion_status
+    if not blocking and doc_pk:
+        prom = promotion.promote(raw_id, doc_type)
+        if prom.get("ok"):
+            final_status = "promoted"
+        else:
+            log.warning("inline promote failed: %s", prom.get("reason"))
+            final_status = "pending"  # _raw kept; manual retry possible
+    elif not blocking and not doc_pk:
+        # Missing PK is a soft failure — keep the _raw row for inspection,
+        # mark status='no_pk' so it doesn't sit in 'pending' indefinitely.
+        persistence.update_promotion_status(
+            doc_type=doc_type, raw_id=raw_id, status="no_pk",
+        )
+        final_status = "no_pk"
+
     result = {
-        "status": promotion_status,
+        "status": final_status,
         "raw_id": raw_id,
-        "doc_pk": columns.get(persistence._DOC_PK_FIELD[doc_type]),
+        "doc_pk": doc_pk,
         "n_fields": len(columns),
         "n_discrepancies": len(discrepancies),
         "trace_id": str(trace_id),
         "pipeline_version": pipeline_version,
+        "raw_persisted": True,
     }
     log.info("dispatch end %s", result)
     return result
