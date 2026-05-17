@@ -38,6 +38,12 @@ _LINE_RAW_TABLES = {
     "quote": "proc.bp_quote_line_items_raw",
     # contract has no line items
 }
+# The line-index column on each line_items_raw table (differs across doc types).
+_LINE_RAW_INDEX_COL = {
+    "invoice": "line_no",
+    "purchase_order": "line_number",
+    "quote": "line_number",
+}
 _DOC_PK_FIELD = {
     "invoice": "invoice_id",
     "purchase_order": "po_id",
@@ -81,7 +87,7 @@ def build_header_record(
     bind_error_discrepancies)."""
     best: dict[str, Candidate] = {}
     for c in candidates:
-        if c.field.startswith("line_items."):
+        if c.field.startswith("line_items["):
             continue
         if c.field not in best or c.confidence > best[c.field].confidence:
             best[c.field] = c
@@ -108,6 +114,41 @@ def build_header_record(
             continue
         columns[meta.db_column] = coerced
     return columns, best, bind_errors
+
+
+def build_line_items(
+    candidates: Iterable[Candidate],
+    registry: PatternRegistry,
+) -> list[dict[str, Any]]:
+    """Group line-item candidates by index → dict of {db_column: coerced_value}.
+    Skips lines with no usable fields. Returns list ordered by line_index."""
+    import re
+    by_idx: dict[int, dict[str, Any]] = {}
+    if not registry.schema.line_items:
+        return []
+    line_field_meta = {f.name: f for f in registry.schema.line_items.fields}
+
+    for c in candidates:
+        if not c.field.startswith("line_items["):
+            continue
+        m = re.match(r"line_items\[(\d+)\]\.(\w+)", c.field)
+        if not m:
+            continue
+        idx, fname = int(m.group(1)), m.group(2)
+        fs = line_field_meta.get(fname)
+        if fs is None or fs.db_column is None:
+            continue
+        coerced, err = _coerce(c.value, fs.type)
+        if err:
+            continue
+        row = by_idx.setdefault(idx, {})
+        row[fs.db_column] = coerced
+
+    out = []
+    for idx in sorted(by_idx.keys()):
+        if by_idx[idx]:
+            out.append(by_idx[idx])
+    return out
 
 
 def write_raw(
@@ -163,6 +204,39 @@ def write_raw(
         except Exception:
             conn.rollback()
             raise
+
+
+def write_line_items_raw(
+    *,
+    doc_type: str,
+    raw_id: int,
+    line_items: list[dict[str, Any]],
+) -> int:
+    """INSERT line items into proc.bp_<doctype>_line_items_raw. Returns count."""
+    if not line_items or doc_type not in _LINE_RAW_TABLES:
+        return 0
+    line_table = _LINE_RAW_TABLES[doc_type]
+    index_col = _LINE_RAW_INDEX_COL[doc_type]
+    written = 0
+    with get_conn() as conn:
+        conn.autocommit = False
+        cur = conn.cursor()
+        try:
+            for i, row in enumerate(line_items):
+                row_cols = ["raw_id", index_col] + list(row.keys())
+                row_vals = [raw_id, i + 1] + list(row.values())
+                placeholders = ", ".join(["%s"] * len(row_cols))
+                col_clause = ", ".join(row_cols)
+                cur.execute(
+                    f"INSERT INTO {line_table} ({col_clause}) VALUES ({placeholders})",
+                    row_vals,
+                )
+                written += 1
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return written
 
 
 def write_provenance(

@@ -26,6 +26,27 @@ _RAW_TO_STG = {
     "contract": ("proc.bp_contract_raw", "proc.bp_contracts"),
 }
 
+# Line-item table promotion pairs (raw → stg). Contract has no line items.
+_LINE_RAW_TO_STG = {
+    "invoice": ("proc.bp_invoice_line_items_raw", "proc.bp_invoice_line_items_stg"),
+    "purchase_order": ("proc.bp_po_line_items_raw", "proc.bp_po_line_items_stg"),
+    "quote": ("proc.bp_quote_line_items_raw", "proc.bp_quote_line_items_stg"),
+}
+
+# Line-item PK column name in _stg per doc_type (TEXT NOT NULL — promote
+# computes "<doc_pk>-L<line_no>" before INSERT).
+_LINE_STG_PK = {
+    "invoice": "invoice_line_id",
+    "purchase_order": "po_line_id",
+    "quote": "quote_line_id",
+}
+# Line-no column name on _stg (matches the index column on _raw).
+_LINE_STG_INDEX = {
+    "invoice": "line_no",
+    "purchase_order": "line_number",
+    "quote": "line_number",
+}
+
 # The column that uniquely identifies a document in _stg (used by ON CONFLICT).
 # Re-extraction of an existing invoice/PO/quote/contract upserts the _stg row
 # rather than failing the promotion.
@@ -121,7 +142,58 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                 )
             cur.execute(sql, target_vals)
 
-            # 3. Update _raw to promoted (audit) then delete
+            # 3. Promote line items if any exist for this raw_id
+            if doc_type in _LINE_RAW_TO_STG:
+                line_raw_t, line_stg_t = _LINE_RAW_TO_STG[doc_type]
+                line_stg_cols = _stg_columns(cur, line_stg_t)
+                # Read all line_items_raw rows for this raw_id
+                cur.execute(
+                    f"SELECT * FROM {line_raw_t} WHERE raw_id = %s "
+                    f"ORDER BY line_raw_id", (raw_id,),
+                )
+                line_rows = cur.fetchall()
+                if line_rows:
+                    line_cols = [d.name for d in cur.description]
+                    # Idempotent: remove any prior line items for this doc_pk
+                    doc_pk = raw_data.get("doc_pk_candidate")
+                    if doc_pk:
+                        pk_col = _STG_PK[doc_type]
+                        cur.execute(
+                            f"DELETE FROM {line_stg_t} WHERE {pk_col} = %s",
+                            (doc_pk,),
+                        )
+                    line_pk_col = _LINE_STG_PK.get(doc_type)
+                    line_idx_col = _LINE_STG_INDEX.get(doc_type)
+                    for lrow in line_rows:
+                        lrow_data = dict(zip(line_cols, lrow))
+                        # carry doc_pk onto the line for FK
+                        if doc_pk:
+                            lrow_data[_STG_PK[doc_type]] = doc_pk
+                        # Generate line PK ("<doc_pk>-L<line_no>") if the _stg
+                        # has a NOT NULL line PK column.
+                        if doc_pk and line_pk_col and line_pk_col in line_stg_cols:
+                            line_no_val = lrow_data.get(line_idx_col) if line_idx_col else None
+                            if line_no_val is None:
+                                line_no_val = lrow_data.get("line_raw_id")
+                            lrow_data[line_pk_col] = f"{doc_pk}-L{line_no_val}"
+                        target_line_cols = [
+                            c for c in line_stg_cols
+                            if c in lrow_data and c not in (
+                                "line_raw_id", "raw_id", "created_date",
+                                "created_by", "last_modified_by", "last_modified_date",
+                            )
+                        ]
+                        if not target_line_cols:
+                            continue
+                        line_vals = [lrow_data[c] for c in target_line_cols]
+                        line_ph = ", ".join(["%s"] * len(target_line_cols))
+                        line_cc = ", ".join(target_line_cols)
+                        cur.execute(
+                            f"INSERT INTO {line_stg_t} ({line_cc}) VALUES ({line_ph})",
+                            line_vals,
+                        )
+
+            # 4. Update _raw to promoted (audit) then delete
             cur.execute(
                 f"UPDATE {raw_t} SET promotion_status='promoted', promoted_at=NOW() "
                 f"WHERE raw_id=%s", (raw_id,),

@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from src.services.extraction import persistence, promotion
 from src.services.extraction.engineered.ner_validator import fill_ner_gaps
+from src.services.extraction.engineered.table_extractor import extract_line_items
 from src.services.extraction.parser import parse as parse_document
 from src.services.extraction.pattern_extractor import run_pattern_extractor
 from src.services.extraction.pattern_registry import get_registry
@@ -82,13 +83,21 @@ def dispatch_document(
     except Exception as exc:
         log.warning("NER gap-fill failed: %s", exc)
 
+    # L2 — line item extraction from ParsedDocument.tables
+    try:
+        line_candidates = extract_line_items(parsed, registry.schema)
+        candidates.extend(line_candidates)
+    except Exception as exc:
+        log.warning("table_extractor failed: %s", exc)
+
     # L3 — substring grounding gate (all candidates must already be substrings
     # by construction, but defensive enforce here so any future source that
     # bypasses construction still gets caught)
     grounded = [c for c in candidates if c.span.text in parsed.full_text]
 
-    # Build header record + provenance picks
+    # Build header record + provenance picks + line items
     columns, picked, bind_errors = persistence.build_header_record(grounded, registry)
+    line_items = persistence.build_line_items(grounded, registry)
 
     discrepancies: list[Discrepancy] = list(bind_errors)
 
@@ -143,6 +152,15 @@ def dispatch_document(
         parser_snapshot=_serialize_parsed(parsed),
         promotion_status=promotion_status,
     )
+
+    # Write line items (if any)
+    if line_items:
+        try:
+            persistence.write_line_items_raw(
+                doc_type=doc_type, raw_id=raw_id, line_items=line_items,
+            )
+        except Exception as exc:
+            log.warning("line_items_raw write failed: %s", exc)
 
     if discrepancies:
         persistence.write_discrepancies(
