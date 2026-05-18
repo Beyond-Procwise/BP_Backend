@@ -5,6 +5,8 @@ from typing import Any, Callable, Dict, Optional
 
 from services.email_watcher import EmailWatcherService
 from services.process_monitor_watcher import ProcessMonitorWatcher
+from services.promotion_listener_service import PromotionListenerService
+from services.uicanvas_bridge import UicanvasBridge
 
 from services.model_training_endpoint import ModelTrainingEndpoint
 from utils.gpu import configure_gpu
@@ -63,6 +65,8 @@ class BackendScheduler:
         self._email_watcher_lock = threading.Lock()
         self._process_monitor_watcher: Optional[ProcessMonitorWatcher] = None
         self._process_monitor_lock = threading.Lock()
+        self._uicanvas_bridge: Optional[UicanvasBridge] = None
+        self._promotion_listener: Optional[PromotionListenerService] = None
         self._orchestrator = orchestrator
         self._register_default_jobs()
         self.start()
@@ -76,6 +80,44 @@ class BackendScheduler:
             self._ensure_process_monitor_watcher()
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to start process monitor watcher during initialisation")
+        try:
+            self._ensure_uicanvas_bridge()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to start uicanvas bridge during initialisation")
+        try:
+            self._ensure_promotion_listener()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to start promotion listener during initialisation")
+
+    def _ensure_promotion_listener(self) -> Optional[PromotionListenerService]:
+        """Start the daemon that listens for HITL discrepancy resolutions
+        and promotes _raw rows to _stg. Enable/disable with
+        PROMOTION_LISTENER_ENABLED (default: enabled)."""
+        import os
+        if os.environ.get("PROMOTION_LISTENER_ENABLED", "1").strip() not in ("1", "true", "True"):
+            logger.info("PromotionListenerService disabled by PROMOTION_LISTENER_ENABLED")
+            return None
+        if self._promotion_listener is None:
+            self._promotion_listener = PromotionListenerService()
+            self._promotion_listener.start()
+        return self._promotion_listener
+
+    def _ensure_uicanvas_bridge(self) -> Optional[UicanvasBridge]:
+        """Start the uicanvas → bp_sqldb process_monitor bridge.
+
+        The UI uploader writes new procurement docs to uicanvas; the
+        renovation pipeline watches bp_sqldb. Bridge transparently mirrors
+        rows so end-users don't need to know which DB the pipeline reads.
+        Enable/disable with UICANVAS_BRIDGE_ENABLED (default: enabled).
+        """
+        import os
+        if os.environ.get("UICANVAS_BRIDGE_ENABLED", "1").strip() not in ("1", "true", "True"):
+            logger.info("UicanvasBridge disabled by UICANVAS_BRIDGE_ENABLED")
+            return None
+        if self._uicanvas_bridge is None:
+            self._uicanvas_bridge = UicanvasBridge()
+            self._uicanvas_bridge.start()
+        return self._uicanvas_bridge
 
     @classmethod
     def ensure(

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import select
-from typing import Any
+from typing import Any, Optional
 
 import psycopg2
 
@@ -212,13 +212,53 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             return {"ok": False, "reason": str(exc)}
 
 
+def _detect_doc_type(raw_id: int) -> Optional[str]:
+    """Return the doc_type whose _raw table contains raw_id, or None.
+
+    Used to recover from legacy discrepancy rows that may have a stale
+    doc_type relative to their raw_id.
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        for dt, (raw_t, _) in _RAW_TO_STG.items():
+            cur.execute(f"SELECT 1 FROM {raw_t} WHERE raw_id = %s", (raw_id,))
+            if cur.fetchone() is not None:
+                return dt
+    return None
+
+
 def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
     """Read all resolved discrepancies for this raw_id, apply their
     resolved_value updates to the _raw row, then promote.
 
     Called by the NOTIFY listener when the DB trigger fires
     'extraction_raw_ready_for_promotion'.
+
+    If the supplied doc_type doesn't have a _raw row matching raw_id (e.g.
+    a legacy discrepancy row whose doc_type is stale relative to its
+    raw_id), detect the correct doc_type by scanning the four _raw tables
+    and re-route.
     """
+    if doc_type not in _RAW_TO_STG:
+        log.warning("unknown doc_type %r for raw_id=%s; attempting detect", doc_type, raw_id)
+        doc_type = _detect_doc_type(raw_id) or doc_type
+    else:
+        # Verify the row exists in the claimed _raw table; otherwise re-detect.
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM {_RAW_TO_STG[doc_type][0]} WHERE raw_id = %s",
+                (raw_id,),
+            )
+            if cur.fetchone() is None:
+                detected = _detect_doc_type(raw_id)
+                if detected and detected != doc_type:
+                    log.info(
+                        "doc_type override for raw_id=%s: %s → %s "
+                        "(legacy discrepancy.doc_type was stale)",
+                        raw_id, doc_type, detected,
+                    )
+                    doc_type = detected
     raw_t = _RAW_TO_STG[doc_type][0]
     with get_conn() as conn:
         conn.autocommit = False
