@@ -1,0 +1,13 @@
+[Unit]
+Description=Run bp-extraction-health.service every 5 minutes
+
+[Timer]
+# First fire 30s after boot to avoid colliding with procwise startup
+OnBootSec=30s
+OnUnitActiveSec=5min
+Unit=bp-extraction-health.service
+# Persistent: catch up missed firings after host downtime
+Persistent=true
+
+[Install]
+WantedBy=timers.target

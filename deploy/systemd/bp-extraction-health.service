@@ -1,0 +1,18 @@
+[Unit]
+Description=BP extraction pipeline health check (one-shot, invoked by timer)
+After=procwise.service
+Wants=procwise.service
+
+[Service]
+Type=oneshot
+User=muthu
+Group=muthu
+WorkingDirectory=/home/muthu/PycharmProjects/BP_Backend
+EnvironmentFile=/home/muthu/PycharmProjects/BP_Backend/.env
+Environment=PYTHONPATH=/home/muthu/PycharmProjects/BP_Backend:/home/muthu/PycharmProjects/BP_Backend/src
+ExecStart=/home/muthu/PycharmProjects/BP_Backend/.venv/bin/python /home/muthu/PycharmProjects/BP_Backend/scripts/extraction_health_check.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
