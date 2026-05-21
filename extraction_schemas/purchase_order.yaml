@@ -19,18 +19,18 @@ fields:
     patterns:
       - name: anchored_po_number
         anchor: '(?i)\b(?:purchase\s+order\s+(?:number|no\.?)|po\s*(?:number|no\.?)|order\s+number|order\s+no\.?)\s*[:\-]\s*'
-        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
         max_span_after_anchor_chars: 40
         prior_confidence: 0.90
       - name: anchored_po_hash
         anchor: '(?i)\bpo\s*#\s*'
-        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
         max_span_after_anchor_chars: 30
         prior_confidence: 0.85
       # "PURCHASE ORDER: 01-2024-001" without explicit Number/No keyword
       - name: bare_purchase_order_colon
         anchor: '(?i)\bpurchase\s+order\s*[:\-]\s*'
-        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
         max_span_after_anchor_chars: 40
         prior_confidence: 0.82
     judge:
@@ -49,6 +49,30 @@ fields:
       - "From"
       - "Sold By"
       - "Seller"
+      # On purchase orders the PO is issued TO the supplier — so the
+      # "Recipient" / "Send To" / "To" block IS the supplier. Without
+      # these labels the L3 judge guesses between two ORG candidates
+      # (buyer vs supplier) and tends to pick the wrong one.
+      - "Recipient"
+      - "Send To"
+      - "Ship To"
+      - "To"
+    confidence_threshold: 0.60
+    patterns:
+      # On a PO the addressee is the supplier. Markdown structure often
+      # gives us ``## Recipient: ## <Supplier Name>`` or ``Send To: <ORG>``
+      # with optional pipe/whitespace padding from table layout. Capture
+      # the WHOLE line that follows the label — the previous lazy
+      # ``{2,80}?`` with optional suffix returned 3-char prefixes like
+      # "Thr" / "Gom" because the non-greedy quantifier prefers the
+      # shortest legal match and the suffix group is optional. Greedy
+      # ``[^\n#|]{3,80}`` bounds the capture at end-of-line or markdown
+      # delimiter, so we get the full company line.
+      - name: po_recipient_supplier
+        anchor: '(?i)#*\s*(?:recipient|send\s+to|ship\s+to|sold\s+to)\s*[:#\-]*\s*#*\s*'
+        value: '([A-Z][^\n#|]{2,80}?)\s*(?:\n|$|\s*#|\s*\|)'
+        max_span_after_anchor_chars: 120
+        prior_confidence: 0.78
     extractors:
       - qwen_vlm
     judge:
@@ -255,18 +279,18 @@ fields:
     confidence_threshold: 0.65
     patterns:
       - name: grand_total
-        anchor: '(?i)\bgrand\s+total\s*[:\-]?\s*[|]?\s*'
-        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
-        max_span_after_anchor_chars: 30
+        anchor: '(?i)\bgrand[\s\-]+total\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 60
         prior_confidence: 0.92
       - name: po_or_order_total
         anchor: '(?i)\b(?:po\s+total|order\s+total|total\s+value|total\s+amount)\s*[:\-]?\s*[|]?\s*'
-        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
         max_span_after_anchor_chars: 30
         prior_confidence: 0.88
       - name: subtotal_net
         anchor: '(?i)\b(?:sub\s*-?\s*total|net\s+total|net\s+amount)\s*[:\-]?\s*[|]?\s*'
-        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
         max_span_after_anchor_chars: 30
         prior_confidence: 0.85
       - name: bare_total_currency
@@ -313,17 +337,20 @@ fields:
       ner_type_check: "none"
     invariants: []
 
+  # supplier_id is computed by promotion.py's resolve_or_create_supplier
+  # from the supplier_name field. Direct extraction is disabled — no
+  # procurement PDF actually labels a column "Supplier ID", so the only
+  # candidates would be Qwen hallucinations.
   - name: supplier_id
     type: string
     required: false
     db_column: supplier_id
     canonical_labels:
       - "Supplier ID"
-    extractors:
-      - qwen_vlm
+    extractors: []
     judge:
       tiebreaker: false
-      grounded_last_resort: true
+      grounded_last_resort: false
       ner_type_check: "none"
     invariants: []
 

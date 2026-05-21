@@ -34,6 +34,7 @@ spans are substrings by construction (ent.text is doc.text[ent.start_char:ent.en
 """
 from __future__ import annotations
 
+import logging
 import re
 import threading
 
@@ -45,6 +46,8 @@ from src.services.extraction_v3.schemas.candidate import Candidate
 from src.services.extraction_v3.schemas.parsed_document import ParsedDocument
 from src.services.extraction_v3.yaml_schema.loader import DocSchema
 from src.services.extraction_v3.yaml_schema.registry import register_extractor
+
+log = logging.getLogger(__name__)
 
 # Transformer-based model for best accuracy. Falls back to en_core_web_sm if
 # the transformer model is not installed (e.g. CPU-only environments).
@@ -699,6 +702,17 @@ class SpacyNERExtractor(Extractor):
                 # Substring guarantee
                 if ent_text not in parsed.full_text:
                     continue
+                # Reject candidates that look like addresses or layout noise.
+                # In procurement docs, spaCy often mis-tags title-cased UK
+                # address fragments as PERSON and ALL-CAPS column headers as
+                # ORG. Better NULL than a wrong value here — the context
+                # layer below has full document text to fall back on.
+                if _looks_like_address(ent_text):
+                    log.debug("ner: dropping address-shaped %s candidate %r", field.name, ent_text)
+                    continue
+                if _looks_like_layout_noise(ent_text):
+                    log.debug("ner: dropping layout-noise %s candidate %r", field.name, ent_text)
+                    continue
 
                 bbox = _find_bbox_for_text(parsed, ent_text)
                 page_idx, b = bbox if bbox else (0, (0.0, 0.0, 0.0, 0.0))
@@ -714,6 +728,79 @@ class SpacyNERExtractor(Extractor):
                 ))
 
         return candidates
+
+
+# Tokens that mark a string as a (UK/US) street/postal address rather than
+# a person or organisation. Used to reject mis-tagged PERSON candidates
+# like "Redkiln Way Horsham West Sussex" that spaCy emits for procurement
+# docs where the buyer address dominates the masthead.
+_ADDRESS_TOKEN_RE = re.compile(
+    r"\b(?:Road|Rd|Street|St|Avenue|Ave|Lane|Ln|Way|Drive|Dr|Close|Crescent|"
+    r"Court|Ct|Boulevard|Blvd|Place|Pl|Square|Sq|Terrace|Park|Plaza|Highway|"
+    r"Hwy|Sussex|Yorkshire|Surrey|Middlesex|Manchester|Birmingham|Liverpool|"
+    r"Leeds|Bristol|Sheffield|Edinburgh|Glasgow|London)\b",
+    re.IGNORECASE,
+)
+# UK / US postcode shapes — anywhere in the string means it's an address.
+_POSTCODE_RE = re.compile(
+    r"\b(?:[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}|\d{5}(?:-\d{4})?)\b"
+)
+
+
+def _looks_like_address(text: str) -> bool:
+    """True if the text contains UK/US address keywords or a postcode."""
+    if not text or len(text) < 6:
+        return False
+    if _POSTCODE_RE.search(text):
+        return True
+    # Require at least one address-suffix word AND multi-word structure to
+    # avoid rejecting a person named e.g. "Mr Park".
+    if _ADDRESS_TOKEN_RE.search(text) and len(text.split()) >= 2:
+        return True
+    return False
+
+
+# Common column-header / label tokens that spaCy mis-tags as ORG in markdown
+# tables. Always lowercase keys — comparison is case-insensitive.
+_LAYOUT_NOISE_WORDS: frozenset[str] = frozenset({
+    "qty", "quantity", "total", "subtotal", "sub-total", "grand-total",
+    "grand total", "tax", "vat", "gst", "discount", "amount", "balance",
+    "description", "item", "items", "price", "cost", "rate", "unit",
+    "net", "gross", "due", "paid", "payment", "currency", "invoice",
+    "quote", "quotation", "po", "purchase order", "order", "date",
+    "number", "no", "reference", "ref", "id", "from", "to", "by",
+    "agency", "department", "billing", "shipping",
+    # Section labels frequently emitted as ORG in docling output.
+    "bill to", "ship to", "sold to", "remit to", "send to", "billing to",
+    "recipient", "buyer", "seller", "vendor", "supplier", "customer",
+})
+
+
+def _looks_like_layout_noise(text: str) -> bool:
+    """True if the candidate is a layout token, not a real entity.
+
+    Rejects:
+      - single ALL-CAPS short words ("QTY", "TOTAL")
+      - any candidate whose canonical form (lowercased, trimmed) is a
+        known column-header / section-label word
+      - candidates ending in a digit-only suffix that looks like a row no
+        (e.g. "Assurity Ltd 10")
+    """
+    if not text:
+        return True
+    s = text.strip()
+    if not s:
+        return True
+    norm = re.sub(r"\s+", " ", s).strip().lower()
+    if norm in _LAYOUT_NOISE_WORDS:
+        return True
+    # Single ALL-CAPS token of 2-5 chars (typical column header).
+    if " " not in s and s.isupper() and 2 <= len(s) <= 5:
+        return True
+    # Trailing bare number ("Assurity Ltd 10") — leftover from table cells.
+    if re.search(r"\b\d{1,4}$", s):
+        return True
+    return False
 
 
 # Regex for company-suffix heuristic (catches names spaCy misses).

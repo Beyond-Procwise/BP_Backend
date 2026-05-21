@@ -38,6 +38,32 @@ def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | No
 _AMOUNT_CLEAN_RE = re.compile(r"[^\d.\-]")
 _DIGIT_RE = re.compile(r"\d")
 
+# Summary-label patterns that procurement docs put in the DESCRIPTION
+# column on the totals rows (Sub-Total/Tax/Discount/Grand Total). These
+# are NOT line items — they're the financial summary block. When a row's
+# item_description matches one of these, skip the whole row.
+_SUMMARY_DESC_RE = re.compile(
+    r"^\s*"
+    r"(?:"
+    r"sub\s*-?\s*total"
+    r"|grand\s*-?\s*total"
+    r"|tax(?:\s*\(?\s*\d{1,3}(?:\.\d+)?%?\s*\)?)?"
+    r"|vat(?:\s*\(?\s*\d{1,3}(?:\.\d+)?%?\s*\)?)?"
+    r"|gst(?:\s*\(?\s*\d{1,3}(?:\.\d+)?%?\s*\)?)?"
+    r"|sales\s+tax"
+    r"|discount(?:\s*\(?\s*\d{1,3}(?:\.\d+)?%?\s*\)?)?"
+    r"|net\s+(?:total|amount)"
+    r"|amount\s+due"
+    r"|balance\s+due"
+    r"|payable"
+    r"|total\s+payable"
+    r"|total\s+amount(?:\s+due)?"
+    r"|total"
+    r")"
+    r"\s*[:$£€¥]*\s*$",
+    re.IGNORECASE,
+)
+
 
 def _is_useful_value(field_name: str, value: str) -> bool:
     """Reject obviously-empty / heading-only cells."""
@@ -76,9 +102,9 @@ def extract_line_items(parsed: Any, schema: DocSchema) -> list[Candidate]:
             for ri, row in enumerate(tbl.rows):
                 if ri == tbl.header_row_index:
                     continue
-                # Per-line: emit Candidate per recognised column
-                any_field_set = False
-                local_idx = line_index  # snapshot before incrementing
+                # First pass: gather candidate values for this row so we can
+                # decide whether it qualifies as a line item BEFORE emitting.
+                row_values: dict[str, tuple[str, Any]] = {}
                 for cell in row:
                     fld = col_to_field.get(cell.col_index)
                     if not fld:
@@ -86,6 +112,21 @@ def extract_line_items(parsed: Any, schema: DocSchema) -> list[Candidate]:
                     value = (cell.text or "").strip()
                     if not _is_useful_value(fld, value):
                         continue
+                    row_values[fld] = (value, cell)
+                # A "line item" is a row that itemises something — so it must
+                # have an item_description. Summary rows like
+                # "| | Sub Total | £5,000" carry values in the amount column
+                # but have no description.
+                if "item_description" not in row_values:
+                    continue
+                # And the item_description must not itself be a summary
+                # label ("Sub-Total" / "Tax (20%)" / "Grand Total" / etc.) —
+                # some templates put those labels in the description column.
+                desc_value = row_values["item_description"][0]
+                if _SUMMARY_DESC_RE.match(desc_value):
+                    continue
+                local_idx = line_index
+                for fld, (value, cell) in row_values.items():
                     out.append(Candidate(
                         field=f"line_items[{local_idx}].{fld}",
                         value=value,
@@ -94,7 +135,6 @@ def extract_line_items(parsed: Any, schema: DocSchema) -> list[Candidate]:
                         pattern_name=None,
                         confidence=0.88,  # tables are structurally reliable
                     ))
-                    any_field_set = True
-                if any_field_set:
+                if row_values:
                     line_index += 1
     return out

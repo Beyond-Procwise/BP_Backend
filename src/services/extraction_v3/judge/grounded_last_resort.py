@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+
 from src.services.extraction_v3.judge.contracts import (
     GroundedInput, GroundedOutput, GroundedConstraints,
 )
@@ -33,6 +35,90 @@ log = logging.getLogger(__name__)
 
 MAX_VALUE_LENGTH = 64
 MAX_DOC_TEXT_FOR_PROMPT = 16000  # cap how much full_text we send to keep prompt size bounded
+
+_WS_RE = re.compile(r"\s+")
+
+# Letter-spaced OCR run: 2+ single-character tokens separated by single
+# spaces. Real-world examples from docling: "I N V O I C E N O : 1 3 2 5 4 8"
+# (long run, caught by either threshold) AND "N O" / "1 s t" (short runs).
+# The earlier ≥4 threshold missed the latter, leaving "N O" stranded between
+# collapsed neighbours. Run boundaries (whitespace/EOS) on both sides keep
+# this from collapsing ordinary 2-letter words like "It is" — those don't
+# match \S\s\S because the inner char is followed by a letter, not space.
+# Used by the L1 pattern_extractor (collapsed view) AND the grounding gate.
+_LETTER_SPACED_RE = re.compile(r"(?:(?<=^)|(?<=\s))((?:\S\s){1,}\S)(?=\s|$)")
+
+
+def _norm_ws(s: str) -> str:
+    """Collapse runs of whitespace to single spaces and strip ends.
+    Used for grounding the LLM's evidence_text against doc_full_text: OCR
+    and table extraction routinely emit multiple spaces, NBSPs, or stray
+    newlines that the LLM normalises away in its response. Without this,
+    the substring check rejects correct extractions on cosmetic whitespace."""
+    return _WS_RE.sub(" ", s).strip()
+
+
+def _collapse_letter_spacing(s: str) -> str:
+    """Compact ``I N V O I C E`` runs to ``INVOICE`` for grounding only.
+
+    Some PDFs emit letter-spaced headings/lines that the L1 regex and the
+    judge's image-derived evidence can't ground against verbatim. This
+    transform restores word-level continuity without modifying the source.
+    Conservative: ≥4 single-char tokens separated by single spaces.
+    """
+    if not s:
+        return s
+    return _LETTER_SPACED_RE.sub(lambda m: m.group(1).replace(" ", ""), s)
+
+
+# Label prefixes the LLM sometimes carries into the value when asked for
+# the verbatim span. Stripping these is type-agnostic and safe: each is a
+# common procurement document label that is never the field value itself.
+# Order matters slightly — longer phrases first so we don't half-strip.
+_LABEL_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"invoice\s*(?:number|no\.?|#)|"
+    r"inv\s*(?:no\.?|#)|"
+    r"quote\s*(?:number|no\.?|reference|ref|#)|"
+    r"quot(?:e|ation)\s*(?:no\.?|#)|"
+    r"po\s*(?:number|no\.?|#)|"
+    r"purchase\s*order\s*(?:number|no\.?|#)|"
+    r"document\s*(?:number|no\.?|#)|"
+    r"reference\s*(?:number|no\.?|#)|"
+    r"ref\s*(?:no\.?|#)|"
+    r"order\s*(?:number|no\.?|#)|"
+    r"(?:invoice|quote|po|order|issue|document|prepared|billing)\s*date|"
+    r"date(?:\s+of\s+(?:invoice|quote|issue))?|"
+    r"date\s+issued|"
+    r"total(?:\s+(?:amount|due|incl(?:\.|usive)?(?:\s+(?:of\s+)?tax)?))?|"
+    r"grand\s*total|"
+    r"sub\s*total|"
+    r"amount\s+due|"
+    r"supplier(?:\s+name)?|"
+    r"vendor(?:\s+name)?|"
+    r"sold\s+by|"
+    r"sold\s+to|"
+    r"bill\s+to|"
+    r"ship\s+to|"
+    r"buyer(?:\s+name)?|"
+    r"customer(?:\s+name)?|"
+    r"recipient|"
+    r"send\s+to|"
+    r"from|to"
+    r")\b[\s:.,#\-]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_leading_label(value: str) -> str:
+    """Remove a leading procurement label (e.g. "Invoice No. ", "Quote Number: ")
+    from a candidate value, if one is present. No-op if no label matches.
+    This is the last line of defence against an LLM that returns the whole
+    labelled span as the value when the field type is a bare identifier."""
+    if not value:
+        return value
+    stripped = _LABEL_PREFIX_RE.sub("", value).strip()
+    return stripped or value
 
 
 def _build_prompt(input_obj: GroundedInput) -> str:
@@ -52,8 +138,11 @@ Document text:
 \"\"\"{input_obj.doc_full_text[:MAX_DOC_TEXT_FOR_PROMPT]}\"\"\"
 
 Constraints:
-- value and evidence_text must be IDENTICAL strings
-- both must appear as a verbatim substring of the document text above
+- value and evidence_text must be IDENTICAL strings (the exact span you
+  found in the document, e.g. "Quote No. QUT104680" or just "QUT104680")
+- the string must appear as a verbatim substring of the document text above
+- DO NOT normalise dates, currencies, or formatting — copy the raw token
+- DO NOT invent surrounding labels that aren't in the document
 - maximum length: {input_obj.constraints.max_length} characters
 - if the value is not present in the text, return value=null and evidence_text=null
 
@@ -76,9 +165,11 @@ VERBATIM — it MUST be a literal substring of the text visible in the image.
 If the field is not in the document, return null for both value and evidence_text.
 
 Constraints:
-- value and evidence_text MUST be identical strings
+- value and evidence_text MUST be identical strings (the exact span you see
+  in the image, e.g. "Quote No. QUT104680" or just "QUT104680")
+- DO NOT normalise dates, currencies, or formatting — copy the raw token
+- DO NOT invent labels that aren't directly next to the value in the image
 - maximum length: {input_obj.constraints.max_length} characters
-- do NOT invent or paraphrase — only verbatim substrings allowed
 
 Reply with ONLY a single JSON object, no prose:
 {{"value": <string or null>, "evidence_text": <string or null>, "rationale": "<one sentence>"}}
@@ -130,41 +221,96 @@ def _apply_safety_checks(
     doc_full_text: str,
     field_name: str,
 ) -> Candidate | None:
-    """Apply the three safety checks and return a Candidate or None."""
+    """Apply the safety checks and return a Candidate or None.
+
+    Anti-hallucination contract (transitive grounding):
+      - value is a literal substring of evidence_text
+      - evidence_text is a literal substring of doc_full_text
+    Together these imply ``value in doc_full_text`` — i.e. the LLM cannot
+    return any token the document doesn't actually contain. The earlier
+    "value == evidence_text" rule was over-strict: real procurement fields
+    naturally sit inside a labelled phrase ("Quote No. QUT104680", "Date:
+    02/01/2019"), and demanding identity forced the judge to choose
+    between returning the bare value (rejected) or the whole phrase
+    (would land in the column as junk). The transitive form preserves the
+    guarantee without crippling recall.
+    """
     # Null or empty → return None
     if parsed.is_null():
         return None
     if not parsed.value or not parsed.evidence_text:
         return None
 
-    # SAFETY CHECK 1: value must equal evidence_text
-    if parsed.value.strip() != parsed.evidence_text.strip():
+    value = parsed.value.strip()
+    evidence = parsed.evidence_text.strip()
+    if not value or not evidence:
+        return None
+
+    # SAFETY CHECK 1: value MUST be a literal substring of evidence_text.
+    # Cheapest check; also catches the LLM emitting unrelated value/evidence.
+    if value not in evidence:
         log.warning(
-            "grounded judge: value != evidence_text (value=%r, evidence=%r) — REJECTING",
-            parsed.value, parsed.evidence_text,
+            "grounded judge: value NOT in evidence_text (value=%r, evidence=%r) — REJECTING",
+            value, evidence,
         )
         return None
 
-    # SAFETY CHECK 2: evidence_text MUST be a substring of doc_full_text
-    if parsed.evidence_text not in doc_full_text:
-        log.warning(
-            "grounded judge: evidence_text NOT in doc_full_text (evidence=%r) — HALLUCINATION REJECTED",
-            parsed.evidence_text,
+    # SAFETY CHECK 2: evidence_text MUST be present in doc_full_text under
+    # text normalisation. The no-fabrication backstop is preserved — any
+    # token in evidence that doesn't appear in the doc would survive
+    # collapse and fail the substring check. We try progressively more
+    # forgiving normalisations:
+    #   1. raw byte-for-byte
+    #   2. whitespace collapsed (handles docling's table double-spaces)
+    #   3. letter-spacing collapsed THEN whitespace collapsed (handles PDFs
+    #      where docling emits ``I N V O I C E N O : 1 3 2 5 4 8``)
+    # All three preserve every non-whitespace token; nothing the LLM
+    # invented can slip through.
+    if evidence not in doc_full_text:
+        ev_norm = _norm_ws(evidence)
+        doc_norm = _norm_ws(doc_full_text)
+        if ev_norm not in doc_norm:
+            # Last resort: collapse all whitespace AND letter-spacing on
+            # both sides. After this, "INVOICE NO: 132548" reduces to
+            # "INVOICENO:132548" which is found in the letter-spaced
+            # source "I N V O I C E N O : 1 3 2 5 4 8 ..." → "INVOICENO:1325481stOct...".
+            # Safe: removing whitespace can't introduce content the doc
+            # doesn't contain — every non-whitespace char in evidence
+            # must still appear in the doc.
+            ev_squeezed = _WS_RE.sub("", _collapse_letter_spacing(evidence))
+            doc_squeezed = _WS_RE.sub("", _collapse_letter_spacing(doc_full_text))
+            if ev_squeezed not in doc_squeezed:
+                log.warning(
+                    "grounded judge: evidence_text NOT in doc_full_text (evidence=%r) — HALLUCINATION REJECTED",
+                    evidence,
+                )
+                return None
+
+    # SAFETY CHECK 3: length bound on the value itself (not the evidence,
+    # which is allowed to be the wider phrase around the value).
+    if len(value) > MAX_VALUE_LENGTH:
+        log.warning("grounded judge: value too long (%d chars) — REJECTING", len(value))
+        return None
+
+    # Last-mile cleanup: when the LLM returns the labelled span as `value`
+    # ("Invoice No. INV610366"), strip the leading label so the column gets
+    # the bare identifier. The original labelled string is preserved as
+    # evidence so provenance still cites the document phrase. Safe because
+    # the stripped value remains a substring of evidence (still in doc).
+    cleaned_value = _strip_leading_label(value)
+    if cleaned_value != value and cleaned_value:
+        log.info(
+            "grounded judge: stripped label from value (raw=%r, clean=%r)",
+            value, cleaned_value,
         )
-        return None
+        value = cleaned_value
 
-    # SAFETY CHECK 3: length bound
-    if len(parsed.value) > MAX_VALUE_LENGTH:
-        log.warning("grounded judge: value too long (%d chars) — REJECTING", len(parsed.value))
-        return None
-
-    # All checks pass — emit Candidate.
     return Candidate(
         field=field_name,
-        value=parsed.value.strip(),
+        value=value,
         page=0,
         bbox=(0.0, 0.0, 0.0, 0.0),
-        evidence_text=parsed.evidence_text.strip(),
+        evidence_text=evidence,
         model="qa_roberta",  # closest Literal for an extractive span judge; see module docstring
         confidence=0.7,
     )

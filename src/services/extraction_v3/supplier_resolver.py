@@ -117,8 +117,44 @@ def _classifier_accepts(name: str) -> bool:
 # ---------------------------------------------------------------------------
 # Minimum name length to attempt resolution / creation.
 _MIN_NAME_LEN = 3
-# rapidfuzz threshold (0-100). 85 is tight enough to avoid false merges.
-_FUZZY_THRESHOLD = 85
+# rapidfuzz threshold (0-100). Raised from 85 → 92: at 85, two suppliers that
+# share only a business suffix ("Perry Ltd" vs "UrbEdge Facilities Management
+# Ltd" → 85.5 via WRatio) got falsely merged because the suffix inflated the
+# partial-token score. 92 makes the match require substantial overlap on the
+# distinctive part of the name. Below this, we auto-create a new supplier.
+_FUZZY_THRESHOLD = 92
+
+# Business-entity suffixes stripped BEFORE the WRatio comparison so the
+# distinctive part of the name dominates the score. Without this, every
+# "X Ltd" / "Y INC" pair scores ~85 against each other regardless of stem.
+_BIZ_SUFFIX_RE = re.compile(
+    r"\s*[,\.]?\s*\b(?:LLC|Ltd|Limited|Inc|Incorporated|Pvt|Pvt\.?\s*Ltd|"
+    r"Private\s+Limited|GmbH|Corp|Corporation|Co\.?|Company|Studios|Agency|"
+    r"Group|Solutions|Services|Holdings|Enterprises?|Partnership|LLP|"
+    r"PLC|AG|S\.?A\.?|N\.?V\.?|S\.?L\.?|S\.?r\.?l\.?|B\.?V\.?)\b\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_biz_suffix(name: str) -> str:
+    """Strip business-entity suffix for a fairer WRatio comparison.
+
+    "Perry Ltd"                          → "Perry"
+    "UrbEdge Facilities Management Ltd"  → "UrbEdge Facilities Management"
+    "Wade INC"                           → "Wade"
+    "FASHION ITEMS INC"                  → "FASHION ITEMS"
+    """
+    if not name:
+        return name
+    prev = None
+    out = name
+    # Strip up to 3 trailing suffixes (e.g. "X Co Ltd") — bounded loop, no while-True.
+    for _ in range(3):
+        prev = out
+        out = _BIZ_SUFFIX_RE.sub("", out).strip(" ,.")
+        if out == prev:
+            break
+    return out or name
 
 # Noise tokens that indicate the extracted value is not a real supplier name.
 _NOISE_LOWER = (
@@ -455,11 +491,15 @@ def resolve_or_create_supplier(name: str, conn) -> str | None:
                 all_suppliers = cur.fetchall()  # list of (id, name)
                 if all_suppliers:
                     choices = {row[0]: row[1] for row in all_suppliers if row[1]}
-                    # Build list of (supplier_id, score)
+                    # Strip business suffix from query AND each candidate so
+                    # we score on the distinctive stem. Falls back to the raw
+                    # name if stripping leaves nothing meaningful.
+                    q_stem = _strip_biz_suffix(display_name) or display_name
                     best_id: str | None = None
                     best_score = 0.0
                     for sid, sname in choices.items():
-                        score = fuzz.WRatio(display_name, sname)
+                        c_stem = _strip_biz_suffix(sname) or sname
+                        score = fuzz.WRatio(q_stem, c_stem)
                         if score > best_score:
                             best_score = score
                             best_id = sid

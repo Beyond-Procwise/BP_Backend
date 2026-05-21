@@ -423,8 +423,27 @@ class ProcessMonitorWatcher:
             self._mark_extracted(record_id)
             confidence = result.get("confidence", 0)
             error_count = result.get("errors", 0)
-            pk = result.get("pk", "")
-            doc_type = result.get("doc_type", "")
+            # Legacy v3 dispatch returns result["pk"]; the renovation
+            # dispatch returns result["doc_pk"]. Reading only "pk" left
+            # the renovation path with pk="" → "KG BLOCKED" every time.
+            pk = result.get("pk") or result.get("doc_pk") or ""
+            doc_type = result.get("doc_type") or category or ""
+
+            # AgentNick → Knowledge Graph refresh: after a successful
+            # stg promotion, push the row into Neo4j so the graph stays
+            # in lock-step with the relational truth. KG sync is a
+            # post-commit side effect — failures are logged but never
+            # propagate, since the row is already durable in stg.
+            if status == "promoted" and pk:
+                try:
+                    from src.services.extraction.kg_sync import sync_row_to_kg
+                    _kg_doc_type = result.get("doc_type") or doc_type
+                    sync_row_to_kg(self._agent_nick, _kg_doc_type, pk)
+                except Exception:
+                    logger.exception(
+                        "KG sync failed for record %s (%s pk=%s)",
+                        record_id, doc_type, pk,
+                    )
 
             logger.info(
                 "Extraction completed for record %s: %s pk=%s fields=%s lines=%s discrep=%s conf=%s",
@@ -663,16 +682,43 @@ class ProcessMonitorWatcher:
         conn = self._get_connection()
         try:
             with conn.cursor() as cur:
-                # Recover stale Extracting records (stuck > 30 minutes)
-                cur.execute(
-                    """
-                    UPDATE proc.process_monitor
-                    SET status = 'Completed', start_ts = NULL
-                    WHERE status = 'Extracting'
-                      AND start_ts < NOW() - INTERVAL '30 minutes'
-                    RETURNING id
-                    """
-                )
+                # Recover stale Extracting records (stuck > 60 minutes).
+                # Two safety conditions:
+                #   1. start_ts older than 60 min — earlier we used 30 min,
+                #      but Qwen GPU contention plus the context-layer pass
+                #      can legitimately push a doc past that. Resetting too
+                #      eagerly caused records to cycle: worker still busy,
+                #      sweep resets to Completed, claim grabs again,
+                #      another worker starts on the same row.
+                #   2. Record is NOT in our in-memory _processing_ids set —
+                #      a worker is actively processing it. Even if start_ts
+                #      is old, we must not reset under a live worker; that
+                #      caused two workers to operate on the same record and
+                #      doubled the load.
+                with self._processing_lock:
+                    active_ids = tuple(self._processing_ids)
+                if active_ids:
+                    cur.execute(
+                        """
+                        UPDATE proc.process_monitor
+                        SET status = 'Completed', start_ts = NULL
+                        WHERE status = 'Extracting'
+                          AND start_ts < NOW() - INTERVAL '60 minutes'
+                          AND id <> ALL(%s)
+                        RETURNING id
+                        """,
+                        (list(active_ids),),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE proc.process_monitor
+                        SET status = 'Completed', start_ts = NULL
+                        WHERE status = 'Extracting'
+                          AND start_ts < NOW() - INTERVAL '60 minutes'
+                        RETURNING id
+                        """
+                    )
                 stale = cur.fetchall()
                 if stale:
                     logger.warning(

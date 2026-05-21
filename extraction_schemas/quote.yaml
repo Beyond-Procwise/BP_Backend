@@ -25,25 +25,56 @@ fields:
     patterns:
       - name: anchored_quote_no
         anchor: '(?i)\b(?:quot(?:e|ation)\s*(?:number|no\.?)|quot(?:e|ation)\s*reference|reference\s*(?:number|no\.?)|rfq\s*(?:reference|no\.?)|document\s*(?:number|no\.?))\s*[:\-]\s*'
-        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
-        max_span_after_anchor_chars: 40
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
+        max_span_after_anchor_chars: 120
         prior_confidence: 0.90
       - name: quote_hash
         anchor: '(?i)\bquot(?:e|ation)\s*#\s*'
-        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
         max_span_after_anchor_chars: 30
         prior_confidence: 0.85
       - name: bare_quote_colon
         anchor: '(?i)\bquot(?:e|ation)\s*[:\-]\s*'
-        value: '([A-Z0-9]*\d[A-Z0-9\-\/\.]{0,30})'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
         max_span_after_anchor_chars: 40
         prior_confidence: 0.78
+      # Spaceless OCR ("QuoteNo:") and "Quote Number Date Issued : ... QUTxxxx"
+      # cases where the label and value are split across columns. Wide window
+      # for the column-split form where the value sits 50-90 chars below
+      # the "Quote Number" label.
+      - name: spaceless_quote_no
+        anchor: '(?i)\bquote\s*no\.?\s*[:\-]?\s*'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
+        max_span_after_anchor_chars: 120
+        prior_confidence: 0.74
+      # Column-split layout: "Quote Number\nDate Issued :\n<date>\nQUT30746"
+      # — the value sits a full block below the "Quote Number" label and
+      # the only token of the form QU* nearby is the quote id itself.
+      - name: quote_number_split_layout
+        anchor: '(?i)\bquote\s+number\b'
+        value: '\b(QU(?:T|OT|OTE|TE)?[\-\.]?\d{2,}[A-Z0-9\-\/]{0,30})\b'
+        max_span_after_anchor_chars: 120
+        prior_confidence: 0.72
+      # Bare QUT/QUOTE/QT-prefixed identifier appearing as a heading or in a
+      # detached column. Tight enough (≥3 digits or a hyphenated form) to
+      # avoid grabbing the literal word "QUOTE" in headings.
+      - name: qut_id_heading
+        anchor: ''
+        value: '\b(QU(?:T|OT|OTE)[\-\.]?\d{2,}[A-Z0-9\-\/]{0,30})\b'
+        max_span_after_anchor_chars: 0
+        prior_confidence: 0.66
     judge:
       tiebreaker: true
       grounded_last_resort: true
       ner_type_check: "none"
     invariants: []
 
+  # supplier_id is populated by the context_layer (raw → stg synthesis)
+  # using the masthead/heading company, then resolved against bp_supplier.
+  # Direct extractors disabled because they routinely promoted layout
+  # noise ("QTY", "Subtotal", product names, ink colours) into this
+  # column. The context_layer disambiguates issuer vs recipient using
+  # the full document text.
   - name: supplier_id
     type: string
     required: false
@@ -56,12 +87,11 @@ fields:
       - "Quoted By"
       - "Seller"
       - "Issued By"
-    extractors:
-      - qwen_vlm
+    extractors: []
     judge:
-      tiebreaker: true
-      grounded_last_resort: true
-      ner_type_check: "ORG"
+      tiebreaker: false
+      grounded_last_resort: false
+      ner_type_check: "none"
     invariants: []
 
   - name: buyer_id
@@ -136,9 +166,24 @@ fields:
     patterns:
       - name: anchored_quote_date
         anchor: '(?i)\b(?:quot(?:e|ation)\s+date|date\s+of\s+quot(?:e|ation)|issue\s+date|date\s+issued|prepared\s+date)\s*[:\-]\s*'
-        value: '(\d{1,2}[/\-\.\s]\d{1,2}[/\-\.\s]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}|\d{1,2}[\-\s][A-Za-z]{3,9}[\-\s]\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})'
-        max_span_after_anchor_chars: 40
+        value: '(\d{1,2}[/\-\.\s]\d{1,2}[/\-\.\s]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}|\d{1,2}(?:st|nd|rd|th)?[\-\s][A-Za-z]{3,9}[\-\s,]?\s*\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})'
+        max_span_after_anchor_chars: 120
         prior_confidence: 0.88
+      # Bare "Date:" anchor — invoice.yaml has this; quote docs use the same
+      # pattern. Lower prior so the labelled forms above win when present.
+      - name: bare_date_label
+        anchor: '(?i)\bdate\s*[:\-]\s*'
+        value: '(\d{1,2}[/\-\.\s]\d{1,2}[/\-\.\s]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}|\d{1,2}(?:st|nd|rd|th)?[\-\s][A-Za-z]{3,9}[\-\s,]?\s*\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})'
+        max_span_after_anchor_chars: 80
+        prior_confidence: 0.70
+      # "INV NO. X / 21 FEBRUARY. 2024" — date appearing after a "/"
+      # separator following an invoice-like ID in single-line footers
+      # (VALUED MERCHANT pattern). Period after the month is tolerated.
+      - name: id_slash_date
+        anchor: '(?i)\b(?:inv|invoice|quote|quot|po)\s*no\.?\s*[:\-]?\s*[A-Z0-9\-\/]+\s*\/\s*'
+        value: '(\d{1,2}\s*[A-Za-z]{3,9}[\.,]?\s*\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2}[,\.]?\s+\d{4})'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.74
     extractors:
       - qwen_vlm
     judge:
@@ -243,19 +288,21 @@ fields:
       - "Total Services"
     confidence_threshold: 0.65
     patterns:
+      # Hyphenated "Grand-Total" appears in some PDF templates (VALUED
+       # MERCHANT etc.) — \s\-? lets the anchor span both.
       - name: grand_total
-        anchor: '(?i)\bgrand\s+total\s*[:\-]?\s*[|]?\s*'
-        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
-        max_span_after_anchor_chars: 30
+        anchor: '(?i)\bgrand[\s\-]+total\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 60
         prior_confidence: 0.90
       - name: anchored_subtotal
         anchor: '(?i)\b(?:sub\s*-?\s*total|net\s+amount|net\s+total|amount\s+before\s+tax|total\s+before\s+tax)\s*[:\-]?\s*[|]?\s*'
-        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
         max_span_after_anchor_chars: 30
         prior_confidence: 0.85
       - name: quote_total
         anchor: '(?i)\b(?:quote\s+total|quotation\s+total|total\s+(?:quote|quotation))\s*[:\-]?\s*[|]?\s*'
-        value: '[£$€¥]?\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
         max_span_after_anchor_chars: 30
         prior_confidence: 0.86
     extractors:
@@ -322,6 +369,44 @@ fields:
       - "Amount Due"
       - "Total"
       - "Total Quoted"
+    confidence_threshold: 0.65
+    # Mirrors invoice.invoice_total_incl_tax: deterministic patterns first,
+    # qwen_vlm only as a fallback. Empty patterns block was leaving every
+    # quote without this field unless Qwen happened to respond cleanly.
+    patterns:
+      - name: grand_total_incl
+        anchor: '(?i)\bgrand[\s\-]+total\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 80
+        prior_confidence: 0.92
+      - name: total_amount_due
+        anchor: '(?i)\btotal\s+amount\s+due\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 80
+        prior_confidence: 0.90
+      - name: quote_total_incl
+        anchor: '(?i)\b(?:quote|quotation)\s+total\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.88
+      - name: total_incl_tax_label
+        anchor: '(?i)\btotal\s*\(?\s*incl\.?\s*(?:of\s+)?(?:tax|gst|vat)\s*\)?\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.86
+      - name: total_payable
+        anchor: '(?i)\btotal\s+payable\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.84
+      # Bare "Total" line with currency on next column (markdown-table form
+      # "| Total       | £1,036.98 |"). Currency symbol required so we
+      # don't grab line-totals.
+      - name: bare_total_with_currency
+        anchor: '(?i)(?<!grand[\s\-])(?<!sub[\s\-])(?<!sub-)\btotal\s*[:\-]?\s*[|]?\s*'
+        value: '[£$€¥]\s*([0-9]+(?:[,\.][0-9]{3})*(?:\.[0-9]{2})?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.74
     extractors:
       - qwen_vlm
     judge:
