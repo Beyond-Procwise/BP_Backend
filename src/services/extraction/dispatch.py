@@ -43,6 +43,25 @@ _RECOVERED_LINE_AMOUNT_COL = {
 }
 
 
+def _map_recovered_lines(doc_type: str, recovered: list[dict]) -> list[dict[str, Any]]:
+    """Map generic recovered items -> per-doc-type line-item db_column rows.
+    The line-index column is intentionally OMITTED — persistence.write_line_items_raw
+    injects it; including it would cause a duplicate-column INSERT."""
+    amt_col = _RECOVERED_LINE_AMOUNT_COL[doc_type]
+    mapped: list[dict[str, Any]] = []
+    for it in recovered:
+        row: dict[str, Any] = {
+            "item_description": it["description"],
+            amt_col: it["amount"],
+        }
+        if it.get("quantity") is not None:
+            row["quantity"] = it["quantity"]
+        if it.get("unit_price") is not None:
+            row["unit_price"] = it["unit_price"]
+        mapped.append(row)
+    return mapped
+
+
 def normalize_doc_pk(doc_type: str, value):
     """Canonicalize a document primary key to its persisted form.
 
@@ -247,33 +266,19 @@ def dispatch_document(
     ):
         try:
             header_total = _completeness.header_subtotal(doc_type, columns)
-            from src.services.extraction.context_layer import (
-                synthesize_line_items as _synth_lines,
-            )
-            recovered = _synth_lines(doc_type, full_text, header_total)
+            from src.services.extraction import context_layer as _ctx
+            recovered = _ctx.synthesize_line_items(doc_type, full_text, header_total)
         except Exception as exc:  # noqa: BLE001
             log.warning("line-item recovery failed: %s", exc)
             recovered = []
 
         if recovered:
-            amt_col = _RECOVERED_LINE_AMOUNT_COL[doc_type]
-            mapped: list[dict[str, Any]] = []
-            for it in recovered:
-                row: dict[str, Any] = {
-                    "item_description": it["description"],
-                    amt_col: it["amount"],
-                }
-                if it.get("quantity") is not None:
-                    row["quantity"] = it["quantity"]
-                if it.get("unit_price") is not None:
-                    row["unit_price"] = it["unit_price"]
-                mapped.append(row)
-
-            # Accept only if the recovered set is at least as good.
+            mapped = _map_recovered_lines(doc_type, recovered)
+            header_total = _completeness.header_subtotal(doc_type, columns)
             old_sum = _completeness.line_sum(doc_type, line_items)
             new_sum = _completeness.line_sum(doc_type, mapped)
             accept = False
-            if header_total:  # truthy float; note: a 0.0 subtotal is treated as "unverifiable" (see completeness._reconciles)
+            if header_total:  # truthy float; 0.0 subtotal treated as unverifiable (see completeness._reconciles)
                 old_err = abs((old_sum or 0) - header_total)
                 new_err = abs((new_sum or 0) - header_total)
                 accept = new_err < old_err
@@ -281,7 +286,7 @@ def dispatch_document(
                 accept = True  # had nothing; grounded recovery is strictly better
             if accept:
                 log.info(
-                    "line-item recovery: replaced %d lines with %d (sum %.2f→%.2f, header=%s)",
+                    "line-item recovery: replaced %d lines with %d (sum %.2f->%.2f, header=%s)",
                     len(line_items), len(mapped), old_sum or 0, new_sum or 0, header_total,
                 )
                 line_items = mapped

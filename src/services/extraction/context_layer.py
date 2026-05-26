@@ -330,6 +330,24 @@ def _coerce_number(v):
         return None
 
 
+def _amount_grounded(amount: float, full_text: str) -> bool:
+    """True if the numeric amount appears in the document text in any common
+    formatting (with/without thousands commas, with/without .00, with/without
+    a currency symbol). Conservative anti-fabrication check for recovered lines."""
+    if amount is None:
+        return False
+    ft = full_text
+    candidates = set()
+    # 1234.5 -> {"1234.5","1234.50","1,234.50","1,234.5"} and integer forms
+    candidates.add(f"{amount:.2f}")
+    candidates.add(f"{amount:,.2f}")
+    candidates.add(str(amount))
+    if amount == int(amount):
+        candidates.add(str(int(amount)))
+        candidates.add(f"{int(amount):,}")
+    return any(c in ft for c in candidates)
+
+
 def _parse_line_items_json(raw: str) -> list[dict]:
     """Extract the first JSON array from the LLM response. [] on failure."""
     if not raw:
@@ -392,6 +410,8 @@ def synthesize_line_items(
         if not desc or amt is None:
             continue
         if desc not in full_text and _squeeze(desc) not in ft_sq:
+            continue
+        if not _amount_grounded(amt, full_text):
             continue
         grounded.append({
             "description": desc,

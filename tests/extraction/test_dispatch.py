@@ -83,6 +83,26 @@ def test_dispatch_writes_raw_and_provenance():
         c.commit()
 
 
+def test_map_recovered_lines_omits_index_column():
+    from src.services.extraction.dispatch import _map_recovered_lines
+    rows = _map_recovered_lines("invoice", [
+        {"description": "A", "quantity": 1, "unit_price": 10.0, "amount": 10.0},
+        {"description": "B", "quantity": None, "unit_price": None, "amount": 5.0},
+    ])
+    assert rows[0] == {"item_description": "A", "line_amount": 10.0, "quantity": 1, "unit_price": 10.0}
+    # second row drops None quantity/unit_price
+    assert rows[1] == {"item_description": "B", "line_amount": 5.0}
+    # CRITICAL: no line-index column (persistence injects it)
+    for r in rows:
+        assert "line_no" not in r and "line_number" not in r
+
+
+def test_map_recovered_lines_quote_uses_line_total():
+    from src.services.extraction.dispatch import _map_recovered_lines
+    rows = _map_recovered_lines("quote", [{"description": "X", "amount": 7.0}])
+    assert rows[0] == {"item_description": "X", "line_total": 7.0}
+
+
 def test_dispatch_sets_completeness_status_and_recovers_lines():
     """Multi-column invoice fixture: lines must reconcile (recovered) or be
     flagged via completeness_status — never silently complete with a gap."""

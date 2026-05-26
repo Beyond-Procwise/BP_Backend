@@ -54,3 +54,12 @@ def test_empty_text_returns_empty():
 def test_non_json_response_returns_empty(monkeypatch):
     monkeypatch.setattr(context_layer, "_call_llm", lambda prompt: "sorry, no tables here")
     assert context_layer.synthesize_line_items("invoice", FULL_TEXT) == []
+
+
+def test_drops_row_with_ungrounded_amount(monkeypatch):
+    # Description IS in the text but the amount (777.0) is NOT -> drop it.
+    monkeypatch.setattr(context_layer, "_call_llm", lambda prompt: (
+        '[{"description":"Hosting - annual","amount":777.0}]'
+    ))
+    items = context_layer.synthesize_line_items("invoice", FULL_TEXT)
+    assert items == []
