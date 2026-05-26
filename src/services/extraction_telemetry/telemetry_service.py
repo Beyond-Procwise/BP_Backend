@@ -147,9 +147,10 @@ def compute_record(cur, pm: dict) -> dict:
     cols = _stg_columns(cur, stg_table)
     cur.execute(f"select * from proc.{stg_table} where {pk_col} = %s", (pk,))
     row = dict(zip(cols, cur.fetchone()))
-    # line items
-    cur.execute(f"select * from proc.{line_table} where {line_fk} = %s", (pk,))
+    # line items — fetch column names BEFORE the data query, otherwise the
+    # information_schema lookup overwrites/consumes the cursor result set.
     lcols = _stg_columns(cur, line_table)
+    cur.execute(f"select * from proc.{line_table} where {line_fk} = %s", (pk,))
     lines = [dict(zip(lcols, r)) for r in cur.fetchall()]
 
     # required fields missing? use the schema via completeness has_line_schema=True
@@ -162,7 +163,7 @@ def compute_record(cur, pm: dict) -> dict:
                   "ai_flag_required"}
     rec["header_fields"] = sum(
         1 for k, v in row.items() if k not in audit_cols and v not in (None, ""))
-    report = assess(doc_type, row, lines, has_line_schema=bool(lines) or True,
+    report = assess(doc_type, row, lines, has_line_schema=True,
                     missing_required=[])
     rec["completeness_status"] = report.status
     n, types = _discrepancy_summary(cur, pk, file_path)
