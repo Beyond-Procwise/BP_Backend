@@ -373,6 +373,33 @@ def dispatch_document(
                         ),
                     ))
 
+            # Source-data reconciliation: when a line prints quantity,
+            # unit_price AND a line total that don't agree (qty × unit_price
+            # ≠ line total), the DOCUMENT itself is internally inconsistent.
+            # Keep the printed values verbatim (no fabrication) and flag the
+            # mismatch as a discrepancy so the source error surfaces.
+            _amt_col = _RECOVERED_LINE_AMOUNT_COL.get(doc_type, "line_amount")
+            for li_idx, li in enumerate(line_items):
+                q = _completeness._to_float(li.get("quantity"))
+                up = _completeness._to_float(li.get("unit_price"))
+                amt = _completeness._to_float(li.get(_amt_col))
+                if q and up and amt is not None and q > 0 and up > 0:
+                    computed = round(q * up, 2)
+                    if abs(computed - amt) > max(0.02, 0.01 * computed):
+                        discrepancies.append(Discrepancy(
+                            field_name=f"line_items[{li_idx}].{_amt_col}",
+                            issue_type="line_total_mismatch",
+                            severity="warning",
+                            blocks_promotion=False,
+                            raw_value=str(amt),
+                            computed_value=str(computed),
+                            notes=(
+                                f"line {li_idx + 1}: quantity {q:g} × unit_price {up:g} "
+                                f"= {computed} but line total printed as {amt} "
+                                f"(source-data inconsistency)"
+                            ),
+                        ))
+
     blocking = any(d.blocks_promotion for d in discrepancies)
     promotion_status = "discrepancy" if blocking else "pending"
 

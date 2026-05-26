@@ -416,6 +416,40 @@ fields:
     invariants:
       - tax_closure
 
+  - name: exchange_rate_to_usd
+    type: decimal
+    required: false
+    db_column: exchange_rate_to_usd
+    canonical_labels:
+      - "Exchange Rate"
+      - "FX Rate"
+      - "Rate to USD"
+      - "Conversion Rate"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: converted_amount_usd
+    type: money
+    required: false
+    db_column: converted_amount_usd
+    canonical_labels:
+      - "USD Equivalent"
+      - "Amount in USD"
+      - "Converted Amount"
+      - "USD Amount"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
   - name: country
     type: string
     required: false
