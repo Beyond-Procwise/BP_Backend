@@ -1,0 +1,22 @@
+[Unit]
+Description=BP Extraction Telemetry (per-document extraction quality + gap capture)
+After=network.target postgresql.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=muthu
+Group=muthu
+WorkingDirectory=/home/muthu/PycharmProjects/BP_Backend
+EnvironmentFile=/home/muthu/PycharmProjects/BP_Backend/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/muthu/PycharmProjects/BP_Backend:/home/muthu/PycharmProjects/BP_Backend/src
+Environment=TELEMETRY_POLL_SECONDS=60
+ExecStart=/home/muthu/PycharmProjects/BP_Backend/.venv/bin/python -m src.services.extraction_telemetry.telemetry_service
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
