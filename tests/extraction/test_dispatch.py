@@ -96,7 +96,7 @@ def test_dispatch_sets_completeness_status_and_recovers_lines():
     )
     assert "completeness_status" in result
     assert result["completeness_status"] in (
-        "complete", "recovered", "line_sum_mismatch", "no_line_items", "missing_required",
+        "complete", "line_sum_mismatch", "no_line_items", "missing_required",
     )
     # If it promoted, it must NOT be a silent line gap: either complete/recovered,
     # or explicitly flagged.
@@ -105,6 +105,8 @@ def test_dispatch_sets_completeness_status_and_recovers_lines():
     # Cleanup raw row
     with _conn() as c:
         cur = c.cursor()
+        cur.execute("DELETE FROM proc.bp_invoice_line_items_stg WHERE invoice_id=%s", (result["doc_pk"],))
+        cur.execute("DELETE FROM proc.bp_invoice_stg WHERE invoice_id=%s", (result["doc_pk"],))
         cur.execute("DELETE FROM proc.bp_extraction_provenance_v3 WHERE doc_pk=%s", (result["doc_pk"],))
         cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE raw_id=%s", (result["raw_id"],))
         cur.execute("DELETE FROM proc.bp_invoice_raw WHERE raw_id=%s", (result["raw_id"],))

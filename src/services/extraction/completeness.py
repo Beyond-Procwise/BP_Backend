@@ -60,6 +60,12 @@ def line_sum(doc_type: str, line_items: list[dict[str, Any]]) -> Optional[float]
     return sum(vals) if vals else None
 
 
+def header_subtotal(doc_type: str, columns: dict[str, Any]) -> Optional[float]:
+    """Public: the document's header subtotal as a float, or None if absent/unparseable."""
+    col = _SUBTOTAL_COL.get(doc_type)
+    return _to_float(columns.get(col)) if col else None
+
+
 def _reconciles(lsum: Optional[float], header_total: Optional[float]) -> bool:
     # Can't check without a header total -> don't flag a gap.
     if header_total in (None, 0) or header_total == 0.0:

@@ -72,3 +72,11 @@ def test_line_sum_helper():
     assert line_sum("invoice", [{"line_amount": 1.0}, {"line_amount": 2.5}]) == 3.5
     assert line_sum("quote", [{"line_total": 4.0}]) == 4.0
     assert line_sum("invoice", []) is None
+
+
+def test_header_subtotal_helper():
+    from src.services.extraction.completeness import header_subtotal
+    assert header_subtotal("invoice", {"invoice_amount": "1234.50"}) == 1234.5
+    assert header_subtotal("quote", {"total_amount": 50.0}) == 50.0
+    assert header_subtotal("invoice", {}) is None
+    assert header_subtotal("contract", {"foo": 1}) is None

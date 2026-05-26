@@ -33,11 +33,13 @@ log = logging.getLogger(__name__)
 # quote document resolve to one canonical PK (no duplicate _stg row).
 _QUOTE_ID_PREFIX = re.compile(r"^(?:quotation|quote|qut|qte)[\s\-\.\/:#]*(?=\d)", re.I)
 
-# Map the generic recovery item shape → per-doc-type line-item db_columns.
-_RECOVERED_LINE_MAP = {
-    "invoice": {"amount": "line_amount", "no": "line_no"},
-    "purchase_order": {"amount": "line_total", "no": "line_number"},
-    "quote": {"amount": "line_total", "no": "line_number"},
+# Map each doc type → its per-line amount db_column for recovered line items.
+# The line-index column (line_no / line_number) is injected by
+# persistence.write_line_items_raw, so recovered rows must NOT include it.
+_RECOVERED_LINE_AMOUNT_COL = {
+    "invoice": "line_amount",
+    "purchase_order": "line_total",
+    "quote": "line_total",
 }
 
 
@@ -244,8 +246,7 @@ def dispatch_document(
         "no_line_items", "line_sum_mismatch",
     ):
         try:
-            sub_col = _completeness._SUBTOTAL_COL.get(doc_type)
-            header_total = columns.get(sub_col) if sub_col else None
+            header_total = _completeness.header_subtotal(doc_type, columns)
             from src.services.extraction.context_layer import (
                 synthesize_line_items as _synth_lines,
             )
@@ -255,13 +256,12 @@ def dispatch_document(
             recovered = []
 
         if recovered:
-            lmap = _RECOVERED_LINE_MAP[doc_type]
+            amt_col = _RECOVERED_LINE_AMOUNT_COL[doc_type]
             mapped: list[dict[str, Any]] = []
-            for i, it in enumerate(recovered, start=1):
+            for it in recovered:
                 row: dict[str, Any] = {
-                    lmap["no"]: i,
                     "item_description": it["description"],
-                    lmap["amount"]: it["amount"],
+                    amt_col: it["amount"],
                 }
                 if it.get("quantity") is not None:
                     row["quantity"] = it["quantity"]
@@ -270,13 +270,12 @@ def dispatch_document(
                 mapped.append(row)
 
             # Accept only if the recovered set is at least as good.
-            ht = _completeness._to_float(header_total)
             old_sum = _completeness.line_sum(doc_type, line_items)
             new_sum = _completeness.line_sum(doc_type, mapped)
             accept = False
-            if ht:
-                old_err = abs((old_sum or 0) - ht)
-                new_err = abs((new_sum or 0) - ht)
+            if header_total:  # truthy float; note: a 0.0 subtotal is treated as "unverifiable" (see completeness._reconciles)
+                old_err = abs((old_sum or 0) - header_total)
+                new_err = abs((new_sum or 0) - header_total)
                 accept = new_err < old_err
             elif not line_items:
                 accept = True  # had nothing; grounded recovery is strictly better
