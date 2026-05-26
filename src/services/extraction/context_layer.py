@@ -308,6 +308,101 @@ def synthesize(
 
 
 # ---------------------------------------------------------------------------
+# Line-item recovery pass (AgentNick enumerate-from-text)
+# ---------------------------------------------------------------------------
+
+import json as _json_le
+import re as _re_le
+
+
+def _squeeze(s: str) -> str:
+    """All-whitespace-stripped, lowercased — for tolerant substring grounding."""
+    return _re_le.sub(r"\s+", "", str(s)).lower()
+
+
+def _coerce_number(v):
+    """Best-effort numeric coercion; None on failure or empty."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(str(v).replace(",", "").replace("£", "").replace("$", "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_line_items_json(raw: str) -> list[dict]:
+    """Extract the first JSON array from the LLM response. [] on failure."""
+    if not raw:
+        return []
+    start = raw.find("[")
+    end = raw.rfind("]") + 1
+    if start == -1 or end <= start:
+        return []
+    try:
+        data = _json_le.loads(raw[start:end])
+    except (ValueError, TypeError):
+        return []
+    return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+
+
+def _build_line_items_prompt(doc_type: str, full_text: str, header_subtotal) -> str:
+    sub = f"The line items should sum to approximately {header_subtotal}.\n" if header_subtotal else ""
+    return (
+        f"You are extracting the LINE ITEMS from a procurement {doc_type}.\n"
+        "Read the DOCUMENT TEXT and output ONLY a JSON array. Each element:\n"
+        '{"description": <string>, "quantity": <number|null>, '
+        '"unit_price": <number|null>, "amount": <number>}\n\n'
+        "RULES:\n"
+        "1. Output ONLY the JSON array. No prose, no markdown fences.\n"
+        "2. Every `description` MUST be a verbatim substring of the DOCUMENT TEXT. "
+        "If you cannot find it verbatim, omit that row. DO NOT FABRICATE.\n"
+        "3. `amount` is the per-line total as a NUMBER (no currency symbol/commas).\n"
+        "4. Do NOT include subtotal / tax / total summary rows as line items.\n"
+        f"5. {sub}"
+        "\nDOCUMENT TEXT:\n"
+        f"{full_text}\n"
+    )
+
+
+def synthesize_line_items(
+    doc_type: str,
+    full_text: str,
+    header_subtotal: float | None = None,
+) -> list[dict]:
+    """Ask AgentNick to enumerate line items grounded in full_text.
+
+    Recovery pass used when the structural/table extractor returned no lines or
+    lines that don't reconcile to the header subtotal. Returns generic dicts
+    {description, quantity, unit_price, amount}; the caller maps these to the
+    schema's line-item db_columns. Never raises — returns [] on any failure.
+    """
+    if not (full_text and full_text.strip()):
+        return []
+    prompt = _build_line_items_prompt(doc_type, full_text, header_subtotal)
+    try:
+        raw = _call_llm(prompt)
+    except Exception:  # noqa: BLE001
+        return []
+    items = _parse_line_items_json(raw or "")
+    grounded: list[dict] = []
+    ft_sq = _squeeze(full_text)
+    for it in items:
+        desc = (it.get("description") or "").strip()
+        amt = _coerce_number(it.get("amount"))
+        if not desc or amt is None:
+            continue
+        if desc not in full_text and _squeeze(desc) not in ft_sq:
+            continue
+        grounded.append({
+            "description": desc,
+            "quantity": _coerce_number(it.get("quantity")),
+            "unit_price": _coerce_number(it.get("unit_price")),
+            "amount": amt,
+        })
+    return grounded
+
+
+# ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
 
