@@ -52,13 +52,20 @@ def main() -> int:
     print(f"\nClean (complete, 0 discrepancies): {clean}/{n} = {clean/n*100:.1f}%")
 
     # 3. Discrepancy / gap distribution
+    def _types(r) -> dict:
+        # jsonb comes back from psycopg2 as a dict already; tolerate str too.
+        dt = r["discrepancy_types"]
+        if isinstance(dt, dict):
+            return dt
+        try:
+            return json.loads(dt or "{}")
+        except (ValueError, TypeError):
+            return {}
+
     dtypes: Counter = Counter()
     for r in rows:
-        try:
-            for k, v in json.loads(r["discrepancy_types"] or "{}").items():
-                dtypes[k] += int(v)
-        except (ValueError, TypeError):
-            pass
+        for k, v in _types(r).items():
+            dtypes[k] += int(v)
     print("\nGaps / discrepancies by type (across all docs):")
     if dtypes:
         for k, c in dtypes.most_common():
@@ -92,7 +99,7 @@ def main() -> int:
                  if r["completeness_status"] not in ("complete", None) or r["n_discrepancies"]]
     print(f"\nDocuments needing attention: {len(attention)}")
     for r in attention:
-        types = ",".join(json.loads(r["discrepancy_types"] or "{}").keys())
+        types = ",".join(_types(r).keys())
         print(f"  [{r['completeness_status']}] {r['doc_type']} {Path(r['file_path']).name}"
               f"  discrep={r['n_discrepancies']}({types})")
     return 0

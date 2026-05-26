@@ -276,6 +276,20 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             col_names = [d.name for d in cur.description]
             raw_data = dict(zip(col_names, row))
 
+            # Safety net: guarantee COMPUTABLE columns (exchange_rate_to_usd,
+            # converted_amount_usd, tax_amount, *_total_incl_tax) are populated
+            # at promotion time, even when the upstream context layer did not
+            # run/compute them (e.g. an LLM hiccup under load). Pure arithmetic
+            # over columns already present — no fabrication; fills missing
+            # tax/total values and sets the deterministic FX conversion.
+            # Genuine document miscalculations are NOT touched here — those are
+            # flagged in the discrepancy table by dispatch.
+            try:
+                from src.services.extraction.context_layer import _compute_derived
+                raw_data = _compute_derived(raw_data)
+            except Exception:  # noqa: BLE001
+                log.debug("derived-compute safety net skipped", exc_info=True)
+
             # Required-field set — used for the AgentNick audit log below
             # and for honouring HITL apply_value fixes that clear noisy
             # values into NULL.
