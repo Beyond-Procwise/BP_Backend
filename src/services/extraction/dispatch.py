@@ -8,10 +8,12 @@ incrementally as live testing exposes them.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from typing import Any
 from uuid import uuid4
 
+from src.services.extraction import completeness as _completeness
 from src.services.extraction import persistence, promotion
 from src.services.extraction.engineered.ner_validator import fill_ner_gaps
 from src.services.extraction.engineered.table_extractor import extract_line_items
@@ -23,6 +25,36 @@ from src.services.extraction.persistence import Discrepancy
 from src.services.extraction_v3.binding.invariants_runner import run_invariants
 
 log = logging.getLogger(__name__)
+
+
+# Leading quote-identifier prefix ("QUT136586", "QUOTE-2025-051", ...). Stripped
+# only when an identifier (something containing a digit) remains, so a quote
+# referenced bare in a sibling PO doc and the same quote extracted from its own
+# quote document resolve to one canonical PK (no duplicate _stg row).
+_QUOTE_ID_PREFIX = re.compile(r"^(?:quotation|quote|qut|qte)[\s\-\.\/:#]*(?=\d)", re.I)
+
+# Map the generic recovery item shape → per-doc-type line-item db_columns.
+_RECOVERED_LINE_MAP = {
+    "invoice": {"amount": "line_amount", "no": "line_no"},
+    "purchase_order": {"amount": "line_total", "no": "line_number"},
+    "quote": {"amount": "line_total", "no": "line_number"},
+}
+
+
+def normalize_doc_pk(doc_type: str, value):
+    """Canonicalize a document primary key to its persisted form.
+
+    Quote IDs are stored without their QUT/Quote prefix; other doc types keep
+    their PK verbatim. Returns the input unchanged when no normalization
+    applies (including None and empty strings)."""
+    if value is None:
+        return None
+    v = str(value).strip()
+    if not v:
+        return v
+    if doc_type == "quote":
+        return _QUOTE_ID_PREFIX.sub("", v)
+    return v
 
 
 def _pipeline_version() -> str:
@@ -112,24 +144,32 @@ def dispatch_document(
     # already been through call_grounded_last_resort's safety check which
     # uses the same progressive normalisation as below. We replicate the
     # check here so any future candidate source has to honour it too.
+    import html as _html
     from src.services.extraction_v3.judge.grounded_last_resort import (
         _collapse_letter_spacing, _norm_ws, _WS_RE,
     )
     full_text = parsed.full_text or ""
-    full_text_ws = _norm_ws(full_text)
-    full_text_sq = _WS_RE.sub("", _collapse_letter_spacing(full_text))
+    # Docling exports markdown pipe-tables — and escapes any `|` characters
+    # inside cell text as `&#124;`. The cell.text we recover from the
+    # structural table preserves the literal `|`. To keep these two views
+    # comparable for the grounding gate, decode HTML entities on the
+    # full_text side before substring checks.
+    full_text_dec = _html.unescape(full_text)
+    full_text_ws = _norm_ws(full_text_dec)
+    full_text_sq = _WS_RE.sub("", _collapse_letter_spacing(full_text_dec))
 
     def _grounded(c) -> bool:
         t = c.span.text
         if not t:
             return False
-        if t in full_text:
+        t_dec = _html.unescape(t)
+        if t_dec in full_text_dec:
             return True
-        if _norm_ws(t) in full_text_ws:
+        if _norm_ws(t_dec) in full_text_ws:
             return True
         # Letter-spacing collapse + all-whitespace strip — last resort, only
         # accepts evidence whose non-whitespace tokens all appear in the doc.
-        if _WS_RE.sub("", _collapse_letter_spacing(t)) in full_text_sq:
+        if _WS_RE.sub("", _collapse_letter_spacing(t_dec)) in full_text_sq:
             return True
         return False
 
@@ -182,6 +222,71 @@ def dispatch_document(
         except Exception as exc:  # noqa: BLE001
             log.warning("context_layer synthesis failed: %s", exc)
 
+    # Canonicalize the primary key before it is used for _raw, provenance and
+    # promotion (e.g. quote 'QUT136586' → '136586') so the same quote referenced
+    # across documents resolves to a single _stg row.
+    _pk_field = persistence._DOC_PK_FIELD[doc_type]
+    if columns.get(_pk_field) not in (None, ""):
+        columns[_pk_field] = normalize_doc_pk(doc_type, columns[_pk_field])
+
+    # --- Bounded gap-control recovery (one attempt) ---
+    # If the structural/table extractor produced no lines or lines that don't
+    # reconcile to the header subtotal, ask AgentNick to re-enumerate line
+    # items from full_text. Accept the recovered set only when it reconciles
+    # (or sums closer to the header total than what we had) — never fabricate.
+    has_line_schema = bool(
+        registry.schema.line_items and registry.schema.line_items.fields
+    )
+    pre = _completeness.assess(
+        doc_type, columns, line_items, has_line_schema=has_line_schema,
+    )
+    if has_line_schema and full_text.strip() and pre.status in (
+        "no_line_items", "line_sum_mismatch",
+    ):
+        try:
+            sub_col = _completeness._SUBTOTAL_COL.get(doc_type)
+            header_total = columns.get(sub_col) if sub_col else None
+            from src.services.extraction.context_layer import (
+                synthesize_line_items as _synth_lines,
+            )
+            recovered = _synth_lines(doc_type, full_text, header_total)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("line-item recovery failed: %s", exc)
+            recovered = []
+
+        if recovered:
+            lmap = _RECOVERED_LINE_MAP[doc_type]
+            mapped: list[dict[str, Any]] = []
+            for i, it in enumerate(recovered, start=1):
+                row: dict[str, Any] = {
+                    lmap["no"]: i,
+                    "item_description": it["description"],
+                    lmap["amount"]: it["amount"],
+                }
+                if it.get("quantity") is not None:
+                    row["quantity"] = it["quantity"]
+                if it.get("unit_price") is not None:
+                    row["unit_price"] = it["unit_price"]
+                mapped.append(row)
+
+            # Accept only if the recovered set is at least as good.
+            ht = _completeness._to_float(header_total)
+            old_sum = _completeness.line_sum(doc_type, line_items)
+            new_sum = _completeness.line_sum(doc_type, mapped)
+            accept = False
+            if ht:
+                old_err = abs((old_sum or 0) - ht)
+                new_err = abs((new_sum or 0) - ht)
+                accept = new_err < old_err
+            elif not line_items:
+                accept = True  # had nothing; grounded recovery is strictly better
+            if accept:
+                log.info(
+                    "line-item recovery: replaced %d lines with %d (sum %.2f→%.2f, header=%s)",
+                    len(line_items), len(mapped), old_sum or 0, new_sum or 0, header_total,
+                )
+                line_items = mapped
+
     discrepancies: list[Discrepancy] = []
     # Re-bind any synthesized values that conflict with column types is
     # already handled by context_layer's _validate_and_bind. Bind errors
@@ -229,6 +334,40 @@ def dispatch_document(
                 blocks_promotion=False,
                 notes=ir.message or f"{ir.name} warning",
             ))
+
+    # Line-item warnings: surface silent failures into the discrepancy
+    # queue so HITL can see them. Non-blocking — these don't stop
+    # promotion (we still want the header data in _stg).
+    if registry.schema.line_items and registry.schema.line_items.fields:
+        if not line_items:
+            discrepancies.append(Discrepancy(
+                field_name="line_items",
+                issue_type="missing_line_items",
+                severity="warning",
+                blocks_promotion=False,
+                notes=(
+                    "no line items were extracted from this document — "
+                    "table_extractor + text-fallback both returned 0 rows"
+                ),
+            ))
+        else:
+            # Flag lines where the numeric essentials are all NULL.
+            numeric_keys = {
+                "quantity", "unit_price", "line_amount", "line_total",
+                "total_amount", "total_amount_incl_tax",
+            }
+            for li_idx, li in enumerate(line_items):
+                if not any(li.get(k) not in (None, "", 0) for k in numeric_keys):
+                    discrepancies.append(Discrepancy(
+                        field_name=f"line_items[{li_idx}]",
+                        issue_type="line_missing_numbers",
+                        severity="warning",
+                        blocks_promotion=False,
+                        notes=(
+                            f"line {li_idx + 1} has no quantity / unit_price / "
+                            f"line_amount — only the description was captured"
+                        ),
+                    ))
 
     blocking = any(d.blocks_promotion for d in discrepancies)
     promotion_status = "discrepancy" if blocking else "pending"
@@ -298,10 +437,35 @@ def dispatch_document(
         d.field_name for d in discrepancies
         if d.issue_type == "missing_required" and d.blocks_promotion
     })
+    completeness_status = _completeness.assess(
+        doc_type, columns, line_items,
+        has_line_schema=has_line_schema,
+        missing_required=missing_required_fields,
+    ).status
+    # Surface the post-promotion confidence (computed by promote()'s
+    # _compute_confidence_score) so the watcher's training-data collector
+    # can decide whether this extraction is good enough to record as a
+    # gold-standard example. Without this, the watcher's confidence>=0.90
+    # gate is always against 0 and no example is ever recorded.
+    confidence_score: float = 0.0
+    if final_status == "promoted" and doc_pk:
+        try:
+            cs = _read_persisted_confidence(doc_type, doc_pk)
+            if cs is not None:
+                confidence_score = float(cs)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not read persisted confidence: %s", exc)
+
+    # _source_text feeds the training-example collector. Cap so the JSONL
+    # line stays a few KB — the model only needs the structural shape of
+    # the source, not the whole multi-page text.
+    source_text = (parsed.full_text or "")[:6000]
     result = {
         "status": final_status,
         "raw_id": raw_id,
         "doc_pk": doc_pk,
+        "pk": doc_pk,  # alias for the watcher's legacy reader
+        "doc_type": doc_type,
         "n_fields": len(columns),
         # Watcher reads this key (legacy v3 shape) to decide whether to log
         # the ZERO_LINE_ITEMS warning. Surface the count we actually wrote
@@ -312,9 +476,41 @@ def dispatch_document(
         "n_discrepancies": len(discrepancies),
         "discrepancies": len(discrepancies),
         "missing_required": missing_required_fields,
+        "completeness_status": completeness_status,
         "trace_id": str(trace_id),
         "pipeline_version": pipeline_version,
         "raw_persisted": True,
+        # New keys for the training-data collector. Defaults are safe
+        # (empty / zero) so non-collector callers are unaffected.
+        "_source_text": source_text,
+        "confidence": confidence_score / 100.0 if confidence_score else 0.0,
+        "confidence_score": confidence_score,
+        "errors": 0 if final_status in ("promoted", "pending") else 1,
     }
-    log.info("dispatch end %s", result)
+    # Avoid logging the full source_text — keep the log line tidy.
+    log_result = {k: v for k, v in result.items() if k != "_source_text"}
+    log.info("dispatch end %s", log_result)
     return result
+
+
+def _read_persisted_confidence(doc_type: str, doc_pk: str) -> float | None:
+    """Read confidence_score from the freshly-promoted _stg row."""
+    from src.services.db import get_conn
+
+    stg_table_map = {
+        "invoice": ("proc.bp_invoice_stg", "invoice_id"),
+        "purchase_order": ("proc.bp_purchase_order_stg", "po_id"),
+        "quote": ("proc.bp_quote_stg", "quote_id"),
+    }
+    info = stg_table_map.get(doc_type)
+    if not info:
+        return None
+    stg_table, pk_col = info
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT confidence_score FROM {stg_table} WHERE {pk_col} = %s",
+            (doc_pk,),
+        )
+        row = cur.fetchone()
+        return float(row[0]) if row and row[0] is not None else None

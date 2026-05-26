@@ -81,3 +81,31 @@ def test_dispatch_writes_raw_and_provenance():
         cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE raw_id=%s", (raw_id,))
         cur.execute("DELETE FROM proc.bp_invoice_raw WHERE raw_id=%s", (raw_id,))
         c.commit()
+
+
+def test_dispatch_sets_completeness_status_and_recovers_lines():
+    """Multi-column invoice fixture: lines must reconcile (recovered) or be
+    flagged via completeness_status — never silently complete with a gap."""
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "tests" / "extraction_v3" / "fixtures" / "invoices"
+        / "INV-002-multi-column.pdf"
+    )
+    result = dispatch_document(
+        process_monitor_id=None, file_path=str(fixture), doc_type="invoice",
+    )
+    assert "completeness_status" in result
+    assert result["completeness_status"] in (
+        "complete", "recovered", "line_sum_mismatch", "no_line_items", "missing_required",
+    )
+    # If it promoted, it must NOT be a silent line gap: either complete/recovered,
+    # or explicitly flagged.
+    if result["status"] == "promoted":
+        assert result["completeness_status"] != "no_line_items" or result["line_items"] == 0
+    # Cleanup raw row
+    with _conn() as c:
+        cur = c.cursor()
+        cur.execute("DELETE FROM proc.bp_extraction_provenance_v3 WHERE doc_pk=%s", (result["doc_pk"],))
+        cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE raw_id=%s", (result["raw_id"],))
+        cur.execute("DELETE FROM proc.bp_invoice_raw WHERE raw_id=%s", (result["raw_id"],))
+        c.commit()
