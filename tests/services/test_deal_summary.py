@@ -46,7 +46,6 @@ def _conn_for_deal_with_one_invoice():
         ),
         "bp_purchase_order_trgt": (["po_id", "deal_id"], []),
         "bp_quote_trgt": (["quote_id", "deal_id"], []),
-        "bp_contracts": (["contract_id", "deal_id"], []),
         "agent_actions": (
             ["phase", "action_type", "summary"],
             [("extraction", "persist", "persisted raw_id=5")],
@@ -74,7 +73,6 @@ def test_gather_deal_context_unknown_deal_returns_none():
         "bp_invoice_trgt": (["invoice_id", "deal_id"], []),
         "bp_purchase_order_trgt": (["po_id", "deal_id"], []),
         "bp_quote_trgt": (["quote_id", "deal_id"], []),
-        "bp_contracts": (["contract_id", "deal_id"], []),
         "agent_actions": (["phase"], []),
         "bp_extraction_discrepancy": (["field_name"], []),
     })

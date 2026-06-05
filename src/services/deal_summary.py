@@ -19,11 +19,13 @@ log = logging.getLogger(__name__)
 _SUMMARY_MODEL = "qwen2.5:7b"
 
 # (final table, line-items table or None, primary-key column)
+# Contracts are intentionally excluded: proc.bp_contracts has no deal_id column
+# (contracts are not deal-scoped in the current schema), so they cannot be
+# linked to a deal via deal_id. A deal is composed of the deal_id-bearing docs.
 _DOC_SOURCES = {
     "invoices": ("proc.bp_invoice_trgt", "proc.bp_invoice_line_items_trgt", "invoice_id"),
     "purchase_orders": ("proc.bp_purchase_order_trgt", "proc.bp_po_line_items_trgt", "po_id"),
     "quotes": ("proc.bp_quote_trgt", "proc.bp_quote_line_items_trgt", "quote_id"),
-    "contracts": ("proc.bp_contracts", None, "contract_id"),
 }
 
 
@@ -80,7 +82,6 @@ def _gather(conn, deal_id: str) -> Optional[dict]:
             "invoices": len(documents["invoices"]),
             "purchase_orders": len(documents["purchase_orders"]),
             "quotes": len(documents["quotes"]),
-            "contracts": len(documents["contracts"]),
             "actions": len(actions),
             "discrepancies": len(discrepancies),
         },
