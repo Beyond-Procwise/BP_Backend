@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 from uuid import UUID
 
+from src.services.agent_actions import bulk_record, PHASE_VALIDATION
 from src.services.db import get_conn
 from src.services.extraction.pattern_registry import PatternRegistry
 from src.services.extraction.types import Candidate
@@ -290,6 +291,9 @@ def write_discrepancies(
     discrepancies: Iterable[Discrepancy],
 ) -> int:
     """INSERT discrepancy rows. Returns count written."""
+    # Materialize: `discrepancies` may be a one-shot generator that we iterate
+    # twice (rows build below + action_rows comprehension).
+    discrepancies = list(discrepancies)
     rows = []
     for d in discrepancies:
         rows.append((
@@ -311,6 +315,27 @@ def write_discrepancies(
         cur = conn.cursor()
         try:
             cur.executemany(sql, rows)
+            action_rows = [
+                {
+                    "phase": PHASE_VALIDATION,
+                    "action_type": "discrepancy",
+                    "doc_type": doc_type,
+                    "doc_pk": doc_pk_candidate,
+                    "field_name": d.field_name,
+                    "status": "error" if d.blocks_promotion else "warn",
+                    "summary": f"{d.issue_type} on {d.field_name}",
+                    "details": {
+                        "issue_type": d.issue_type,
+                        "severity": d.severity,
+                        "blocks_promotion": d.blocks_promotion,
+                        "raw_value": d.raw_value,
+                        "expected_value": d.expected_value,
+                        "computed_value": d.computed_value,
+                    },
+                }
+                for d in discrepancies
+            ]
+            bulk_record(action_rows, conn=conn)
             conn.commit()
             return len(rows)
         except Exception:
