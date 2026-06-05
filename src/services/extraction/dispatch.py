@@ -13,6 +13,7 @@ import subprocess
 from typing import Any
 from uuid import uuid4
 
+from src.services.agent_actions import record_action, PHASE_EXTRACTION
 from src.services.extraction import completeness as _completeness
 from src.services.extraction import persistence, promotion
 from src.services.extraction.engineered.ner_validator import fill_ner_gaps
@@ -195,6 +196,17 @@ def dispatch_document(
         return False
 
     grounded = [c for c in candidates if _grounded(c)]
+    record_action(
+        phase=PHASE_EXTRACTION,
+        action_type="grounding_gate",
+        doc_type=doc_type,
+        trace_id=trace_id,
+        pipeline_version=pipeline_version,
+        agent="grounding_gate",
+        status="ok" if grounded else "warn",
+        summary=f"{len(grounded)} of {len(candidates)} candidates grounded",
+        details={"candidates": len(candidates), "grounded": len(grounded)},
+    )
 
     # Build header record + provenance picks + line items
     columns, picked, bind_errors = persistence.build_header_record(grounded, registry)
@@ -240,6 +252,17 @@ def dispatch_document(
                     # regex noise we had. Required fields will surface as
                     # missing_required below; non-required stay NULL.
                     columns.pop(k, None)
+            record_action(
+                phase=PHASE_EXTRACTION,
+                action_type="context_synthesize",
+                doc_type=doc_type,
+                trace_id=trace_id,
+                pipeline_version=pipeline_version,
+                agent="AgentNick",
+                status="ok",
+                summary=f"context_layer synthesized {len(synthesized)} fields",
+                details={"fields": sorted(synthesized.keys())},
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("context_layer synthesis failed: %s", exc)
 
@@ -416,6 +439,17 @@ def dispatch_document(
         columns=columns,
         parser_snapshot=_serialize_parsed(parsed),
         promotion_status=promotion_status,
+    )
+    record_action(
+        phase=PHASE_EXTRACTION,
+        action_type="persist",
+        doc_type=doc_type,
+        trace_id=trace_id,
+        pipeline_version=pipeline_version,
+        agent="persistence",
+        status="ok",
+        summary=f"persisted raw_id={raw_id}",
+        details={"raw_id": raw_id, "n_fields": len(columns), "n_lines": len(line_items)},
     )
 
     # Write line items (if any)
