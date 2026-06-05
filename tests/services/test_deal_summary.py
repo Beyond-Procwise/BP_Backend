@@ -86,3 +86,41 @@ def test_build_prompt_is_grounded_and_factual():
     assert "do not fabricate" in low or "only the data" in low
     assert "INV-1" in prompt        # facts are present in the prompt
     assert "Acme Deal" in prompt
+
+
+def test_summarize_deal_returns_text_and_sources(monkeypatch):
+    monkeypatch.setattr(
+        ds, "gather_deal_context",
+        lambda deal_id, conn=None: {
+            "deal_id": deal_id, "deal_name": "Acme Deal",
+            "documents": {"invoices": [], "purchase_orders": [], "quotes": []},
+            "actions": [], "discrepancies": [],
+            "sources": {"invoices": 1, "purchase_orders": 0, "quotes": 0,
+                        "actions": 2, "discrepancies": 0},
+        },
+    )
+    monkeypatch.setattr(ds, "ollama_generate", lambda *a, **k: "Acme Deal: one invoice for ACME.")
+    out = ds.summarize_deal("D-9")
+    assert out["deal_id"] == "D-9"
+    assert "Acme Deal" in out["summary"]
+    assert out["sources"]["invoices"] == 1
+
+
+def test_summarize_deal_unknown_returns_none(monkeypatch):
+    monkeypatch.setattr(ds, "gather_deal_context", lambda deal_id, conn=None: None)
+    assert ds.summarize_deal("NOPE") is None
+
+
+def test_summarize_deal_raises_on_empty_llm(monkeypatch):
+    monkeypatch.setattr(
+        ds, "gather_deal_context",
+        lambda deal_id, conn=None: {
+            "deal_id": deal_id, "deal_name": None,
+            "documents": {"invoices": [], "purchase_orders": [], "quotes": []},
+            "actions": [], "discrepancies": [], "sources": {"invoices": 1},
+        },
+    )
+    monkeypatch.setattr(ds, "ollama_generate", lambda *a, **k: "")
+    import pytest
+    with pytest.raises(ds.SummarizationError):
+        ds.summarize_deal("D-9")

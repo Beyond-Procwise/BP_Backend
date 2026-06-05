@@ -11,6 +11,7 @@ import logging
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.ollama_client import ollama_generate
 
 log = logging.getLogger(__name__)
 
@@ -112,3 +113,34 @@ def _build_prompt(ctx: dict) -> str:
         f"Deal facts (JSON):\n{facts}\n\n"
         "Summary:"
     )
+
+
+class SummarizationError(RuntimeError):
+    """Raised when the LLM returns no usable summary."""
+
+
+def summarize_deal(deal_id: str, conn: Any = None) -> Optional[dict]:
+    """Summarize a deal into clear text. Returns None if the deal is unknown.
+
+    Raises SummarizationError if the LLM returns nothing.
+    """
+    ctx = gather_deal_context(deal_id, conn=conn)
+    if ctx is None:
+        return None
+    prompt = _build_prompt(ctx)
+    text = ollama_generate(
+        prompt,
+        model=_SUMMARY_MODEL,
+        temperature=0.0,
+        num_predict=1024,
+        timeout=120,
+        retries=2,
+    )
+    if not text or not text.strip():
+        raise SummarizationError(f"empty summary for deal {deal_id}")
+    return {
+        "deal_id": deal_id,
+        "deal_name": ctx.get("deal_name"),
+        "summary": text.strip(),
+        "sources": ctx["sources"],
+    }
