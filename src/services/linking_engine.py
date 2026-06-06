@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 # Tunables (env-overridable)
 # ---------------------------------------------------------------------------
 MIN_CONFIDENCE = float(os.getenv("PROMOTE_MIN_CONFIDENCE", "90"))   # _stg extraction conf
-MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))   # F decision band
+MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))   # F auto-promote gate
+REVIEW_MIN = float(os.getenv("PROMOTE_REVIEW_MIN", "65"))           # F floor for human review
 
 # Decision band thresholds (PDF Stage 7C)
 _BAND_AUTO = 92.0
@@ -450,6 +451,49 @@ def promote_ready(conn: Any = None, doc_types=("invoice", "quote"), limit: Optio
     return _promote(conn, doc_types, limit)
 
 
+def _set_amount_for_invoice(cur, po_id) -> Optional[float]:
+    """Sum of all invoices (stg+trgt, deduped by invoice_id) on this PO — for N:1."""
+    cur.execute(
+        "select coalesce(sum(amt),0) from ("
+        "  select invoice_id, max(converted_amount_usd) amt from ("
+        "    select invoice_id, converted_amount_usd from proc.bp_invoice_stg where po_id=%s"
+        "    union all"
+        "    select invoice_id, converted_amount_usd from proc.bp_invoice_trgt where po_id=%s"
+        "  ) x group by invoice_id"
+        ") y", (po_id, po_id))
+    return _to_float(cur.fetchone()[0])
+
+
+def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[dict], Optional[str]]:
+    """Score one staged row against its parent PO. Returns (po, link, reason).
+    ``reason`` is set when the row fails a gate (held); None means promotable."""
+    cfg = _DOC[doc_type]
+    pk, pk_val = cfg["pk"], row[cfg["pk"]]
+    po = _find_parent_po(cur, row.get("po_id"))
+    conf = _to_float(row.get("confidence_score")) or 0.0
+    if row.get("po_id") is None:
+        return None, None, "no_parent_reference"
+    if po is None:
+        return None, None, "parent_not_found"
+    src_lines = _rows(cur, f"select * from {cfg['lines_stg']} where {pk} = %s", (pk_val,))
+    tgt_lines = _rows(cur, "select * from proc.bp_po_line_items_stg where po_id = %s", (po["po_id"],))
+    set_amount = _set_amount_for_invoice(cur, po["po_id"]) if doc_type == "invoice" else None
+    link = score_link(row, po, cfg["profile"], src_lines, tgt_lines, set_amount_usd=set_amount)
+    if conf < MIN_CONFIDENCE:
+        return po, link, "low_extraction_confidence"
+    if link["F"] < MIN_LINK_SCORE:
+        return po, link, "low_link_score"
+    return po, link, None
+
+
+def _do_copy(cur, doc_type: str, row: dict) -> int:
+    """Copy a staged doc + its line items into _trgt (deal cols excluded)."""
+    cfg = _DOC[doc_type]
+    cols = _copyable_cols(cur, cfg["stg"], cfg["trgt"])
+    _upsert(cur, cfg["trgt"], cfg["pk"], row, cols)
+    return _copy_lines(cur, cfg["pk"], row[cfg["pk"]], cfg["lines_stg"], cfg["lines_trgt"])
+
+
 def _promote(conn, doc_types, limit) -> dict:
     cur = conn.cursor()
     promoted, held = 0, 0
@@ -465,41 +509,10 @@ def _promote(conn, doc_types, limit) -> dict:
                      + (f" limit {int(limit)}" if limit else ""))
         for row in cand:
             pk_val = row[pk]
-            reason = None
-            link = None
-            po = _find_parent_po(cur, row.get("po_id"))
-            conf = _to_float(row.get("confidence_score")) or 0.0
-
-            if row.get("po_id") is None:
-                reason = "no_parent_reference"
-            elif po is None:
-                reason = "parent_not_found"
-            elif conf < MIN_CONFIDENCE:
-                reason = "low_extraction_confidence"
-            else:
-                src_lines = _rows(cur, f"select * from {cfg['lines_stg']} where {pk} = %s", (pk_val,))
-                tgt_lines = _rows(cur, "select * from proc.bp_po_line_items_stg where po_id = %s",
-                                  (po["po_id"],))
-                # Set-level N:1 amount: sum all invoices (stg+trgt, deduped) on this PO.
-                set_amount = None
-                if doc_type == "invoice":
-                    cur.execute(
-                        "select coalesce(sum(amt),0) from ("
-                        "  select invoice_id, max(converted_amount_usd) amt from ("
-                        "    select invoice_id, converted_amount_usd from proc.bp_invoice_stg where po_id=%s"
-                        "    union all"
-                        "    select invoice_id, converted_amount_usd from proc.bp_invoice_trgt where po_id=%s"
-                        "  ) x group by invoice_id"
-                        ") y", (po["po_id"], po["po_id"]))
-                    set_amount = _to_float(cur.fetchone()[0])
-                link = score_link(row, po, cfg["profile"], src_lines, tgt_lines, set_amount_usd=set_amount)
-                if link["F"] < MIN_LINK_SCORE:
-                    reason = "low_link_score"
+            po, link, reason = _evaluate(cur, doc_type, row)
 
             if reason is None:  # PROMOTE
-                cols = _copyable_cols(cur, cfg["stg"], cfg["trgt"])
-                _upsert(cur, cfg["trgt"], pk, row, cols)
-                n_lines = _copy_lines(cur, pk, pk_val, cfg["lines_stg"], cfg["lines_trgt"])
+                n_lines = _do_copy(cur, doc_type, row)
                 promoted += 1
                 warn = link["F"] < _BAND_AUTO
                 record_action(
@@ -521,7 +534,7 @@ def _promote(conn, doc_types, limit) -> dict:
                     doc_type=doc_type, doc_pk=str(pk_val), agent="linking_engine",
                     status="skipped", confidence=(link["F"] if link else None),
                     summary=f"held {doc_type} {pk_val}: {reason}",
-                    details={"reason": reason, "confidence_score": conf,
+                    details={"reason": reason,
                              "F": link["F"] if link else None,
                              "decision": link["decision"] if link else None,
                              "signals": link["signals"] if link else None},
@@ -530,3 +543,92 @@ def _promote(conn, doc_types, limit) -> dict:
                                 "reason": reason, "F": link["F"] if link else None})
 
     return {"promoted": promoted, "held": held, "by_reason": by_reason, "details": details}
+
+
+# ---------------------------------------------------------------------------
+# Human review queue
+# ---------------------------------------------------------------------------
+def review_queue(conn: Any = None, doc_types=("invoice", "quote"),
+                 min_score: Optional[float] = None) -> list[dict]:
+    """List not-yet-promoted staged docs in the REVIEW band — a verified parent
+    link with REVIEW_MIN <= F < MIN_LINK_SCORE — with their gap report, for human
+    approval. Read-only (no writes)."""
+    floor = REVIEW_MIN if min_score is None else float(min_score)
+    if conn is None:
+        with get_conn() as own:
+            return _review_queue(own, doc_types, floor)
+    return _review_queue(conn, doc_types, floor)
+
+
+def _review_queue(conn, doc_types, floor) -> list[dict]:
+    cur = conn.cursor()
+    out: list[dict] = []
+    for doc_type in doc_types:
+        cfg = _DOC[doc_type]
+        pk = cfg["pk"]
+        cand = _rows(cur,
+                     f"select * from {cfg['stg']} s where s.{pk} is not null "
+                     f"and not exists (select 1 from {cfg['trgt']} t where t.{pk} = s.{pk})")
+        for row in cand:
+            po, link, reason = _evaluate(cur, doc_type, row)
+            if link is None or not (floor <= link["F"] < MIN_LINK_SCORE):
+                continue
+            # gap report: signals sorted by impact = |w * r * (2s-1)| (PDF Stage 8)
+            gaps = sorted(link["signals"], key=lambda s: abs(s["c"]), reverse=True)
+            out.append({
+                "doc_type": doc_type, "doc_pk": row[pk], "parent_po": po["po_id"],
+                "F": link["F"], "decision": link["decision"],
+                "confidence_score": _to_float(row.get("confidence_score")),
+                "supplier_id": row.get("supplier_id"),
+                "amount_usd": _to_float(row.get("converted_amount_usd")),
+                "weak_or_conflicting": [g for g in gaps if g["status"] not in ("OK",)],
+                "gap_report": gaps,
+            })
+    out.sort(key=lambda x: x["F"], reverse=True)
+    return out
+
+
+def approve_promotion(doc_type: str, doc_pk: str, reviewer: Optional[str] = None,
+                      note: Optional[str] = None, conn: Any = None) -> dict:
+    """Human override: force-promote a specific staged doc to _trgt regardless of
+    the F gate, recording who approved it and the score at approval time."""
+    if conn is None:
+        with get_conn() as own:
+            own.autocommit = False
+            try:
+                result = _approve(own, doc_type, doc_pk, reviewer, note)
+                own.commit()
+                return result
+            except Exception:
+                own.rollback()
+                raise
+    return _approve(conn, doc_type, doc_pk, reviewer, note)
+
+
+def _approve(conn, doc_type: str, doc_pk: str, reviewer, note) -> dict:
+    if doc_type not in _DOC:
+        return {"status": "error", "detail": f"unknown doc_type {doc_type}"}
+    cfg = _DOC[doc_type]
+    pk = cfg["pk"]
+    cur = conn.cursor()
+    rows = _rows(cur, f"select * from {cfg['stg']} where {pk} = %s", (doc_pk,))
+    if not rows:
+        return {"status": "not_found", "detail": f"{doc_type} {doc_pk} not in staging"}
+    row = rows[0]
+    po, link, reason = _evaluate(cur, doc_type, row)
+    n_lines = _do_copy(cur, doc_type, row)
+    record_action(
+        phase=PHASE_CONSOLIDATION, action_type="promote_approved",
+        doc_type=doc_type, doc_pk=str(doc_pk), agent=reviewer or "human_review",
+        status="ok", confidence=(link["F"] if link else None),
+        summary=f"human-approved promotion of {doc_type} {doc_pk}"
+                + (f" (F={link['F']}, was {reason})" if link else ""),
+        details={"approved_by": reviewer or "human_review", "note": note,
+                 "F": link["F"] if link else None,
+                 "decision": link["decision"] if link else None,
+                 "held_reason": reason, "parent_po": po["po_id"] if po else None,
+                 "lines": n_lines, "signals": link["signals"] if link else None},
+        conn=conn)
+    return {"status": "promoted", "doc_type": doc_type, "doc_pk": doc_pk,
+            "F": link["F"] if link else None, "decision": link["decision"] if link else None,
+            "approved_by": reviewer or "human_review", "lines": n_lines}
