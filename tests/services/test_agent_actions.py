@@ -39,11 +39,18 @@ def test_record_action_uses_injected_conn_and_does_not_commit():
         details={"n": 3},
         conn=conn,
     )
-    assert len(conn._cur.executed) == 1
-    sql, params = conn._cur.executed[0]
-    assert "INSERT INTO proc.agent_actions" in sql
+    # The write is wrapped in a SAVEPOINT, so executed also holds SAVEPOINT/
+    # RELEASE statements; find the one INSERT among them.
+    inserts = [(sql, params) for sql, params in conn._cur.executed
+               if "INSERT INTO proc.agent_actions" in sql]
+    assert len(inserts) == 1
+    sql, params = inserts[0]
     # details serialized to JSON text
     assert '"n": 3' in params[12]
+    # a SAVEPOINT was taken and released around the insert
+    stmts = [s for s, _ in conn._cur.executed]
+    assert any(s.startswith("SAVEPOINT") for s in stmts)
+    assert any(s.startswith("RELEASE SAVEPOINT") for s in stmts)
     # caller owns the transaction: writer must NOT commit an injected conn
     assert conn.committed is False
 
@@ -81,3 +88,55 @@ def test_bulk_record_empty_is_noop():
     conn = _RecordingConn()
     aa.bulk_record([], conn=conn)
     assert conn._cur.many == []
+
+
+class _FailingInsertCursor:
+    """Cursor that records statements but raises on the agent_actions INSERT,
+    simulating e.g. a missing table — to prove the SAVEPOINT contains the failure."""
+
+    def __init__(self):
+        self.executed = []
+
+    def execute(self, sql, params=()):
+        self.executed.append(sql)
+        if "INSERT INTO proc.agent_actions" in sql:
+            raise RuntimeError("relation does not exist")
+
+    def executemany(self, sql, params):
+        self.executed.append(sql)
+        if "INSERT INTO proc.agent_actions" in sql:
+            raise RuntimeError("relation does not exist")
+
+
+class _FailingConn:
+    def __init__(self):
+        self._cur = _FailingInsertCursor()
+
+    def cursor(self):
+        return self._cur
+
+
+def test_shared_conn_insert_failure_rolls_back_to_savepoint_and_is_swallowed():
+    # A failed action insert on a caller-owned conn must (a) not propagate, and
+    # (b) issue ROLLBACK TO SAVEPOINT so the caller's transaction stays usable.
+    conn = _FailingConn()
+    aa.record_action(
+        phase=aa.PHASE_VALIDATION, action_type="discrepancy",
+        field_name="tax_amount", conn=conn,
+    )  # must not raise
+    stmts = conn._cur.executed
+    assert any(s.startswith("SAVEPOINT") for s in stmts)
+    assert any(s.startswith("ROLLBACK TO SAVEPOINT") for s in stmts)
+    # the savepoint was NOT released (the insert failed)
+    assert not any(s.startswith("RELEASE SAVEPOINT") for s in stmts)
+
+
+def test_shared_conn_bulk_insert_failure_rolls_back_to_savepoint():
+    conn = _FailingConn()
+    aa.bulk_record(
+        [{"phase": aa.PHASE_VALIDATION, "action_type": "discrepancy"}],
+        conn=conn,
+    )  # must not raise
+    stmts = conn._cur.executed
+    assert any(s.startswith("SAVEPOINT") for s in stmts)
+    assert any(s.startswith("ROLLBACK TO SAVEPOINT") for s in stmts)

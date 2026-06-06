@@ -182,10 +182,10 @@ def ollama_cloud_generate(
             )
             response.raise_for_status()
             body = response.json()
-            text = (body.get("response") or "").strip()
-            if not text:
-                text = (body.get("thinking") or "").strip()
-            return text
+            # Return only the user-facing response. Deliberately do NOT fall back
+            # to a thinking/reasoning field — for summaries that would leak raw
+            # chain-of-thought; an empty response surfaces as None instead.
+            return (body.get("response") or "").strip()
         except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(

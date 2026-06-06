@@ -69,19 +69,42 @@ def _row_params(fields: Mapping[str, Any]) -> tuple:
     )
 
 
+_SAVEPOINT = "agent_actions_sp"
+
+
+def _write_on_shared_conn(conn: Any, run) -> None:
+    """Run an INSERT on a caller-owned conn inside a SAVEPOINT.
+
+    A logging write must never poison the caller's transaction. Without a
+    savepoint, a failed INSERT into proc.agent_actions (e.g. the table is
+    missing in some environment) would leave psycopg2 in an aborted-transaction
+    state, so the caller's subsequent commit would silently discard its own rows
+    (e.g. the discrepancy rows in write_discrepancies). The savepoint confines
+    any failure to the action write alone.
+    """
+    cur = conn.cursor()
+    cur.execute(f"SAVEPOINT {_SAVEPOINT}")
+    try:
+        run(cur)
+        cur.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
+    except Exception:
+        cur.execute(f"ROLLBACK TO SAVEPOINT {_SAVEPOINT}")
+        raise
+
+
 def record_action(*, phase: str, action_type: str, conn: Any = None, **fields: Any) -> None:
     """Insert one action row. Best-effort: errors are logged, never raised.
 
-    If ``conn`` is provided, the row is written on that connection's cursor and
-    the caller owns commit/rollback. Otherwise a short autonomous transaction is
-    opened and committed here.
+    If ``conn`` is provided, the row is written on that connection's cursor
+    (inside a SAVEPOINT) and the caller owns commit/rollback. Otherwise a short
+    autonomous transaction is opened and committed here.
     """
     try:
         fields["phase"] = phase
         fields["action_type"] = action_type
         params = _row_params(fields)
         if conn is not None:
-            conn.cursor().execute(_INSERT, params)
+            _write_on_shared_conn(conn, lambda cur: cur.execute(_INSERT, params))
             return
         with get_conn() as own:
             own.autocommit = False
@@ -106,7 +129,7 @@ def bulk_record(rows: Iterable[Mapping[str, Any]], *, conn: Any = None) -> None:
         if not params:
             return
         if conn is not None:
-            conn.cursor().executemany(_INSERT, params)
+            _write_on_shared_conn(conn, lambda cur: cur.executemany(_INSERT, params))
             return
         with get_conn() as own:
             own.autocommit = False
