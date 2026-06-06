@@ -126,6 +126,16 @@ def summarize_deal(deal_id: str, conn: Any = None) -> Optional[dict]:
 
     Raises SummarizationError if the LLM returns nothing.
     """
+    # Reconcile first (best-effort) so the action trail the summary reads back
+    # includes the fresh consolidation matches/mismatches. A reconcile failure
+    # must never block the summary. Imported lazily to avoid an import cycle
+    # (reconciliation imports gather_deal_context from this module).
+    try:
+        from src.services.reconciliation import reconcile_deal
+        reconcile_deal(deal_id, conn=conn)
+    except Exception as exc:
+        log.warning("reconcile before summary failed for %s: %s", deal_id, exc)
+
     ctx = gather_deal_context(deal_id, conn=conn)
     if ctx is None:
         return None
