@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:extract")
 
+# Ollama Cloud (remote, authenticated) — used for non-critical tasks like
+# summarization so the local GPU stays dedicated to AgentNick extraction.
+OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://api.ollama.com")
+OLLAMA_CLOUD_API_KEY = os.getenv("OLLAMA_CLOUD_API_KEY")
+
 # Max concurrent Ollama requests — match OLLAMA_NUM_PARALLEL (default 2)
 _MAX_CONCURRENT = int(os.getenv("OLLAMA_MAX_CONCURRENT", "2"))
 _semaphore = threading.Semaphore(_MAX_CONCURRENT)
@@ -134,6 +139,67 @@ def ollama_generate(
         )
     except Exception:
         pass
+    return None
+
+
+def ollama_cloud_generate(
+    prompt: str,
+    *,
+    model: str,
+    timeout: int = 120,
+    temperature: float = 0,
+    num_predict: int = 1024,
+    retries: int = 2,
+) -> Optional[str]:
+    """Send a generation request to the Ollama Cloud API (remote, authenticated).
+
+    Used for non-critical tasks (e.g. deal summarization) so the local GPU
+    stays free for AgentNick extraction. Returns the response text, or None on
+    failure. Requires OLLAMA_CLOUD_API_KEY in the environment. Unlike the local
+    ``ollama_generate``, this does not use the local GPU semaphore — the call is
+    remote.
+    """
+    api_key = os.getenv("OLLAMA_CLOUD_API_KEY", OLLAMA_CLOUD_API_KEY)
+    base = os.getenv("OLLAMA_CLOUD_BASE_URL", OLLAMA_CLOUD_BASE_URL).rstrip("/")
+    if not api_key:
+        logger.error("ollama_cloud_generate: OLLAMA_CLOUD_API_KEY not set")
+        return None
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload: Dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": temperature, "num_predict": num_predict},
+    }
+
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.post(
+                f"{base}/api/generate",
+                json=payload,
+                headers=headers,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            text = (body.get("response") or "").strip()
+            if not text:
+                text = (body.get("thinking") or "").strip()
+            return text
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
+            delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
+            logger.warning(
+                "Ollama Cloud transient error (attempt %d/%d, model=%s): %s — retrying in %ds",
+                attempt, retries, model, exc, delay,
+            )
+            if attempt < retries:
+                time.sleep(delay)
+        except Exception as exc:
+            logger.exception("Ollama Cloud request failed (attempt %d/%d): %s", attempt, retries, exc)
+            if attempt < retries:
+                time.sleep(RETRY_BASE_DELAY)
+
+    logger.error("Ollama Cloud request failed after %d attempts (model=%s)", retries, model)
     return None
 
 

@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Optional
 
 from src.services.db import get_conn
-from src.services.ollama_client import ollama_generate
+from src.services.ollama_client import ollama_cloud_generate
 
 log = logging.getLogger(__name__)
 
-# General model for summarization — deliberately NOT the extraction adapter,
-# so the GPU/AgentNick stays free for extraction. Swappable to llm_router later.
-_SUMMARY_MODEL = "qwen2.5:7b"
+# Summarization runs on the Ollama Cloud API (remote), NOT the local GPU, so the
+# local AgentNick model stays dedicated to extraction. Model is env-configurable
+# via PROCWISE_SUMMARY_MODEL; default is a strong general cloud model.
+_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "gpt-oss:120b")
 
 # (final table, line-items table or None, primary-key column)
 # Contracts are intentionally excluded: proc.bp_contracts has no deal_id column
@@ -128,7 +130,7 @@ def summarize_deal(deal_id: str, conn: Any = None) -> Optional[dict]:
     if ctx is None:
         return None
     prompt = _build_prompt(ctx)
-    text = ollama_generate(
+    text = ollama_cloud_generate(
         prompt,
         model=_SUMMARY_MODEL,
         temperature=0.0,

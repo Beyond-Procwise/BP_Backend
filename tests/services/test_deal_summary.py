@@ -99,7 +99,7 @@ def test_summarize_deal_returns_text_and_sources(monkeypatch):
                         "actions": 2, "discrepancies": 0},
         },
     )
-    monkeypatch.setattr(ds, "ollama_generate", lambda *a, **k: "Acme Deal: one invoice for ACME.")
+    monkeypatch.setattr(ds, "ollama_cloud_generate", lambda *a, **k: "Acme Deal: one invoice for ACME.")
     out = ds.summarize_deal("D-9")
     assert out["deal_id"] == "D-9"
     assert "Acme Deal" in out["summary"]
@@ -120,7 +120,7 @@ def test_summarize_deal_raises_on_empty_llm(monkeypatch):
             "actions": [], "discrepancies": [], "sources": {"invoices": 1},
         },
     )
-    monkeypatch.setattr(ds, "ollama_generate", lambda *a, **k: "")
+    monkeypatch.setattr(ds, "ollama_cloud_generate", lambda *a, **k: "")
     import pytest
     with pytest.raises(ds.SummarizationError):
         ds.summarize_deal("D-9")
