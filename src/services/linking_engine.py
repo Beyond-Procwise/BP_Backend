@@ -69,6 +69,27 @@ def cmp_exact_ref(a: Any, b: Any) -> tuple[float, str]:
 cmp_exact_id = cmp_exact_ref  # same normalized-equality semantics
 
 
+def cmp_supplier(a: Any, b: Any) -> tuple[float, str]:
+    """Supplier identity with a fuzzy fallback (PDF D.4 SUPPLIER_NAME_CANONICAL).
+
+    Exact resolved-ID match -> strong (1.0). When resolved IDs differ but share a
+    strong root (one normalized ID is a prefix of the other, e.g. SUP-Nexaspark
+    vs SUP-NexasparkMarketingLtd — a supplier-master resolution drift), treat as
+    WEAK supporting evidence (0.7) rather than a hard Tier-1 conflict, so it
+    supports the link without imposing the 0.45 conflict cap. Genuinely different
+    suppliers remain a CONFLICT.
+    """
+    na, nb = _norm_id(a), _norm_id(b)
+    if na is None or nb is None:
+        return 0.5, "MISSING"
+    if na == nb:
+        return 1.0, "OK"
+    short, lng = sorted([na, nb], key=len)
+    if len(short) >= 8 and lng.startswith(short):
+        return 0.7, "WEAK"
+    return 0.0, "CONFLICT"
+
+
 def _to_float(v: Any) -> Optional[float]:
     if v is None:
         return None
@@ -100,24 +121,28 @@ def _tokens(text: Any) -> set[str]:
 
 
 def _line_pair_score(a: dict, b: dict) -> float:
-    """Per-line composite: description overlap, quantity, unit price."""
+    """Per-line composite over the sub-signals that actually have data on both
+    sides (description always; quantity / unit price only when present). Missing
+    qty/price are neutral, not penalised (PDF: missing -> neutral, not conflict)."""
+    parts: list[tuple[float, float]] = []  # (weight, score)
     desc_a, desc_b = _tokens(a.get("item_description")), _tokens(b.get("item_description"))
     if desc_a or desc_b:
-        overlap = len(desc_a & desc_b) / max(1, len(desc_a | desc_b))
-    else:
-        overlap = 0.0
+        parts.append((0.5, len(desc_a & desc_b) / max(1, len(desc_a | desc_b))))
     qa, qb = _to_float(a.get("quantity")), _to_float(b.get("quantity"))
-    qty = 1.0 if (qa is not None and qb is not None and abs(qa - qb) < 1e-9) else 0.0
+    if qa is not None and qb is not None:
+        parts.append((0.25, 1.0 if abs(qa - qb) < 1e-9 else 0.0))
     pa, pb = _to_float(a.get("unit_price")), _to_float(b.get("unit_price"))
-    price = 1.0 if (pa is not None and pb is not None and abs(pa - pb) < 1e-6) else 0.0
-    # weights: description 0.4, quantity 0.3, unit price 0.3
-    return 0.4 * overlap + 0.3 * qty + 0.3 * price
+    if pa is not None and pb is not None:
+        parts.append((0.25, 1.0 if abs(pa - pb) < 1e-6 else 0.0))
+    if not parts:
+        return 0.0
+    return sum(w * s for w, s in parts) / sum(w for w, _ in parts)
 
 
 def cmp_line_composite(src_lines: list[dict], tgt_lines: list[dict]) -> tuple[float, str]:
     if not src_lines or not tgt_lines:
         return 0.5, "MISSING"
-    # greedy best-match each source line to a target line
+    # best-match each source (e.g. invoice) line to a target (PO) line
     used: set[int] = set()
     scores: list[float] = []
     for sl in src_lines:
@@ -132,8 +157,11 @@ def cmp_line_composite(src_lines: list[dict], tgt_lines: list[dict]) -> tuple[fl
             used.add(best_j)
         scores.append(best)
     avg = sum(scores) / len(scores) if scores else 0.0
-    # count coverage: penalise extra/missing lines
-    coverage = min(len(src_lines), len(tgt_lines)) / max(len(src_lines), len(tgt_lines))
+    # Coverage penalty ONLY for source-extra lines (invoice lines with no PO
+    # match). A partial invoice covering a SUBSET of PO lines is legitimate
+    # (split shipment / staged payment) and is not penalised (PDF LINE_COUNT_COVERAGE).
+    extra = max(0, len(src_lines) - len(tgt_lines))
+    coverage = 1.0 - (extra / len(src_lines)) if src_lines else 1.0
     s = avg * coverage
     return s, ("OK" if s >= 0.8 else "WEAK" if s >= 0.5 else "CONFLICT")
 
@@ -201,19 +229,27 @@ PROFILES = {
 }
 
 
-def _signal_match(kind: str, src: dict, tgt: dict, src_lines, tgt_lines, date_field: str) -> tuple[float, str]:
+def _signal_match(kind: str, src: dict, tgt: dict, src_lines, tgt_lines, date_field: str,
+                  set_amount_usd: Optional[float] = None) -> tuple[float, str]:
     if kind == "po_ref":
         return cmp_exact_ref(src.get("po_id"), tgt.get("po_id"))
     if kind == "supplier_id":
-        return cmp_exact_id(src.get("supplier_id"), tgt.get("supplier_id"))
+        return cmp_supplier(src.get("supplier_id"), tgt.get("supplier_id"))
     if kind == "amount":
-        return cmp_numeric_tol(src.get("converted_amount_usd"), tgt.get("converted_amount_usd"))
+        # Set-level for N:1 (PDF Appendix B): compare the aggregate source amount
+        # (sum of sibling invoices sharing the PO) against the PO total, so a
+        # legitimate partial/split invoice does not read as an amount conflict.
+        src_amt = set_amount_usd if set_amount_usd is not None else src.get("converted_amount_usd")
+        return cmp_numeric_tol(src_amt, tgt.get("converted_amount_usd"))
     if kind == "currency":
         return cmp_exact_ref(src.get("currency"), tgt.get("currency"))
     if kind == "line_set":
         return cmp_line_composite(src_lines, tgt_lines)
     if kind == "temporal":
-        return cmp_temporal(src.get(date_field), tgt.get("order_date"), tgt.get("expected_delivery_date"))
+        # PO has no expiry field; expected_delivery_date is a delivery target, NOT
+        # an expiry, so a legitimate later (e.g. staged-payment) invoice must not
+        # be flagged. Compare on order-precedence + plausibility window only.
+        return cmp_temporal(src.get(date_field), tgt.get("order_date"), None)
     if kind == "location":
         return cmp_location(src.get("country"), src.get("region"),
                             tgt.get("ship_to_country"), tgt.get("delivery_region"))
@@ -233,9 +269,16 @@ def _band(F: float) -> str:
 
 
 def score_link(source_row: dict, target_row: dict, profile_name: str,
-               source_lines: Optional[list] = None, target_lines: Optional[list] = None) -> dict:
+               source_lines: Optional[list] = None, target_lines: Optional[list] = None,
+               set_amount_usd: Optional[float] = None) -> dict:
     """Deterministically score the relationship source→target. Returns the full
-    auditable result (PDF stages 1A..7C)."""
+    auditable result (PDF stages 1A..7C).
+
+    ``set_amount_usd`` (PDF Appendix B): when scoring an N:1 child (e.g. one of
+    several invoices on a PO), pass the aggregate amount of the whole sibling set
+    so the amount signal compares the set total against the parent, not the
+    single child.
+    """
     profile = PROFILES[profile_name]
     src_lines = source_lines or []
     tgt_lines = target_lines or []
@@ -246,7 +289,7 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
     signals = []
     for spec in profile["signals"]:
         s, status = _signal_match(spec["kind"], source_row, target_row, src_lines, tgt_lines,
-                                  profile["date_field"])
+                                  profile["date_field"], set_amount_usd)
         # Stage 1B/1C: normalized/system fields (currency) trust = 1.0; else conf proxy.
         if spec["kind"] == "currency":
             q = 1.0
@@ -437,7 +480,19 @@ def _promote(conn, doc_types, limit) -> dict:
                 src_lines = _rows(cur, f"select * from {cfg['lines_stg']} where {pk} = %s", (pk_val,))
                 tgt_lines = _rows(cur, "select * from proc.bp_po_line_items_stg where po_id = %s",
                                   (po["po_id"],))
-                link = score_link(row, po, cfg["profile"], src_lines, tgt_lines)
+                # Set-level N:1 amount: sum all invoices (stg+trgt, deduped) on this PO.
+                set_amount = None
+                if doc_type == "invoice":
+                    cur.execute(
+                        "select coalesce(sum(amt),0) from ("
+                        "  select invoice_id, max(converted_amount_usd) amt from ("
+                        "    select invoice_id, converted_amount_usd from proc.bp_invoice_stg where po_id=%s"
+                        "    union all"
+                        "    select invoice_id, converted_amount_usd from proc.bp_invoice_trgt where po_id=%s"
+                        "  ) x group by invoice_id"
+                        ") y", (po["po_id"], po["po_id"]))
+                    set_amount = _to_float(cur.fetchone()[0])
+                link = score_link(row, po, cfg["profile"], src_lines, tgt_lines, set_amount_usd=set_amount)
                 if link["F"] < MIN_LINK_SCORE:
                     reason = "low_link_score"
 
