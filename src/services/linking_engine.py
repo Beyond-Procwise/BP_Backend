@@ -60,6 +60,26 @@ def _norm_id(v: Any) -> Optional[str]:
     return s or None
 
 
+def _norm_po(v: Any) -> Optional[str]:
+    """Canonical PO number. Procurement documents reference the same PO in
+    inconsistent formats: the PO table stores it bare ('506789'), quotes prefix
+    it ('PO506789'), invoices are mixed ('PO507269' / '389948'). Strip
+    non-alphanumerics AND a leading 'po' so every form maps to the bare number,
+    so quote->PO and invoice->PO joins actually connect."""
+    s = _norm_id(v)
+    if s is None:
+        return None
+    s = re.sub(r"^po", "", s)
+    return s or None
+
+
+def cmp_po_ref(a: Any, b: Any) -> tuple[float, str]:
+    na, nb = _norm_po(a), _norm_po(b)
+    if na is None or nb is None:
+        return 0.5, "MISSING"
+    return (1.0, "OK") if na == nb else (0.0, "CONFLICT")
+
+
 def cmp_exact_ref(a: Any, b: Any) -> tuple[float, str]:
     na, nb = _norm_id(a), _norm_id(b)
     if na is None or nb is None:
@@ -233,7 +253,7 @@ PROFILES = {
 def _signal_match(kind: str, src: dict, tgt: dict, src_lines, tgt_lines, date_field: str,
                   set_amount_usd: Optional[float] = None) -> tuple[float, str]:
     if kind == "po_ref":
-        return cmp_exact_ref(src.get("po_id"), tgt.get("po_id"))
+        return cmp_po_ref(src.get("po_id"), tgt.get("po_id"))
     if kind == "supplier_id":
         return cmp_supplier(src.get("supplier_id"), tgt.get("supplier_id"))
     if kind == "amount":
@@ -387,11 +407,20 @@ def _table_columns(cur, schema_table: str) -> list[str]:
     return [r[0] for r in cur.fetchall()]
 
 
+# SQL fragment that normalizes a po_id column the same way as _norm_po()
+# (strip non-alphanumerics, lowercase, drop a leading 'po').
+_PO_NORM_SQL = "regexp_replace(regexp_replace(lower({col}), '[^a-z0-9]', '', 'g'), '^po', '')"
+
+
 def _find_parent_po(cur, po_id) -> Optional[dict]:
-    if po_id is None:
+    """Resolve the parent PO by canonical PO number, tolerant of PO-prefix and
+    separator differences between the reference and the PO table."""
+    npo = _norm_po(po_id)
+    if npo is None:
         return None
+    cond = _PO_NORM_SQL.format(col="po_id")
     for tbl in (_PO["trgt"], _PO["stg"]):
-        rows = _rows(cur, f"select * from {tbl} where po_id = %s limit 1", (po_id,))
+        rows = _rows(cur, f"select * from {tbl} where {cond} = %s limit 1", (npo,))
         if rows:
             return rows[0]
     return None
@@ -420,7 +449,8 @@ def _upsert(cur, trgt_table: str, pk: str, row: dict, cols: list[str]) -> None:
             [row.get(c) for c in cols])
 
 
-def _copy_lines(cur, pk: str, pk_val, lines_stg: str, lines_trgt: str) -> int:
+def _copy_lines(cur, pk: str, pk_val, lines_stg: str, lines_trgt: str,
+                canonical_po: Optional[str] = None) -> int:
     cols = _copyable_cols(cur, lines_stg, lines_trgt)
     if pk not in cols:
         # line tables are keyed by the parent pk; ensure it's carried
@@ -428,6 +458,8 @@ def _copy_lines(cur, pk: str, pk_val, lines_stg: str, lines_trgt: str) -> int:
     rows = _rows(cur, f"select * from {lines_stg} where {pk} = %s", (pk_val,))
     cur.execute(f"delete from {lines_trgt} where {pk} = %s", (pk_val,))
     for r in rows:
+        if canonical_po is not None and "po_id" in cols:
+            r = {**r, "po_id": canonical_po}  # canonicalize the line's PO reference
         cur.execute(
             f"insert into {lines_trgt} (" + ", ".join(cols) + ") values (" +
             ", ".join(["%s"] * len(cols)) + ")",
@@ -452,15 +484,18 @@ def promote_ready(conn: Any = None, doc_types=("invoice", "quote"), limit: Optio
 
 
 def _set_amount_for_invoice(cur, po_id) -> Optional[float]:
-    """Sum of all invoices (stg+trgt, deduped by invoice_id) on this PO — for N:1."""
+    """Sum of all invoices (stg+trgt, deduped by invoice_id) on this PO — for N:1.
+    Matches on the canonical PO number so prefixed/bare invoice po_ids all count."""
+    npo = _norm_po(po_id)
+    inv_cond = _PO_NORM_SQL.format(col="po_id")
     cur.execute(
         "select coalesce(sum(amt),0) from ("
         "  select invoice_id, max(converted_amount_usd) amt from ("
-        "    select invoice_id, converted_amount_usd from proc.bp_invoice_stg where po_id=%s"
+        f"    select invoice_id, converted_amount_usd from proc.bp_invoice_stg where {inv_cond}=%s"
         "    union all"
-        "    select invoice_id, converted_amount_usd from proc.bp_invoice_trgt where po_id=%s"
+        f"    select invoice_id, converted_amount_usd from proc.bp_invoice_trgt where {inv_cond}=%s"
         "  ) x group by invoice_id"
-        ") y", (po_id, po_id))
+        ") y", (npo, npo))
     return _to_float(cur.fetchone()[0])
 
 
@@ -486,12 +521,34 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
     return po, link, None
 
 
-def _do_copy(cur, doc_type: str, row: dict) -> int:
-    """Copy a staged doc + its line items into _trgt (deal cols excluded)."""
+def _ensure_po_in_trgt(cur, po: dict) -> None:
+    """Make sure the parent PO (the deal anchor) is itself in _trgt, so a promoted
+    invoice/quote is never an orphan. Copies from _stg if absent; preserves any
+    trigger-set deal columns on update."""
+    cfg = _PO
+    rows = _rows(cur, f"select * from {cfg['stg']} where po_id = %s", (po["po_id"],))
+    src = rows[0] if rows else po  # prefer the staged source; fall back to the row we have
+    cols = _copyable_cols(cur, cfg["stg"], cfg["trgt"])
+    cols = [c for c in cols if c in src]
+    _upsert(cur, cfg["trgt"], cfg["pk"], src, cols)
+    _copy_lines(cur, cfg["pk"], po["po_id"], "proc.bp_po_line_items_stg",
+                "proc.bp_po_line_items_trgt")
+
+
+def _do_copy(cur, doc_type: str, row: dict, po: Optional[dict] = None) -> int:
+    """Copy a staged doc + its line items into _trgt (deal cols excluded). When a
+    parent PO is given, canonicalize the doc's po_id to the PO's bare number so
+    the whole deal shares one join key, and ensure the PO anchor is in _trgt."""
     cfg = _DOC[doc_type]
+    canonical_po = None
+    if po is not None:
+        canonical_po = po["po_id"]
+        row = {**row, "po_id": canonical_po}
+        _ensure_po_in_trgt(cur, po)
     cols = _copyable_cols(cur, cfg["stg"], cfg["trgt"])
     _upsert(cur, cfg["trgt"], cfg["pk"], row, cols)
-    return _copy_lines(cur, cfg["pk"], row[cfg["pk"]], cfg["lines_stg"], cfg["lines_trgt"])
+    return _copy_lines(cur, cfg["pk"], row[cfg["pk"]], cfg["lines_stg"], cfg["lines_trgt"],
+                       canonical_po=canonical_po)
 
 
 def _promote(conn, doc_types, limit) -> dict:
@@ -512,7 +569,7 @@ def _promote(conn, doc_types, limit) -> dict:
             po, link, reason = _evaluate(cur, doc_type, row)
 
             if reason is None:  # PROMOTE
-                n_lines = _do_copy(cur, doc_type, row)
+                n_lines = _do_copy(cur, doc_type, row, po=po)
                 promoted += 1
                 warn = link["F"] < _BAND_AUTO
                 record_action(
@@ -543,6 +600,120 @@ def _promote(conn, doc_types, limit) -> dict:
                                 "reason": reason, "F": link["F"] if link else None})
 
     return {"promoted": promoted, "held": held, "by_reason": by_reason, "details": details}
+
+
+# ---------------------------------------------------------------------------
+# Canonicalize PO references already in _trgt so a deal's docs share one join key
+# ---------------------------------------------------------------------------
+def canonicalize_po_references(conn: Any = None) -> dict:
+    """Align po_id across _trgt to the bare PO number of the PO it resolves to,
+    so quote.po_id == invoice.po_id == purchase_order.po_id for the same PO and
+    the deal-grouping trigger can join cleanly. Only rewrites a value when it
+    resolves to an existing PO and currently differs (e.g. 'PO506789' -> '506789').
+    Never touches deal columns. Read-modify on _trgt only."""
+    if conn is None:
+        with get_conn() as own:
+            own.autocommit = False
+            try:
+                result = _canon_po(own)
+                own.commit()
+                return result
+            except Exception:
+                own.rollback()
+                raise
+    return _canon_po(conn)
+
+
+def _canon_po(conn) -> dict:
+    cur = conn.cursor()
+    updated: dict[str, int] = {}
+    for doc_type, cfg in _DOC.items():
+        pk = cfg["pk"]
+        n = 0
+        rows = _rows(cur, f"select {pk}, po_id from {cfg['trgt']} where po_id is not null")
+        for r in rows:
+            po = _find_parent_po(cur, r["po_id"])
+            if po is None or po["po_id"] == r["po_id"]:
+                continue
+            canon = po["po_id"]
+            cur.execute(f"update {cfg['trgt']} set po_id=%s where {pk}=%s", (canon, r[pk]))
+            # line items carry po_id too on some tables
+            if "po_id" in _table_columns(cur, cfg["lines_trgt"]):
+                cur.execute(f"update {cfg['lines_trgt']} set po_id=%s where {pk}=%s", (canon, r[pk]))
+            n += 1
+        updated[doc_type] = n
+    return {"updated": updated, "total": sum(updated.values())}
+
+
+# ---------------------------------------------------------------------------
+# Quote-anchored traversal: quote (sourcing) -> PO (award) -> invoices (billing)
+# ---------------------------------------------------------------------------
+def quote_chains(conn: Any = None) -> dict:
+    """Procurement starts with the quote. For every distinct quote, resolve its
+    PO (canonical PO number, prefix-tolerant) and the invoices billed against
+    that PO, with the deterministic quote->PO link score. Returns the full
+    quote->PO->invoice picture plus connectivity stats. Read-only."""
+    if conn is None:
+        with get_conn() as own:
+            return _quote_chains(own)
+    return _quote_chains(conn)
+
+
+def _quote_chains(conn) -> dict:
+    cur = conn.cursor()
+    quotes = _rows(cur, """
+        select quote_id,
+               max(po_id) po_id, max(supplier_id) supplier_id,
+               max(converted_amount_usd) converted_amount_usd, max(currency) currency,
+               max(confidence_score) confidence_score, max(quote_date) quote_date,
+               max(country) country, max(region) region
+          from (
+            select quote_id, po_id, supplier_id, converted_amount_usd, currency,
+                   confidence_score, quote_date, country, region
+              from proc.bp_quote_stg where quote_id is not null
+            union all
+            select quote_id, po_id, supplier_id, converted_amount_usd, currency,
+                   confidence_score, quote_date, country, region
+              from proc.bp_quote_trgt where quote_id is not null
+          ) u group by quote_id order by quote_id""")
+
+    inv_cond = _PO_NORM_SQL.format(col="po_id")
+    chains, linked, orphan = [], 0, 0
+    for qrow in quotes:
+        qid = qrow["quote_id"]
+        po = _find_parent_po(cur, qrow.get("po_id"))
+        if po is None:
+            orphan += 1
+            chains.append({"quote_id": qid, "supplier_id": qrow.get("supplier_id"),
+                           "po_ref": qrow.get("po_id"), "purchase_order": None,
+                           "invoices": [], "link": None,
+                           "status": "no_linked_po"})
+            continue
+        linked += 1
+        invs = _rows(cur,
+                     f"select invoice_id, converted_amount_usd, invoice_date from proc.bp_invoice_stg where {inv_cond}=%s "
+                     f"union select invoice_id, converted_amount_usd, invoice_date from proc.bp_invoice_trgt where {inv_cond}=%s",
+                     (_norm_po(po["po_id"]), _norm_po(po["po_id"])))
+        qlines = _rows(cur, "select * from proc.bp_quote_line_items_stg where quote_id=%s", (qid,))
+        plines = _rows(cur, "select * from proc.bp_po_line_items_stg where po_id=%s", (po["po_id"],))
+        link = score_link(qrow, po, "quote_po", qlines, plines)
+        chains.append({
+            "quote_id": qid, "supplier_id": qrow.get("supplier_id"),
+            "po_ref": qrow.get("po_id"),
+            "purchase_order": {"po_id": po["po_id"], "supplier_id": po.get("supplier_id"),
+                               "converted_amount_usd": _to_float(po.get("converted_amount_usd"))},
+            "invoices": [{"invoice_id": i["invoice_id"],
+                          "converted_amount_usd": _to_float(i.get("converted_amount_usd"))}
+                         for i in invs],
+            "link": {"F": link["F"], "decision": link["decision"]},
+            "status": "linked",
+        })
+    return {
+        "total_quotes": len(quotes),
+        "linked_to_po": linked,
+        "orphan_quotes": orphan,
+        "chains": chains,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -616,7 +787,7 @@ def _approve(conn, doc_type: str, doc_pk: str, reviewer, note) -> dict:
         return {"status": "not_found", "detail": f"{doc_type} {doc_pk} not in staging"}
     row = rows[0]
     po, link, reason = _evaluate(cur, doc_type, row)
-    n_lines = _do_copy(cur, doc_type, row)
+    n_lines = _do_copy(cur, doc_type, row, po=po)
     record_action(
         phase=PHASE_CONSOLIDATION, action_type="promote_approved",
         doc_type=doc_type, doc_pk=str(doc_pk), agent=reviewer or "human_review",

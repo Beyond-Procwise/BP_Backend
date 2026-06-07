@@ -11,7 +11,9 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from src.services.linking_engine import promote_ready, review_queue, approve_promotion
+from src.services.linking_engine import (
+    promote_ready, review_queue, approve_promotion, quote_chains, canonicalize_po_references,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,24 @@ def run_promotion(
         return promote_ready(doc_types=doc_types, limit=limit)
     except Exception as exc:
         logger.exception("promotion run failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/canonicalize-po", summary="Align po_id across _trgt to the bare PO number")
+def post_canonicalize_po() -> dict[str, Any]:
+    try:
+        return canonicalize_po_references()
+    except Exception as exc:
+        logger.exception("canonicalize-po failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/quote-chains", summary="Quote-anchored view: each quote -> its PO -> invoices")
+def get_quote_chains() -> dict[str, Any]:
+    try:
+        return quote_chains()
+    except Exception as exc:
+        logger.exception("quote-chains failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
