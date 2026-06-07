@@ -36,6 +36,19 @@ SYSTEM_PROMPT = (
 
 DEFAULT_EVAL_PATH = "src/data/training/auto_collected_examples.jsonl"
 
+# Fields in the gold `extracted.header` that are NOT produced verbatim by the
+# model — they are resolved/normalised/stamped downstream (e.g. promotion.py
+# resolves the supplier NAME the model emits into a SUP-* id). Scoring the model
+# against these would unfairly penalise it (and training toward them would induce
+# hallucination). Excluded from the faithful model eval.
+DOWNSTREAM_FIELDS = {
+    "supplier_id", "buyer_id", "deal_id", "deal_name", "document_id",
+    "ai_flag_required", "trigger_type", "trigger_context_description",
+    "created_date", "created_by", "last_modified_by", "last_modified_date",
+    "confidence_score", "exchange_rate_to_usd", "converted_amount_usd",
+    "invoice_status", "po_status", "status", "region",
+}
+
 
 # ---------------------------------------------------------------------------
 # Data
@@ -118,11 +131,15 @@ def _predicted_header(pred: Optional[dict]) -> dict:
     return h if isinstance(h, dict) else {k: v for k, v in pred.items() if not isinstance(v, (list, dict))}
 
 
-def score_example(expected_header: dict, predicted_text: str) -> dict:
-    """Field-level accuracy for one example. Only fields present (non-empty) in
-    the gold header are scored — extraction must reproduce known values."""
+def score_example(expected_header: dict, predicted_text: str,
+                  exclude_fields: Optional[set] = None) -> dict:
+    """Field-level accuracy for one example. Only model-output fields present
+    (non-empty) in the gold header are scored; downstream-resolved fields are
+    excluded so the model is judged on what it actually produces."""
+    exclude = exclude_fields if exclude_fields is not None else DOWNSTREAM_FIELDS
     pred = _predicted_header(_extract_json(predicted_text))
-    fields = [k for k, v in expected_header.items() if _norm_val(v) != ""]
+    fields = [k for k, v in expected_header.items()
+              if _norm_val(v) != "" and k not in exclude]
     if not fields:
         return {"n_fields": 0, "n_correct": 0, "accuracy": 1.0, "mismatches": []}
     correct, mism = 0, []
@@ -146,6 +163,25 @@ def ollama_generate_fn(model: str, timeout: int = 120) -> Callable[[str], str]:
         out = ollama_generate(prompt, model=model, temperature=0.0,
                               num_predict=2048, timeout=timeout, retries=2)
         return out or ""
+    return _gen
+
+
+def context_layer_generate_fn(model: str) -> Callable[[EvalExample], str]:
+    """Faithful backend: run the REAL pipeline step (context_layer.synthesize)
+    with the given model, the same way extraction uses it. Returns the
+    synthesized field dict as JSON text. This is the correct way to measure the
+    model's contribution (vs a naive prompt)."""
+    from src.services.extraction import context_layer
+
+    def _gen(example: EvalExample) -> str:
+        prev = context_layer._LLM_MODEL
+        context_layer._LLM_MODEL = model
+        try:
+            out = context_layer.synthesize(example.doc_type, example.source_text, {},
+                                           example.pk)
+        finally:
+            context_layer._LLM_MODEL = prev
+        return json.dumps(out, default=str)
     return _gen
 
 
@@ -189,6 +225,31 @@ def evaluate(generate_fn: Callable[[str], str], examples: list[EvalExample],
                                 "mismatches": sc["mismatches"]})
     rep.doc_accuracy = sum(accs) / len(accs) if accs else 0.0
     rep.exact_doc_rate = exact / len(examples) if examples else 0.0
+    return rep
+
+
+def evaluate_via_context_layer(model: str, examples: list[EvalExample]) -> EvalReport:
+    """Faithful evaluation through the real context_layer.synthesize step,
+    scoring only model-output fields (downstream-resolved fields excluded)."""
+    gen = context_layer_generate_fn(model)
+    rep = EvalReport(model=f"{model} (context_layer)", n_examples=len(examples))
+    accs, exact = [], 0
+    for ex in examples:
+        pred_text = gen(ex)
+        sc = score_example(ex.expected_header, pred_text, exclude_fields=DOWNSTREAM_FIELDS)
+        if sc["n_fields"] == 0:
+            continue
+        accs.append(sc["accuracy"])
+        rep.total_fields += sc["n_fields"]
+        rep.total_correct += sc["n_correct"]
+        if sc["accuracy"] >= 1.0:
+            exact += 1
+        rep.per_example.append({"pk": ex.pk, "doc_type": ex.doc_type,
+                                "accuracy": round(sc["accuracy"], 4),
+                                "mismatches": sc["mismatches"]})
+    rep.doc_accuracy = sum(accs) / len(accs) if accs else 0.0
+    rep.exact_doc_rate = exact / len(accs) if accs else 0.0
+    rep.n_examples = len(accs)
     return rep
 
 
