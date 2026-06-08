@@ -1160,7 +1160,7 @@ class EmailDispatchService:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT process_output FROM proc.action WHERE action_id = %s",
+                    "SELECT process_output FROM proc.bp_action WHERE action_id = %s",
                     (action_id,),
                 )
                 row = cur.fetchone()
@@ -1178,7 +1178,7 @@ class EmailDispatchService:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE proc.action
+                    UPDATE proc.bp_action
                     SET process_output = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE action_id = %s

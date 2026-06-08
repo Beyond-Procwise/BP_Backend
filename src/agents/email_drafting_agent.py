@@ -1278,7 +1278,7 @@ class EmailDraftingAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _prepare_logged_output(self, payload: Any) -> Any:
-        """Normalise logged output to the contract expected by proc.action."""
+        """Normalise logged output to the contract expected by proc.bp_action."""
 
         prepared = super()._prepare_logged_output(payload)
         return self._normalise_action_payload(prepared)
@@ -3641,7 +3641,7 @@ class EmailDraftingAgent(BaseAgent):
             with get_conn() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        "SELECT agent_type FROM proc.action WHERE action_id = %s",
+                        "SELECT agent_type FROM proc.bp_action WHERE action_id = %s",
                         (action_id,),
                     )
                     row = cursor.fetchone()

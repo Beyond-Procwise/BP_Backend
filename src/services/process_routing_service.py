@@ -1418,7 +1418,7 @@ class ProcessRoutingService:
         action_id: Optional[str] = None,
         run_id: Optional[str] = None,
     ) -> Optional[str]:
-        """Insert or update an action record in ``proc.action``.
+        """Insert or update an action record in ``proc.bp_action``.
 
         If ``action_id`` is provided, the existing record is updated with the
         new ``process_output`` and ``status``. Otherwise a new record is
@@ -1432,7 +1432,7 @@ class ProcessRoutingService:
                         run_id = run_id or str(uuid.uuid4())
                         cursor.execute(
                             """
-                            INSERT INTO proc.action (
+                            INSERT INTO proc.bp_action (
                                 action_id, process_id, run_id, agent_type,
                                 process_output, status, action_desc, action_date
                             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -1451,7 +1451,7 @@ class ProcessRoutingService:
                     else:
                         cursor.execute(
                             """
-                            UPDATE proc.action
+                            UPDATE proc.bp_action
                             SET process_output = %s,
                                 status = %s,
                                 updated_at = CURRENT_TIMESTAMP
