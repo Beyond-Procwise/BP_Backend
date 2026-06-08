@@ -2,7 +2,7 @@
 
 The original implementation read bundled JSON fixtures for supplier ranking
 and opportunity policies.  Runtime environments now mandate that policy
-configuration is sourced directly from the PostgreSQL ``proc.policy`` table
+configuration is sourced directly from the PostgreSQL ``proc.bp_policy`` table
 so that agent behaviour reflects the latest governance rules without
 requiring code deploys.  This module therefore provides a lightweight
 repository for policy metadata with convenience helpers for common lookups.
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class PolicyEngine:
-    """Load and cache policy definitions from ``proc.policy``."""
+    """Load and cache policy definitions from ``proc.bp_policy``."""
 
     SUPPLIER_POLICY_SLUGS = {
         "weight_allocation_policy",
@@ -62,7 +62,7 @@ class PolicyEngine:
             connection.  This parameter is primarily intended for unit
             tests where lightweight stubs are preferable.
         policy_rows:
-            Iterable of dictionaries mirroring the ``proc.policy`` schema.
+            Iterable of dictionaries mirroring the ``proc.bp_policy`` schema.
             When supplied the rows are used instead of querying the
             database, enabling deterministic fixtures in tests.
         """

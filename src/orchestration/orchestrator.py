@@ -587,7 +587,7 @@ class Orchestrator:
     def _load_policies(self) -> Dict[int, Dict[str, Any]]:
         """Aggregate policy definitions keyed by their ID.
 
-        The ``policy_desc`` column in ``proc.policy`` contains plain text
+        The ``policy_desc`` column in ``proc.bp_policy`` contains plain text
         descriptions.  Like prompts, policies may reference agents via
         ``linked_agents``.  When database access fails a fallback to bundled
         JSON policy files is performed.
@@ -603,7 +603,7 @@ class Orchestrator:
                     cursor.execute(
                         """
                         SELECT policy_id, policy_name, policy_desc, policy_details, policy_linked_agents
-                        FROM proc.policy
+                        FROM proc.bp_policy
                         """
                     )
                     rows = cursor.fetchall()

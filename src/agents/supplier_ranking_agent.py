@@ -298,7 +298,7 @@ class SupplierRankingAgent(BaseAgent):
             with get_conn() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        "SELECT prompts_desc FROM proc.prompt WHERE prompt_id = %s",
+                        "SELECT prompts_desc FROM proc.bp_prompt WHERE prompt_id = %s",
                         (prompt_id,),
                     )
                     row = cursor.fetchone()

@@ -701,7 +701,7 @@ class ProcessRoutingService:
 
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        "SELECT prompt_id, prompt_linked_agents FROM proc.prompt"
+                        "SELECT prompt_id, prompt_linked_agents FROM proc.bp_prompt"
                     )
                     for pid, linked in cursor.fetchall():
                         try:
@@ -713,7 +713,7 @@ class ProcessRoutingService:
 
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        "SELECT policy_id, policy_linked_agents FROM proc.policy"
+                        "SELECT policy_id, policy_linked_agents FROM proc.bp_policy"
                     )
                     for pid, linked in cursor.fetchall():
                         try:

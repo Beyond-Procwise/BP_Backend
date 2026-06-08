@@ -1,4 +1,4 @@
-"""Prompt utilities backed by the ``proc.prompt`` database table.
+"""Prompt utilities backed by the ``proc.bp_prompt`` database table.
 
 The historical implementation of :class:`PromptEngine` focused solely on
 LLM-based query decomposition and expected callers to manually feed prompt
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class PromptEngine:
-    """Load prompt metadata from ``proc.prompt`` and expose helper utilities."""
+    """Load prompt metadata from ``proc.bp_prompt`` and expose helper utilities."""
 
     _DEFAULT_COLUMNS: Sequence[str] = (
         "prompt_id",
