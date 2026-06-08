@@ -95,3 +95,13 @@ def test_gather_portfolio_context_empty_returns_none():
         "count(*) FROM proc.bp_quote_trgt": (["count"], [(0,)]),
     })
     assert sa.gather_portfolio_context(conn) is None
+
+
+def test_build_persona_prompt_includes_framing_rules_and_facts():
+    facts = {"scope": "portfolio", "totals": {"invoices": 2}}
+    prompt = sa._build_persona_prompt("You are a compliance auditor.", facts)
+    assert "You are a compliance auditor." in prompt
+    # grounded no-fabrication rule reused from deal_summary._build_prompt
+    assert "Do not fabricate" in prompt
+    # the facts are embedded as JSON
+    assert '"invoices": 2' in prompt

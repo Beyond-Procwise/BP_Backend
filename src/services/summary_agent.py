@@ -118,3 +118,13 @@ def gather_portfolio_context(conn: Any) -> Optional[dict]:
             "actions": int(actions),
         },
     }
+
+
+def _build_persona_prompt(framing: str, facts: dict) -> str:
+    """Persona framing + the grounded base rules + the fact JSON.
+
+    Reuses ``deal_summary._build_prompt`` for the no-fabrication base so the
+    grounding rules stay identical across both summary paths.
+    """
+    base = _build_prompt(facts)
+    return f"{framing.strip()}\n\n{base}"
