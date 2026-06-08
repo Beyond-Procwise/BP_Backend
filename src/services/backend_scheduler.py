@@ -301,11 +301,12 @@ class BackendScheduler:
             "summary-precompute",
             self._run_summary_precompute,
             interval=timedelta(hours=hours),
+            initial_delay=timedelta(minutes=30),
         )
 
     def _run_summary_precompute(self) -> None:
         try:
-            from services.summary_agent import precompute_summaries
+            from src.services.summary_agent import precompute_summaries
             counts = precompute_summaries()
             logger.info("summary precompute completed: %s", counts)
         except Exception:
