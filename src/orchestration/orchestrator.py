@@ -641,7 +641,6 @@ class Orchestrator:
                     policies[int(pid)] = value
         except Exception:  # pragma: no cover - defensive
             logger.exception("Failed to load policies from DB")
-            self._policy_cache = {}
             return {}
 
         self._policy_cache = dict(policies)
@@ -1473,6 +1472,9 @@ class Orchestrator:
         # Step 1: Extract documents
         extraction_result = self._execute_agent("data_extraction", context)
 
+        if not extraction_result:
+            return {"status": "failed", "error": "data_extraction agent unavailable"}
+
         if extraction_result.status != AgentStatus.SUCCESS:
             return extraction_result.data
 
@@ -1663,6 +1665,9 @@ class Orchestrator:
         # Execute quote evaluation
         logger.info("Quote workflow starting")
         quote_result = self._execute_agent("quote_evaluation", context)
+
+        if not quote_result:
+            return {"status": "failed", "error": "quote_evaluation agent unavailable"}
 
         results: Dict[str, Any] = dict(quote_result.data)
 

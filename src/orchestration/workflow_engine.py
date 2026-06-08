@@ -408,7 +408,7 @@ class WorkflowEngine:
                 any_edge_traversable = False
                 for edge in predecessors:
                     source_status = state.node_statuses.get(edge.source)
-                    if source_status == NodeStatus.COMPLETED and edge.should_traverse(state):
+                    if source_status in (NodeStatus.COMPLETED, NodeStatus.SKIPPED) and edge.should_traverse(state):
                         any_edge_traversable = True
                         # Apply data mappings from this edge
                         mapped_data = edge.map_data(state)
@@ -528,7 +528,7 @@ class WorkflowEngine:
             # Copy specified output fields to shared data
             for output_field in node.output_to_shared:
                 value = result.data.get(output_field)
-                if value is not None:
+                if value:
                     state.shared_data[output_field] = value
             # Also merge pass_fields
             if result.pass_fields:
