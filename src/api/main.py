@@ -2,8 +2,9 @@ import sys, os, uvicorn, logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Protocol, cast
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from api.auth import verify_api_key
 
 # Ensure GPU utilisation by default on compatible hardware
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -255,8 +256,11 @@ async def lifespan(app: FastAPI):
 
     logger.info("API shutting down.")
 
-app = FastAPI(title="ProcWise API v4 (Definitive)", version="4.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="ProcWise API v4 (Definitive)", version="4.0", lifespan=lifespan, dependencies=[Depends(verify_api_key)])
+
+_origins = [o.strip() for o in os.getenv("PROCWISE_CORS_ORIGINS", "*").split(",") if o.strip()]
+_allow_creds = _origins != ["*"]
+app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_allow_creds, allow_methods=["*"], allow_headers=["*"])
 
 app.include_router(agents_router_mod.router)
 app.include_router(documents.router)

@@ -805,11 +805,17 @@ async def ask_question(
 
     file_data: List[tuple[bytes, str]] = []
     if req.file_path:
-        if not os.path.isfile(req.file_path):
+        _upload_base = os.path.realpath(
+            os.getenv("PROCWISE_UPLOAD_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "..", "uploads"))
+        )
+        _resolved = os.path.realpath(req.file_path)
+        if not _resolved.startswith(_upload_base + os.sep) and _resolved != _upload_base:
+            raise HTTPException(status_code=400, detail="file_path outside allowed directory")
+        if not os.path.isfile(_resolved):
             raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
         try:
-            with open(req.file_path, "rb") as f:
-                file_data.append((f.read(), os.path.basename(req.file_path)))
+            with open(_resolved, "rb") as f:
+                file_data.append((f.read(), os.path.basename(_resolved)))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Could not read file: {exc}")
 
