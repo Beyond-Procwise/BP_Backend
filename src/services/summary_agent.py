@@ -180,3 +180,76 @@ def _store_summary(
         "sources": sources,
         "generated_at": generated_at.isoformat(),
     }
+
+
+def generate_summary(
+    persona: str,
+    deal_id: Optional[str] = None,
+    as_of: Optional[str] = None,
+    conn: Any = None,
+) -> Optional[dict]:
+    """Generate (and persist) a persona summary.
+
+    deal_id present -> per-deal scope; absent -> portfolio. When as_of is set,
+    regenerate over the nearest stored snapshot at/before that datetime (the
+    result is stored as a historical, non-current row). Returns None when there
+    is no underlying data; raises SnapshotNotFound / SummarizationError.
+    """
+    if conn is None:
+        with get_conn() as own:
+            return generate_summary(persona, deal_id, as_of, conn=own)
+
+    scope = "deal" if deal_id else "portfolio"
+    framing, persona_source = resolve_persona(persona, conn)
+
+    if as_of is not None:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT data_snapshot FROM proc.bp_summary "
+            "WHERE scope = %s AND deal_id IS NOT DISTINCT FROM %s "
+            "AND generated_at <= %s ORDER BY generated_at DESC LIMIT 1",
+            (scope, deal_id, as_of),
+        )
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            raise SnapshotNotFound(
+                f"no snapshot at/before {as_of} for scope={scope} deal_id={deal_id}"
+            )
+        facts = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        is_current = False
+    else:
+        facts = (
+            gather_deal_context(deal_id, conn=conn)
+            if deal_id
+            else gather_portfolio_context(conn)
+        )
+        if facts is None:
+            return None
+        is_current = True
+
+    text = ollama_cloud_generate(
+        _build_persona_prompt(framing, facts),
+        model=_SUMMARY_MODEL,
+        temperature=0.0,
+        num_predict=1024,
+        timeout=120,
+        retries=2,
+    )
+    if not text or not text.strip():
+        raise SummarizationError(
+            f"empty summary for persona={persona} deal_id={deal_id}"
+        )
+
+    sources = facts.get("sources") if isinstance(facts, dict) else None
+    return _store_summary(
+        conn,
+        persona=persona,
+        persona_source=persona_source,
+        scope=scope,
+        deal_id=deal_id,
+        summary=text.strip(),
+        data_snapshot=facts,
+        sources=sources,
+        model=_SUMMARY_MODEL,
+        is_current=is_current,
+    )

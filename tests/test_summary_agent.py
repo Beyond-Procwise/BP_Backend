@@ -143,3 +143,60 @@ def test_store_summary_as_of_does_not_flip_current():
     sqls = " ".join(s for s, _ in rec)
     assert "UPDATE proc.bp_summary SET is_current = false" not in sqls
     assert "INSERT INTO proc.bp_summary" in sqls
+
+
+def test_generate_summary_portfolio(monkeypatch):
+    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "PORTFOLIO SUMMARY")
+    monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "bp_prompt"))
+    monkeypatch.setattr(sa, "gather_portfolio_context", lambda conn: {"scope": "portfolio", "sources": {"invoices": 2}})
+    rec = []
+    conn = _FakeConn({}, recorder=rec)
+    out = sa.generate_summary("analysis", deal_id=None, conn=conn)
+    assert out["summary"] == "PORTFOLIO SUMMARY"
+    assert out["scope"] == "portfolio"
+    assert out["deal_id"] is None
+    assert "INSERT INTO proc.bp_summary" in " ".join(s for s, _ in rec)
+
+
+def test_generate_summary_deal(monkeypatch):
+    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "DEAL SUMMARY")
+    monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "raw"))
+    monkeypatch.setattr(sa, "gather_deal_context", lambda deal_id, conn=None: {"deal_id": deal_id, "sources": {"invoices": 1}})
+    conn = _FakeConn({})
+    out = sa.generate_summary("compliance", deal_id="D-9", conn=conn)
+    assert out["scope"] == "deal"
+    assert out["deal_id"] == "D-9"
+    assert out["persona_source"] == "raw"
+
+
+def test_generate_summary_no_data_returns_none(monkeypatch):
+    monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "bp_prompt"))
+    monkeypatch.setattr(sa, "gather_portfolio_context", lambda conn: None)
+    assert sa.generate_summary("analysis", conn=_FakeConn({})) is None
+
+
+def test_generate_summary_empty_llm_raises(monkeypatch):
+    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "")
+    monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "bp_prompt"))
+    monkeypatch.setattr(sa, "gather_deal_context", lambda deal_id, conn=None: {"deal_id": deal_id, "sources": {}})
+    import pytest
+    with pytest.raises(sa.SummarizationError):
+        sa.generate_summary("analysis", deal_id="D-9", conn=_FakeConn({}))
+
+
+def test_generate_summary_as_of_uses_snapshot(monkeypatch):
+    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "HISTORICAL")
+    monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "bp_prompt"))
+    conn = _FakeConn({
+        "SELECT data_snapshot FROM proc.bp_summary": (["data_snapshot"], [({"scope": "deal", "old": True},)]),
+    })
+    out = sa.generate_summary("analysis", deal_id="D-9", as_of="2026-05-01T00:00:00Z", conn=conn)
+    assert out["summary"] == "HISTORICAL"
+
+
+def test_generate_summary_as_of_missing_snapshot_raises(monkeypatch):
+    monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "bp_prompt"))
+    conn = _FakeConn({"SELECT data_snapshot FROM proc.bp_summary": (["data_snapshot"], [])})
+    import pytest
+    with pytest.raises(sa.SnapshotNotFound):
+        sa.generate_summary("analysis", deal_id="D-9", as_of="2020-01-01T00:00:00Z", conn=conn)
