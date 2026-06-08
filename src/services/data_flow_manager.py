@@ -105,22 +105,22 @@ class RelationAnalysis:
 
 # Canonical procurement relationships derived from ``docs/procurement_table_reference.md``.
 PROCUREMENT_TABLE_ALIASES: Dict[str, Tuple[str, ...]] = {
-    "proc.contracts": ("contracts",),
-    "proc.supplier": ("supplier_master", "suppliers"),
-    "proc.purchase_order_agent": ("purchase_orders", "purchase_order_agent"),
-    "proc.po_line_items_agent": ("purchase_order_lines", "po_line_items"),
-    "proc.invoice_agent": ("invoices", "invoice_agent"),
-    "proc.invoice_line_items_agent": ("invoice_lines", "invoice_line_items"),
+    "proc.bp_contracts": ("contracts",),
+    "proc.bp_supplier": ("supplier_master", "suppliers"),
+    "proc.bp_purchase_order_trgt": ("purchase_orders", "purchase_order_agent"),
+    "proc.bp_po_line_items_trgt": ("purchase_order_lines", "po_line_items"),
+    "proc.bp_invoice_trgt": ("invoices", "invoice_agent"),
+    "proc.bp_invoice_line_items_trgt": ("invoice_lines", "invoice_line_items"),
     "proc.cat_product_mapping": ("product_mapping", "cat_product_mapping"),
-    "proc.quote_agent": ("quotes", "quote_agent"),
-    "proc.quote_line_items_agent": ("quote_lines", "quote_line_items"),
+    "proc.bp_quote_trgt": ("quotes", "quote_agent"),
+    "proc.bp_quote_line_items_trgt": ("quote_lines", "quote_line_items"),
 }
 
 PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
     RelationshipConfig(
-        source_table="proc.contracts",
+        source_table="proc.bp_contracts",
         source_column="supplier_id",
-        target_table="proc.supplier",
+        target_table="proc.bp_supplier",
         target_column="supplier_id",
         relationship="references",
         description="Contracts are linked to supplier master records via supplier_id.",
@@ -128,9 +128,9 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
         target_aliases=("supplier_master", "suppliers"),
     ),
     RelationshipConfig(
-        source_table="proc.purchase_order_agent",
+        source_table="proc.bp_purchase_order_trgt",
         source_column="contract_id",
-        target_table="proc.contracts",
+        target_table="proc.bp_contracts",
         target_column="contract_id",
         relationship="references",
         description="Purchase orders reference the contract they were raised against.",
@@ -138,9 +138,9 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
         target_aliases=("contracts",),
     ),
     RelationshipConfig(
-        source_table="proc.purchase_order_agent",
+        source_table="proc.bp_purchase_order_trgt",
         source_column="supplier_id",
-        target_table="proc.supplier",
+        target_table="proc.bp_supplier",
         target_column="supplier_id",
         relationship="references",
         description="Purchase orders inherit supplier attributes from the supplier master.",
@@ -148,9 +148,9 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
         target_aliases=("supplier_master", "suppliers"),
     ),
     RelationshipConfig(
-        source_table="proc.po_line_items_agent",
+        source_table="proc.bp_po_line_items_trgt",
         source_column="po_id",
-        target_table="proc.purchase_order_agent",
+        target_table="proc.bp_purchase_order_trgt",
         target_column="po_id",
         relationship="belongs_to",
         description="Line items roll up to their parent purchase order via po_id.",
@@ -158,9 +158,9 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
         target_aliases=("purchase_orders",),
     ),
     RelationshipConfig(
-        source_table="proc.invoice_line_items_agent",
+        source_table="proc.bp_invoice_line_items_trgt",
         source_column="invoice_id",
-        target_table="proc.invoice_agent",
+        target_table="proc.bp_invoice_trgt",
         target_column="invoice_id",
         relationship="belongs_to",
         description="Invoice line items aggregate into invoices via invoice_id.",
@@ -168,9 +168,9 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
         target_aliases=("invoices",),
     ),
     RelationshipConfig(
-        source_table="proc.invoice_line_items_agent",
+        source_table="proc.bp_invoice_line_items_trgt",
         source_column="po_id",
-        target_table="proc.purchase_order_agent",
+        target_table="proc.bp_purchase_order_trgt",
         target_column="po_id",
         relationship="reconciles",
         description="Invoice lines reconcile back to the originating purchase order.",
@@ -178,9 +178,9 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
         target_aliases=("purchase_orders",),
     ),
     RelationshipConfig(
-        source_table="proc.invoice_agent",
+        source_table="proc.bp_invoice_trgt",
         source_column="po_id",
-        target_table="proc.purchase_order_agent",
+        target_table="proc.bp_purchase_order_trgt",
         target_column="po_id",
         relationship="reconciles",
         description="Invoices reconcile to the purchase order that triggered them.",
@@ -190,7 +190,7 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
     RelationshipConfig(
         source_table="proc.cat_product_mapping",
         source_column="product",
-        target_table="proc.po_line_items_agent",
+        target_table="proc.bp_po_line_items_trgt",
         target_column="item_description",
         relationship="categorises",
         description="Product taxonomy enriches PO line descriptions for category analytics.",
@@ -200,9 +200,9 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
         target_normalizer="text",
     ),
     RelationshipConfig(
-        source_table="proc.quote_line_items_agent",
+        source_table="proc.bp_quote_line_items_trgt",
         source_column="quote_id",
-        target_table="proc.quote_agent",
+        target_table="proc.bp_quote_trgt",
         target_column="quote_id",
         relationship="belongs_to",
         description="Quote line items attach to their header quote records.",
@@ -210,9 +210,9 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
         target_aliases=("quotes",),
     ),
     RelationshipConfig(
-        source_table="proc.quote_agent",
+        source_table="proc.bp_quote_trgt",
         source_column="po_id",
-        target_table="proc.purchase_order_agent",
+        target_table="proc.bp_purchase_order_trgt",
         target_column="po_id",
         relationship="compares",
         description="Quotes can be compared against the purchase order ultimately issued.",
@@ -223,11 +223,11 @@ PROCUREMENT_RELATIONSHIPS: Tuple[RelationshipConfig, ...] = (
 
 # High level flow paths for reporting and vector persistence (canonical table names).
 PROCUREMENT_FLOW_PATHS: Tuple[Tuple[str, ...], ...] = (
-    ("proc.contracts", "proc.supplier", "proc.purchase_order_agent", "proc.po_line_items_agent"),
-    ("proc.contracts", "proc.purchase_order_agent", "proc.invoice_agent", "proc.invoice_line_items_agent"),
-    ("proc.purchase_order_agent", "proc.po_line_items_agent", "proc.cat_product_mapping"),
-    ("proc.purchase_order_agent", "proc.quote_agent", "proc.quote_line_items_agent"),
-    ("proc.purchase_order_agent", "proc.invoice_agent", "proc.invoice_line_items_agent"),
+    ("proc.bp_contracts", "proc.bp_supplier", "proc.bp_purchase_order_trgt", "proc.bp_po_line_items_trgt"),
+    ("proc.bp_contracts", "proc.bp_purchase_order_trgt", "proc.bp_invoice_trgt", "proc.bp_invoice_line_items_trgt"),
+    ("proc.bp_purchase_order_trgt", "proc.bp_po_line_items_trgt", "proc.cat_product_mapping"),
+    ("proc.bp_purchase_order_trgt", "proc.bp_quote_trgt", "proc.bp_quote_line_items_trgt"),
+    ("proc.bp_purchase_order_trgt", "proc.bp_invoice_trgt", "proc.bp_invoice_line_items_trgt"),
 )
 
 AGENT_RELATIONSHIP_SUMMARIES: Dict[str, Dict[str, Any]] = {
@@ -236,14 +236,14 @@ AGENT_RELATIONSHIP_SUMMARIES: Dict[str, Dict[str, Any]] = {
             "Analyses spend, invoices, quotes and contracts to surface procurement savings opportunities and supplier gaps."
         ),
         "tables": {
-            "proc.purchase_order_agent",
-            "proc.po_line_items_agent",
-            "proc.invoice_agent",
-            "proc.invoice_line_items_agent",
-            "proc.contracts",
-            "proc.quote_agent",
-            "proc.quote_line_items_agent",
-            "proc.supplier",
+            "proc.bp_purchase_order_trgt",
+            "proc.bp_po_line_items_trgt",
+            "proc.bp_invoice_trgt",
+            "proc.bp_invoice_line_items_trgt",
+            "proc.bp_contracts",
+            "proc.bp_quote_trgt",
+            "proc.bp_quote_line_items_trgt",
+            "proc.bp_supplier",
         },
         "outputs": [
             "policy_opportunities",
@@ -258,13 +258,13 @@ AGENT_RELATIONSHIP_SUMMARIES: Dict[str, Dict[str, Any]] = {
             "Scores suppliers shared by upstream opportunity mining using purchase history, invoice performance and risk metrics."
         ),
         "tables": {
-            "proc.supplier",
-            "proc.purchase_order_agent",
-            "proc.po_line_items_agent",
-            "proc.invoice_agent",
-            "proc.invoice_line_items_agent",
-            "proc.contracts",
-            "proc.quote_agent",
+            "proc.bp_supplier",
+            "proc.bp_purchase_order_trgt",
+            "proc.bp_po_line_items_trgt",
+            "proc.bp_invoice_trgt",
+            "proc.bp_invoice_line_items_trgt",
+            "proc.bp_contracts",
+            "proc.bp_quote_trgt",
         },
         "outputs": ["supplier_rankings", "supplier_profiles", "agentic_plan"],
         "include_flows": True,
@@ -277,8 +277,8 @@ AGENT_RELATIONSHIP_SUMMARIES: Dict[str, Dict[str, Any]] = {
             "proc.rfq_targets",
             "proc.negotiation_sessions",
             "proc.negotiation_session_state",
-            "proc.purchase_order_agent",
-            "proc.quote_agent",
+            "proc.bp_purchase_order_trgt",
+            "proc.bp_quote_trgt",
         },
         "outputs": ["rfq_responses", "negotiation_prompts", "agentic_plan"],
         "include_flows": False,
@@ -291,8 +291,8 @@ AGENT_RELATIONSHIP_SUMMARIES: Dict[str, Dict[str, Any]] = {
             "proc.rfq_targets",
             "proc.negotiation_sessions",
             "proc.negotiation_session_state",
-            "proc.purchase_order_agent",
-            "proc.invoice_agent",
+            "proc.bp_purchase_order_trgt",
+            "proc.bp_invoice_trgt",
         },
         "outputs": ["negotiation_outcomes", "agentic_plan"],
         "include_flows": False,
@@ -1455,7 +1455,7 @@ class DataFlowManager:
     def _extract_supplier_flows(
         self, tables: Dict[str, pd.DataFrame], alias_index: TableAliasIndex
     ) -> List[Dict[str, Any]]:
-        supplier_alias = alias_index.resolve_alias("proc.supplier", tables)
+        supplier_alias = alias_index.resolve_alias("proc.bp_supplier", tables)
         supplier_df = tables.get(supplier_alias, pd.DataFrame()) if supplier_alias else pd.DataFrame()
         if supplier_df.empty:
             return []
@@ -1553,7 +1553,7 @@ class DataFlowManager:
             return entry
 
         # Contracts
-        contract_alias = alias_index.resolve_alias("proc.contracts", tables)
+        contract_alias = alias_index.resolve_alias("proc.bp_contracts", tables)
         contracts = tables.get(contract_alias, pd.DataFrame()) if contract_alias else pd.DataFrame()
         if not contracts.empty:
             supplier_series = self._derive_supplier_series(contracts, name_map)
@@ -1583,7 +1583,7 @@ class DataFlowManager:
                         entry["contracts"]["latest_end_date"] = latest_end
 
         # Purchase orders
-        po_alias = alias_index.resolve_alias("proc.purchase_order_agent", tables)
+        po_alias = alias_index.resolve_alias("proc.bp_purchase_order_trgt", tables)
         purchase_orders = tables.get(po_alias, pd.DataFrame()) if po_alias else pd.DataFrame()
         po_supplier_series = None
         if not purchase_orders.empty:
@@ -1626,7 +1626,7 @@ class DataFlowManager:
                     entry["purchase_orders"] = po_summary[supplier_id]
 
         # Purchase order line items (product coverage)
-        po_lines_alias = alias_index.resolve_alias("proc.po_line_items_agent", tables)
+        po_lines_alias = alias_index.resolve_alias("proc.bp_po_line_items_trgt", tables)
         po_lines = tables.get(po_lines_alias, pd.DataFrame()) if po_lines_alias else pd.DataFrame()
         if po_supplier_series is not None and not po_lines.empty and not purchase_orders.empty:
             po_id_col = self._resolve_column(purchase_orders, "po_id", _PO_ID_ALIASES) or "po_id"
@@ -1712,7 +1712,7 @@ class DataFlowManager:
                         _register_category(supplier_id, category_value, product_clean)
 
         # Invoices
-        invoice_alias = alias_index.resolve_alias("proc.invoice_agent", tables)
+        invoice_alias = alias_index.resolve_alias("proc.bp_invoice_trgt", tables)
         invoices = tables.get(invoice_alias, pd.DataFrame()) if invoice_alias else pd.DataFrame()
         invoice_supplier_series = None
         if not invoices.empty:
@@ -1740,7 +1740,7 @@ class DataFlowManager:
                     if latest_invoice:
                         entry["invoices"]["latest_invoice_date"] = latest_invoice
 
-        invoice_lines_alias = alias_index.resolve_alias("proc.invoice_line_items_agent", tables)
+        invoice_lines_alias = alias_index.resolve_alias("proc.bp_invoice_line_items_trgt", tables)
         invoice_lines = tables.get(invoice_lines_alias, pd.DataFrame()) if invoice_lines_alias else pd.DataFrame()
         if invoice_supplier_series is not None and not invoice_lines.empty and not invoices.empty:
             inv_id_col = self._resolve_column(invoices, "invoice_id", _INVOICE_ID_ALIASES) or "invoice_id"
@@ -1821,7 +1821,7 @@ class DataFlowManager:
                         _register_category(supplier_id, category_value, product_clean)
 
         # Quotes
-        quote_alias = alias_index.resolve_alias("proc.quote_agent", tables)
+        quote_alias = alias_index.resolve_alias("proc.bp_quote_trgt", tables)
         quotes = tables.get(quote_alias, pd.DataFrame()) if quote_alias else pd.DataFrame()
         if not quotes.empty:
             quote_supplier_series = self._derive_supplier_series(quotes, name_map)

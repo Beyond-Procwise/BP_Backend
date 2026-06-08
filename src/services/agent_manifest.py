@@ -24,32 +24,32 @@ logger = logging.getLogger(__name__)
 
 _PROC_RELATIONSHIPS: List[Dict[str, str]] = [
     {
-        "from": "proc.contracts.supplier_id",
-        "to": "proc.supplier.supplier_id",
+        "from": "proc.bp_contracts.supplier_id",
+        "to": "proc.bp_supplier.supplier_id",
         "description": "Contracts reference suppliers for supplier_name resolution.",
     },
     {
-        "from": "proc.supplier.supplier_name",
-        "to": "proc.purchase_order_agent.supplier_name",
+        "from": "proc.bp_supplier.supplier_name",
+        "to": "proc.bp_purchase_order_trgt.supplier_name",
         "description": "Supplier names link into the purchase order fact table.",
     },
     {
-        "from": "proc.purchase_order_agent.po_id",
-        "to": "proc.po_line_items_agent.po_id",
+        "from": "proc.bp_purchase_order_trgt.po_id",
+        "to": "proc.bp_po_line_items_trgt.po_id",
         "description": "Purchase orders own the associated line items.",
     },
     {
-        "from": "proc.purchase_order_agent.po_id",
-        "to": "proc.invoice_agent.po_id",
+        "from": "proc.bp_purchase_order_trgt.po_id",
+        "to": "proc.bp_invoice_trgt.po_id",
         "description": "Invoices reference the purchase order they belong to.",
     },
     {
-        "from": "proc.invoice_agent.invoice_id",
-        "to": "proc.invoice_line_items_agent.invoice_id",
+        "from": "proc.bp_invoice_trgt.invoice_id",
+        "to": "proc.bp_invoice_line_items_trgt.invoice_id",
         "description": "Invoice line items extend invoice level details.",
     },
     {
-        "from": "proc.po_line_items_agent.item_description",
+        "from": "proc.bp_po_line_items_trgt.item_description",
         "to": "proc.cat_product_mapping.product",
         "description": "Line items map onto the category taxonomy for enriched spend insights.",
     },
@@ -131,7 +131,7 @@ class AgentManifestService:
         # ``PROCUREMENT_SCHEMAS``. Provide lightweight descriptors so manifests
         # can surface the relationship chain end-to-end.
         profiles.setdefault(
-            "proc.contracts",
+            "proc.bp_contracts",
             {
                 "columns": [
                     "contract_id",
@@ -146,7 +146,7 @@ class AgentManifestService:
             },
         )
         profiles.setdefault(
-            "proc.supplier",
+            "proc.bp_supplier",
             {
                 "columns": [
                     "supplier_id",

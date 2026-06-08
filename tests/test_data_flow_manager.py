@@ -123,15 +123,15 @@ def test_data_flow_manager_builds_graph_and_persists():
     tables = _tables_fixture()
 
     table_name_map = {
-        "contracts": "proc.contracts",
-        "supplier_master": "proc.supplier",
-        "purchase_orders": "proc.purchase_order_agent",
-        "purchase_order_lines": "proc.po_line_items_agent",
-        "invoices": "proc.invoice_agent",
-        "invoice_lines": "proc.invoice_line_items_agent",
+        "contracts": "proc.bp_contracts",
+        "supplier_master": "proc.bp_supplier",
+        "purchase_orders": "proc.bp_purchase_order_trgt",
+        "purchase_order_lines": "proc.bp_po_line_items_trgt",
+        "invoices": "proc.bp_invoice_trgt",
+        "invoice_lines": "proc.bp_invoice_line_items_trgt",
         "product_mapping": "proc.cat_product_mapping",
-        "quotes": "proc.quote_agent",
-        "quote_lines": "proc.quote_line_items_agent",
+        "quotes": "proc.bp_quote_trgt",
+        "quote_lines": "proc.bp_quote_line_items_trgt",
     }
 
     relations, graph = manager.build_data_flow_map(tables, table_name_map=table_name_map)
@@ -140,9 +140,9 @@ def test_data_flow_manager_builds_graph_and_persists():
     assert any(
         rel["status"] == "linked"
         for rel in relations
-        if rel["source_table"] == "proc.contracts" and rel["target_table"] == "proc.supplier"
+        if rel["source_table"] == "proc.bp_contracts" and rel["target_table"] == "proc.bp_supplier"
     )
-    assert graph["nodes"]["proc.contracts"]["row_count"] == 2
+    assert graph["nodes"]["proc.bp_contracts"]["row_count"] == 2
     assert graph["paths"]
     for path in graph["paths"]:
         assert path["canonical"]

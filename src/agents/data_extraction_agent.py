@@ -3432,7 +3432,7 @@ class DataExtractionAgent(BaseAgent):
             conn = self.agent_nick.get_db_connection()
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT 1 FROM proc.purchase_order_agent WHERE po_id = %s LIMIT 1",
+                    "SELECT 1 FROM proc.bp_purchase_order_trgt WHERE po_id = %s LIMIT 1",
                     (po_id,),
                 )
                 exists = cur.fetchone() is not None
