@@ -45,7 +45,7 @@ class DiscrepancyDetectionAgent(BaseAgent):
 
             for col in candidates:
                 try:
-                    cur.execute(f"SELECT {col} FROM proc.invoice_agent LIMIT 0")
+                    cur.execute(f"SELECT {col} FROM proc.bp_invoice_trgt LIMIT 0")
                     return col
                 except errors.UndefinedColumn:
                     connection.rollback()
@@ -94,7 +94,7 @@ class DiscrepancyDetectionAgent(BaseAgent):
 
                             if columns:
                                 cursor.execute(
-                                    f"SELECT {', '.join(columns)} FROM proc.invoice_agent WHERE invoice_id = %s",
+                                    f"SELECT {', '.join(columns)} FROM proc.bp_invoice_trgt WHERE invoice_id = %s",
                                     (pk,),
                                 )
                                 row = cursor.fetchone()
@@ -125,7 +125,7 @@ class DiscrepancyDetectionAgent(BaseAgent):
                                     total_amount = None
                             else:
                                 cursor.execute(
-                                    "SELECT 1 FROM proc.invoice_agent WHERE invoice_id = %s",
+                                    "SELECT 1 FROM proc.bp_invoice_trgt WHERE invoice_id = %s",
                                     (pk,),
                                 )
                                 row = cursor.fetchone()

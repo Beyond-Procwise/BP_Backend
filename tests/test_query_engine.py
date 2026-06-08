@@ -65,7 +65,7 @@ def test_fetch_supplier_data_uses_line_items(monkeypatch):
         return "1"
 
     def fake_cols(conn, schema, table):
-        if (schema, table) == ("proc", "supplier"):
+        if (schema, table) == ("proc", "bp_supplier"):
             calls.append(("cols", schema, table))
         return []
 
@@ -78,11 +78,11 @@ def test_fetch_supplier_data_uses_line_items(monkeypatch):
 
     engine.fetch_supplier_data()
 
-    assert ("price", "proc", "po_line_items_agent", "li") in calls
-    assert ("qty", "proc", "po_line_items_agent", "li") in calls
-    assert ("price", "proc", "invoice_line_items_agent", "ili") in calls
-    assert ("qty", "proc", "invoice_line_items_agent", "ili") in calls
-    assert ("cols", "proc", "supplier") in calls
+    assert ("price", "proc", "bp_po_line_items_trgt", "li") in calls
+    assert ("qty", "proc", "bp_po_line_items_trgt", "li") in calls
+    assert ("price", "proc", "bp_invoice_line_items_trgt", "ili") in calls
+    assert ("qty", "proc", "bp_invoice_line_items_trgt", "ili") in calls
+    assert ("cols", "proc", "bp_supplier") in calls
 
 
 def test_fetch_supplier_data_uses_delivery_lead_time(monkeypatch):
@@ -249,11 +249,11 @@ def test_fetch_procurement_flow_builds_expected_query(monkeypatch):
     main_query = next(q for q in queries if "proc.cat_product_mapping" not in q)
     for table in [
         "proc.contracts",
-        "proc.supplier",
-        "proc.purchase_order_agent",
-        "proc.po_line_items_agent",
-        "proc.invoice_agent",
-        "proc.invoice_line_items_agent",
+        "proc.bp_supplier",
+        "proc.bp_purchase_order_trgt",
+        "proc.bp_po_line_items_trgt",
+        "proc.bp_invoice_trgt",
+        "proc.bp_invoice_line_items_trgt",
     ]:
         assert table in main_query
 
@@ -402,14 +402,14 @@ def test_train_procurement_context_embeds_schema(monkeypatch):
 
     sample_frames = {
         "proc.contracts": pd.DataFrame({"contract_id": ["CO1"], "supplier_id": ["SI1"]}),
-        "proc.supplier": pd.DataFrame({"supplier_id": ["SI1"], "supplier_name": ["Acme"]}),
-        "proc.purchase_order_agent": pd.DataFrame({"po_id": ["PO1"], "supplier_id": ["SI1"]}),
-        "proc.po_line_items_agent": pd.DataFrame({"po_id": ["PO1"], "item_description": ["Widget"]}),
-        "proc.invoice_agent": pd.DataFrame({"invoice_id": ["IN1"], "po_id": ["PO1"]}),
-        "proc.invoice_line_items_agent": pd.DataFrame({"invoice_id": ["IN1"], "po_id": ["PO1"]}),
+        "proc.bp_supplier": pd.DataFrame({"supplier_id": ["SI1"], "supplier_name": ["Acme"]}),
+        "proc.bp_purchase_order_trgt": pd.DataFrame({"po_id": ["PO1"], "supplier_id": ["SI1"]}),
+        "proc.bp_po_line_items_trgt": pd.DataFrame({"po_id": ["PO1"], "item_description": ["Widget"]}),
+        "proc.bp_invoice_trgt": pd.DataFrame({"invoice_id": ["IN1"], "po_id": ["PO1"]}),
+        "proc.bp_invoice_line_items_trgt": pd.DataFrame({"invoice_id": ["IN1"], "po_id": ["PO1"]}),
         "proc.cat_product_mapping": pd.DataFrame({"product": ["Widget"], "category_level_2": ["Hardware"]}),
-        "proc.quote_agent": pd.DataFrame({"quote_id": ["Q1"], "po_id": ["PO1"]}),
-        "proc.quote_line_items_agent": pd.DataFrame({"quote_id": ["Q1"], "line_total": [100.0]}),
+        "proc.bp_quote_trgt": pd.DataFrame({"quote_id": ["Q1"], "po_id": ["PO1"]}),
+        "proc.bp_quote_line_items_trgt": pd.DataFrame({"quote_id": ["Q1"], "line_total": [100.0]}),
     }
 
     def fake_read_sql(sql, conn):

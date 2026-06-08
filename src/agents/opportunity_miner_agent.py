@@ -1279,7 +1279,7 @@ class OpportunityMinerAgent(BaseAgent):
         for relation in relationships:
             source = relation.get("source_table")
             target = relation.get("target_table")
-            if "proc.supplier" not in (source, target):
+            if "proc.bp_supplier" not in (source, target):
                 continue
             status = relation.get("status")
             if status in {"linked", None}:
@@ -1383,7 +1383,7 @@ class OpportunityMinerAgent(BaseAgent):
             return None
 
         supplier_table = None
-        for key in ("supplier_master", "proc.supplier"):
+        for key in ("supplier_master", "proc.bp_supplier"):
             df = tables.get(key)
             if df is not None:
                 supplier_table = df
@@ -2223,21 +2223,21 @@ class OpportunityMinerAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Mapping from internal identifiers to database tables.  Core
     # procurement data lives in the ``proc`` schema as indicated in the
-    # requirements: ``proc.invoice_agent``, ``proc.purchase_order_agent``,
-    # ``proc.contracts`` and ``proc.supplier``.
+    # requirements: ``proc.bp_invoice_trgt``, ``proc.bp_purchase_order_trgt``,
+    # ``proc.contracts`` and ``proc.bp_supplier``.
     TABLE_MAP = {
-        "purchase_orders": "proc.purchase_order_agent",
-        "purchase_order_lines": "proc.po_line_items_agent",
-        "invoices": "proc.invoice_agent",
-        "invoice_lines": "proc.invoice_line_items_agent",
+        "purchase_orders": "proc.bp_purchase_order_trgt",
+        "purchase_order_lines": "proc.bp_po_line_items_trgt",
+        "invoices": "proc.bp_invoice_trgt",
+        "invoice_lines": "proc.bp_invoice_line_items_trgt",
         "contracts": "proc.contracts",
-        "quotes": "proc.quote_agent",
-        "quote_lines": "proc.quote_line_items_agent",
+        "quotes": "proc.bp_quote_trgt",
+        "quote_lines": "proc.bp_quote_line_items_trgt",
         "product_mapping": "proc.cat_product_mapping",
         # "price_benchmarks": "price_benchmarks",
         # "indices": "indices",
         # "shipments": "shipments",
-        "supplier_master": "proc.supplier",
+        "supplier_master": "proc.bp_supplier",
     }
     TABLES = list(TABLE_MAP.keys())
 
@@ -2359,7 +2359,7 @@ class OpportunityMinerAgent(BaseAgent):
 
 
     def _build_supplier_lookup(self, tables: Dict[str, pd.DataFrame]) -> None:
-        """Build helper maps to resolve supplier metadata from ``proc.supplier``."""
+        """Build helper maps to resolve supplier metadata from ``proc.bp_supplier``."""
 
         supplier_master = tables.get("supplier_master", pd.DataFrame())
         lookup: Dict[str, Optional[str]] = {}
@@ -5017,7 +5017,7 @@ class OpportunityMinerAgent(BaseAgent):
 
         The user requirement mandates that the ``item_id`` exposed to
         downstream agents represents the supplier's product name as captured in
-        ``proc.po_line_items_agent``.  Findings frequently surface purchase
+        ``proc.bp_po_line_items_trgt``.  Findings frequently surface purchase
         order identifiers or internal item codes which, while useful for audit
         trails, are not human friendly.  This helper cross references purchase
         order line items (and their parent purchase orders) to surface the
@@ -7032,11 +7032,11 @@ class OpportunityMinerAgent(BaseAgent):
 
 
     def _load_supplier_risk_map(self) -> Dict[str, float]:
-        """Load supplier risk scores from `proc.supplier` into a map: supplier_id -> risk_score."""
+        """Load supplier risk scores from `proc.bp_supplier` into a map: supplier_id -> risk_score."""
         self._supplier_risk_map = {}
         try:
             df = self._read_sql(
-                "SELECT supplier_id, COALESCE(risk_score, 0.0) AS risk_score FROM proc.supplier"
+                "SELECT supplier_id, COALESCE(risk_score, 0.0) AS risk_score FROM proc.bp_supplier"
             )
             if not df.empty:
                 if "risk_score" in df.columns:
@@ -7112,12 +7112,12 @@ class OpportunityMinerAgent(BaseAgent):
             for src in sources:
                 try:
                     df = self._read_sql(
-                        "SELECT item_id FROM proc.po_line_items_agent WHERE po_id = %s",
+                        "SELECT item_id FROM proc.bp_po_line_items_trgt WHERE po_id = %s",
                         params=(src,),
                     )
                     if df.empty:
                         df = self._read_sql(
-                            "SELECT item_id FROM proc.invoice_line_items_agent WHERE invoice_id = %s",
+                            "SELECT item_id FROM proc.bp_invoice_line_items_trgt WHERE invoice_id = %s",
                             params=(src,),
                         )
                     if df.empty:
@@ -7137,25 +7137,25 @@ class OpportunityMinerAgent(BaseAgent):
             return []
 
         po_price_expr = self._price_expression(
-            "proc", "po_line_items_agent", "li"
+            "proc", "bp_po_line_items_trgt", "li"
         )
         inv_price_expr = self._price_expression(
-            "proc", "invoice_line_items_agent", "ili"
+            "proc", "bp_invoice_line_items_trgt", "ili"
         )
 
         sql = f"""
             WITH po_suppliers AS (
                 SELECT p.supplier_name AS supplier_reference,
                        {po_price_expr} AS unit_price
-                FROM proc.po_line_items_agent li
-                JOIN proc.purchase_order_agent p ON p.po_id = li.po_id
+                FROM proc.bp_po_line_items_trgt li
+                JOIN proc.bp_purchase_order_trgt p ON p.po_id = li.po_id
                 WHERE li.item_id = %s
                   AND NULLIF(BTRIM(p.supplier_name), '') IS NOT NULL
             ), invoice_suppliers AS (
                 SELECT ia.supplier_name AS supplier_reference,
                        {inv_price_expr} AS unit_price
-                FROM proc.invoice_line_items_agent ili
-                JOIN proc.invoice_agent ia ON ia.invoice_id = ili.invoice_id
+                FROM proc.bp_invoice_line_items_trgt ili
+                JOIN proc.bp_invoice_trgt ia ON ia.invoice_id = ili.invoice_id
                 WHERE ili.item_id = %s
                   AND NULLIF(BTRIM(ia.supplier_name), '') IS NOT NULL
             )

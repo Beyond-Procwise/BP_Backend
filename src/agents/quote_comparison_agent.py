@@ -124,9 +124,9 @@ class QuoteComparisonAgent(BaseAgent):
                     ),
                 )
 
-        quotes = self._read_table("proc.quote_agent")
-        quote_lines = self._read_table("proc.quote_line_items_agent")
-        supplier_master = self._read_table("proc.supplier")
+        quotes = self._read_table("proc.bp_quote_trgt")
+        quote_lines = self._read_table("proc.bp_quote_line_items_trgt")
+        supplier_master = self._read_table("proc.bp_supplier")
         suppliers = (
             supplier_master[["supplier_id", "supplier_name"]]
             if not supplier_master.empty and "supplier_id" in supplier_master.columns

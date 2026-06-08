@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 configure_gpu()
 
 
-# Columns expected on ``proc.supplier``. The list mirrors the schema so that the
+# Columns expected on ``proc.bp_supplier``. The list mirrors the schema so that the
 # query can explicitly project each field rather than relying on ``s.*`` which
 # tends to be brittle across database revisions.
 SUPPLIER_FIELDS = [
@@ -106,14 +106,14 @@ _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 # Canonical procurement tables that should be embedded for supplier-aware RAG
 _PROCUREMENT_TABLE_SOURCES: dict[str, tuple[str, str]] = {
     "contracts": ("proc", "contracts"),
-    "supplier_master": ("proc", "supplier"),
-    "purchase_orders": ("proc", "purchase_order_agent"),
-    "purchase_order_lines": ("proc", "po_line_items_agent"),
-    "invoices": ("proc", "invoice_agent"),
-    "invoice_lines": ("proc", "invoice_line_items_agent"),
+    "supplier_master": ("proc", "bp_supplier"),
+    "purchase_orders": ("proc", "bp_purchase_order_trgt"),
+    "purchase_order_lines": ("proc", "bp_po_line_items_trgt"),
+    "invoices": ("proc", "bp_invoice_trgt"),
+    "invoice_lines": ("proc", "bp_invoice_line_items_trgt"),
     "product_mapping": ("proc", "cat_product_mapping"),
-    "quotes": ("proc", "quote_agent"),
-    "quote_lines": ("proc", "quote_line_items_agent"),
+    "quotes": ("proc", "bp_quote_trgt"),
+    "quote_lines": ("proc", "bp_quote_line_items_trgt"),
 }
 
 _TABLE_SAMPLE_LIMIT = 10000
@@ -283,23 +283,23 @@ class QueryEngine(BaseEngine):
             with self.agent_nick.get_db_connection() as conn:
                 # Line item tables carry the price/quantity information we need
                 po_price = self._price_expression(
-                    conn, "proc", "po_line_items_agent", "li"
+                    conn, "proc", "bp_po_line_items_trgt", "li"
                 )
                 inv_price = self._price_expression(
-                    conn, "proc", "invoice_line_items_agent", "ili"
+                    conn, "proc", "bp_invoice_line_items_trgt", "ili"
                 )
                 po_qty = self._quantity_expression(
-                    conn, "proc", "po_line_items_agent", "li"
+                    conn, "proc", "bp_po_line_items_trgt", "li"
                 )
                 inv_qty = self._quantity_expression(
-                    conn, "proc", "invoice_line_items_agent", "ili"
+                    conn, "proc", "bp_invoice_line_items_trgt", "ili"
                 )
 
-                supplier_cols = self._get_columns(conn, "proc", "supplier")
+                supplier_cols = self._get_columns(conn, "proc", "bp_supplier")
                 supplier_cols_set = set(supplier_cols)
 
                 # Determine which supplier columns can safely be projected from
-                # ``proc.supplier``. ``supplier_id`` and ``supplier_name`` are
+                # ``proc.bp_supplier``. ``supplier_id`` and ``supplier_name`` are
                 # required for downstream joins. Additional fields are only
                 # included when they exist in the current database so we avoid
                 # referencing stale or renamed columns.
@@ -367,13 +367,13 @@ class QueryEngine(BaseEngine):
                 sql = f"""
                 WITH supplier_lookup AS (
                     SELECT {supplier_lookup_select}
-                    FROM proc.supplier src
+                    FROM proc.bp_supplier src
                     {supplier_filter_clause}
                 ), po AS (
                     SELECT sl.supplier_id,
                            SUM({po_price} * {po_qty}) AS po_spend
-                    FROM proc.po_line_items_agent li
-                    JOIN proc.purchase_order_agent p ON p.po_id = li.po_id
+                    FROM proc.bp_po_line_items_trgt li
+                    JOIN proc.bp_purchase_order_trgt p ON p.po_id = li.po_id
                     JOIN supplier_lookup sl
                       ON sl.supplier_name_norm = LOWER(NULLIF(BTRIM(p.supplier_name), ''))
                     GROUP BY sl.supplier_id
@@ -381,8 +381,8 @@ class QueryEngine(BaseEngine):
                     SELECT sl.supplier_id,
                            SUM({inv_price} * {inv_qty}) AS invoice_spend,
                            COUNT(DISTINCT i.invoice_id) AS invoice_count
-                    FROM proc.invoice_agent i
-                    LEFT JOIN proc.invoice_line_items_agent ili ON i.invoice_id = ili.invoice_id
+                    FROM proc.bp_invoice_trgt i
+                    LEFT JOIN proc.bp_invoice_line_items_trgt ili ON i.invoice_id = ili.invoice_id
                     JOIN supplier_lookup sl
                       ON sl.supplier_name_norm = LOWER(NULLIF(BTRIM(i.supplier_name), ''))
                     GROUP BY sl.supplier_id
@@ -458,7 +458,7 @@ class QueryEngine(BaseEngine):
         supplier_ids: Iterable[str] | None = None,
         supplier_names: Iterable[str] | None = None,
     ) -> pd.DataFrame:
-        """Return invoice headers from ``proc.invoice_agent`` with optional supplier filters."""
+        """Return invoice headers from ``proc.bp_invoice_trgt`` with optional supplier filters."""
 
         supplier_id_list = [
             str(value).strip()
@@ -489,12 +489,12 @@ class QueryEngine(BaseEngine):
                 SELECT supplier_id,
                        LOWER(NULLIF(BTRIM(supplier_name), '')) AS supplier_name_norm,
                        supplier_name AS supplier_name_master
-                FROM proc.supplier
+                FROM proc.bp_supplier
             )
             SELECT i.*,
                    sl.supplier_id AS supplier_id_lookup,
                    sl.supplier_name_master
-            FROM proc.invoice_agent i
+            FROM proc.bp_invoice_trgt i
             LEFT JOIN supplier_lookup sl
               ON LOWER(NULLIF(BTRIM(i.supplier_name), '')) = sl.supplier_name_norm
             {where_clause};
@@ -554,12 +554,12 @@ class QueryEngine(BaseEngine):
                 SELECT supplier_id,
                        LOWER(NULLIF(BTRIM(supplier_name), '')) AS supplier_name_norm,
                        supplier_name AS supplier_name_master
-                FROM proc.supplier
+                FROM proc.bp_supplier
             )
             SELECT p.*,
                    sl.supplier_id AS supplier_id_lookup,
                    sl.supplier_name_master
-            FROM proc.purchase_order_agent p
+            FROM proc.bp_purchase_order_trgt p
             LEFT JOIN supplier_lookup sl
               ON LOWER(NULLIF(BTRIM(p.supplier_name), '')) = sl.supplier_name_norm
             {where_clause};
@@ -592,19 +592,19 @@ class QueryEngine(BaseEngine):
 
         The query implements the following flow:
 
-        1. Retrieve supplier master data from ``proc.supplier`` and normalise
+        1. Retrieve supplier master data from ``proc.bp_supplier`` and normalise
            ``supplier_name`` values for resilient joins.
         2. Map contracts and purchase orders to suppliers using the
            normalised ``supplier_name`` rather than legacy numeric
            identifiers.
         3. For the matching purchase orders, collect line items and invoices
-           via ``po_id`` joins (``proc.po_line_items_agent`` and
-           ``proc.invoice_agent``).
+           via ``po_id`` joins (``proc.bp_po_line_items_trgt`` and
+           ``proc.bp_invoice_trgt``).
         4. Intelligently map purchase order line items to canonical product
            and category information from ``proc.cat_product_mapping`` using a
            fuzzy match between ``item_description`` and the mapping table's
            ``product`` field. All category levels ``1``‑``5`` are returned.
-        5. Map invoices to ``proc.invoice_line_items_agent`` via ``invoice_id``.
+        5. Map invoices to ``proc.bp_invoice_line_items_trgt`` via ``invoice_id``.
 
         When ``embed`` is ``True`` a human‑readable summary of the returned
         rows is generated and upserted into the vector database so downstream
@@ -646,7 +646,7 @@ class QueryEngine(BaseEngine):
                 SELECT supplier_id,
                        supplier_name,
                        LOWER(NULLIF(BTRIM(supplier_name), '')) AS supplier_name_norm
-                FROM proc.supplier
+                FROM proc.bp_supplier
             ),
             contract_supplier AS (
                 SELECT c.contract_id,
@@ -670,7 +670,7 @@ class QueryEngine(BaseEngine):
                        p.contract_id,
                        p.supplier_name,
                        LOWER(NULLIF(BTRIM(p.supplier_name), '')) AS supplier_name_norm
-                FROM proc.purchase_order_agent p
+                FROM proc.bp_purchase_order_trgt p
             ),
             po_enriched AS (
                 SELECT
@@ -686,7 +686,7 @@ class QueryEngine(BaseEngine):
             ),
             inv AS (
                 SELECT ia.invoice_id, ia.po_id
-                FROM proc.invoice_agent ia
+                FROM proc.bp_invoice_trgt ia
             )
             SELECT
                 pe.supplier_id,
@@ -697,9 +697,9 @@ class QueryEngine(BaseEngine):
                 inv.invoice_id,
                 ili.invoice_line_id
             FROM po_enriched pe
-            LEFT JOIN proc.po_line_items_agent li ON pe.po_id = li.po_id
+            LEFT JOIN proc.bp_po_line_items_trgt li ON pe.po_id = li.po_id
             LEFT JOIN inv ON pe.po_id = inv.po_id
-            LEFT JOIN proc.invoice_line_items_agent ili
+            LEFT JOIN proc.bp_invoice_line_items_trgt ili
                 ON inv.invoice_id = ili.invoice_id
             {where_clause}
         """

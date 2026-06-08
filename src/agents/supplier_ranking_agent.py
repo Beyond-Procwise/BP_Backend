@@ -1128,7 +1128,7 @@ class SupplierRankingAgent(BaseAgent):
             ]
 
         tables["po_lines"] = self._read_table(
-            "proc.po_line_items_agent",
+            "proc.bp_po_line_items_trgt",
             "po_id = ANY(%s)" if po_ids else None,
             [po_ids] if po_ids else None,
             columns=(
@@ -1144,7 +1144,7 @@ class SupplierRankingAgent(BaseAgent):
             ),
         )
         tables["invoice_lines"] = self._read_table(
-            "proc.invoice_line_items_agent",
+            "proc.bp_invoice_line_items_trgt",
             "invoice_id = ANY(%s)" if invoice_ids else None,
             [invoice_ids] if invoice_ids else None,
             columns=(

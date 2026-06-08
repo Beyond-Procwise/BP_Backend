@@ -428,8 +428,8 @@ class QuoteEvaluationAgent(BaseAgent):
                             q.created_by,
                             q.last_modified_by,
                             q.last_modified_date
-                        FROM proc.quote_agent AS q
-                        LEFT JOIN proc.supplier AS s ON s.supplier_id = q.supplier_id
+                        FROM proc.bp_quote_trgt AS q
+                        LEFT JOIN proc.bp_supplier AS s ON s.supplier_id = q.supplier_id
                         {where_sql}
                         ORDER BY q.quote_date DESC NULLS LAST,
                                  q.created_date DESC NULLS LAST,
@@ -471,7 +471,7 @@ class QuoteEvaluationAgent(BaseAgent):
                             tax_amount,
                             total_amount,
                             currency
-                        FROM proc.quote_line_items_agent
+                        FROM proc.bp_quote_line_items_trgt
                         WHERE quote_id = ANY(%s)
                         ORDER BY quote_id, line_number
                         """,
@@ -725,6 +725,7 @@ class QuoteEvaluationAgent(BaseAgent):
     def _get_responses_from_db(self, rfq_id: str) -> List[Dict]:
         if not rfq_id:
             return []
+        # TODO: no bp_supplier_responses table yet
         sql = (
             "SELECT supplier_id, price, lead_time, response_text FROM proc.supplier_responses WHERE rfq_id = %s"
         )

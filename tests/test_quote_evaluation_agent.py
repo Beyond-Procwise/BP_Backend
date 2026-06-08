@@ -79,10 +79,10 @@ class QuoteCursorStub:
 
     def execute(self, sql, params=None):
         self.connection.queries.append((sql, params))
-        if "FROM proc.quote_agent" in sql:
+        if "FROM proc.bp_quote_trgt" in sql:
             self._rows = self.connection.quotes
             self.description = [(col,) for col in self.connection.quote_columns]
-        elif "FROM proc.quote_line_items_agent" in sql:
+        elif "FROM proc.bp_quote_line_items_trgt" in sql:
             self._rows = self.connection.lines
             self.description = [(col,) for col in self.connection.line_columns]
         else:
