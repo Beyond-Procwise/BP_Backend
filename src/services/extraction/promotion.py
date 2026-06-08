@@ -77,6 +77,21 @@ def _stg_columns(cur, stg_table: str) -> list[str]:
     return [r[0] for r in cur.fetchall()]
 
 
+def _table_columns(cur, qualified_table: str) -> list[str]:
+    """Return actual column names for any schema-qualified table.
+
+    Used as an identifier allowlist before interpolating column names
+    into SQL (SQL-injection defence for HITL-supplied field_name values).
+    """
+    schema, table = qualified_table.split(".")
+    cur.execute(
+        """SELECT column_name FROM information_schema.columns
+            WHERE table_schema=%s AND table_name=%s""",
+        (schema, table),
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
 # ---------------------------------------------------------------------------
 # Confidence + discrepancy helpers
 # ---------------------------------------------------------------------------
@@ -595,7 +610,19 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                    AND blocks_promotion=TRUE
             """, (raw_id,))
             fixes = cur.fetchall()
+            # Build an allowlist of real columns for raw_t ONCE, then validate
+            # every field_name before interpolating it into an UPDATE identifier.
+            # This prevents SQL-injection via a crafted field_name in the
+            # discrepancy table (e.g. "x = NULL, promotion_status").
+            allowed_cols = set(_table_columns(cur, raw_t))
             for field_name, resolved_value, action in fixes:
+                if field_name not in allowed_cols:
+                    log.error(
+                        "HITL fix: rejected unknown/invalid column name %r for %s "
+                        "(raw_id=%s) — skipping to prevent SQL injection",
+                        field_name, raw_t, raw_id,
+                    )
+                    continue
                 if action == "apply_value":
                     cur.execute(
                         f"UPDATE {raw_t} SET {field_name} = %s WHERE raw_id=%s",
