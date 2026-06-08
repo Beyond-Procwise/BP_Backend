@@ -105,3 +105,41 @@ def test_build_persona_prompt_includes_framing_rules_and_facts():
     assert "Do not fabricate" in prompt
     # the facts are embedded as JSON
     assert '"invoices": 2' in prompt
+
+
+def test_store_summary_flips_current_and_inserts():
+    rec = []
+    conn = _FakeConn({}, recorder=rec)
+    out = sa._store_summary(
+        conn,
+        persona="compliance",
+        persona_source="bp_prompt",
+        scope="deal",
+        deal_id="D-9",
+        summary="text",
+        data_snapshot={"a": 1},
+        sources={"invoices": 1},
+        model="gpt-oss:120b",
+        is_current=True,
+    )
+    assert out["summary_id"]
+    assert out["persona"] == "compliance"
+    assert out["deal_id"] == "D-9"
+    assert "generated_at" in out
+    assert conn.committed is True
+    sqls = " ".join(s for s, _ in rec)
+    assert "UPDATE proc.bp_summary SET is_current = false" in sqls
+    assert "INSERT INTO proc.bp_summary" in sqls
+
+
+def test_store_summary_as_of_does_not_flip_current():
+    rec = []
+    conn = _FakeConn({}, recorder=rec)
+    sa._store_summary(
+        conn, persona="compliance", persona_source="raw", scope="deal",
+        deal_id="D-9", summary="t", data_snapshot={}, sources=None,
+        model="m", is_current=False,
+    )
+    sqls = " ".join(s for s, _ in rec)
+    assert "UPDATE proc.bp_summary SET is_current = false" not in sqls
+    assert "INSERT INTO proc.bp_summary" in sqls

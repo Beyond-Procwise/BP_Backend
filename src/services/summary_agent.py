@@ -128,3 +128,55 @@ def _build_persona_prompt(framing: str, facts: dict) -> str:
     """
     base = _build_prompt(facts)
     return f"{framing.strip()}\n\n{base}"
+
+
+def _store_summary(
+    conn: Any,
+    *,
+    persona: str,
+    persona_source: str,
+    scope: str,
+    deal_id: Optional[str],
+    summary: str,
+    data_snapshot: Any,
+    sources: Any,
+    model: str,
+    is_current: bool = True,
+) -> dict:
+    """Insert a summary row. When is_current, demote the prior current row of the
+    same (persona, scope, deal_id) group first. summary_id/generated_at are set
+    in Python so the result is returned without RETURNING parsing.
+    """
+    sid = str(uuid.uuid4())
+    generated_at = datetime.now(timezone.utc)
+    cur = conn.cursor()
+    if is_current:
+        cur.execute(
+            "UPDATE proc.bp_summary SET is_current = false "
+            "WHERE persona = %s AND scope = %s "
+            "AND deal_id IS NOT DISTINCT FROM %s AND is_current",
+            (persona, scope, deal_id),
+        )
+    cur.execute(
+        "INSERT INTO proc.bp_summary "
+        "(summary_id, persona, persona_source, scope, deal_id, summary, "
+        " data_snapshot, sources, model, is_current, generated_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            sid, persona, persona_source, scope, deal_id, summary,
+            json.dumps(data_snapshot, default=str),
+            json.dumps(sources, default=str) if sources is not None else None,
+            model, is_current, generated_at,
+        ),
+    )
+    conn.commit()
+    return {
+        "summary_id": sid,
+        "persona": persona,
+        "persona_source": persona_source,
+        "scope": scope,
+        "deal_id": deal_id,
+        "summary": summary,
+        "sources": sources,
+        "generated_at": generated_at.isoformat(),
+    }
