@@ -200,3 +200,51 @@ def test_generate_summary_as_of_missing_snapshot_raises(monkeypatch):
     import pytest
     with pytest.raises(sa.SnapshotNotFound):
         sa.generate_summary("analysis", deal_id="D-9", as_of="2020-01-01T00:00:00Z", conn=conn)
+
+
+def test_precompute_iterates_personas_and_scopes(monkeypatch):
+    calls = []
+    def fake_generate(persona, deal_id=None, as_of=None, conn=None):
+        calls.append((persona, deal_id))
+        return {"summary_id": "x"}
+    monkeypatch.setattr(sa, "generate_summary", fake_generate)
+    conn = _FakeConn({
+        "prompt_type = 'summary_persona'": (["prompt_name"], [("analysis",), ("compliance",)]),
+        "SELECT DISTINCT deal_id": (["deal_id"], [("D-1",), ("D-2",)]),
+    })
+    out = sa.precompute_summaries(conn=conn)
+    assert out["generated"] == 6
+    assert ("analysis", None) in calls
+    assert ("compliance", "D-2") in calls
+
+
+def test_precompute_continues_past_failures(monkeypatch):
+    def fake_generate(persona, deal_id=None, as_of=None, conn=None):
+        if deal_id == "D-1":
+            raise RuntimeError("boom")
+        return {"summary_id": "x"}
+    monkeypatch.setattr(sa, "generate_summary", fake_generate)
+    conn = _FakeConn({
+        "prompt_type = 'summary_persona'": (["prompt_name"], [("analysis",)]),
+        "SELECT DISTINCT deal_id": (["deal_id"], [("D-1",)]),
+    })
+    out = sa.precompute_summaries(conn=conn)
+    assert out["failed"] == 1
+    assert out["generated"] == 1
+
+
+def test_get_cached_summary_returns_current_row():
+    conn = _FakeConn({
+        "FROM proc.bp_summary": (
+            ["summary_id", "persona", "persona_source", "scope", "deal_id", "summary", "sources", "generated_at"],
+            [("sid-1", "compliance", "bp_prompt", "deal", "D-9", "cached text", {"invoices": 1}, "2026-06-08T00:00:00Z")],
+        ),
+    })
+    out = sa.get_cached_summary("compliance", "D-9", conn=conn)
+    assert out["summary_id"] == "sid-1"
+    assert out["summary"] == "cached text"
+
+
+def test_get_cached_summary_none_when_absent():
+    conn = _FakeConn({"FROM proc.bp_summary": (["summary_id"], [])})
+    assert sa.get_cached_summary("compliance", "D-9", conn=conn) is None

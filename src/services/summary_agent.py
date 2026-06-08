@@ -253,3 +253,121 @@ def generate_summary(
         model=_SUMMARY_MODEL,
         is_current=is_current,
     )
+
+
+def _rows_as_dicts(cur) -> list[dict]:
+    cols = [d[0] for d in (cur.description or [])]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def get_cached_summary(persona: str, deal_id: Optional[str] = None, conn: Any = None) -> Optional[dict]:
+    """Return the current cached summary for (persona, deal_id), or None."""
+    if conn is None:
+        with get_conn() as own:
+            return get_cached_summary(persona, deal_id, conn=own)
+    scope = "deal" if deal_id else "portfolio"
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT summary_id, persona, persona_source, scope, deal_id, summary, "
+        "sources, generated_at FROM proc.bp_summary "
+        "WHERE persona = %s AND scope = %s AND deal_id IS NOT DISTINCT FROM %s "
+        "AND is_current ORDER BY generated_at DESC LIMIT 1",
+        (persona, scope, deal_id),
+    )
+    rows = _rows_as_dicts(cur)
+    return rows[0] if rows else None
+
+
+def list_summary_history(persona: str, deal_id: Optional[str] = None, conn: Any = None) -> list[dict]:
+    """Return prior summaries for (persona, deal_id), newest first."""
+    if conn is None:
+        with get_conn() as own:
+            return list_summary_history(persona, deal_id, conn=own)
+    scope = "deal" if deal_id else "portfolio"
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT summary_id, scope, deal_id, generated_at, is_current, "
+        "left(summary, 200) AS snippet FROM proc.bp_summary "
+        "WHERE persona = %s AND scope = %s AND deal_id IS NOT DISTINCT FROM %s "
+        "ORDER BY generated_at DESC",
+        (persona, scope, deal_id),
+    )
+    return _rows_as_dicts(cur)
+
+
+def get_summary_by_id(summary_id: str, conn: Any = None) -> Optional[dict]:
+    """Return a single stored summary by id, or None."""
+    if conn is None:
+        with get_conn() as own:
+            return get_summary_by_id(summary_id, conn=own)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT summary_id, persona, persona_source, scope, deal_id, summary, "
+        "sources, model, is_current, generated_at FROM proc.bp_summary "
+        "WHERE summary_id = %s",
+        (summary_id,),
+    )
+    rows = _rows_as_dicts(cur)
+    return rows[0] if rows else None
+
+
+def _distinct_deal_ids(conn: Any) -> list[str]:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DISTINCT deal_id FROM ("
+        " SELECT deal_id FROM proc.bp_invoice_trgt "
+        " UNION SELECT deal_id FROM proc.bp_purchase_order_trgt "
+        " UNION SELECT deal_id FROM proc.bp_quote_trgt) t "
+        "WHERE deal_id IS NOT NULL"
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+def _summary_personas(conn: Any) -> list[str]:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT prompt_name FROM proc.bp_prompt "
+        "WHERE prompt_type = 'summary_persona' AND COALESCE(prompts_status,1)=1"
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+def precompute_summaries(
+    personas: Optional[list[str]] = None,
+    deal_ids: Optional[list[str]] = None,
+    conn: Any = None,
+) -> dict:
+    """Generate current summaries for every persona x scope (portfolio + each
+    deal). Per-item failures are logged and skipped. Returns counts.
+    """
+    if conn is None:
+        with get_conn() as own:
+            return precompute_summaries(personas, deal_ids, conn=own)
+
+    personas = personas or _summary_personas(conn)
+    deal_ids = deal_ids if deal_ids is not None else _distinct_deal_ids(conn)
+    scopes: list[Optional[str]] = [None] + list(deal_ids)  # None = portfolio
+    planned = len(personas) * len(scopes)
+    log.info(
+        "summary precompute: %d personas x %d scopes = %d generations",
+        len(personas), len(scopes), planned,
+    )
+
+    generated = 0
+    failed = 0
+    for persona in personas:
+        for deal_id in scopes:
+            try:
+                generate_summary(persona, deal_id=deal_id, conn=conn)
+                generated += 1
+            except Exception:  # pragma: no cover - logged, run continues
+                failed += 1
+                log.exception(
+                    "precompute failed for persona=%s deal_id=%s", persona, deal_id
+                )
+    return {
+        "generated": generated,
+        "failed": failed,
+        "personas": len(personas),
+        "scopes": len(scopes),
+    }
