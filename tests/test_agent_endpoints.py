@@ -364,3 +364,38 @@ def test_email_dispatch_detects_workflow_mismatch(monkeypatch):
     assert detail["stored_workflow_id"] == "wf-stored"
 
 
+def test_reload_governance_reloads_both_engines():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from types import SimpleNamespace
+    from api.routers import agents as agents_router
+
+    calls = {"prompts": 0, "policies": 0}
+
+    prompt_engine = SimpleNamespace(
+        refresh=lambda: calls.__setitem__("prompts", calls["prompts"] + 1),
+        all_prompts=lambda: [{"promptId": 1}, {"promptId": 2}],
+    )
+    policy_engine = SimpleNamespace(
+        reload_policies=lambda: calls.__setitem__("policies", calls["policies"] + 1),
+        list_policies=lambda: [{"policyId": "a"}],
+    )
+
+    app = FastAPI()
+    app.include_router(agents_router.router)
+    app.state.agent_nick = SimpleNamespace(
+        prompt_engine=prompt_engine,
+        policy_engine=policy_engine,
+        agents={},
+    )
+
+    client = TestClient(app)
+    resp = client.post("/agents/reload-governance")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "success"
+    assert body["prompts"] == 2
+    assert body["policies"] == 1
+    assert calls == {"prompts": 1, "policies": 1}
+
+

@@ -76,6 +76,22 @@ async def reload_policies(agent_nick=Depends(get_agent_nick)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/reload-governance")
+async def reload_governance(agent_nick=Depends(get_agent_nick)):
+    """Reload both prompt and policy governance from the bp_ tables."""
+    try:
+        agent_nick.policy_engine.reload_policies()
+        agent_nick.prompt_engine.refresh()
+        return {
+            "status": "success",
+            "prompts": len(agent_nick.prompt_engine.all_prompts()),
+            "policies": len(agent_nick.policy_engine.list_policies()),
+        }
+    except Exception as e:  # pragma: no cover - defensive
+        logger.error(f"Failed to reload governance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class AgentExecutionRequest(BaseModel):
     agent_type: str
     payload: Dict[str, Any] = {}
