@@ -99,3 +99,19 @@ def test_prompt_engine_loads_and_normalises_prompts():
 
     library = engine.prompt_library()
     assert any(t.get("template_id") == "contract" for t in library["templates"])
+
+
+def test_prompt_engine_queries_bp_prompt_table():
+    captured = {}
+
+    class CapturingCursor(DummyCursor):
+        def execute(self, query, params=None):
+            captured["query"] = query
+
+    class CapturingConn(DummyConn):
+        def cursor(self):
+            return CapturingCursor(self._rows)
+
+    PromptEngine(connection_factory=lambda: CapturingConn([]))
+    assert "proc.bp_prompt" in captured["query"]
+    assert "proc.prompt " not in captured["query"]

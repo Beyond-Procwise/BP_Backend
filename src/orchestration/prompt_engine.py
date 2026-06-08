@@ -125,7 +125,7 @@ class PromptEngine:
                         SELECT prompt_id, prompt_name, prompt_type, prompt_linked_agents,
                                prompts_desc, prompts_status, created_date, created_by,
                                last_modified_date, last_modified_by, version
-                        FROM proc.prompt
+                        FROM proc.bp_prompt
                         WHERE COALESCE(prompts_status, 1) = 1
                         """
                     )
