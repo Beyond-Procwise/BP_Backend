@@ -8,7 +8,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from agents.supplier_ranking_agent import SupplierRankingAgent, ensure_payment_terms_score
+from agents.supplier_ranking_agent import SupplierRankingAgent, ensure_payment_terms_score, _json_safe
 from agents.base_agent import AgentContext, AgentOutput, AgentStatus
 from engines.policy_engine import PolicyEngine
 from orchestration.orchestrator import Orchestrator
@@ -570,3 +570,141 @@ def test_ensure_payment_terms_score_imputes_unknown(caplog):
         result = ensure_payment_terms_score(df.copy())
     assert result.loc[0, "payment_terms_score"] == 50.0
     assert any("payment_terms_score" in record.getMessage() for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# JSON-safe coercion helpers
+# ---------------------------------------------------------------------------
+
+import math
+import numpy as np
+
+
+def _is_json_native(v):
+    """Return True if *v* is a type that json.dumps handles without a custom encoder."""
+    return v is None or isinstance(v, (bool, int, float, str, list, dict))
+
+
+def test_json_safe_coerces_numpy_nan_to_none():
+    assert _json_safe(np.nan) is None
+
+
+def test_json_safe_coerces_float_nan_to_none():
+    assert _json_safe(float("nan")) is None
+
+
+def test_json_safe_coerces_pandas_na_to_none():
+    assert _json_safe(pd.NA) is None
+
+
+def test_json_safe_coerces_pandas_nat_to_none():
+    assert _json_safe(pd.NaT) is None
+
+
+def test_json_safe_coerces_numpy_int64():
+    result = _json_safe(np.int64(42))
+    assert result == 42
+    assert type(result) is int
+
+
+def test_json_safe_coerces_numpy_float64():
+    result = _json_safe(np.float64(3.14))
+    assert math.isclose(result, 3.14)
+    assert type(result) is float
+
+
+def test_json_safe_coerces_numpy_float64_nan_to_none():
+    assert _json_safe(np.float64("nan")) is None
+
+
+def test_json_safe_passes_through_none():
+    assert _json_safe(None) is None
+
+
+def test_json_safe_passes_through_native_float():
+    assert _json_safe(1.5) == 1.5
+    assert type(_json_safe(1.5)) is float
+
+
+def test_json_safe_passes_through_native_int():
+    assert _json_safe(7) == 7
+    assert type(_json_safe(7)) is int
+
+
+def test_json_safe_passes_through_str():
+    assert _json_safe("hello") == "hello"
+
+
+def test_json_safe_coerces_numpy_bool():
+    assert _json_safe(np.bool_(True)) is True
+    assert type(_json_safe(np.bool_(True))) is bool
+
+
+def test_prepare_ranking_entry_no_pandas_objects(monkeypatch):
+    """_prepare_ranking_entry must produce only JSON-native types even when the
+    DataFrame row contains np.nan, pandas NA, and numpy scalar values."""
+
+    class StubPolicyEngine:
+        def __init__(self):
+            self.supplier_policies = [
+                {
+                    "policyName": "WeightAllocationPolicy",
+                    "details": {"rules": {"default_weights": {"price": 1.0}}},
+                },
+            ]
+
+    class StubQueryEngine:
+        def fetch_supplier_data(self, *_, **__):
+            return pd.DataFrame()
+
+    nick = SimpleNamespace(
+        settings=SimpleNamespace(extraction_model="gpt-oss", script_user="tester"),
+        policy_engine=StubPolicyEngine(),
+        query_engine=StubQueryEngine(),
+    )
+
+    agent = SupplierRankingAgent(nick)
+
+    # Build a row that mimics a DataFrame row with problematic types
+    row = pd.Series({
+        "supplier_id": "SUP-TECHWORLD",
+        "supplier_name": pd.NA,          # pandas NA – was serialising as {"__module__":"pandas"}
+        "final_score": np.float64(50.0),
+        "price_score": np.nan,
+        "delivery_score": pd.NA,
+        "risk_score": pd.NA,             # same root cause as the live bug
+        "payment_terms_score": np.float64(66.67),
+        "payment_terms": pd.NA,
+        "avg_unit_price": pd.NA,         # same root cause as the live bug
+        "total_spend": np.float64(0.0),
+        "po_count": pd.NA,
+        "invoice_count": pd.NA,
+        "avg_lead_time_days": np.nan,
+        "justification": "ok",
+        "contact_name_1": pd.NA,
+        "contact_email_1": pd.NA,
+        "flow_coverage": np.float64(0.0),
+    })
+
+    entry = agent._prepare_ranking_entry(row, profile=None, weights={"price": 1.0})
+
+    # Every value in the entry must be JSON-native
+    bad_fields = {
+        k: (v, type(v).__name__)
+        for k, v in entry.items()
+        if not _is_json_native(v)
+    }
+    assert bad_fields == {}, f"Non-JSON-native values found: {bad_fields}"
+
+    # Specific assertions from the live bug report
+    assert entry["supplier_name"] is None       # pd.NA → None
+    assert entry["risk_score"] is None          # pd.NA → None
+    assert entry["avg_unit_price"] is None      # pd.NA → None
+    assert entry["price_score"] is None         # np.nan → None
+    assert entry["delivery_score"] is None      # pd.NA → None
+    assert entry["po_count"] is None            # pd.NA → None
+    assert isinstance(entry["final_score"], float)
+    assert math.isclose(entry["final_score"], 50.0)
+
+    # Must be JSON-serialisable without errors
+    json.dumps(entry)  # would raise TypeError if any pandas/numpy objects remained

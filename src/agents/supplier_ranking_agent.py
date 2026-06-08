@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import multiprocessing
 import re
 import warnings
@@ -30,6 +31,46 @@ with warnings.catch_warnings():
         message="pandas only supports SQLAlchemy connectable",
         category=UserWarning,
     )
+
+
+def _json_safe(v: Any) -> Any:
+    """Coerce a value to a JSON-native type (str, int, float, bool, None, list, dict).
+
+    Handles the common cases that arise when DataFrame rows are turned into
+    plain Python dicts:
+
+    * pandas NA / NaT / pd.NA  → None
+    * numpy NaN / numpy float scalars → None (if NaN) or native float
+    * numpy integer scalars     → native int
+    * numpy bool_               → native bool
+    * pandas Timestamp / any object with .isoformat() → ISO string
+    * native float NaN          → None
+    """
+    if v is None:
+        return None
+    # numpy bool_ must be checked before float/int because np.bool_ inherits
+    # from Python int on some numpy builds.
+    if isinstance(v, np.bool_):
+        return bool(v)
+    # numpy/pandas floating (np.float64 inherits from Python float, so we
+    # must coerce to native float rather than returning the subclass).
+    if isinstance(v, (np.floating, float)):
+        f = float(v)
+        return None if math.isnan(f) else f
+    # numpy integer
+    if isinstance(v, np.integer):
+        return int(v)
+    # pandas NA / NaT (must come after numpy scalar checks so the cheap
+    # isinstance paths above catch the common numpy scalars first).
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    # Timestamps and date-like objects with isoformat
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return v
 
 
 def _parse_payment_terms_days(val: Any) -> Optional[float]:
@@ -1804,26 +1845,31 @@ class SupplierRankingAgent(BaseAgent):
     def _prepare_ranking_entry(
         self, row: pd.Series, profile: Optional[Dict], weights: Dict[str, float]
     ) -> Dict:
+        # Coerce score/metric fields to JSON-native types so that pandas NA,
+        # numpy scalars, and other non-serialisable objects never leak into the
+        # API response.
+        raw_final = row.get("final_score", 0.0)
+        final_score_safe = _json_safe(raw_final)
         entry = {
-            "supplier_id": row.get("supplier_id"),
-            "supplier_name": row.get("supplier_name"),
-            "final_score": float(row.get("final_score", 0.0)),
-            "price_score": row.get("price_score"),
-            "delivery_score": row.get("delivery_score"),
-            "risk_score": row.get("risk_score"),
-            "payment_terms_score": row.get("payment_terms_score"),
-            "payment_terms": row.get("payment_terms"),
-            "avg_unit_price": row.get("avg_unit_price"),
-            "total_spend": row.get("total_spend"),
-            "po_count": row.get("po_count"),
-            "invoice_count": row.get("invoice_count"),
-            "lead_time_days": row.get("avg_lead_time_days"),
-            "justification": row.get("justification"),
-            "contact_name": row.get("contact_name_1"),
-            "contact_email": row.get("contact_email_1"),
+            "supplier_id": _json_safe(row.get("supplier_id")),
+            "supplier_name": _json_safe(row.get("supplier_name")),
+            "final_score": final_score_safe if isinstance(final_score_safe, (int, float)) else 0.0,
+            "price_score": _json_safe(row.get("price_score")),
+            "delivery_score": _json_safe(row.get("delivery_score")),
+            "risk_score": _json_safe(row.get("risk_score")),
+            "payment_terms_score": _json_safe(row.get("payment_terms_score")),
+            "payment_terms": _json_safe(row.get("payment_terms")),
+            "avg_unit_price": _json_safe(row.get("avg_unit_price")),
+            "total_spend": _json_safe(row.get("total_spend")),
+            "po_count": _json_safe(row.get("po_count")),
+            "invoice_count": _json_safe(row.get("invoice_count")),
+            "lead_time_days": _json_safe(row.get("avg_lead_time_days")),
+            "justification": _json_safe(row.get("justification")),
+            "contact_name": _json_safe(row.get("contact_name_1")),
+            "contact_email": _json_safe(row.get("contact_email_1")),
             "weights": dict(weights),
         }
-        coverage = row.get("flow_coverage")
+        coverage = _json_safe(row.get("flow_coverage"))
         if isinstance(coverage, (int, float)):
             entry["flow_coverage"] = float(coverage)
         relationship_cov = row.get("relationship_coverage")
