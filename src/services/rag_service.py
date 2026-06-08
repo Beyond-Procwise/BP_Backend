@@ -1082,11 +1082,18 @@ class RAGService:
 
         if points and collection_name:
             self._purge_disallowed_metadata(collection_name)
-            self.client.upsert(
-                collection_name=collection_name,
-                points=points,
-                wait=True,
-            )
+            try:
+                self.client.upsert(
+                    collection_name=collection_name,
+                    points=points,
+                    wait=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Qdrant upsert failed for collection %r (%d points) — "
+                    "document processing continues",
+                    collection_name, len(points),
+                )
 
     def upsert_texts(self, texts: List[str], metadata: Optional[Dict] = None):
         """Backward compatible wrapper around :meth:`upsert_payloads`."""

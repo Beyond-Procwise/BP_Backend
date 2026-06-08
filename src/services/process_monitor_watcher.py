@@ -240,6 +240,20 @@ class ProcessMonitorWatcher:
         if not pk_val or not table:
             return False  # can't determine — assume no re-extraction needed
 
+        # Allowlist guard — table and pk_col must be one of the known bp_ pairs
+        # (they are derived from hardcoded branches above, but guard defensively)
+        _ALLOWED_TABLE_PK: dict = {
+            "proc.bp_purchase_order": "po_id",
+            "proc.bp_invoice": "invoice_id",
+            "proc.bp_quote": "quote_id",
+        }
+        if _ALLOWED_TABLE_PK.get(table) != pk_col:
+            logger.warning(
+                "_data_needs_reextraction: rejected disallowed table=%r pk_col=%r",
+                table, pk_col,
+            )
+            return False
+
         try:
             cur.execute(f"SELECT 1 FROM {table} WHERE {pk_col} = %s LIMIT 1", (pk_val,))
             return cur.fetchone() is None  # True = data missing, needs re-extraction
@@ -547,30 +561,70 @@ class ProcessMonitorWatcher:
         # Build the training conversation (instruction → response)
         source_text = result.get("_source_text", "") if isinstance(result, dict) else ""
 
-        # Fetch persisted data from DB as the "verified" output
+        # Fetch persisted data from DB as the "verified" output. The
+        # renovation pipeline writes to *_stg with lowercase doc_types
+        # ('invoice', 'purchase_order', 'quote'); the older v3 pipeline
+        # used capitalised forms ('Invoice', 'Purchase_Order', 'Quote').
+        # We accept both shapes so this collector keeps working through
+        # the migration.
         try:
             conn = self._get_connection()
             try:
                 with conn.cursor() as cur:
-                    pk_map = {"Invoice": ("proc.bp_invoice", "invoice_id"),
-                              "Purchase_Order": ("proc.bp_purchase_order", "po_id"),
-                              "Quote": ("proc.bp_quote", "quote_id")}
+                    pk_map = {
+                        "invoice": ("proc.bp_invoice_stg", "invoice_id"),
+                        "purchase_order": ("proc.bp_purchase_order_stg", "po_id"),
+                        "quote": ("proc.bp_quote_stg", "quote_id"),
+                        # Legacy v3 capitalised variants → same _stg tables
+                        "Invoice": ("proc.bp_invoice_stg", "invoice_id"),
+                        "Purchase_Order": ("proc.bp_purchase_order_stg", "po_id"),
+                        "Quote": ("proc.bp_quote_stg", "quote_id"),
+                    }
                     table_info = pk_map.get(doc_type)
                     if not table_info:
+                        logger.debug(
+                            "_collect_training_example: doc_type=%r has no _stg "
+                            "mapping — skipping", doc_type,
+                        )
                         return
                     table, pk_col = table_info
+                    # Allowlist guard — values come from hardcoded dict above, but
+                    # validate explicitly to prevent SQL injection if the dict is
+                    # ever extended with user-supplied keys.
+                    _ALLOWED_STG_TABLES: frozenset = frozenset(pk_map.values())
+                    if (table, pk_col) not in _ALLOWED_STG_TABLES:
+                        logger.warning(
+                            "_collect_training_example: rejected disallowed "
+                            "table=%r pk_col=%r", table, pk_col,
+                        )
+                        return
                     cur.execute(f"SELECT row_to_json(t) FROM {table} t WHERE {pk_col} = %s", (pk,))
                     row = cur.fetchone()
                     if not row:
                         return
                     header_data = row[0]
 
-                    # Get line items
-                    line_table_map = {"Invoice": ("proc.bp_invoice_line_items", "invoice_id"),
-                                     "Purchase_Order": ("proc.bp_po_line_items", "po_id"),
-                                     "Quote": ("proc.bp_quote_line_items", "quote_id")}
+                    # Get line items from the matching _line_items_stg table.
+                    line_table_map = {
+                        "invoice": ("proc.bp_invoice_line_items_stg", "invoice_id"),
+                        "purchase_order": ("proc.bp_po_line_items_stg", "po_id"),
+                        "quote": ("proc.bp_quote_line_items_stg", "quote_id"),
+                        "Invoice": ("proc.bp_invoice_line_items_stg", "invoice_id"),
+                        "Purchase_Order": ("proc.bp_po_line_items_stg", "po_id"),
+                        "Quote": ("proc.bp_quote_line_items_stg", "quote_id"),
+                    }
                     lt_info = line_table_map.get(doc_type)
                     line_data = []
+                    if lt_info:
+                        lt_table, lt_fk = lt_info
+                        # Allowlist guard for line-items table as well
+                        _ALLOWED_LINE_TABLES: frozenset = frozenset(line_table_map.values())
+                        if (lt_table, lt_fk) not in _ALLOWED_LINE_TABLES:
+                            logger.warning(
+                                "_collect_training_example: rejected disallowed "
+                                "line table=%r fk=%r", lt_table, lt_fk,
+                            )
+                            lt_info = None
                     if lt_info:
                         lt_table, lt_fk = lt_info
                         cur.execute(f"SELECT row_to_json(t) FROM {lt_table} t WHERE {lt_fk} = %s", (pk,))

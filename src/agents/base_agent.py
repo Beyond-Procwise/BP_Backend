@@ -375,7 +375,7 @@ class BaseAgent:
     def execute(self, context: "AgentContext") -> "AgentOutput":
         """Execute the agent with process logging.
 
-        This centralises writes to ``proc.routing`` and ``proc.action`` so that
+        This centralises writes to ``proc.routing`` and ``proc.bp_action`` so that
         every agent invocation is captured in the database regardless of how it
         is triggered.
         """
@@ -1578,14 +1578,8 @@ class AgentNick:
                 yield connection
             return
 
-        conn = self.get_db_connection()
-        try:
+        with self.get_db_connection_cm() as conn:  # closes on exit
             yield conn
-        finally:  # pragma: no cover - defensive cleanup
-            try:
-                conn.close()
-            except Exception:
-                logger.exception("Failed to close DB connection")
 
     def ollama_options(self) -> Dict[str, Any]:
         """Return default options for Ollama requests respecting GPU availability."""
@@ -1660,6 +1654,42 @@ class AgentNick:
             user=self.settings.db_user, password=self.settings.db_password,
             port=self.settings.db_port
         )
+
+    @contextmanager
+    def get_db_connection_cm(self):
+        """Context-manager wrapper around :meth:`get_db_connection` that
+        **closes** the connection on exit.
+
+        Prefer this over the bare :meth:`get_db_connection` wherever a
+        ``with`` block can be used — it prevents the connection-leak that
+        psycopg2's own ``__exit__`` does NOT guard (psycopg2 commit/rollback
+        on exit but does NOT close).
+
+        Call sites that need a *factory callable* (StateManager,
+        DocumentExtractor, etc.) must continue to use
+        :meth:`get_db_connection` directly until those classes are updated
+        to accept a context-manager factory.
+
+        Transaction semantics match psycopg2's own ``with conn:`` block —
+        the transaction is committed on clean exit and rolled back on
+        exception — so this is a safe drop-in for ``with get_db_connection()``
+        while additionally closing the connection.
+        """
+        conn = self.get_db_connection()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.exception("Failed to roll back DB connection")
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                logger.exception("Failed to close DB connection")
 
     def _verify_neo4j(self) -> None:
         """Verify Neo4j connectivity at startup — KG is a required service."""

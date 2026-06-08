@@ -77,10 +77,11 @@ def ollama_generate(
         acquired = _semaphore.acquire(timeout=SEMAPHORE_TIMEOUT)
         if not acquired:
             logger.warning(
-                "Ollama semaphore wait exceeded %ds (attempt %d/%d) — proceeding anyway",
+                "Ollama semaphore wait exceeded %ds (attempt %d/%d) — aborting to "
+                "protect GPU concurrency limit",
                 SEMAPHORE_TIMEOUT, attempt, retries,
             )
-            # Proceed without semaphore — better than blocking forever
+            return None
 
         try:
             response = requests.post(
