@@ -105,7 +105,7 @@ _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 
 # Canonical procurement tables that should be embedded for supplier-aware RAG
 _PROCUREMENT_TABLE_SOURCES: dict[str, tuple[str, str]] = {
-    "contracts": ("proc", "contracts"),
+    "contracts": ("proc", "bp_contracts"),
     "supplier_master": ("proc", "bp_supplier"),
     "purchase_orders": ("proc", "bp_purchase_order_trgt"),
     "purchase_order_lines": ("proc", "bp_po_line_items_trgt"),
@@ -383,8 +383,7 @@ class QueryEngine(BaseEngine):
                            COUNT(DISTINCT i.invoice_id) AS invoice_count
                     FROM proc.bp_invoice_trgt i
                     LEFT JOIN proc.bp_invoice_line_items_trgt ili ON i.invoice_id = ili.invoice_id
-                    JOIN supplier_lookup sl
-                      ON sl.supplier_name_norm = LOWER(NULLIF(BTRIM(i.supplier_name), ''))
+                    JOIN supplier_lookup sl ON sl.supplier_id = i.supplier_id
                     GROUP BY sl.supplier_id
                 )
                 SELECT
@@ -477,7 +476,7 @@ class QueryEngine(BaseEngine):
             filters.append("sl.supplier_id = ANY(%s)")
             params.append(supplier_id_list)
         if supplier_name_list:
-            filters.append("LOWER(NULLIF(BTRIM(i.supplier_name), '')) = ANY(%s)")
+            filters.append("LOWER(NULLIF(BTRIM(sl.supplier_name_master), '')) = ANY(%s)")
             params.append(supplier_name_list)
 
         where_clause = ""
@@ -495,8 +494,7 @@ class QueryEngine(BaseEngine):
                    sl.supplier_id AS supplier_id_lookup,
                    sl.supplier_name_master
             FROM proc.bp_invoice_trgt i
-            LEFT JOIN supplier_lookup sl
-              ON LOWER(NULLIF(BTRIM(i.supplier_name), '')) = sl.supplier_name_norm
+            LEFT JOIN supplier_lookup sl ON i.supplier_id = sl.supplier_id
             {where_clause};
         """
 
@@ -653,7 +651,7 @@ class QueryEngine(BaseEngine):
                        c.supplier_id,
                        sl.supplier_name,
                        sl.supplier_name_norm
-                FROM proc.contracts c
+                FROM proc.bp_contracts c
                 LEFT JOIN supplier_lookup sl ON c.supplier_id = sl.supplier_id
             ),
             contract_supplier_name AS (

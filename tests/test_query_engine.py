@@ -248,7 +248,7 @@ def test_fetch_procurement_flow_builds_expected_query(monkeypatch):
 
     main_query = next(q for q in queries if "proc.cat_product_mapping" not in q)
     for table in [
-        "proc.contracts",
+        "proc.bp_contracts",
         "proc.bp_supplier",
         "proc.bp_purchase_order_trgt",
         "proc.bp_po_line_items_trgt",
@@ -401,7 +401,7 @@ def test_train_procurement_context_embeds_schema(monkeypatch):
     )
 
     sample_frames = {
-        "proc.contracts": pd.DataFrame({"contract_id": ["CO1"], "supplier_id": ["SI1"]}),
+        "proc.bp_contracts": pd.DataFrame({"contract_id": ["CO1"], "supplier_id": ["SI1"]}),
         "proc.bp_supplier": pd.DataFrame({"supplier_id": ["SI1"], "supplier_name": ["Acme"]}),
         "proc.bp_purchase_order_trgt": pd.DataFrame({"po_id": ["PO1"], "supplier_id": ["SI1"]}),
         "proc.bp_po_line_items_trgt": pd.DataFrame({"po_id": ["PO1"], "item_description": ["Widget"]}),
@@ -473,7 +473,7 @@ def test_train_procurement_context_embeds_schema(monkeypatch):
     assert captured["metadata"]["document_type"] == "procurement_schema"
     assert any("contracts_c1" in text for text in captured["texts"])
     assert isinstance(captured["tables"], dict) and "contracts" in captured["tables"]
-    assert captured["table_name_map"]["contracts"] == "proc.contracts"
+    assert captured["table_name_map"]["contracts"] == "proc.bp_contracts"
     assert captured["persist"][0][0]["status"] == "linked"
     assert captured["embed"] is True
     assert captured["knowledge_loaded"] is True
