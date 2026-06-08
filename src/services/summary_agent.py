@@ -57,3 +57,64 @@ def resolve_persona(persona: str, conn: Any) -> tuple[str, str]:
             if template:
                 return str(template), "bp_prompt"
     return persona, "raw"
+
+
+def gather_portfolio_context(conn: Any) -> Optional[dict]:
+    """Aggregate the final (_trgt) tables into a compact portfolio fact dict.
+
+    Returns None when all three document tables are empty.
+    """
+    cur = conn.cursor()
+
+    def _scalar(sql: str) -> Any:
+        cur.execute(sql)
+        r = cur.fetchone()
+        return r[0] if r else None
+
+    inv = _scalar("SELECT count(*) FROM proc.bp_invoice_trgt") or 0
+    pos = _scalar("SELECT count(*) FROM proc.bp_purchase_order_trgt") or 0
+    quotes = _scalar("SELECT count(*) FROM proc.bp_quote_trgt") or 0
+    if (inv + pos + quotes) == 0:
+        return None
+
+    inv_usd = _scalar(
+        "SELECT COALESCE(SUM(converted_amount_usd),0) FROM proc.bp_invoice_trgt"
+    ) or 0
+    po_usd = _scalar(
+        "SELECT COALESCE(SUM(converted_amount_usd),0) FROM proc.bp_purchase_order_trgt t"
+    ) or 0
+
+    cur.execute(
+        "SELECT supplier_id, COALESCE(SUM(converted_amount_usd),0) AS usd "
+        "FROM proc.bp_invoice_trgt WHERE supplier_id IS NOT NULL "
+        "GROUP BY supplier_id ORDER BY usd DESC LIMIT 10"
+    )
+    top_suppliers = [
+        {"supplier_id": s, "invoice_usd": float(u or 0)} for s, u in cur.fetchall()
+    ]
+
+    cur.execute("SELECT currency, COUNT(*) AS n FROM proc.bp_invoice_trgt GROUP BY currency")
+    currency_mix = {str(c): int(n) for c, n in cur.fetchall() if c is not None}
+
+    disc = _scalar("SELECT count(*) FROM proc.bp_extraction_discrepancy") or 0
+    actions = _scalar("SELECT count(*) FROM proc.bp_agent_actions") or 0
+
+    return {
+        "scope": "portfolio",
+        "totals": {
+            "invoices": int(inv),
+            "purchase_orders": int(pos),
+            "quotes": int(quotes),
+            "invoice_spend_usd": float(inv_usd or 0),
+            "po_value_usd": float(po_usd or 0),
+        },
+        "top_suppliers": top_suppliers,
+        "currency_mix": currency_mix,
+        "sources": {
+            "invoices": int(inv),
+            "purchase_orders": int(pos),
+            "quotes": int(quotes),
+            "discrepancies": int(disc),
+            "actions": int(actions),
+        },
+    }

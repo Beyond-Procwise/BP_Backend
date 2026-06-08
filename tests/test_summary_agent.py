@@ -61,3 +61,37 @@ def test_resolve_persona_falls_back_to_raw():
     framing, source = sa.resolve_persona("some ad-hoc persona", conn)
     assert framing == "some ad-hoc persona"
     assert source == "raw"
+
+
+def _portfolio_conn():
+    return _FakeConn({
+        "count(*) FROM proc.bp_invoice_trgt": (["count"], [(2,)]),
+        "count(*) FROM proc.bp_purchase_order_trgt": (["count"], [(1,)]),
+        "count(*) FROM proc.bp_quote_trgt": (["count"], [(3,)]),
+        "SUM(converted_amount_usd),0) FROM proc.bp_invoice_trgt": (["s"], [(1500.0,)]),
+        "FROM proc.bp_purchase_order_trgt t": (["s"], [(800.0,)]),
+        "GROUP BY supplier_id": (["supplier_id", "usd"], [("SUP-A", 1200.0), ("SUP-B", 300.0)]),
+        "GROUP BY currency": (["currency", "n"], [("USD", 2)]),
+        "FROM proc.bp_extraction_discrepancy": (["count"], [(4,)]),
+        "FROM proc.bp_agent_actions": (["count"], [(7,)]),
+    })
+
+
+def test_gather_portfolio_context_aggregates():
+    ctx = sa.gather_portfolio_context(_portfolio_conn())
+    assert ctx is not None
+    assert ctx["scope"] == "portfolio"
+    assert ctx["totals"]["invoices"] == 2
+    assert ctx["totals"]["quotes"] == 3
+    assert ctx["totals"]["invoice_spend_usd"] == 1500.0
+    assert ctx["top_suppliers"][0]["supplier_id"] == "SUP-A"
+    assert ctx["sources"]["discrepancies"] == 4
+
+
+def test_gather_portfolio_context_empty_returns_none():
+    conn = _FakeConn({
+        "count(*) FROM proc.bp_invoice_trgt": (["count"], [(0,)]),
+        "count(*) FROM proc.bp_purchase_order_trgt": (["count"], [(0,)]),
+        "count(*) FROM proc.bp_quote_trgt": (["count"], [(0,)]),
+    })
+    assert sa.gather_portfolio_context(conn) is None
