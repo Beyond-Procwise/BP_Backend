@@ -186,7 +186,7 @@ class PolicyEngine:
                         """
                         SELECT policy_id, policy_name, policy_type, policy_desc,
                                policy_details, policy_linked_agents
-                        FROM proc.policy
+                        FROM proc.bp_policy
                         WHERE COALESCE(policy_status, 1) = 1
                         """
                     )

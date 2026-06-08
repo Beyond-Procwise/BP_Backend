@@ -42,3 +42,31 @@ def test_missing_criteria_defaults_to_policy_weights():
     engine = PolicyEngine(policy_rows=_policy_rows())
     result = engine.validate_workflow('supplier_ranking', 'user1', {})
     assert result['allowed'] is True
+
+
+def test_policy_engine_queries_bp_policy_table():
+    captured = {}
+
+    class CapturingCursor:
+        def __init__(self):
+            self.description = None
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            pass
+        def execute(self, query, params=None):
+            captured["query"] = query
+        def fetchall(self):
+            return []
+
+    class CapturingConn:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            pass
+        def cursor(self):
+            return CapturingCursor()
+
+    PolicyEngine(connection_factory=lambda: CapturingConn())
+    assert "proc.bp_policy" in captured["query"]
+    assert "proc.policy " not in captured["query"]
