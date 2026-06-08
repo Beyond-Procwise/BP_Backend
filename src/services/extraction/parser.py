@@ -76,16 +76,18 @@ def _try_download_key(key: str, bucket: str, dest: str) -> bool:
         return False
 
 
-def _resolve_to_local(file_path: str) -> str:
+def _resolve_to_local(file_path: str) -> tuple[str, bool]:
     """Resolve an inbound file_path to a path that exists on disk.
 
     Tries the literal path first, then S3 (object key = file_path) using the
-    settings.s3_bucket_name, then canonical-prefix fallbacks. Returns the
-    resolved local path. Raises FileNotFoundError if no resolution succeeds.
+    settings.s3_bucket_name, then canonical-prefix fallbacks. Returns a tuple
+    of (resolved_local_path, needs_cleanup) where needs_cleanup is True when
+    the path is a temporary download that should be deleted after use.
+    Raises FileNotFoundError if no resolution succeeds.
     """
-    # 1. Local file present
+    # 1. Local file present — caller owns the file, do not delete
     if os.path.isfile(file_path):
-        return file_path
+        return file_path, False
 
     bucket = _s3_bucket()
     if not bucket:
@@ -101,7 +103,7 @@ def _resolve_to_local(file_path: str) -> str:
     # 2a. Try the file_path as-is as an S3 key
     if _try_download_key(file_path, bucket, tmp):
         log.info("Resolved %r via S3 key %r (bucket=%s)", file_path, file_path, bucket)
-        return tmp
+        return tmp, True
 
     # 2b. Try canonical prefix mapping (e.g. documents/invoice/foo → Invoice/foo)
     for doc_prefix, s3_prefix in _S3_CANONICAL_PREFIXES.items():
@@ -112,7 +114,7 @@ def _resolve_to_local(file_path: str) -> str:
                     "Resolved %r via canonical S3 key %r (bucket=%s)",
                     file_path, canonical_key, bucket,
                 )
-                return tmp
+                return tmp, True
 
     # 2c. Try basename in each canonical prefix (handles UI paths with stray
     # subdirs and lets us recover when the key wasn't laid down with the
@@ -129,9 +131,9 @@ def _resolve_to_local(file_path: str) -> str:
                 "Resolved %r via basename S3 key %r (bucket=%s)",
                 file_path, candidate, bucket,
             )
-            return tmp
+            return tmp, True
 
-    # Cleanup empty temp file
+    # Cleanup empty temp file on failure
     try:
         os.unlink(tmp)
     except Exception:
@@ -154,5 +156,12 @@ def parse(file_path: Union[str, Path]) -> ParsedDocument:
     Raises FileNotFoundError when the file cannot be resolved.
     Raises ValueError for unsupported formats.
     """
-    resolved = _resolve_to_local(str(file_path))
-    return _route_parse(Path(resolved))
+    resolved, needs_cleanup = _resolve_to_local(str(file_path))
+    try:
+        return _route_parse(Path(resolved))
+    finally:
+        if needs_cleanup:
+            try:
+                os.remove(resolved)
+            except Exception:
+                pass

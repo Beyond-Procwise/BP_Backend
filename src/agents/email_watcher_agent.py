@@ -117,13 +117,18 @@ class ImapIdleFetcher:
         if self._client_factory is not None:
             client = self._client_factory()
         elif self.use_ssl:
-            client = imaplib.IMAP4_SSL(self.host, self.port)
+            client = imaplib.IMAP4_SSL(self.host, self.port, timeout=self.idle_timeout)
         else:
-            client = imaplib.IMAP4(self.host, self.port)
+            client = imaplib.IMAP4(self.host, self.port, timeout=self.idle_timeout)
         login_name = self.login or self.username
         client.login(login_name, self.password)
         self._client = client
-        self._idle_supported = "IDLE" in (getattr(client, "capabilities", lambda: [])() or [])
+        try:
+            _typ, _caps = client.capability()
+            _caps_str = b" ".join(_caps).decode(errors="ignore").upper() if _caps else ""
+            self._idle_supported = "IDLE" in _caps_str
+        except Exception:
+            self._idle_supported = False
         return client
 
     def _ensure_selected(self) -> imaplib.IMAP4:
