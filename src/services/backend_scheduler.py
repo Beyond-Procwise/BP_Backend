@@ -260,6 +260,7 @@ class BackendScheduler:
         self._sync_training_job()
         self._register_model_sync_job()
         self._register_kg_sync_job()
+        self._register_summary_precompute_job()
 
     def _register_kg_sync_job(self) -> None:
         """Register periodic KG sync job (startup + every 6 hours)."""
@@ -288,6 +289,27 @@ class BackendScheduler:
             builder.close()
         except Exception:
             logger.exception("KG sync job failed")
+
+    def _register_summary_precompute_job(self) -> None:
+        """Register the daily persona-summary precompute job."""
+        from config.settings import settings as _settings
+        if not bool(getattr(_settings, "enable_summary_precompute", True)):
+            logger.info("Summary precompute disabled; skipping job registration")
+            return
+        hours = int(getattr(_settings, "summary_precompute_interval_hours", 24))
+        self.register_job(
+            "summary-precompute",
+            self._run_summary_precompute,
+            interval=timedelta(hours=hours),
+        )
+
+    def _run_summary_precompute(self) -> None:
+        try:
+            from services.summary_agent import precompute_summaries
+            counts = precompute_summaries()
+            logger.info("summary precompute completed: %s", counts)
+        except Exception:
+            logger.exception("summary precompute job failed")
 
     def _register_model_sync_job(self) -> None:
         """Register periodic model sync job (every 6 hours)."""

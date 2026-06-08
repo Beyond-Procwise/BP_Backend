@@ -431,6 +431,8 @@ class Settings(BaseSettings):
     enable_training_scheduler: bool = Field(
         default=False, env="ENABLE_TRAINING_SCHEDULER"
     )
+    enable_summary_precompute: bool = True
+    summary_precompute_interval_hours: int = 24
     verbose_agent_debug: bool = Field(
         default=False, env="VERBOSE_AGENT_DEBUG"
     )
