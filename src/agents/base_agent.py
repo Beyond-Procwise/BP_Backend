@@ -293,6 +293,85 @@ class BaseAgent:
         """Access the shared workflow context (read prior results, shared data)."""
         return self._workflow_context
 
+    # ------------------------------------------------------------------
+    # Governance resolver — uniform, agent-scoped access to prompts/policies
+    # ------------------------------------------------------------------
+    def _governance_slug(self) -> str:
+        """Slug identifying THIS agent for prompt/policy linkage lookups."""
+        return _slugify_agent_name(self.__class__.__name__)
+
+    def resolve_prompt(self, prompt_name: str, **fmt: Any) -> Optional[str]:
+        """Return the active prompt template governing this agent, by name.
+
+        Resolution order: prompt linked to this agent whose name matches →
+        global prompt with that name → None. When ``fmt`` is supplied the
+        template is ``str.format``-ed; a formatting error returns the raw
+        template rather than raising.
+        """
+        engine = getattr(self, "prompt_engine", None)
+        if engine is None:
+            return None
+        target = _slugify_agent_name(prompt_name)
+
+        def _match(prompts):
+            for prompt in prompts or []:
+                if _slugify_agent_name(prompt.get("promptName")) == target:
+                    return prompt.get("template")
+            return None
+
+        template = None
+        try:
+            template = _match(engine.prompts_for_agent(self.__class__.__name__))
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("resolve_prompt: agent-scoped lookup failed", exc_info=True)
+        if template is None:
+            try:
+                template = _match(engine.all_prompts())
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("resolve_prompt: global lookup failed", exc_info=True)
+        if not template:
+            return None
+        if fmt:
+            try:
+                return str(template).format(**fmt)
+            except (KeyError, IndexError, ValueError):
+                return str(template)
+        return str(template)
+
+    def governing_policies(self) -> List[Dict[str, Any]]:
+        """Return all policies linked to this agent (parsed)."""
+        engine = getattr(self.agent_nick, "policy_engine", None)
+        if engine is None:
+            return []
+        slug = self._governance_slug()
+        try:
+            policies = engine.list_policies()
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("governing_policies: list_policies failed", exc_info=True)
+            return []
+        # PolicyEngine folds policy_linked_agents into each policy's `aliases`
+        # set at load time, so matching on aliases alone covers both fields.
+        result: List[Dict[str, Any]] = []
+        for policy in policies:
+            if slug in (policy.get("aliases") or set()):
+                result.append(policy)
+        return result
+
+    def governing_policy(self, name: str) -> Optional[Dict[str, Any]]:
+        """Return one policy by slug/name: agent-scoped → global → None."""
+        engine = getattr(self.agent_nick, "policy_engine", None)
+        if engine is None:
+            return None
+        target = _slugify_agent_name(name)
+        for policy in self.governing_policies():
+            if target in (policy.get("aliases") or set()):
+                return policy
+        try:
+            return engine.get_policy(name)
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("governing_policy: get_policy failed", exc_info=True)
+            return None
+
     def execute(self, context: "AgentContext") -> "AgentOutput":
         """Execute the agent with process logging.
 
