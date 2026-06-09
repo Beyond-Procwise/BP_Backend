@@ -1584,7 +1584,12 @@ class NegotiationAgent(BaseAgent):
     def _session_key(self, workflow_id: str) -> str:
         return f"negotiation_session:{workflow_id}"
 
-    def _load_session_state(self, workflow_id: str, max_rounds: int) -> NegotiationSession:
+    def _load_session_state_obj(self, workflow_id: str, max_rounds: int) -> NegotiationSession:
+        """Load a NegotiationSession object from Redis (used by multi-round orchestration).
+
+        Renamed from _load_session_state to avoid shadowing the DB/dict variant below.
+        Call this when you need a NegotiationSession instance (not a plain dict).
+        """
         session = NegotiationSession(session_id=workflow_id, max_rounds=max_rounds)
         if not self._redis_client:
             return session
@@ -1606,7 +1611,12 @@ class NegotiationAgent(BaseAgent):
             logger.exception("Unable to deserialize negotiation session state")
             return session
 
-    def _save_session_state(self, workflow_id: str, session: NegotiationSession) -> None:
+    def _save_session_state_obj(self, workflow_id: str, session: NegotiationSession) -> None:
+        """Persist a NegotiationSession object to Redis (used by multi-round orchestration).
+
+        Renamed from _save_session_state to avoid shadowing the DB/dict variant below.
+        Call this when you have a NegotiationSession instance (not a plain dict).
+        """
         if not self._redis_client:
             return
         try:
@@ -3134,7 +3144,7 @@ class NegotiationAgent(BaseAgent):
             "hitl_pending_rounds": set(),
         }
 
-        session = self._load_session_state(workflow_id, max_rounds)
+        session = self._load_session_state_obj(workflow_id, max_rounds)
         session.negotiation_parameters.update(shared_context.get("negotiation_parameters", {}))
         negotiation_state["session"] = session
         shared_context["session"] = session
@@ -3220,7 +3230,7 @@ class NegotiationAgent(BaseAgent):
                 for supplier_id, info in negotiation_state["active_suppliers"].items()
                 if info.get("status") not in {"ACCEPTED", "DECLINED", "FAILED"}
             ]
-            self._save_session_state(workflow_id, session)
+            self._save_session_state_obj(workflow_id, session)
 
             all_round_results.append(round_result)
 
@@ -3267,7 +3277,7 @@ class NegotiationAgent(BaseAgent):
                         set(session.received_responses)
                         .union(set(responses_received.keys()))
                     )
-                    self._save_session_state(workflow_id, session)
+                    self._save_session_state_obj(workflow_id, session)
 
                 if not responses_received:
                     logger.warning(
@@ -3730,7 +3740,7 @@ class NegotiationAgent(BaseAgent):
         ):
             self._clear_session_state(workflow_id)
         else:
-            self._save_session_state(workflow_id, session)
+            self._save_session_state_obj(workflow_id, session)
 
         return round_result
 
@@ -3952,7 +3962,7 @@ class NegotiationAgent(BaseAgent):
                 logger.debug("Failed to hydrate negotiation session from dict", exc_info=True)
                 session = None
         if session is None and session_workflow_id:
-            session = self._load_session_state(session_workflow_id, max_rounds_value)
+            session = self._load_session_state_obj(session_workflow_id, max_rounds_value)
             negotiation_state["session"] = session
         if session:
             session.update_round(round_num)
@@ -3982,7 +3992,7 @@ class NegotiationAgent(BaseAgent):
             session.negotiation_parameters.update(
                 negotiation_state.get("negotiation_parameters", {})
             )
-            self._save_session_state(session_workflow_id, session)
+            self._save_session_state_obj(session_workflow_id, session)
 
         result: Tuple[Dict[str, List[Dict[str, Any]]], bool] = ({}, False)
 
@@ -4769,34 +4779,31 @@ class NegotiationAgent(BaseAgent):
         if not isinstance(lock_round, int) or lock_round < 1:
             lock_round = max(int(identifier.round_number or 1), 1)
 
-        lock_context = self._session_lock(workflow_id, supplier, lock_round)
-        lock_acquired = lock_context.__enter__()
-        if not lock_acquired:
-            lock_context.__exit__(None, None, None)
-            logger.warning(
-                "NegotiationAgent concurrency guard prevented duplicate run",
-                extra={
-                    "workflow_id": workflow_id,
-                    "supplier_id": supplier,
-                    "round": lock_round,
-                },
-            )
-            return self._with_plan(
-                context,
-                AgentOutput(
-                    status=AgentStatus.FAILED,
-                    data={
+        with self._session_lock(workflow_id, supplier, lock_round) as lock_acquired:
+            if not lock_acquired:
+                logger.warning(
+                    "NegotiationAgent concurrency guard prevented duplicate run",
+                    extra={
                         "workflow_id": workflow_id,
                         "supplier_id": supplier,
                         "round": lock_round,
-                        "locked": True,
-                        "message": "Another negotiation instance is already processing this supplier round.",
                     },
-                    error="negotiation_session_locked",
-                ),
-            )
+                )
+                return self._with_plan(
+                    context,
+                    AgentOutput(
+                        status=AgentStatus.FAILED,
+                        data={
+                            "workflow_id": workflow_id,
+                            "supplier_id": supplier,
+                            "round": lock_round,
+                            "locked": True,
+                            "message": "Another negotiation instance is already processing this supplier round.",
+                        },
+                        error="negotiation_session_locked",
+                    ),
+                )
 
-        try:
             return self._run_single_negotiation_locked(
                 context,
                 identifier,
@@ -4807,8 +4814,6 @@ class NegotiationAgent(BaseAgent):
                 session_id,
                 round_hint,
             )
-        finally:
-            lock_context.__exit__(None, None, None)
 
     def _run_single_negotiation_locked(
         self,
@@ -6153,7 +6158,7 @@ class NegotiationAgent(BaseAgent):
 
         if LLM_ENABLED and text:
             try:  # pragma: no cover - optional dependency
-                import ollama  # type: ignore
+                from services.ollama_client import ollama_generate  # type: ignore
 
                 prompt = (
                     "Extract JSON with keys: tone (firm/flexible/neutral), finality_hint (bool), "
@@ -6161,8 +6166,9 @@ class NegotiationAgent(BaseAgent):
                     "delivery_flex (possible/unlikely/null), concession_band_pct (float or null). Only return JSON.\n\n"
                     f"Text:\n{text}"
                 )
-                resp = ollama.generate(model=LLM_MODEL, prompt=prompt, options={"temperature": 0.1})
-                content = resp.get("response") or ""
+                # Use the project-standard wrapper: handles timeout (default 600s),
+                # retries, and the GPU semaphore — avoids an indefinite hang.
+                content = ollama_generate(prompt, model=LLM_MODEL, temperature=0.1) or ""
                 if "{" in content and "}" in content:
                     content = content[content.find("{") : content.rfind("}") + 1]
                     parsed = json.loads(content)
@@ -7048,6 +7054,10 @@ class NegotiationAgent(BaseAgent):
                     )
                     row = cur.fetchone()
                     if row:
+                        # SELECT order: supplier_reply_count, current_round, status,
+                        # awaiting_response, last_supplier_msg_id, last_agent_msg_id,
+                        # last_email_sent_at, base_subject, initial_body, thread_state,
+                        # workflow_id, session_reference, email_history  (13 columns)
                         (
                             state["supplier_reply_count"],
                             state["current_round"],
@@ -7059,7 +7069,6 @@ class NegotiationAgent(BaseAgent):
                             base_subject,
                             initial_body,
                             thread_state_raw,
-                            email_history_raw,
                             workflow_value,
                             session_reference_value,
                             email_history_raw,
@@ -7463,7 +7472,7 @@ class NegotiationAgent(BaseAgent):
 
         return "\n".join(lines)
 
-    def _compose_negotiation_message(
+    def _compose_negotiation_message_rich(
         self,
         *,
         context: AgentContext,
@@ -7480,7 +7489,12 @@ class NegotiationAgent(BaseAgent):
         procurement_summary: Optional[Dict[str, Any]],
         contact_name: Optional[str],
     ) -> str:
-        """Compose a human-like, strategically crafted negotiation message."""
+        """Compose a negotiation message using rich craft helpers and tone logic.
+
+        Renamed from _compose_negotiation_message (first definition) to avoid shadowing
+        the simpler variant below.  Accepts contact_name and supplier_name; called by
+        _build_summary when _use_enhanced_messages is True.
+        """
 
         counter_price = decision.get("counter_price")
         current_offer = positions.supplier_offer
@@ -8438,10 +8452,11 @@ class NegotiationAgent(BaseAgent):
 
         message_text: Optional[str] = None
         if self._use_enhanced_messages and hasattr(
-            self, "_compose_negotiation_message"
+            self, "_compose_negotiation_message_rich"
         ):
             try:
-                message_text = self._compose_negotiation_message(
+                # Use the rich variant that accepts contact_name and supplier_name.
+                message_text = self._compose_negotiation_message_rich(
                     context=context,
                     decision=decision,
                     positions=positions,
