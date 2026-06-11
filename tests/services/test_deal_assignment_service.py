@@ -165,15 +165,32 @@ def test_reconcile_legacy_binds_like_pattern_and_rewrites_to_dealv2():
     assert n >= 1
 
 
+def test_backfill_deal_metadata_stamps_document_id_for_legacy_rows():
+    # A reconciled row: has deal_id, but document_id is empty.
+    legacy = [{"po_id": "526702", "deal_id": "DEALV2-526702", "deal_name": "Duncan LLC — PO 526702"}]
+    cols = ["po_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    cur = _ScriptCursor(
+        script=[("from proc.bp_purchase_order_trgt", legacy)],
+        columns={"bp_purchase_order_trgt": cols})
+    n = das._backfill_deal_metadata(cur)
+    assert n >= 1
+    # document_id stamped as <deal_id>::po::<pk>
+    assert any("update proc.bp_purchase_order_trgt" in e[0].lower()
+               and e[1] and "DEALV2-526702::po::526702" in str(e[1]) for e in cur.executed)
+    # and recorded in the deal_document_map
+    assert any("insert into proc.bp_deal_document_map" in e[0].lower() for e in cur.executed)
+
+
 def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     calls = []
     monkeypatch.setattr(das, "_look_forward", lambda cur: calls.append("fwd") or 2)
     monkeypatch.setattr(das, "_look_back", lambda cur: calls.append("back") or 1)
     monkeypatch.setattr(das, "_reconcile_legacy", lambda cur: calls.append("rec") or 3)
+    monkeypatch.setattr(das, "_backfill_deal_metadata", lambda cur: calls.append("meta") or 5)
     monkeypatch.setattr(das, "_flag_unassigned", lambda cur: calls.append("flag") or 4)
     cur = _ScriptCursor(script=[], columns={})
     conn = _RecConn(cur)
     result = das.assign_deals(conn=conn)
-    assert result == {"forward_linked": 2, "backward_linked": 1,
-                      "reconciled": 3, "unassigned_review": 4}
-    assert calls == ["fwd", "back", "rec", "flag"]
+    assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
+                      "metadata_filled": 5, "unassigned_review": 4}
+    assert calls == ["fwd", "back", "rec", "meta", "flag"]

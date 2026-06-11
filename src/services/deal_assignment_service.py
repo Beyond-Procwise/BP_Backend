@@ -282,6 +282,31 @@ def _reconcile_legacy(cur) -> int:
     return reconciled
 
 
+def _backfill_deal_metadata(cur) -> int:
+    """Stamp document_id (and deal_date where resolvable) on every _trgt doc that
+    has a deal_id but no document_id yet — e.g. legacy rows that were only
+    reconciled, or rows assigned by an external process. Idempotent: once
+    document_id is set, the row is skipped on the next run."""
+    updated = 0
+    for doc_type in ("invoice", "quote", "po"):
+        pk, _raw, _stg, trgt, _ls, _lt = _DOC[doc_type]
+        rows = _rows(cur,
+            f"select {pk}, deal_id, deal_name from {trgt} "
+            f"where deal_id is not null and deal_id <> '' "
+            f"and (document_id is null or document_id = '')")
+        for r in rows:
+            doc_pk = r[pk]
+            document_id = mint_document_id(r["deal_id"], doc_type, str(doc_pk))
+            deal_date = _deal_date_for_doc(cur, doc_type, doc_pk)
+            _persist_deal(cur, doc_type, doc_pk, deal_id=r["deal_id"],
+                          deal_name=r.get("deal_name"), document_id=document_id,
+                          deal_date=deal_date)
+            _upsert_document_map(cur, r["deal_id"], r.get("deal_name"), doc_type,
+                                 doc_pk, document_id, None)
+            updated += 1
+    return updated
+
+
 def _flag_unassigned(cur) -> int:
     """Mark monitor rows whose document still has no deal as review-needed."""
     cur.execute(
@@ -315,6 +340,7 @@ def _run(cur) -> dict:
     fwd = _look_forward(cur)
     back = _look_back(cur)
     rec = _reconcile_legacy(cur)
+    meta = _backfill_deal_metadata(cur)
     flag = _flag_unassigned(cur)
     return {"forward_linked": fwd, "backward_linked": back,
-            "reconciled": rec, "unassigned_review": flag}
+            "reconciled": rec, "metadata_filled": meta, "unassigned_review": flag}
