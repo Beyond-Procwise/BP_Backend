@@ -49,3 +49,36 @@ def lookback_deal_id(canonical_po: str) -> str:
 def lookback_deal_name(supplier_name: Optional[str], canonical_po: str) -> str:
     supplier = (supplier_name or "Unknown Supplier").strip()
     return f"{supplier} — PO {canonical_po}"
+
+
+from src.services.linking_engine import _table_columns  # column introspection
+
+# doc_type -> (pk, raw, stg, trgt, line_stg, line_trgt)
+_DOC = {
+    "invoice": ("invoice_id",
+                "proc.bp_invoice_raw", "proc.bp_invoice_stg", "proc.bp_invoice_trgt",
+                "proc.bp_invoice_line_items_stg", "proc.bp_invoice_line_items_trgt"),
+    "quote": ("quote_id",
+              "proc.bp_quote_raw", "proc.bp_quote_stg", "proc.bp_quote_trgt",
+              "proc.bp_quote_line_items_stg", "proc.bp_quote_line_items_trgt"),
+    "po": ("po_id",
+           "proc.bp_purchase_order_raw", "proc.bp_purchase_order_stg", "proc.bp_purchase_order_trgt",
+           "proc.bp_po_line_items_stg", "proc.bp_po_line_items_trgt"),
+}
+_DEAL_COLS = ("deal_id", "deal_name", "document_id", "deal_date")
+
+
+def _persist_deal(cur, doc_type, doc_pk, *, deal_id, deal_name, document_id, deal_date):
+    """Write deal columns onto the document's stg/trgt rows + their line items,
+    only for columns that actually exist on each table."""
+    pk, _raw, stg, trgt, line_stg, line_trgt = _DOC[doc_type]
+    values = {"deal_id": deal_id, "deal_name": deal_name,
+              "document_id": document_id, "deal_date": deal_date}
+    for table in (stg, trgt, line_stg, line_trgt):
+        present = [c for c in _DEAL_COLS if c in _table_columns(cur, table)]
+        if not present or pk not in _table_columns(cur, table):
+            continue
+        set_clause = ", ".join(f"{c}=%s" for c in present)
+        cur.execute(
+            f"update {table} set {set_clause} where {pk}=%s",
+            [values[c] for c in present] + [doc_pk])
