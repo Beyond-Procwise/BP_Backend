@@ -13,16 +13,33 @@ import logging
 import os
 from typing import Any, Optional
 
+from src.services.db import get_conn
+from src.services.linking_engine import (
+    _PO,
+    _norm_po,
+    _rows,
+    _table_columns,
+    score_link,
+)
+
 log = logging.getLogger(__name__)
 
+MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))
 
+
+# ---------------------------------------------------------------------------
+# Pure helpers (no DB)
+# ---------------------------------------------------------------------------
 def basename_match(path_a: Optional[str], path_b: Optional[str]) -> bool:
     """True when two file paths share the same case-insensitive basename."""
-    if not path_a or not path_b:
-        return False
-    ba = os.path.basename(str(path_a)).strip().lower()
-    bb = os.path.basename(str(path_b)).strip().lower()
-    return bool(ba) and ba == bb
+    return _basename(path_a) != "" and _basename(path_a) == _basename(path_b)
+
+
+def _basename(path: Optional[str]) -> str:
+    """Normalized basename: directory-stripped, trimmed, lower-cased."""
+    if not path:
+        return ""
+    return os.path.basename(str(path)).strip().lower()
 
 
 def mint_document_id(deal_id: str, doc_type: str, doc_pk: str) -> str:
@@ -51,8 +68,9 @@ def lookback_deal_name(supplier_name: Optional[str], canonical_po: str) -> str:
     return f"{supplier} — PO {canonical_po}"
 
 
-from src.services.linking_engine import _table_columns  # column introspection
-
+# ---------------------------------------------------------------------------
+# Document-table registry
+# ---------------------------------------------------------------------------
 # doc_type -> (pk, raw, stg, trgt, line_stg, line_trgt)
 _DOC = {
     "invoice": ("invoice_id",
@@ -66,6 +84,11 @@ _DOC = {
            "proc.bp_po_line_items_stg", "proc.bp_po_line_items_trgt"),
 }
 _DEAL_COLS = ("deal_id", "deal_name", "document_id", "deal_date")
+_DOCTYPE_FROM_HINT = {"invoice": "invoice", "quote": "quote", "po": "po",
+                      "purchase_order": "po", "purchaseorder": "po"}
+
+# SQL fragment normalizing a po_id column the same way as _norm_po().
+_PO_NORM_COND = "regexp_replace(regexp_replace(lower(po_id),'[^a-z0-9]','','g'),'^po','')"
 
 
 def _persist_deal(cur, doc_type, doc_pk, *, deal_id, deal_name, document_id, deal_date):
@@ -75,19 +98,14 @@ def _persist_deal(cur, doc_type, doc_pk, *, deal_id, deal_name, document_id, dea
     values = {"deal_id": deal_id, "deal_name": deal_name,
               "document_id": document_id, "deal_date": deal_date}
     for table in (stg, trgt, line_stg, line_trgt):
-        present = [c for c in _DEAL_COLS if c in _table_columns(cur, table)]
-        if not present or pk not in _table_columns(cur, table):
+        cols = _table_columns(cur, table)
+        present = [c for c in _DEAL_COLS if c in cols]
+        if not present or pk not in cols:
             continue
         set_clause = ", ".join(f"{c}=%s" for c in present)
         cur.execute(
             f"update {table} set {set_clause} where {pk}=%s",
             [values[c] for c in present] + [doc_pk])
-
-
-from src.services.linking_engine import _rows
-
-_DOCTYPE_FROM_HINT = {"invoice": "invoice", "quote": "quote", "po": "po",
-                      "purchase_order": "po", "purchaseorder": "po"}
 
 
 def _set_monitor_status(cur, monitor_id, status):
@@ -104,27 +122,55 @@ def _candidate_doc_types(category, document_type):
     return ["invoice", "quote", "po"]   # unknown hint -> search all
 
 
+def _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, document_id, source_file):
+    cur.execute(
+        "insert into proc.bp_deal_document_map "
+        "(document_id, deal_id, deal_name, doc_type, doc_pk, source_file) "
+        "values (%s,%s,%s,%s,%s,%s) "
+        "on conflict (document_id) do update set "
+        "deal_id=excluded.deal_id, deal_name=excluded.deal_name, "
+        "doc_type=excluded.doc_type, doc_pk=excluded.doc_pk, source_file=excluded.source_file",
+        (document_id, deal_id, deal_name, doc_type, str(doc_pk), source_file))
+
+
+def _raw_basename_index(cur, raw_table, pk) -> dict:
+    """One scan of a raw table -> {normalized basename(source_file): pk}.
+
+    Built once per raw table per run so the look-forward match is O(monitors),
+    not O(monitors x raw-rows).
+    """
+    index: dict = {}
+    for r in _rows(cur, f"select {pk}, source_file from {raw_table}") or []:
+        key = _basename(r.get("source_file"))
+        if key:
+            index[key] = r.get(pk)
+    return index
+
+
 def _look_forward(cur) -> int:
-    """Stamp process_monitor deals onto matching extracted documents."""
+    """Stamp process_monitor deals onto matching extracted documents.
+
+    Returns the number of document links made: a monitor row that matches in
+    more than one raw table counts once per matched document (the monitor's
+    own status is set once, per monitor).
+    """
     linked = 0
     monitors = _rows(cur,
         "select id, file_path, deal_id, deal_name, category, document_type "
         "from proc.process_monitor "
         "where deal_id is not null and deal_id <> ''")
+    raw_index_cache: dict = {}   # raw_table -> {basename: pk}
     for m in monitors:
         matched = False
+        m_key = _basename(m.get("file_path"))
         for dt in _candidate_doc_types(m.get("category"), m.get("document_type")):
-            pk, raw, stg, trgt, _ls, _lt = _DOC[dt]
-            # find the doc whose source_file basename matches the monitor file_path
-            src_rows = _rows(cur, f"select {pk}, source_file from {raw}") or []
-            hit = next((r for r in src_rows
-                        if basename_match(m["file_path"], r.get("source_file"))), None)
-            if not hit:
-                # raw may be absent; fall back to trgt by basename of any source col if present
+            pk, raw, _stg, _trgt, _ls, _lt = _DOC[dt]
+            if raw not in raw_index_cache:
+                raw_index_cache[raw] = _raw_basename_index(cur, raw, pk)
+            doc_pk = raw_index_cache[raw].get(m_key) if m_key else None
+            if not doc_pk:
                 continue
-            doc_pk = hit[pk]
             doc_id = mint_document_id(m["deal_id"], dt, str(doc_pk))
-            # resolve deal_date from the deal's PO if this is/has one (best-effort)
             deal_date = _deal_date_for_doc(cur, dt, doc_pk)
             _persist_deal(cur, dt, doc_pk, deal_id=m["deal_id"], deal_name=m["deal_name"],
                           document_id=doc_id, deal_date=deal_date)
@@ -137,44 +183,38 @@ def _look_forward(cur) -> int:
     return linked
 
 
-def _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, document_id, source_file):
-    cur.execute(
-        "insert into proc.bp_deal_document_map "
-        "(document_id, deal_id, deal_name, doc_type, doc_pk, source_file) "
-        "values (%s,%s,%s,%s,%s,%s) "
-        "on conflict (document_id) do update set "
-        "deal_id=excluded.deal_id, deal_name=excluded.deal_name, "
-        "doc_type=excluded.doc_type, doc_pk=excluded.doc_pk, source_file=excluded.source_file",
-        (document_id, deal_id, deal_name, doc_type, str(doc_pk), source_file))
+def _invoice_line_delivery(cur, doc_pk):
+    """Best-effort invoice-line delivery_date fallback for deal_date."""
+    rows = _rows(cur,
+        f"select delivery_date from {_DOC['invoice'][5]} where invoice_id=%s "
+        f"and delivery_date is not null limit 1", (doc_pk,))
+    return rows[0].get("delivery_date") if rows else None
 
 
 def _deal_date_for_doc(cur, doc_type, doc_pk):
     """Resolve the order's expected delivery date for the deal this doc belongs to."""
-    from src.services.linking_engine import _PO, _norm_po
     # po doc: its own expected_delivery_date
     if doc_type == "po":
         r = _rows(cur, f"select expected_delivery_date from {_PO['trgt']} where po_id=%s", (doc_pk,))
-        return r[0]["expected_delivery_date"] if r else None
-    # invoice/quote: find parent PO via po_id on the doc, then its delivery date
+        return resolve_deal_date(r[0] if r else None)
+    # invoice/quote: find the parent PO via po_id on the doc, then its delivery date
     pk, _raw, stg, trgt, _ls, _lt = _DOC[doc_type]
     rr = _rows(cur, f"select po_id from {trgt} where {pk}=%s", (doc_pk,)) or \
          _rows(cur, f"select po_id from {stg} where {pk}=%s", (doc_pk,))
     po_ref = rr[0].get("po_id") if rr else None
+    inv_line = _invoice_line_delivery(cur, doc_pk) if doc_type == "invoice" else None
     if not po_ref:
-        return None
-    cond = "regexp_replace(regexp_replace(lower(po_id),'[^a-z0-9]','','g'),'^po','')"
-    pr = _rows(cur, f"select expected_delivery_date from {_PO['trgt']} where {cond}=%s",
+        return resolve_deal_date(None, inv_line)
+    pr = _rows(cur, f"select expected_delivery_date from {_PO['trgt']} where {_PO_NORM_COND}=%s",
                (_norm_po(po_ref),))
-    return pr[0]["expected_delivery_date"] if pr else None
+    return resolve_deal_date(pr[0] if pr else None, inv_line)
 
 
-from src.services.linking_engine import score_link, _norm_po, _PO
-
-MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))
-
-
+# ---------------------------------------------------------------------------
+# Look-back pass
+# ---------------------------------------------------------------------------
 def _unlinked_docs(cur, doc_type):
-    pk, _raw, stg, trgt, _ls, _lt = _DOC[doc_type]
+    _pk, _raw, _stg, trgt, _ls, _lt = _DOC[doc_type]
     return _rows(cur, f"select * from {trgt} where deal_id is null or deal_id = ''")
 
 
@@ -184,12 +224,10 @@ def _look_back(cur) -> int:
     for doc_type in ("invoice", "quote"):
         pk = _DOC[doc_type][0]
         for row in _unlinked_docs(cur, doc_type):
-            po_ref = row.get("po_id")
-            npo = _norm_po(po_ref)
+            npo = _norm_po(row.get("po_id"))
             if not npo:
                 continue   # no-PO doc -> left for review by orchestrator
-            cond = "regexp_replace(regexp_replace(lower(po_id),'[^a-z0-9]','','g'),'^po','')"
-            pos = _rows(cur, f"select * from {_PO['trgt']} where {cond}=%s", (npo,))
+            pos = _rows(cur, f"select * from {_PO['trgt']} where {_PO_NORM_COND}=%s", (npo,))
             if not pos:
                 continue
             po = pos[0]
@@ -202,7 +240,7 @@ def _look_back(cur) -> int:
             deal_name = lookback_deal_name(supplier, npo)
             doc_pk = row[pk]
             doc_id = mint_document_id(deal_id, doc_type, str(doc_pk))
-            deal_date = po.get("expected_delivery_date")
+            deal_date = resolve_deal_date(po)
             _persist_deal(cur, doc_type, doc_pk, deal_id=deal_id, deal_name=deal_name,
                           document_id=doc_id, deal_date=deal_date)
             _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, doc_id,
@@ -216,9 +254,9 @@ def _look_back(cur) -> int:
     return linked
 
 
-from src.services.db import get_conn
-
-
+# ---------------------------------------------------------------------------
+# Reconciliation + orchestration
+# ---------------------------------------------------------------------------
 def _reconcile_legacy(cur) -> int:
     """Rewrite legacy DEAL-<po> keys (no monitor deal) to the derived DEALV2-<po>
     form so all deal_ids share one scheme. Authoritative monitor deals already
