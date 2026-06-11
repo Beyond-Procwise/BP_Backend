@@ -113,6 +113,28 @@ def test_look_forward_links_monitor_deal_to_matching_invoice(monkeypatch):
                and e[1] and "Deal_Linked" in e[1] for e in cur.executed)
 
 
+def test_look_back_joins_po_existing_deal_without_overwriting(monkeypatch):
+    # A PO already carries an authoritative deal_id; an unlinked invoice on it
+    # must JOIN that deal, and the PO must NOT be re-stamped with DEALV2-.
+    inv = [{"invoice_id": "INV9", "po_id": "PO526702", "supplier_id": "SUP-Duncan", "deal_id": None}]
+    po = [{"po_id": "526702", "supplier_id": "SUP-Duncan", "supplier_name": "Duncan LLC",
+           "expected_delivery_date": None, "deal_id": "DEAL_A2026052891", "deal_name": "deal_a"}]
+    cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    cur = _ScriptCursor(
+        script=[("from proc.bp_invoice_trgt", inv),
+                ("from proc.bp_purchase_order_trgt", po)],
+        columns={"bp_invoice_trgt": cols, "bp_invoice_stg": cols})
+    monkeypatch.setattr(das, "score_link", lambda *a, **k: {"F": 95.0})
+    n = das._look_back(cur)
+    assert n == 1
+    # child invoice joined the PO's existing authoritative deal
+    assert any("update proc.bp_invoice_trgt" in e[0].lower()
+               and e[1] and "DEAL_A2026052891" in str(e[1]) for e in cur.executed)
+    # the PO was NOT re-stamped, and no DEALV2 id was minted anywhere
+    assert not any("update proc.bp_purchase_order_trgt" in e[0].lower() for e in cur.executed)
+    assert not any(e[1] and "DEALV2-" in str(e[1]) for e in cur.executed)
+
+
 def test_look_forward_deal_tagged_but_unmatched_is_deal_linked():
     # Monitor row carries a deal_id but no extracted doc matches by filename.
     # It must still be Deal_Linked (the deal is known), never Deal_Unassigned_Review.

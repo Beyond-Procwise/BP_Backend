@@ -239,8 +239,16 @@ def _look_back(cur) -> int:
             if link["F"] < MIN_LINK_SCORE:
                 continue
             supplier = po.get("supplier_name") or po.get("supplier_id")
-            deal_id = lookback_deal_id(npo)
-            deal_name = lookback_deal_name(supplier, npo)
+            # Honor an existing PO deal (authoritative from look-forward, or a
+            # legacy id reconcile will normalize): the child joins the PO's deal
+            # rather than minting a new one. Only mint DEALV2 when the PO has none.
+            existing_po_deal = (po.get("deal_id") or "").strip()
+            if existing_po_deal:
+                deal_id = existing_po_deal
+                deal_name = po.get("deal_name") or lookback_deal_name(supplier, npo)
+            else:
+                deal_id = lookback_deal_id(npo)
+                deal_name = lookback_deal_name(supplier, npo)
             doc_pk = row[pk]
             doc_id = mint_document_id(deal_id, doc_type, str(doc_pk))
             deal_date = resolve_deal_date(po)
@@ -248,11 +256,13 @@ def _look_back(cur) -> int:
                           document_id=doc_id, deal_date=deal_date)
             _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, doc_id,
                                  row.get("source_file"))
-            # also stamp the PO itself into the same derived deal
-            po_doc_id = mint_document_id(deal_id, "po", str(po["po_id"]))
-            _persist_deal(cur, "po", po["po_id"], deal_id=deal_id, deal_name=deal_name,
-                          document_id=po_doc_id, deal_date=deal_date)
-            _upsert_document_map(cur, deal_id, deal_name, "po", po["po_id"], po_doc_id, None)
+            # Stamp the PO into the deal only when it had none — never overwrite
+            # an existing (authoritative) PO deal_id.
+            if not existing_po_deal:
+                po_doc_id = mint_document_id(deal_id, "po", str(po["po_id"]))
+                _persist_deal(cur, "po", po["po_id"], deal_id=deal_id, deal_name=deal_name,
+                              document_id=po_doc_id, deal_date=deal_date)
+                _upsert_document_map(cur, deal_id, deal_name, "po", po["po_id"], po_doc_id, None)
             linked += 1
     return linked
 
