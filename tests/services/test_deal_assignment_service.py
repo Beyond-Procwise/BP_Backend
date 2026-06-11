@@ -111,3 +111,22 @@ def test_look_forward_links_monitor_deal_to_matching_invoice(monkeypatch):
     # status advanced to Deal_Linked
     assert any("update proc.process_monitor set status" in e[0].lower()
                and e[1] and "Deal_Linked" in e[1] for e in cur.executed)
+
+
+def test_look_back_groups_invoice_under_canonical_po_deal(monkeypatch):
+    # invoice with no deal, references PO 502001; a PO exists in trgt
+    inv = [{"invoice_id": "103404", "po_id": "PO502001", "supplier_id": "SUP-Thrive",
+            "deal_id": None}]
+    po = [{"po_id": "502001", "supplier_id": "SUP-Thrive", "supplier_name": "Thrive Ltd",
+           "expected_delivery_date": None, "deal_id": None}]
+    columns = {"bp_invoice_stg": ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"],
+               "bp_invoice_trgt": ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]}
+    cur = _ScriptCursor(
+        script=[("from proc.bp_invoice_trgt", inv),
+                ("from proc.bp_purchase_order_trgt", po)],
+        columns=columns)
+    # force the link score to pass
+    monkeypatch.setattr(das, "score_link", lambda *a, **k: {"F": 95.0})
+    n = das._look_back(cur)
+    assert n >= 1
+    assert any("dealv2-502001" in (str(e[1]).lower() if e[1] else "") for e in cur.executed)

@@ -166,3 +166,51 @@ def _deal_date_for_doc(cur, doc_type, doc_pk):
     pr = _rows(cur, f"select expected_delivery_date from {_PO['trgt']} where {cond}=%s",
                (_norm_po(po_ref),))
     return pr[0]["expected_delivery_date"] if pr else None
+
+
+from src.services.linking_engine import score_link, _norm_po, _PO
+
+MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))
+
+
+def _unlinked_docs(cur, doc_type):
+    pk, _raw, stg, trgt, _ls, _lt = _DOC[doc_type]
+    return _rows(cur, f"select * from {trgt} where deal_id is null or deal_id = ''")
+
+
+def _look_back(cur) -> int:
+    """Group deal-less docs under their canonical PO deal when the link score passes."""
+    linked = 0
+    for doc_type in ("invoice", "quote"):
+        pk = _DOC[doc_type][0]
+        for row in _unlinked_docs(cur, doc_type):
+            po_ref = row.get("po_id")
+            npo = _norm_po(po_ref)
+            if not npo:
+                continue   # no-PO doc -> left for review by orchestrator
+            cond = "regexp_replace(regexp_replace(lower(po_id),'[^a-z0-9]','','g'),'^po','')"
+            pos = _rows(cur, f"select * from {_PO['trgt']} where {cond}=%s", (npo,))
+            if not pos:
+                continue
+            po = pos[0]
+            profile = "invoice_po" if doc_type == "invoice" else "quote_po"
+            link = score_link(row, po, profile)
+            if link["F"] < MIN_LINK_SCORE:
+                continue
+            supplier = po.get("supplier_name") or po.get("supplier_id")
+            deal_id = lookback_deal_id(npo)
+            deal_name = lookback_deal_name(supplier, npo)
+            doc_pk = row[pk]
+            doc_id = mint_document_id(deal_id, doc_type, str(doc_pk))
+            deal_date = po.get("expected_delivery_date")
+            _persist_deal(cur, doc_type, doc_pk, deal_id=deal_id, deal_name=deal_name,
+                          document_id=doc_id, deal_date=deal_date)
+            _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, doc_id,
+                                 row.get("source_file"))
+            # also stamp the PO itself into the same derived deal
+            po_doc_id = mint_document_id(deal_id, "po", str(po["po_id"]))
+            _persist_deal(cur, "po", po["po_id"], deal_id=deal_id, deal_name=deal_name,
+                          document_id=po_doc_id, deal_date=deal_date)
+            _upsert_document_map(cur, deal_id, deal_name, "po", po["po_id"], po_doc_id, None)
+            linked += 1
+    return linked
