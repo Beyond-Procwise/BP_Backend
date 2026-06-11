@@ -132,6 +132,21 @@ def test_look_back_groups_invoice_under_canonical_po_deal(monkeypatch):
     assert any("dealv2-502001" in (str(e[1]).lower() if e[1] else "") for e in cur.executed)
 
 
+def test_reconcile_legacy_binds_like_pattern_and_rewrites_to_dealv2():
+    # Regression: a bare '%' in "LIKE 'DEAL-%'" is misread by psycopg2 as a
+    # parameter placeholder. The pattern must be passed as a bind parameter.
+    legacy = [{"invoice_id": "INV1", "deal_id": "DEAL-526702", "po_id": "PO526702"}]
+    cur = _ScriptCursor(script=[("from proc.bp_invoice_trgt", legacy)], columns={})
+    n = das._reconcile_legacy(cur)
+    selects = [e for e in cur.executed
+               if e[0].lower().startswith("select") and "like" in e[0].lower()]
+    assert selects, "reconcile should issue a LIKE select"
+    assert selects[0][1] == ("DEAL-%",), "LIKE pattern must be a bind param, not inline"
+    assert any(e[0].lower().startswith("update") and e[1] and "DEALV2-526702" in str(e[1])
+               for e in cur.executed)
+    assert n >= 1
+
+
 def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     calls = []
     monkeypatch.setattr(das, "_look_forward", lambda cur: calls.append("fwd") or 2)

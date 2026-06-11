@@ -264,9 +264,11 @@ def _reconcile_legacy(cur) -> int:
     reconciled = 0
     for doc_type in ("invoice", "quote", "po"):
         pk, _raw, _stg, trgt, _ls, _lt = _DOC[doc_type]
+        # Pass the LIKE pattern as a bind param — a bare '%' in the SQL string
+        # would be misread by psycopg2 as a parameter placeholder.
         rows = _rows(cur,
-            f"select {pk}, deal_id, po_id from {trgt} "
-            f"where deal_id like 'DEAL-%'")
+            f"select {pk}, deal_id, po_id from {trgt} where deal_id like %s",
+            ("DEAL-%",))
         for r in rows:
             npo = _norm_po(r.get("po_id")) or r["deal_id"].split("-", 1)[-1]
             new_id = lookback_deal_id(npo)
