@@ -82,3 +82,87 @@ def _persist_deal(cur, doc_type, doc_pk, *, deal_id, deal_name, document_id, dea
         cur.execute(
             f"update {table} set {set_clause} where {pk}=%s",
             [values[c] for c in present] + [doc_pk])
+
+
+from src.services.linking_engine import _rows
+
+_DOCTYPE_FROM_HINT = {"invoice": "invoice", "quote": "quote", "po": "po",
+                      "purchase_order": "po", "purchaseorder": "po"}
+
+
+def _set_monitor_status(cur, monitor_id, status):
+    cur.execute(
+        "update proc.process_monitor set status=%s, lastmodified_date=now() where id=%s",
+        (status, monitor_id))
+
+
+def _candidate_doc_types(category, document_type):
+    for hint in (category, document_type):
+        key = (hint or "").strip().lower().replace(" ", "")
+        if key in _DOCTYPE_FROM_HINT:
+            return [_DOCTYPE_FROM_HINT[key]]
+    return ["invoice", "quote", "po"]   # unknown hint -> search all
+
+
+def _look_forward(cur) -> int:
+    """Stamp process_monitor deals onto matching extracted documents."""
+    linked = 0
+    monitors = _rows(cur,
+        "select id, file_path, deal_id, deal_name, category, document_type "
+        "from proc.process_monitor "
+        "where deal_id is not null and deal_id <> ''")
+    for m in monitors:
+        matched = False
+        for dt in _candidate_doc_types(m.get("category"), m.get("document_type")):
+            pk, raw, stg, trgt, _ls, _lt = _DOC[dt]
+            # find the doc whose source_file basename matches the monitor file_path
+            src_rows = _rows(cur, f"select {pk}, source_file from {raw}") or []
+            hit = next((r for r in src_rows
+                        if basename_match(m["file_path"], r.get("source_file"))), None)
+            if not hit:
+                # raw may be absent; fall back to trgt by basename of any source col if present
+                continue
+            doc_pk = hit[pk]
+            doc_id = mint_document_id(m["deal_id"], dt, str(doc_pk))
+            # resolve deal_date from the deal's PO if this is/has one (best-effort)
+            deal_date = _deal_date_for_doc(cur, dt, doc_pk)
+            _persist_deal(cur, dt, doc_pk, deal_id=m["deal_id"], deal_name=m["deal_name"],
+                          document_id=doc_id, deal_date=deal_date)
+            _upsert_document_map(cur, m["deal_id"], m["deal_name"], dt, doc_pk, doc_id,
+                                 m["file_path"])
+            matched = True
+            linked += 1
+        _set_monitor_status(cur, m["id"], "Deal_Linked" if matched
+                            else "Deal_Unassigned_Review")
+    return linked
+
+
+def _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, document_id, source_file):
+    cur.execute(
+        "insert into proc.bp_deal_document_map "
+        "(document_id, deal_id, deal_name, doc_type, doc_pk, source_file) "
+        "values (%s,%s,%s,%s,%s,%s) "
+        "on conflict (document_id) do update set "
+        "deal_id=excluded.deal_id, deal_name=excluded.deal_name, "
+        "doc_type=excluded.doc_type, doc_pk=excluded.doc_pk, source_file=excluded.source_file",
+        (document_id, deal_id, deal_name, doc_type, str(doc_pk), source_file))
+
+
+def _deal_date_for_doc(cur, doc_type, doc_pk):
+    """Resolve the order's expected delivery date for the deal this doc belongs to."""
+    from src.services.linking_engine import _PO, _norm_po
+    # po doc: its own expected_delivery_date
+    if doc_type == "po":
+        r = _rows(cur, f"select expected_delivery_date from {_PO['trgt']} where po_id=%s", (doc_pk,))
+        return r[0]["expected_delivery_date"] if r else None
+    # invoice/quote: find parent PO via po_id on the doc, then its delivery date
+    pk, _raw, stg, trgt, _ls, _lt = _DOC[doc_type]
+    rr = _rows(cur, f"select po_id from {trgt} where {pk}=%s", (doc_pk,)) or \
+         _rows(cur, f"select po_id from {stg} where {pk}=%s", (doc_pk,))
+    po_ref = rr[0].get("po_id") if rr else None
+    if not po_ref:
+        return None
+    cond = "regexp_replace(regexp_replace(lower(po_id),'[^a-z0-9]','','g'),'^po','')"
+    pr = _rows(cur, f"select expected_delivery_date from {_PO['trgt']} where {cond}=%s",
+               (_norm_po(po_ref),))
+    return pr[0]["expected_delivery_date"] if pr else None

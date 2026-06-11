@@ -65,3 +65,49 @@ def test_persist_deal_writes_deal_cols_to_stg_and_trgt():
     updates = [e for e in cur.executed if e[0].lower().startswith("update")]
     assert any("bp_invoice_trgt" in e[0] and "deal_id" in e[0] for e in updates)
     assert any("bp_invoice_stg" in e[0] and "deal_id" in e[0] for e in updates)
+
+
+class _ScriptCursor:
+    """Returns canned rows per matched SQL fragment; records writes & status updates."""
+    def __init__(self, script, columns):
+        self.script = script            # list of (substr, rows[list[dict]])
+        self.columns = columns
+        self.executed = []
+        self._rows = []; self.description = None
+    def execute(self, sql, params=()):
+        s = " ".join(sql.split())
+        self.executed.append((s, params))
+        low = s.lower()
+        if "information_schema.columns" in low:
+            tbl = params[1]; self._rows = [(c,) for c in self.columns.get(tbl, [])]
+            self.description = [("column_name",)]; return
+        for substr, rows in self.script:
+            if substr.lower() in low:
+                self._rows = [tuple(r.values()) for r in rows]
+                self.description = [(k,) for k in (rows[0].keys() if rows else [])]
+                return
+        self._rows = []; self.description = None
+    def fetchall(self): return list(self._rows)
+    def fetchone(self): return self._rows[0] if self._rows else None
+
+
+def test_look_forward_links_monitor_deal_to_matching_invoice(monkeypatch):
+    cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    monitor = [{"id": 720, "file_path": "documents/Invoice/THRIVE INV103404 for PO502001.pdf",
+                "deal_id": "TEST00120260610104", "deal_name": "Test001",
+                "category": "Invoice", "document_type": "pdf"}]
+    inv = [{"invoice_id": "103404", "source_file": "x/THRIVE INV103404 for PO502001.pdf"}]
+    cur = _ScriptCursor(
+        script=[("from proc.process_monitor", monitor),
+                ("from proc.bp_invoice_raw", inv),
+                ("from proc.bp_invoice_trgt", inv)],
+        columns={"bp_invoice_stg": cols, "bp_invoice_trgt": cols})
+    conn = _RecConn(cur)
+    n = das._look_forward(cur)
+    assert n >= 1
+    # deal columns written to trgt
+    assert any("update proc.bp_invoice_trgt" in e[0].lower() and "deal_id" in e[0].lower()
+               for e in cur.executed)
+    # status advanced to Deal_Linked
+    assert any("update proc.process_monitor set status" in e[0].lower()
+               and e[1] and "Deal_Linked" in e[1] for e in cur.executed)
