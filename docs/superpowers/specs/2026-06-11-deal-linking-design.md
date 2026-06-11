@@ -147,9 +147,11 @@ Script `scripts/backfill_deal_linking.py`:
 - **View** (`tests/sql/test_deal_views.py` or live read-only): `bp_deal_overview` counts/totals reconcile against `bp_deal_documents`; 3-way-match and cycle-time math on a seeded deal.
 - **Live validation**: run backfill against `bp_sqldb`, verify the known chains (PO526702 / Duncan, PO502001 / Thrive invoices) group correctly and KPIs are non-null.
 
-## 11. Assumptions & Open Questions
+## 11. Assumptions & Open Questions (resolved 2026-06-11)
 
-1. **`deal_date` = expected delivery date** (from PO), stamped on all docs — confirm vs document transaction date.
-2. Deal list/detail **view columns** are inferred; the only legible screenshot was the executive dashboard. Will reconcile against Figma frames when accessible.
-3. Look-back threshold reuses `PROMOTE_MIN_LINK_SCORE` (default 80). Acceptable, or a separate `DEAL_LINK_MIN_SCORE`?
-4. Legacy `DEAL-<po>` rows with no monitor deal are migrated to `DEALV2-<po>`; acceptable to rewrite these keys?
+1. **`deal_date` = expected delivery date** (from PO), stamped on all docs. **CONFIRMED.**
+2. Look-back threshold **reuses `PROMOTE_MIN_LINK_SCORE` (default 80)**. **CONFIRMED.**
+3. Legacy `DEAL-<po>` rows with no monitor deal are **rewritten to `DEALV2-<po>`**. **CONFIRMED.**
+4. Deal list/detail **view columns** remain inferred — Figma MCP access is blocked by account seat/plan
+   membership (share/proto links do not change this); only the executive dashboard screenshot was legible.
+   Views will be reconciled against the Figma frames if/when screenshots or Dev/Full-seat access are provided.
