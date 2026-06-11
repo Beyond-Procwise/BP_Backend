@@ -258,12 +258,15 @@ class BackendScheduler:
 
     TRGT_PROMOTION_JOB_NAME = "trgt-promotion"
 
+    DEAL_ASSIGNMENT_JOB_NAME = "deal-assignment"
+
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
         self._register_model_sync_job()
         self._register_kg_sync_job()
         self._register_summary_precompute_job()
         self._register_trgt_promotion_job()
+        self._register_deal_assignment_job()
 
     def _register_trgt_promotion_job(self) -> None:
         """Register the periodic _stg -> _trgt promotion job.
@@ -302,6 +305,36 @@ class BackendScheduler:
             logger.info("trgt promotion completed: %s", result)
         except Exception:
             logger.exception("trgt promotion job failed")
+
+    def _register_deal_assignment_job(self) -> None:
+        """Assign documents to deals after _stg->_trgt promotion (look-forward +
+        look-back + reconcile). Toggle DEAL_ASSIGNMENT_ENABLED (default on),
+        interval DEAL_ASSIGNMENT_INTERVAL_MINUTES (default 15)."""
+        import os
+        if os.environ.get("DEAL_ASSIGNMENT_ENABLED", "1").strip() not in ("1", "true", "True"):
+            logger.info("deal assignment job disabled by DEAL_ASSIGNMENT_ENABLED")
+            return
+        if self.DEAL_ASSIGNMENT_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("DEAL_ASSIGNMENT_INTERVAL_MINUTES", "15"))
+        except ValueError:
+            minutes = 15
+        self.register_job(
+            self.DEAL_ASSIGNMENT_JOB_NAME,
+            self._run_deal_assignment,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_deal_assignment(self) -> None:
+        """Run the deal assignment passes."""
+        try:
+            from src.services.deal_assignment_service import assign_deals
+            result = assign_deals()
+            logger.info("deal assignment completed: %s", result)
+        except Exception:
+            logger.exception("deal assignment job failed")
 
     def _register_kg_sync_job(self) -> None:
         """Register periodic KG sync job (startup + every 6 hours)."""
