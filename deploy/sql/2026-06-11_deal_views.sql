@@ -65,8 +65,8 @@ SELECT
   round(100.0*count(*) FILTER (WHERE three_way_match)/nullif(count(*),0),0) AS three_way_match_pct,
   round(avg(price_variance_pct)::numeric, 1) AS price_variance_pct,
   (SELECT count(*) FROM (
-      SELECT supplier_id, amount, invoice_date FROM proc.bp_invoice_trgt
-      GROUP BY supplier_id, amount, invoice_date HAVING count(*)>1) dup) AS duplicate_count,
+      SELECT supplier_id, invoice_amount, invoice_date FROM proc.bp_invoice_trgt
+      GROUP BY supplier_id, invoice_amount, invoice_date HAVING count(*)>1) dup) AS duplicate_count,
   sum(invoice_total) FILTER (WHERE po_count=0) AS no_po_spend
 FROM proc.bp_deal_overview;
 

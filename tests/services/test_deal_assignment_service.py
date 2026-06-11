@@ -113,6 +113,24 @@ def test_look_forward_links_monitor_deal_to_matching_invoice(monkeypatch):
                and e[1] and "Deal_Linked" in e[1] for e in cur.executed)
 
 
+def test_look_forward_deal_tagged_but_unmatched_is_deal_linked():
+    # Monitor row carries a deal_id but no extracted doc matches by filename.
+    # It must still be Deal_Linked (the deal is known), never Deal_Unassigned_Review.
+    monitor = [{"id": 707, "file_path": "documents/po/DUNCAN PO526702.pdf",
+                "deal_id": "DEAL_A2026052891", "deal_name": "deal_a",
+                "category": "po", "document_type": "pdf"}]
+    cur = _ScriptCursor(
+        script=[("from proc.process_monitor", monitor),
+                ("from proc.bp_purchase_order_raw", [])],  # no raw rows -> no match
+        columns={})
+    n = das._look_forward(cur)
+    assert n == 0  # nothing stamped to _trgt
+    status_writes = [e for e in cur.executed
+                     if "update proc.process_monitor set status" in e[0].lower()]
+    assert status_writes and status_writes[0][1] and status_writes[0][1][0] == "Deal_Linked"
+    assert not any(e[1] and "Deal_Unassigned_Review" in str(e[1]) for e in status_writes)
+
+
 def test_look_back_groups_invoice_under_canonical_po_deal(monkeypatch):
     # invoice with no deal, references PO 502001; a PO exists in trgt
     inv = [{"invoice_id": "103404", "po_id": "PO502001", "supplier_id": "SUP-Thrive",

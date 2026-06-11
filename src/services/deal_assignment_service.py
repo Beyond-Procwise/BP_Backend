@@ -178,8 +178,11 @@ def _look_forward(cur) -> int:
                                  m["file_path"])
             matched = True
             linked += 1
-        _set_monitor_status(cur, m["id"], "Deal_Linked" if matched
-                            else "Deal_Unassigned_Review")
+        # A monitor row in this loop always carries a deal_id (the query filters
+        # for it), so the deal is known at the monitor level — mark Deal_Linked
+        # whether or not the extracted doc was found in _trgt. `matched` only
+        # governs whether _trgt rows were stamped.
+        _set_monitor_status(cur, m["id"], "Deal_Linked")
     return linked
 
 
