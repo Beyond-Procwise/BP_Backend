@@ -214,3 +214,64 @@ def _look_back(cur) -> int:
             _upsert_document_map(cur, deal_id, deal_name, "po", po["po_id"], po_doc_id, None)
             linked += 1
     return linked
+
+
+from src.services.db import get_conn
+
+
+def _reconcile_legacy(cur) -> int:
+    """Rewrite legacy DEAL-<po> keys (no monitor deal) to the derived DEALV2-<po>
+    form so all deal_ids share one scheme. Authoritative monitor deals already
+    overwrote their rows in the look-forward pass."""
+    reconciled = 0
+    for doc_type in ("invoice", "quote", "po"):
+        pk, _raw, _stg, trgt, _ls, _lt = _DOC[doc_type]
+        rows = _rows(cur,
+            f"select {pk}, deal_id, po_id from {trgt} "
+            f"where deal_id like 'DEAL-%'")
+        for r in rows:
+            npo = _norm_po(r.get("po_id")) or r["deal_id"].split("-", 1)[-1]
+            new_id = lookback_deal_id(npo)
+            if new_id == r["deal_id"]:
+                continue
+            cur.execute(f"update {trgt} set deal_id=%s where {pk}=%s", (new_id, r[pk]))
+            reconciled += 1
+    return reconciled
+
+
+def _flag_unassigned(cur) -> int:
+    """Mark monitor rows whose document still has no deal as review-needed."""
+    cur.execute(
+        "update proc.process_monitor set status='Deal_Unassigned_Review', "
+        "lastmodified_date=now() "
+        "where (deal_id is null or deal_id='') "
+        "and status not in ('Extraction_Failed','Deal_Unassigned_Review') "
+        "returning id")
+    try:
+        return len(cur.fetchall())
+    except Exception:
+        return 0
+
+
+def assign_deals(conn: Any = None, limit: Optional[int] = None) -> dict:
+    """Run look-forward, look-back, reconcile, and unassigned-flag passes."""
+    if conn is None:
+        with get_conn() as own:
+            own.autocommit = False
+            try:
+                r = _run(own.cursor())
+                own.commit()
+                return r
+            except Exception:
+                own.rollback()
+                raise
+    return _run(conn.cursor())
+
+
+def _run(cur) -> dict:
+    fwd = _look_forward(cur)
+    back = _look_back(cur)
+    rec = _reconcile_legacy(cur)
+    flag = _flag_unassigned(cur)
+    return {"forward_linked": fwd, "backward_linked": back,
+            "reconciled": rec, "unassigned_review": flag}

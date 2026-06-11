@@ -130,3 +130,17 @@ def test_look_back_groups_invoice_under_canonical_po_deal(monkeypatch):
     n = das._look_back(cur)
     assert n >= 1
     assert any("dealv2-502001" in (str(e[1]).lower() if e[1] else "") for e in cur.executed)
+
+
+def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(das, "_look_forward", lambda cur: calls.append("fwd") or 2)
+    monkeypatch.setattr(das, "_look_back", lambda cur: calls.append("back") or 1)
+    monkeypatch.setattr(das, "_reconcile_legacy", lambda cur: calls.append("rec") or 3)
+    monkeypatch.setattr(das, "_flag_unassigned", lambda cur: calls.append("flag") or 4)
+    cur = _ScriptCursor(script=[], columns={})
+    conn = _RecConn(cur)
+    result = das.assign_deals(conn=conn)
+    assert result == {"forward_linked": 2, "backward_linked": 1,
+                      "reconciled": 3, "unassigned_review": 4}
+    assert calls == ["fwd", "back", "rec", "flag"]
