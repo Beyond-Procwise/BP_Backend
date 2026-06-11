@@ -514,15 +514,16 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                             line_vals,
                         )
 
-            # 4. Update _raw to promoted (audit) then delete
+            # 4. Mark _raw as promoted and RETAIN the row.
+            # _raw is a permanent retention tier: it holds the engine's original
+            # extraction output so the computed _stg values can always be traced
+            # back to and compared against the raw source. Do NOT delete on clean
+            # promotion (matches extraction_v3/persistence.py, which also keeps
+            # _raw). The row is marked promotion_status='promoted' for audit.
             cur.execute(
                 f"UPDATE {raw_t} SET promotion_status='promoted', promoted_at=NOW() "
                 f"WHERE raw_id=%s", (raw_id,),
             )
-            # Keep the _raw row as an audit trail OR delete? Spec says delete on
-            # clean promotion; keep on discrepancy. Delete here — the data is
-            # now in _stg, and provenance_v3 retains the bbox/evidence.
-            cur.execute(f"DELETE FROM {raw_t} WHERE raw_id=%s", (raw_id,))
 
             conn.commit()
             # AgentNick audit trail — one structured INFO line per row, so

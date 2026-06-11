@@ -43,7 +43,7 @@ def test_dispatch_writes_raw_and_provenance():
         file_path=str(FIXTURE),
         doc_type="invoice",
     )
-    assert result["status"] in ("pending", "discrepancy")
+    assert result["status"] in ("pending", "discrepancy", "promoted")
     assert result["raw_id"] is not None
     raw_id = result["raw_id"]
 
@@ -57,7 +57,11 @@ def test_dispatch_writes_raw_and_provenance():
             (raw_id,),
         )
         row = cur.fetchone()
+        # _raw is a permanent retention tier: the row MUST survive even after a
+        # clean promotion to _stg (the pipeline no longer deletes it).
         assert row is not None
+        if result["status"] == "promoted":
+            assert row[6] == "promoted", f"promoted raw row must be marked: {row[6]}"
         inv_id, sup_name, inv_amt, currency, has_snap, has_trace, status = row
         # Expected fixture values
         assert inv_id == "0526", f"invoice_id wrong: {inv_id}"

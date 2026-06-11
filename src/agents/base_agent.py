@@ -49,15 +49,24 @@ except Exception:  # pragma: no cover - optional dependency failures handled gra
 logger = logging.getLogger(__name__)
 
 
+_UNIVERSAL_LOCAL_MODEL = "BeyondProcwise/AgentNick:latest"
+
+
 def _build_fallback_models() -> Tuple[str, ...]:
-    """Return fallback model chain preferring Qwen2.5."""
+    """Return the local fallback model chain.
+
+    AgentNick is the single universal local model for the product, so it is the
+    terminal fallback. The previous chain hard-coded qwen2.5:32b/7b and
+    phi4:latest, none of which are pulled in Ollama — every miss walked the
+    whole chain and logged 404 ResponseErrors.
+    """
     configured = getattr(settings, "local_primary_model", None)
     fallback = getattr(settings, "local_fallback_model", None)
     candidates: List[str] = []
-    for name in (configured, fallback, "qwen2.5:32b", "qwen2.5:7b", "phi4:latest"):
+    for name in (configured, fallback, _UNIVERSAL_LOCAL_MODEL):
         if name and name not in candidates:
             candidates.append(name)
-    return tuple(candidates) if candidates else ("qwen2.5:32b",)
+    return tuple(candidates) if candidates else (_UNIVERSAL_LOCAL_MODEL,)
 
 _OLLAMA_FALLBACK_MODELS: Tuple[str, ...] = _build_fallback_models()
 

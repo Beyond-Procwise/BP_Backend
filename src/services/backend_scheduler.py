@@ -256,11 +256,52 @@ class BackendScheduler:
 
     KG_SYNC_JOB_NAME = "kg-sync-dispatch"
 
+    TRGT_PROMOTION_JOB_NAME = "trgt-promotion"
+
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
         self._register_model_sync_job()
         self._register_kg_sync_job()
         self._register_summary_precompute_job()
+        self._register_trgt_promotion_job()
+
+    def _register_trgt_promotion_job(self) -> None:
+        """Register the periodic _stg -> _trgt promotion job.
+
+        The _raw -> _stg promotion is event-driven (PromotionListenerService).
+        The final _stg -> _trgt step (confidence + link-score gated, via
+        linking_engine.promote_ready) had no automatic trigger and only ran on
+        a manual API call, leaving _trgt empty. This job closes that gap so
+        eligible staged rows flow to the final target tables on a schedule.
+
+        Enable/disable with TRGT_PROMOTION_ENABLED (default: enabled).
+        Interval via TRGT_PROMOTION_INTERVAL_MINUTES (default: 15).
+        """
+        import os
+        if os.environ.get("TRGT_PROMOTION_ENABLED", "1").strip() not in ("1", "true", "True"):
+            logger.info("trgt promotion job disabled by TRGT_PROMOTION_ENABLED")
+            return
+        if self.TRGT_PROMOTION_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("TRGT_PROMOTION_INTERVAL_MINUTES", "15"))
+        except ValueError:
+            minutes = 15
+        self.register_job(
+            self.TRGT_PROMOTION_JOB_NAME,
+            self._run_trgt_promotion,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=3),
+        )
+
+    def _run_trgt_promotion(self) -> None:
+        """Promote confidence/link-gated _stg rows into _trgt."""
+        try:
+            from src.services.linking_engine import promote_ready
+            result = promote_ready()
+            logger.info("trgt promotion completed: %s", result)
+        except Exception:
+            logger.exception("trgt promotion job failed")
 
     def _register_kg_sync_job(self) -> None:
         """Register periodic KG sync job (startup + every 6 hours)."""

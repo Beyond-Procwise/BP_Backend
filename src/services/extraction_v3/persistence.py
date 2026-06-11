@@ -12,7 +12,8 @@ Stage 2 — validate → promote or flag:
     fields.  Returns list[Discrepancy] (severity 'critical' | 'warning' | 'info').
   - If NO critical discrepancies:
       _promote_to_stg: write header to _stg, line items to _stg, provenance
-      to _v3, DELETE _raw row (clean promotion).
+      to _v3, and RETAIN the _raw row (marked promotion_status='promoted').
+      _raw is a permanent retention tier holding the engine's original output.
   - Else:
       _flag_with_discrepancies: write discrepancy rows, UPDATE _raw
       promotion_status='discrepancy'.  _stg is NOT written.

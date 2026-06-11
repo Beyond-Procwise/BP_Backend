@@ -594,18 +594,21 @@ class RAGPipeline:
     def _render_html_answer(self, answer_text: str) -> str:
         return self._normalise_answer_html(answer_text)
 
+    _UNIVERSAL_LOCAL_MODEL = "BeyondProcwise/AgentNick:latest"
+
     def _ensure_phi4_default(self, configured_model: Optional[str]) -> str:
-        """Guarantee Joshi relies on phi4 (or a fine-tuned variant)."""
+        """Resolve the local model for Joshi/RAG.
+
+        AgentNick is the universal local model for the product. Respect any
+        explicitly configured model (e.g. a qwen3 variant) but default to
+        AgentNick when none is set — never phi4, which is not pulled in Ollama
+        and produced 404 ResponseErrors.
+        """
 
         candidate = (configured_model or "").strip()
-        if candidate and "qwen3" in candidate.lower():
-            return candidate
         if candidate:
-            logger.warning(
-                "Configured RAG model '%s' is not phi4; defaulting to phi4:latest for Joshi.",
-                candidate,
-            )
-        return "phi4:latest"
+            return candidate
+        return self._UNIVERSAL_LOCAL_MODEL
 
     def register_session_upload(
         self,

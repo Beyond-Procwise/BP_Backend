@@ -18,8 +18,8 @@ log = logging.getLogger(__name__)
 
 # Summarization runs on the Ollama Cloud API (remote), NOT the local GPU, so the
 # local AgentNick model stays dedicated to extraction. Model is env-configurable
-# via PROCWISE_SUMMARY_MODEL; default is a strong general cloud model.
-_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "gpt-oss:120b")
+# via PROCWISE_SUMMARY_MODEL; default is the Qwen 3.5 cloud model.
+_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "qwen3.5:397b")
 
 # (final table, line-items table or None, primary-key column)
 # Contracts are intentionally excluded: proc.bp_contracts has no deal_id column
@@ -63,7 +63,7 @@ def _gather(conn, deal_id: str) -> Optional[dict]:
 
     actions = _fetch_dicts(
         cur,
-        "SELECT * FROM proc.agent_actions WHERE deal_id = %s ORDER BY created_at ASC",
+        "SELECT * FROM proc.bp_agent_actions WHERE deal_id = %s ORDER BY created_at ASC",
         (deal_id,),
     )
     discrepancies = _fetch_dicts(

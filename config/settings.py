@@ -243,11 +243,14 @@ class Settings(BaseSettings):
     llm_router_queue_depth_threshold: int = Field(
         default=8, env="LLM_ROUTER_QUEUE_DEPTH_THRESHOLD"
     )
+    # AgentNick is the single universal local model for the product. The old
+    # qwen2.5:32b/7b defaults referenced models that are not pulled in Ollama
+    # and produced 404 fallback-chain errors.
     local_primary_model: str = Field(
-        default="qwen2.5:32b", env="LOCAL_PRIMARY_MODEL"
+        default="BeyondProcwise/AgentNick:latest", env="LOCAL_PRIMARY_MODEL"
     )
     local_fallback_model: str = Field(
-        default="qwen2.5:7b", env="LOCAL_FALLBACK_MODEL"
+        default="BeyondProcwise/AgentNick:latest", env="LOCAL_FALLBACK_MODEL"
     )
 
     # LoRA Adapter Paths
@@ -342,7 +345,7 @@ class Settings(BaseSettings):
     document_extraction_model: str = Field(
         default="BeyondProcwise/AgentNick:latest", env="DOCUMENT_EXTRACTION_MODEL"
     )
-    rag_model: str = Field(default="qwen3:30b", env="RAG_LLM_MODEL")
+    rag_model: str = Field(default="BeyondProcwise/AgentNick:latest", env="RAG_LLM_MODEL")
     # ``BAAI/bge-large-en-v1.5`` provides state-of-the-art dense retrieval
     # performance for procurement terminology while remaining compatible with
     # Qdrant's HNSW indexes. The model outputs 1024 dimensional vectors which

@@ -151,6 +151,7 @@ def ollama_cloud_generate(
     temperature: float = 0,
     num_predict: int = 1024,
     retries: int = 2,
+    think: bool = False,
 ) -> Optional[str]:
     """Send a generation request to the Ollama Cloud API (remote, authenticated).
 
@@ -159,6 +160,12 @@ def ollama_cloud_generate(
     failure. Requires OLLAMA_CLOUD_API_KEY in the environment. Unlike the local
     ``ollama_generate``, this does not use the local GPU semaphore — the call is
     remote.
+
+    ``think`` defaults to False: the summary cloud models (e.g. qwen3.5:397b)
+    are hybrid reasoning models that, when thinking is enabled, emit their
+    answer in a separate ``thinking`` field and leave ``response`` empty — and
+    this function deliberately returns only ``response`` (never the raw
+    chain-of-thought). Disabling thinking makes the answer land in ``response``.
     """
     api_key = os.getenv("OLLAMA_CLOUD_API_KEY", OLLAMA_CLOUD_API_KEY)
     base = os.getenv("OLLAMA_CLOUD_BASE_URL", OLLAMA_CLOUD_BASE_URL).rstrip("/")
@@ -170,6 +177,7 @@ def ollama_cloud_generate(
         "model": model,
         "prompt": prompt,
         "stream": False,
+        "think": think,
         "options": {"temperature": temperature, "num_predict": num_predict},
     }
 

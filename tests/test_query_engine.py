@@ -240,6 +240,8 @@ def test_fetch_procurement_flow_builds_expected_query(monkeypatch):
         return base_df
 
     monkeypatch.setattr(pd, "read_sql", fake_read_sql)
+    # The category catalog is present in this scenario, so enrichment runs.
+    monkeypatch.setattr(engine, "_table_exists", lambda *a, **k: True)
 
     df = engine.fetch_procurement_flow()
 
@@ -293,6 +295,8 @@ def test_fetch_procurement_flow_embeds_summary(monkeypatch):
         return base_df
 
     monkeypatch.setattr(pd, "read_sql", fake_read_sql)
+    # The category catalog is present in this scenario, so enrichment runs.
+    monkeypatch.setattr(engine, "_table_exists", lambda *a, **k: True)
 
     called = {}
 

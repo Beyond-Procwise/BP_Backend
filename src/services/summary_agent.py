@@ -19,8 +19,10 @@ from src.services.deal_summary import gather_deal_context, _build_prompt
 
 log = logging.getLogger(__name__)
 
-# Summaries run on the Ollama Cloud API (remote), keeping the local GPU free.
-_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "gpt-oss:120b")
+# Summaries run on the Ollama Cloud API (remote), keeping the local GPU free for
+# AgentNick extraction. Default is the Qwen 3.5 cloud model; override via
+# PROCWISE_SUMMARY_MODEL.
+_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "qwen3.5:397b")
 
 
 class SummarizationError(RuntimeError):

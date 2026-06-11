@@ -191,6 +191,12 @@ class QueryEngine(BaseEngine):
             logger.exception("column introspection failed for %s.%s", schema, table)
             return []
 
+    def _table_exists(self, conn, schema: str, table: str) -> bool:
+        """Return True if ``schema.table`` exists. Reuses the resilient column
+        introspection (which returns [] on any failure), so a missing or
+        unreadable table is reported as absent rather than raising."""
+        return bool(self._get_columns(conn, schema, table))
+
     def _price_expression(self, conn, schema: str, table: str, alias: str) -> str:
         """Return SQL snippet for the unit price column in ``table``.
 
@@ -702,20 +708,34 @@ class QueryEngine(BaseEngine):
             {where_clause}
         """
 
-        category_sql = """
+        category_cols = [
+            "product",
+            "category_level_1",
+            "category_level_2",
+            "category_level_3",
+            "category_level_4",
+            "category_level_5",
+        ]
+        category_sql = f"""
             SELECT
-                product,
-                category_level_1,
-                category_level_2,
-                category_level_3,
-                category_level_4,
-                category_level_5
+                {', '.join(category_cols)}
             FROM proc.cat_product_mapping
         """
 
         with self._pandas_reader() as conn:
             df = read_sql_compat(sql, conn, params=params if params else None)
-            category_df = read_sql_compat(category_sql, conn)
+            # proc.cat_product_mapping is an optional category catalog owned by
+            # the external ingestion layer; it may not be provisioned yet. Treat
+            # its absence as "no category enrichment available" rather than
+            # letting an UndefinedTable error abort the whole procurement query.
+            if self._table_exists(conn, "proc", "cat_product_mapping"):
+                category_df = read_sql_compat(category_sql, conn)
+            else:
+                logger.warning(
+                    "proc.cat_product_mapping is absent; skipping product/category "
+                    "enrichment for this procurement-flow query."
+                )
+                category_df = pd.DataFrame(columns=category_cols)
 
         df = self._assign_procurement_categories(df, category_df)
 

@@ -56,10 +56,9 @@ def test_call_ollama_prefers_fallback_when_list_empty(monkeypatch):
 
     captured = {}
 
-    assert base_agent._OLLAMA_FALLBACK_MODELS == (
-        "phi4:latest",
-        "phi4",
-    )
+    # AgentNick is the single universal local model and the terminal fallback.
+    assert "BeyondProcwise/AgentNick:latest" in base_agent._OLLAMA_FALLBACK_MODELS
+    assert base_agent._OLLAMA_FALLBACK_MODELS[-1] == "BeyondProcwise/AgentNick:latest"
 
     def fake_generate(model, **kwargs):
         captured["model"] = model
