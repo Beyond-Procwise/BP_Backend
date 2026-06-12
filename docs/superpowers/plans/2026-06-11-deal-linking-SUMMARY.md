@@ -28,12 +28,27 @@ A deal-linking layer that groups Quotes/POs/Invoices into deals and exposes deal
 ## Code changes
 
 - **`src/services/deal_assignment_service.py`** (new) — the engine. Passes run in order:
-  1. `_look_forward` — match `process_monitor` rows (with deal_id) to extracted docs by `basename(file_path)==basename(source_file)` (one indexed scan per raw table), stamp deal columns, set `process_monitor.status='Deal_Linked'`.
+  1. `_look_forward` — match `process_monitor` rows (with deal_id) to extracted docs by **exact `process_monitor_id`** (set by the RENOVATION extraction path), falling back to `basename(file_path)==basename(source_file)`; stamp deal columns, set `process_monitor.status='Deal_Linked'`.
   2. `_look_back` — for deal-less invoices/quotes, find canonical PO, score membership with `linking_engine.score_link` (supplier/buyer/amount/line-item/temporal/location); join when `F ≥ PROMOTE_MIN_LINK_SCORE` (80). **Joins the PO's existing deal if present — never overwrites an authoritative deal_id.** No-PO docs left unassigned.
   3. `_reconcile_legacy` — rewrite legacy `DEAL-<po>` → `DEALV2-<po>` (parameterized LIKE).
-  4. `_backfill_deal_metadata` — stamp `document_id` + `deal_date` on any deal-assigned doc missing them.
-  5. `_flag_unassigned` — mark deal-less monitor rows `Deal_Unassigned_Review`.
+  4. `_propagate_deal_along_po` — spread a known deal across the **full PO chain**: any Quote/PO/Invoice sharing a canonical PO joins the single deal present on any of them, so the complete chain lands in one deal even if only one doc was tagged. Conflicting deals on a PO are left for review.
+  5. `_backfill_deal_metadata` — stamp `document_id` + `deal_date` on any deal-assigned doc missing them.
+  6. `_flag_unassigned` — mark deal-less monitor rows `Deal_Unassigned_Review`.
   - `assign_deals(conn=None)` orchestrates; idempotent (re-run is a clean no-op).
+
+## End-to-end fresh-extraction validation (2026-06-12)
+
+Verified the full pipeline holds for a truncate-and-re-extract, via live transactional simulations (rolled back):
+- **`deal_date` is protected** across re-extraction: added to `linking_engine._DEAL_COLS` so stg→trgt promotion never clobbers the assigned value. `raw→stg` and `stg→trgt` promotions both carry/ignore `deal_date` safely (dynamic column detection; no hardcoded lists).
+- **Look-forward works on fresh data**: extraction writes `raw.source_file == process_monitor.file_path` and `raw.process_monitor_id`, so the exact-id match links the deal. Simulated invoice → its PO + quote all joined the deal (`forward_linked:1, propagated:2`), with `deal_date` resolved from the PO's `expected_delivery_date`.
+- **FK-safe truncation**: `deploy/sql/truncate_for_fresh_extraction.sql` (single `TRUNCATE … RESTART IDENTITY CASCADE`) — tested transactionally, no FK violation on the `bp_*_raw.process_monitor_id → process_monitor` constraint.
+
+### Fresh-extraction runbook
+1. `psql -f deploy/sql/truncate_for_fresh_extraction.sql` (review counts, then COMMIT).
+2. Ensure deal columns/views exist: `deploy/sql/2026-06-11_deal_linking.sql` + `deploy/sql/2026-06-11_deal_views.sql` (idempotent — safe to re-apply).
+3. Upload + extract documents (tag `process_monitor.deal_id`/`deal_name` for look-forward deals).
+4. The `backend_scheduler` runs `trgt-promotion` then `deal-assignment` automatically; or run `python3 scripts/backfill_deal_linking.py` once to force it immediately.
+5. Read deals from `proc.bp_deal_overview` / `bp_deal_kpis` / `bp_deal_documents` / `bp_process_monitor_status`.
 - **`src/services/backend_scheduler.py`** — registers a `deal-assignment` job after `trgt-promotion` (toggle `DEAL_ASSIGNMENT_ENABLED`, interval `DEAL_ASSIGNMENT_INTERVAL_MINUTES` default 15).
 - **`scripts/backfill_deal_linking.py`** (new) — one-time apply DDL → assign → views → report.
 
