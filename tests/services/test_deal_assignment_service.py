@@ -223,16 +223,48 @@ def test_backfill_deal_metadata_stamps_document_id_for_legacy_rows():
     assert any("insert into proc.bp_deal_document_map" in e[0].lower() for e in cur.executed)
 
 
+def test_propagate_deal_along_po_spreads_to_siblings_without_deal():
+    # PO 888 carries a deal; the invoice on PO 888 has none -> it must inherit
+    # the PO's deal. (The PO row's own deal_id is the known one.)
+    cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    inv = [{"invoice_id": "INV1", "po_id": "PO888", "deal_id": None, "deal_name": None}]
+    po = [{"po_id": "888", "deal_id": "DEALSIM", "deal_name": "Sim"}]
+    cur = _ScriptCursor(
+        script=[("select invoice_id, po_id, deal_id, deal_name from proc.bp_invoice_trgt", inv),
+                ("select po_id, deal_id, deal_name from proc.bp_purchase_order_trgt", po)],
+        columns={"bp_invoice_trgt": cols, "bp_invoice_stg": cols})
+    n = das._propagate_deal_along_po(cur)
+    assert n == 1
+    # the invoice inherits DEALSIM
+    assert any("update proc.bp_invoice_trgt" in e[0].lower()
+               and e[1] and "DEALSIM" in str(e[1]) and "INV1" in str(e[1]) for e in cur.executed)
+
+
+def test_propagate_deal_skips_conflicting_po_chain():
+    # Two docs on the same PO carry DIFFERENT deals -> conflict, propagate nothing.
+    cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    inv = [{"invoice_id": "INV1", "po_id": "PO888", "deal_id": "DEAL_A", "deal_name": "A"}]
+    po = [{"po_id": "888", "deal_id": "DEAL_B", "deal_name": "B"}]
+    cur = _ScriptCursor(
+        script=[("select invoice_id, po_id, deal_id, deal_name from proc.bp_invoice_trgt", inv),
+                ("select po_id, deal_id, deal_name from proc.bp_purchase_order_trgt", po)],
+        columns={"bp_invoice_trgt": cols})
+    n = das._propagate_deal_along_po(cur)
+    assert n == 0
+    assert not any(e[0].lower().startswith("update") for e in cur.executed)
+
+
 def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     calls = []
     monkeypatch.setattr(das, "_look_forward", lambda cur: calls.append("fwd") or 2)
     monkeypatch.setattr(das, "_look_back", lambda cur: calls.append("back") or 1)
     monkeypatch.setattr(das, "_reconcile_legacy", lambda cur: calls.append("rec") or 3)
+    monkeypatch.setattr(das, "_propagate_deal_along_po", lambda cur: calls.append("prop") or 6)
     monkeypatch.setattr(das, "_backfill_deal_metadata", lambda cur: calls.append("meta") or 5)
     monkeypatch.setattr(das, "_flag_unassigned", lambda cur: calls.append("flag") or 4)
     cur = _ScriptCursor(script=[], columns={})
     conn = _RecConn(cur)
     result = das.assign_deals(conn=conn)
     assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
-                      "metadata_filled": 5, "unassigned_review": 4}
-    assert calls == ["fwd", "back", "rec", "meta", "flag"]
+                      "propagated": 6, "metadata_filled": 5, "unassigned_review": 4}
+    assert calls == ["fwd", "back", "rec", "prop", "meta", "flag"]

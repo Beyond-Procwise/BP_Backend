@@ -277,6 +277,50 @@ def _look_back(cur) -> int:
     return linked
 
 
+def _propagate_deal_along_po(cur) -> int:
+    """Spread a known deal across the full PO chain.
+
+    Every Quote/PO/Invoice that shares a canonical PO belongs to one deal. When
+    any doc on a PO already carries a deal_id (from look-forward tagging or
+    look-back), stamp that same deal onto the PO-chain siblings that have none —
+    so the complete Quote->PO->Invoice chain lands in a single deal even if only
+    one document was tagged. POs whose docs disagree on the deal are left
+    untouched (conflict -> review). Idempotent.
+    """
+    groups: dict = {}   # canonical_po -> list of (doc_type, doc_pk, deal_id, deal_name)
+    for doc_type in ("invoice", "quote", "po"):
+        pk, _raw, _stg, trgt, _ls, _lt = _DOC[doc_type]
+        if doc_type == "po":
+            rows = _rows(cur, f"select po_id, deal_id, deal_name from {trgt}")
+            for r in rows:
+                npo = _norm_po(r.get("po_id"))
+                if npo:
+                    groups.setdefault(npo, []).append(("po", r["po_id"], r.get("deal_id"), r.get("deal_name")))
+        else:
+            rows = _rows(cur, f"select {pk}, po_id, deal_id, deal_name from {trgt}")
+            for r in rows:
+                npo = _norm_po(r.get("po_id"))
+                if npo:
+                    groups.setdefault(npo, []).append((doc_type, r[pk], r.get("deal_id"), r.get("deal_name")))
+
+    updated = 0
+    for members in groups.values():
+        deals = {(d, n) for (_t, _pk, d, n) in members if d}
+        if len({d for (d, n) in deals}) != 1:
+            continue   # 0 deals -> nothing to spread; >1 -> conflict, skip
+        deal_id, deal_name = next(iter(deals))
+        for (dt, dpk, existing, _n) in members:
+            if existing:
+                continue
+            document_id = mint_document_id(deal_id, dt, str(dpk))
+            deal_date = _deal_date_for_doc(cur, dt, dpk)
+            _persist_deal(cur, dt, dpk, deal_id=deal_id, deal_name=deal_name,
+                          document_id=document_id, deal_date=deal_date)
+            _upsert_document_map(cur, deal_id, deal_name, dt, dpk, document_id, None)
+            updated += 1
+    return updated
+
+
 # ---------------------------------------------------------------------------
 # Reconciliation + orchestration
 # ---------------------------------------------------------------------------
@@ -360,7 +404,8 @@ def _run(cur) -> dict:
     fwd = _look_forward(cur)
     back = _look_back(cur)
     rec = _reconcile_legacy(cur)
+    prop = _propagate_deal_along_po(cur)
     meta = _backfill_deal_metadata(cur)
     flag = _flag_unassigned(cur)
-    return {"forward_linked": fwd, "backward_linked": back,
-            "reconciled": rec, "metadata_filled": meta, "unassigned_review": flag}
+    return {"forward_linked": fwd, "backward_linked": back, "reconciled": rec,
+            "propagated": prop, "metadata_filled": meta, "unassigned_review": flag}
