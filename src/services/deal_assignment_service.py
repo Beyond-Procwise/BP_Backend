@@ -133,41 +133,51 @@ def _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, document_id,
         (document_id, deal_id, deal_name, doc_type, str(doc_pk), source_file))
 
 
-def _raw_basename_index(cur, raw_table, pk) -> dict:
-    """One scan of a raw table -> {normalized basename(source_file): pk}.
+def _raw_index(cur, raw_table, pk) -> dict:
+    """One scan of a raw table -> {"by_pmid": {process_monitor_id: pk},
+    "by_basename": {normalized basename(source_file): pk}}.
 
     Built once per raw table per run so the look-forward match is O(monitors),
     not O(monitors x raw-rows).
     """
-    index: dict = {}
-    for r in _rows(cur, f"select {pk}, source_file from {raw_table}") or []:
+    by_pmid: dict = {}     # process_monitor_id -> pk (exact)
+    by_basename: dict = {}  # normalized basename(source_file) -> pk (fallback)
+    for r in _rows(cur, f"select {pk}, source_file, process_monitor_id from {raw_table}") or []:
+        pmid = r.get("process_monitor_id")
+        if pmid is not None:
+            by_pmid[pmid] = r.get(pk)
         key = _basename(r.get("source_file"))
         if key:
-            index[key] = r.get(pk)
-    return index
+            by_basename[key] = r.get(pk)
+    return {"by_pmid": by_pmid, "by_basename": by_basename}
 
 
 def _look_forward(cur) -> int:
     """Stamp process_monitor deals onto matching extracted documents.
 
-    Returns the number of document links made: a monitor row that matches in
-    more than one raw table counts once per matched document (the monitor's
-    own status is set once, per monitor).
+    A document is matched to its monitor row by process_monitor_id (exact, set
+    by the RENOVATION extraction path) when available, else by matching
+    basename(file_path) == basename(source_file). Returns the number of
+    document links made: a monitor row that matches in more than one raw table
+    counts once per matched document (the monitor's own status is set once).
     """
     linked = 0
     monitors = _rows(cur,
         "select id, file_path, deal_id, deal_name, category, document_type "
         "from proc.process_monitor "
         "where deal_id is not null and deal_id <> ''")
-    raw_index_cache: dict = {}   # raw_table -> {basename: pk}
+    raw_index_cache: dict = {}   # raw_table -> {"by_pmid": {...}, "by_basename": {...}}
     for m in monitors:
         matched = False
         m_key = _basename(m.get("file_path"))
         for dt in _candidate_doc_types(m.get("category"), m.get("document_type")):
             pk, raw, _stg, _trgt, _ls, _lt = _DOC[dt]
             if raw not in raw_index_cache:
-                raw_index_cache[raw] = _raw_basename_index(cur, raw, pk)
-            doc_pk = raw_index_cache[raw].get(m_key) if m_key else None
+                raw_index_cache[raw] = _raw_index(cur, raw, pk)
+            idx = raw_index_cache[raw]
+            doc_pk = idx["by_pmid"].get(m["id"])
+            if not doc_pk and m_key:
+                doc_pk = idx["by_basename"].get(m_key)
             if not doc_pk:
                 continue
             doc_id = mint_document_id(m["deal_id"], dt, str(doc_pk))

@@ -389,7 +389,10 @@ _DOC = {
     },
 }
 _PO = {"stg": "proc.bp_purchase_order_stg", "trgt": "proc.bp_purchase_order_trgt", "pk": "po_id"}
-_DEAL_COLS = {"deal_id", "deal_name", "document_id"}  # owned by the SQL trigger
+# Deal columns are owned by deal_assignment_service, NOT by promotion: never
+# copy them stg->trgt, or a re-extraction would clobber assigned deal values
+# (e.g. reset deal_date to the always-NULL staged value).
+_DEAL_COLS = {"deal_id", "deal_name", "document_id", "deal_date"}
 
 
 def _rows(cur, sql, params=()) -> list[dict]:

@@ -113,6 +113,26 @@ def test_look_forward_links_monitor_deal_to_matching_invoice(monkeypatch):
                and e[1] and "Deal_Linked" in e[1] for e in cur.executed)
 
 
+def test_look_forward_matches_by_process_monitor_id_over_filename():
+    # raw row carries process_monitor_id=555 but its source_file basename does
+    # NOT match the monitor's file_path — the exact pmid match must still win.
+    monitor = [{"id": 555, "file_path": "documents/Invoice/renamed.pdf",
+                "deal_id": "DEALX", "deal_name": "dx",
+                "category": "Invoice", "document_type": "pdf"}]
+    inv = [{"invoice_id": "INVX", "source_file": "store/totally-different.pdf",
+            "process_monitor_id": 555}]
+    cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    cur = _ScriptCursor(
+        script=[("from proc.process_monitor", monitor),
+                ("from proc.bp_invoice_raw", inv)],
+        columns={"bp_invoice_stg": cols, "bp_invoice_trgt": cols})
+    n = das._look_forward(cur)
+    assert n == 1
+    assert any("update proc.bp_invoice_trgt" in e[0].lower()
+               and e[1] and "INVX" in str(e[1]) and "DEALX" in str(e[1])
+               for e in cur.executed)
+
+
 def test_look_back_joins_po_existing_deal_without_overwriting(monkeypatch):
     # A PO already carries an authoritative deal_id; an unlinked invoice on it
     # must JOIN that deal, and the PO must NOT be re-stamped with DEALV2-.
