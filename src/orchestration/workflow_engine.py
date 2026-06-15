@@ -343,12 +343,18 @@ class WorkflowEngine:
         checkpoint_store: Optional[Any] = None,
         event_bus: Optional[Any] = None,
         manifest_service: Optional[Any] = None,
+        agent_wiring: Optional[Any] = None,
     ) -> None:
         self.agents = agent_registry
         self.settings = settings
         self._checkpoint_store = checkpoint_store
         self._event_bus = event_bus
         self._manifest_service = manifest_service
+        # Optional agentic-blackboard wiring (provided by the orchestrator) so the
+        # declarative path shares the same WorkflowContext as the legacy path:
+        #   .attach(agent, context)  -> give the agent the shared blackboard
+        #   .record(context, node_name, result) -> record the node's output
+        self._agent_wiring = agent_wiring
 
     def execute(
         self,
@@ -498,6 +504,15 @@ class WorkflowEngine:
 
         logger.info("Executing node '%s' (agent: %s)", node.name, node.agent_type)
 
+        # Agentic interconnection: attach the shared blackboard so this node's
+        # agent reads prior results + the procurement brief and can emit signals
+        # (same WorkflowContext as the legacy path, keyed by workflow_id).
+        if self._agent_wiring is not None:
+            try:
+                self._agent_wiring.attach(agent, context)
+            except Exception:  # pragma: no cover - wiring is best-effort
+                logger.debug("agent wiring attach failed for node %s", node.name, exc_info=True)
+
         # Execute with retry support
         result: Optional[AgentOutput] = None
         attempts = node.retry_count + 1
@@ -529,6 +544,13 @@ class WorkflowEngine:
 
         # Update state with results
         state.node_results[node.name] = result.data or {}
+        # Record this node's output onto the shared blackboard for downstream
+        # agents + the workflow learning loop.
+        if self._agent_wiring is not None:
+            try:
+                self._agent_wiring.record(context, node.name, result)
+            except Exception:  # pragma: no cover - wiring is best-effort
+                logger.debug("agent wiring record failed for node %s", node.name, exc_info=True)
         if result.status == AgentStatus.SUCCESS:
             state.node_statuses[node.name] = NodeStatus.COMPLETED
             # Copy specified output fields to shared data

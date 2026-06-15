@@ -45,6 +45,26 @@ os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 
 
+class _EngineAgentWiring:
+    """Bridges the declarative WorkflowEngine to the orchestrator's shared
+    agentic blackboard, so both execution paths populate one WorkflowContext per
+    workflow_id (the engine calls agents directly, bypassing ``_execute_agent``).
+    """
+
+    def __init__(self, orchestrator: "Orchestrator") -> None:
+        self._orch = orchestrator
+
+    def attach(self, agent: Any, context: Any) -> None:
+        wf_ctx = self._orch._get_or_create_wf_context(context)
+        self._orch._attach_workflow_context(agent, context, wf_ctx)
+
+    def record(self, context: Any, node_name: str, result: Any) -> None:
+        wid = getattr(context, "workflow_id", None) or ""
+        wf_ctx = self._orch._wf_contexts.get(wid)
+        if wf_ctx is not None:
+            self._orch._record_agent_result(wf_ctx, node_name, result)
+
+
 class Orchestrator:
 
     # Default workflow hints for agents that historically relied on implicit
@@ -123,6 +143,7 @@ class Orchestrator:
                 checkpoint_store=self._workflow_redis,
                 event_bus=self.event_bus,
                 manifest_service=self.manifest_service,
+                agent_wiring=_EngineAgentWiring(self),
             )
             self._workflow_registry = WORKFLOW_REGISTRY
             logger.info("Declarative workflow engine initialized with %d workflows", len(WORKFLOW_REGISTRY))
