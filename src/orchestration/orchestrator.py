@@ -55,6 +55,16 @@ class _EngineAgentWiring:
         self._orch = orchestrator
 
     def attach(self, agent: Any, context: Any) -> None:
+        # Inject the agent's DB-configured prompts/policies (governance) so the
+        # declarative path applies the same agent instructions as the legacy path
+        # — the engine builds context from data mappings only and would otherwise
+        # run agents without their governance.
+        try:
+            self._orch._inject_agent_instructions(
+                getattr(context, "agent_id", None), context.input_data
+            )
+        except Exception:  # pragma: no cover - best-effort
+            pass
         wf_ctx = self._orch._get_or_create_wf_context(context)
         self._orch._attach_workflow_context(agent, context, wf_ctx)
 

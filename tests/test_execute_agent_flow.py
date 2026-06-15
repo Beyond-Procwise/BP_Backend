@@ -444,13 +444,15 @@ def test_ranking_workflow_runs_full_supplier_flow():
     assert quote_agent.ranking_seen[0]["supplier_id"] == "S1"
     assert quote_agent.category_seen == "Raw Materials"
 
-    assert result["result"]["opportunities"]["supplier_candidates"] == ["S1", "S2"]
-    assert result["result"]["opportunities"]["product_category"] == "Raw Materials"
-    assert result["result"]["ranking"]["ranking"][0]["supplier_id"] == "S1"
-    assert result["result"]["downstream_results"]["quote_evaluation"]["quotes"] == [
-        "Q1",
-        "Q2",
-    ]
+    # Declarative WorkflowEngine result contract: node_results keyed by node name,
+    # plus engine_state (with shared_data) — replaces the legacy
+    # opportunities/ranking/downstream_results shape.
+    node_results = result["result"]
+    shared = node_results["engine_state"]["shared_data"]
+    assert node_results["mine_opportunities"]["supplier_candidates"] == ["S1", "S2"]
+    assert shared["product_category"] == "Raw Materials"
+    assert node_results["rank_suppliers"]["ranking"][0]["supplier_id"] == "S1"
+    assert node_results["evaluate_quotes"]["quotes"] == ["Q1", "Q2"]
 
 
 def test_execute_agent_flow_handles_prefixed_agent_names():
