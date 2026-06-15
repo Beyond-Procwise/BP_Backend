@@ -45,7 +45,7 @@ from agents.email_dispatch_agent import EmailDispatchAgent
 from agents.negotiation_agent import NegotiationAgent
 from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
-from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, promotion, summary, negotiate
+from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, promotion, summary, negotiate, opportunities
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -274,6 +274,7 @@ app.include_router(vendors.build_router())
 app.include_router(metrics.router)
 app.include_router(deal_summary.router)
 app.include_router(negotiate.router)
+app.include_router(opportunities.router)
 app.include_router(promotion.router)
 app.include_router(summary.router)
 
