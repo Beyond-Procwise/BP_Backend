@@ -155,24 +155,30 @@ def test_look_forward_matches_by_process_monitor_id_over_filename():
                for e in cur.executed)
 
 
-def test_look_back_joins_po_existing_deal_without_overwriting(monkeypatch):
-    # A PO already carries an authoritative deal_id; an unlinked invoice on it
-    # must JOIN that deal, and the PO must NOT be re-stamped with DEALV2-.
-    inv = [{"invoice_id": "INV9", "po_id": "PO526702", "supplier_id": "SUP-Duncan", "deal_id": None}]
+_QA_COLS = ["po_id", "quote_id", "invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+_QA_COLMAP = {k: _QA_COLS for k in ("bp_quote_trgt", "bp_quote_stg", "bp_invoice_trgt",
+                                    "bp_invoice_stg", "bp_purchase_order_trgt",
+                                    "bp_purchase_order_stg")}
+
+
+def test_look_back_joins_existing_po_deal_when_quote_anchors():
+    # PO carries an authoritative deal; a quote (explicit po_id ref) anchors it.
+    # The quote + invoice JOIN the PO's deal; the PO is not re-stamped; no DEALV2 minted.
     po = [{"po_id": "526702", "supplier_id": "SUP-Duncan", "supplier_name": "Duncan LLC",
            "expected_delivery_date": None, "deal_id": "DEAL_A2026052891", "deal_name": "deal_a"}]
-    cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    quote = [{"quote_id": "QUT1", "po_id": "526702", "supplier_id": "SUP-Duncan",
+              "deal_id": None, "deal_name": None}]
+    inv = [{"invoice_id": "INV9", "deal_id": None}]
     cur = _ScriptCursor(
-        script=[("from proc.bp_invoice_trgt", inv),
-                ("from proc.bp_purchase_order_trgt", po)],
-        columns={"bp_invoice_trgt": cols, "bp_invoice_stg": cols})
-    monkeypatch.setattr(das, "score_link", lambda *a, **k: {"F": 95.0})
-    n = das._look_back(cur)
-    assert n == 1
-    # child invoice joined the PO's existing authoritative deal
-    assert any("update proc.bp_invoice_trgt" in e[0].lower()
-               and e[1] and "DEAL_A2026052891" in str(e[1]) for e in cur.executed)
-    # the PO was NOT re-stamped, and no DEALV2 id was minted anywhere
+        script=[("from proc.bp_purchase_order_trgt", po),
+                ("from proc.bp_quote_trgt", quote),
+                ("from proc.bp_invoice_trgt", inv)],
+        columns=_QA_COLMAP)
+    das._look_back(cur)
+    assert any("update proc.bp_quote_trgt" in e[0].lower() and "DEAL_A2026052891" in str(e[1])
+               for e in cur.executed)
+    assert any("update proc.bp_invoice_trgt" in e[0].lower() and "DEAL_A2026052891" in str(e[1])
+               for e in cur.executed)
     assert not any("update proc.bp_purchase_order_trgt" in e[0].lower() for e in cur.executed)
     assert not any(e[1] and "DEALV2-" in str(e[1]) for e in cur.executed)
 
@@ -217,23 +223,37 @@ def test_look_forward_deal_tagged_but_unmatched_is_deal_linked():
     assert not any(e[1] and "Deal_Unassigned_Review" in str(e[1]) for e in status_writes)
 
 
-def test_look_back_groups_invoice_under_canonical_po_deal(monkeypatch):
-    # invoice with no deal, references PO 502001; a PO exists in trgt
-    inv = [{"invoice_id": "103404", "po_id": "PO502001", "supplier_id": "SUP-Thrive",
-            "deal_id": None}]
+def test_look_back_forms_dealv2_when_quote_anchors():
+    # No existing deal; an anchoring quote forms DEALV2-<po> for quote + PO + invoice.
     po = [{"po_id": "502001", "supplier_id": "SUP-Thrive", "supplier_name": "Thrive Ltd",
-           "expected_delivery_date": None, "deal_id": None}]
-    columns = {"bp_invoice_stg": ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"],
-               "bp_invoice_trgt": ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]}
+           "expected_delivery_date": None, "deal_id": None, "deal_name": None}]
+    quote = [{"quote_id": "Q41", "po_id": "502001", "supplier_id": "SUP-Thrive",
+              "deal_id": None, "deal_name": None}]
+    inv = [{"invoice_id": "103404", "deal_id": None}]
     cur = _ScriptCursor(
-        script=[("from proc.bp_invoice_trgt", inv),
-                ("from proc.bp_purchase_order_trgt", po)],
-        columns=columns)
-    # force the link score to pass
-    monkeypatch.setattr(das, "score_link", lambda *a, **k: {"F": 95.0})
+        script=[("from proc.bp_purchase_order_trgt", po),
+                ("from proc.bp_quote_trgt", quote),
+                ("from proc.bp_invoice_trgt", inv)],
+        columns=_QA_COLMAP)
     n = das._look_back(cur)
-    assert n >= 1
-    assert any("dealv2-502001" in (str(e[1]).lower() if e[1] else "") for e in cur.executed)
+    assert n == 3   # quote + PO + invoice
+    for tbl in ("bp_quote_trgt", "bp_purchase_order_trgt", "bp_invoice_trgt"):
+        assert any(f"update proc.{tbl}" in e[0].lower() and "DEALV2-502001" in str(e[1])
+                   for e in cur.executed), tbl
+
+
+def test_look_back_no_deal_without_quote_anchor(monkeypatch):
+    # PO present but NO quote anchors it (no explicit ref, score below bar) ->
+    # no deal minted; the PO + its invoices stay orphaned.
+    po = [{"po_id": "519829", "supplier_id": "SUP-X", "supplier_name": "X",
+           "expected_delivery_date": None, "deal_id": None, "deal_name": None}]
+    cur = _ScriptCursor(
+        script=[("from proc.bp_purchase_order_trgt", po),
+                ("where supplier_id", [{"quote_id": "Qz", "supplier_id": "SUP-X", "po_id": None}])],
+        columns=_QA_COLMAP)
+    monkeypatch.setattr(das, "score_link", lambda *a, **k: {"F": 10.0})  # below QUOTE_ANCHOR_MIN_SCORE
+    assert das._look_back(cur) == 0
+    assert not any(e[1] and "DEALV2-" in str(e[1]) for e in cur.executed)
 
 
 def test_reconcile_legacy_binds_like_pattern_and_rewrites_to_dealv2():
@@ -342,11 +362,12 @@ def test_reconcile_status_emits_stage_based_updates():
     updates = [s for s in cur.sql if s.lower().startswith("update proc.process_monitor")]
     assert len(updates) == 3                      # one per doc type
     joined = " ".join(updates).lower()
-    for st in ("deal_linked", "deal_unassigned_review", "staged",
-               "discrepancy_review", "extracted"):
-        assert st in joined                       # full stage lifecycle covered
+    for st in ("deal_linked", "orphaned_awaiting_quote", "deal_unassigned_review",
+               "staged", "discrepancy_review", "extracted"):
+        assert st in joined                       # full quote-anchored lifecycle covered
     assert "extraction_failed" in joined and "deal_conflict_review" in joined  # preserved
-    assert "pm.deal_id is null" in joined         # never downgrades look-forward deals
+    # orphan rule: a PO/invoice is complete only when its deal contains a quote
+    assert "bp_quote_trgt q where q.deal_id" in joined
 
 
 def test_upsert_document_map_drops_stale_same_doc_entries():

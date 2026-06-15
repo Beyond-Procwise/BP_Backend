@@ -25,6 +25,9 @@ from src.services.linking_engine import (
 log = logging.getLogger(__name__)
 
 MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))
+# Bar for a quote to ANCHOR a PO (form/complete a deal). Defaults to the link bar.
+QUOTE_ANCHOR_MIN_SCORE = float(os.getenv("QUOTE_ANCHOR_MIN_SCORE",
+                                         os.getenv("PROMOTE_MIN_LINK_SCORE", "80")))
 
 
 # ---------------------------------------------------------------------------
@@ -296,55 +299,75 @@ def _deal_date_for_doc(cur, doc_type, doc_pk):
 
 
 # ---------------------------------------------------------------------------
-# Look-back pass
+# Look-back pass (quote-gated)
 # ---------------------------------------------------------------------------
-def _unlinked_docs(cur, doc_type):
-    _pk, _raw, _stg, trgt, _ls, _lt = _DOC[doc_type]
-    return _rows(cur, f"select * from {trgt} where deal_id is null or deal_id = ''")
+def _quote_anchor_for_po(cur, po, npo=None):
+    """Return the quote that ANCHORS this PO (or None). Quote is the deal anchor:
+    matched by explicit reference (quote.po_id, po_line_items.quote_number) or, when
+    refs are absent, by relationship score >= QUOTE_ANCHOR_MIN_SCORE (supplier +
+    line-item/product overlap + amount + temporal). Candidates narrowed by supplier."""
+    quo = _DOC["quote"][3]
+    npo = npo or _norm_po(po.get("po_id"))
+    # 1) explicit: a quote whose own po_id resolves to this canonical PO
+    if npo:
+        ex = _rows(cur, f"select * from {quo} where {_PO_NORM_COND}=%s", (npo,))
+        if ex:
+            return ex[0]
+    # 2) the PO's line items naming a quote_number
+    poln = _DOC["po"][5]
+    for r in _rows(cur, f"select distinct quote_number from {poln} "
+                        f"where po_id=%s and coalesce(quote_number,'')<>''", (po.get("po_id"),)):
+        qr = _rows(cur, f"select * from {quo} where quote_id=%s", (str(r["quote_number"]),))
+        if qr:
+            return qr[0]
+    # 3) relationship score (supplier-narrowed; line items strengthen the match)
+    sup = po.get("supplier_id")
+    cand = (_rows(cur, f"select * from {quo} where supplier_id=%s", (sup,)) if sup
+            else _rows(cur, f"select * from {quo}"))
+    po_lines = _rows(cur, f"select * from {poln} where po_id=%s", (po.get("po_id"),))
+    best, best_f = None, 0.0
+    for q in cand:
+        q_lines = _rows(cur, f"select * from {_DOC['quote'][5]} where quote_id=%s", (q.get("quote_id"),))
+        link = score_link(q, po, "quote_po", source_lines=q_lines, target_lines=po_lines)
+        if link.get("F", 0) >= QUOTE_ANCHOR_MIN_SCORE and link["F"] > best_f:
+            best, best_f = q, link["F"]
+    return best
 
 
 def _look_back(cur) -> int:
-    """Group deal-less docs under their canonical PO deal when the link score passes."""
+    """Quote-gated deal formation. A deal forms for a canonical PO ONLY when a quote
+    anchors it (Quote -> PO -> Invoice flow). The anchoring quote, the PO, and the
+    PO's invoices are assigned to the deal (the PO's existing authoritative deal, or a
+    derived DEALV2-<po>). POs/invoices with no anchoring quote are left orphaned (no
+    deal minted) — surfaced as Orphaned_Awaiting_Quote by reconcile_status. Only
+    currently-unlinked docs are stamped, so authoritative look-forward deals are never
+    clobbered. Returns the number of documents newly linked."""
+    inv_trgt = _DOC["invoice"][3]
     linked = 0
-    for doc_type in ("invoice", "quote"):
-        pk = _DOC[doc_type][0]
-        for row in _unlinked_docs(cur, doc_type):
-            npo = _norm_po(row.get("po_id"))
-            if not npo:
-                continue   # no-PO doc -> left for review by orchestrator
-            pos = _rows(cur, f"select * from {_PO['trgt']} where {_PO_NORM_COND}=%s", (npo,))
-            if not pos:
-                continue
-            po = pos[0]
-            profile = "invoice_po" if doc_type == "invoice" else "quote_po"
-            link = score_link(row, po, profile)
-            if link["F"] < MIN_LINK_SCORE:
-                continue
-            supplier = po.get("supplier_name") or po.get("supplier_id")
-            # Honor an existing PO deal (authoritative from look-forward, or a
-            # legacy id reconcile will normalize): the child joins the PO's deal
-            # rather than minting a new one. Only mint DEALV2 when the PO has none.
-            existing_po_deal = (po.get("deal_id") or "").strip()
-            if existing_po_deal:
-                deal_id = existing_po_deal
-                deal_name = po.get("deal_name") or lookback_deal_name(supplier, npo)
-            else:
-                deal_id = lookback_deal_id(npo)
-                deal_name = lookback_deal_name(supplier, npo)
-            doc_pk = row[pk]
-            doc_id = mint_document_id(deal_id, doc_type, str(doc_pk))
-            deal_date = resolve_deal_date(po)
-            _persist_deal(cur, doc_type, doc_pk, deal_id=deal_id, deal_name=deal_name,
+    for po in _rows(cur, f"select * from {_PO['trgt']}"):
+        npo = _norm_po(po.get("po_id"))
+        if not npo:
+            continue
+        quote = _quote_anchor_for_po(cur, po, npo)
+        if quote is None:
+            continue   # no anchoring quote -> PO + its invoices stay orphaned
+        supplier = po.get("supplier_name") or po.get("supplier_id")
+        existing = (po.get("deal_id") or "").strip() or (quote.get("deal_id") or "").strip()
+        deal_id = existing or lookback_deal_id(npo)
+        deal_name = ((po.get("deal_name") or quote.get("deal_name")) if existing
+                     else lookback_deal_name(supplier, npo))
+        deal_date = resolve_deal_date(po)
+        members = [("po", po.get("po_id"), po.get("deal_id")),
+                   ("quote", quote.get("quote_id"), quote.get("deal_id"))]
+        for inv in _rows(cur, f"select invoice_id, deal_id from {inv_trgt} where {_PO_NORM_COND}=%s", (npo,)):
+            members.append(("invoice", inv["invoice_id"], inv.get("deal_id")))
+        for dt, dpk, cur_deal in members:
+            if (cur_deal or "").strip():
+                continue   # already linked -> never clobber an authoritative deal
+            doc_id = mint_document_id(deal_id, dt, str(dpk))
+            _persist_deal(cur, dt, dpk, deal_id=deal_id, deal_name=deal_name,
                           document_id=doc_id, deal_date=deal_date)
-            _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, doc_id,
-                                 row.get("source_file"))
-            # Stamp the PO into the deal only when it had none — never overwrite
-            # an existing (authoritative) PO deal_id.
-            if not existing_po_deal:
-                po_doc_id = mint_document_id(deal_id, "po", str(po["po_id"]))
-                _persist_deal(cur, "po", po["po_id"], deal_id=deal_id, deal_name=deal_name,
-                              document_id=po_doc_id, deal_date=deal_date)
-                _upsert_document_map(cur, deal_id, deal_name, "po", po["po_id"], po_doc_id, None)
+            _upsert_document_map(cur, deal_id, deal_name, dt, dpk, doc_id, None)
             linked += 1
     return linked
 
@@ -489,35 +512,49 @@ def _backfill_deal_metadata(cur) -> int:
 
 def reconcile_status(cur) -> int:
     """Set each document's process_monitor.status to reflect its TRUE furthest
-    pipeline stage, so the status board is unambiguous:
+    pipeline stage AND the quote-anchored deal model:
 
-        Deal_Linked            — in _trgt with a deal (or the monitor row carries
-                                  its own look-forward deal_id, handled by look_forward)
-        Deal_Unassigned_Review — reached _trgt but has no deal
-        Staged                 — promoted to _stg, not yet in _trgt (gate-held)
-        Discrepancy_Review     — held at _raw by a blocking discrepancy
-        Extracted              — in _raw, clean, not yet staged
+        Deal_Linked              — quote in _trgt with a deal; OR a PO/invoice whose
+                                   deal HAS a quote (a complete Quote->PO->Invoice chain)
+        Orphaned_Awaiting_Quote  — a PO/invoice in _trgt whose deal has NO quote
+                                   (or has no deal) — the quote anchor is missing
+        Deal_Unassigned_Review   — a quote in _trgt with no deal
+        Staged                   — promoted to _stg, not yet in _trgt (gate-held)
+        Discrepancy_Review       — held at _raw by a blocking discrepancy
+        Extracted                — in _raw, clean, not yet staged
 
-    Never touches Extraction_Failed or Deal_Conflict_Review (owned elsewhere) and
-    never downgrades a monitor row that already carries its own deal_id
-    (look-forward). Set-based, one UPDATE per doc type. Returns rows changed.
+    Quotes are never orphaned (the quote IS the anchor). Set-based, one UPDATE per
+    doc type. Never touches Extraction_Failed or Deal_Conflict_Review. Authoritative
+    for the deal-stage statuses (quote presence, not deal_id alone, decides
+    Deal_Linked vs Orphaned), so it does NOT skip deal-tagged rows. Returns rows changed.
     """
+    # PO/invoice: complete only when their deal contains a quote; else orphaned.
+    case_po_inv = (
+        "case "
+        "when t.{pk} is not null and t.deal_id is not null and t.deal_id <> '' "
+        "  and exists(select 1 from proc.bp_quote_trgt q where q.deal_id = t.deal_id) then 'Deal_Linked' "
+        "when t.{pk} is not null then 'Orphaned_Awaiting_Quote' "
+        "when s.{pk} is not null then 'Staged' "
+        "when r.promotion_status = 'discrepancy' then 'Discrepancy_Review' "
+        "else 'Extracted' end")
+    # Quote: anchor — linked when it has a deal, else unassigned (never orphaned).
+    case_quote = (
+        "case "
+        "when t.{pk} is not null and t.deal_id is not null and t.deal_id <> '' then 'Deal_Linked' "
+        "when t.{pk} is not null then 'Deal_Unassigned_Review' "
+        "when s.{pk} is not null then 'Staged' "
+        "when r.promotion_status = 'discrepancy' then 'Discrepancy_Review' "
+        "else 'Extracted' end")
     updated = 0
     for doc_type in ("invoice", "quote", "po"):
         pk, raw, stg, trgt, _ls, _lt = _DOC[doc_type]
+        st_case = (case_quote if doc_type == "quote" else case_po_inv).format(pk=pk)
         cur.execute(
             f"""
             update proc.process_monitor pm
                set status = sub.st, lastmodified_date = now()
             from (
-              select r.process_monitor_id pm_id,
-                case
-                  when t.{pk} is not null and t.deal_id is not null and t.deal_id <> '' then 'Deal_Linked'
-                  when t.{pk} is not null then 'Deal_Unassigned_Review'
-                  when s.{pk} is not null then 'Staged'
-                  when r.promotion_status = 'discrepancy' then 'Discrepancy_Review'
-                  else 'Extracted'
-                end st
+              select r.process_monitor_id pm_id, {st_case} st
               from {raw} r
               left join {stg} s  on s.{pk} = r.{pk}
               left join {trgt} t on t.{pk} = r.{pk}
@@ -525,7 +562,6 @@ def reconcile_status(cur) -> int:
             ) sub
             where pm.id = sub.pm_id
               and pm.status not in ('Extraction_Failed', 'Deal_Conflict_Review')
-              and (pm.deal_id is null or pm.deal_id = '')
               and pm.status is distinct from sub.st
             """)
         updated += cur.rowcount or 0
