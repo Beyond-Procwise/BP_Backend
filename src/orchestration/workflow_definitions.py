@@ -10,6 +10,8 @@ orchestrator with composable, testable, and reusable workflow definitions.
 
 from __future__ import annotations
 
+from typing import Any, Dict, Optional
+
 from orchestration.workflow_engine import (
     WorkflowEdge,
     WorkflowGraph,
@@ -17,6 +19,75 @@ from orchestration.workflow_engine import (
     WorkflowState,
     NodeStatus,
 )
+
+
+# ---------------------------------------------------------------------------
+# Derived-value helpers (mirror the legacy orchestrator so the declarative path
+# carries the same context downstream)
+# ---------------------------------------------------------------------------
+def _derive_product_category(opportunity_payload: Any) -> Optional[str]:
+    """Pick the dominant spend category from an opportunity payload.
+
+    Mirrors ``Orchestrator._derive_product_category`` so downstream nodes
+    (quote evaluation, email drafting) receive category context on the
+    declarative path exactly as they did on the legacy path.
+    """
+    if not isinstance(opportunity_payload, dict):
+        return None
+
+    def _norm(v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    for key in ("product_category", "category_id", "primary_category", "spend_category"):
+        direct = _norm(opportunity_payload.get(key))
+        if direct:
+            return direct
+
+    findings = opportunity_payload.get("findings")
+    if isinstance(findings, list):
+        totals: Dict[str, float] = {}
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            category = _norm(
+                finding.get("category_id")
+                or finding.get("spend_category")
+                or finding.get("category")
+                or finding.get("item_category")
+            )
+            if not category:
+                continue
+            weight = finding.get("financial_impact_gbp")
+            if weight in (None, ""):
+                for alt in ("potential_savings", "total_savings",
+                            "estimated_savings", "value", "impact"):
+                    weight = finding.get(alt)
+                    if weight not in (None, ""):
+                        break
+            try:
+                score = float(weight)
+            except (TypeError, ValueError):
+                score = 0.0
+            if score <= 0.0:
+                score = 1.0
+            totals[category] = totals.get(category, 0.0) + score
+        if totals:
+            return max(totals.items(), key=lambda item: (item[1], item[0]))[0]
+
+    return None
+
+
+def _opportunity_post_process(
+    result_data: Dict[str, Any], shared_data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Derive product_category from the opportunity findings for downstream nodes."""
+    payload: Dict[str, Any] = dict(shared_data or {})
+    payload.update(result_data or {})
+    category = _derive_product_category(payload)
+    return {"product_category": category} if category else {}
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +175,7 @@ def build_ranking_workflow() -> WorkflowGraph:
         agent_type="opportunity_miner",
         output_to_shared=["findings", "supplier_candidates", "supplier_directory"],
         required=False,
+        post_process=_opportunity_post_process,
     ))
 
     graph.add_node(WorkflowNode(

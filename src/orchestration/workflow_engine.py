@@ -180,6 +180,12 @@ class WorkflowNode:
     required: bool = True
     retry_count: int = 0
     timeout_seconds: Optional[int] = None
+    # Optional hook: derive extra shared values from this node's result + the
+    # current shared data after the node succeeds. Receives (result_data,
+    # shared_data) and returns a dict of values to merge into shared_data. Lets a
+    # declarative workflow compute fields (e.g. product_category from findings)
+    # that the legacy path derived imperatively. Default None = no behaviour.
+    post_process: Optional[Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]] = None
 
     def build_input_data(self, state: WorkflowState) -> Dict[str, Any]:
         """Build the agent's input_data from the workflow state."""
@@ -533,6 +539,17 @@ class WorkflowEngine:
             # Also merge pass_fields
             if result.pass_fields:
                 state.shared_data.update(result.pass_fields)
+            # Derive any computed shared values (e.g. product_category from
+            # findings) so the declarative path matches the legacy behaviour.
+            if node.post_process is not None:
+                try:
+                    derived = node.post_process(result.data or {}, state.shared_data)
+                    if isinstance(derived, dict):
+                        for k, v in derived.items():
+                            if v is not None and not state.shared_data.get(k):
+                                state.shared_data[k] = v
+                except Exception:  # pragma: no cover - hook is best-effort
+                    logger.debug("post_process hook failed for node %s", node.name, exc_info=True)
         else:
             state.node_statuses[node.name] = NodeStatus.FAILED
             state.errors.append({
