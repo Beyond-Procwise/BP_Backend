@@ -131,9 +131,17 @@ class BackendScheduler:
             logger.exception("scheduling downstream chain failed (non-fatal)")
 
     def _run_downstream_chain(self) -> None:
-        """Event-driven tail of the pipeline: promote eligible _stg rows to _trgt,
-        assign deals, then chain opportunity mining when deals changed. Idempotent
-        — the periodic trgt-promotion / deal-assignment jobs remain as a backstop."""
+        """Event-driven tail of the pipeline: catch up any stranded _raw rows,
+        promote eligible _stg rows to _trgt, assign deals, then chain opportunity
+        mining when deals changed. Idempotent — the periodic trgt-promotion /
+        deal-assignment jobs remain as a backstop."""
+        try:
+            from src.services.extraction.promotion import promote_pending
+            pend = promote_pending()
+            if pend.get("promoted") or pend.get("failed"):
+                logger.info("downstream chain: pending-raw catch-up %s", pend)
+        except Exception:
+            logger.exception("downstream chain: pending-raw catch-up failed")
         try:
             from src.services.linking_engine import promote_ready
             prom = promote_ready()
@@ -354,7 +362,16 @@ class BackendScheduler:
         )
 
     def _run_trgt_promotion(self) -> None:
-        """Promote confidence/link-gated _stg rows into _trgt."""
+        """Catch up stranded _raw rows, then promote confidence/link-gated _stg
+        rows into _trgt. The pending catch-up here is the periodic backstop for
+        any promotion NOTIFY missed by the event listener."""
+        try:
+            from src.services.extraction.promotion import promote_pending
+            pend = promote_pending()
+            if pend.get("promoted") or pend.get("failed"):
+                logger.info("trgt promotion: pending-raw catch-up %s", pend)
+        except Exception:
+            logger.exception("trgt promotion: pending-raw catch-up failed")
         try:
             from src.services.linking_engine import promote_ready
             result = promote_ready()

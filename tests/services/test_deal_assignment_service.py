@@ -349,6 +349,58 @@ def test_reconcile_status_emits_stage_based_updates():
     assert "pm.deal_id is null" in joined         # never downgrades look-forward deals
 
 
+def test_upsert_document_map_drops_stale_same_doc_entries():
+    class _Cur:
+        def __init__(self):
+            self.sql = []
+        def execute(self, sql, params=()):
+            self.sql.append((" ".join(sql.split()), params))
+    cur = _Cur()
+    das._upsert_document_map(cur, "DEAL_X", "x", "po", "PO1", "DEAL_X::po::PO1", None)
+    dels = [e for e in cur.sql if e[0].lower().startswith("delete from proc.bp_deal_document_map")]
+    assert dels and dels[0][1] == ("po", "PO1", "DEAL_X::po::PO1")
+
+
+def test_prune_deal_document_map_checks_all_trgt_tables():
+    class _Cur:
+        def __init__(self):
+            self.sql = []
+            self.rowcount = 3
+        def execute(self, sql, params=()):
+            self.sql.append(" ".join(sql.split()))
+    cur = _Cur()
+    assert das._prune_deal_document_map(cur) == 3
+    s = cur.sql[0].lower()
+    assert "delete from proc.bp_deal_document_map" in s
+    for t in ("bp_invoice_trgt", "bp_quote_trgt", "bp_purchase_order_trgt"):
+        assert t in s
+
+
+def test_propagate_deal_date_stamps_every_doc_in_deal():
+    import datetime as dt
+
+    class _Cur:
+        def __init__(self):
+            self.sql = []
+            self.rowcount = 1
+            self._rows = []
+            self.description = None
+        def execute(self, sql, params=()):
+            self.sql.append((" ".join(sql.split()), params))
+            if "max(expected_delivery_date)" in sql:
+                self._rows = [("DEAL_X", dt.date(2024, 1, 1))]
+                self.description = [("deal_id",), ("dd",)]
+            else:
+                self._rows = []
+        def fetchall(self):
+            return list(self._rows)
+    cur = _Cur()
+    das._propagate_deal_date(cur)
+    updates = [e for e in cur.sql if e[0].lower().startswith("update")]
+    assert len(updates) == 3   # invoice, quote, po all stamped with the deal date
+    assert all("deal_date=%s" in e[0].lower() and "DEAL_X" in str(e[1]) for e in updates)
+
+
 def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     calls = []
     monkeypatch.setattr(das, "_look_forward", lambda cur: calls.append("fwd") or 2)
@@ -357,11 +409,13 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     monkeypatch.setattr(das, "_propagate_deal_along_po", lambda cur: calls.append("prop") or 6)
     monkeypatch.setattr(das, "_flag_conflict_po_chains", lambda cur: calls.append("conf") or 7)
     monkeypatch.setattr(das, "_backfill_deal_metadata", lambda cur: calls.append("meta") or 5)
+    monkeypatch.setattr(das, "_propagate_deal_date", lambda cur: calls.append("dates") or 8)
+    monkeypatch.setattr(das, "_prune_deal_document_map", lambda cur: calls.append("prune") or 9)
     monkeypatch.setattr(das, "reconcile_status", lambda cur: calls.append("status") or 4)
     cur = _ScriptCursor(script=[], columns={})
     conn = _RecConn(cur)
     result = das.assign_deals(conn=conn)
     assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
                       "propagated": 6, "conflicts_flagged": 7, "metadata_filled": 5,
-                      "status_reconciled": 4}
-    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "status"]
+                      "deal_dates_set": 8, "map_pruned": 9, "status_reconciled": 4}
+    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "dates", "prune", "status"]

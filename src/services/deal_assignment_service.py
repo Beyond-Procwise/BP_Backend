@@ -131,6 +131,45 @@ def _upsert_document_map(cur, deal_id, deal_name, doc_type, doc_pk, document_id,
         "deal_id=excluded.deal_id, deal_name=excluded.deal_name, "
         "doc_type=excluded.doc_type, doc_pk=excluded.doc_pk, source_file=excluded.source_file",
         (document_id, deal_id, deal_name, doc_type, str(doc_pk), source_file))
+    # A document belongs to exactly ONE current deal — drop any stale entries for
+    # the same (doc_type, doc_pk) recorded under a previous deal_id/document_id.
+    cur.execute(
+        "delete from proc.bp_deal_document_map "
+        "where doc_type=%s and doc_pk=%s and document_id<>%s",
+        (doc_type, str(doc_pk), document_id))
+
+
+def _prune_deal_document_map(cur) -> int:
+    """Remove map rows whose document_id is no longer present in any _trgt table
+    (the doc was re-keyed under a new deal, or removed). Keeps the map an exact
+    mirror of the live deal->document relationships."""
+    cur.execute(
+        "delete from proc.bp_deal_document_map m where "
+        "not exists (select 1 from proc.bp_invoice_trgt where document_id=m.document_id) and "
+        "not exists (select 1 from proc.bp_quote_trgt where document_id=m.document_id) and "
+        "not exists (select 1 from proc.bp_purchase_order_trgt where document_id=m.document_id)")
+    return cur.rowcount or 0
+
+
+def _propagate_deal_date(cur) -> int:
+    """deal_date is a DEAL-level attribute (the order's expected delivery date).
+    Compute it once per deal from the deal's PO(s) and stamp it on EVERY document
+    in that deal, so a quote/invoice inherits the date even when it carries no PO
+    reference of its own. Set-based; returns rows changed."""
+    updated = 0
+    deals = _rows(cur,
+        "select deal_id, max(expected_delivery_date) dd from proc.bp_purchase_order_trgt "
+        "where deal_id is not null and deal_id <> '' and expected_delivery_date is not null "
+        "group by deal_id")
+    for d in deals:
+        for doc_type in ("invoice", "quote", "po"):
+            _pk, _r, _s, trgt, _l, _lt = _DOC[doc_type]
+            cur.execute(
+                f"update {trgt} set deal_date=%s "
+                f"where deal_id=%s and deal_date is distinct from %s",
+                (d["dd"], d["deal_id"], d["dd"]))
+            updated += cur.rowcount or 0
+    return updated
 
 
 def _raw_index(cur, raw_table, pk) -> dict:
@@ -515,7 +554,10 @@ def _run(cur) -> dict:
     prop = _propagate_deal_along_po(cur)
     conflicts = _flag_conflict_po_chains(cur)
     meta = _backfill_deal_metadata(cur)
+    dates = _propagate_deal_date(cur)
+    pruned = _prune_deal_document_map(cur)
     status = reconcile_status(cur)
     return {"forward_linked": fwd, "backward_linked": back, "reconciled": rec,
             "propagated": prop, "conflicts_flagged": conflicts,
-            "metadata_filled": meta, "status_reconciled": status}
+            "metadata_filled": meta, "deal_dates_set": dates,
+            "map_pruned": pruned, "status_reconciled": status}

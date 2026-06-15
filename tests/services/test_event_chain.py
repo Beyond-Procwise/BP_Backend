@@ -94,3 +94,27 @@ def test_run_listener_invokes_on_promoted(monkeypatch):
 
     promo.run_listener(stop_event=stop, on_promoted=on_promoted)
     assert seen == [(7, "invoice")]
+
+
+def test_promote_pending_catches_stranded_raw(monkeypatch):
+    import src.services.extraction.promotion as promo
+
+    class _Cur:
+        def execute(self, sql, params=()):
+            self._rows = [(101,)] if "bp_invoice_raw" in sql else []
+        def fetchall(self):
+            return list(getattr(self, "_rows", []))
+
+    class _Conn:
+        autocommit = True
+        def cursor(self): return _Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(promo, "get_conn", lambda: _Conn())
+    seen = []
+    monkeypatch.setattr(promo, "apply_hitl_fixes_and_promote",
+                        lambda rid, dt: seen.append((rid, dt)) or {"ok": True})
+    out = promo.promote_pending(doc_types=("invoice",))
+    assert seen == [(101, "invoice")]
+    assert out["promoted"] == 1 and out["failed"] == 0

@@ -674,6 +674,47 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
     return promote(raw_id, doc_type)
 
 
+def promote_pending(doc_types=("invoice", "quote", "purchase_order", "contract"),
+                    limit: Optional[int] = None) -> dict[str, Any]:
+    """Catch-up promotion for _raw rows stranded at promotion_status='pending'.
+
+    A 'pending' row means its ``extraction_raw_ready_for_promotion`` NOTIFY was
+    never processed (e.g. the listener was down, or the notify was lost). This
+    promotes them through the same path as the event-driven listener so no
+    document is silently stuck before _stg. Idempotent.
+    """
+    out: dict[str, Any] = {"promoted": 0, "failed": 0, "by_type": {}}
+    pending: list[tuple[int, str]] = []
+    with get_conn() as conn:
+        conn.autocommit = True
+        cur = conn.cursor()
+        for dt in doc_types:
+            mapping = _RAW_TO_STG.get(dt)
+            if not mapping:
+                continue
+            raw_t = mapping[0]
+            try:
+                cur.execute(
+                    f"SELECT raw_id FROM {raw_t} WHERE promotion_status='pending' "
+                    f"ORDER BY raw_id" + (f" LIMIT {int(limit)}" if limit else ""))
+                for (rid,) in cur.fetchall():
+                    pending.append((int(rid), dt))
+            except Exception:  # table may not exist in some envs
+                log.debug("promote_pending scan skipped for %s", raw_t, exc_info=True)
+    for rid, dt in pending:
+        try:
+            res = apply_hitl_fixes_and_promote(rid, dt)
+            ok = bool(res and res.get("ok"))
+            out["promoted" if ok else "failed"] += 1
+            out["by_type"][dt] = out["by_type"].get(dt, 0) + (1 if ok else 0)
+        except Exception:
+            out["failed"] += 1
+            log.exception("promote_pending failed raw_id=%s doc_type=%s", rid, dt)
+    if pending:
+        log.info("promote_pending: %s", out)
+    return out
+
+
 def run_listener(stop_event=None, on_promoted=None) -> None:
     """Listen on 'extraction_raw_ready_for_promotion' channel and process
     NOTIFY events sequentially. Run in a dedicated worker.
