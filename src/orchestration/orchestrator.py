@@ -1,5 +1,7 @@
 import logging
+import threading
 import uuid
+from collections import OrderedDict
 from typing import Dict, List, Optional, Any, Set, Tuple, Mapping
 from datetime import datetime
 import asyncio
@@ -97,6 +99,14 @@ class Orchestrator:
         self._prompt_cache: Optional[Dict[int, Dict[str, Any]]] = None
         self._policy_cache: Optional[Dict[int, Dict[str, Any]]] = None
         self._workflow_redis = get_workflow_redis_client()
+
+        # Shared agentic blackboard: one WorkflowContext per workflow_id, so every
+        # agent in a run (sequential or parallel) reads prior results and emits
+        # routing signals onto the same context. Bounded FIFO so the registry can
+        # never grow without limit even if a path skips explicit release.
+        self._wf_contexts: "OrderedDict[str, Any]" = OrderedDict()
+        self._wf_ctx_lock = threading.Lock()
+        self._wf_ctx_cap = 256
 
         # Initialize the declarative workflow engine (12-Factor #8: own your control flow)
         try:
@@ -381,6 +391,10 @@ class Orchestrator:
             )
             return {"status": "failed", "workflow_id": workflow_id, "error": str(e)}
 
+        finally:
+            # Drop the shared blackboard for this run so the registry stays bounded.
+            self._release_wf_context(workflow_id)
+
     @staticmethod
     @lru_cache(maxsize=1)
     def _load_agent_definitions() -> Dict[str, str]:
@@ -395,9 +409,17 @@ class Orchestrator:
         with path.open() as f:
             data = json.load(f)
 
+        # The catalogue is stored as {"agents": [...]} but historically was a bare
+        # list — accept either shape so a schema tweak can't silently blank the
+        # whole agent registry.
+        if isinstance(data, dict):
+            data = data.get("agents") or data.get("definitions") or []
+
         defs: Dict[str, str] = {}
         for item in data:
-            agent_class = item.get("agentType", "")
+            if not isinstance(item, dict):
+                continue
+            agent_class = item.get("agentType") or item.get("agent_type") or ""
             if not agent_class:
                 continue
             # Create lookups based on the ``agentType`` field rather than the
@@ -2478,6 +2500,11 @@ class Orchestrator:
             return None
 
         self._inject_agent_instructions(agent_name, context.input_data)
+        # Agentic interconnection: attach the shared blackboard so the agent can
+        # read prior agents' results + the procurement brief and emit routing
+        # signals. Best-effort — never blocks execution if wiring fails.
+        wf_ctx = self._get_or_create_wf_context(context)
+        self._attach_workflow_context(agent, context, wf_ctx)
         workflow_name = context.input_data.get("workflow")
         with workflow_scope(
             workflow_id=context.workflow_id,
@@ -2485,7 +2512,90 @@ class Orchestrator:
             agent_name=agent_name,
             metadata={"agent_context": context.input_data},
         ):
-            return agent.execute(context)
+            result = agent.execute(context)
+        self._record_agent_result(wf_ctx, agent_name, result)
+        return result
+
+    # ── Agentic blackboard (shared WorkflowContext per workflow) ──────────────
+
+    def _wf_goal(self, context: AgentContext) -> str:
+        try:
+            return str(
+                (context.input_data or {}).get("workflow")
+                or getattr(context, "agent_id", "")
+                or ""
+            )
+        except Exception:  # pragma: no cover - defensive
+            return ""
+
+    def _get_or_create_wf_context(self, context: AgentContext) -> Any:
+        """Return the shared WorkflowContext for ``context.workflow_id``.
+
+        One blackboard per workflow_id serves every sequential and parallel child
+        agent (they all inherit workflow_id via ``_create_child_context``). The
+        registry is a bounded FIFO so it can never grow without limit.
+        """
+        from orchestration.workflow_context import WorkflowContext
+
+        wid = getattr(context, "workflow_id", None) or "default"
+        created = False
+        with self._wf_ctx_lock:
+            wf_ctx = self._wf_contexts.get(wid)
+            if wf_ctx is None:
+                wf_ctx = WorkflowContext(goal=self._wf_goal(context), workflow_id=wid)
+                self._wf_contexts[wid] = wf_ctx
+                created = True
+                while len(self._wf_contexts) > self._wf_ctx_cap:
+                    self._wf_contexts.popitem(last=False)
+        if created:
+            # Phase 2 enrichment runs outside the lock (it may hit DB/KG); failures
+            # are swallowed so a missing brief never breaks a workflow.
+            self._enrich_workflow_context(wf_ctx, context)
+        return wf_ctx
+
+    def _release_wf_context(self, workflow_id: Optional[str]) -> None:
+        if not workflow_id:
+            return
+        with self._wf_ctx_lock:
+            self._wf_contexts.pop(workflow_id, None)
+
+    def _attach_workflow_context(
+        self, agent: Any, context: AgentContext, wf_ctx: Any
+    ) -> None:
+        """Give *agent* live access to the shared blackboard and a read-only view
+        of prior work + the procurement brief via ``input_data``."""
+        try:
+            if hasattr(agent, "set_workflow_context"):
+                agent.set_workflow_context(wf_ctx)
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("set_workflow_context failed for %s", type(agent).__name__, exc_info=True)
+        try:
+            context.input_data["_workflow_blackboard"] = {
+                "workflow_id": wf_ctx.workflow_id,
+                "prior_results": dict(wf_ctx.agent_results),
+                "shared_data": dict(wf_ctx.shared_data),
+                "procurement_brief": wf_ctx.get_procurement_brief(),
+            }
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("blackboard injection failed", exc_info=True)
+
+    def _record_agent_result(self, wf_ctx: Any, agent_name: str, result: Any) -> None:
+        if result is None or wf_ctx is None:
+            return
+        try:
+            data = result.data if hasattr(result, "data") else result
+            if isinstance(data, dict):
+                wf_ctx.record_result(agent_name, data)
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("record_result failed for %s", agent_name, exc_info=True)
+
+    def _enrich_workflow_context(self, wf_ctx: Any, context: AgentContext) -> None:
+        """Phase 2 hook: attach a procurement knowledge brief to the blackboard.
+
+        Overridden behaviour is filled in by the knowledge-brief phase; the base
+        implementation is a safe no-op so Phase 1 wiring stands alone.
+        """
+        return None
 
     def _publish_workflow_complete(
         self,

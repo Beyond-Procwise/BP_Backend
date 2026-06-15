@@ -8,6 +8,7 @@ Spec reference: Task 2 of the agentic re-engineering plan.
 """
 from __future__ import annotations
 
+import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -71,6 +72,10 @@ class WorkflowContext:
         self.agent_results: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self.shared_data: Dict[str, Any] = {}
         self._signals: List[AgentSignal] = []
+        # Parallel agents in a single workflow share one context instance, so
+        # mutations (result recording, signal emission, shared-data writes) are
+        # guarded by a re-entrant lock.
+        self._lock = threading.RLock()
 
     # ── Result Management ───────────────────────────────────────────────────
 
@@ -84,7 +89,8 @@ class WorkflowContext:
             agent_name: Name of the agent that produced the result.
             output: Arbitrary output dictionary from the agent.
         """
-        self.agent_results[agent_name] = output
+        with self._lock:
+            self.agent_results[agent_name] = output
 
     def get_prior_result(self, agent_name: str) -> Optional[Dict[str, Any]]:
         """Return the stored output for *agent_name*, or None if not present.
@@ -103,7 +109,8 @@ class WorkflowContext:
             key: Shared data key.
             value: Value to store under *key*.
         """
-        self.shared_data[key] = value
+        with self._lock:
+            self.shared_data[key] = value
 
     # ── Procurement Brief ───────────────────────────────────────────────────
 
@@ -151,7 +158,8 @@ class WorkflowContext:
             message=message,
             data=data or {},
         )
-        self._signals.append(sig)
+        with self._lock:
+            self._signals.append(sig)
         return sig
 
     def get_signals(
@@ -171,7 +179,8 @@ class WorkflowContext:
         Returns:
             List of matching :class:`AgentSignal` instances in emission order.
         """
-        results = self._signals
+        with self._lock:
+            results = list(self._signals)
         if signal_type is not None:
             results = [s for s in results if s.signal_type == signal_type]
         if agent is not None:
