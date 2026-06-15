@@ -108,9 +108,9 @@ def test_look_forward_links_monitor_deal_to_matching_invoice(monkeypatch):
     # deal columns written to trgt
     assert any("update proc.bp_invoice_trgt" in e[0].lower() and "deal_id" in e[0].lower()
                for e in cur.executed)
-    # status advanced to Deal_Linked
-    assert any("update proc.process_monitor set status" in e[0].lower()
-               and e[1] and "Deal_Linked" in e[1] for e in cur.executed)
+    # status is owned by reconcile_status now — look_forward must NOT write status
+    assert not any("update proc.process_monitor set status" in e[0].lower()
+                   for e in cur.executed)
 
 
 def test_ensure_in_trgt_copies_staged_doc_when_absent():
@@ -205,9 +205,10 @@ def test_look_forward_does_not_cross_claim_pmid_raw_by_basename():
     assert not any("DEAL_WRONG" in str(e[1]) for e in inv_updates)
 
 
-def test_look_forward_deal_tagged_but_unmatched_is_deal_linked():
-    # Monitor row carries a deal_id but no extracted doc matches by filename.
-    # It must still be Deal_Linked (the deal is known), never Deal_Unassigned_Review.
+def test_look_forward_unmatched_is_noop():
+    # Monitor row carries a deal_id but no extracted doc matches -> look_forward
+    # does nothing (no stamp, no status write). Status is reconcile_status's job;
+    # the unmatched doc just isn't in _trgt yet, so it stays at its raw/stg stage.
     monitor = [{"id": 707, "file_path": "documents/po/DUNCAN PO526702.pdf",
                 "deal_id": "DEAL_A2026052891", "deal_name": "deal_a",
                 "category": "po", "document_type": "pdf"}]
@@ -217,10 +218,8 @@ def test_look_forward_deal_tagged_but_unmatched_is_deal_linked():
         columns={})
     n = das._look_forward(cur)
     assert n == 0  # nothing stamped to _trgt
-    status_writes = [e for e in cur.executed
-                     if "update proc.process_monitor set status" in e[0].lower()]
-    assert status_writes and status_writes[0][1] and status_writes[0][1][0] == "Deal_Linked"
-    assert not any(e[1] and "Deal_Unassigned_Review" in str(e[1]) for e in status_writes)
+    assert not any("update proc.process_monitor set status" in e[0].lower()
+                   for e in cur.executed)
 
 
 def test_look_back_forms_dealv2_when_quote_anchors():

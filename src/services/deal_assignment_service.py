@@ -226,23 +226,28 @@ def _ensure_in_trgt(cur, doc_type, doc_pk) -> bool:
 def _look_forward(cur) -> int:
     """Stamp process_monitor deals onto matching extracted documents.
 
-    A document is matched to its monitor row by process_monitor_id (exact, set
-    by the RENOVATION extraction path) when available, else by matching
-    basename(file_path) == basename(source_file). Returns the number of
-    document links made: a monitor row that matches in more than one raw table
-    counts once per matched document (the monitor's own status is set once).
-    """
+    A document is matched to its monitor row by process_monitor_id (exact, set by
+    the RENOVATION extraction path) when available, else by basename(file_path) ==
+    basename(source_file). IDEMPOTENT: a doc already carrying its exact deal_id is
+    skipped (not re-stamped, not counted), so a stable system returns 0 and does
+    not retrigger downstream mining. Status is owned solely by reconcile_status.
+    Returns the number of documents NEWLY linked this run."""
     linked = 0
+    # Ordered by id so that, when the SAME document is claimed by several monitor
+    # uploads tagged with DIFFERENT deals (a conflict), the FIRST (lowest-id)
+    # upload deterministically owns it this run — making the pass stable/idempotent
+    # rather than flapping every cycle. _flag_conflict_po_chains still surfaces the
+    # disagreement for resolution.
     monitors = _rows(cur,
         "select id, file_path, deal_id, deal_name, category, document_type "
         "from proc.process_monitor "
-        "where deal_id is not null and deal_id <> ''")
+        "where deal_id is not null and deal_id <> '' order by id")
     raw_index_cache: dict = {}   # raw_table -> {"by_pmid": {...}, "by_basename": {...}}
+    claimed: set = set()         # (doc_type, doc_pk) already owned this run
     for m in monitors:
-        matched = False
         m_key = _basename(m.get("file_path"))
         for dt in _candidate_doc_types(m.get("category"), m.get("document_type")):
-            pk, raw, _stg, _trgt, _ls, _lt = _DOC[dt]
+            pk, raw, _stg, trgt, _ls, _lt = _DOC[dt]
             if raw not in raw_index_cache:
                 raw_index_cache[raw] = _raw_index(cur, raw, pk)
             idx = raw_index_cache[raw]
@@ -251,9 +256,16 @@ def _look_forward(cur) -> int:
                 doc_pk = idx["by_basename"].get(m_key)
             if not doc_pk:
                 continue
-            # Deal-path promotion: a deal-tagged doc must reach _trgt even when
-            # it has no parent PO (the PO-gated promote_ready holds those). Copy
-            # the staged row into _trgt first; the deal grouping is authoritative.
+            if (dt, doc_pk) in claimed:
+                continue   # a lower-id upload already owns this doc this run
+            claimed.add((dt, doc_pk))
+            # Already linked to this exact deal? -> nothing to do (idempotent).
+            cur_d = _rows(cur, f"select deal_id from {trgt} where {pk}=%s", (doc_pk,))
+            if cur_d and (cur_d[0].get("deal_id") or "") == (m["deal_id"] or ""):
+                continue
+            # Deal-path promotion: a deal-tagged doc must reach _trgt even when it
+            # has no parent PO (the PO-gated promote_ready holds those). Copy the
+            # staged row into _trgt first; the deal grouping is authoritative.
             _ensure_in_trgt(cur, dt, doc_pk)
             doc_id = mint_document_id(m["deal_id"], dt, str(doc_pk))
             deal_date = _deal_date_for_doc(cur, dt, doc_pk)
@@ -261,13 +273,7 @@ def _look_forward(cur) -> int:
                           document_id=doc_id, deal_date=deal_date)
             _upsert_document_map(cur, m["deal_id"], m["deal_name"], dt, doc_pk, doc_id,
                                  m["file_path"])
-            matched = True
             linked += 1
-        # A monitor row in this loop always carries a deal_id (the query filters
-        # for it), so the deal is known at the monitor level — mark Deal_Linked
-        # whether or not the extracted doc was found in _trgt. `matched` only
-        # governs whether _trgt rows were stamped.
-        _set_monitor_status(cur, m["id"], "Deal_Linked")
     return linked
 
 
