@@ -197,6 +197,13 @@ def generate_summary(
     result is stored as a historical, non-current row). Returns None when there
     is no underlying data; raises SnapshotNotFound / SummarizationError.
     """
+    # Normalize as_of: clients often send "" for "now" — an empty string is NOT
+    # a valid timestamp and must fall through to current generation, not the
+    # historical-snapshot branch (which would run `generated_at <= ''`).
+    as_of = as_of.strip() if isinstance(as_of, str) else as_of
+    if not as_of:
+        as_of = None
+
     if conn is None:
         with get_conn() as own:
             return generate_summary(persona, deal_id, as_of, conn=own)
