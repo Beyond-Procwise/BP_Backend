@@ -298,17 +298,51 @@ def test_propagate_deal_skips_conflicting_po_chain():
     assert not any(e[0].lower().startswith("update") for e in cur.executed)
 
 
+def test_flag_conflict_po_chains_sets_review_status_on_mismatched_deals():
+    # PO 888 has an invoice tagged DEAL_A and the PO tagged DEAL_B -> conflict.
+    inv = [{"invoice_id": "INV1", "po_id": "PO888", "deal_id": "DEAL_A", "deal_name": "A"}]
+    po = [{"po_id": "888", "deal_id": "DEAL_B", "deal_name": "B"}]
+    inv_raw = [{"invoice_id": "INV1", "process_monitor_id": 11}]
+    po_raw = [{"po_id": "888", "process_monitor_id": 22}]
+    cur = _ScriptCursor(
+        script=[("select invoice_id, po_id, deal_id, deal_name from proc.bp_invoice_trgt", inv),
+                ("select po_id, deal_id, deal_name from proc.bp_purchase_order_trgt", po),
+                ("from proc.bp_invoice_raw", inv_raw),
+                ("from proc.bp_purchase_order_raw", po_raw)],
+        columns={})
+    n = das._flag_conflict_po_chains(cur)
+    assert n == 2  # both monitor rows flagged
+    statuses = [e for e in cur.executed
+                if "update proc.process_monitor set status" in e[0].lower()]
+    assert all("Deal_Conflict_Review" in str(e[1]) for e in statuses)
+    flagged_ids = {e[1][1] for e in statuses}
+    assert flagged_ids == {11, 22}
+
+
+def test_flag_conflict_po_chains_noop_when_single_deal():
+    inv = [{"invoice_id": "INV1", "po_id": "PO888", "deal_id": "DEAL_A", "deal_name": "A"}]
+    po = [{"po_id": "888", "deal_id": "DEAL_A", "deal_name": "A"}]
+    cur = _ScriptCursor(
+        script=[("select invoice_id, po_id, deal_id, deal_name from proc.bp_invoice_trgt", inv),
+                ("select po_id, deal_id, deal_name from proc.bp_purchase_order_trgt", po)],
+        columns={})
+    assert das._flag_conflict_po_chains(cur) == 0
+    assert not any("update proc.process_monitor set status" in e[0].lower() for e in cur.executed)
+
+
 def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     calls = []
     monkeypatch.setattr(das, "_look_forward", lambda cur: calls.append("fwd") or 2)
     monkeypatch.setattr(das, "_look_back", lambda cur: calls.append("back") or 1)
     monkeypatch.setattr(das, "_reconcile_legacy", lambda cur: calls.append("rec") or 3)
     monkeypatch.setattr(das, "_propagate_deal_along_po", lambda cur: calls.append("prop") or 6)
+    monkeypatch.setattr(das, "_flag_conflict_po_chains", lambda cur: calls.append("conf") or 7)
     monkeypatch.setattr(das, "_backfill_deal_metadata", lambda cur: calls.append("meta") or 5)
     monkeypatch.setattr(das, "_flag_unassigned", lambda cur: calls.append("flag") or 4)
     cur = _ScriptCursor(script=[], columns={})
     conn = _RecConn(cur)
     result = das.assign_deals(conn=conn)
     assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
-                      "propagated": 6, "metadata_filled": 5, "unassigned_review": 4}
-    assert calls == ["fwd", "back", "rec", "prop", "meta", "flag"]
+                      "propagated": 6, "conflicts_flagged": 7, "metadata_filled": 5,
+                      "unassigned_review": 4}
+    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "flag"]

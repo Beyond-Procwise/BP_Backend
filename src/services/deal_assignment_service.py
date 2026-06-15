@@ -310,17 +310,11 @@ def _look_back(cur) -> int:
     return linked
 
 
-def _propagate_deal_along_po(cur) -> int:
-    """Spread a known deal across the full PO chain.
-
-    Every Quote/PO/Invoice that shares a canonical PO belongs to one deal. When
-    any doc on a PO already carries a deal_id (from look-forward tagging or
-    look-back), stamp that same deal onto the PO-chain siblings that have none —
-    so the complete Quote->PO->Invoice chain lands in a single deal even if only
-    one document was tagged. POs whose docs disagree on the deal are left
-    untouched (conflict -> review). Idempotent.
-    """
-    groups: dict = {}   # canonical_po -> list of (doc_type, doc_pk, deal_id, deal_name)
+def _po_chain_groups(cur) -> dict:
+    """canonical_po -> list of (doc_type, doc_pk, deal_id, deal_name) for every
+    Quote/PO/Invoice referencing that PO. Shared by propagation and conflict
+    detection so both reason over the same grouping."""
+    groups: dict = {}
     for doc_type in ("invoice", "quote", "po"):
         pk, _raw, _stg, trgt, _ls, _lt = _DOC[doc_type]
         if doc_type == "po":
@@ -335,13 +329,31 @@ def _propagate_deal_along_po(cur) -> int:
                 npo = _norm_po(r.get("po_id"))
                 if npo:
                     groups.setdefault(npo, []).append((doc_type, r[pk], r.get("deal_id"), r.get("deal_name")))
+    return groups
 
+
+def _po_chain_deal_ids(members) -> set:
+    """Distinct non-blank deal_ids among a PO chain's documents."""
+    return {d for (_t, _pk, d, _n) in members if d}
+
+
+def _propagate_deal_along_po(cur) -> int:
+    """Spread a known deal across the full PO chain.
+
+    Every Quote/PO/Invoice that shares a canonical PO belongs to one deal. When
+    any doc on a PO already carries a deal_id (from look-forward tagging or
+    look-back), stamp that same deal onto the PO-chain siblings that have none —
+    so the complete Quote->PO->Invoice chain lands in a single deal even if only
+    one document was tagged. POs whose docs disagree on the deal are left
+    untouched (flagged by _flag_conflict_po_chains). Idempotent.
+    """
     updated = 0
-    for members in groups.values():
-        deals = {(d, n) for (_t, _pk, d, n) in members if d}
-        if len({d for (d, n) in deals}) != 1:
-            continue   # 0 deals -> nothing to spread; >1 -> conflict, skip
-        deal_id, deal_name = next(iter(deals))
+    for members in _po_chain_groups(cur).values():
+        deal_ids = _po_chain_deal_ids(members)
+        if len(deal_ids) != 1:
+            continue   # 0 deals -> nothing to spread; >1 -> conflict (flagged elsewhere)
+        deal_id = next(iter(deal_ids))
+        deal_name = next((n for (_t, _pk, d, n) in members if d == deal_id), None)
         for (dt, dpk, existing, _n) in members:
             if existing:
                 continue
@@ -352,6 +364,38 @@ def _propagate_deal_along_po(cur) -> int:
             _upsert_document_map(cur, deal_id, deal_name, dt, dpk, document_id, None)
             updated += 1
     return updated
+
+
+def _monitor_ids_for_doc(cur, doc_type, doc_pk) -> list:
+    """Every process_monitor_id that produced this document (a re-uploaded file
+    yields several raw rows / monitor rows for the same doc_pk)."""
+    pk, raw, _stg, _trgt, _ls, _lt = _DOC[doc_type]
+    return [r["process_monitor_id"] for r in _rows(
+        cur, f"select process_monitor_id from {raw} "
+             f"where {pk}=%s and process_monitor_id is not null", (doc_pk,))]
+
+
+def _flag_conflict_po_chains(cur) -> int:
+    """Flag PO chains whose documents carry MORE THAN ONE distinct deal_id.
+
+    Propagation deliberately leaves such chains untouched (it can't know which
+    deal is right). Here we surface the mismatch for human resolution by setting
+    process_monitor.status='Deal_Conflict_Review' on every monitor row behind a
+    deal-bearing doc in the conflicted chain. Returns the count of monitor rows
+    flagged. Idempotent (re-setting the same status is a no-op in effect).
+    """
+    flagged: set = set()
+    for members in _po_chain_groups(cur).values():
+        if len(_po_chain_deal_ids(members)) <= 1:
+            continue
+        for (dt, dpk, deal_id, _n) in members:
+            if not deal_id:
+                continue
+            for mid in _monitor_ids_for_doc(cur, dt, dpk):
+                if mid not in flagged:
+                    _set_monitor_status(cur, mid, "Deal_Conflict_Review")
+                    flagged.add(mid)
+    return len(flagged)
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +482,9 @@ def _run(cur) -> dict:
     back = _look_back(cur)
     rec = _reconcile_legacy(cur)
     prop = _propagate_deal_along_po(cur)
+    conflicts = _flag_conflict_po_chains(cur)
     meta = _backfill_deal_metadata(cur)
     flag = _flag_unassigned(cur)
     return {"forward_linked": fwd, "backward_linked": back, "reconciled": rec,
-            "propagated": prop, "metadata_filled": meta, "unassigned_review": flag}
+            "propagated": prop, "conflicts_flagged": conflicts,
+            "metadata_filled": meta, "unassigned_review": flag}
