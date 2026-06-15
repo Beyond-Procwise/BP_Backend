@@ -314,6 +314,29 @@ def dispatch_document(
                 )
                 line_items = mapped
 
+    # Subtotal recovery from line items. When the required header subtotal
+    # (invoice_amount / total_amount) could not be grounded from the text but
+    # line items are present, derive it from the lines — subtotal-closure aware,
+    # so a mis-captured Subtotal/Tax row (table parsers emit them as extra
+    # "line items") is not double-counted. Pure arithmetic over grounded line
+    # amounts, never fabrication; closes the garbled-summary-label gap that left
+    # invoice_amount NULL and blocked promotion as missing_required.
+    _sub_col = _completeness._SUBTOTAL_COL.get(doc_type)
+    if _sub_col and columns.get(_sub_col) in (None, "") and line_items:
+        _sub, _cut = _completeness.derive_subtotal_from_lines(doc_type, line_items)
+        if _sub is not None:
+            columns[_sub_col] = _sub
+            if _cut is not None and 0 < _cut < len(line_items):
+                log.info(
+                    "dispatch: derived %s=%s and trimmed %d summary line(s) "
+                    "after subtotal-closure",
+                    _sub_col, _sub, len(line_items) - _cut,
+                )
+                line_items = line_items[:_cut]
+            else:
+                log.info("dispatch: derived %s=%s from %d line items",
+                         _sub_col, _sub, len(line_items))
+
     discrepancies: list[Discrepancy] = []
     # Re-bind any synthesized values that conflict with column types is
     # already handled by context_layer's _validate_and_bind. Bind errors

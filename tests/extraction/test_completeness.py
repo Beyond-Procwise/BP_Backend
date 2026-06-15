@@ -6,7 +6,43 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.services.extraction.completeness import assess, line_sum  # noqa: E402
+from src.services.extraction.completeness import (  # noqa: E402
+    assess,
+    derive_subtotal_from_lines,
+    line_sum,
+)
+
+
+def test_derive_subtotal_closure_aware_trims_mis_captured_summary_rows():
+    # The real items (2000+3500+1250=6750) are followed by a mis-captured
+    # Subtotal row (6750) and a Tax row (675) — common table-parser pollution.
+    lines = [
+        {"line_amount": 2000}, {"line_amount": 3500}, {"line_amount": 1250},
+        {"line_amount": 6750}, {"line_amount": 675},
+    ]
+    sub, cut = derive_subtotal_from_lines("invoice", lines)
+    assert sub == 6750.0
+    assert cut == 3   # caller trims to the 3 real items
+
+
+def test_derive_subtotal_plain_sum_when_no_closure():
+    lines = [{"line_amount": 2000}, {"line_amount": 3500}, {"line_amount": 1250}]
+    sub, cut = derive_subtotal_from_lines("invoice", lines)
+    assert sub == 6750.0
+    assert cut is None   # every line is a real item
+
+
+def test_derive_subtotal_no_false_positive_on_two_equal_items():
+    # Two equal items must NOT be read as item+subtotal (needs >=2 prior lines).
+    lines = [{"line_amount": 2000}, {"line_amount": 2000}]
+    sub, cut = derive_subtotal_from_lines("invoice", lines)
+    assert sub == 4000.0
+    assert cut is None
+
+
+def test_derive_subtotal_none_when_no_amounts():
+    assert derive_subtotal_from_lines("invoice", [{"item_description": "x"}]) == (None, None)
+    assert derive_subtotal_from_lines("invoice", []) == (None, None)
 
 
 def test_complete_invoice_with_reconciling_lines():

@@ -66,6 +66,44 @@ def header_subtotal(doc_type: str, columns: dict[str, Any]) -> Optional[float]:
     return _to_float(columns.get(col)) if col else None
 
 
+def derive_subtotal_from_lines(
+    doc_type: str, line_items: list[dict[str, Any]]
+) -> tuple[Optional[float], Optional[int]]:
+    """Derive the header subtotal from line-item amounts when it could not be
+    grounded from the document text.
+
+    Subtotal-closure aware: table parsers frequently emit the printed
+    "Subtotal"/"Tax"/"Total" rows as extra line items (e.g. a row whose label
+    column was garbled to "30" but whose amount equals the sum of the real
+    items). When a line in the last two positions equals the running sum of the
+    preceding (>=2) real amounts, that line is the mis-captured subtotal — its
+    value is the subtotal, and the rows from it onward are summary, not items.
+
+    Returns ``(subtotal, cut_index)`` where ``cut_index`` is the count of leading
+    real line items (so callers may trim ``line_items[:cut_index]``), or
+    ``(sum, None)`` when no closure was detected and every line is a real item,
+    or ``(None, None)`` when there are no usable amounts. Pure arithmetic over
+    grounded line amounts — not fabrication.
+    """
+    amt_col = _LINE_AMOUNT_COL.get(doc_type)
+    if not amt_col or not line_items:
+        return None, None
+    amts = [_to_float(li.get(amt_col)) for li in line_items]
+    vals = [a for a in amts if a is not None]
+    if not vals:
+        return None, None
+    n = len(amts)
+    for i, a in enumerate(amts):
+        if a is None or i < n - 2:   # only consider the last two rows as a closure
+            continue
+        prior = [x for x in amts[:i] if x is not None]
+        if len(prior) >= 2:
+            s = sum(prior)
+            if s > 0 and abs(a - s) <= max(0.01, _RECONCILE_TOLERANCE * s):
+                return round(s, 2), i
+    return round(sum(vals), 2), None
+
+
 def _reconciles(lsum: Optional[float], header_total: Optional[float]) -> bool:
     # Can't check without a header total -> don't flag a gap.
     if header_total in (None, 0) or header_total == 0.0:
