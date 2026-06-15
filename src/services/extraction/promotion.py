@@ -433,6 +433,23 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                 doc_type, raw_data, _required,
             )
 
+            # 1f. Carry the look-forward deal (deal_id/deal_name) from
+            # process_monitor onto the staged row, so deal-tagged docs are
+            # self-describing in _stg. The authoritative grouping still lives on
+            # process_monitor; this just mirrors it. Best-effort, never blocks.
+            pm_id = raw_data.get("process_monitor_id")
+            if pm_id is not None and not raw_data.get("deal_id"):
+                try:
+                    cur.execute(
+                        "SELECT deal_id, deal_name FROM proc.process_monitor WHERE id = %s",
+                        (pm_id,))
+                    pm = cur.fetchone()
+                    if pm and pm[0]:
+                        raw_data["deal_id"] = pm[0]
+                        raw_data["deal_name"] = pm[1]
+                except Exception:  # noqa: BLE001
+                    log.debug("process_monitor deal carry skipped", exc_info=True)
+
             # 2. Intersect with _stg columns
             stg_cols = _stg_columns(cur, stg_t)
             target_cols = [c for c in stg_cols if c in raw_data and c not in _CONTROL_COLS]

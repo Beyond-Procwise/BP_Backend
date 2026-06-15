@@ -141,15 +141,44 @@ def _raw_index(cur, raw_table, pk) -> dict:
     not O(monitors x raw-rows).
     """
     by_pmid: dict = {}     # process_monitor_id -> pk (exact)
-    by_basename: dict = {}  # normalized basename(source_file) -> pk (fallback)
+    by_basename: dict = {}  # basename(source_file) -> pk, ONLY for pmid-less raws
     for r in _rows(cur, f"select {pk}, source_file, process_monitor_id from {raw_table}") or []:
         pmid = r.get("process_monitor_id")
         if pmid is not None:
+            # A raw that knows its triggering monitor row is matched ONLY by that
+            # exact id — never by basename. Otherwise other monitor rows sharing
+            # the filename (same file re-uploaded under a different deal) would
+            # cross-claim it, nondeterministically overwriting the right deal.
             by_pmid[pmid] = r.get(pk)
+            continue
         key = _basename(r.get("source_file"))
         if key:
             by_basename[key] = r.get(pk)
     return {"by_pmid": by_pmid, "by_basename": by_basename}
+
+
+def _ensure_in_trgt(cur, doc_type, doc_pk) -> bool:
+    """Copy a staged doc (+ its line items) into _trgt if it isn't there yet.
+
+    This is the deal-path promotion: a deal-tagged document reaches _trgt
+    independent of PO linkage (the PO-gated linking_engine.promote_ready holds
+    PO-less docs forever). Reuses the linking_engine copy helpers, which exclude
+    the deal columns — _look_forward stamps those afterward. Returns True when
+    the doc is present in _trgt afterward.
+    """
+    from src.services.linking_engine import _copyable_cols, _upsert, _copy_lines
+    pk, _raw, stg, trgt, line_stg, line_trgt = _DOC[doc_type]
+    if _rows(cur, f"select 1 from {trgt} where {pk}=%s limit 1", (doc_pk,)):
+        return True
+    staged = _rows(cur, f"select * from {stg} where {pk}=%s", (doc_pk,))
+    if not staged:
+        return False   # not promoted to _stg yet (e.g. held at raw by a discrepancy)
+    cols = _copyable_cols(cur, stg, trgt)
+    if not cols:
+        return False
+    _upsert(cur, trgt, pk, staged[0], cols)
+    _copy_lines(cur, pk, doc_pk, line_stg, line_trgt)
+    return True
 
 
 def _look_forward(cur) -> int:
@@ -180,6 +209,10 @@ def _look_forward(cur) -> int:
                 doc_pk = idx["by_basename"].get(m_key)
             if not doc_pk:
                 continue
+            # Deal-path promotion: a deal-tagged doc must reach _trgt even when
+            # it has no parent PO (the PO-gated promote_ready holds those). Copy
+            # the staged row into _trgt first; the deal grouping is authoritative.
+            _ensure_in_trgt(cur, dt, doc_pk)
             doc_id = mint_document_id(m["deal_id"], dt, str(doc_pk))
             deal_date = _deal_date_for_doc(cur, dt, doc_pk)
             _persist_deal(cur, dt, doc_pk, deal_id=m["deal_id"], deal_name=m["deal_name"],

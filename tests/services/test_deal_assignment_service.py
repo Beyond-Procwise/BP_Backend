@@ -113,6 +113,28 @@ def test_look_forward_links_monitor_deal_to_matching_invoice(monkeypatch):
                and e[1] and "Deal_Linked" in e[1] for e in cur.executed)
 
 
+def test_ensure_in_trgt_copies_staged_doc_when_absent():
+    # A PO-less quote is in _stg but not _trgt -> deal-path promotion copies it
+    # into _trgt (without the deal columns, which _look_forward stamps later).
+    cols = ["quote_id", "po_id", "supplier_id", "total_amount",
+            "deal_id", "deal_name", "document_id", "deal_date"]
+    staged = [{"quote_id": "Q1", "po_id": None, "supplier_id": "SUP-X", "total_amount": 100}]
+    cur = _ScriptCursor(
+        script=[("select * from proc.bp_quote_stg", staged)],
+        columns={"bp_quote_stg": cols, "bp_quote_trgt": cols})
+    assert das._ensure_in_trgt(cur, "quote", "Q1") is True
+    inserts = [e for e in cur.executed if e[0].lower().startswith("insert into proc.bp_quote_trgt")]
+    assert inserts, "staged quote should be inserted into _trgt"
+    assert "deal_id" not in inserts[0][0].lower()  # deal cols excluded from the copy
+
+
+def test_ensure_in_trgt_noops_when_not_staged():
+    # Doc not in _trgt and not in _stg (e.g. held at raw by a discrepancy) -> no copy.
+    cur = _ScriptCursor(script=[], columns={"bp_invoice_stg": ["invoice_id"], "bp_invoice_trgt": ["invoice_id"]})
+    assert das._ensure_in_trgt(cur, "invoice", "INV404") is False
+    assert not any(e[0].lower().startswith("insert into proc.bp_invoice_trgt") for e in cur.executed)
+
+
 def test_look_forward_matches_by_process_monitor_id_over_filename():
     # raw row carries process_monitor_id=555 but its source_file basename does
     # NOT match the monitor's file_path — the exact pmid match must still win.
@@ -153,6 +175,28 @@ def test_look_back_joins_po_existing_deal_without_overwriting(monkeypatch):
     # the PO was NOT re-stamped, and no DEALV2 id was minted anywhere
     assert not any("update proc.bp_purchase_order_trgt" in e[0].lower() for e in cur.executed)
     assert not any(e[1] and "DEALV2-" in str(e[1]) for e in cur.executed)
+
+
+def test_look_forward_does_not_cross_claim_pmid_raw_by_basename():
+    # Same filename, two monitor rows, different deals; raw points to monitor 100
+    # via process_monitor_id. Monitor 200 must NOT claim it by basename.
+    monitors = [
+        {"id": 100, "file_path": "d/SAME.pdf", "deal_id": "DEAL_RIGHT", "deal_name": "right",
+         "category": "Invoice", "document_type": "pdf"},
+        {"id": 200, "file_path": "d/SAME.pdf", "deal_id": "DEAL_WRONG", "deal_name": "wrong",
+         "category": "Invoice", "document_type": "pdf"},
+    ]
+    inv = [{"invoice_id": "INV1", "source_file": "x/SAME.pdf", "process_monitor_id": 100}]
+    cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    cur = _ScriptCursor(
+        script=[("from proc.process_monitor", monitors),
+                ("from proc.bp_invoice_raw", inv)],
+        columns={"bp_invoice_stg": cols, "bp_invoice_trgt": cols})
+    das._look_forward(cur)
+    inv_updates = [e for e in cur.executed
+                   if "update proc.bp_invoice_trgt" in e[0].lower() and e[1]]
+    assert any("DEAL_RIGHT" in str(e[1]) for e in inv_updates)
+    assert not any("DEAL_WRONG" in str(e[1]) for e in inv_updates)
 
 
 def test_look_forward_deal_tagged_but_unmatched_is_deal_linked():
