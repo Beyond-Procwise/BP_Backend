@@ -448,18 +448,49 @@ def _backfill_deal_metadata(cur) -> int:
     return updated
 
 
-def _flag_unassigned(cur) -> int:
-    """Mark monitor rows whose document still has no deal as review-needed."""
-    cur.execute(
-        "update proc.process_monitor set status='Deal_Unassigned_Review', "
-        "lastmodified_date=now() "
-        "where (deal_id is null or deal_id='') "
-        "and status not in ('Extraction_Failed','Deal_Unassigned_Review') "
-        "returning id")
-    try:
-        return len(cur.fetchall())
-    except Exception:
-        return 0
+def reconcile_status(cur) -> int:
+    """Set each document's process_monitor.status to reflect its TRUE furthest
+    pipeline stage, so the status board is unambiguous:
+
+        Deal_Linked            — in _trgt with a deal (or the monitor row carries
+                                  its own look-forward deal_id, handled by look_forward)
+        Deal_Unassigned_Review — reached _trgt but has no deal
+        Staged                 — promoted to _stg, not yet in _trgt (gate-held)
+        Discrepancy_Review     — held at _raw by a blocking discrepancy
+        Extracted              — in _raw, clean, not yet staged
+
+    Never touches Extraction_Failed or Deal_Conflict_Review (owned elsewhere) and
+    never downgrades a monitor row that already carries its own deal_id
+    (look-forward). Set-based, one UPDATE per doc type. Returns rows changed.
+    """
+    updated = 0
+    for doc_type in ("invoice", "quote", "po"):
+        pk, raw, stg, trgt, _ls, _lt = _DOC[doc_type]
+        cur.execute(
+            f"""
+            update proc.process_monitor pm
+               set status = sub.st, lastmodified_date = now()
+            from (
+              select r.process_monitor_id pm_id,
+                case
+                  when t.{pk} is not null and t.deal_id is not null and t.deal_id <> '' then 'Deal_Linked'
+                  when t.{pk} is not null then 'Deal_Unassigned_Review'
+                  when s.{pk} is not null then 'Staged'
+                  when r.promotion_status = 'discrepancy' then 'Discrepancy_Review'
+                  else 'Extracted'
+                end st
+              from {raw} r
+              left join {stg} s  on s.{pk} = r.{pk}
+              left join {trgt} t on t.{pk} = r.{pk}
+              where r.process_monitor_id is not null
+            ) sub
+            where pm.id = sub.pm_id
+              and pm.status not in ('Extraction_Failed', 'Deal_Conflict_Review')
+              and (pm.deal_id is null or pm.deal_id = '')
+              and pm.status is distinct from sub.st
+            """)
+        updated += cur.rowcount or 0
+    return updated
 
 
 def assign_deals(conn: Any = None, limit: Optional[int] = None) -> dict:
@@ -484,7 +515,7 @@ def _run(cur) -> dict:
     prop = _propagate_deal_along_po(cur)
     conflicts = _flag_conflict_po_chains(cur)
     meta = _backfill_deal_metadata(cur)
-    flag = _flag_unassigned(cur)
+    status = reconcile_status(cur)
     return {"forward_linked": fwd, "backward_linked": back, "reconciled": rec,
             "propagated": prop, "conflicts_flagged": conflicts,
-            "metadata_filled": meta, "unassigned_review": flag}
+            "metadata_filled": meta, "status_reconciled": status}

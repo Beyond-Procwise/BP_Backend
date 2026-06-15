@@ -71,7 +71,7 @@ def _bare_scheduler(orchestrator=None):
 
 
 _CHANGED = {"forward_linked": 2, "backward_linked": 0, "reconciled": 0,
-            "propagated": 0, "metadata_filled": 0, "unassigned_review": 0,
+            "propagated": 0, "metadata_filled": 0, "status_reconciled": 0,
             "conflicts_flagged": 0}
 _NO_CHANGE = {**_CHANGED, "forward_linked": 0}
 

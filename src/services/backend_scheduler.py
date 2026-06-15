@@ -151,6 +151,12 @@ class BackendScheduler:
             self._chain_opportunity_mining(deal_result)
         except Exception:
             logger.exception("downstream chain: opportunity mining failed")
+        # Refresh the knowledge graph so all agents see the new deals/opportunities
+        # on the same event (the periodic kg-sync job remains as a backstop).
+        try:
+            self._run_kg_sync()
+        except Exception:
+            logger.exception("downstream chain: KG sync failed")
 
     def _ensure_uicanvas_bridge(self) -> Optional[UicanvasBridge]:
         """Start the uicanvas → bp_sqldb process_monitor bridge.

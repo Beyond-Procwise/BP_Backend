@@ -330,6 +330,25 @@ def test_flag_conflict_po_chains_noop_when_single_deal():
     assert not any("update proc.process_monitor set status" in e[0].lower() for e in cur.executed)
 
 
+def test_reconcile_status_emits_stage_based_updates():
+    class _Cur:
+        def __init__(self):
+            self.sql = []
+            self.rowcount = 0
+        def execute(self, sql, params=()):
+            self.sql.append(" ".join(sql.split()))
+    cur = _Cur()
+    das.reconcile_status(cur)
+    updates = [s for s in cur.sql if s.lower().startswith("update proc.process_monitor")]
+    assert len(updates) == 3                      # one per doc type
+    joined = " ".join(updates).lower()
+    for st in ("deal_linked", "deal_unassigned_review", "staged",
+               "discrepancy_review", "extracted"):
+        assert st in joined                       # full stage lifecycle covered
+    assert "extraction_failed" in joined and "deal_conflict_review" in joined  # preserved
+    assert "pm.deal_id is null" in joined         # never downgrades look-forward deals
+
+
 def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     calls = []
     monkeypatch.setattr(das, "_look_forward", lambda cur: calls.append("fwd") or 2)
@@ -338,11 +357,11 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     monkeypatch.setattr(das, "_propagate_deal_along_po", lambda cur: calls.append("prop") or 6)
     monkeypatch.setattr(das, "_flag_conflict_po_chains", lambda cur: calls.append("conf") or 7)
     monkeypatch.setattr(das, "_backfill_deal_metadata", lambda cur: calls.append("meta") or 5)
-    monkeypatch.setattr(das, "_flag_unassigned", lambda cur: calls.append("flag") or 4)
+    monkeypatch.setattr(das, "reconcile_status", lambda cur: calls.append("status") or 4)
     cur = _ScriptCursor(script=[], columns={})
     conn = _RecConn(cur)
     result = das.assign_deals(conn=conn)
     assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
                       "propagated": 6, "conflicts_flagged": 7, "metadata_filled": 5,
-                      "unassigned_review": 4}
-    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "flag"]
+                      "status_reconciled": 4}
+    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "status"]
