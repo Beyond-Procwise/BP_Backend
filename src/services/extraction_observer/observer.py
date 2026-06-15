@@ -2,8 +2,8 @@
 
 Runs as a long-lived systemd service. Polls bp_*_raw tables every POLL_SECONDS,
 analyses each new row, and writes findings into proc.bp_extraction_observation
-and to journald. Designed to keep running even when Claude is off — the
-analysis is deterministic Python with no LLM dependency.
+and to journald. Designed to keep running independently of any interactive
+assistant session — the analysis is deterministic Python with no LLM dependency.
 
 What it captures:
   1. Per-doc field-fill report — which expected stg columns are NULL.

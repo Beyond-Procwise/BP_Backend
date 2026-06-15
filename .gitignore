@@ -3,7 +3,6 @@
 __pycache__/
 *.pyc
 .env
-.claude/
 .idea/
 
 # Runtime artifacts
@@ -19,5 +18,4 @@ documents/
 # Session-generated analysis / specs — kept offline only, not part of repo
 artifacts/extraction_analysis/
 artifacts/log_monitor/*.md
-docs/superpowers/
 src/docs/model_tuning/phi4_humanization_plan.md

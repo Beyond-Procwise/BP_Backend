@@ -652,7 +652,7 @@ a:hover { color: var(--color-accent-hover); }
             <div class="arch-components">
               <div class="arch-component" data-desc="The Cognitive Layer is the brain that all agents share. It handles memory (remembering what happened in this workflow), retrieval (finding relevant past data), and LLM routing (choosing which AI model to use for each task)." onclick="showArchDesc(this)"><span class="arch-component-icon">&#129504;</span> Cognitive Layer</div>
               <div class="arch-component" data-desc="Local AI models (like Phi-4, Mistral) run on your own hardware. They handle routine tasks like data extraction and classification without sending data to the cloud." onclick="showArchDesc(this)"><span class="arch-component-icon">&#128187;</span> Local LLMs (Ollama)</div>
-              <div class="arch-component" data-desc="Claude (by Anthropic) handles complex reasoning tasks like negotiation strategy and verification. It's only used when the local models aren't powerful enough." onclick="showArchDesc(this)"><span class="arch-component-icon">&#9729;&#65039;</span> Cloud LLM (Claude)</div>
+              <div class="arch-component" data-desc="The cloud LLM handles complex reasoning tasks like negotiation strategy and verification. It's only used when the local models aren't powerful enough." onclick="showArchDesc(this)"><span class="arch-component-icon">&#9729;&#65039;</span> Cloud LLM</div>
             </div>
           </div>
 
@@ -960,7 +960,7 @@ a:hover { color: var(--color-accent-hover); }
           <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-4)">
             <div class="pattern-icon" style="background: var(--color-actor-4)">&#128268;</div>
             <h4 class="pattern-title">LLM Router</h4>
-            <p class="pattern-desc">Routes tasks to local or cloud AI models based on complexity. Simple tasks stay local; hard ones go to Claude.</p>
+            <p class="pattern-desc">Routes tasks to local or cloud AI models based on complexity. Simple tasks stay local; hard ones go to the cloud model.</p>
           </div>
           <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-5)">
             <div class="pattern-icon" style="background: var(--color-actor-5)">&#9989;</div>
@@ -1015,7 +1015,7 @@ a:hover { color: var(--color-accent-hover); }
       <!-- Screen 3: LLM Router Code Translation -->
       <section class="screen animate-in">
         <h2 class="screen-heading">LLM Router: Choosing the Right AI</h2>
-        <p>Not every task needs a powerful (and expensive) cloud AI. The <span class="term" data-definition="An LLM (Large Language Model) is the AI brain that processes text &mdash; like GPT, Claude, or Mistral. Different models have different strengths: some are fast and cheap, others are slower but smarter.">LLM</span> Router picks the best model for each job.</p>
+        <p>Not every task needs a powerful (and expensive) cloud AI. The <span class="term" data-definition="An LLM (Large Language Model) is the AI brain that processes text &mdash; like GPT, Llama, or Mistral. Different models have different strengths: some are fast and cheap, others are slower but smarter.">LLM</span> Router picks the best model for each job.</p>
 
         <div class="translation-block">
           <div class="translation-code">
@@ -1035,7 +1035,7 @@ a:hover { color: var(--color-accent-hover); }
               <p class="tl">Given a task type (like "extraction" or "negotiation_strategy"), decide which AI model to use:</p>
               <p class="tl">If this task type needs cloud-level intelligence...</p>
               <p class="tl">AND the cloud option is turned on...</p>
-              <p class="tl">AND we have an API key for it &mdash; then use the cloud model (Claude).</p>
+              <p class="tl">AND we have an API key for it &mdash; then use the cloud model.</p>
               <p class="tl">Otherwise, find the right local model for this task type...</p>
               <p class="tl">(Fall back to a default local model if no specific one is configured)</p>
               <p class="tl">Use the local model via Ollama &mdash; faster, free, and keeps data private.</p>
@@ -1047,9 +1047,9 @@ a:hover { color: var(--color-accent-hover); }
           <div class="badge-item"><code class="badge-code">extraction</code><span>&#128187; Phi-4 (local) &mdash; fast pattern matching for pulling data from documents</span></div>
           <div class="badge-item"><code class="badge-code">classification</code><span>&#128187; Phi-4 (local) &mdash; categorizing documents and items</span></div>
           <div class="badge-item"><code class="badge-code">summarization</code><span>&#128187; Mistral (local) &mdash; condensing long text into key points</span></div>
-          <div class="badge-item"><code class="badge-code">complex_reasoning</code><span>&#9729;&#65039; Claude (cloud) &mdash; multi-step logic and analysis</span></div>
-          <div class="badge-item"><code class="badge-code">negotiation_strategy</code><span>&#9729;&#65039; Claude (cloud) &mdash; strategic thinking and recommendation</span></div>
-          <div class="badge-item"><code class="badge-code">verification</code><span>&#9729;&#65039; Claude (cloud) &mdash; checking other agents' work for accuracy</span></div>
+          <div class="badge-item"><code class="badge-code">complex_reasoning</code><span>&#9729;&#65039; Cloud model &mdash; multi-step logic and analysis</span></div>
+          <div class="badge-item"><code class="badge-code">negotiation_strategy</code><span>&#9729;&#65039; Cloud model &mdash; strategic thinking and recommendation</span></div>
+          <div class="badge-item"><code class="badge-code">verification</code><span>&#9729;&#65039; Cloud model &mdash; checking other agents' work for accuracy</span></div>
         </div>
       </section>
 
@@ -1312,7 +1312,7 @@ a:hover { color: var(--color-accent-hover); }
 
         <div class="badge-list">
           <div class="badge-item"><code class="badge-code">ENABLE_COGNITIVE_LAYER=true</code><span>Activates the new LangGraph workflows, cognitive layer, and unified retrieval. Set to <code>false</code> to fall back to legacy agents.</span></div>
-          <div class="badge-item"><code class="badge-code">ENABLE_CLOUD_LLM=true</code><span>Allows the LLM Router to escalate to Claude for complex tasks. Set to <code>false</code> to keep everything running on local models only.</span></div>
+          <div class="badge-item"><code class="badge-code">ENABLE_CLOUD_LLM=true</code><span>Allows the LLM Router to escalate to the cloud model for complex tasks. Set to <code>false</code> to keep everything running on local models only.</span></div>
         </div>
       </section>
 
@@ -1446,7 +1446,7 @@ a:hover { color: var(--color-accent-hover); }
 
         <div class="badge-list">
           <div class="badge-item"><code class="badge-code">ENABLE_COGNITIVE_LAYER</code><span>Master switch for new architecture (default: false)</span></div>
-          <div class="badge-item"><code class="badge-code">CLOUD_LLM_MODEL</code><span>Which cloud model to use (default: claude-sonnet-4-20250514)</span></div>
+          <div class="badge-item"><code class="badge-code">CLOUD_LLM_MODEL</code><span>Which cloud model to use (set via CLOUD_LLM_MODEL)</span></div>
           <div class="badge-item"><code class="badge-code">LLM_ROUTER_CONFIDENCE_THRESHOLD</code><span>Minimum confidence to accept a result (default: 0.7)</span></div>
           <div class="badge-item"><code class="badge-code">RETRIEVAL_TOP_K</code><span>How many results to return from search (default: 10)</span></div>
           <div class="badge-item"><code class="badge-code">RETRIEVAL_BM25_WEIGHT</code><span>Keyword search weight in fusion (default: 0.3)</span></div>

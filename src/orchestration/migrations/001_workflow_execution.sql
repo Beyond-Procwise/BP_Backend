@@ -1,6 +1,5 @@
 -- src/orchestration/migrations/001_workflow_execution.sql
 -- Orchestration rearchitecture: durable workflow state tables
--- Spec: docs/superpowers/specs/2026-03-31-orchestration-rearchitecture-design.md Section 5
 
 BEGIN;
 
