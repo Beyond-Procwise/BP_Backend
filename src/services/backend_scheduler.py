@@ -98,9 +98,59 @@ class BackendScheduler:
             logger.info("PromotionListenerService disabled by PROMOTION_LISTENER_ENABLED")
             return None
         if self._promotion_listener is None:
-            self._promotion_listener = PromotionListenerService()
+            # Drive the rest of the chain on the promotion event (stg->trgt ->
+            # deal-linking -> mining) instead of waiting for the deal-assignment
+            # timer — see _on_doc_promoted / _run_downstream_chain.
+            self._promotion_listener = PromotionListenerService(
+                on_promoted=self._on_doc_promoted)
             self._promotion_listener.start()
         return self._promotion_listener
+
+    DOWNSTREAM_CHAIN_JOB_NAME = "downstream-chain"
+
+    def _on_doc_promoted(self, result, payload) -> None:
+        """Called by the promotion listener after a _raw -> _stg promotion. Run
+        the downstream chain on the event, coalescing bursts (many docs promoting
+        at once) into a single one-shot run via a short debounce delay."""
+        try:
+            import os
+            try:
+                delay = float(os.environ.get("DOWNSTREAM_CHAIN_DELAY_SECONDS", "5"))
+            except ValueError:
+                delay = 5.0
+            with self._lock:
+                pending = self.DOWNSTREAM_CHAIN_JOB_NAME in self._jobs
+            if pending:
+                return  # a run is already queued; it will pick up this doc too
+            self.submit_once(
+                self.DOWNSTREAM_CHAIN_JOB_NAME,
+                self._run_downstream_chain,
+                initial_delay=timedelta(seconds=max(0.0, delay)),
+            )
+        except Exception:
+            logger.exception("scheduling downstream chain failed (non-fatal)")
+
+    def _run_downstream_chain(self) -> None:
+        """Event-driven tail of the pipeline: promote eligible _stg rows to _trgt,
+        assign deals, then chain opportunity mining when deals changed. Idempotent
+        — the periodic trgt-promotion / deal-assignment jobs remain as a backstop."""
+        try:
+            from src.services.linking_engine import promote_ready
+            prom = promote_ready()
+            logger.info("downstream chain: trgt promotion %s", prom)
+        except Exception:
+            logger.exception("downstream chain: trgt promotion failed")
+        try:
+            from src.services.deal_assignment_service import assign_deals
+            deal_result = assign_deals()
+            logger.info("downstream chain: deal assignment %s", deal_result)
+        except Exception:
+            logger.exception("downstream chain: deal assignment failed")
+            return
+        try:
+            self._chain_opportunity_mining(deal_result)
+        except Exception:
+            logger.exception("downstream chain: opportunity mining failed")
 
     def _ensure_uicanvas_bridge(self) -> Optional[UicanvasBridge]:
         """Start the uicanvas → bp_sqldb process_monitor bridge.

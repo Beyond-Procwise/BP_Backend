@@ -17,9 +17,12 @@ log = logging.getLogger(__name__)
 
 
 class PromotionListenerService:
-    def __init__(self) -> None:
+    def __init__(self, on_promoted=None) -> None:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        # Invoked after each successful _raw -> _stg promotion so the scheduler
+        # can drive the rest of the chain (stg->trgt->link->mine) on the event.
+        self._on_promoted = on_promoted
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -42,7 +45,7 @@ class PromotionListenerService:
     def _run_forever(self, run_listener) -> None:
         while not self._stop.is_set():
             try:
-                run_listener(self._stop)
+                run_listener(self._stop, on_promoted=self._on_promoted)
             except Exception as exc:
                 log.warning("promotion listener crashed; restarting in 10s: %s", exc)
                 if self._stop.wait(10):

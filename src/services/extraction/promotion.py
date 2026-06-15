@@ -542,6 +542,17 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                 f"WHERE raw_id=%s", (raw_id,),
             )
 
+            # Advance the document's process_monitor status to 'Staged' (in _stg)
+            # so the status board reflects pipeline progress. Guarded so it never
+            # regresses a doc that already reached a deal/target state.
+            _pm_id = raw_data.get("process_monitor_id")
+            if _pm_id is not None:
+                cur.execute(
+                    "UPDATE proc.process_monitor SET status='Staged', lastmodified_date=NOW() "
+                    "WHERE id=%s AND status IN ('Extracted','Extraction_InReview','Running')",
+                    (_pm_id,),
+                )
+
             conn.commit()
             # AgentNick audit trail — one structured INFO line per row, so
             # the operator can grep journalctl for the agent's activity.
@@ -557,6 +568,7 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             return {
                 "ok": True,
                 "doc_pk": raw_data.get("doc_pk_candidate"),
+                "process_monitor_id": raw_data.get("process_monitor_id"),
                 "confidence_score": float(raw_data.get("confidence_score"))
                     if raw_data.get("confidence_score") is not None else None,
                 "discrepancies_logged": _discrepancies_logged,
@@ -662,9 +674,14 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
     return promote(raw_id, doc_type)
 
 
-def run_listener(stop_event=None) -> None:
+def run_listener(stop_event=None, on_promoted=None) -> None:
     """Listen on 'extraction_raw_ready_for_promotion' channel and process
-    NOTIFY events sequentially. Run in a dedicated worker."""
+    NOTIFY events sequentially. Run in a dedicated worker.
+
+    ``on_promoted(result, payload)`` — optional callback invoked after each
+    successful _raw -> _stg promotion, so downstream consumers can drive the
+    rest of the chain (stg -> trgt -> deal-linking -> mining) on the event
+    rather than on a timer. Best-effort: callback errors never break the loop."""
     s = Settings()
     conn = psycopg2.connect(
         host=s.db_host, dbname=s.db_name, user=s.db_user,
@@ -695,6 +712,11 @@ def run_listener(stop_event=None) -> None:
                 log.info("notify received: raw_id=%s doc_type=%s", raw_id, doc_type)
                 result = apply_hitl_fixes_and_promote(int(raw_id), doc_type)
                 log.info("promotion result: %s", result)
+                if on_promoted is not None and isinstance(result, dict) and result.get("ok"):
+                    try:
+                        on_promoted(result, payload)
+                    except Exception:
+                        log.exception("on_promoted callback failed (non-fatal)")
     finally:
         try:
             conn.close()
