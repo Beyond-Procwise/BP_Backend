@@ -197,12 +197,21 @@ def generate_summary(
     result is stored as a historical, non-current row). Returns None when there
     is no underlying data; raises SnapshotNotFound / SummarizationError.
     """
-    # Normalize as_of: clients often send "" for "now" — an empty string is NOT
-    # a valid timestamp and must fall through to current generation, not the
-    # historical-snapshot branch (which would run `generated_at <= ''`).
-    as_of = as_of.strip() if isinstance(as_of, str) else as_of
-    if not as_of:
-        as_of = None
+    # Normalize as_of: clients send "", "null", "undefined" (JS) or other junk
+    # for "now". Only a PARSEABLE timestamp may drive the historical-snapshot
+    # branch; anything else falls through to current generation rather than
+    # crashing the query (`generated_at <= 'null'` -> InvalidDatetimeFormat).
+    if isinstance(as_of, str):
+        s = as_of.strip()
+        if not s or s.lower() in ("null", "undefined", "none", "nan"):
+            as_of = None
+        else:
+            try:
+                datetime.fromisoformat(s.replace("Z", "+00:00"))
+                as_of = s
+            except ValueError:
+                log.warning("summary: ignoring unparseable as_of=%r; generating current", as_of)
+                as_of = None
 
     if conn is None:
         with get_conn() as own:

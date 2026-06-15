@@ -193,8 +193,21 @@ def ollama_cloud_generate(
             body = response.json()
             # Return only the user-facing response. Deliberately do NOT fall back
             # to a thinking/reasoning field — for summaries that would leak raw
-            # chain-of-thought; an empty response surfaces as None instead.
-            return (body.get("response") or "").strip()
+            # chain-of-thought.
+            text = (body.get("response") or "").strip()
+            if text:
+                return text
+            # Empty response (an occasional model glitch even with think=False).
+            # Treat it as transient and retry rather than surfacing an empty
+            # summary; return "" only after retries are exhausted.
+            logger.warning(
+                "Ollama Cloud returned empty response (attempt %d/%d, model=%s)",
+                attempt, retries, model,
+            )
+            if attempt < retries:
+                time.sleep(min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY))
+                continue
+            return text
         except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(

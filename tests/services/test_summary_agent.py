@@ -18,7 +18,7 @@ class _Conn:
         return _C()
 
 
-@pytest.mark.parametrize("blank", ["", "   ", None])
+@pytest.mark.parametrize("blank", ["", "   ", None, "null", "undefined", "NULL", "none", "not-a-date"])
 def test_blank_as_of_uses_current_generation(monkeypatch, blank):
     calls = {"gather": 0}
     monkeypatch.setattr(sa, "resolve_persona", lambda p, c: ("framing", "raw"))
@@ -51,3 +51,20 @@ def test_real_as_of_uses_snapshot_branch(monkeypatch):
     out = sa.generate_summary("analysis", deal_id="D1", as_of="2026-06-15T00:00:00Z", conn=_SnapConn())
     assert out == {"summary": "a summary"}
     assert seen["snapshot_sql"] is True   # historical snapshot path taken
+
+
+def test_cloud_generate_retries_on_empty_response(monkeypatch):
+    """An empty `response` (model glitch) must be retried, not returned as ''."""
+    import src.services.ollama_client as oc
+
+    monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "x")
+    monkeypatch.setattr(oc.time, "sleep", lambda *_: None)
+    bodies = iter([{"response": ""}, {"response": "real summary"}])
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return next(bodies)
+
+    monkeypatch.setattr(oc.requests, "post", lambda *a, **k: _Resp())
+    out = oc.ollama_cloud_generate("prompt", model="qwen3.5:397b", retries=3)
+    assert out == "real summary"   # retried past the empty first response
