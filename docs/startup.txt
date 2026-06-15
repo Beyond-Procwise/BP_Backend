@@ -1,0 +1,8 @@
+To install, run:
+  ! sudo bash /home/muthu/PycharmProjects/BP_Backend/install-service.sh
+
+  After that, manage with:
+  sudo systemctl status procwise    # check status
+  journalctl -u procwise -f         # tail logs
+  sudo systemctl restart procwise   # restart
+  sudo systemctl stop procwise      # stop
