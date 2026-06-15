@@ -118,3 +118,20 @@ def test_promote_pending_catches_stranded_raw(monkeypatch):
     out = promo.promote_pending(doc_types=("invoice",))
     assert seen == [(101, "invoice")]
     assert out["promoted"] == 1 and out["failed"] == 0
+
+
+def test_downstream_chain_throttles_kg_sync(monkeypatch):
+    import src.services.linking_engine as le
+    import src.services.deal_assignment_service as das
+    import src.services.extraction.promotion as promo
+    monkeypatch.setattr(promo, "promote_pending", lambda: {"promoted": 0, "failed": 0})
+    monkeypatch.setattr(le, "promote_ready", lambda: {})
+    monkeypatch.setattr(das, "assign_deals", lambda: {"forward_linked": 0})
+    monkeypatch.setenv("KG_SYNC_THROTTLE_SECONDS", "9999")
+    s = _bare()
+    kg = []
+    monkeypatch.setattr(s, "_run_kg_sync", lambda: kg.append(1))
+    monkeypatch.setattr(s, "_chain_opportunity_mining", lambda r: None)
+    s._run_downstream_chain()   # first run -> KG rebuild
+    s._run_downstream_chain()   # within throttle window -> skipped
+    assert kg == [1]

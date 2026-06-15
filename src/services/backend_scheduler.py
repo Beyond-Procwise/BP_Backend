@@ -160,11 +160,26 @@ class BackendScheduler:
         except Exception:
             logger.exception("downstream chain: opportunity mining failed")
         # Refresh the knowledge graph so all agents see the new deals/opportunities
-        # on the same event (the periodic kg-sync job remains as a backstop).
+        # on the same event — but THROTTLED: a full graph rebuild is expensive, so
+        # under sustained uploads we coalesce to at most one rebuild per
+        # KG_SYNC_THROTTLE_SECONDS (default 5 min). The periodic kg-sync job remains
+        # a backstop, and the next promotion event after the window rebuilds again.
+        import os
+        import time
         try:
-            self._run_kg_sync()
-        except Exception:
-            logger.exception("downstream chain: KG sync failed")
+            throttle = float(os.environ.get("KG_SYNC_THROTTLE_SECONDS", "300"))
+        except ValueError:
+            throttle = 300.0
+        now = time.monotonic()
+        if now - getattr(self, "_last_kg_sync_at", 0.0) >= throttle:
+            try:
+                self._run_kg_sync()
+                self._last_kg_sync_at = now
+            except Exception:
+                logger.exception("downstream chain: KG sync failed")
+        else:
+            logger.debug("downstream chain: KG sync throttled (last run %.0fs ago)",
+                         now - getattr(self, "_last_kg_sync_at", 0.0))
 
     def _ensure_uicanvas_bridge(self) -> Optional[UicanvasBridge]:
         """Start the uicanvas → bp_sqldb process_monitor bridge.
