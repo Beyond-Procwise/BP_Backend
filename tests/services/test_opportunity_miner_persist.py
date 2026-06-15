@@ -63,35 +63,60 @@ def test_output_db_is_non_fatal(monkeypatch):
     OpportunityMinerAgent._output_db(agent, [_Finding("a")])
 
 
-def test_opportunity_mining_job_opt_in(monkeypatch):
-    import threading
+def _bare_scheduler(orchestrator=None):
     from src.services.backend_scheduler import BackendScheduler
-
-    def _fresh():
-        s = BackendScheduler.__new__(BackendScheduler)
-        s._jobs = {}
-        s._lock = threading.Lock()
-        s._orchestrator = object()  # present
-        return s
-
-    monkeypatch.setenv("OPPORTUNITY_MINING_ENABLED", "0")
-    s = _fresh()
-    s._register_opportunity_mining_job()
-    assert BackendScheduler.OPPORTUNITY_MINING_JOB_NAME not in s._jobs   # off by default
-
-    monkeypatch.setenv("OPPORTUNITY_MINING_ENABLED", "1")
-    s = _fresh()
-    s._register_opportunity_mining_job()
-    assert BackendScheduler.OPPORTUNITY_MINING_JOB_NAME in s._jobs       # opt-in registers
-
-
-def test_opportunity_mining_job_skips_without_orchestrator(monkeypatch):
-    import threading
-    from src.services.backend_scheduler import BackendScheduler
-    monkeypatch.setenv("OPPORTUNITY_MINING_ENABLED", "1")
     s = BackendScheduler.__new__(BackendScheduler)
-    s._jobs = {}
-    s._lock = threading.Lock()
+    s._orchestrator = orchestrator if orchestrator is not None else object()
+    return s
+
+
+_CHANGED = {"forward_linked": 2, "backward_linked": 0, "reconciled": 0,
+            "propagated": 0, "metadata_filled": 0, "unassigned_review": 0,
+            "conflicts_flagged": 0}
+_NO_CHANGE = {**_CHANGED, "forward_linked": 0}
+
+
+def _patch_assign(monkeypatch, result):
+    import src.services.deal_assignment_service as das
+    monkeypatch.setattr(das, "assign_deals", lambda: result)
+
+
+def test_deal_assignment_chains_mining_when_deals_changed(monkeypatch):
+    _patch_assign(monkeypatch, _CHANGED)
+    monkeypatch.setenv("OPPORTUNITY_MINING_ENABLED", "1")
+    s = _bare_scheduler()
+    called = []
+    monkeypatch.setattr(s, "_run_opportunity_mining", lambda: called.append(True))
+    s._run_deal_assignment()
+    assert called == [True]   # mining fired right after deals changed
+
+
+def test_no_chain_when_no_deal_changes(monkeypatch):
+    _patch_assign(monkeypatch, _NO_CHANGE)
+    monkeypatch.setenv("OPPORTUNITY_MINING_ENABLED", "1")
+    s = _bare_scheduler()
+    called = []
+    monkeypatch.setattr(s, "_run_opportunity_mining", lambda: called.append(True))
+    s._run_deal_assignment()
+    assert called == []   # nothing changed -> no heavy mining run
+
+
+def test_no_chain_when_disabled(monkeypatch):
+    _patch_assign(monkeypatch, _CHANGED)
+    monkeypatch.setenv("OPPORTUNITY_MINING_ENABLED", "0")
+    s = _bare_scheduler()
+    called = []
+    monkeypatch.setattr(s, "_run_opportunity_mining", lambda: called.append(True))
+    s._run_deal_assignment()
+    assert called == []
+
+
+def test_no_chain_without_orchestrator(monkeypatch):
+    _patch_assign(monkeypatch, _CHANGED)
+    monkeypatch.setenv("OPPORTUNITY_MINING_ENABLED", "1")
+    s = _bare_scheduler(orchestrator=None)
     s._orchestrator = None
-    s._register_opportunity_mining_job()
-    assert BackendScheduler.OPPORTUNITY_MINING_JOB_NAME not in s._jobs
+    called = []
+    monkeypatch.setattr(s, "_run_opportunity_mining", lambda: called.append(True))
+    s._run_deal_assignment()
+    assert called == []

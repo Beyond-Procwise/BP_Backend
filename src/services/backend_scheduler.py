@@ -267,7 +267,6 @@ class BackendScheduler:
         self._register_summary_precompute_job()
         self._register_trgt_promotion_job()
         self._register_deal_assignment_job()
-        self._register_opportunity_mining_job()
 
     def _register_trgt_promotion_job(self) -> None:
         """Register the periodic _stg -> _trgt promotion job.
@@ -328,44 +327,43 @@ class BackendScheduler:
             initial_delay=timedelta(minutes=5),
         )
 
+    # Counts in the assign_deals() result that mean _trgt deals actually changed.
+    _DEAL_CHANGE_KEYS = ("forward_linked", "backward_linked", "propagated",
+                         "reconciled", "metadata_filled")
+
     def _run_deal_assignment(self) -> None:
-        """Run the deal assignment passes."""
+        """Run the deal assignment passes, then chain opportunity mining when the
+        deal set actually changed — closing the upload -> extract -> link -> mine
+        -> dashboard loop the moment new deals are linked (no separate timer)."""
         try:
             from src.services.deal_assignment_service import assign_deals
             result = assign_deals()
             logger.info("deal assignment completed: %s", result)
         except Exception:
             logger.exception("deal assignment job failed")
-
-    OPPORTUNITY_MINING_JOB_NAME = "opportunity-mining"
-
-    def _register_opportunity_mining_job(self) -> None:
-        """Periodically run the opportunity miner so proc.bp_opportunity (and the
-        Opportunities dashboard) stay current as new _trgt data lands — closing
-        the upload -> extract -> link -> mine -> dashboard loop.
-
-        Opt-in (mining is heavy + policy-config driven): enable with
-        OPPORTUNITY_MINING_ENABLED=1. Tune OPPORTUNITY_MINING_WORKFLOW,
-        OPPORTUNITY_MINING_MIN_IMPACT, OPPORTUNITY_MINING_INTERVAL_MINUTES.
-        """
-        import os
-        if os.environ.get("OPPORTUNITY_MINING_ENABLED", "0").strip() not in ("1", "true", "True"):
-            return
-        if self._orchestrator is None:
-            logger.info("opportunity mining job skipped — no orchestrator wired")
-            return
-        if self.OPPORTUNITY_MINING_JOB_NAME in self._jobs:
             return
         try:
-            minutes = int(os.environ.get("OPPORTUNITY_MINING_INTERVAL_MINUTES", "60"))
-        except ValueError:
-            minutes = 60
-        self.register_job(
-            self.OPPORTUNITY_MINING_JOB_NAME,
-            self._run_opportunity_mining,
-            interval=timedelta(minutes=max(1, minutes)),
-            initial_delay=timedelta(minutes=10),   # after trgt-promotion + deal-assignment
-        )
+            self._chain_opportunity_mining(result)
+        except Exception:
+            logger.exception("chained opportunity mining failed")
+
+    def _chain_opportunity_mining(self, deal_result: Any) -> None:
+        """Run opportunity mining iff deal-assignment changed something. Mining is
+        heavy, so it only fires when new deals were actually linked/updated.
+        Set OPPORTUNITY_MINING_ENABLED=0 to disable the chain (default on)."""
+        import os
+        if os.environ.get("OPPORTUNITY_MINING_ENABLED", "1").strip() in ("0", "false", "False"):
+            return
+        if self._orchestrator is None:
+            logger.debug("opportunity mining chain skipped — no orchestrator wired")
+            return
+        changed = isinstance(deal_result, dict) and any(
+            int(deal_result.get(k) or 0) for k in self._DEAL_CHANGE_KEYS)
+        if not changed:
+            logger.debug("opportunity mining chain skipped — no deal changes")
+            return
+        logger.info("deals changed -> chaining opportunity mining")
+        self._run_opportunity_mining()
 
     def _run_opportunity_mining(self) -> None:
         """Run opportunity mining; the miner upserts findings into bp_opportunity."""
