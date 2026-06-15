@@ -2589,13 +2589,120 @@ class Orchestrator:
         except Exception:  # pragma: no cover - defensive
             logger.debug("record_result failed for %s", agent_name, exc_info=True)
 
-    def _enrich_workflow_context(self, wf_ctx: Any, context: AgentContext) -> None:
-        """Phase 2 hook: attach a procurement knowledge brief to the blackboard.
+    def _context_service(self) -> Any:
+        """Return a shared ProcurementContextService, reusing AgentNick's where
+        available (also exposed via the reasoning engine), else constructing one.
+        Cached on the orchestrator; returns None if it cannot be built."""
+        svc = getattr(self, "_ctx_service_cached", "unset")
+        if svc != "unset":
+            return svc
+        svc = getattr(self.agent_nick, "context_service", None)
+        if svc is None:
+            engine = getattr(self.agent_nick, "reasoning_engine", None)
+            svc = getattr(engine, "_context_service", None) if engine else None
+        if svc is None:
+            try:
+                from services.procurement_context_service import ProcurementContextService
+                svc = ProcurementContextService(self.agent_nick)
+            except Exception:  # pragma: no cover - defensive
+                svc = None
+        self._ctx_service_cached = svc
+        return svc
 
-        Overridden behaviour is filled in by the knowledge-brief phase; the base
-        implementation is a safe no-op so Phase 1 wiring stands alone.
+    def _enrich_workflow_context(self, wf_ctx: Any, context: AgentContext) -> None:
+        """Phase 2: attach a procurement knowledge brief (lifecycle stage +
+        relevant learned patterns + related documents + active policies) to the
+        shared blackboard, so every agent in the workflow starts knowledgeable —
+        fed from AgentNick's stores. Best-effort: any failure leaves the workflow
+        running without a brief rather than raising.
         """
-        return None
+        try:
+            input_data = context.input_data or {}
+            header = input_data.get("header") or input_data.get("document") or {}
+            if not isinstance(header, dict):
+                header = {}
+            doc_type = str(
+                input_data.get("doc_type")
+                or input_data.get("document_type")
+                or input_data.get("workflow")
+                or "unknown"
+            )
+            category = (
+                input_data.get("product_category")
+                or input_data.get("category")
+                or header.get("category")
+            )
+
+            # 1) Relevant learned patterns (AgentNick's pattern store).
+            patterns: List[Dict[str, Any]] = []
+            ps = getattr(self.agent_nick, "pattern_service", None)
+            if ps is not None and hasattr(ps, "get_patterns"):
+                try:
+                    patterns = ps.get_patterns(
+                        category=str(category) if category else None,
+                        min_confidence=0.4,
+                    ) or []
+                except Exception:
+                    patterns = []
+
+            ctx_svc = self._context_service()
+
+            # 2) Related documents (only when we have a document identity + KG).
+            related: List[Any] = []
+            doc_id = (
+                header.get("invoice_id") or header.get("po_id")
+                or header.get("quote_id") or input_data.get("document_id")
+            )
+            if ctx_svc is not None and doc_id and hasattr(ctx_svc, "find_related_documents"):
+                try:
+                    related = ctx_svc.find_related_documents(str(doc_id), doc_type) or []
+                except Exception:
+                    related = []
+
+            # 3) Active policy names from the manifest/context.
+            policies: List[str] = []
+            try:
+                pol_ctx = (
+                    getattr(context, "policy_context", None)
+                    or input_data.get("policy_context")
+                    or []
+                )
+                for p in pol_ctx:
+                    if isinstance(p, dict):
+                        name = p.get("policyName") or p.get("policy_name")
+                        if name:
+                            policies.append(str(name))
+            except Exception:
+                policies = []
+
+            # 4) Build the brief (structured if the service is available).
+            brief: Optional[Dict[str, Any]] = None
+            if ctx_svc is not None and hasattr(ctx_svc, "build_context_brief"):
+                try:
+                    brief = ctx_svc.build_context_brief(
+                        doc_type, header,
+                        patterns=patterns,
+                        related_docs=[str(r) for r in related],
+                        policies=policies,
+                    )
+                except Exception:
+                    brief = None
+            if brief is None:
+                brief = {
+                    "document_type": doc_type,
+                    "document_summary": {},
+                    "patterns": [
+                        p.get("pattern_text", "") for p in patterns if isinstance(p, dict)
+                    ],
+                    "related_documents": [str(r) for r in related],
+                    "active_policies": policies,
+                }
+
+            wf_ctx.set_procurement_brief(brief)
+            if patterns:
+                wf_ctx.update_shared("patterns", patterns)
+        except Exception:  # pragma: no cover - enrichment is best-effort
+            logger.debug("workflow context enrichment failed", exc_info=True)
 
     def _publish_workflow_complete(
         self,
