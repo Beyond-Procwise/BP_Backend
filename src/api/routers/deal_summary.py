@@ -21,6 +21,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/deals", tags=["Deals"])
 
 
+@router.get("/orphans", summary="PO/invoice documents awaiting an anchoring quote")
+def get_deal_orphans() -> dict[str, Any]:
+    """Quote-anchored model: list PO/invoice docs whose deal has no quote yet."""
+    from src.services.db import get_conn
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "select deal_id, deal_name, doc_type, doc_pk, supplier_name, "
+                "amount, currency, doc_date, status from proc.bp_deal_orphans "
+                "order by amount desc nulls last")
+            cols = [d[0] for d in cur.description]
+            items = [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.exception("deal orphans read failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"orphans": items, "count": len(items),
+            "generated_at": datetime.now(timezone.utc).isoformat()}
+
+
 @router.get("/{deal_id}/summary", summary="AI summary of a procurement deal")
 def get_deal_summary(deal_id: str) -> dict[str, Any]:
     try:
