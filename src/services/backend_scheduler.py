@@ -267,6 +267,7 @@ class BackendScheduler:
         self._register_summary_precompute_job()
         self._register_trgt_promotion_job()
         self._register_deal_assignment_job()
+        self._register_opportunity_mining_job()
 
     def _register_trgt_promotion_job(self) -> None:
         """Register the periodic _stg -> _trgt promotion job.
@@ -335,6 +336,54 @@ class BackendScheduler:
             logger.info("deal assignment completed: %s", result)
         except Exception:
             logger.exception("deal assignment job failed")
+
+    OPPORTUNITY_MINING_JOB_NAME = "opportunity-mining"
+
+    def _register_opportunity_mining_job(self) -> None:
+        """Periodically run the opportunity miner so proc.bp_opportunity (and the
+        Opportunities dashboard) stay current as new _trgt data lands — closing
+        the upload -> extract -> link -> mine -> dashboard loop.
+
+        Opt-in (mining is heavy + policy-config driven): enable with
+        OPPORTUNITY_MINING_ENABLED=1. Tune OPPORTUNITY_MINING_WORKFLOW,
+        OPPORTUNITY_MINING_MIN_IMPACT, OPPORTUNITY_MINING_INTERVAL_MINUTES.
+        """
+        import os
+        if os.environ.get("OPPORTUNITY_MINING_ENABLED", "0").strip() not in ("1", "true", "True"):
+            return
+        if self._orchestrator is None:
+            logger.info("opportunity mining job skipped — no orchestrator wired")
+            return
+        if self.OPPORTUNITY_MINING_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("OPPORTUNITY_MINING_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.OPPORTUNITY_MINING_JOB_NAME,
+            self._run_opportunity_mining,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=10),   # after trgt-promotion + deal-assignment
+        )
+
+    def _run_opportunity_mining(self) -> None:
+        """Run opportunity mining; the miner upserts findings into bp_opportunity."""
+        import os
+        try:
+            workflow = os.environ.get("OPPORTUNITY_MINING_WORKFLOW", "all")
+            try:
+                min_impact = float(os.environ.get("OPPORTUNITY_MINING_MIN_IMPACT", "100"))
+            except ValueError:
+                min_impact = 100.0
+            result = self._orchestrator.execute_workflow(
+                "opportunity_mining",
+                {"workflow": workflow, "conditions": {}, "min_financial_impact": min_impact},
+            )
+            logger.info("opportunity mining completed: %s",
+                        (result or {}).get("status") if isinstance(result, dict) else "ok")
+        except Exception:
+            logger.exception("opportunity mining job failed")
 
     def _register_kg_sync_job(self) -> None:
         """Register periodic KG sync job (startup + every 6 hours)."""

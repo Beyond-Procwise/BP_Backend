@@ -2155,6 +2155,7 @@ class OpportunityMinerAgent(BaseAgent):
 
             self._output_excel(filtered)
             self._output_feed(filtered)
+            self._output_db(filtered)
 
 
             data = {
@@ -7253,6 +7254,29 @@ class OpportunityMinerAgent(BaseAgent):
         with open(path, "w", encoding="utf-8") as f:
             json.dump([f.as_dict() for f in findings], f, ensure_ascii=False, indent=2)
         logger.info("Wrote %d findings to %s", len(findings), path)
+
+    def _output_db(self, findings: List[Finding]) -> None:
+        """Persist findings into proc.bp_opportunity so the Opportunities-page
+        dashboard reflects them immediately (no JSON sync step needed).
+        Best-effort: a DB hiccup must never break mining."""
+        if not findings:
+            return
+        try:
+            from src.services.db import get_conn
+            from src.services.opportunity_store import upsert_opportunity
+            with get_conn() as conn:
+                conn.autocommit = False
+                cur = conn.cursor()
+                try:
+                    for finding in findings:
+                        upsert_opportunity(cur, finding.as_dict())
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+            logger.info("Upserted %d findings into proc.bp_opportunity", len(findings))
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            logger.exception("bp_opportunity upsert skipped (non-fatal)")
 
 
 OpportunityMinerAgent._policy_price_benchmark_variance.supports_supplier_autodetect = True
