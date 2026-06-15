@@ -396,6 +396,36 @@ def test_prune_deal_document_map_checks_all_trgt_tables():
         assert t in s
 
 
+def test_mirror_deal_to_raw_and_stg_targets_every_tier():
+    deal_cols = ["deal_id", "deal_name", "deal_date"]
+    cols = {
+        "bp_invoice_raw": ["invoice_id", "raw_id"] + deal_cols,
+        "bp_invoice_stg": ["invoice_id"] + deal_cols,
+        "bp_invoice_trgt": ["invoice_id"] + deal_cols,
+        "bp_invoice_line_items_raw": ["raw_id", "deal_id", "deal_name"],
+        "bp_quote_raw": ["quote_id", "raw_id"] + deal_cols,
+        "bp_quote_stg": ["quote_id"] + deal_cols,
+        "bp_quote_trgt": ["quote_id"] + deal_cols,
+        "bp_quote_line_items_raw": ["raw_id", "deal_id", "deal_name"],
+        "bp_purchase_order_raw": ["po_id", "raw_id"] + deal_cols,
+        "bp_purchase_order_stg": ["po_id"] + deal_cols,
+        "bp_purchase_order_trgt": ["po_id"] + deal_cols,
+        "bp_po_line_items_raw": ["raw_id", "deal_id", "deal_name"],
+    }
+    cur = _RecCursor(cols)
+    cur.rowcount = 1
+    das._mirror_deal_to_raw_and_stg(cur)
+    updates = [e[0].lower() for e in cur.executed if e[0].lower().startswith("update")]
+    # _raw and _stg mirrored FROM _trgt for each of the 3 doc types (6 updates)…
+    assert any("update proc.bp_invoice_raw" in u and "from proc.bp_invoice_trgt" in u for u in updates)
+    assert any("update proc.bp_invoice_stg" in u and "from proc.bp_invoice_trgt" in u for u in updates)
+    assert any("update proc.bp_purchase_order_raw" in u and "from proc.bp_purchase_order_trgt" in u for u in updates)
+    # …plus line-item _raw inheriting the deal from the parent doc _raw via raw_id.
+    assert any("update proc.bp_po_line_items_raw" in u and "l.raw_id=p.raw_id" in u for u in updates)
+    # idempotency guard: every mirror is gated on a value actually differing.
+    assert all("is distinct from" in u for u in updates)
+
+
 def test_propagate_deal_date_stamps_every_doc_in_deal():
     import datetime as dt
 
@@ -430,6 +460,7 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     monkeypatch.setattr(das, "_flag_conflict_po_chains", lambda cur: calls.append("conf") or 7)
     monkeypatch.setattr(das, "_backfill_deal_metadata", lambda cur: calls.append("meta") or 5)
     monkeypatch.setattr(das, "_propagate_deal_date", lambda cur: calls.append("dates") or 8)
+    monkeypatch.setattr(das, "_mirror_deal_to_raw_and_stg", lambda cur: calls.append("mirror") or 10)
     monkeypatch.setattr(das, "_prune_deal_document_map", lambda cur: calls.append("prune") or 9)
     monkeypatch.setattr(das, "reconcile_status", lambda cur: calls.append("status") or 4)
     cur = _ScriptCursor(script=[], columns={})
@@ -437,5 +468,7 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     result = das.assign_deals(conn=conn)
     assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
                       "propagated": 6, "conflicts_flagged": 7, "metadata_filled": 5,
-                      "deal_dates_set": 8, "map_pruned": 9, "status_reconciled": 4}
-    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "dates", "prune", "status"]
+                      "deal_dates_set": 8, "tiers_mirrored": 10, "map_pruned": 9,
+                      "status_reconciled": 4}
+    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "dates",
+                     "mirror", "prune", "status"]

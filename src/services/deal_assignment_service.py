@@ -87,6 +87,14 @@ _DOC = {
            "proc.bp_po_line_items_stg", "proc.bp_po_line_items_trgt"),
 }
 _DEAL_COLS = ("deal_id", "deal_name", "document_id", "deal_date")
+# Permanent line-item _raw tables. They carry no natural doc pk of their own — each
+# row links to its parent document's _raw row by raw_id — so they inherit the deal
+# from the parent rather than from _trgt directly.
+_LINE_RAW = {
+    "invoice": "proc.bp_invoice_line_items_raw",
+    "quote": "proc.bp_quote_line_items_raw",
+    "po": "proc.bp_po_line_items_raw",
+}
 _DOCTYPE_FROM_HINT = {"invoice": "invoice", "quote": "quote", "po": "po",
                       "purchase_order": "po", "purchaseorder": "po"}
 
@@ -173,6 +181,54 @@ def _propagate_deal_date(cur) -> int:
                 (d["dd"], d["deal_id"], d["dd"]))
             updated += cur.rowcount or 0
     return updated
+
+
+def _mirror_deal_to_raw_and_stg(cur) -> int:
+    """Keep deal identity consistent across the whole tier stack.
+
+    The _trgt tier is the authority for a document's deal (the SQL deal trigger and
+    the assignment passes both write it there). This mirrors deal_id / deal_name /
+    deal_date DOWN onto the permanent _raw tier and the _stg tier — keyed by the
+    document's natural pk — so every tier agrees on the same deal. Line-item _raw
+    rows inherit the deal from their parent document's _raw row via raw_id.
+
+    Set-based and idempotent: only rows whose values actually differ are touched,
+    so the returned count settles to 0 once all tiers agree.
+    """
+    changed = 0
+    cols_of = {}
+
+    def _cols(table):
+        if table not in cols_of:
+            cols_of[table] = _table_columns(cur, table)
+        return cols_of[table]
+
+    for doc_type in ("invoice", "quote", "po"):
+        pk, raw, stg, trgt, _ls, _lt = _DOC[doc_type]
+        src = [c for c in ("deal_id", "deal_name", "deal_date") if c in _cols(trgt)]
+        if not src:
+            continue
+        for dest in (raw, stg):
+            present = [c for c in src if c in _cols(dest)]
+            if not present or pk not in _cols(dest):
+                continue
+            set_clause = ", ".join(f"{c}=t.{c}" for c in present)
+            diff = " or ".join(f"d.{c} is distinct from t.{c}" for c in present)
+            cur.execute(
+                f"update {dest} d set {set_clause} from {trgt} t "
+                f"where d.{pk}=t.{pk} and ({diff})")
+            changed += cur.rowcount or 0
+        # Line-item _raw rows inherit the parent document's deal via raw_id.
+        line_raw = _LINE_RAW[doc_type]
+        lpresent = [c for c in ("deal_id", "deal_name") if c in _cols(line_raw)]
+        if lpresent and "raw_id" in _cols(line_raw) and "raw_id" in _cols(raw):
+            set_clause = ", ".join(f"{c}=p.{c}" for c in lpresent)
+            diff = " or ".join(f"l.{c} is distinct from p.{c}" for c in lpresent)
+            cur.execute(
+                f"update {line_raw} l set {set_clause} from {raw} p "
+                f"where l.raw_id=p.raw_id and ({diff})")
+            changed += cur.rowcount or 0
+    return changed
 
 
 def _raw_index(cur, raw_table, pk) -> dict:
@@ -597,9 +653,11 @@ def _run(cur) -> dict:
     conflicts = _flag_conflict_po_chains(cur)
     meta = _backfill_deal_metadata(cur)
     dates = _propagate_deal_date(cur)
+    mirrored = _mirror_deal_to_raw_and_stg(cur)
     pruned = _prune_deal_document_map(cur)
     status = reconcile_status(cur)
     return {"forward_linked": fwd, "backward_linked": back, "reconciled": rec,
             "propagated": prop, "conflicts_flagged": conflicts,
             "metadata_filled": meta, "deal_dates_set": dates,
+            "tiers_mirrored": mirrored,
             "map_pruned": pruned, "status_reconciled": status}
