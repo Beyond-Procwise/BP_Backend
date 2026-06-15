@@ -77,6 +77,11 @@ class Orchestrator:
 
     GATEKEEPER_AGENTS: Set[str] = {"supplier_interaction"}
 
+    # Bounded signal-driven feedback: at most this many SUGGEST_AGENT additions
+    # per sequential chain, so a misbehaving agent can never expand a workflow
+    # without limit.
+    MAX_DYNAMIC_AGENTS: int = int(os.getenv("MAX_DYNAMIC_AGENTS", "3"))
+
     def __init__(self, agent_nick, *, training_endpoint=None):
         # Ensure GPU environment is initialised before any agent execution.
         # ``configure_gpu`` is idempotent so repeated calls are safe and allow
@@ -2878,22 +2883,131 @@ class Orchestrator:
     def _execute_sequential_agents(
         self, agents: List[str], context: AgentContext, pass_fields: Dict
     ) -> Dict:
-        """Execute agents sequentially"""
-        results = {}
+        """Execute agents sequentially, with bounded signal-driven feedback.
 
-        for agent_name in agents:
-            if agent_name in self.agents:
-                child_context = self._create_child_context(
-                    context, agent_name, pass_fields
+        After each agent runs, the orchestrator reacts to the signals that agent
+        emitted onto the shared blackboard: a ``SUGGEST_AGENT`` adds the suggested
+        agent as a dynamic next step (deduped, capped by ``MAX_DYNAMIC_AGENTS``,
+        never re-running an agent), and a ``RECOMMEND_ESCALATION`` /
+        ``CONFIDENCE_LOW`` routes once to ``approvals``. Agents that emit no
+        signals execute exactly as before.
+        """
+        results: Dict[str, Any] = {}
+        queue: List[str] = list(agents)
+        executed: set = set()
+        dynamic_added = 0
+        escalated = False
+
+        while queue:
+            agent_name = queue.pop(0)
+            if agent_name not in self.agents or agent_name in executed:
+                continue
+            child_context = self._create_child_context(
+                context, agent_name, pass_fields
+            )
+            # Snapshot the signal count so we react only to what THIS agent emits
+            # (agents emit under their class name, not the registry slug, so we
+            # slice by position rather than filter by agent name).
+            sig_before = self._wf_signal_count(context)
+            result = self._execute_agent(agent_name, child_context)
+            executed.add(agent_name)
+            results[agent_name] = result.data if result else None
+
+            # Update pass fields for next agent
+            if result and result.pass_fields:
+                self._merge_pass_fields(pass_fields, result.pass_fields)
+
+            additions, dynamic_added, escalated = self._dynamic_next_from_signals(
+                context, sig_before, executed, set(queue), dynamic_added, escalated
+            )
+            for nxt in additions:
+                queue.append(nxt)
+                logger.info(
+                    "Agentic feedback: %s -> dynamically queued %s", agent_name, nxt
                 )
-                result = self._execute_agent(agent_name, child_context)
-                results[agent_name] = result.data if result else None
-
-                # Update pass fields for next agent
-                if result and result.pass_fields:
-                    self._merge_pass_fields(pass_fields, result.pass_fields)
 
         return results
+
+    def _normalise_signal_agent(self, token: Any) -> Optional[str]:
+        """Resolve a signal's target token to a registered agent name, or None."""
+        if not token:
+            return None
+        token = str(token).strip()
+        if token in self.agents:
+            return token
+        try:
+            resolved = self._resolve_agent_name(token)
+        except Exception:
+            resolved = None
+        if resolved and resolved in self.agents:
+            return resolved
+        mapped = self.AGENT_TOKEN_ALIASES.get(token.replace(" ", "").lower())
+        if mapped and mapped in self.agents:
+            return mapped
+        return None
+
+    def _wf_signal_count(self, context: AgentContext) -> int:
+        """Current number of signals on this workflow's blackboard (0 if none)."""
+        wid = getattr(context, "workflow_id", None) or ""
+        wf_ctx = self._wf_contexts.get(wid)
+        if wf_ctx is None:
+            return 0
+        try:
+            return len(wf_ctx.get_signals())
+        except Exception:  # pragma: no cover - defensive
+            return 0
+
+    def _dynamic_next_from_signals(
+        self,
+        context: AgentContext,
+        since: int,
+        executed: set,
+        queued: set,
+        dynamic_added: int,
+        escalated: bool,
+    ):
+        """Turn signals emitted since position *since* into bounded next-steps.
+
+        Returns ``(additions, dynamic_added, escalated)``. Pure read of the shared
+        blackboard; never raises.
+        """
+        additions: List[str] = []
+        wid = getattr(context, "workflow_id", None) or ""
+        wf_ctx = self._wf_contexts.get(wid)
+        if wf_ctx is None:
+            return additions, dynamic_added, escalated
+        try:
+            from orchestration.workflow_context import SignalType
+            signals = wf_ctx.get_signals()[since:]
+        except Exception:  # pragma: no cover - defensive
+            return additions, dynamic_added, escalated
+
+        for sig in signals:
+            st = getattr(sig, "signal_type", None)
+            data = getattr(sig, "data", None) or {}
+            if st == SignalType.SUGGEST_AGENT and dynamic_added < self.MAX_DYNAMIC_AGENTS:
+                target = data.get("agent") or data.get("next_agent") or data.get("agent_id")
+                canonical = self._normalise_signal_agent(target)
+                if (
+                    canonical
+                    and canonical not in executed
+                    and canonical not in queued
+                    and canonical not in additions
+                ):
+                    additions.append(canonical)
+                    dynamic_added += 1
+            elif st in (SignalType.RECOMMEND_ESCALATION, SignalType.CONFIDENCE_LOW) and not escalated:
+                approvals = self._normalise_signal_agent("approvals")
+                if (
+                    approvals
+                    and approvals not in executed
+                    and approvals not in queued
+                    and approvals not in additions
+                ):
+                    additions.append(approvals)
+                    escalated = True
+
+        return additions, dynamic_added, escalated
 
     @staticmethod
     def _normalise_category(value: Any) -> Optional[str]:
