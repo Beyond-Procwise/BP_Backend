@@ -32,8 +32,8 @@ def upsert_opportunity(cur, rec: dict) -> None:
           (opportunity_id, opportunity_ref_id, detector_type, policy_id, supplier_id,
            supplier_name, category_id, item_id, item_description, financial_impact_gbp,
            stage, ml_priority_score, weightage, calculation_details, source_records,
-           detected_on)
-        values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           detected_on, quote_id, po_id)
+        values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         on conflict (opportunity_id) do update set
           opportunity_ref_id=excluded.opportunity_ref_id,
           detector_type=excluded.detector_type, policy_id=excluded.policy_id,
@@ -44,6 +44,7 @@ def upsert_opportunity(cur, rec: dict) -> None:
           ml_priority_score=excluded.ml_priority_score, weightage=excluded.weightage,
           calculation_details=excluded.calculation_details,
           source_records=excluded.source_records, detected_on=excluded.detected_on,
+          quote_id=excluded.quote_id, po_id=excluded.po_id,
           -- only force stage to 'rejected'; otherwise keep the progressed stage
           stage=case when excluded.stage='rejected' then 'rejected'
                      else proc.bp_opportunity.stage end,
@@ -57,6 +58,8 @@ def upsert_opportunity(cur, rec: dict) -> None:
             rec.get("ml_priority_score"), rec.get("weightage"),
             json.dumps(calc), json.dumps(rec.get("source_records") or []),
             rec.get("detected_on"),
+            rec.get("quote_id") or calc.get("quote_id"),
+            rec.get("po_id") or calc.get("po_id"),
         ),
     )
 

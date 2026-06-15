@@ -77,7 +77,8 @@ def test_detailed_opportunities_mapping_with_uncategorised_fallback():
             "detector_type": "Maverick Spend Detection", "category_id": None,
             "supplier_name": "City of Newport", "supplier_id": "SUP-X",
             "item_description": "Tier 3 Marketing Services", "item_id": None,
-            "financial_impact_gbp": 100000, "stage": "identified"}]),
+            "financial_impact_gbp": 100000, "stage": "identified",
+            "quote_id": "Q1", "deal_id": "D1", "orphaned": True}]),
     ])
     rows = od.detailed_opportunities(cur)
     r = rows[0]
@@ -85,7 +86,7 @@ def test_detailed_opportunities_mapping_with_uncategorised_fallback():
         "opportunityId": "9", "date": "2026-06-08", "type": "Maverick Spend Detection",
         "category": "Uncategorised", "supplier": "City of Newport",
         "opportunity": "Tier 3 Marketing Services", "potentialSaving": "£100k",
-        "stage": "identified",
+        "stage": "identified", "quoteId": "Q1", "orphaned": True,
     }
 
 

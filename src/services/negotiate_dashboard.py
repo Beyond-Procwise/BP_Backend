@@ -64,7 +64,8 @@ def _deal(cur, deal_id: str) -> Optional[dict]:
         "select deal_id, deal_name, supplier_id, supplier_name, deal_date, "
         "first_activity_date, last_activity_date, quote_count, po_count, "
         "invoice_count, quote_total, po_total, invoice_total, currency, "
-        "price_variance_pct, cycle_days_quote_to_po, cycle_days_po_to_invoice "
+        "price_variance_pct, cycle_days_quote_to_po, cycle_days_po_to_invoice, "
+        "has_quote_anchor, orphaned "
         "from proc.bp_deal_overview where deal_id=%s", (deal_id,))
     return rows[0] if rows else None
 
@@ -115,10 +116,13 @@ def proposal_snapshot(cur, deal_id: str, d: Optional[dict] = None) -> list[dict]
         "where deal_id=%s and payment_terms is not null limit 1", (deal_id,))
     payment_terms = pterm[0]["payment_terms"] if pterm else ""
     term = _contract_term(cur, deal_id)
+    # The quote is the savings baseline. With no quote (orphaned chain) there is
+    # nothing to measure against — surface that rather than a misleading 0%.
+    savings_val = "awaiting quote" if not quote else f"{savings_pct:.0f}%"
     return [
         {"label": "tvc", "value": _money(tvc, ccy)},
         {"label": "annualRunRate", "value": _money(tvc, ccy)},
-        {"label": "savingsVsBaseline", "value": f"{savings_pct:.0f}%"},
+        {"label": "savingsVsBaseline", "value": savings_val},
         {"label": "paymentTerms", "value": payment_terms or ""},
         {"label": "Terms", "value": term or ""},
     ]
@@ -184,9 +188,10 @@ def negotiation_kpis(cur, deal_id: str, d: Optional[dict] = None) -> list[dict]:
     volume = _volume_total(cur, deal_id)
     closure = d.get("last_activity_date")
     closure_str = closure.strftime("%d %B %Y") if hasattr(closure, "strftime") else (str(closure) if closure else "")
+    savings_val = "awaiting quote" if not quote else _money(savings, ccy)
     return [
         {"label": "Total Cost", "value": _money(total_cost, ccy)},
-        {"label": "Savings", "value": _money(savings, ccy), "positive": savings >= 0},
+        {"label": "Savings", "value": savings_val, "positive": savings >= 0},
         {"label": "Price Change", "value": f"{price_change_pct:.1f}%", "positive": price_change_pct <= 0},
         {"label": "Volume Change", "value": str(int(volume)) if volume is not None else "0",
          "positive": True},
@@ -390,6 +395,8 @@ def _build(cur, deal_id: str) -> Optional[dict]:
     return {
         "deal_id": deal_id,
         "deal_name": d.get("deal_name"),
+        "orphaned": bool(d.get("orphaned")),
+        "hasQuoteAnchor": bool(d.get("has_quote_anchor")),
         "summary": deal_summary_text(cur, deal_id, d),
         "proposalSnapshot": proposal_snapshot(cur, deal_id, d),
         "versionHistory": offer_version_history(cur, deal_id, d),

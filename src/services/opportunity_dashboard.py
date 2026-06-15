@@ -152,11 +152,15 @@ def opportunity_trends(cur) -> list[dict]:
 # 5. detailed opportunities list
 # ---------------------------------------------------------------------------
 def detailed_opportunities(cur, limit: int = 100) -> list[dict]:
+    # orphaned = the opportunity's deal has no anchoring quote (quote-anchored model).
     rows = _rows(cur,
-        "select opportunity_id, detected_on, detector_type, category_id, supplier_name, "
-        "supplier_id, item_description, item_id, financial_impact_gbp, stage "
-        "from proc.bp_opportunity "
-        "order by financial_impact_gbp desc nulls last, detected_on desc nulls last "
+        "select o.opportunity_id, o.detected_on, o.detector_type, o.category_id, "
+        "o.supplier_name, o.supplier_id, o.item_description, o.item_id, "
+        "o.financial_impact_gbp, o.stage, o.quote_id, o.deal_id, "
+        "(o.deal_id is not null and o.deal_id<>'' "
+        " and not exists(select 1 from proc.bp_quote_trgt q where q.deal_id=o.deal_id)) as orphaned "
+        "from proc.bp_opportunity o "
+        "order by o.financial_impact_gbp desc nulls last, o.detected_on desc nulls last "
         "limit %s", (limit,))
     out = []
     for r in rows:
@@ -170,6 +174,8 @@ def detailed_opportunities(cur, limit: int = 100) -> list[dict]:
             "opportunity": r.get("item_description") or r.get("item_id") or (r.get("detector_type") or ""),
             "potentialSaving": _money(r.get("financial_impact_gbp")),
             "stage": r.get("stage"),
+            "quoteId": r.get("quote_id"),
+            "orphaned": bool(r.get("orphaned")),
         })
     return out
 
