@@ -359,6 +359,10 @@ class Orchestrator:
                 success=True,
             )
 
+            self._learn_from_workflow(
+                workflow_id, workflow_name, context, result, success=True
+            )
+
             return {
                 "status": "completed",
                 "workflow_id": workflow_id,
@@ -393,6 +397,9 @@ class Orchestrator:
                 context=context,
                 result={"error": str(e)},
                 success=False,
+            )
+            self._learn_from_workflow(
+                workflow_id, workflow_name, context, {"error": str(e)}, success=False
             )
             return {"status": "failed", "workflow_id": workflow_id, "error": str(e)}
 
@@ -2583,6 +2590,73 @@ class Orchestrator:
             }
         except Exception:  # pragma: no cover - defensive
             logger.debug("blackboard injection failed", exc_info=True)
+
+    def _learn_from_workflow(
+        self,
+        workflow_id: Optional[str],
+        workflow_name: str,
+        context: Optional[AgentContext],
+        result: Any,
+        success: bool,
+    ) -> None:
+        """Phase 4: feed workflow outcomes back into the shared pattern store so the
+        system's knowledge improves over time.
+
+        On success, reinforce the patterns that informed the run (those attached to
+        the blackboard's brief). Concern signals (CONFIDENCE_LOW / NEEDS_ATTENTION)
+        are recorded as low-confidence patterns regardless of outcome. We never
+        auto-deprecate on failure — a single failed run is too weak a signal to
+        suppress a pattern. Entirely best-effort; never affects the result.
+        """
+        ps = getattr(self.agent_nick, "pattern_service", None)
+        if ps is None:
+            return
+        wf_ctx = self._wf_contexts.get(workflow_id or "")
+        if wf_ctx is None:
+            return
+        try:
+            category = ""
+            try:
+                input_data = (context.input_data if context else {}) or {}
+                category = str(
+                    input_data.get("product_category")
+                    or input_data.get("category")
+                    or ""
+                )
+            except Exception:
+                category = ""
+
+            if success and hasattr(ps, "reinforce_pattern"):
+                used = wf_ctx.shared_data.get("patterns") or []
+                for p in used[:5]:
+                    if isinstance(p, dict) and p.get("pattern_text") and p.get("pattern_type"):
+                        try:
+                            ps.reinforce_pattern(p["pattern_type"], p["pattern_text"])
+                        except Exception:
+                            pass
+
+            if hasattr(ps, "record_pattern"):
+                from orchestration.workflow_context import SignalType
+                concern = {SignalType.CONFIDENCE_LOW, SignalType.NEEDS_ATTENTION}
+                seen_msgs: set = set()
+                for sig in wf_ctx.get_signals():
+                    if getattr(sig, "signal_type", None) not in concern:
+                        continue
+                    text = f"{workflow_name}: {getattr(sig, 'message', '')}".strip()[:200]
+                    if not text or text in seen_msgs:
+                        continue
+                    seen_msgs.add(text)
+                    try:
+                        ps.record_pattern(
+                            pattern_type="workflow_concern",
+                            pattern_text=text,
+                            category=category,
+                            confidence=0.3,
+                        )
+                    except Exception:
+                        pass
+        except Exception:  # pragma: no cover - learning is best-effort
+            logger.debug("workflow learning hook failed for %s", workflow_id, exc_info=True)
 
     def _record_agent_result(self, wf_ctx: Any, agent_name: str, result: Any) -> None:
         if result is None or wf_ctx is None:
