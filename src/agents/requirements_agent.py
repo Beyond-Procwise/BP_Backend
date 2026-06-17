@@ -93,8 +93,16 @@ class RequirementsAgent(BaseAgent):
             # think=False is required: AgentNick is a reasoning model and returns
             # an empty `response` without it (see Model Routing Policy).
             result = self.call_ollama(prompt=prompt, format="json", think=False)
-            raw = result.get("response") if isinstance(result, dict) else result
-            parsed = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            # call_ollama returns an ollama GenerateResponse object (attribute
+            # access) OR a dict OR a raw string — extract the response text from
+            # whichever shape we got.
+            if isinstance(result, str):
+                raw = result
+            else:
+                raw = getattr(result, "response", None)
+                if raw is None and hasattr(result, "get"):
+                    raw = result.get("response")
+            parsed = json.loads(raw) if isinstance(raw, str) and raw.strip() else {}
         except Exception:
             logger.debug("elicitation LLM parse failed", exc_info=True)
             parsed = {}
