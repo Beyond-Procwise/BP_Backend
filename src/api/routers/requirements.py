@@ -53,6 +53,17 @@ def _run_requirements_turn(app_state: Any, payload: Dict[str, Any]) -> Dict[str,
     return dict(output.data or {})
 
 
+def _run_requirements_workflow(app_state: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the declarative requirements→sourcing workflow via the orchestrator.
+
+    gather_requirement → (complete) → rank_suppliers → (ranking) → draft_emails.
+    Isolated for testability — patched in unit tests."""
+    orchestrator = getattr(app_state, "orchestrator", None)
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Orchestrator unavailable")
+    return orchestrator.execute_workflow("requirements_to_ranking", dict(payload))
+
+
 def _events_for(result: Dict[str, Any]) -> List[Dict[str, str]]:
     """Build SSE-style progress events describing the turn for a live chat UI."""
     events: List[Dict[str, str]] = [{"event": "thinking", "message": "Reviewing requirement"}]
@@ -77,6 +88,22 @@ def post_message(body: RequirementMessage, request: Request) -> Dict[str, Any]:
     return {
         "result": result,
         "events": _events_for(result),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.post("/run-workflow", summary="Run the requirements→sourcing workflow")
+def post_run_workflow(body: RequirementMessage, request: Request) -> Dict[str, Any]:
+    try:
+        result = _run_requirements_workflow(request.app.state, body.model_dump(exclude_none=True))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("requirements workflow failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {
+        "workflow": "requirements_to_ranking",
+        "result": result,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

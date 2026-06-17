@@ -117,6 +117,18 @@ def _has_ranking_payload(state: WorkflowState) -> bool:
     )
 
 
+def _requirement_is_complete(state: WorkflowState) -> bool:
+    """True once the requirements agent has fully gathered a requirement.
+
+    Gates the hand-off to supplier_ranking: while the agent is still asking
+    questions (complete=False) the workflow does not advance to sourcing.
+    """
+    return bool(
+        state.shared_data.get("complete")
+        or state.node_results.get("gather_requirement", {}).get("complete")
+    )
+
+
 def _negotiation_fields_present(state: WorkflowState) -> bool:
     required = {"supplier", "current_offer", "target_price", "rfq_id"}
     return required.issubset(state.shared_data.keys())
@@ -400,6 +412,74 @@ def build_supplier_interaction_workflow() -> WorkflowGraph:
     return graph
 
 
+def build_requirements_to_ranking_workflow() -> WorkflowGraph:
+    """Workflow: gather a procurement requirement, then drive sourcing.
+
+    Graph::
+
+        gather_requirement --(requirement complete)--> rank_suppliers
+                                                            |
+                                                  (ranking ready)
+                                                            v
+                                                       draft_emails
+
+    The requirements agent runs first; only once it reports ``complete`` does
+    the workflow hand the requirement off to supplier_ranking (the agent emits
+    a ``query`` field for that purpose). RFQ drafting follows when a ranking is
+    produced. While the requirement is still being gathered the gate stays shut,
+    so an incomplete conversation never triggers sourcing.
+    """
+    graph = WorkflowGraph(
+        name="requirements_to_ranking",
+        description="Gather a procurement requirement, then rank suppliers and draft RFQs",
+    )
+
+    graph.add_node(WorkflowNode(
+        name="gather_requirement",
+        agent_type="requirements",
+        static_inputs={"created_by": "workflow"},
+        output_to_shared=[
+            "requirement", "requirement_id", "completeness_score", "complete", "query",
+        ],
+        required=True,
+    ))
+
+    graph.add_node(WorkflowNode(
+        name="rank_suppliers",
+        agent_type="supplier_ranking",
+        input_mapping={
+            "gather_requirement.query": "query",
+            "gather_requirement.requirement": "requirement",
+        },
+        output_to_shared=["ranking", "justification"],
+        required=True,
+    ))
+
+    graph.add_node(WorkflowNode(
+        name="draft_emails",
+        agent_type="email_drafting",
+        input_mapping={
+            "rank_suppliers.ranking": "ranking",
+            "gather_requirement.requirement": "requirement",
+        },
+        output_to_shared=["drafts"],
+        required=False,
+    ))
+
+    graph.add_edge(
+        "gather_requirement", "rank_suppliers",
+        condition=_requirement_is_complete,
+        label="requirement_complete",
+    )
+    graph.add_edge(
+        "rank_suppliers", "draft_emails",
+        condition=_has_ranking_payload,
+        label="ranking_ready",
+    )
+
+    return graph
+
+
 # ---------------------------------------------------------------------------
 # Workflow Registry
 # ---------------------------------------------------------------------------
@@ -410,6 +490,7 @@ WORKFLOW_REGISTRY = {
     "quote_evaluation": build_quote_workflow,
     "opportunity_mining": build_opportunity_workflow,
     "supplier_interaction": build_supplier_interaction_workflow,
+    "requirements_to_ranking": build_requirements_to_ranking_workflow,
 }
 
 

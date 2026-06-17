@@ -175,6 +175,9 @@ class RequirementsAgent(BaseAgent):
             if complete:
                 self._emit_handoff(session, requirement_out)
                 summary = self._summary(session, requirement_out)
+                # `query` is the sourcing handle downstream agents (supplier_ranking)
+                # consume; surface it as an output field so a workflow can route it.
+                query = requirement_out.get("title") or requirement_out.get("category") or ""
                 return self._with_plan(context, AgentOutput(
                     status=AgentStatus.SUCCESS,
                     data={
@@ -182,6 +185,7 @@ class RequirementsAgent(BaseAgent):
                         "requirement_id": session.requirement_id,
                         "complete": True,
                         "requirement": requirement_out,
+                        "query": query,
                         "completeness_score": score,
                         "summary": summary,
                     },

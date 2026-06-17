@@ -4,9 +4,11 @@ from fastapi.testclient import TestClient
 import src.api.routers.requirements as rq
 
 
-def _client(monkeypatch, run_result=None, get_result=None, list_result=None):
+def _client(monkeypatch, run_result=None, get_result=None, list_result=None, wf_result=None):
     monkeypatch.setattr(rq, "_run_requirements_turn",
                         lambda app_state, payload: run_result or {"complete": False, "next_question": "?"})
+    monkeypatch.setattr(rq, "_run_requirements_workflow",
+                        lambda app_state, payload: wf_result or {"engine_state": {"status": "completed"}})
     monkeypatch.setattr(rq.requirement_service, "get_requirement", lambda rid: get_result)
     monkeypatch.setattr(rq.requirement_service, "list_requirements",
                         lambda limit=50, offset=0: list_result or [])
@@ -23,6 +25,16 @@ def test_message_returns_next_question(monkeypatch):
     body = resp.json()
     assert body["result"]["next_question"] == "How many?"
     assert isinstance(body["events"], list) and body["events"]
+
+
+def test_run_workflow(monkeypatch):
+    client = _client(monkeypatch, wf_result={"engine_state": {"status": "completed"},
+                                             "gather_requirement": {"complete": True}})
+    resp = client.post("/requirements/run-workflow", json={"message": "Need 25 chairs"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["workflow"] == "requirements_to_ranking"
+    assert body["result"]["engine_state"]["status"] == "completed"
 
 
 def test_get_requirement_404(monkeypatch):
