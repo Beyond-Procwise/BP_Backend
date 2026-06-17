@@ -4,11 +4,9 @@ from fastapi.testclient import TestClient
 import src.api.routers.requirements as rq
 
 
-def _client(monkeypatch, run_result=None, get_result=None, list_result=None, wf_result=None):
+def _client(monkeypatch, run_result=None, get_result=None, list_result=None):
     monkeypatch.setattr(rq, "_run_requirements_turn",
                         lambda app_state, payload: run_result or {"complete": False, "next_question": "?"})
-    monkeypatch.setattr(rq, "_run_requirements_workflow",
-                        lambda app_state, payload: wf_result or {"engine_state": {"status": "completed"}})
     monkeypatch.setattr(rq.requirement_service, "get_requirement", lambda rid: get_result)
     monkeypatch.setattr(rq.requirement_service, "list_requirements",
                         lambda limit=50, offset=0: list_result or [])
@@ -27,14 +25,32 @@ def test_message_returns_next_question(monkeypatch):
     assert isinstance(body["events"], list) and body["events"]
 
 
-def test_run_workflow(monkeypatch):
-    client = _client(monkeypatch, wf_result={"engine_state": {"status": "completed"},
-                                             "gather_requirement": {"complete": True}})
+def test_run_workflow_returns_job_id_immediately(monkeypatch):
+    launched = {}
+    monkeypatch.setattr(rq, "_launch_workflow",
+                        lambda app_state, payload, job_id: launched.update(
+                            {"job_id": job_id, "payload": payload}))
+    client = _client(monkeypatch)
     resp = client.post("/requirements/run-workflow", json={"message": "Need 25 chairs"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["workflow"] == "requirements_to_ranking"
-    assert body["result"]["engine_state"]["status"] == "completed"
+    assert body["status"] == "running"
+    assert body["job_id"] == launched["job_id"]          # launched in background
+    assert body["poll"].endswith(body["job_id"])
+    assert launched["payload"]["message"] == "Need 25 chairs"
+
+
+def test_poll_workflow_job(monkeypatch):
+    client = _client(monkeypatch)
+    rq._WORKFLOW_JOBS.clear()
+    rq._WORKFLOW_JOBS["J1"] = {"status": "completed",
+                              "result": {"engine_state": {"status": "completed"}},
+                              "error": None}
+    ok = client.get("/requirements/workflow/J1")
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "completed"
+    assert client.get("/requirements/workflow/UNKNOWN").status_code == 404
 
 
 def test_get_requirement_404(monkeypatch):
