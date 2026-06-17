@@ -42,6 +42,7 @@ class AgentCapability(str, Enum):
     DISCREPANCY_DETECTION = "discrepancy_detection"
     APPROVAL_DECISION = "approval_decision"
     RAG_QUERY = "rag_query"
+    REQUIREMENTS_GATHERING = "requirements_gathering"
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,7 @@ CAPABILITY_ROLES: Dict[AgentCapability, AgentRole] = {
     AgentCapability.DOCUMENT_EXTRACTION: AgentRole.SOURCE,
     AgentCapability.DOCUMENT_CLASSIFICATION: AgentRole.SOURCE,
     AgentCapability.OPPORTUNITY_MINING: AgentRole.SOURCE,
+    AgentCapability.REQUIREMENTS_GATHERING: AgentRole.SOURCE,
     AgentCapability.SUPPLIER_RANKING: AgentRole.PROCESSOR,
     AgentCapability.QUOTE_EVALUATION: AgentRole.PROCESSOR,
     AgentCapability.QUOTE_COMPARISON: AgentRole.AGGREGATOR,

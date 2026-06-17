@@ -36,6 +36,7 @@ _AGENT_MODULE_MAP: Dict[str, str] = {
     "approvals": "agents.approvals_agent",
     "discrepancy_detection": "agents.discrepancy_detection_agent",
     "rag": "agents.rag_agent",
+    "requirements": "agents.requirements_agent",
 }
 
 # Canonical mapping from agent type slugs to class names
@@ -53,6 +54,7 @@ _AGENT_CLASS_MAP: Dict[str, str] = {
     "approvals": "ApprovalsAgent",
     "discrepancy_detection": "DiscrepancyDetectionAgent",
     "rag": "RAGAgent",
+    "requirements": "RequirementsAgent",
 }
 
 # Agent contracts define each agent's I/O specification
@@ -168,6 +170,14 @@ AGENT_CONTRACTS: Dict[str, AgentContract] = {
         optional_inputs=frozenset(),
         output_fields=frozenset({"answer", "sources"}),
         description="Retrieval-augmented generation for procurement Q&A",
+    ),
+    "requirements": AgentContract(
+        agent_type="requirements",
+        capabilities=frozenset({AgentCapability.REQUIREMENTS_GATHERING}),
+        required_inputs=frozenset(),
+        optional_inputs=frozenset({"message", "brief", "session_id", "created_by", "category"}),
+        output_fields=frozenset({"requirement_id", "requirement", "completeness_score"}),
+        description="Conversation-led gathering of procurement requirements",
     ),
 }
 

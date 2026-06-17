@@ -233,6 +233,24 @@
       },
       "outputs": ["answer", "sources"],
       "version": "1.0.0"
+    },
+    {
+      "agentId": 14,
+      "agentType": "RequirementsAgent",
+      "slug": "requirements",
+      "class_path": "agents.requirements_agent.RequirementsAgent",
+      "description": "Gathers procurement requirements through conversation, seeded by history and able to parse an unstructured brief; persists a structured requirement and hands off to sourcing agents.",
+      "role": "source",
+      "capabilities": ["requirements_gathering"],
+      "required_inputs": [],
+      "output_fields": ["requirement_id", "requirement", "completeness_score"],
+      "dependencies": ["db_client", "redis_client", "ollama_client"],
+      "inputs": {
+        "required": [],
+        "optional": ["message", "brief", "session_id", "created_by", "category"]
+      },
+      "outputs": ["requirement_id", "requirement", "completeness_score"],
+      "version": "1.0.0"
     }
   ]
 }
