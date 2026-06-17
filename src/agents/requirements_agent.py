@@ -22,8 +22,8 @@ _DEFAULT_ELICITATION_PROMPT = (
     "Current requirement: {requirement}\n"
     "Still missing: {missing}\n"
     "Buyer message: {message}\n"
-    'Respond ONLY with JSON: {{"updates": {{<field>: <value>, ...}}, '
-    '"next_question": "<one question, or empty string if nothing missing>"}}'
+    'Respond ONLY with JSON: {"updates": {<field>: <value>, ...}, '
+    '"next_question": "<one question, or empty string if nothing missing>"}'
 )
 
 
@@ -64,10 +64,13 @@ class RequirementsAgent(BaseAgent):
     def _advance(self, session: RequirementSession, user_text: str) -> str:
         missing = session.missing_fields or list(requirement_service.DEFAULT_REQUIRED_FIELDS)
         template = self.resolve_prompt("requirements_elicitation") or _DEFAULT_ELICITATION_PROMPT
-        prompt = template.format(
-            requirement=json.dumps(session.requirement),
-            missing=", ".join(missing),
-            message=user_text,
+        # Explicit placeholder substitution (NOT str.format): prompt templates
+        # contain literal JSON braces, which str.format would parse as fields.
+        prompt = (
+            template
+            .replace("{requirement}", json.dumps(session.requirement))
+            .replace("{missing}", ", ".join(missing))
+            .replace("{message}", user_text)
         )
         try:
             result = self.call_ollama(prompt=prompt, format="json")

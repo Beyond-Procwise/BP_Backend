@@ -91,6 +91,27 @@ def test_brief_is_parsed_on_first_turn(monkeypatch):
     assert out.data["complete"] is False
 
 
+def test_db_template_with_literal_json_braces_does_not_crash(monkeypatch):
+    # Regression: the DB-seeded elicitation prompt contains literal JSON braces
+    # ({"updates": {}, ...}). str.format() would raise KeyError on them; the
+    # agent must use plain substitution and survive.
+    agent = _make_agent(
+        monkeypatch,
+        llm_payloads=[{"updates": {"title": "Chairs"}, "next_question": "How many?"}],
+        redis=_FakeRedis(),
+    )
+    db_template = (
+        "Current requirement: {requirement}\nStill missing: {missing}\n"
+        "Buyer message: {message}\n"
+        'Respond ONLY with JSON: {"updates": {}, "next_question": ""}'
+    )
+    agent.resolve_prompt = lambda name, **fmt: db_template
+    out = agent.run(_ctx({"message": "I need chairs"}))
+    assert out.status == AgentStatus.SUCCESS
+    assert out.data["requirement"]["title"] == "Chairs"
+    assert out.data["next_question"] == "How many?"
+
+
 def test_malformed_llm_json_does_not_crash(monkeypatch):
     agent = _make_agent(monkeypatch, llm_payloads=[], redis=_FakeRedis())
     agent.call_ollama = lambda **kw: {"response": "not json at all"}
