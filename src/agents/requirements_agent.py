@@ -98,6 +98,11 @@ class RequirementsAgent(BaseAgent):
         except Exception:
             logger.debug("elicitation LLM parse failed", exc_info=True)
             parsed = {}
+        if not (isinstance(parsed, dict) and parsed.get("updates")):
+            logger.warning(
+                "RequirementsAgent elicitation produced no field updates; raw=%r",
+                (raw if isinstance(raw, str) else result),
+            )
         if isinstance(parsed, dict):
             session.apply_fields(parsed.get("updates") or {})
             return str(parsed.get("next_question") or "")
