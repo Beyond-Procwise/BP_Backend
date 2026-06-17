@@ -47,12 +47,44 @@ def test_incomplete_turn_asks_next_question(monkeypatch):
                        "next_question": "How many laptops do you need?"}],
         redis=redis,
     )
+    persisted = []
+    monkeypatch.setattr(ra_mod.requirement_service, "persist", lambda rec: persisted.append(rec))
     out = agent.run(_ctx({"message": "I need laptops for the IT team", "created_by": "alice"}))
     assert out.status == AgentStatus.SUCCESS
     assert out.data["complete"] is False
     assert out.data["next_question"] == "How many laptops do you need?"
     assert "quantity" in out.data["missing_fields"]
     assert out.data["session_id"] in [k.split(":")[1] for k in redis.store]
+    # The gathering row is persisted every turn (durable session backing store).
+    assert persisted and persisted[-1]["status"] == "gathering"
+
+
+def test_reloads_prior_state_from_db_when_redis_absent(monkeypatch):
+    # Redis disabled (get_redis_client -> None). Turn 2 must reload the gathering
+    # row by session_id from the DB and continue, not start a fresh requirement.
+    agent = _make_agent(
+        monkeypatch,
+        llm_payloads=[{"updates": {"quantity": 25, "needed_by_date": "2026-08-15",
+                                   "delivery_location": "London HQ"},
+                       "next_question": ""}],
+        redis=None,
+    )
+    prior_row = {
+        "requirement_id": "REQ-prior", "created_by": "alice", "status": "gathering",
+        "title": "Chairs", "category": "Furniture", "seed_context": {},
+    }
+    monkeypatch.setattr(ra_mod.requirement_service, "get_by_session",
+                        lambda sid: prior_row if sid == "S-prior" else None)
+    persisted = []
+    monkeypatch.setattr(ra_mod.requirement_service, "persist", lambda rec: persisted.append(rec))
+
+    out = agent.run(_ctx({"session_id": "S-prior",
+                          "message": "25 units to London HQ by 2026-08-15"}))
+    assert out.data["requirement"]["title"] == "Chairs"        # reloaded from DB
+    assert out.data["requirement"]["category"] == "Furniture"  # reloaded from DB
+    assert out.data["complete"] is True                        # + new fields → done
+    assert out.data["requirement_id"] == "REQ-prior"           # continuity, not a new id
+    assert persisted[-1]["status"] == "complete"
 
 
 def test_complete_turn_persists_and_emits_signals(monkeypatch):

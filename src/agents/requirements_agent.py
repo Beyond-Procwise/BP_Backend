@@ -3,7 +3,24 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Dict, List
+
+_RECONSTRUCT_FIELDS = (
+    "title", "category", "description", "quantity", "unit", "target_budget",
+    "currency", "needed_by_date", "delivery_location", "priority",
+    "specifications", "constraints",
+)
+
+
+def _jsonsafe(value: Any) -> Any:
+    """Coerce DB-typed values (Decimal/date) to JSON-serialisable forms."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return value
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 from services.requirement_session import RequirementSession
@@ -92,6 +109,11 @@ class RequirementsAgent(BaseAgent):
 
             session_id = str(data.get("session_id") or uuid.uuid4().hex)
             session = RequirementSession.load(session_id, redis)
+            if session is None and data.get("session_id"):
+                # Redis miss (or disabled): reload the durable gathering row.
+                row = requirement_service.get_by_session(session_id)
+                if row:
+                    session = self._session_from_row(session_id, row)
             if session is None:
                 session = RequirementSession(
                     session_id=session_id,
@@ -126,11 +148,16 @@ class RequirementsAgent(BaseAgent):
                 k: v for k, v in session.requirement.items() if not k.startswith("_")
             }
 
-            if not missing:
+            complete = not missing
+            status = "complete" if complete else "gathering"
+            if complete:
                 session.mark_complete()
-                record = self._build_record(session, requirement_out, score, missing)
-                requirement_service.persist(record)
-                session.save(redis)
+            # Persist every turn: the bp_requirement row IS the durable session.
+            record = self._build_record(session, requirement_out, score, missing, status)
+            requirement_service.persist(record)
+            session.save(redis)
+
+            if complete:
                 self._emit_handoff(session, requirement_out)
                 summary = self._summary(session, requirement_out)
                 return self._with_plan(context, AgentOutput(
@@ -147,7 +174,6 @@ class RequirementsAgent(BaseAgent):
                     confidence=score,
                 ))
 
-            session.save(redis)
             return self._with_plan(context, AgentOutput(
                 status=AgentStatus.SUCCESS,
                 data={
@@ -166,11 +192,32 @@ class RequirementsAgent(BaseAgent):
             logger.exception("RequirementsAgent.run failed")
             return AgentOutput(status=AgentStatus.FAILED, data={}, error=str(exc))
 
-    def _build_record(self, session, requirement_out, score, missing) -> Dict[str, Any]:
+    def _session_from_row(self, session_id: str, row: Dict[str, Any]) -> RequirementSession:
+        """Rebuild a session from its durable bp_requirement row (Redis-less path)."""
+        session = RequirementSession(
+            session_id=session_id,
+            requirement_id=row.get("requirement_id") or "",
+            created_by=row.get("created_by") or "",
+            status=row.get("status") or "gathering",
+        )
+        req: Dict[str, Any] = {}
+        for key in _RECONSTRUCT_FIELDS:
+            value = row.get(key)
+            if value is None:
+                continue
+            req[key] = _jsonsafe(value)
+        seed = row.get("seed_context")
+        if isinstance(seed, dict):
+            req["_seed_context"] = seed
+        session.requirement = req
+        return session
+
+    def _build_record(self, session, requirement_out, score, missing,
+                      status: str = "complete") -> Dict[str, Any]:
         record = {
             "requirement_id": session.requirement_id,
             "session_id": session.session_id,
-            "status": "complete",
+            "status": status,
             "created_by": session.created_by,
             "completeness_score": score,
             "missing_fields": missing,

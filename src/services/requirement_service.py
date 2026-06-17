@@ -91,6 +91,28 @@ def persist(record: Dict[str, Any]) -> None:
         conn.commit()
 
 
+def get_by_session(session_id: str) -> Optional[Dict[str, Any]]:
+    """Return the most recent bp_requirement row for a session_id, or None.
+
+    This is the durable backing store for multi-turn elicitation when Redis is
+    unavailable: each turn upserts the (gathering) row and the next turn reloads
+    it here."""
+    if not session_id:
+        return None
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "select * from proc.bp_requirement where session_id = %s "
+            "order by created_at desc limit 1",
+            (session_id,),
+        )
+        cols = [d[0] for d in (cur.description or [])]
+        row = cur.fetchone()
+    if not row:
+        return None
+    return dict(zip(cols, row))
+
+
 def get_requirement(requirement_id: str) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         cur = conn.cursor()
