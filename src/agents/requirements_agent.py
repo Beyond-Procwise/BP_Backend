@@ -90,7 +90,9 @@ class RequirementsAgent(BaseAgent):
             .replace("{message}", user_text)
         )
         try:
-            result = self.call_ollama(prompt=prompt, format="json")
+            # think=False is required: AgentNick is a reasoning model and returns
+            # an empty `response` without it (see Model Routing Policy).
+            result = self.call_ollama(prompt=prompt, format="json", think=False)
             raw = result.get("response") if isinstance(result, dict) else result
             parsed = json.loads(raw) if isinstance(raw, str) else (raw or {})
         except Exception:

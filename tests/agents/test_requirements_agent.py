@@ -16,15 +16,17 @@ def _make_agent(monkeypatch, llm_payloads, redis=None):
     """llm_payloads: list of dicts returned (as JSON) by successive call_ollama calls."""
     agent = RequirementsAgent.__new__(RequirementsAgent)  # bypass heavy __init__
     agent._workflow_context = None
-    calls = {"i": 0}
+    calls = {"i": 0, "kwargs": []}
 
     def fake_call_ollama(prompt=None, model=None, format=None, messages=None, **kw):
         payload = llm_payloads[calls["i"]]
         calls["i"] += 1
+        calls["kwargs"].append(kw)
         import json as _json
         return {"response": _json.dumps(payload)}
 
     agent.call_ollama = fake_call_ollama
+    agent._llm_calls = calls
     agent.resolve_prompt = lambda name, **fmt: None
     agent.governing_policy = lambda name: None
     agent._with_plan = lambda ctx, out: out  # bypass BaseAgent plan internals
@@ -57,6 +59,8 @@ def test_incomplete_turn_asks_next_question(monkeypatch):
     assert out.data["session_id"] in [k.split(":")[1] for k in redis.store]
     # The gathering row is persisted every turn (durable session backing store).
     assert persisted and persisted[-1]["status"] == "gathering"
+    # think=False is required for the AgentNick reasoning model to return output.
+    assert agent._llm_calls["kwargs"][0].get("think") is False
 
 
 def test_reloads_prior_state_from_db_when_redis_absent(monkeypatch):
