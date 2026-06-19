@@ -185,12 +185,13 @@ _NARRATIVE_SOURCE = "deal_analysis_service"
 
 def upsert_analysis_row(conn: Any, metrics: dict, narrative_summary_id: Optional[str],
                         model: Optional[str], summary_text: Optional[str] = None) -> str:
-    """Demote the deal's prior current row, then insert the new current row.
+    """Replace the deal's row: delete any prior row(s) for the deal, then insert
+    the new one. The table holds exactly ONE row per deal (no is_current history).
 
-    The demote UPDATE and the INSERT are committed together so there is never a
-    window where the deal has zero current rows.  Because the live connection is
-    autocommit=True we toggle it around the two statements, with a safe fallback
-    for test fakes that lack the attribute.
+    The DELETE and the INSERT are committed together so a reader never sees the
+    deal with zero rows mid-update. Because the live connection is autocommit=True
+    we toggle it around the two statements, with a safe fallback for test fakes
+    that lack the attribute.
     """
     analysis_id = str(uuid.uuid4())
     generated_at = datetime.now(timezone.utc)
@@ -205,8 +206,8 @@ def upsert_analysis_row(conn: Any, metrics: dict, narrative_summary_id: Optional
     cur = conn.cursor()
     try:
         cur.execute(
-            "UPDATE proc.bp_analysis_summary SET is_current = false "
-            "WHERE deal_id = %s AND is_current", (metrics["deal_id"],))
+            "DELETE FROM proc.bp_analysis_summary WHERE deal_id = %s",
+            (metrics["deal_id"],))
         cur.execute(
             "INSERT INTO proc.bp_analysis_summary "
             "(analysis_id, deal_id, deal_name, supplier, category, deal_value, currency, "

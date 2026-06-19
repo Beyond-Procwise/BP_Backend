@@ -44,12 +44,17 @@ class FakeConn:
         pass
 
 
-def test_upsert_demotes_then_inserts():
+def test_upsert_deletes_prior_then_inserts():
     conn = FakeConn()
     aid = mod.upsert_analysis_row(conn, SAMPLE, "sum-123", "BeyondProcwise/AgentNick:unified")
-    sqls = " | ".join(s for s, _ in conn._cur.executed)
-    assert "UPDATE proc.bp_analysis_summary SET is_current = false" in sqls
+    executed = [s for s, _ in conn._cur.executed]
+    sqls = " | ".join(executed)
+    # one-row-per-deal: prior rows are deleted, then the new row inserted (in that order)
+    assert "DELETE FROM proc.bp_analysis_summary WHERE deal_id" in sqls
     assert "INSERT INTO proc.bp_analysis_summary" in sqls
+    delete_idx = next(i for i, s in enumerate(executed) if s.startswith("DELETE"))
+    insert_idx = next(i for i, s in enumerate(executed) if "INSERT INTO" in s)
+    assert delete_idx < insert_idx
     assert isinstance(aid, str) and len(aid) > 0
 
 

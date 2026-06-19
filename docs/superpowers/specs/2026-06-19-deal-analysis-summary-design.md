@@ -152,7 +152,7 @@ in-code design system.
   linking job.
 - Narrative LLM failure → still persist the metrics row; leave `narrative_summary_id` NULL and
   retry on the next sync.
-- The analysis-row demote+insert is atomic (one transaction): the `is_current` flip and the INSERT commit together, so there is never a window where a deal has zero current rows. The narrative (`bp_summary`) and the metrics row (`bp_analysis_summary`) are committed in separate transactions and reconciled best-effort — a re-sync heals any orphaned narrative.
+- The table holds exactly ONE row per deal: `upsert_analysis_row` deletes any prior row(s) for the deal and inserts the new one, both committed together (one transaction), so a reader never sees the deal with zero rows mid-update. The narrative (`bp_summary`) and the metrics row (`bp_analysis_summary`) are committed in separate transactions and reconciled best-effort — a re-sync heals any orphaned narrative.
 
 ## 8. Testing & validation
 
