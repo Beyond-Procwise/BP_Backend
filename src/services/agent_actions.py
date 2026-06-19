@@ -83,6 +83,13 @@ def _write_on_shared_conn(conn: Any, run) -> None:
     any failure to the action write alone.
     """
     cur = conn.cursor()
+    # On an autocommit connection there is no open transaction, so SAVEPOINT is
+    # both impossible ("can only be used in transaction blocks") and unnecessary:
+    # each statement commits on its own, so a failed insert cannot poison the
+    # caller's work. Run the write directly in that case.
+    if getattr(conn, "autocommit", False):
+        run(cur)
+        return
     cur.execute(f"SAVEPOINT {_SAVEPOINT}")
     try:
         run(cur)
