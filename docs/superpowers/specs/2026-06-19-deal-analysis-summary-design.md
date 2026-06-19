@@ -93,13 +93,13 @@ after `reconcile_status()` flips statuses — so a deal's summary is produced as
 This is the natural event boundary and reuses the existing scheduler cadence; no new DB trigger
 or LISTEN/NOTIFY needed.
 
-### Narrative model decision (flagged for review)
-Memory holds a **hard "AgentNick is the only base model"** rule and also an established
-"summaries run on cloud qwen" routing — these are in tension. **Chosen default:** generate the
-narrative with **local AgentNick** via `deal_summary.summarize_deal()`, but **persist the result
-into `bp_summary`** (the established summary table) so it is cached and UI-reachable. This honors
-the AgentNick-only constraint while keeping `bp_summary` as the storage of record.
-*Override here if you'd rather use the existing cloud `summary_agent` path.*
+### Narrative model decision (CONFIRMED 2026-06-19)
+Generate the narrative with **local AgentNick** via `deal_summary.summarize_deal()`, and
+**persist the result into `bp_summary`** (the established summary table) so it is cached and
+UI-reachable. This honors both the **AgentNick-is-the-only-base-model** hard rule and the
+**Single-Model Consolidation** direction (AgentNick:unified is the single brain for all
+non-extraction tasks; the older cloud-qwen summary routing is superseded). The cloud
+`summary_agent` path is NOT used for this feature.
 
 ## 5. API
 
