@@ -1,7 +1,8 @@
 """AI summary + reconciliation of a procurement deal.
 
-GET  /deals/{deal_id}/summary   — consolidates the deal's final (_trgt) records,
-line items, action trail and discrepancies, then returns a clear-text summary.
+GET  /deals/{deal_id}/summary   — returns the PRE-STORED narrative summary for a
+deal (generated and cached when the deal became Deal_Linked). When none exists it
+returns a "Summary not available" message rather than regenerating on the fly.
 POST /deals/{deal_id}/reconcile — compares the deal's documents (amount/currency/
 supplier/tax) and records consolidation actions; returns the verdicts.
 """
@@ -13,8 +14,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from src.services.deal_summary import summarize_deal, SummarizationError
 from src.services.reconciliation import reconcile_deal
+
+_NOT_AVAILABLE = "Summary not available"
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +43,31 @@ def get_deal_orphans() -> dict[str, Any]:
             "generated_at": datetime.now(timezone.utc).isoformat()}
 
 
-@router.get("/{deal_id}/summary", summary="AI summary of a procurement deal")
+@router.get("/{deal_id}/summary", summary="Pre-stored AI summary of a procurement deal")
 def get_deal_summary(deal_id: str) -> dict[str, Any]:
+    """Return the pre-stored narrative summary for a deal (cached in bp_summary
+    when the deal became Deal_Linked). If none is stored, respond 200 with a
+    "Summary not available" message instead of regenerating or erroring."""
+    from src.services.db import get_conn
     try:
-        result = summarize_deal(deal_id)
-    except SummarizationError as exc:
-        raise HTTPException(status_code=502, detail=f"Summarization failed: {exc}")
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "select summary, model, sources, generated_at "
+                "from proc.bp_summary "
+                "where deal_id = %s and scope = 'deal' and is_current "
+                "order by generated_at desc limit 1", (deal_id,))
+            row = cur.fetchone()
     except Exception as exc:  # DB or unexpected error
-        logger.exception("deal summary failed for %s", deal_id)
+        logger.exception("deal summary read failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))
-    if result is None:
-        raise HTTPException(status_code=404, detail=f"No deal found for deal_id={deal_id}")
-    result["generated_at"] = datetime.now(timezone.utc).isoformat()
-    return result
+    if row is None:
+        return {"deal_id": deal_id, "summary": None, "message": _NOT_AVAILABLE,
+                "generated_at": datetime.now(timezone.utc).isoformat()}
+    summary, model, sources, generated_at = row
+    return {"deal_id": deal_id, "summary": summary, "model": model,
+            "sources": sources,
+            "generated_at": generated_at.isoformat() if generated_at else None}
 
 
 @router.get("/analysis-summary", summary="Analysis-summary grid rows (all current deals)")
@@ -73,8 +87,11 @@ def get_analysis_summary_all() -> dict[str, Any]:
     except Exception as exc:
         logger.exception("analysis summary list failed")
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"rows": [to_ui_row(r) for r in rows], "count": len(rows),
-            "generated_at": datetime.now(timezone.utc).isoformat()}
+    payload = {"rows": [to_ui_row(r) for r in rows], "count": len(rows),
+               "generated_at": datetime.now(timezone.utc).isoformat()}
+    if not rows:
+        payload["message"] = _NOT_AVAILABLE
+    return payload
 
 
 @router.get("/{deal_id}/analysis-summary", summary="Analysis-summary grid row for one deal")
@@ -90,16 +107,14 @@ def get_analysis_summary(deal_id: str) -> dict[str, Any]:
                 "efficiency_score, items, item_count from proc.bp_analysis_summary "
                 "where deal_id = %s and is_current limit 1", (deal_id,))
             row = cur.fetchone()
-            if row is None:
-                raise HTTPException(status_code=404,
-                                    detail=f"No analysis summary for deal_id={deal_id}")
             cols = [d[0] for d in cur.description]
-            data = dict(zip(cols, row))
-    except HTTPException:
-        raise
+            data = dict(zip(cols, row)) if row is not None else None
     except Exception as exc:
         logger.exception("analysis summary read failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))
+    if data is None:
+        return {"deal_id": deal_id, "row": None, "message": _NOT_AVAILABLE,
+                "generated_at": datetime.now(timezone.utc).isoformat()}
     return {"row": to_ui_row(data),
             "generated_at": datetime.now(timezone.utc).isoformat()}
 
