@@ -28,3 +28,16 @@ def test_to_ui_row_nulls_render_dash():
     assert ui["value"] == "–"
     assert ui["priceChange"] == "–"
     assert ui["items"] == "–"
+
+
+def test_to_ui_row_items_as_json_string():
+    """items stored as a JSON string (e.g. read directly from DB jsonb column)
+    must be decoded and rendered as a comma-joined names string, not '–'."""
+    import json
+    items_json = json.dumps([{"name": "Widget A"}, {"name": "Bolt B"}])
+    row = {"deal_id": "DEAL-3", "supplier": "Acme", "category": "Electronics",
+           "deal_value": 500.0, "currency": "GBP", "volume": 50.0,
+           "unit_price": 10.0, "price_change_pct": None, "volume_change_pct": None,
+           "efficiency_score": None, "items": items_json}
+    ui = mod.to_ui_row(row)
+    assert ui["items"] == "Widget A, Bolt B"

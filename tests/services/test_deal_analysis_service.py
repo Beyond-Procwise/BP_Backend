@@ -4,6 +4,19 @@ import pytest
 mod = importlib.import_module("src.services.deal_analysis_service")
 
 
+class _FakeCur:
+    """Minimal cursor so compute_deal_metrics gets a non-None cur."""
+    def execute(self, sql, params=()):
+        pass
+    def fetchone(self):
+        return None
+
+
+class _FakeConn:
+    def cursor(self):
+        return _FakeCur()
+
+
 def _ctx(invoices=None, pos=None, quotes=None, deal_name="DEAL-1"):
     return {
         "deal_id": "DEAL-1",
@@ -29,7 +42,7 @@ def test_full_deal_metrics(monkeypatch):
     monkeypatch.setattr(mod, "gather_deal_context",
                         lambda deal_id, conn=None: _ctx(invoices=[inv], quotes=[quote]))
     monkeypatch.setattr(mod, "_deal_category", lambda cur, deal_id: "Electronics")
-    m = mod.compute_deal_metrics("DEAL-1", conn=object())
+    m = mod.compute_deal_metrics("DEAL-1", conn=_FakeConn())
     assert m["supplier"] == "Acme"
     assert m["category"] == "Electronics"
     assert m["deal_value"] == 1000          # invoice total
@@ -49,7 +62,7 @@ def test_missing_quote_leaves_changes_null(monkeypatch):
     monkeypatch.setattr(mod, "gather_deal_context",
                         lambda deal_id, conn=None: _ctx(invoices=[inv]))
     monkeypatch.setattr(mod, "_deal_category", lambda cur, deal_id: None)
-    m = mod.compute_deal_metrics("DEAL-1", conn=object())
+    m = mod.compute_deal_metrics("DEAL-1", conn=_FakeConn())
     assert m["deal_value"] == 500
     assert m["price_change_pct"] is None
     assert m["volume_change_pct"] is None

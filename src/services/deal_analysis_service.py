@@ -115,15 +115,23 @@ def _compute(ctx: dict, cur) -> dict:
         deal_value, currency = _doc_total(quote), _first_present(quote, "currency")
 
     # volume: prefer invoice line qty, then PO, then quote
-    volume = _sum_qty(inv) or _sum_qty(po) or _sum_qty(quote)
+    volume = _sum_qty(inv)
+    if volume is None:
+        volume = _sum_qty(po)
+    if volume is None:
+        volume = _sum_qty(quote)
     unit_price = (deal_value / volume) if (deal_value is not None and volume) else None
 
     inv_unit = _weighted_unit_price(inv)
-    quote_unit = _weighted_unit_price(quote) or _weighted_unit_price(po)
+    quote_unit = _weighted_unit_price(quote)
+    if quote_unit is None:
+        quote_unit = _weighted_unit_price(po)
     price_change_pct = _pct_change(inv_unit, quote_unit)
 
     inv_vol = _sum_qty(inv)
-    quote_vol = _sum_qty(quote) or _sum_qty(po)
+    quote_vol = _sum_qty(quote)
+    if quote_vol is None:
+        quote_vol = _sum_qty(po)
     volume_change_pct = _pct_change(inv_vol, quote_vol)
 
     # efficiency = realized savings = (quoted unit - invoiced unit) * invoiced volume
@@ -137,7 +145,7 @@ def _compute(ctx: dict, cur) -> dict:
         "deal_id": ctx["deal_id"],
         "deal_name": ctx.get("deal_name"),
         "supplier": supplier,
-        "category": _deal_category(cur, ctx["deal_id"]),
+        "category": _deal_category(cur, ctx["deal_id"]) if cur is not None else None,
         "deal_value": round(deal_value, 2) if deal_value is not None else None,
         "currency": currency,
         "volume": volume,
@@ -176,31 +184,59 @@ _NARRATIVE_SOURCE = "deal_analysis_service"
 
 
 def upsert_analysis_row(conn: Any, metrics: dict, narrative_summary_id: Optional[str],
-                        model: str) -> str:
-    """Demote the deal's prior current row, then insert the new current row."""
+                        model: Optional[str]) -> str:
+    """Demote the deal's prior current row, then insert the new current row.
+
+    The demote UPDATE and the INSERT are committed together so there is never a
+    window where the deal has zero current rows.  Because the live connection is
+    autocommit=True we toggle it around the two statements, with a safe fallback
+    for test fakes that lack the attribute.
+    """
     analysis_id = str(uuid.uuid4())
     generated_at = datetime.now(timezone.utc)
+
+    prev_autocommit = getattr(conn, "autocommit", None)
+    if prev_autocommit:
+        try:
+            conn.autocommit = False
+        except Exception:
+            prev_autocommit = None
+
     cur = conn.cursor()
-    cur.execute(
-        "UPDATE proc.bp_analysis_summary SET is_current = false "
-        "WHERE deal_id = %s AND is_current", (metrics["deal_id"],))
-    cur.execute(
-        "INSERT INTO proc.bp_analysis_summary "
-        "(analysis_id, deal_id, deal_name, supplier, category, deal_value, currency, "
-        " volume, unit_price, price_change_pct, volume_change_pct, efficiency_score, "
-        " items, item_count, narrative_summary_id, data_snapshot, model, is_current, "
-        " generated_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-        (analysis_id, metrics["deal_id"], metrics.get("deal_name"),
-         metrics.get("supplier"), metrics.get("category"), metrics.get("deal_value"),
-         metrics.get("currency"), metrics.get("volume"), metrics.get("unit_price"),
-         metrics.get("price_change_pct"), metrics.get("volume_change_pct"),
-         metrics.get("efficiency_score"),
-         json.dumps(metrics.get("items"), default=str),
-         metrics.get("item_count"), narrative_summary_id,
-         json.dumps(metrics.get("data_snapshot"), default=str),
-         model, True, generated_at))
-    conn.commit()
+    try:
+        cur.execute(
+            "UPDATE proc.bp_analysis_summary SET is_current = false "
+            "WHERE deal_id = %s AND is_current", (metrics["deal_id"],))
+        cur.execute(
+            "INSERT INTO proc.bp_analysis_summary "
+            "(analysis_id, deal_id, deal_name, supplier, category, deal_value, currency, "
+            " volume, unit_price, price_change_pct, volume_change_pct, efficiency_score, "
+            " items, item_count, narrative_summary_id, data_snapshot, model, is_current, "
+            " generated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (analysis_id, metrics["deal_id"], metrics.get("deal_name"),
+             metrics.get("supplier"), metrics.get("category"), metrics.get("deal_value"),
+             metrics.get("currency"), metrics.get("volume"), metrics.get("unit_price"),
+             metrics.get("price_change_pct"), metrics.get("volume_change_pct"),
+             metrics.get("efficiency_score"),
+             json.dumps(metrics.get("items"), default=str),
+             metrics.get("item_count"), narrative_summary_id,
+             json.dumps(metrics.get("data_snapshot"), default=str),
+             model, True, generated_at))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        if prev_autocommit:
+            try:
+                conn.autocommit = True
+            except Exception:
+                pass
+
     return analysis_id
 
 
@@ -226,7 +262,7 @@ def generate_for_deal(deal_id: str, conn: Any) -> dict:
     except Exception as exc:  # narrative is best-effort; metrics still persist
         log.warning("narrative generation failed for %s: %s", deal_id, exc)
 
-    upsert_analysis_row(conn, metrics, narrative_id, _SUMMARY_MODEL)
+    upsert_analysis_row(conn, metrics, narrative_id, _SUMMARY_MODEL if narrative_id else None)
     return {"deal_id": deal_id, "status": "ok", "narrative_summary_id": narrative_id}
 
 
@@ -241,7 +277,7 @@ def _linked_deal_ids_needing_summary(cur) -> list[str]:
 
 
 def sync_deal_summaries(conn: Any = None, deal_ids: Optional[list[str]] = None,
-                        max_workers: int = 4) -> dict:
+                        max_workers: int = 2) -> dict:
     """Generate metrics + narrative for every linked deal missing a current summary.
 
     Each deal is processed on its own connection so failures stay isolated and
@@ -310,6 +346,12 @@ def to_ui_row(row: dict) -> dict:
     """
     cur = row.get("currency")
     items = row.get("items")
+    if isinstance(items, str):
+        try:
+            import json as _json
+            items = _json.loads(items)
+        except Exception:
+            items = None
     if isinstance(items, list):
         names = [i.get("name") for i in items if isinstance(i, dict) and i.get("name")]
         items_str = ", ".join(names) if names else "–"
