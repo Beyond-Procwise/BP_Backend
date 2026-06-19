@@ -6,7 +6,11 @@ persists those rows and the AgentNick narrative for every Deal_Linked deal.
 """
 from __future__ import annotations
 
+import json
 import logging
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.services.db import get_conn
@@ -165,3 +169,113 @@ def compute_deal_metrics(deal_id: str, conn: Any = None) -> Optional[dict]:
         if ctx is None:
             return None
         return _compute(ctx, own.cursor())
+
+
+_NARRATIVE_PERSONA = "analysis"
+_NARRATIVE_SOURCE = "deal_analysis_service"
+
+
+def upsert_analysis_row(conn: Any, metrics: dict, narrative_summary_id: Optional[str],
+                        model: str) -> str:
+    """Demote the deal's prior current row, then insert the new current row."""
+    analysis_id = str(uuid.uuid4())
+    generated_at = datetime.now(timezone.utc)
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE proc.bp_analysis_summary SET is_current = false "
+        "WHERE deal_id = %s AND is_current", (metrics["deal_id"],))
+    cur.execute(
+        "INSERT INTO proc.bp_analysis_summary "
+        "(analysis_id, deal_id, deal_name, supplier, category, deal_value, currency, "
+        " volume, unit_price, price_change_pct, volume_change_pct, efficiency_score, "
+        " items, item_count, narrative_summary_id, data_snapshot, model, is_current, "
+        " generated_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (analysis_id, metrics["deal_id"], metrics.get("deal_name"),
+         metrics.get("supplier"), metrics.get("category"), metrics.get("deal_value"),
+         metrics.get("currency"), metrics.get("volume"), metrics.get("unit_price"),
+         metrics.get("price_change_pct"), metrics.get("volume_change_pct"),
+         metrics.get("efficiency_score"),
+         json.dumps(metrics.get("items"), default=str),
+         metrics.get("item_count"), narrative_summary_id,
+         json.dumps(metrics.get("data_snapshot"), default=str),
+         model, True, generated_at))
+    conn.commit()
+    return analysis_id
+
+
+def generate_for_deal(deal_id: str, conn: Any) -> dict:
+    """Compute metrics, generate+store the AgentNick narrative, upsert the row."""
+    from src.services.deal_summary import summarize_deal, _SUMMARY_MODEL
+    from src.services.summary_agent import _store_summary
+
+    metrics = compute_deal_metrics(deal_id, conn=conn)
+    if metrics is None:
+        return {"deal_id": deal_id, "status": "no_records"}
+
+    narrative_id = None
+    try:
+        narr = summarize_deal(deal_id, conn=conn)
+        if narr and narr.get("summary"):
+            stored = _store_summary(
+                conn, persona=_NARRATIVE_PERSONA, persona_source=_NARRATIVE_SOURCE,
+                scope="deal", deal_id=deal_id, summary=narr["summary"],
+                data_snapshot=metrics.get("data_snapshot"),
+                sources=narr.get("sources"), model=_SUMMARY_MODEL, is_current=True)
+            narrative_id = stored["summary_id"]
+    except Exception as exc:  # narrative is best-effort; metrics still persist
+        log.warning("narrative generation failed for %s: %s", deal_id, exc)
+
+    upsert_analysis_row(conn, metrics, narrative_id, _SUMMARY_MODEL)
+    return {"deal_id": deal_id, "status": "ok", "narrative_summary_id": narrative_id}
+
+
+def _linked_deal_ids_needing_summary(cur) -> list[str]:
+    """Deals at Deal_Linked status with no current bp_analysis_summary row."""
+    cur.execute(
+        "select distinct deal_id from proc.process_monitor pm "
+        "where pm.status = 'Deal_Linked' and coalesce(pm.deal_id,'') <> '' "
+        "and not exists (select 1 from proc.bp_analysis_summary a "
+        "                where a.deal_id = pm.deal_id and a.is_current)")
+    return [r[0] for r in cur.fetchall()]
+
+
+def sync_deal_summaries(conn: Any = None, deal_ids: Optional[list[str]] = None,
+                        max_workers: int = 4) -> dict:
+    """Generate metrics + narrative for every linked deal missing a current summary.
+
+    Each deal is processed on its own connection so failures stay isolated and
+    work runs concurrently. Safe to call repeatedly (idempotent).
+    """
+    if conn is not None:
+        ids = deal_ids if deal_ids is not None else _linked_deal_ids_needing_summary(conn.cursor())
+    else:
+        with get_conn() as own:
+            ids = deal_ids if deal_ids is not None else _linked_deal_ids_needing_summary(own.cursor())
+
+    processed = failed = 0
+    done: list[str] = []
+
+    def _work(deal_id: str):
+        # Each worker uses an independent connection (psycopg connections are
+        # not thread-safe to share). When a conn was passed in we still open a
+        # fresh one per deal to keep failures from poisoning a shared txn.
+        with get_conn() as wc:
+            return generate_for_deal(deal_id, wc)
+
+    if not ids:
+        return {"processed": 0, "skipped": 0, "failed": 0, "deal_ids": []}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futs = {pool.submit(_work, d): d for d in ids}
+        for fut in as_completed(futs):
+            d = futs[fut]
+            try:
+                fut.result()
+                processed += 1
+                done.append(d)
+            except Exception as exc:
+                failed += 1
+                log.warning("summary sync failed for deal %s: %s", d, exc)
+
+    return {"processed": processed, "skipped": 0, "failed": failed, "deal_ids": done}
