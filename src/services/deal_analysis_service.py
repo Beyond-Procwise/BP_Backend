@@ -279,3 +279,54 @@ def sync_deal_summaries(conn: Any = None, deal_ids: Optional[list[str]] = None,
                 log.warning("summary sync failed for deal %s: %s", d, exc)
 
     return {"processed": processed, "skipped": 0, "failed": failed, "deal_ids": done}
+
+
+_CCY = {"GBP": "£", "USD": "$", "EUR": "€"}
+
+
+def _money(value, currency) -> str:
+    if value is None:
+        return "–"
+    sym = _CCY.get((currency or "").upper(), (currency + " ") if currency else "")
+    v = float(value)
+    if abs(v) >= 1_000_000:
+        return f"{sym}{v / 1_000_000:.1f}M".replace(".0M", "M")
+    if abs(v) >= 1_000:
+        return f"{sym}{round(v / 1_000)}K"
+    return f"{sym}{v:,.2f}"
+
+
+def _signed_pct(value) -> str:
+    if value is None:
+        return "–"
+    return f"{'+' if value >= 0 else ''}{value:g}%"
+
+
+def to_ui_row(row: dict) -> dict:
+    """Map a bp_analysis_summary row to the exact shape AnalysisSummary.jsx wants.
+
+    Every value is a string (the UI search filter lowercases each field), NULL
+    numerics render as the en-dash, and items is a comma-joined product string.
+    """
+    cur = row.get("currency")
+    items = row.get("items")
+    if isinstance(items, list):
+        names = [i.get("name") for i in items if isinstance(i, dict) and i.get("name")]
+        items_str = ", ".join(names) if names else "–"
+    else:
+        items_str = "–"
+    unit = row.get("unit_price")
+    return {
+        "id": row.get("deal_id") or "–",
+        "supplier": row.get("supplier") or "–",
+        "category": row.get("category") or "–",
+        "value": _money(row.get("deal_value"), cur),
+        "volume": f"{float(row['volume']):,.0f}" if row.get("volume") is not None else "–",
+        "unitPrice": _money(unit, cur) if unit is not None and float(unit) >= 1000
+                     else (f"{_CCY.get((cur or '').upper(), (cur + ' ') if cur else '')}{float(unit):,.2f}"
+                           if unit is not None else "–"),
+        "priceChange": _signed_pct(row.get("price_change_pct")),
+        "volumeChange": _signed_pct(row.get("volume_change_pct")),
+        "efficiency": f"{float(row['efficiency_score']):g}" if row.get("efficiency_score") is not None else "–",
+        "items": items_str,
+    }

@@ -631,18 +631,29 @@ def reconcile_status(cur) -> int:
 
 
 def assign_deals(conn: Any = None, limit: Optional[int] = None) -> dict:
-    """Run look-forward, look-back, reconcile, and unassigned-flag passes."""
+    """Run look-forward, look-back, reconcile, and unassigned-flag passes,
+    then generate analysis summaries for any newly Deal_Linked deals."""
     if conn is None:
         with get_conn() as own:
             own.autocommit = False
             try:
                 r = _run(own.cursor())
                 own.commit()
-                return r
             except Exception:
                 own.rollback()
                 raise
-    return _run(conn.cursor())
+    else:
+        r = _run(conn.cursor())
+
+    # Summary generation is post-link and best-effort: it must never fail the
+    # linking pipeline. Runs on its own connections (see sync_deal_summaries).
+    try:
+        from src.services.deal_analysis_service import sync_deal_summaries
+        r["summaries"] = sync_deal_summaries()
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("deal summary sync after assign_deals failed: %s", exc)
+        r["summaries"] = {"error": str(exc)}
+    return r
 
 
 def _run(cur) -> dict:
