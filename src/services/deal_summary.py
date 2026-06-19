@@ -12,14 +12,14 @@ import os
 from typing import Any, Optional
 
 from src.services.db import get_conn
-from src.services.ollama_client import ollama_cloud_generate
+from src.services.ollama_client import ollama_generate
 
 log = logging.getLogger(__name__)
 
-# Summarization runs on the Ollama Cloud API (remote), NOT the local GPU, so the
-# local AgentNick model stays dedicated to extraction. Model is env-configurable
-# via PROCWISE_SUMMARY_MODEL; default is the Qwen 3.5 cloud model.
-_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "qwen3.5:397b")
+# Single-brain setup: summaries run on the local AgentNick:unified reasoning
+# model — the same brain used for analysis, negotiation and the agentic flow.
+# Extraction keeps its own specialist. Env-configurable via PROCWISE_SUMMARY_MODEL.
+_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "BeyondProcwise/AgentNick:unified")
 
 # (final table, line-items table or None, primary-key column)
 # Contracts are intentionally excluded: proc.bp_contracts has no deal_id column
@@ -102,18 +102,22 @@ def gather_deal_context(deal_id: str, conn: Any = None) -> Optional[dict]:
 def _build_prompt(ctx: dict) -> str:
     facts = json.dumps(ctx, indent=2, default=str)
     return (
-        "You are a procurement analyst. Write a clear, plain-English summary of "
-        "the deal described by the JSON facts below.\n\n"
-        "Rules:\n"
-        "- Use ONLY the data provided. Do not fabricate or infer values that are "
-        "not present.\n"
-        "- If something is absent or null, simply leave it out — do not guess.\n"
-        "- Cover: the documents involved (invoices, purchase orders, quotes), "
-        "key amounts and currencies, suppliers, and any discrepancies or "
-        "notable actions in the trail.\n"
-        "- Be concise and factual; no marketing language.\n\n"
-        f"Deal facts (JSON):\n{facts}\n\n"
-        "Summary:"
+        "You are a procurement analyst. Using ONLY the JSON facts below, write a "
+        "SHORT, precise summary of the deal. Do not fabricate or infer values that "
+        "are not present; if something is absent, leave it out.\n\n"
+        "Respond in EXACTLY this format and keep it tight:\n"
+        "<one or two plain-English sentences: supplier, buyer, the documents "
+        "involved (quote/PO/invoice), and total value with currency>\n"
+        "Key Outcomes:\n"
+        "• <Label>: <value>\n"
+        "• <Label>: <value>\n"
+        "(3-5 bullets maximum, each one short fact — e.g. Supplier, Total Value, "
+        "Items, Price vs Quote, Discrepancies. Each bullet MUST start with '• ' "
+        "and be of the form 'Label: value'.)\n"
+        "Conclusion:\n"
+        "<exactly one short sentence stating whether the deal is consistent and "
+        "complete, and flagging any single issue worth noting>\n\n"
+        f"Deal facts (JSON):\n{facts}\n"
     )
 
 
@@ -140,11 +144,11 @@ def summarize_deal(deal_id: str, conn: Any = None) -> Optional[dict]:
     if ctx is None:
         return None
     prompt = _build_prompt(ctx)
-    text = ollama_cloud_generate(
+    text = ollama_generate(
         prompt,
         model=_SUMMARY_MODEL,
         temperature=0.0,
-        num_predict=1024,
+        num_predict=400,
         timeout=120,
         retries=2,
     )

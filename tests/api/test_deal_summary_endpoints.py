@@ -75,16 +75,25 @@ def test_analysis_summary_returns_row(monkeypatch):
 
 
 def test_deal_summary_not_available(monkeypatch):
-    _patch(monkeypatch, [], ["summary", "model", "sources", "generated_at"])
+    _patch(monkeypatch, [], ["summary", "model", "generated_at"])
     res = mod.get_deal_summary("NOPE")
+    assert res["summary"] is None
+    assert res["message"] == "Summary not available"
+
+
+def test_deal_summary_null_summary_not_available(monkeypatch):
+    # analysis row exists but its narrative is NULL (narrative generation failed)
+    ts = datetime(2026, 6, 19, tzinfo=timezone.utc)
+    _patch(monkeypatch, [(None, None, ts)], ["summary", "model", "generated_at"])
+    res = mod.get_deal_summary("DEAL-1")
     assert res["summary"] is None
     assert res["message"] == "Summary not available"
 
 
 def test_deal_summary_returns_stored(monkeypatch):
     ts = datetime(2026, 6, 19, tzinfo=timezone.utc)
-    row = ("This deal involves Acme.", "BeyondProcwise/AgentNick:unified", None, ts)
-    _patch(monkeypatch, [row], ["summary", "model", "sources", "generated_at"])
+    row = ("This deal involves Acme.", "BeyondProcwise/AgentNick:unified", ts)
+    _patch(monkeypatch, [row], ["summary", "model", "generated_at"])
     res = mod.get_deal_summary("DEAL-1")
     assert res["summary"] == "This deal involves Acme."
     assert res["model"] == "BeyondProcwise/AgentNick:unified"

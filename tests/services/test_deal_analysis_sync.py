@@ -108,9 +108,10 @@ def test_generate_for_deal_model_none_when_narrative_fails(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "src.services.deal_summary", fake_ds)
 
-    def fake_upsert(conn, metrics, narrative_summary_id, model):
+    def fake_upsert(conn, metrics, narrative_summary_id, model, summary_text=None):
         captured["model"] = model
         captured["narrative_summary_id"] = narrative_summary_id
+        captured["summary_text"] = summary_text
         return "fake-analysis-id"
 
     monkeypatch.setattr(mod, "upsert_analysis_row", fake_upsert)

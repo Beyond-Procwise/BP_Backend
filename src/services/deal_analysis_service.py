@@ -184,7 +184,7 @@ _NARRATIVE_SOURCE = "deal_analysis_service"
 
 
 def upsert_analysis_row(conn: Any, metrics: dict, narrative_summary_id: Optional[str],
-                        model: Optional[str]) -> str:
+                        model: Optional[str], summary_text: Optional[str] = None) -> str:
     """Demote the deal's prior current row, then insert the new current row.
 
     The demote UPDATE and the INSERT are committed together so there is never a
@@ -211,16 +211,16 @@ def upsert_analysis_row(conn: Any, metrics: dict, narrative_summary_id: Optional
             "INSERT INTO proc.bp_analysis_summary "
             "(analysis_id, deal_id, deal_name, supplier, category, deal_value, currency, "
             " volume, unit_price, price_change_pct, volume_change_pct, efficiency_score, "
-            " items, item_count, narrative_summary_id, data_snapshot, model, is_current, "
-            " generated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            " items, item_count, narrative_summary_id, summary, data_snapshot, model, "
+            " is_current, generated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (analysis_id, metrics["deal_id"], metrics.get("deal_name"),
              metrics.get("supplier"), metrics.get("category"), metrics.get("deal_value"),
              metrics.get("currency"), metrics.get("volume"), metrics.get("unit_price"),
              metrics.get("price_change_pct"), metrics.get("volume_change_pct"),
              metrics.get("efficiency_score"),
              json.dumps(metrics.get("items"), default=str),
-             metrics.get("item_count"), narrative_summary_id,
+             metrics.get("item_count"), narrative_summary_id, summary_text,
              json.dumps(metrics.get("data_snapshot"), default=str),
              model, True, generated_at))
         conn.commit()
@@ -250,19 +250,25 @@ def generate_for_deal(deal_id: str, conn: Any) -> dict:
         return {"deal_id": deal_id, "status": "no_records"}
 
     narrative_id = None
+    narrative_text = None
     try:
         narr = summarize_deal(deal_id, conn=conn)
         if narr and narr.get("summary"):
+            narrative_text = narr["summary"]
             stored = _store_summary(
                 conn, persona=_NARRATIVE_PERSONA, persona_source=_NARRATIVE_SOURCE,
-                scope="deal", deal_id=deal_id, summary=narr["summary"],
+                scope="deal", deal_id=deal_id, summary=narrative_text,
                 data_snapshot=metrics.get("data_snapshot"),
                 sources=narr.get("sources"), model=_SUMMARY_MODEL, is_current=True)
             narrative_id = stored["summary_id"]
     except Exception as exc:  # narrative is best-effort; metrics still persist
         log.warning("narrative generation failed for %s: %s", deal_id, exc)
 
-    upsert_analysis_row(conn, metrics, narrative_id, _SUMMARY_MODEL if narrative_id else None)
+    # Store the narrative TEXT directly on the analysis row (authoritative home),
+    # alongside the bp_summary FK for the existing summary ecosystem.
+    upsert_analysis_row(conn, metrics, narrative_id,
+                        _SUMMARY_MODEL if narrative_id else None,
+                        summary_text=narrative_text)
     return {"deal_id": deal_id, "status": "ok", "narrative_summary_id": narrative_id}
 
 

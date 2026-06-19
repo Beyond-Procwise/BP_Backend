@@ -45,28 +45,27 @@ def get_deal_orphans() -> dict[str, Any]:
 
 @router.get("/{deal_id}/summary", summary="Pre-stored AI summary of a procurement deal")
 def get_deal_summary(deal_id: str) -> dict[str, Any]:
-    """Return the pre-stored narrative summary for a deal (cached in bp_summary
-    when the deal became Deal_Linked). If none is stored, respond 200 with a
-    "Summary not available" message instead of regenerating or erroring."""
+    """Return the pre-stored narrative summary for a deal, read from the deal's
+    analysis-summary row (generated when the deal became Deal_Linked). If none is
+    stored, respond 200 with a "Summary not available" message instead of
+    regenerating or erroring."""
     from src.services.db import get_conn
     try:
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "select summary, model, sources, generated_at "
-                "from proc.bp_summary "
-                "where deal_id = %s and scope = 'deal' and is_current "
-                "order by generated_at desc limit 1", (deal_id,))
+                "select summary, model, generated_at "
+                "from proc.bp_analysis_summary "
+                "where deal_id = %s and is_current limit 1", (deal_id,))
             row = cur.fetchone()
     except Exception as exc:  # DB or unexpected error
         logger.exception("deal summary read failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))
-    if row is None:
+    if row is None or row[0] is None:
         return {"deal_id": deal_id, "summary": None, "message": _NOT_AVAILABLE,
                 "generated_at": datetime.now(timezone.utc).isoformat()}
-    summary, model, sources, generated_at = row
+    summary, model, generated_at = row
     return {"deal_id": deal_id, "summary": summary, "model": model,
-            "sources": sources,
             "generated_at": generated_at.isoformat() if generated_at else None}
 
 
