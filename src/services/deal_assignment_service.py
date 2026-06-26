@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
+from difflib import SequenceMatcher
 from typing import Any, Optional
 
 from src.services.db import get_conn
 from src.services.linking_engine import (
     _PO,
+    _norm_id,
     _norm_po,
     _rows,
     _table_columns,
+    cmp_supplier,
     score_link,
 )
 
@@ -33,6 +37,30 @@ QUOTE_ANCHOR_MIN_SCORE = float(os.getenv("QUOTE_ANCHOR_MIN_SCORE",
 # ---------------------------------------------------------------------------
 # Pure helpers (no DB)
 # ---------------------------------------------------------------------------
+# Min normalized-string similarity for two supplier ids to count as the SAME
+# supplier when cmp_supplier can't resolve them (e.g. an extraction typo like
+# "Auarius" vs "Aquarius", which is not a clean prefix). Tuned so genuine
+# typos/suffix drift pass (>=0.67) while different companies fail (<=0.37).
+_SUPPLIER_SIM_MIN = 0.6
+
+
+def _same_supplier(a: Any, b: Any) -> bool:
+    """True when two supplier ids denote the same supplier.
+
+    Layers the linking engine's cmp_supplier (exact + prefix-drift) with a fuzzy
+    string ratio so extraction typos are not mistaken for a different supplier.
+    A missing id on either side is inconclusive -> treated as same (never flag)."""
+    na, nb = _norm_id(a), _norm_id(b)
+    if not na or not nb:
+        return True
+    if na == nb:
+        return True
+    score, _ = cmp_supplier(a, b)           # 1.0 OK / 0.7 WEAK(prefix) / 0.0 CONFLICT
+    if score >= 0.7:
+        return True
+    return SequenceMatcher(None, na, nb).ratio() >= _SUPPLIER_SIM_MIN
+
+
 def basename_match(path_a: Optional[str], path_b: Optional[str]) -> bool:
     """True when two file paths share the same case-insensitive basename."""
     return _basename(path_a) != "" and _basename(path_a) == _basename(path_b)
@@ -117,6 +145,72 @@ def _persist_deal(cur, doc_type, doc_pk, *, deal_id, deal_name, document_id, dea
         cur.execute(
             f"update {table} set {set_clause} where {pk}=%s",
             [values[c] for c in present] + [doc_pk])
+
+
+def _rename_deal(cur, deal_id: str, new_name: str) -> int:
+    """Set deal_name across every _trgt/_stg doc (+ line items) in a DERIVED deal.
+    Used to upgrade a provisional '[Awaiting Quote] …' name to its final name once the
+    anchoring quote joins the deal. Idempotent — only rows whose name differs are
+    touched. Caller must restrict this to derived (DEALV2-) deals; never look-forward."""
+    renamed = 0
+    for dt in ("invoice", "quote", "po"):
+        pk, _raw, stg, trgt, line_stg, line_trgt = _DOC[dt]
+        for table in (stg, trgt, line_stg, line_trgt):
+            cols = _table_columns(cur, table)
+            if "deal_id" not in cols or "deal_name" not in cols:
+                continue
+            cur.execute(
+                f"update {table} set deal_name=%s "
+                f"where deal_id=%s and coalesce(deal_name,'') <> %s",
+                (new_name, deal_id, new_name))
+            renamed += cur.rowcount or 0
+    return renamed
+
+
+def _deal_supplier(cur, deal_id: str) -> Optional[str]:
+    """Representative supplier for a deal (PO first, then invoice, then quote)."""
+    for dt in ("po", "invoice", "quote"):
+        pk, _r, _s, trgt, _ls, _lt = _DOC[dt]
+        cols = _table_columns(cur, trgt)
+        scol = "supplier_name" if "supplier_name" in cols else ("supplier_id" if "supplier_id" in cols else None)
+        if not scol:
+            continue
+        rr = _rows(cur, f"select {scol} s from {trgt} where deal_id=%s and coalesce({scol}::text,'') <> '' limit 1", (deal_id,))
+        if rr:
+            return rr[0]["s"]
+    return None
+
+
+def _finalize_lookback_names(cur) -> int:
+    """Set ONE consistent name on every derived (DEALV2-) deal, reflecting quote
+    presence: the final name once the deal contains a quote, a provisional
+    '[Awaiting Quote] …' name otherwise (those docs stay Orphaned_Awaiting_Quote).
+    Idempotent; authoritative look-forward deals (not DEALV2-) are never touched."""
+    cur.execute(
+        "select d.deal_id, "
+        "exists(select 1 from proc.bp_quote_trgt q where q.deal_id=d.deal_id) hq "
+        "from ("
+        "  select deal_id from proc.bp_purchase_order_trgt where deal_id like 'DEALV2-%' "
+        "  union select deal_id from proc.bp_invoice_trgt where deal_id like 'DEALV2-%' "
+        "  union select deal_id from proc.bp_quote_trgt where deal_id like 'DEALV2-%'"
+        ") d where d.deal_id is not null")
+    deals = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
+    renamed = 0
+    for d in deals:
+        did, hq = d["deal_id"], bool(d["hq"])
+        sup = _deal_supplier(cur, did)
+        key = did[len("DEALV2-"):]
+        if key.startswith("Q-"):
+            base = f"{(sup or 'Unknown Supplier').strip()} — Quote {key[2:]}"
+        elif key.startswith("INV-"):
+            base = f"{(sup or 'Unknown Supplier').strip()} — Invoice {key[4:]}"
+        elif key.startswith("PO-"):
+            base = lookback_deal_name(sup, key[3:])
+        else:
+            base = lookback_deal_name(sup, key)
+        name = base if hq else f"[Awaiting Quote] {base}"
+        renamed += _rename_deal(cur, did, name)
+    return renamed
 
 
 def _set_monitor_status(cur, monitor_id, status):
@@ -397,40 +491,86 @@ def _quote_anchor_for_po(cur, po, npo=None):
 
 
 def _look_back(cur) -> int:
-    """Quote-gated deal formation. A deal forms for a canonical PO ONLY when a quote
-    anchors it (Quote -> PO -> Invoice flow). The anchoring quote, the PO, and the
-    PO's invoices are assigned to the deal (the PO's existing authoritative deal, or a
-    derived DEALV2-<po>). POs/invoices with no anchoring quote are left orphaned (no
-    deal minted) — surfaced as Orphaned_Awaiting_Quote by reconcile_status. Only
-    currently-unlinked docs are stamped, so authoritative look-forward deals are never
-    clobbered. Returns the number of documents newly linked."""
+    """Look-back (historical) deal assignment — the agent's responsibility.
+
+    A look-back document is any _trgt doc NOT already carrying an authoritative
+    look-forward deal (process_monitor had no deal_id/deal_name). Every such document
+    is given a UNIQUE deal_id derived DETERMINISTICALLY from its relationships, so no
+    look-back doc is ever left without a deal:
+
+      * the canonical PO number is the relationship key — a PO and every quote/invoice
+        that resolves to it converge on ONE deal ``DEALV2-<canonical_po>`` (Quote->PO->
+        Invoice chains group together); a quote may also anchor a PO by reference/score.
+      * a document with no resolvable PO link is its own single-document deal
+        (``DEALV2-Q-<quote_id>`` / ``DEALV2-INV-<invoice_id>`` / ``DEALV2-PO-<po_id>``).
+
+    Existing (look-forward) deals are NEVER clobbered, and the pass is idempotent (a doc
+    already carrying a deal_id is skipped). Returns the number of documents newly linked."""
     inv_trgt = _DOC["invoice"][3]
+    quo_trgt = _DOC["quote"][3]
+    po_trgt = _PO["trgt"]
     linked = 0
-    for po in _rows(cur, f"select * from {_PO['trgt']}"):
+
+    def _assign(dt, dpk, cur_deal, deal_id, deal_name, deal_date) -> None:
+        nonlocal linked
+        if dpk is None or (cur_deal or "").strip():
+            return  # no pk, or an authoritative/earlier deal already present -> leave it
+        doc_id = mint_document_id(deal_id, dt, str(dpk))
+        _persist_deal(cur, dt, dpk, deal_id=deal_id, deal_name=deal_name,
+                      document_id=doc_id, deal_date=deal_date)
+        _upsert_document_map(cur, deal_id, deal_name, dt, dpk, doc_id, None)
+        linked += 1
+
+    # 1) PO-keyed deals: a PO anchors a deal on its own (NO quote gate). The PO, its
+    #    referencing invoices, and any anchoring quote all share DEALV2-<canonical po>.
+    for po in _rows(cur, f"select * from {po_trgt}"):
+        sup = po.get("supplier_name") or po.get("supplier_id")
         npo = _norm_po(po.get("po_id"))
-        if not npo:
-            continue
-        quote = _quote_anchor_for_po(cur, po, npo)
-        if quote is None:
-            continue   # no anchoring quote -> PO + its invoices stay orphaned
-        supplier = po.get("supplier_name") or po.get("supplier_id")
-        existing = (po.get("deal_id") or "").strip() or (quote.get("deal_id") or "").strip()
-        deal_id = existing or lookback_deal_id(npo)
-        deal_name = ((po.get("deal_name") or quote.get("deal_name")) if existing
-                     else lookback_deal_name(supplier, npo))
-        deal_date = resolve_deal_date(po)
-        members = [("po", po.get("po_id"), po.get("deal_id")),
-                   ("quote", quote.get("quote_id"), quote.get("deal_id"))]
-        for inv in _rows(cur, f"select invoice_id, deal_id from {inv_trgt} where {_PO_NORM_COND}=%s", (npo,)):
-            members.append(("invoice", inv["invoice_id"], inv.get("deal_id")))
-        for dt, dpk, cur_deal in members:
-            if (cur_deal or "").strip():
-                continue   # already linked -> never clobber an authoritative deal
-            doc_id = mint_document_id(deal_id, dt, str(dpk))
-            _persist_deal(cur, dt, dpk, deal_id=deal_id, deal_name=deal_name,
-                          document_id=doc_id, deal_date=deal_date)
-            _upsert_document_map(cur, deal_id, deal_name, dt, dpk, doc_id, None)
-            linked += 1
+        quote = _quote_anchor_for_po(cur, po, npo) if npo else None
+        existing = (po.get("deal_id") or "").strip() or ((quote or {}).get("deal_id") or "").strip()
+        if npo:
+            deal_id = existing or lookback_deal_id(npo)
+            deal_name = ((po.get("deal_name") or (quote or {}).get("deal_name")) if existing
+                         else lookback_deal_name(sup, npo))
+        else:
+            deal_id = existing or f"DEALV2-PO-{po.get('po_id')}"
+            deal_name = (po.get("deal_name") if existing
+                         else lookback_deal_name(sup, str(po.get("po_id"))))
+        dd = resolve_deal_date(po)
+        _assign("po", po.get("po_id"), po.get("deal_id"), deal_id, deal_name, dd)
+        if quote is not None:
+            _assign("quote", quote.get("quote_id"), quote.get("deal_id"), deal_id, deal_name, dd)
+        if npo:
+            for inv in _rows(cur, f"select invoice_id, deal_id from {inv_trgt} where {_PO_NORM_COND}=%s", (npo,)):
+                _assign("invoice", inv["invoice_id"], inv.get("deal_id"), deal_id, deal_name, dd)
+
+    # 2) Any still-unlinked quote -> its referenced PO's deal, else its own single-doc deal.
+    for q in _rows(cur, f"select * from {quo_trgt} where coalesce(deal_id,'') = ''"):
+        qid = q.get("quote_id")
+        sup = q.get("supplier_name") or q.get("supplier_id")
+        npo = _norm_po(q.get("po_id"))
+        if npo:
+            deal_id, deal_name = lookback_deal_id(npo), lookback_deal_name(sup, npo)
+        else:
+            deal_id, deal_name = f"DEALV2-Q-{qid}", f"{(sup or 'Unknown Supplier').strip()} — Quote {qid}"
+        _assign("quote", qid, q.get("deal_id"), deal_id, deal_name, resolve_deal_date(None))
+
+    # 3) Any still-unlinked invoice -> its referenced PO's deal, else its own single-doc deal.
+    for inv in _rows(cur, f"select * from {inv_trgt} where coalesce(deal_id,'') = ''"):
+        iid = inv.get("invoice_id")
+        sup = inv.get("supplier_name") or inv.get("supplier_id")
+        npo = _norm_po(inv.get("po_id"))
+        if npo:
+            deal_id, deal_name = lookback_deal_id(npo), lookback_deal_name(sup, npo)
+        else:
+            deal_id, deal_name = f"DEALV2-INV-{iid}", f"{(sup or 'Unknown Supplier').strip()} — Invoice {iid}"
+        _assign("invoice", iid, inv.get("deal_id"), deal_id, deal_name, _deal_date_for_doc(cur, "invoice", iid))
+
+    # 4) Provisional vs final naming. A derived (DEALV2-) deal WITHOUT a quote carries
+    #    an "[Awaiting Quote] …" name and reconcile_status keeps its docs Orphaned; once a
+    #    quote joins the deal it is renamed to its final name (-> Deal_Linked). Idempotent;
+    #    authoritative look-forward deals are never renamed.
+    _finalize_lookback_names(cur)
     return linked
 
 
@@ -522,6 +662,54 @@ def _flag_conflict_po_chains(cur) -> int:
     return len(flagged)
 
 
+def _deal_docs_suppliers(cur) -> dict:
+    """deal_id -> [(doc_type, doc_pk, supplier_id)] for every _trgt doc that
+    carries a deal. Used by the supplier-conflict check."""
+    out: dict = {}
+    for dt in ("po", "invoice", "quote"):
+        pk, _r, _s, trgt, _ls, _lt = _DOC[dt]
+        cols = _table_columns(cur, trgt)
+        if "supplier_id" not in cols or "deal_id" not in cols:
+            continue
+        for r in _rows(cur, f"select {pk} as pk, deal_id, supplier_id from {trgt} "
+                            f"where coalesce(deal_id::text,'') <> ''"):
+            out.setdefault(r["deal_id"], []).append((dt, r["pk"], r.get("supplier_id")))
+    return out
+
+
+def _flag_supplier_conflict_deals(cur) -> int:
+    """Flag documents whose supplier conflicts with the rest of their deal.
+
+    Deal grouping is owned upstream (user-supplied at upload), so a wrong-supplier
+    document can be dropped into an otherwise-coherent deal (e.g. a different
+    company's invoice), silently polluting that deal's analytics. The PO-chain
+    conflict check can't see it (a no-PO invoice is in no chain). Here we surface
+    each such document for human resolution by setting
+    process_monitor.status='Deal_Conflict_Review' — mirroring
+    _flag_conflict_po_chains. Supplier identity uses the fuzzy _same_supplier so
+    extraction typos / id drift are NOT flagged. Returns monitor rows flagged."""
+    flagged: set = set()
+    for _deal_id, docs in _deal_docs_suppliers(cur).items():
+        present = [(dt, pk, s) for (dt, pk, s) in docs if _norm_id(s)]
+        if len(present) < 2:
+            continue
+        # representative supplier: the PO's (the deal anchor) if any, else the
+        # most common supplier across the deal's documents.
+        rep = next((s for (dt, _pk, s) in present if dt == "po"), None)
+        if rep is None:
+            rep = Counter(s for (_dt, _pk, s) in present).most_common(1)[0][0]
+        if all(_same_supplier(s, rep) for (_dt, _pk, s) in present):
+            continue   # coherent deal — nothing to flag
+        for (dt, pk, s) in present:
+            if _same_supplier(s, rep):
+                continue
+            for mid in _monitor_ids_for_doc(cur, dt, pk):
+                if mid not in flagged:
+                    _set_monitor_status(cur, mid, "Deal_Conflict_Review")
+                    flagged.add(mid)
+    return len(flagged)
+
+
 # ---------------------------------------------------------------------------
 # Reconciliation + orchestration
 # ---------------------------------------------------------------------------
@@ -573,36 +761,32 @@ def _backfill_deal_metadata(cur) -> int:
 
 
 def reconcile_status(cur) -> int:
-    """Set each document's process_monitor.status to reflect its TRUE furthest
-    pipeline stage AND the quote-anchored deal model:
+    """Set each document's process_monitor.status to its TRUE furthest pipeline stage
+    AND the deal-COMPLETENESS model. A deal is COMPLETE — Deal_Linked — ONLY when it
+    contains ALL THREE document types (quote AND purchase order AND invoice). A deal
+    holding only a subset is NOT linked:
 
-        Deal_Linked              — quote in _trgt with a deal; OR a PO/invoice whose
-                                   deal HAS a quote (a complete Quote->PO->Invoice chain)
-        Orphaned_Awaiting_Quote  — a PO/invoice in _trgt whose deal has NO quote
-                                   (or has no deal) — the quote anchor is missing
-        Deal_Unassigned_Review   — a quote in _trgt with no deal
+        Deal_Linked              — deal has quote + PO + invoice (a complete chain)
+        Orphaned_Awaiting_Quote  — has a deal but NO quote (the anchor is missing)
+        Deal_Incomplete          — has a deal + a quote, but missing the PO and/or invoice
+        Deal_Unassigned_Review   — in _trgt with no deal_id at all (transient — look_back
+                                   assigns every doc, so this should be empty in steady state)
         Staged                   — promoted to _stg, not yet in _trgt (gate-held)
         Discrepancy_Review       — held at _raw by a blocking discrepancy
         Extracted                — in _raw, clean, not yet staged
 
-    Quotes are never orphaned (the quote IS the anchor). Set-based, one UPDATE per
-    doc type. Never touches Extraction_Failed or Deal_Conflict_Review. Authoritative
-    for the deal-stage statuses (quote presence, not deal_id alone, decides
-    Deal_Linked vs Orphaned), so it does NOT skip deal-tagged rows. Returns rows changed.
+    Completeness is a deal-level property, so the SAME case applies to every doc type.
+    Set-based, one UPDATE per doc type. Never touches Extraction_Failed or
+    Deal_Conflict_Review. Returns rows changed.
     """
-    # PO/invoice: complete only when their deal contains a quote; else orphaned.
-    case_po_inv = (
+    has_q = "exists(select 1 from proc.bp_quote_trgt q where q.deal_id = t.deal_id)"
+    has_p = "exists(select 1 from proc.bp_purchase_order_trgt p where p.deal_id = t.deal_id)"
+    has_i = "exists(select 1 from proc.bp_invoice_trgt i where i.deal_id = t.deal_id)"
+    case_all = (
         "case "
-        "when t.{pk} is not null and t.deal_id is not null and t.deal_id <> '' "
-        "  and exists(select 1 from proc.bp_quote_trgt q where q.deal_id = t.deal_id) then 'Deal_Linked' "
-        "when t.{pk} is not null then 'Orphaned_Awaiting_Quote' "
-        "when s.{pk} is not null then 'Staged' "
-        "when r.promotion_status = 'discrepancy' then 'Discrepancy_Review' "
-        "else 'Extracted' end")
-    # Quote: anchor — linked when it has a deal, else unassigned (never orphaned).
-    case_quote = (
-        "case "
-        "when t.{pk} is not null and t.deal_id is not null and t.deal_id <> '' then 'Deal_Linked' "
+        f"when t.{{pk}} is not null and coalesce(t.deal_id,'') <> '' and {has_q} and {has_p} and {has_i} then 'Deal_Linked' "
+        f"when t.{{pk}} is not null and coalesce(t.deal_id,'') <> '' and not {has_q} then 'Orphaned_Awaiting_Quote' "
+        "when t.{pk} is not null and coalesce(t.deal_id,'') <> '' then 'Deal_Incomplete' "
         "when t.{pk} is not null then 'Deal_Unassigned_Review' "
         "when s.{pk} is not null then 'Staged' "
         "when r.promotion_status = 'discrepancy' then 'Discrepancy_Review' "
@@ -610,7 +794,7 @@ def reconcile_status(cur) -> int:
     updated = 0
     for doc_type in ("invoice", "quote", "po"):
         pk, raw, stg, trgt, _ls, _lt = _DOC[doc_type]
-        st_case = (case_quote if doc_type == "quote" else case_po_inv).format(pk=pk)
+        st_case = case_all.format(pk=pk)
         cur.execute(
             f"""
             update proc.process_monitor pm
@@ -662,6 +846,7 @@ def _run(cur) -> dict:
     rec = _reconcile_legacy(cur)
     prop = _propagate_deal_along_po(cur)
     conflicts = _flag_conflict_po_chains(cur)
+    sup_conflicts = _flag_supplier_conflict_deals(cur)
     meta = _backfill_deal_metadata(cur)
     dates = _propagate_deal_date(cur)
     mirrored = _mirror_deal_to_raw_and_stg(cur)
@@ -669,6 +854,7 @@ def _run(cur) -> dict:
     status = reconcile_status(cur)
     return {"forward_linked": fwd, "backward_linked": back, "reconciled": rec,
             "propagated": prop, "conflicts_flagged": conflicts,
+            "supplier_conflicts_flagged": sup_conflicts,
             "metadata_filled": meta, "deal_dates_set": dates,
             "tiers_mirrored": mirrored,
             "map_pruned": pruned, "status_reconciled": status}

@@ -288,6 +288,54 @@ class ProcessMonitorWatcher:
             with self._processing_lock:
                 self._processing_ids.discard(record_id)
 
+    # Map any spelling of a doc type to a canonical key, and back to the
+    # category label used in proc.process_monitor.category.
+    _CATEGORY_CANON = {
+        "invoice": "invoice", "quote": "quote",
+        "po": "purchase_order", "purchase_order": "purchase_order",
+        "purchaseorder": "purchase_order", "contract": "contract",
+    }
+    _CANON_TO_CATEGORY = {
+        "invoice": "Invoice", "quote": "Quote",
+        "purchase_order": "PO", "contract": "Contract",
+    }
+
+    def _reconcile_category(self, record_id: int, declared: str, detected: str) -> None:
+        """Reconcile a category/content mismatch gracefully.
+
+        When the engine detects (or re-routes to) a different document type
+        than the declared category — e.g. a quote uploaded under 'Invoice' —
+        the extracted data is persisted under the DETECTED type. We update the
+        process_monitor record's ``category`` to the detected type so deal
+        linking, dashboards and summaries reference the right document. This is
+        a no-op when the types already agree or the detected type is unknown.
+        """
+        dcl = self._CATEGORY_CANON.get((declared or "").strip().lower())
+        det = self._CATEGORY_CANON.get((detected or "").strip().lower())
+        if not det or det == dcl:
+            return
+        new_category = self._CANON_TO_CATEGORY.get(det)
+        if not new_category:
+            return
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE proc.process_monitor
+                    SET category = %s, lastmodified_date = %s
+                    WHERE id = %s
+                    """,
+                    (new_category, datetime.now(timezone.utc), record_id),
+                )
+        finally:
+            conn.close()
+        logger.warning(
+            "Category reconciled for record %s: declared=%r but content "
+            "extracted as %r -> category set to %r",
+            record_id, declared, det, new_category,
+        )
+
     def _mark_failed(self, record_id: int, error: str) -> None:
         """Mark a record as failed extraction."""
         try:
@@ -442,6 +490,20 @@ class ProcessMonitorWatcher:
             # the renovation path with pk="" → "KG BLOCKED" every time.
             pk = result.get("pk") or result.get("doc_pk") or ""
             doc_type = result.get("doc_type") or category or ""
+
+            # Category-mismatch hardening: the engine may detect/re-route to a
+            # different document type than the declared category (e.g. a quote
+            # filed under 'Invoice'). The extracted data then lives under the
+            # DETECTED type, so reconcile the process_monitor category to match
+            # it — keeping downstream linking / dashboards / summaries
+            # consistent. This must never fail the (already successful)
+            # extraction, so it is wrapped and best-effort.
+            try:
+                self._reconcile_category(record_id, category, doc_type)
+            except Exception:
+                logger.debug(
+                    "category reconcile skipped for record %s", record_id, exc_info=True
+                )
 
             # AgentNick → Knowledge Graph refresh: after a successful
             # stg promotion, push the row into Neo4j so the graph stays

@@ -36,6 +36,40 @@ _CROSS_ENCODER_CACHE: dict[tuple[str, str], Any] = {}
 
 logger = logging.getLogger(__name__)
 
+# CUDA OOM surfaces as ``torch.OutOfMemoryError`` on recent PyTorch and as a
+# plain ``RuntimeError`` ("CUDA out of memory") on older releases. Catch both.
+if torch is not None and hasattr(torch, "OutOfMemoryError"):
+    _CUDA_OOM_ERRORS: tuple[type[BaseException], ...] = (torch.OutOfMemoryError, RuntimeError)
+else:  # pragma: no cover - torch missing or pre-2.x
+    _CUDA_OOM_ERRORS = (RuntimeError,)
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """True when ``exc`` represents a CUDA out-of-memory condition."""
+    if torch is not None and isinstance(exc, getattr(torch, "OutOfMemoryError", ())):
+        return True
+    return "out of memory" in str(exc).lower()
+
+
+def _construct_on_cpu(cross_encoder_cls: Any, model_name: str):
+    """Construct a cross encoder strictly on CPU.
+
+    ``configure_gpu`` sets the global default device to ``cuda`` via
+    ``torch.set_default_device``. Passing ``device="cpu"`` alone is not
+    enough: transformers' warmup still allocates scratch tensors on the
+    default device and re-triggers a CUDA OOM. We therefore pin the default
+    device to CPU for the duration of construction (auto-restored on exit)
+    and release any cached CUDA blocks left over from the failed GPU attempt.
+    """
+    if torch is None:
+        return cross_encoder_cls(model_name, device="cpu")
+    try:
+        torch.cuda.empty_cache()
+    except Exception:  # pragma: no cover - no CUDA / driver hiccup
+        pass
+    with torch.device("cpu"):
+        return cross_encoder_cls(model_name, device="cpu")
+
 
 def configure_gpu() -> str:
     """Configure GPU environment variables and default device.
@@ -114,6 +148,22 @@ def load_cross_encoder(
         encoder = cross_encoder_cls(model_name, device=target_device)
         _CROSS_ENCODER_CACHE[cache_key] = encoder
         return encoder
+    except _CUDA_OOM_ERRORS as exc:  # pragma: no cover - hardware dependent
+        if target_device in (None, "cpu") or not _is_cuda_oom(exc):
+            raise
+        logger.warning(
+            "Cross encoder '%s' could not be loaded on %s due to CUDA OOM "
+            "(GPU likely held by Ollama models); falling back to CPU. Error: %s",
+            model_name,
+            target_device,
+            exc,
+        )
+        encoder = _construct_on_cpu(cross_encoder_cls, model_name)
+        # Cache under the CPU key so subsequent calls reuse the CPU reranker
+        # instead of re-attempting the GPU load and OOM-ing again.
+        _CROSS_ENCODER_CACHE[(model_name, "cpu")] = encoder
+        _CROSS_ENCODER_CACHE[cache_key] = encoder
+        return encoder
     except NotImplementedError as exc:  # pragma: no cover - hardware dependent
         if "meta tensor" not in str(exc):
             raise
@@ -122,7 +172,7 @@ def load_cross_encoder(
             "retrying via CPU fallback.",
             target_device,
         )
-        encoder = cross_encoder_cls(model_name, device="cpu")
+        encoder = _construct_on_cpu(cross_encoder_cls, model_name)
         if target_device and target_device != "cpu":
             try:
                 encoder.to(target_device)

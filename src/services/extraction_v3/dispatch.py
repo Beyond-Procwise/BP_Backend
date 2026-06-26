@@ -27,12 +27,57 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from typing import Any
 
+from config.settings import settings
 from src.services.extraction_v3.persistence import persist as persist_v3
 from src.services.extraction_v3.schemas.result import ExtractionResult
 
 log = logging.getLogger(__name__)
+
+
+def _ensure_local_file(file_path: str, agent_nick: Any = None) -> tuple[str, str | None]:
+    """Return ``(local_path, cleanup_path)`` for a document.
+
+    ``process_monitor.file_path`` stores the **S3 object key** (e.g.
+    ``documents/Quote/X.pdf``), but the extraction engine's ``FileDetector``
+    only checks the local filesystem. If the path is not already a local file
+    we treat it as an S3 key and download it to a temp file so extraction is
+    robust regardless of whether a transient local copy happens to exist.
+
+    ``cleanup_path`` is the temp file the caller must delete when done, or
+    ``None`` when the original path was already local (nothing to clean up).
+    """
+    if os.path.isfile(file_path):
+        return file_path, None
+
+    bucket = getattr(settings, "s3_bucket_name", None)
+    if not bucket:
+        raise FileNotFoundError(
+            f"File not found locally and no S3 bucket configured: {file_path}"
+        )
+
+    s3 = getattr(agent_nick, "s3_client", None)
+    if s3 is None:
+        import boto3  # lazy: only when a download is actually needed
+        s3 = boto3.client("s3")
+
+    suffix = os.path.splitext(file_path)[1] or ".pdf"
+    fd, tmp = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    try:
+        s3.download_file(bucket, file_path, tmp)
+    except Exception as exc:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise FileNotFoundError(
+            f"Could not fetch '{file_path}' locally or from S3 bucket '{bucket}': {exc}"
+        ) from exc
+    log.info("Resolved S3 key %r -> local temp file for extraction", file_path)
+    return tmp, tmp
 
 _CAT_ALIASES: dict[str, str] = {
     "po": "purchase_order",
@@ -324,6 +369,22 @@ def dispatch_document(
     doc_type = _normalise_category(category)
     engine = _select_engine()
 
+    # Resolve the document to a guaranteed-local file. file_path may be an S3
+    # object key (process_monitor stores keys like 'documents/Quote/X.pdf');
+    # the engine's FileDetector only reads the local FS, so download if needed.
+    try:
+        local_path, _cleanup = _ensure_local_file(file_path, agent_nick)
+    except Exception as exc:
+        log.exception("could not resolve document %s for extraction", file_path)
+        return {
+            "status": "error",
+            "pk": "",
+            "error": str(exc),
+            "header_persisted": False,
+            "confidence": 0.0,
+            "errors": 1,
+        }
+
     try:
         log.info(
             "Dispatching %s (%s) to extraction engine=%s",
@@ -333,14 +394,16 @@ def dispatch_document(
             # Contract docs aren't yet supported by v4; fall back to qwen_vlm.
             if doc_type == "contract":
                 log.info("Contract doc -- routing to qwen_vlm (v4 doesn't support contracts yet)")
-                result = _run_qwen_vlm(file_path, doc_type)
+                result = _run_qwen_vlm(local_path, doc_type)
             else:
-                result = _run_hybrid_v4(file_path, doc_type)
+                result = _run_hybrid_v4(local_path, doc_type)
         else:
-            result = _run_qwen_vlm(file_path, doc_type)
+            result = _run_qwen_vlm(local_path, doc_type)
 
         # Always call persist_v3 — it now handles missing PK by writing _raw
         # with promotion_status='no_pk' so the audit trail is always preserved.
+        # Keep the ORIGINAL file_path (the S3 key) as source_file for the audit
+        # trail, not the throwaway temp path.
         raw_id = persist_v3(result, source_file=file_path)
         adapted = _adapt_v3_result(result, raw_id=raw_id)
         return adapted
@@ -357,3 +420,9 @@ def dispatch_document(
             "confidence": 0.0,
             "errors": 1,
         }
+    finally:
+        if _cleanup:
+            try:
+                os.remove(_cleanup)
+            except OSError:
+                pass

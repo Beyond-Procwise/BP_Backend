@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATASET_PATH = PROJECT_ROOT / "data" / "training" / "qlora_dataset.json"
+DATASET_PATH = PROJECT_ROOT / "data" / "training" / "curated_finetune.json"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "models" / "agentnick-qlora"
 MERGED_DIR = PROJECT_ROOT / "data" / "models" / "agentnick-merged"
 

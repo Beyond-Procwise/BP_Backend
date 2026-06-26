@@ -560,6 +560,12 @@ line_items:
         - "Line Amount"
         - "Line Total"
         - "Extended Amount"
+        - "Total Cost"
+        - "Total Price"
+        - "Monthly Cost"
+        - "Monthly Total"
+        - "Monthly Subtotal"
+        - "Monthly Amount"
         - "Total"
       extractors:
       - qwen_vlm

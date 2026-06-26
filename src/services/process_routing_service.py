@@ -640,7 +640,13 @@ class ProcessRoutingService:
         path = Path(__file__).resolve().parents[1] / "agent_definitions.json"
         with path.open() as f:
             data = json.load(f)
-        for item in data:
+        # agent_definitions.json is {"agents": [ {...}, ... ]}. Iterating the dict
+        # directly yielded its keys (strings) and broke item.get(...) — pull the
+        # records list explicitly; tolerate a bare list and skip non-dict entries.
+        records = data.get("agents", []) if isinstance(data, dict) else data
+        for item in records:
+            if not isinstance(item, dict):
+                continue
             agent_class = item.get("agentType", "")
             if not agent_class:
                 continue

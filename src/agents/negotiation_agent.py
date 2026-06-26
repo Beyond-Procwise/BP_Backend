@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 # -----------------------------
 MAX_SUPPLIER_REPLIES = int(os.getenv("NEG_MAX_SUPPLIER_REPLIES", "3"))
 LLM_ENABLED = os.getenv("NEG_ENABLE_LLM", "1").strip() not in {"0", "false", "False"}
-LLM_MODEL = os.getenv("NEG_LLM_MODEL", "llama3.2:latest")
+LLM_MODEL = os.getenv("NEG_LLM_MODEL", "BeyondProcwise/AgentNick:unified")
 COST_OF_CAPITAL_APR = float(os.getenv("NEG_COST_OF_CAPITAL_APR", "0.12"))
 LEAD_TIME_VALUE_PCT_PER_WEEK = float(os.getenv("NEG_LT_VALUE_PCT_PER_WEEK", "0.01"))
 def _resolve_thread_transcript_limit() -> Optional[int]:

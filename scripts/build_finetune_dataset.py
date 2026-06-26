@@ -211,14 +211,24 @@ def main():
 
     all_examples = []
 
-    # 1. Auto-collected verified extractions
+    # 1. Auto-collected verified extractions (the day's gold-standard outputs)
     all_examples.extend(load_auto_collected())
 
-    # 2. Existing QLoRA dataset
+    # 2. Existing QLoRA dataset (historical accuracy corpus)
     all_examples.extend(load_existing_qlora())
 
-    # 3. Multi-agent awareness + accuracy examples
+    # 3. Multi-agent awareness + extraction accuracy examples (lightweight)
     all_examples.extend(generate_multi_agent_examples())
+
+    # 4. ProcWise-product knowledge examples (deep agent capabilities,
+    #    data model, discipline rules, layout patterns, cross-agent
+    #    workflow, negative examples). Teaches AgentNick to operate as
+    #    an integral part of the ProcWise platform, not just a generic
+    #    extractor.
+    from procwise_knowledge_examples import generate_procwise_knowledge_examples
+    procwise_examples = generate_procwise_knowledge_examples()
+    print(f"  ProcWise knowledge: {len(procwise_examples)} examples")
+    all_examples.extend(procwise_examples)
 
     # Convert to chat format (Alpaca style)
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)

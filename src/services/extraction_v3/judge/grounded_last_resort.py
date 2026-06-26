@@ -9,8 +9,9 @@ AND ``evidence_text in doc_full_text`` is REJECTED. There is no fallback.
 If the LLM cannot cite, the field stays NULL → review queue.
 
 Supports two backends selected by EXTRACTION_V3_JUDGE_MODEL:
-  - "qwen" (default): Qwen2.5-VL-7B-Instruct with image + text prompt.
-  - "ollama": legacy Ollama text-only (rollback path).
+  - "ollama" (default): unified AgentNick model via Ollama (text-only).
+  - "qwen": Qwen2.5-VL-7B-Instruct with image + text prompt (opt-in only;
+    we no longer invoke the VLM by default — single AgentNick model policy).
 
 Model name note: the returned Candidate uses ``model="qa_roberta"`` because
 ``ExtractorName`` is a closed Literal and the grounded judge is semantically
@@ -405,7 +406,7 @@ def call_grounded_last_resort(
     if not doc_full_text or not doc_full_text.strip():
         return None
 
-    judge_model = os.getenv("EXTRACTION_V3_JUDGE_MODEL", "qwen").lower()
+    judge_model = os.getenv("EXTRACTION_V3_JUDGE_MODEL", "ollama").lower()
 
     if judge_model == "ollama":
         log.debug("grounded judge: using Ollama (EXTRACTION_V3_JUDGE_MODEL=ollama)")

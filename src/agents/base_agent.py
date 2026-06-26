@@ -84,37 +84,43 @@ def _slugify_agent_name(value: Any) -> str:
     return slug
 
 
+# Model routing: ONLY document extraction uses the extraction specialist; every
+# other (non-extraction) agent falls back to ``reasoning_model`` (AgentNick
+# :unified) — the single procurement brain. Per-agent override fields are still
+# honoured first, so any agent can be individually retargeted via settings.
 _AGENT_MODEL_FIELD_PREFERENCES: Dict[str, Tuple[str, ...]] = {
-    "rag_pipeline": ("rag_model", "extraction_model"),
-    "rag_service": ("rag_model", "extraction_model"),
-    "rag_agent": ("rag_model", "extraction_model"),
-    "prompt_engine": ("rag_model", "extraction_model"),
+    "rag_pipeline": ("rag_model", "reasoning_model"),
+    "rag_service": ("rag_model", "reasoning_model"),
+    "rag_agent": ("rag_model", "reasoning_model"),
+    "prompt_engine": ("rag_model", "reasoning_model"),
     "data_extraction_agent": (
         "data_extraction_model",
         "document_extraction_model",
         "extraction_model",
     ),
-    "supplier_ranking_agent": ("supplier_ranking_model", "extraction_model"),
+    "supplier_ranking_agent": ("supplier_ranking_model", "reasoning_model"),
     "supplier_interaction_agent": (
         "supplier_interaction_model",
-        "extraction_model",
+        "reasoning_model",
     ),
     "email_drafting_agent": (
         "email_compose_model",
         "negotiation_email_model",
-        "extraction_model",
+        "reasoning_model",
     ),
-    "email_dispatch_agent": ("email_dispatch_model", "extraction_model"),
-    "email_watcher_agent": ("email_watcher_model", "extraction_model"),
-    "negotiation_agent": ("negotiation_email_model", "extraction_model"),
-    "quote_evaluation_agent": ("quote_evaluation_model", "extraction_model"),
-    "quote_comparison_agent": ("quote_comparison_model", "extraction_model"),
-    "approvals_agent": ("approvals_model", "extraction_model"),
-    "opportunity_miner_agent": ("opportunity_miner_model", "extraction_model"),
+    "email_dispatch_agent": ("email_dispatch_model", "reasoning_model"),
+    "email_watcher_agent": ("email_watcher_model", "reasoning_model"),
+    "negotiation_agent": ("negotiation_email_model", "reasoning_model"),
+    "quote_evaluation_agent": ("quote_evaluation_model", "reasoning_model"),
+    "quote_comparison_agent": ("quote_comparison_model", "reasoning_model"),
+    "approvals_agent": ("approvals_model", "reasoning_model"),
+    "opportunity_miner_agent": ("opportunity_miner_model", "reasoning_model"),
     "discrepancy_detection_agent": (
         "discrepancy_detection_model",
-        "extraction_model",
+        "reasoning_model",
     ),
+    "requirements_agent": ("requirements_model", "reasoning_model"),
+    "deal_assignment_agent": ("reasoning_model",),
 }
 
 
@@ -1619,7 +1625,12 @@ class AgentNick:
                 if isinstance(candidate, str) and candidate.strip():
                     registry[slug] = candidate.strip()
                     break
-        fallback = getattr(self.settings, "extraction_model", None)
+        # Terminal fallback for any agent not explicitly mapped is the reasoning
+        # brain (:unified), NOT the extraction specialist — only data_extraction
+        # resolves to the extraction model via its preference tuple above.
+        fallback = getattr(self.settings, "reasoning_model", None) or getattr(
+            self.settings, "extraction_model", None
+        )
         if isinstance(fallback, str) and fallback.strip():
             self._agent_model_fallback = fallback.strip()
         self._agent_model_registry = registry
@@ -1651,7 +1662,9 @@ class AgentNick:
             return fallback
         if isinstance(self._agent_model_fallback, str) and self._agent_model_fallback:
             return self._agent_model_fallback
-        fallback_model = getattr(self.settings, "extraction_model", None)
+        fallback_model = getattr(self.settings, "reasoning_model", None) or getattr(
+            self.settings, "extraction_model", None
+        )
         if isinstance(fallback_model, str) and fallback_model.strip():
             self._agent_model_fallback = fallback_model.strip()
             return self._agent_model_fallback

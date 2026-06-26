@@ -3,8 +3,9 @@
 Fires after L1 (regex) and L2 (NER + tables) have run. For each REQUIRED
 schema field where no candidate exists above its confidence threshold AND
 the field declares ``judge.grounded_last_resort: true``, the judge re-reads
-the parsed document (and optionally the page image via Qwen2.5-VL) and
-returns a verbatim-substring value.
+the parsed document text with the unified AgentNick model (Ollama) and
+returns a verbatim-substring value. (Qwen2.5-VL is opt-in only via
+EXTRACTION_V3_JUDGE_MODEL=qwen; not used by default.)
 
 Safety contract is enforced by ``call_grounded_last_resort``: the returned
 value MUST equal evidence_text AND be a literal substring of

@@ -645,6 +645,8 @@ line_items:
         - "Item"
         - "Product"
         - "Service Description"
+        - "Service"
+        - "Services"
       extractors:
       - qwen_vlm
       judge:
@@ -696,6 +698,18 @@ line_items:
         - "Line Amount"
         - "Line Total"
         - "Extended Amount"
+        - "Total Cost"
+        - "Total Price"
+        - "Subtotal"
+        - "Sub-Total"
+        - "Sub Total"
+        - "Net Amount"
+        - "Net Total"
+        - "Net"
+        - "Monthly Cost"
+        - "Monthly Subtotal"
+        - "Monthly Amount"
+        - "Monthly Total"
       extractors:
       - qwen_vlm
       judge:
@@ -743,10 +757,10 @@ line_items:
       required: false
       db_column: total_amount_incl_tax
       canonical_labels:
-        - "Total"
         - "Total Incl. Tax"
         - "Line Total (Incl. Tax)"
         - "Amount Incl. Tax"
+        - "Total (Incl. Tax)"
       extractors:
       - qwen_vlm
       judge:

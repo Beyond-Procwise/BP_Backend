@@ -224,8 +224,16 @@ def dispatch_document(
     if full_text.strip():
         try:
             from src.services.extraction.context_layer import synthesize as _ctx_synth
+            # Flatten structured tables across pages so the context layer can
+            # recover a version/summary "Total Value" the LLM can't reach when
+            # docling detaches the grand-total label from its value.
+            _doc_tables = [
+                t for pg in (parsed.pages or [])
+                for t in (getattr(pg, "tables", None) or [])
+            ]
             synthesized = _ctx_synth(
                 doc_type, full_text, columns, file_path=file_path,
+                doc_tables=_doc_tables,
             )
             # Build the schema's set of valid db_columns. context_layer's
             # output may include derived fields (exchange_rate_to_usd,

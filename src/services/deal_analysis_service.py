@@ -53,6 +53,12 @@ def _sum_qty(docs: list[dict]) -> Optional[float]:
     return total if seen else None
 
 
+def _line_count(docs: list[dict]) -> int:
+    """Total number of line items across a doc type. Used as a volume fallback
+    for lump-sum/services deals that carry no per-unit quantity."""
+    return sum(len(d.get("line_items") or []) for d in docs)
+
+
 def _weighted_unit_price(docs: list[dict]) -> Optional[float]:
     """Total line value / total qty across a doc type's line items."""
     val = 0.0
@@ -120,6 +126,19 @@ def _compute(ctx: dict, cur) -> dict:
         volume = _sum_qty(po)
     if volume is None:
         volume = _sum_qty(quote)
+    volume_basis = "quantity" if volume is not None else None
+    if volume is None:
+        # Lump-sum / services deals (e.g. "Social Media Management" billed as a
+        # flat line_amount) carry no per-unit quantity in the source documents.
+        # Fall back to the line-item count — each line is one unit — so the
+        # Analyse grid shows the deal's size instead of a blank. Derived from the
+        # real document structure, not fabricated. Per-unit savings metrics below
+        # (price/volume change, efficiency) stay NULL: they need a per-unit price
+        # baseline that genuinely does not exist for these deals.
+        lc = _line_count(inv) or _line_count(po) or _line_count(quote)
+        if lc:
+            volume = float(lc)
+            volume_basis = "line_count"
     unit_price = (deal_value / volume) if (deal_value is not None and volume) else None
 
     inv_unit = _weighted_unit_price(inv)
@@ -159,7 +178,7 @@ def _compute(ctx: dict, cur) -> dict:
             "invoice_total": _doc_total(inv), "po_total": _doc_total(po),
             "quote_total": _doc_total(quote), "invoice_unit": inv_unit,
             "quote_unit": quote_unit, "invoice_volume": inv_vol,
-            "quote_volume": quote_vol,
+            "quote_volume": quote_vol, "volume_basis": volume_basis,
         },
     }
 

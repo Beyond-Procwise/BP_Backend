@@ -46,6 +46,81 @@ class ProcurementContextService:
 
     def __init__(self, agent_nick) -> None:
         self._agent_nick = agent_nick
+        self._kgdrv = None  # lazy Neo4j driver for KG intelligence
+
+    def _kg(self):
+        """Lazy, cached Neo4j driver for KG intelligence. None if unreachable."""
+        if self._kgdrv is None:
+            try:
+                import os
+                from neo4j import GraphDatabase
+                self._kgdrv = GraphDatabase.driver(
+                    os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+                    auth=(os.getenv("NEO4J_USERNAME", "neo4j"),
+                          os.getenv("NEO4J_PASSWORD", "procwise2026")))
+            except Exception:
+                self._kgdrv = False  # unavailable
+        return self._kgdrv or None
+
+    def kg_supplier_intelligence(self, supplier_id) -> Dict[str, Any]:
+        """Supplier history from the knowledge graph — invoice/PO/quote/contract
+        counts and total invoiced USD — to inform supplier ranking, negotiation and
+        opportunity reasoning. Fail-safe: returns {} if the KG is unavailable."""
+        drv = self._kg()
+        if drv is None or not supplier_id:
+            return {}
+        try:
+            with drv.session() as s:
+                # Pattern-comprehension counts (no cartesian blow-up); amount summed
+                # via toFloat() since converted_amount_usd is stored as text in the KG.
+                rec = s.run(
+                    "MATCH (sup:Supplier {supplier_id:$sid}) RETURN "
+                    "size([(sup)<-[:INVOICE_FROM_SUPPLIER]-(i) | i]) AS invoices, "
+                    "size([(sup)<-[:PO_FROM_SUPPLIER]-(p) | p]) AS purchase_orders, "
+                    "size([(sup)<-[:QUOTE_FROM_SUPPLIER]-(q) | q]) AS quotes, "
+                    "size([(sup)-[:SUPPLIER_PARTY_TO_CONTRACT]->(c) | c]) AS contracts, "
+                    "round(reduce(t=0.0, a IN [(sup)<-[:INVOICE_FROM_SUPPLIER]-(i) | "
+                    "toFloat(i.converted_amount_usd)] | t + coalesce(a, 0.0))) AS invoiced_usd",
+                    sid=str(supplier_id)).single()
+            if not rec:
+                return {}
+            return {k: rec[k] for k in ("invoices", "purchase_orders", "quotes", "contracts", "invoiced_usd") if rec[k]}
+        except Exception:
+            return {}
+
+    def kg_related_documents(self, doc_id, doc_type) -> List[Dict[str, str]]:
+        """Related documents via the KG chain (Invoice<->PO<->Quote). Fail-safe []."""
+        drv = self._kg()
+        if drv is None or not doc_id:
+            return []
+        dt = (doc_type or "").lower()
+        out: List[Dict[str, str]] = []
+        try:
+            with drv.session() as s:
+                if "invoice" in dt:
+                    for r in s.run(
+                        "MATCH (i:Invoice {invoice_id:$id})-[:INVOICE_REFERENCES_PO]->(p:PurchaseOrder) "
+                        "OPTIONAL MATCH (p)-[:PO_REFERENCES_QUOTE]->(q:Quote) "
+                        "RETURN p.po_id AS po, collect(DISTINCT q.quote_id) AS quotes", id=str(doc_id)):
+                        if r["po"]:
+                            out.append({"type": "PurchaseOrder", "id": r["po"]})
+                        out += [{"type": "Quote", "id": q} for q in (r["quotes"] or []) if q]
+                elif "purchase" in dt or dt == "po":
+                    for r in s.run(
+                        "MATCH (p:PurchaseOrder {po_id:$id}) "
+                        "OPTIONAL MATCH (p)-[:PO_REFERENCES_QUOTE]->(q:Quote) "
+                        "OPTIONAL MATCH (p)<-[:INVOICE_REFERENCES_PO]-(i:Invoice) "
+                        "RETURN collect(DISTINCT q.quote_id) AS quotes, collect(DISTINCT i.invoice_id) AS invs", id=str(doc_id)):
+                        out += [{"type": "Quote", "id": q} for q in (r["quotes"] or []) if q]
+                        out += [{"type": "Invoice", "id": v} for v in (r["invs"] or []) if v]
+                elif "quote" in dt:
+                    for r in s.run(
+                        "MATCH (q:Quote {quote_id:$id})<-[:PO_REFERENCES_QUOTE]-(p:PurchaseOrder) "
+                        "RETURN collect(DISTINCT p.po_id) AS pos", id=str(doc_id)):
+                        out += [{"type": "PurchaseOrder", "id": v} for v in (r["pos"] or []) if v]
+        except Exception:
+            return []
+        return out
 
     def determine_lifecycle_stage(
         self, doc_type: str, header: Dict[str, Any]
@@ -89,11 +164,16 @@ class ProcurementContextService:
             if val:
                 doc_summary[key] = str(val)
 
+        # KG supplier intelligence (history, spend, contracts) — improves agent
+        # reasoning (ranking/negotiation/opportunity). Fail-safe: {} if KG unavailable.
+        supplier_intel = self.kg_supplier_intelligence(header.get("supplier_id"))
+
         return {
             "lifecycle_stage": stage,
             "document_type": doc_type,
             "document_summary": doc_summary,
             "related_documents": related_docs or [],
+            "supplier_intelligence": supplier_intel,
             "patterns": [p.get("pattern_text", "") for p in (patterns or [])],
             "active_policies": policies or [],
             "next_expected_stage": self._next_stage(stage),
@@ -141,7 +221,12 @@ class ProcurementContextService:
     def find_related_documents(
         self, doc_id: str, doc_type: str
     ) -> List[Dict[str, str]]:
-        """Query KG for related documents."""
+        """Find related documents — authoritative source is the knowledge graph
+        (Invoice<->PO<->Quote chain); falls back to the _trgt tables if the KG has
+        nothing for this doc."""
+        kg = self.kg_related_documents(doc_id, doc_type)
+        if kg:
+            return kg
         related: List[Dict[str, str]] = []
         try:
             conn = self._agent_nick.get_db_connection()
@@ -149,14 +234,14 @@ class ProcurementContextService:
                 if doc_type == "Invoice":
                     # Find linked PO
                     cur.execute(
-                        "SELECT po_id FROM proc.bp_invoice WHERE invoice_id = %s AND po_id IS NOT NULL",
+                        "SELECT po_id FROM proc.bp_invoice_trgt WHERE invoice_id = %s AND po_id IS NOT NULL",
                         (doc_id,),
                     )
                     for r in cur.fetchall():
                         related.append({"type": "PurchaseOrder", "id": r[0]})
                         # Find quotes linked to this PO
                         cur.execute(
-                            "SELECT DISTINCT quote_number FROM proc.bp_po_line_items "
+                            "SELECT DISTINCT quote_number FROM proc.bp_po_line_items_trgt "
                             "WHERE po_id = %s AND quote_number IS NOT NULL",
                             (r[0],),
                         )
@@ -166,7 +251,7 @@ class ProcurementContextService:
                 elif doc_type == "Purchase_Order":
                     # Find linked quotes
                     cur.execute(
-                        "SELECT DISTINCT quote_number FROM proc.bp_po_line_items "
+                        "SELECT DISTINCT quote_number FROM proc.bp_po_line_items_trgt "
                         "WHERE po_id = %s AND quote_number IS NOT NULL",
                         (doc_id,),
                     )
@@ -174,7 +259,7 @@ class ProcurementContextService:
                         related.append({"type": "Quote", "id": r[0]})
                     # Find linked invoices
                     cur.execute(
-                        "SELECT invoice_id FROM proc.bp_invoice WHERE po_id = %s",
+                        "SELECT invoice_id FROM proc.bp_invoice_trgt WHERE po_id = %s",
                         (doc_id,),
                     )
                     for r in cur.fetchall():
@@ -183,7 +268,7 @@ class ProcurementContextService:
                 elif doc_type == "Quote":
                     # Find POs referencing this quote
                     cur.execute(
-                        "SELECT DISTINCT po_id FROM proc.bp_po_line_items "
+                        "SELECT DISTINCT po_id FROM proc.bp_po_line_items_trgt "
                         "WHERE quote_number = %s",
                         (doc_id,),
                     )
@@ -205,8 +290,8 @@ class ProcurementContextService:
                 # POs without invoices (potential follow-up needed)
                 cur.execute("""
                     SELECT p.po_id, p.supplier_name, p.order_date
-                    FROM proc.bp_purchase_order p
-                    LEFT JOIN proc.bp_invoice i ON i.po_id = p.po_id
+                    FROM proc.bp_purchase_order_trgt p
+                    LEFT JOIN proc.bp_invoice_trgt i ON i.po_id = p.po_id
                     WHERE i.invoice_id IS NULL
                     AND p.order_date < NOW() - INTERVAL '30 days'
                 """)

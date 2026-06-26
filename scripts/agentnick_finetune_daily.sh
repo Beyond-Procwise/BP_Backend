@@ -1,8 +1,8 @@
 #!/bin/bash
 # Daily AgentNick fine-tune wrapper.
 #
-# Schedule: triggered by cron at 19:30 UTC (= 1am IST) every day.
-# Window:   8 hours max — hard-killed at 03:30 UTC (= 9am IST).
+# Schedule: triggered by cron at 18:30 UTC (= 00:00 IST midnight) every day.
+# Window:   8h30m — hard-killed at 03:00 UTC (= 08:30 IST).
 #
 # Procurement GPU coordination: BeyondProcwise/AgentNick:extract (7B Q8)
 # stays loaded for live extraction during the day, but full-precision
@@ -28,16 +28,33 @@ LOG="${LOG_DIR}/agentnick_finetune_${STAMP}.log"
   echo "Host: $(hostname)"
   echo
 
-  echo "--- GPU state ---"
+  echo "--- GPU state (before) ---"
   nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free --format=csv 2>&1 || echo "(nvidia-smi unavailable)"
   echo
-  echo "--- procwise state ---"
+  echo "--- procwise state (before) ---"
   systemctl is-active procwise 2>&1 || true
   echo
 
-  echo "--- Triggering run_overnight_finetune.sh (8h hard limit) ---"
+  # Stop procwise so the QLoRA loader has the GPU to itself. Without
+  # this, full-precision fine-tune (~14 GiB) OOMs against the live
+  # extractor's 9-10 GiB footprint. Sudoers entry at
+  # /etc/sudoers.d/procwise-finetune permits passwordless stop/start
+  # for user `muthu`.
+  echo "--- Stopping procwise to free GPU ---"
+  sudo /usr/bin/systemctl stop procwise || {
+    echo "WARN: failed to stop procwise — fine-tune will likely OOM"
+  }
+  # Give CUDA + Ollama a few seconds to release VRAM cleanly
+  sleep 10
+  echo "--- GPU state (after stop) ---"
+  nvidia-smi --query-gpu=memory.used,memory.free --format=csv 2>&1 || true
+  echo
+
+  echo "--- Triggering run_overnight_finetune.sh (8h30m hard limit) ---"
   cd "${BP_ROOT}"
-  timeout --signal=SIGTERM --kill-after=60s 8h bash "${BP_ROOT}/scripts/run_overnight_finetune.sh"
+  # 8h30m = 30600s. Timeout's --kill-after=60s gives QLoRA a graceful
+  # exit window if the budget is exceeded so adapter checkpoints flush.
+  timeout --signal=SIGTERM --kill-after=60s 30600s bash "${BP_ROOT}/scripts/run_overnight_finetune.sh"
   rc=$?
   echo
   echo "--- Result ---"
@@ -48,8 +65,21 @@ LOG="${LOG_DIR}/agentnick_finetune_${STAMP}.log"
   if [ "${rc}" -eq 0 ]; then
     echo "STATUS: SUCCESS"
   elif [ "${rc}" -eq 124 ] || [ "${rc}" -eq 137 ]; then
-    echo "STATUS: TIMEOUT (8h window exhausted)"
+    echo "STATUS: TIMEOUT (8h30m window exhausted)"
   else
     echo "STATUS: FAILED rc=${rc}"
   fi
+
+  # ALWAYS bring procwise back up, even on fine-tune failure or
+  # timeout. The live extraction service must not stay offline because
+  # of a training-pipeline issue. systemctl start is idempotent.
+  echo
+  echo "--- Restarting procwise ---"
+  sudo /usr/bin/systemctl start procwise || {
+    echo "ERROR: failed to start procwise — manual intervention required"
+  }
+  sleep 5
+  echo "--- procwise state (after) ---"
+  systemctl is-active procwise 2>&1 || true
+  echo "End-of-wrapper (UTC): $(date -u)"
 } 2>&1 | tee -a "${LOG}"

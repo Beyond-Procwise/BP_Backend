@@ -156,3 +156,44 @@ def execute_agent(
         )
         prs.update_process_status(process_id, -1)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+class InstructionRequest(BaseModel):
+    """A free-text instruction for AgentNick to plan and (optionally) execute."""
+    instruction: str
+    plan_only: bool = False
+    context: Optional[Dict[str, Any]] = None
+
+
+@router.post("/instruct")
+def instruct(req: InstructionRequest, agent_nick=Depends(get_agent_nick)):
+    """Front door for instruction-driven, dynamic agent routing.
+
+    Hands the plain-English instruction to AgentNick (via the ReasoningEngine),
+    which composes a plan by choosing the best-suited agents from the catalogue
+    — rather than running a hard-wired workflow graph.
+
+    ``plan_only=True`` returns the composed plan without executing the agents,
+    which is useful for inspecting AgentNick's routing decision.
+    """
+    engine = getattr(agent_nick, "reasoning_engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="ReasoningEngine not available")
+
+    task: Dict[str, Any] = {"goal": req.instruction, "use_llm_planning": True}
+    if req.context:
+        task.update(req.context)
+
+    if req.plan_only:
+        plan = engine.reason_and_plan(task, context={"patterns": []})
+        return {
+            "goal": plan.goal,
+            "planner": plan.planner,
+            "planning_error": plan.planning_error,
+            "steps": [
+                {"agent": s.agent, "parallel_group": s.parallel_group, "required": s.required}
+                for s in plan.steps
+            ],
+        }
+
+    return engine.process_task(task)

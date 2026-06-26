@@ -17,6 +17,13 @@ EnvironmentFile=/home/muthu/PycharmProjects/BP_Backend/.env
 ExecStartPre=/usr/bin/docker compose --env-file /home/muthu/PycharmProjects/BP_Backend/.env -f /home/muthu/PycharmProjects/BP_Backend/procurement_knowledge_graph/docker-compose.yml up -d neo4j
 ExecStartPre=/bin/sleep 10
 
+# Free port 8000 before binding. A stray/manually-started uvicorn squatting the
+# port (PPID 1 orphan, no --workers flag) makes this service fail with
+# [Errno 98] address already in use and crash-loop under Restart=on-failure.
+# The leading '-' tells systemd to ignore the exit code when nothing is bound.
+ExecStartPre=-/usr/bin/fuser -k 8000/tcp
+ExecStartPre=/bin/sleep 2
+
 ExecStart=/home/muthu/PycharmProjects/BP_Backend/.venv/bin/uvicorn api.main:app \
     --host 0.0.0.0 \
     --port 8000 \

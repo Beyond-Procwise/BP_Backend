@@ -510,7 +510,15 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
     po = _find_parent_po(cur, row.get("po_id"))
     conf = _to_float(row.get("confidence_score")) or 0.0
     if row.get("po_id") is None:
-        return None, None, "no_parent_reference"
+        # No parent PO to link against: a quote is the ROOT of the
+        # quote->PO->invoice chain (no parent by definition) and a no-PO invoice
+        # is valid off-PO / maverick spend. Promote standalone when extraction
+        # confidence passes — there is no link score to apply because there is no
+        # parent to score against. Below the gate, hold as a low-confidence row
+        # (NOT 'no_parent_reference', which stalled these in _stg forever).
+        if conf < MIN_CONFIDENCE:
+            return None, None, "low_extraction_confidence"
+        return None, None, None
     if po is None:
         return None, None, "parent_not_found"
     src_lines = _rows(cur, f"select * from {cfg['lines_stg']} where {pk} = %s", (pk_val,))
@@ -574,18 +582,26 @@ def _promote(conn, doc_types, limit) -> dict:
             if reason is None:  # PROMOTE
                 n_lines = _do_copy(cur, doc_type, row, po=po)
                 promoted += 1
-                warn = link["F"] < _BAND_AUTO
+                # Standalone promotion (parent-less quote / no-PO invoice) carries
+                # no link score: both ``link`` and ``po`` are None.
+                F = link["F"] if link else None
+                decision = link["decision"] if link else "standalone_no_parent"
+                warn = (F is not None and F < _BAND_AUTO)
                 record_action(
                     phase=PHASE_CONSOLIDATION, action_type="promote_to_trgt",
                     doc_type=doc_type, doc_pk=str(pk_val), agent="linking_engine",
-                    status="warn" if warn else "ok", confidence=link["F"],
-                    summary=f"promoted {doc_type} {pk_val} (F={link['F']}, {link['decision']})",
-                    details={"F": link["F"], "decision": link["decision"], "parent_po": po["po_id"],
-                             "lines": n_lines, "signals": link["signals"],
-                             "P_raw": link["P_raw"], "C": link["C"], "Q": link["Q"]},
+                    status="warn" if warn else "ok", confidence=F,
+                    summary=f"promoted {doc_type} {pk_val} (F={F}, {decision})",
+                    details={"F": F, "decision": decision,
+                             "parent_po": po["po_id"] if po else None,
+                             "lines": n_lines,
+                             "signals": link["signals"] if link else None,
+                             "P_raw": link["P_raw"] if link else None,
+                             "C": link["C"] if link else None,
+                             "Q": link["Q"] if link else None},
                     conn=conn)
                 details.append({"doc_type": doc_type, "doc_pk": pk_val, "action": "promoted",
-                                "F": link["F"], "decision": link["decision"]})
+                                "F": F, "decision": decision})
             else:  # HELD
                 held += 1
                 by_reason[reason] = by_reason.get(reason, 0) + 1

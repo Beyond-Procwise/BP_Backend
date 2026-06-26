@@ -70,6 +70,11 @@ OCR_BINARIZE_C = 10
 SPACY_MODEL = "en_core_web_sm"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 NUEXTRACT_MODEL = "nuextract:3.8b"
+# NuExtract HTTP read timeout (seconds). Raised from 120 so chunk extraction
+# survives GPU contention (e.g. the pinned :unified planning model competing
+# for the GPU) and completes, instead of timing out -> empty fields -> docs
+# held at promotion with low_extraction_confidence. Env-tunable.
+NUEXTRACT_TIMEOUT = int(os.getenv("NUEXTRACT_TIMEOUT", "300"))
 
 LINE_ITEM_ROW_Y_TOLERANCE = 8
 LINE_ITEM_COL_X_GAP = 40
@@ -556,7 +561,7 @@ def _call_nuextract_invoice(text: str) -> dict:
             "stream": False,
             "options": {"temperature": 0, "num_predict": 2048},
         },
-        timeout=120,
+        timeout=NUEXTRACT_TIMEOUT,
     )
     response.raise_for_status()
     raw_output = response.json().get("response", "").strip()
@@ -642,7 +647,7 @@ def _call_nuextract_po(text: str) -> dict:
             "stream": False,
             "options": {"temperature": 0, "num_predict": 2048},
         },
-        timeout=120,
+        timeout=NUEXTRACT_TIMEOUT,
     )
     response.raise_for_status()
     raw_output = response.json().get("response", "").strip()
@@ -5280,7 +5285,7 @@ def _call_nuextract_quote(text: str) -> dict:
             "stream": False,
             "options": {"temperature": 0, "num_predict": 2048},
         },
-        timeout=120,
+        timeout=NUEXTRACT_TIMEOUT,
     )
     response.raise_for_status()
     raw_output = response.json().get("response", "").strip()

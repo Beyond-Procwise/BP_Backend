@@ -1,9 +1,9 @@
 """Cross-document reconciliation for a procurement deal.
 
 Compares the final (_trgt) documents that share a ``deal_id`` and records the
-matches/mismatches as consolidation actions in ``proc.agent_actions``. This is
-read-only on the _trgt data — it never mutates source records (extraction
-accuracy mandate); the only writes are to the agent_actions event log.
+matches/mismatches as consolidation actions in ``proc.bp_agent_actions``. This
+is read-only on the _trgt data — it never mutates source records (extraction
+accuracy mandate); the only writes are to the bp_agent_actions event log.
 
 Checks (each independent and individually verifiable):
   - amount_usd : converted_amount_usd close across docs (currency-agnostic)

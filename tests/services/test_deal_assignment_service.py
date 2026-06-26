@@ -451,6 +451,61 @@ def test_propagate_deal_date_stamps_every_doc_in_deal():
     assert all("deal_date=%s" in e[0].lower() and "DEAL_X" in str(e[1]) for e in updates)
 
 
+def test_same_supplier_treats_typo_and_drift_as_same_but_flags_genuine_conflict():
+    # extraction typo + suffix drift -> SAME (must not be flagged as a conflict)
+    assert das._same_supplier("SUP-AuariusMarketing", "SUP-AquariusMarketingLtd") is True
+    # prefix/id drift handled by cmp_supplier -> SAME
+    assert das._same_supplier("SUP-Infotech", "SUP-InfotechConsulting") is True
+    assert das._same_supplier("SUP-Nexaspark", "SUP-NexasparkMarketingLtd") is True
+    # genuinely different suppliers -> CONFLICT
+    assert das._same_supplier("SUP-Techworld", "SUP-DixonReynoldsAndSolomon") is False
+    # exact match / missing-is-inconclusive
+    assert das._same_supplier("SUP-X", "SUP-X") is True
+    assert das._same_supplier(None, "SUP-X") is True
+    assert das._same_supplier("SUP-X", "") is True
+
+
+_SC_COLMAP = {"bp_purchase_order_trgt": ["po_id", "deal_id", "supplier_id"],
+              "bp_invoice_trgt": ["invoice_id", "deal_id", "supplier_id"],
+              "bp_quote_trgt": ["quote_id", "deal_id", "supplier_id"]}
+
+
+def test_flag_supplier_conflict_deals_flags_the_wrong_supplier_doc():
+    # Deal D1 = a Dixon Reynolds PO + a Techworld invoice (genuinely different
+    # supplier dropped into the deal). The invoice's monitor row is flagged; the
+    # PO (the deal's representative supplier) is not.
+    po = [{"pk": "521031", "deal_id": "D1", "supplier_id": "SUP-DixonReynoldsAndSolomon"}]
+    inv = [{"pk": "QUT-005-022", "deal_id": "D1", "supplier_id": "SUP-Techworld"}]
+    inv_raw = [{"invoice_id": "QUT-005-022", "process_monitor_id": 868}]
+    cur = _ScriptCursor(
+        script=[("from proc.bp_purchase_order_trgt", po),
+                ("from proc.bp_invoice_trgt", inv),
+                ("from proc.bp_quote_trgt", []),
+                ("from proc.bp_invoice_raw", inv_raw)],
+        columns=_SC_COLMAP)
+    n = das._flag_supplier_conflict_deals(cur)
+    assert n == 1
+    statuses = [e for e in cur.executed
+                if "update proc.process_monitor set status" in e[0].lower()]
+    assert statuses and all("Deal_Conflict_Review" in str(e[1]) for e in statuses)
+    assert {e[1][1] for e in statuses} == {868}   # only the Techworld invoice
+
+
+def test_flag_supplier_conflict_deals_ignores_same_supplier_typo():
+    # Deal D2 = Aquarius PO + an invoice whose supplier_id is a typo of the same
+    # company ("Auarius"). Coherent deal -> NOTHING flagged (no false positive).
+    po = [{"pk": "508084", "deal_id": "D2", "supplier_id": "SUP-AquariusMarketingLtd"}]
+    inv = [{"pk": "INV-25-050", "deal_id": "D2", "supplier_id": "SUP-AuariusMarketing"}]
+    cur = _ScriptCursor(
+        script=[("from proc.bp_purchase_order_trgt", po),
+                ("from proc.bp_invoice_trgt", inv),
+                ("from proc.bp_quote_trgt", [])],
+        columns=_SC_COLMAP)
+    assert das._flag_supplier_conflict_deals(cur) == 0
+    assert not any("update proc.process_monitor set status" in e[0].lower()
+                   for e in cur.executed)
+
+
 def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     calls = []
     monkeypatch.setattr(das, "_look_forward", lambda cur: calls.append("fwd") or 2)
@@ -458,6 +513,7 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     monkeypatch.setattr(das, "_reconcile_legacy", lambda cur: calls.append("rec") or 3)
     monkeypatch.setattr(das, "_propagate_deal_along_po", lambda cur: calls.append("prop") or 6)
     monkeypatch.setattr(das, "_flag_conflict_po_chains", lambda cur: calls.append("conf") or 7)
+    monkeypatch.setattr(das, "_flag_supplier_conflict_deals", lambda cur: calls.append("supconf") or 1)
     monkeypatch.setattr(das, "_backfill_deal_metadata", lambda cur: calls.append("meta") or 5)
     monkeypatch.setattr(das, "_propagate_deal_date", lambda cur: calls.append("dates") or 8)
     monkeypatch.setattr(das, "_mirror_deal_to_raw_and_stg", lambda cur: calls.append("mirror") or 10)
@@ -466,9 +522,11 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     cur = _ScriptCursor(script=[], columns={})
     conn = _RecConn(cur)
     result = das.assign_deals(conn=conn)
+    result.pop("summaries", None)   # post-link best-effort step; not part of the pass counts
     assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
-                      "propagated": 6, "conflicts_flagged": 7, "metadata_filled": 5,
+                      "propagated": 6, "conflicts_flagged": 7,
+                      "supplier_conflicts_flagged": 1, "metadata_filled": 5,
                       "deal_dates_set": 8, "tiers_mirrored": 10, "map_pruned": 9,
                       "status_reconciled": 4}
-    assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "dates",
+    assert calls == ["fwd", "back", "rec", "prop", "conf", "supconf", "meta", "dates",
                      "mirror", "prune", "status"]

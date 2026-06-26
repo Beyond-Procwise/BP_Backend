@@ -602,7 +602,7 @@ def _build_rfq_table_html(descriptions: Iterable[str]) -> str:
 RFQ_TABLE_HEADER = _build_rfq_table_html([])
 
 
-DEFAULT_NEGOTIATION_MODEL = "mistral"
+DEFAULT_NEGOTIATION_MODEL = "BeyondProcwise/AgentNick:unified"
 
 
 class EmailDraftingAgent(BaseAgent):

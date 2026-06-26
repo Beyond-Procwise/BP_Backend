@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
@@ -50,6 +51,12 @@ class WorkflowPlan:
     steps: List[PlanStep]
     negotiation_strategy: Optional[Strategy] = None
     escalation_policy: Dict[str, Any] = field(default_factory=dict)
+    # Provenance so a degraded fallback can never masquerade as a real plan:
+    #   "llm"                  -> AgentNick composed the plan
+    #   "rule_based"           -> deterministic plan for a known task_type
+    #   "rule_based_fallback"  -> LLM planning FAILED; this is a degraded plan
+    planner: str = "rule_based"
+    planning_error: Optional[str] = None
 
 
 @dataclass
@@ -66,7 +73,23 @@ class Observation:
 # ---------------------------------------------------------------------------
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
-_OLLAMA_MODEL = "BeyondProcwise/AgentNick:latest"
+# Planning runs on the *reasoning* AgentNick variant (:unified) — NOT the
+# extraction-specialist :latest, whose baked-in identity ("my only job is
+# document extraction") makes it refuse planning tasks. Both are the same
+# AgentNick base model; ProcWise stays AgentNick-only.
+_OLLAMA_MODEL = "BeyondProcwise/AgentNick:unified"
+# The first planning call after a model swap pays a one-time cold-load cost
+# (~2 min to page the 30B model into VRAM); generation itself is ~1-2s. The
+# old 30s timeout could never survive that, so it silently failed every time.
+_OLLAMA_TIMEOUT = 240
+# Keep the planning model warm for an idle window, but NOT pinned forever.
+# A finite keep_alive lets Ollama evict :unified under memory pressure so the
+# extraction specialist (:extract, 9.4GB) can load on the shared 23GB GPU —
+# pinning (-1) blocked that eviction and starved extraction (multi-minute
+# stalls). Back-to-back planning calls within the window still avoid a
+# cold-load; an idle planner cold-loads on next use (~2 min, one-off).
+# Env-tunable (Ollama duration string, e.g. "30m", "10m", or "-1" to re-pin).
+_OLLAMA_KEEP_ALIVE = os.getenv("REASONING_KEEP_ALIVE", "30m")
 
 # High-value task threshold (mirrors NegotiationStrategyEngine.escalation_threshold)
 _HIGH_VALUE_THRESHOLD = 50_000.0
@@ -212,6 +235,12 @@ class ReasoningEngine:
             "data": results,
             "confidence": observation.confidence,
             "workflow_id": wf_ctx.workflow_id,
+            "planner": plan.planner,
+            "planning_error": plan.planning_error,
+            "plan": [
+                {"agent": s.agent, "parallel_group": s.parallel_group, "required": s.required}
+                for s in plan.steps
+            ],
             "signals": [s.to_dict() for s in wf_ctx.get_signals()],
             "observation": {
                 "action": observation.action,
@@ -219,6 +248,41 @@ class ReasoningEngine:
                 "confidence": observation.confidence,
             },
         }
+
+    def warm_up(self) -> bool:
+        """Pre-load and pin the planning model (:unified) into VRAM.
+
+        Issues a trivial generate call with ``keep_alive=-1`` so the model is
+        resident before the first real planning request, avoiding the ~2 min
+        cold-load that otherwise trips the planner timeout. Best-effort: any
+        failure is logged and swallowed (the planner still works, just colder).
+
+        Intended to be called once at server startup, ideally on a background
+        thread so it does not block boot.
+        """
+        payload = json.dumps(
+            {
+                "model": _OLLAMA_MODEL,
+                "prompt": "ok",
+                "stream": False,
+                "think": False,
+                "keep_alive": _OLLAMA_KEEP_ALIVE,
+                "options": {"num_predict": 1},
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            _OLLAMA_URL, data=payload,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            logger.info("Warming planning model %s (pinning resident)...", _OLLAMA_MODEL)
+            with urllib.request.urlopen(req, timeout=_OLLAMA_TIMEOUT):
+                pass
+            logger.info("Planning model %s warmed and pinned", _OLLAMA_MODEL)
+            return True
+        except Exception as exc:
+            logger.warning("Planner warm-up failed for %s: %s", _OLLAMA_MODEL, exc)
+            return False
 
     def reason_and_plan(
         self, task: dict, context: Optional[dict] = None
@@ -249,13 +313,26 @@ class ReasoningEngine:
 
         if use_llm or (task_type and task_type not in known_types):
             try:
-                return self._llm_compose_plan(task, context or {})
-            except Exception:
-                logger.exception(
-                    "LLM planning failed for task_type='%s'; falling back to rule-based", task_type
+                plan = self._llm_compose_plan(task, context or {})
+                plan.planner = "llm"
+                return plan
+            except Exception as exc:
+                # LOUD, not silent: a fallback here means dynamic planning did
+                # NOT happen. Tag the plan so callers/UX can surface it rather
+                # than mistaking a trivial default for a real AgentNick plan.
+                logger.error(
+                    "LLM PLANNING FAILED (AgentNick:unified) for task_type=%r goal=%r: %s "
+                    "-- returning DEGRADED rule-based fallback (not a real plan)",
+                    task_type, task.get("goal"), exc, exc_info=True,
                 )
+                plan = self._rule_based_plan(task, context or {})
+                plan.planner = "rule_based_fallback"
+                plan.planning_error = str(exc)
+                return plan
 
-        return self._rule_based_plan(task, context or {})
+        plan = self._rule_based_plan(task, context or {})
+        plan.planner = "rule_based"
+        return plan
 
     def observe(self, results: dict) -> Observation:
         """Evaluate workflow results and return an :class:`Observation`.
@@ -449,7 +526,16 @@ class ReasoningEngine:
         )
 
         payload = json.dumps(
-            {"model": _OLLAMA_MODEL, "prompt": prompt, "stream": False}
+            {
+                "model": _OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                # Suppress chain-of-thought: we want the JSON plan, not the
+                # model's reasoning narrative (which blows past the timeout).
+                "think": False,
+                "keep_alive": _OLLAMA_KEEP_ALIVE,  # pin :unified resident
+                "options": {"temperature": 0, "num_predict": 1024},
+            }
         ).encode("utf-8")
 
         req = urllib.request.Request(
@@ -459,7 +545,7 @@ class ReasoningEngine:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=_OLLAMA_TIMEOUT) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
 
         response_text = raw.get("response", "")
@@ -525,18 +611,49 @@ class ReasoningEngine:
             wf_ctx.record_result(agent_id, result)
             return result
 
+        # Share the blackboard so the agent can read prior results and emit
+        # signals (SUGGEST_AGENT, CONFIDENCE_LOW, ...).
+        if hasattr(agent, "set_workflow_context"):
+            try:
+                agent.set_workflow_context(wf_ctx)
+            except Exception:
+                logger.debug("Could not attach workflow context to '%s'", agent_id)
+
         try:
-            # Prefer run(task, context=wf_ctx); fall back to run(task)
-            if hasattr(agent, "run"):
+            # Real BaseAgent instances speak AgentContext -> AgentOutput, exactly
+            # like the orchestrator's invocation path. Build a proper context and
+            # call execute() (which also handles process logging + governance).
+            # Simple/callable agents and test doubles still take a plain dict.
+            from agents.base_agent import AgentContext, BaseAgent
+
+            if isinstance(agent, BaseAgent):
+                policy_context: List[Dict[str, Any]] = []
+                if hasattr(agent, "governing_policies"):
+                    try:
+                        policy_context = list(agent.governing_policies())
+                    except Exception:
+                        logger.debug("governing_policies() failed for '%s'", agent_id)
+                ctx = AgentContext(
+                    workflow_id=wf_ctx.workflow_id,
+                    agent_id=agent_id,
+                    user_id=str(task_input.get("user_id") or "reasoning_engine"),
+                    input_data=task_input,
+                    policy_context=policy_context,
+                )
+                result = self._agent_output_to_dict(agent.execute(ctx))
+            elif hasattr(agent, "run"):
                 try:
                     result = agent.run(task_input, context=wf_ctx)
                 except TypeError:
                     result = agent.run(task_input)
+                if not isinstance(result, dict):
+                    result = {"output": result}
             else:
-                result = {"error": f"Agent '{agent_id}' has no run() method"}
-
-            if not isinstance(result, dict):
-                result = {"output": result}
+                result = {
+                    "error": f"Agent '{agent_id}' has no run()/execute()",
+                    "agent": agent_id,
+                    "status": "agent_error",
+                }
 
         except Exception as exc:
             logger.exception("Agent '%s' raised an exception", agent_id)
@@ -544,6 +661,26 @@ class ReasoningEngine:
 
         wf_ctx.record_result(agent_id, result)
         return result
+
+    @staticmethod
+    def _agent_output_to_dict(output: Any) -> Dict[str, Any]:
+        """Flatten an :class:`AgentOutput` into the plain result dict the loop
+        expects (status / confidence / error surfaced at the top level)."""
+        from agents.base_agent import AgentOutput
+
+        if not isinstance(output, AgentOutput):
+            return output if isinstance(output, dict) else {"output": output}
+
+        data = dict(output.data) if isinstance(output.data, dict) else {"output": output.data}
+        status = output.status.value if hasattr(output.status, "value") else str(output.status)
+        data.setdefault("status", status)
+        if output.confidence is not None:
+            data.setdefault("confidence", output.confidence)
+        if output.error:
+            data.setdefault("error", output.error)
+        if output.next_agents:
+            data.setdefault("next_agents", list(output.next_agents))
+        return data
 
     # ------------------------------------------------------------------
     # Private: Helpers

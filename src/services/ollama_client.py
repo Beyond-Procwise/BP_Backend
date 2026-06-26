@@ -44,9 +44,10 @@ def ollama_generate(
     timeout: int = DEFAULT_TIMEOUT,
     temperature: float = 0,
     num_predict: int = 8192,
-    num_gpu: int = 99,
+    num_gpu: int = -1,
     retries: int = MAX_RETRIES,
     stop: Optional[list] = None,
+    think: bool = False,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -62,8 +63,12 @@ def ollama_generate(
     options: Dict[str, Any] = {
         "temperature": temperature,
         "num_predict": num_predict,
-        "num_gpu": num_gpu,
     }
+    # num_gpu < 0 -> let Ollama auto-fit GPU layers (overflow to CPU). Forcing all
+    # layers on GPU (num_gpu=99) OOM-kills the runner for the 30B unified model when
+    # the card is contended. Only pin a specific count when explicitly requested.
+    if num_gpu is not None and num_gpu >= 0:
+        options["num_gpu"] = num_gpu
     if stop:
         options["stop"] = stop
     payload: Dict[str, Any] = {
@@ -71,6 +76,11 @@ def ollama_generate(
         "prompt": prompt,
         "stream": False,
         "options": options,
+        # AgentNick:latest (Qwen3-30B "Thinking") emits its answer in a separate
+        # `thinking` field and leaves `response` empty when reasoning is on.
+        # Default think=False so the answer lands in `response` for every local
+        # caller (extraction, agentic, summaries) — matching ollama_cloud_generate.
+        "think": think,
     }
 
     for attempt in range(1, retries + 1):

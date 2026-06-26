@@ -127,6 +127,14 @@ async def lifespan(app: FastAPI):
         agent_nick.reasoning_engine = reasoning_engine
         agent_nick.pattern_service = pattern_service
 
+        # Pin the planning model (AgentNick:unified) resident on a background
+        # thread so the first /agents/instruct call doesn't pay a ~2 min
+        # cold-load. Non-blocking: boot proceeds while the model warms.
+        import threading
+        threading.Thread(
+            target=reasoning_engine.warm_up, name="planner-warmup", daemon=True
+        ).start()
+
         # Seed initial patterns if table is empty
         from services.seed_patterns import seed_patterns
         existing = pattern_service.get_patterns()

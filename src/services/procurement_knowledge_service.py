@@ -99,8 +99,7 @@ class ProcurementKnowledgeService:
         rag = RAGService(self.agent_nick)
         texts: List[str] = []
         for brief in briefs:
-            payload = brief.to_payload()
-            # Ensure customer-identifying fields are stripped from payloads.
+            payload = brief.to_payload() ##this is to capture the customer details, needs changes??
             payload.pop("customer", None)
             payload.pop("customer_id", None)
             payload.pop("customer_name", None)

@@ -8,8 +8,9 @@ those layers can't solve is *context*: which company in the document is
 the supplier vs the buyer? Is "QTY" a real org or a column header? Is
 "Redkiln Way Horsham" a person or an address?
 
-This module makes ONE Qwen2.5-VL call per document. The prompt:
-  - hands Qwen the full text (capped at 16k chars)
+This module makes ONE unified-AgentNick (BeyondProcwise/AgentNick:extract via
+Ollama) call per document. The prompt:
+  - hands AgentNick the full text (capped at 16k chars)
   - lists the schema fields with their procurement meanings
   - includes the existing regex/NER candidates as hints
   - demands a single JSON object back
@@ -129,7 +130,16 @@ _PO_FIELDS: list[tuple[str, str, str]] = [
 ]
 
 _QUOTE_FIELDS: list[tuple[str, str, str]] = [
-    ("quote_id", "str", "Quote identifier (e.g. 'QUT30746', 'QUT-2025-051'). Output the raw token."),
+    ("quote_id", "str",
+     "The SUPPLIER'S OWN quote/quotation reference. Labels: 'Quote No', 'Quotation Number', "
+     "'Quotation reference', 'Quote Ref', 'Reference No', or 'Our Ref'. ANY format is valid, "
+     "including alphanumeric codes with slashes or dots (e.g. 'QUT30746', 'QUT-2025-051', "
+     "'CLK/RFQ/2024/0321'). The label and value may sit on separate lines/columns — take the "
+     "reference code printed next to the label. Output the raw token EXACTLY as printed. "
+     "If BOTH a supplier 'Quotation reference'/'Our Ref' AND a buyer 'RFQ reference'/'RFQ No'/"
+     "'Customer Ref' appear, the quote_id is the SUPPLIER'S one — the buyer's RFQ reference "
+     "(e.g. 'PROC-2024-RFQ-FRT-005') is NOT the quote_id. Use an RFQ reference only when it is "
+     "the single reference present."),
     ("supplier_id", "str",
      "The COMPANY ISSUING the quote — the supplier. Usually in the masthead/heading. Output the company NAME — it will be resolved to an internal supplier ID downstream."),
     ("buyer_id", "str", "The COMPANY RECEIVING the quote (in 'Bill To:', 'Customer:', 'Quoted To:')."),
@@ -138,7 +148,13 @@ _QUOTE_FIELDS: list[tuple[str, str, str]] = [
     ("quote_date", "date", "Quote issue date — ISO YYYY-MM-DD."),
     ("validity_date", "date", "Quote validity / expiry date — ISO YYYY-MM-DD."),
     ("currency", "str", "ISO 4217 code."),
-    ("total_amount", "money", "Pre-tax subtotal."),
+    ("total_amount", "money",
+     "The document's OVERALL pre-tax total — the single figure that represents the whole "
+     "quote, NOT an individual section/category sub-total. On rate-card/multi-section quotes "
+     "use the explicit overall total labelled 'Total', 'Total Value', 'Contract Value', "
+     "'Annual Contract Value', 'Total Contract Value' or 'Total (excluding VAT/tax)'. Never "
+     "report an intermediate section sub-total (e.g. a 'Surcharges sub-total' or a single "
+     "category sub-total) as total_amount."),
     ("tax_percent", "decimal", "Tax rate percentage."),
     ("tax_amount", "money", "Tax amount."),
     ("total_amount_incl_tax", "money", "Grand total including tax."),
@@ -258,11 +274,108 @@ def parse_filename_hints(file_path: str | None) -> dict[str, str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Deterministic overall/contract-total recovery (rate-card & version-history
+# quotes). docling frequently FLATTENS the bottom-of-document grand-total row
+# so its label ("ANNUAL CONTRACT VALUE", "Total Contract Value") loses its
+# value in full_text — the LLM then mis-picks an intermediate section
+# sub-total (e.g. a "Surcharges sub-total"). Structured tables preserve the
+# label↔value association, so when the document carries a per-version
+# "Total Value"/"Contract Value" summary table we read the figure for THIS
+# document's version directly from the cells. Purely deterministic + grounded
+# — never fabricates.
+# ---------------------------------------------------------------------------
+
+_CONTRACT_TOTAL_HEADER_RE = re.compile(
+    r"(?i)\b(?:annual\s+)?(?:total\s+)?contract\s+value\b|\btotal\s+value\b"
+)
+_LINE_TABLE_HEADER_RE = re.compile(
+    r"(?i)\b(?:description|qty|quantity|unit\s+price|item)\b"
+)
+
+
+def _doc_version(full_text: str, file_path: str | None) -> int | None:
+    """Best-effort version number for a versioned quote (V1 / Version 2 / ...)."""
+    if file_path:
+        m = re.search(r"(?i)[_\- ]V(\d{1,2})\b", file_path)
+        if m:
+            return int(m.group(1))
+    # Masthead "Version 1 — Initial Rate Schedule" / "Version 2"
+    m = re.search(r"(?i)\bversion\s+(\d{1,2})\b", (full_text or "")[:1500])
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _cell_text(c) -> str:
+    return (getattr(c, "text", "") or "").strip()
+
+
+def _recover_contract_total(doc_tables, full_text: str, file_path: str | None):
+    """Return the document-level pre-tax total from a version/summary table.
+
+    Finds a table with a "Total Value"/"Contract Value" header column and
+    returns the money value on the row matching THIS document's version (or the
+    sole data row). Returns None when nothing unambiguous + grounded is found,
+    so a normal quote (no such table) is never affected.
+    """
+    if not doc_tables:
+        return None
+    version = _doc_version(full_text, file_path)
+    for t in doc_tables:
+        rows = list(getattr(t, "rows", []) or [])
+        if not rows:
+            continue
+        # Locate the header cell holding "Total Value"/"Contract Value" by
+        # scanning ALL rows — docling often makes header_row_index point at a
+        # spanned title row ("VERSION HISTORY") above the real column header.
+        hdr_idx = None
+        val_col = None
+        for ri, r in enumerate(rows):
+            row_text = " ".join(_cell_text(c) for c in r)
+            # Skip ordinary line-item tables ("Description | Qty | Unit Price").
+            if _LINE_TABLE_HEADER_RE.search(row_text):
+                hdr_idx = None
+                break
+            for c in r:
+                if _CONTRACT_TOTAL_HEADER_RE.search(_cell_text(c)):
+                    hdr_idx = ri
+                    val_col = getattr(c, "col_index", None)
+                    break
+            if hdr_idx is not None:
+                break
+        if hdr_idx is None or val_col is None:
+            continue
+        data_rows = [
+            r for ri, r in enumerate(rows)
+            if ri > hdr_idx and any(_cell_text(c) for c in r)
+        ]
+        chosen = None
+        if version is not None:
+            vre = re.compile(rf"(?i)\b(?:V|Version\s*)0*{version}\b")
+            for r in data_rows:
+                first = _cell_text(r[0]) if r else ""
+                if vre.search(first):
+                    chosen = r
+                    break
+        if chosen is None and len(data_rows) == 1:
+            chosen = data_rows[0]
+        if chosen is None:
+            continue
+        for c in chosen:
+            if getattr(c, "col_index", None) == val_col:
+                val = _coerce_number(_cell_text(c))
+                if val is not None and val > 0 and _money_grounded(val, full_text):
+                    return val
+    return None
+
+
 def synthesize(
     doc_type: str,
     full_text: str,
     raw_candidates: dict[str, Any],
     file_path: str | None = None,
+    doc_tables=None,
 ) -> dict[str, Any]:
     """Produce a clean structured row from full_text + L1/L2/L3 candidates.
 
@@ -299,6 +412,22 @@ def synthesize(
         return raw_candidates
 
     cleaned = _validate_and_bind(parsed, full_text, fields)
+    # Deterministic override for rate-card / version-history quotes where the
+    # grand total is detached from its label in full_text (docling flattening)
+    # and the LLM mis-picks a section sub-total. Reads THIS version's figure
+    # from the structured "Total Value"/"Contract Value" table; grounded only.
+    if doc_type in ("quote", "purchase_order"):
+        recovered_total = _recover_contract_total(doc_tables, full_text, file_path)
+        if recovered_total is not None and recovered_total != cleaned.get("total_amount"):
+            log.info(
+                "context_layer: contract-total recovery set total_amount=%s "
+                "(was %s) from version/summary table",
+                recovered_total, cleaned.get("total_amount"),
+            )
+            cleaned["total_amount"] = recovered_total
+            # Recompute tax / incl-tax from the corrected pre-tax base.
+            cleaned["tax_amount"] = None
+            cleaned["total_amount_incl_tax"] = None
     cleaned = _compute_derived(cleaned)
     log.info(
         "context_layer: doc_type=%s synthesized %d fields (non-null)",
@@ -454,6 +583,7 @@ TAX + TOTAL RECOVERY (very important — many invoices have these but in awkward
 - Pattern C — single "Total Amount Due" with one number: that's the GRAND TOTAL (incl. tax). If the doc shows ONLY this single number with no separate tax/subtotal line, set invoice_amount = grand_total - tax (if tax_amount is derivable from "Tax (X%)" anywhere), otherwise leave invoice_amount = grand_total and tax_amount = null.
 - UK invoices very commonly use 20% VAT. If you can see "Tax (20%)" anywhere, even without an explicit amount, you can pair it with the subtotal in the SAME block. DO NOT compute the tax — only report the value as it appears in the document.
 - Never put the GRAND TOTAL into invoice_amount/total_amount (those are pre-tax subtotals). The grand total goes into *_total_incl_tax.
+- Pattern D — multi-section / rate-card quotes (common for freight, logistics, services and framework agreements): the document lists SEVERAL category sub-totals (e.g. "Domestic Road sub-total", "European Groupage sub-total", "Surcharges sub-total") and then ONE overall document total, often labelled "Total", "Total Value", "Contract Value", "Annual Contract Value", "Total Contract Value" or "Total (excluding VAT/tax)". The pre-tax total_amount is that OVERALL total — NOT any single category/section sub-total. If the overall total is marked "excluding VAT/tax", it IS the pre-tax total_amount (do not mistake a surcharges or category sub-total for it). If a document shows several candidate "Total Value" figures in a VERSION HISTORY table, use the one matching THIS version of the document.
 
 COUNTRY + REGION DERIVATION (from any visible address):
 - UK postcode like "RH13 5QH", "M17 1AB", "EC2A 3NW", "B7 4AX", "LS10 1QP",
@@ -553,7 +683,7 @@ def _build_prompt(
 
 
 # ---------------------------------------------------------------------------
-# LLM call (Qwen2.5-VL inside procwise; Ollama fallback)
+# LLM call (unified BeyondProcwise/AgentNick:extract via Ollama)
 # ---------------------------------------------------------------------------
 
 
@@ -582,7 +712,9 @@ def _call_llm(prompt: str) -> str | None:
             num_predict=MAX_RESPONSE_TOKENS,
             temperature=0.0,
             retries=2,
-            timeout=120,
+            # Raised from 120 so the context-layer call completes under GPU
+            # contention rather than failing the doc on missing-required.
+            timeout=int(_os.getenv("CONTEXT_LAYER_TIMEOUT", "300")),
         )
     except Exception as exc:  # noqa: BLE001
         log.error("context_layer: ollama call failed: %s", exc)

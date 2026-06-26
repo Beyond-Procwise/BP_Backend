@@ -33,7 +33,7 @@ Environment:
     LLM_EXTRACT_FALLBACK = 'on' (default) | 'off'
     LLM_EXTRACT_MODEL    = model name (default 'BeyondProcwise/AgentNick:extract')
     OLLAMA_BASE_URL      = inherited from engine
-    LLM_EXTRACT_TIMEOUT  = seconds (default 60)
+    LLM_EXTRACT_TIMEOUT  = seconds (default 240)
 """
 from __future__ import annotations
 
@@ -49,7 +49,10 @@ logger = logging.getLogger("extraction_v4.llm_extractor")
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_MODEL = os.getenv("LLM_EXTRACT_MODEL", "BeyondProcwise/AgentNick:extract")
-LLM_TIMEOUT = int(os.getenv("LLM_EXTRACT_TIMEOUT", "60"))
+# Raised from 60 so the missing-required-field fill completes under GPU
+# contention instead of being skipped (skipped fill -> empty fields -> low
+# extraction confidence -> docs held at promotion). Env-tunable.
+LLM_TIMEOUT = int(os.getenv("LLM_EXTRACT_TIMEOUT", "240"))
 
 # Cap text we send to the LLM. Long contexts hurt latency more than they help
 # accuracy for header-only extraction. The flat_text is usually short.
@@ -365,6 +368,10 @@ def _call_ollama(prompt: str) -> dict:
             "prompt": prompt,
             "stream": False,
             "format": "json",
+            # think=False: AgentNick:latest (Qwen3-30B Thinking) otherwise emits its
+            # output in `thinking` and leaves `response` empty, silently breaking the
+            # extraction LLM-fill. Disable reasoning so the JSON lands in `response`.
+            "think": False,
             "options": {
                 "temperature": 0,
                 "num_predict": 2048,

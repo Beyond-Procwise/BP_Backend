@@ -318,6 +318,12 @@ class Settings(BaseSettings):
     imap_search_criteria: str = Field(default="ALL", env="IMAP_SEARCH_CRITERIA")
 
     extraction_model: str = "BeyondProcwise/AgentNick:latest"
+    # Single non-extraction brain: every reasoning/analysis/summarisation/
+    # negotiation/ranking/Q&A task resolves to this AgentNick variant. Extraction
+    # keeps its own specialist (extraction_model / :extract). AgentNick-only.
+    reasoning_model: str = Field(
+        default="BeyondProcwise/AgentNick:unified", env="REASONING_MODEL"
+    )
     llm_backend: str = Field(default="ollama", env="LLM_BACKEND")
     langchain_provider: str = Field(default="ollama", env="LANGCHAIN_PROVIDER")
     langchain_model: Optional[str] = Field(
@@ -345,7 +351,7 @@ class Settings(BaseSettings):
     document_extraction_model: str = Field(
         default="BeyondProcwise/AgentNick:latest", env="DOCUMENT_EXTRACTION_MODEL"
     )
-    rag_model: str = Field(default="BeyondProcwise/AgentNick:latest", env="RAG_LLM_MODEL")
+    rag_model: str = Field(default="BeyondProcwise/AgentNick:unified", env="RAG_LLM_MODEL")
     # ``BAAI/bge-large-en-v1.5`` provides state-of-the-art dense retrieval
     # performance for procurement terminology while remaining compatible with
     # Qdrant's HNSW indexes. The model outputs 1024 dimensional vectors which

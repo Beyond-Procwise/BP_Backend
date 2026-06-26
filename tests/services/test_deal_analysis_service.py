@@ -69,6 +69,41 @@ def test_missing_quote_leaves_changes_null(monkeypatch):
     assert m["efficiency_score"] is None
 
 
+def test_lump_sum_services_volume_falls_back_to_line_count(monkeypatch):
+    # Services deal: line_amount present but NO per-unit quantity/unit_price in
+    # the source doc (e.g. "Social Media Management" billed as a flat amount).
+    # Volume should fall back to the line-item count so the Analyse grid is not
+    # blank; per-unit savings metrics stay NULL (genuinely uncomputable).
+    inv = {"supplier_name": "Design House", "total_amount": 6000, "currency": "GBP",
+           "line_items": [
+               {"item_description": "Social Media Management", "line_amount": 2000.0},
+               {"item_description": "Social Media Management", "line_amount": 2000.0},
+               {"item_description": "Social Media Management", "line_amount": 2000.0}]}
+    monkeypatch.setattr(mod, "gather_deal_context",
+                        lambda deal_id, conn=None: _ctx(invoices=[inv]))
+    monkeypatch.setattr(mod, "_deal_category", lambda cur, deal_id: "Marketing")
+    m = mod.compute_deal_metrics("DEAL-1", conn=_FakeConn())
+    assert m["deal_value"] == 6000
+    assert m["volume"] == 3                          # 3 line items, one unit each
+    assert m["unit_price"] == pytest.approx(2000.0)  # 6000 / 3
+    assert m["price_change_pct"] is None             # no per-unit baseline -> honest NULL
+    assert m["volume_change_pct"] is None
+    assert m["efficiency_score"] is None
+    assert m["data_snapshot"]["volume_basis"] == "line_count"
+
+
+def test_quantity_volume_is_not_overridden_by_line_count(monkeypatch):
+    # When real quantities exist, volume stays quantity-based (fallback must not fire).
+    inv = {"supplier_name": "Acme", "total_amount": 1000, "currency": "GBP",
+           "line_items": [{"item_description": "Widget", "quantity": 100, "unit_price": 10.0}]}
+    monkeypatch.setattr(mod, "gather_deal_context",
+                        lambda deal_id, conn=None: _ctx(invoices=[inv]))
+    monkeypatch.setattr(mod, "_deal_category", lambda cur, deal_id: None)
+    m = mod.compute_deal_metrics("DEAL-1", conn=_FakeConn())
+    assert m["volume"] == 100
+    assert m["data_snapshot"]["volume_basis"] == "quantity"
+
+
 def test_unknown_deal_returns_none(monkeypatch):
     monkeypatch.setattr(mod, "gather_deal_context", lambda deal_id, conn=None: None)
     assert mod.compute_deal_metrics("NOPE", conn=object()) is None
