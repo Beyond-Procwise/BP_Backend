@@ -54,14 +54,26 @@ not extraction-tuned):
 The gate correctly refused promotion. A regressed nightly finetune can no longer
 reach production silently.
 
-## Note: real training implementation status
+## Real finetune EXPERIMENT — run end-to-end (2026-06-28, after the PyTorch fix)
 
-`pipeline.py::_train_model` / `_merge_adapters` remain stubs (no QLoRA has ever
-actually run). The **gate** is wired and proven; a genuine QLoRA run is a
-multi-hour GPU job and, per prior evidence (a real finetune previously regressed
-to ~0.0), is expected to be **refused** by this very gate on the current corpus.
-The honest position: the accuracy lever is prompt/data quality, not retraining —
-and the gate now guarantees no retrain can ship a regression.
+Once the PyTorch/Blackwell upgrade made GPU training possible, a genuine QLoRA
+finetune was run end-to-end (not a stub):
+- Base **Qwen/Qwen2.5-7B-Instruct** (AgentNick lineage), QLoRA 4-bit via
+  `bitsandbytes` on the 96 GB GPU, 3 epochs over 162 procurement chat examples
+  (`scripts/gpu_upgrade/finetune_qwen_gated.py`). Training completed; adapter
+  merged into the base; merged model registered to Ollama as `:ft-candidate`.
+- **Eval gate result:** candidate **doc_accuracy = 0.0000** vs baseline 0.8426
+  (delta −0.8426) → **REGRESSION_REFUSE**. Production `:extract` **unchanged**.
+- **Why 0.0:** the merged/converted candidate is **non-viable** — its llama
+  runner crashes on generation ("post predict EOF"), so it returns nothing. This
+  reproduces the prior finding that finetuning on the current corpus/setup yields
+  a broken/regressed model.
+
+**Takeaway:** the experiment is now genuinely runnable (PyTorch unblocked it), and
+the gate **correctly caught and refused** a non-viable candidate — production was
+protected automatically. The accuracy lever remains prompt/data quality and a
+fixed training+conversion path, not this retrain. `:ft-candidate` is retained for
+later debugging of the merge→GGUF step.
 
 ## Bottom line
 

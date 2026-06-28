@@ -1,0 +1,4 @@
+holdout=32 examples; baseline_model=BeyondProcwise/AgentNick:extract
+BASELINE doc_accuracy=0.8426 exact=0.1875 n=32 (180s)
+CANDIDATE doc_accuracy=0.0000 delta=-0.8426 verdict=REGRESSION_REFUSE (848s)
+wrote /home/muthu/PycharmProjects/BP_Backend/artifacts/gpu_upgrade/eval_ft-candidate.json
