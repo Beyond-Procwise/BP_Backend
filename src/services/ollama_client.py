@@ -24,10 +24,10 @@ DEFAULT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick
 OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://api.ollama.com")
 OLLAMA_CLOUD_API_KEY = os.getenv("OLLAMA_CLOUD_API_KEY")
 
-# Max concurrent Ollama requests — match OLLAMA_NUM_PARALLEL on the daemon.
-# Default 8 for the 96 GB RTX PRO 6000 Blackwell (was 2 for the old contended
-# card). Env-tunable so it can be dialled without a code change.
-_MAX_CONCURRENT = int(os.getenv("OLLAMA_MAX_CONCURRENT", "8"))
+# Max concurrent Ollama requests. Measured 2 vs 8 on the 96 GB Blackwell (2026-06-28):
+# extraction is GPU-compute-bound, so raising this gave NO reliable throughput gain
+# (NP=8 median 45s vs NP=2 ~38s for a 9-doc batch). Kept conservative; env-tunable.
+_MAX_CONCURRENT = int(os.getenv("OLLAMA_MAX_CONCURRENT", "2"))
 _semaphore = threading.Semaphore(_MAX_CONCURRENT)
 
 # Retry and timeout — tuned for queued GPU inference

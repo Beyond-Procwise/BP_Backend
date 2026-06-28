@@ -6,14 +6,17 @@ Three workstreams, each proven against live `bp_sqldb` data, read-only (no
 production writes). Reports: `A_speed_before_after.md`, `B_agentnick_before_after.md`,
 `C_quality_before_after.md`.
 
-## A — Extraction speed ✅ (needs 1 root command to activate in prod)
-- Lifting the Ollama concurrency throttle 2→8 gives a **clean 3.0× batch-throughput**
-  win on the **live** renovation pipeline (9 docs: 42.4 s → 14.2 s).
-- **Accuracy held**: per-doc work identical (~10.7 s); 8/9 docs byte-identical
-  (1 diff was LLM temp-0 noise, same field/line counts), not a code-path change.
-- Code shipped (env-tunable). **Production activation needs the root-owned daemon
-  line** `OLLAMA_NUM_PARALLEL=8` + `systemctl restart ollama && restart procwise`
-  (command in `resources/deployment/ollama_env.md`).
+## A — Extraction speed ❌ no concurrency win (corrected)
+- **An earlier 3× claim was WRONG** — based on a single non-reproducible 14.2 s
+  measurement. On repeated + live-production measurement, raising the Ollama
+  throttle (NP=2→8) gives **NO reliable speed-up**: NP=2 median ~38 s vs NP=8
+  median ~45 s for a 9-doc batch (within ±25 % noise). Extraction is
+  **GPU-compute-bound** — one GPU can't run 8 LLM sequences faster than 2.
+- Production daemon was activated to NP=8, measured (~45 s, no gain), and
+  **reverted to NP=2** (original). Code concurrency defaults reverted too.
+- **Kept** (genuine, not concurrency): all LLM calls now route through the managed
+  client (robustness); `:latest` num_gpu -1 full-GPU offload (unmeasured for speed).
+- Real speed levers are the PyTorch/Blackwell fix + reducing per-doc LLM calls — see below.
 
 ## B — AgentNick intelligence ✅
 - Live eval baseline re-established at **~0.845** (matches historical 0.847).
@@ -42,6 +45,9 @@ let the engineered (L2) extractors use the new GPU. This is separate infra work,
 flagged for a decision.
 
 ## Net
-- Extraction: ~3× faster once the daemon line is applied; no accuracy cost.
+- Extraction: **no software speed-up available** — GPU-compute-bound; the hardware
+  upgrade itself is the per-call gain. Concurrency tuning tested and reverted.
 - AgentNick: can now only get better in production, never worse (gated).
 - Codebase: smaller, clearer, with the worst file's presentation layer isolated.
+- Biggest open lever for speed/quality: **upgrade PyTorch to a Blackwell build** so
+  the torch ML extractors stop falling back to CPU.

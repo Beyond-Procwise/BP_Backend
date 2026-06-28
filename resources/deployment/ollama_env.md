@@ -2,6 +2,12 @@
 
 Hardware: **NVIDIA RTX PRO 6000 Blackwell, 96 GB VRAM**.
 
+> **2026-06-28 finding:** raising `OLLAMA_NUM_PARALLEL` 2→8 was **measured to give
+> no extraction speed-up** (GPU-compute-bound; NP=2 ≈ NP=8 ≈ ~40 s/9-doc batch).
+> The daemon was reverted to `NUM_PARALLEL=2`. The block below is retained only as
+> a reference for *how* to set daemon env if a future, non-compute-bound workload
+> ever benefits — it is NOT a recommended change today.
+
 The Ollama *daemon* (systemd) carries its own environment, separate from the
 app's `.env`. The app's `OLLAMA_NUM_PARALLEL` in `.env` does **not** reach the
 daemon — only the systemd unit does. Set these on the daemon:

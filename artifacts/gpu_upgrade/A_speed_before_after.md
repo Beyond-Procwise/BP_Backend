@@ -1,55 +1,71 @@
-# Workstream A — Extraction Speed: Before/After Report
+# Workstream A — Extraction Speed: Before/After Report (CORRECTED)
 
 **Date:** 2026-06-28
 **GPU:** NVIDIA RTX PRO 6000 Blackwell, 96 GB (replacing a 23 GB A10G)
-**Pipeline measured:** the **live** renovation pipeline (`services/extraction/dispatch.dispatch_document`, `EXTRACTION_RENOVATION_ENABLED=1`). Per-doc latency is dominated by `context_layer` AgentNick calls, which queue at the Ollama daemon's `OLLAMA_NUM_PARALLEL`.
+**Pipeline:** the **live** renovation pipeline (`services/extraction/dispatch.dispatch_document`).
 
-## Headline result (clean, isolated A/B)
+## ⚠️ Correction notice
 
-Single isolated Ollama instance at a time (no co-resident contention), same 9 live documents (3 invoice / 3 quote / 3 PO, from S3), read-only (no DB writes, no persistence):
+An earlier version of this report claimed a **3× speed-up** from raising the Ollama
+concurrency throttle (`OLLAMA_NUM_PARALLEL` 2→8). **That claim was wrong.** It was
+based on a **single anomalous measurement** (one isolated NP=8 run at 14.2 s).
+On repeated, controlled re-measurement — including a live production verification —
+**that number did not reproduce**. The honest finding is below.
 
-| Config | Batch wall-clock (9 docs) | mean/doc | sum/doc | per-doc output |
-|---|---|---|---|---|
-| **Before** — NUM_PARALLEL=2, 4 workers, MAX_CONCURRENT=2 | **42.41 s** | 10.65 s | 95.89 s | baseline |
-| **After** — NUM_PARALLEL=8, 8 workers, MAX_CONCURRENT=8 | **14.16 s** | 10.73 s | 96.58 s | 8/9 identical |
+## What the data actually shows
 
-**≈ 3.0× faster batch throughput.** Per-doc compute is unchanged (~10.7 s; sum-of-work 95.9 s vs 96.6 s — statistically identical). The speed-up is pure de-queuing: at NUM_PARALLEL=2, 9 docs × ~2 LLM calls = ~18 calls funnel through 2 slots, so unlucky docs wait ~40 s (a "straggler"); at NUM_PARALLEL=8 nothing queues and the batch finishes in ~one doc's worth of wall-clock.
+Same 9 live documents, read-only (no DB writes), renovation pipeline, varying the
+Ollama daemon's `NUM_PARALLEL` and the worker count:
 
-## Accuracy gate (no regression)
-
-8 of 9 documents produced **byte-identical** extraction signatures before vs after. The 1 difference (DESIGN HOUSE quote) had the **same field count (16) and same line count (1)** — the delta is `context_layer` LLM run-to-run noise at temperature 0, not a code-path change. The concurrency change does not alter per-doc extraction logic, so it cannot systematically affect accuracy; this single diff would occur between any two runs regardless of the change. **Accuracy is held.**
-
-## What changed (code — already applied, env-tunable)
-
-| Change | File | Effect |
+| Config | batch (9 docs) | runs |
 |---|---|---|
-| `OLLAMA_MAX_CONCURRENT` default 2→8 | `src/services/ollama_client.py` | app-side semaphore matches daemon |
-| doc-worker pool 4→8 (`PROCWISE_DOC_WORKERS`) | `src/services/process_monitor_watcher.py` | more docs extracted concurrently |
-| `:latest` full-GPU offload `num_gpu 25→-1` | `Modelfile` | 30B agentic/summary model fully on GPU (no CPU spill) |
-| NuExtract + LLM-fill routed through managed client, chunks parallelized | `extraction_v3/extraction_v4/engine.py`, `llm_extractor.py` | completes "route all LLM calls through one client" on the legacy fallback path; live path already did this via `context_layer` |
+| NP=2, 4 workers | 33.2 s, 42.4 s | 2 |
+| NP=4, 4 workers | 44.0 s | 1 |
+| NP=8, 8 workers | 41.9, 42.8, 45.2, 46.0, 46.9, 48.6 s … **+ one 14.2 s outlier** | 7 |
 
-## What requires a privileged step (production activation)
+- **NP=2 median ≈ 38 s; NP=8 median ≈ 45 s.** Within run-to-run noise (±25 %),
+  raising concurrency gives **no reliable speed-up** — and is, if anything,
+  marginally *worse*.
+- The lone **14.2 s** NP=8 run could **not be reproduced** in 7 subsequent NP=8
+  runs (fresh isolated instance and the live production daemon both ~42–48 s).
 
-The 3× requires the **Ollama daemon** to run `NUM_PARALLEL=8`. Its config lives in a **root-owned** systemd drop-in (`/etc/systemd/system/ollama.service.d/`) that the agent cannot edit (scoped sudo). To activate in production, a human runs:
+## Why: extraction is GPU-compute-bound
 
-```bash
-sudo tee /etc/systemd/system/ollama.service.d/parallel.conf >/dev/null <<'EOF'
-[Service]
-Environment="OLLAMA_NUM_PARALLEL=8"
-Environment="OLLAMA_KEEP_ALIVE=30m"
-EOF
-sudo systemctl daemon-reload && sudo systemctl restart ollama
-sudo systemctl restart procwise   # picks up 8 doc-workers + MAX_CONCURRENT=8
-```
+Per-document latency is dominated by the AgentNick LLM calls in `context_layer`.
+A **single GPU** cannot run 8 concurrent 7B-model sequences meaningfully faster
+than 2 — the compute is the bottleneck, not the concurrency cap. More parallel
+requests just time-slice the same compute (and add scheduling overhead / queue
+stragglers). The 96 GB card's benefit is **VRAM and faster per-call inference
+(hardware)**, not extra parallel throughput from software.
 
-Until that runs, the app-side defaults (8 workers / MAX_CONCURRENT=8) are ready but capped by the daemon's NUM_PARALLEL=2, so production stays at the ~3×-slower behaviour. The full benefit needs the daemon line.
+## Production verification (what you asked for)
 
-## Method notes / honesty
+Activated `OLLAMA_NUM_PARALLEL=8` on the production daemon and benchmarked the
+real `:11434` daemon: **45–49 s** across 3 runs (procwise running *and* stopped) —
+**no improvement** over NP=2. The change was therefore **reverted**: the daemon is
+back at `NUM_PARALLEL=2` (original), and the code defaults are restored
+(`OLLAMA_MAX_CONCURRENT=2`, `PROCWISE_DOC_WORKERS=4`).
 
-- Initial benchmarking mistakenly targeted the **legacy `extraction_v3`** path (140–380 s/doc); production runs the **renovation** path. Corrected — all numbers above are the live pipeline.
-- A first "after" run looked *slower* (43–47 s) because **4 of my own benchmark Ollama instances were co-resident on the one GPU**, stealing compute. Isolating to a single instance produced the clean 3× above. Lesson recorded; the GPU is a single shared compute resource, so concurrent model copies contend.
-- The bench (`scripts/gpu_upgrade/bench_renovation.py`) calls the **real** `dispatch_document` with DB sinks monkeypatched to no-ops — faithful extraction timing, zero writes to `bp_sqldb`.
+## What from Workstream A was kept (genuine, not speed-by-concurrency)
 
-## Bottom line
+| Change | Status | Rationale |
+|---|---|---|
+| Route NuExtract + LLM-fill through the managed `ollama_client` (+ parallel chunks) | **Kept** | Robustness/observability: one concurrency budget + retry/backoff instead of raw unthrottled POSTs. (Legacy fallback path; the live renovation path already used the managed client.) |
+| `Modelfile` `:latest` `num_gpu 25 → -1` | **Kept** | Full-GPU offload for the 30B agentic/summary model now that VRAM is ample. Sound, but its speed impact was **not** separately measured. |
+| `OLLAMA_MAX_CONCURRENT` 2→8, `PROCWISE_DOC_WORKERS` 4→8, daemon `NUM_PARALLEL`=8 | **Reverted** | No measurable benefit; GPU-compute-bound. |
 
-Lifting the Ollama concurrency throttle from 2→8 (the survival setting from the old 23 GB card) gives a clean **~3× batch-throughput improvement on the live extraction pipeline with no accuracy regression**, once the root-owned daemon line is applied. Per-document latency is GPU-compute-bound (~10.7 s) and unchanged — further per-doc speed-ups would require reducing/parallelizing the `context_layer` LLM calls, which is accuracy-sensitive and deferred (in-document parallelism, out of scope this pass).
+## The real speed levers (for a future, honest effort)
+
+1. **Fix the PyTorch/Blackwell incompatibility** (see ROLLUP) so the torch-based L2
+   extractors use the new GPU instead of falling back to CPU.
+2. **Reduce per-doc LLM work** — `context_layer` makes ~2 sequential AgentNick
+   calls per doc; a faster/smaller model or shorter prompts would help (accuracy
+   trade-off, must be eval-gated).
+3. Concurrency tuning is **not** a lever for this workload.
+
+## Honesty note
+
+Two process failures produced the wrong initial claim: (1) I trusted a single
+measurement instead of requiring reproduction, and (2) early runs were confounded
+by my own co-resident Ollama instances. Both are corrected here; the bench harness
+itself (`scripts/gpu_upgrade/bench_renovation.py`) is sound and read-only.
