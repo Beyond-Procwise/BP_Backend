@@ -1,0 +1,394 @@
+# Decision Layer — Playbooks, Pure Policy & Decision Engine (Conformance P2–P4)
+
+**Date:** 2026-06-28
+**Status:** Approved design direction; Phases 2–4 of the Conformance Engine roadmap
+**Author:** Nick + Claude
+
+## Goal
+
+Stand up the "what do we do" brain on top of the Conformance Engine's Rule Book
+(Phase 1). It is built from four **distinct, single-purpose** concerns, run by a
+fifth piece — the orchestrator — that is the runtime conductor, not a brain:
+
+- **Rule Book** (P1) — *"How do I evaluate conditions against facts?"* → produces findings.
+- **Policy Engine** (P2) — *"Is this allowed / required / forbidden?"* → a **pure** permission gate.
+- **Decision Engine** (P3) — *"Which option do I choose?"* → evaluates outputs; escalates to a human when it cannot resolve clearly.
+- **Playbook** (P4) — *"What is the human-authored, expert-owned strategy?"* → the orchestrating, ordered response.
+- **Orchestrator** — the conductor that selects the playbook, ingests rule + policy detail into it, runs its steps via the agents, and hands outputs to the decision engine. It is the spine, not a fifth brain.
+
+This is **Phases 2–4 of 5**. Out of scope (Phase 5): rule-change-event +
+external-feed triggers.
+
+## The picture
+
+```
+   TRIGGER  ── scheduled sweep (Rule Book finding)  OR  event (deal/doc/schedule)
+        │
+        ▼
+┌──────────────── ORCHESTRATOR (the conductor — generalizes ReasoningEngine) ───────────────┐
+│                                                                                            │
+│  1. SELECT   → load the governing PLAYBOOK (the human-authored strategy)  ← FIRST point    │
+│  2. INGEST   → call RULE ENGINE (evaluate facts) + POLICY ENGINE (allowed/not),            │
+│                inject their detail into the playbook context                                │
+│  3. ACT      → run each PLAYBOOK step by invoking the AGENTS                                │
+│  4. GATE     → before each step, ask POLICY ENGINE "is this allowed?" by context           │
+│  5. OBSERVE  → hand outputs to the DECISION ENGINE  ← AFTER each step + at the end          │
+│                → complete / retry / escalate / choose (human-in-the-loop if unclear)        │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+The four engines stay dumb and focused — each answers its one question. The
+orchestrator is what sequences them into a pipeline.
+
+## Entry model — both sweeps and events
+
+The orchestrator can be entered two ways, and both converge on "run a playbook":
+
+- **Scheduled sweep:** the scheduler runs the Rule-Book detection sweep (P1) →
+  each finding becomes a trigger → the orchestrator selects the playbook for that
+  finding type and runs it.
+- **Event-triggered:** an event (deal created, document arrived, a manual
+  request, a cron) directly selects a playbook; the playbook then *calls* the
+  rule engine to evaluate the relevant facts and the policy engine to check what
+  is allowed.
+
+So the Rule Book serves two roles: a **standalone sweep** that raises findings,
+and a **service the playbook calls** to evaluate conditions on demand. Either
+way the playbook is the orchestrating unit and the decision engine checks the
+outputs.
+
+## What exists today (we generalize — renovate, not rewrite)
+
+Three of the four concepts already exist, but scattered, negotiation-specific,
+and in-code. This design lifts them into one cross-cutting, data-driven,
+human-authored layer; negotiation becomes the *first consumer*, not a special
+case.
+
+- **Orchestrator / decision loop:** `orchestration/reasoning_engine.py` already
+  implements Reason → Plan → Act → **Observe** (`observe()` →
+  `Observation(complete|retry|escalate|adapt)`), and **already escalates on low
+  confidence** — exactly the decision behaviour we want. It is currently
+  **unwired and broken** (2026-06-18 dynamic-planner diagnosis), so this design
+  wires and fixes it. `Plan` ≈ select playbook, `Act` ≈ run steps, `Observe` ≈
+  decision engine.
+- **Policy gate:** `engines/negotiation_strategy_engine.py::evaluate_policy_rails()`
+  returns `RailDecision(continue|escalate|accept|walk_away)` from
+  `auto_approve_threshold` / `escalation_threshold`, "first matching rule wins."
+  Hardcoded, negotiation-only.
+- **Playbook:** the in-code "negotiation playbook" (`Strategy` per round). Not
+  human-authored data.
+- **Rule Book:** Phase-1 conformance design (`proc.bp_finding`, `proc.bp_rule`).
+- **Legacy Policy Engine:** `engines/policy_engine.py` over `proc.bp_policy` —
+  today a **config store** (supplier-ranking weights, normalization, categorical
+  maps) mixed with opportunity-detector mirrors. This is the "old way" we are
+  dissolving (see Legacy Dissolution).
+- **Action capabilities:** `email_drafting_agent`, `negotiation_agent`,
+  `approvals_agent`; the `proc.bp_agent_actions` event log records every action.
+
+## Core design decisions
+
+1. **The playbook is the orchestrating unit, selected first.** It is
+   human-authored expert strategy; the rule and policy engines are services it
+   calls. The system *executes* playbooks; AgentNick never invents one.
+2. **The decision engine runs after the playbook (and per step).** It evaluates
+   outputs — complete / retry / escalate / choose — generalizing the existing
+   `observe()` loop, including escalate-when-unclear.
+3. **The policy engine is PURE.** It answers only allowed / required / forbidden
+   / escalate. It holds no scoring config and no detection logic. Pure,
+   structured, queryable.
+4. **Legacy `bp_policy` is dissolved, not patched.** Every old row is migrated
+   to where it actually belongs — detection → Rule Book, strategy → Playbook —
+   leaving `bp_policy` as a clean permission table (see next section).
+5. **Policy is applied by context.** No policy↔rule/playbook link tables. The
+   orchestrator evaluates `applicable_gates(context)` at runtime; agents ingest
+   their linked permissions.
+6. **Human-in-the-loop by default.** Playbook steps are `human_gated` unless a
+   step is explicitly whitelisted `auto` (low-risk, reversible). The decision
+   engine escalates to a human whenever it cannot resolve clearly.
+7. **Governance is a universal envelope; the playbook is optional.** Policy
+   (gate) and the decision (observe) step apply to **every** agent invocation,
+   whether or not a playbook orchestrates it. The playbook only *sequences*
+   several enveloped actions; a direct agent call with no playbook is the
+   degenerate single-step case. There is no path by which an agent runs without
+   policy and a decision (see Universal Envelope).
+
+## Universal envelope — governance with or without a playbook
+
+The `gate → act → observe` envelope belongs to the **orchestrator**, not to the
+playbook. Every agent invocation passes through it, so there is no way for an
+agent to run while skipping policy and the decision step.
+
+```
+ANY agent invocation  (a playbook step OR a direct/ad-hoc call)
+        │
+   ┌────┴──────────────── ORCHESTRATOR envelope (ALWAYS) ─────────────────┐
+   │  GATE    → POLICY ENGINE: is this action allowed? (by context)        │
+   │  RULES   → RULE ENGINE: evaluate any rules relevant to this context   │
+   │  ACT     → run the agent (paused for approval if policy says so)      │
+   │  OBSERVE → DECISION ENGINE: check output → complete/retry/escalate/   │
+   │            choose; escalate to a human if it cannot resolve clearly   │
+   └────────────────────────────────────────────────────────────────────────┘
+```
+
+The orchestrator's "playbook first" step is therefore: **check whether a
+playbook governs this situation.**
+
+- **Playbook found** → run its ordered steps, each wrapped in the envelope.
+- **No playbook** (none exists, or none required for a simple direct call) →
+  run the requested agent as a **single enveloped step** — the *default path*,
+  i.e. an implicit one-step playbook. The identical policy gate, rule check, and
+  decision-observe still apply.
+
+Audit stays uniform: a direct call still produces a `bp_playbook_run` (with
+`playbook_id = NULL` / `'default'`), a `bp_decision`, and `bp_agent_actions`
+rows — nothing escapes the record. The principle: **policy and the decision step
+are mandatory for every agent action; the playbook is the optional strategy that
+sequences several of them.**
+
+## Legacy dissolution — where every old policy goes
+
+The eight seeded `bp_policy` rows are reclassified by what they actually are.
+After migration each engine owns exactly one kind of thing.
+
+| Old `bp_policy` row | True nature | New home |
+|---|---|---|
+| ContractExpiryOpportunity, PriceBenchmarkVariance, VolumeConsolidation, SupplierRiskAlert, DuplicateSupplier, CategoryOverspend, … | **detection** | **Rule Book** (`proc.bp_rule`) — already seeded by Phase 1; we ensure parity and retire the policy rows |
+| WeightAllocationPolicy, CategoricalScoringPolicy, NormalizationDirectionPolicy | **scoring strategy** | **Playbook** — a human-authored "Supplier Ranking" playbook whose step carries the weights / normalization / categorical maps as params; `supplier_ranking_agent` reads them from the playbook |
+| Negotiation auto-approve / escalation thresholds (today hardcoded in `negotiation_strategy_engine`) | **permission** | **Pure Policy** (`proc.bp_policy`, reborn) as `allow` / `escalate` gates |
+
+Migration is data-preserving and staged: copy each row to its new home, repoint
+the consumer (`supplier_ranking_agent`, `negotiation_agent`), prove parity, then
+retire the old `bp_policy` content. No detection or ranking behaviour changes —
+only *where the definition lives*.
+
+## P2 — Policy Engine, reborn pure
+
+A policy answers one question: **is this allowed?** Structured, not free-form
+JSON, so it is queryable and the precedence is obvious.
+
+```sql
+-- bp_policy is redefined as a PURE permission table (old config rows migrated out).
+CREATE TABLE IF NOT EXISTS proc.bp_policy (
+    policy_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    policy_name    TEXT NOT NULL,
+    applies_to     JSONB NOT NULL DEFAULT '{}',  -- context match: finding_type, action_slug, category, supplier, amount band
+    effect         TEXT NOT NULL,                -- allow | require_approval | deny | escalate
+    priority       INTEGER NOT NULL DEFAULT 100, -- tie-breaker when effects are compatible
+    rationale      TEXT,
+    policy_status  TEXT NOT NULL DEFAULT 'active',  -- draft | pending_approval | active | retired
+    version        INTEGER NOT NULL DEFAULT 1,
+    created_by     TEXT NOT NULL DEFAULT 'system',
+    approved_by    TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_bp_policy_status ON proc.bp_policy (policy_status);
+```
+
+Engine (`engines/policy_engine.py`, rewritten):
+- `Policy` dataclass (`applies_to`, `effect`, `priority`).
+- `applicable_gates(context: dict) -> list[Policy]` — every active policy whose
+  `applies_to` matches the context. Pure, deterministic, `policy_rows=` test
+  injection.
+- `is_allowed(context) -> Gate` — convenience that resolves the matching
+  policies to a single verdict (most-restrictive wins: `deny > escalate >
+  require_approval > allow`, tie-broken by `priority`).
+- The old slug-resolution, ranking-weight normalization, and `validate_workflow`
+  methods are **removed** — ranking config now lives in the Supplier Ranking
+  playbook, and `supplier_ranking_agent` reads it from there.
+- `evaluate_policy_rails()` in the negotiation engine is refactored to call
+  `applicable_gates()`; its `RailDecision` shape is preserved.
+
+Governance (versioning/approval) is shared by policy, rule, and playbook via the
+`*_status` lifecycle (`draft → pending_approval → active → retired`) plus one
+audit table:
+
+```sql
+CREATE TABLE IF NOT EXISTS proc.bp_governance_change (
+    change_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    target_table  TEXT NOT NULL, target_id TEXT NOT NULL,
+    version_from  INTEGER, version_to INTEGER,
+    old_value     JSONB, new_value JSONB,
+    change_status TEXT NOT NULL DEFAULT 'pending_approval',
+    changed_by    TEXT NOT NULL, approved_by TEXT,
+    changed_at    TIMESTAMPTZ NOT NULL DEFAULT now(), approved_at TIMESTAMPTZ
+);
+```
+
+Cache refresh reuses `POST /agents/reload-governance` (extended to reload
+policies and playbooks).
+
+## P4 — Playbooks (first, human-authored expert strategy)
+
+The playbook is the orchestrating unit the orchestrator selects first. It is
+authored and versioned by a procurement expert (through the governance
+lifecycle) and only *executed* by the system.
+
+```sql
+CREATE TABLE IF NOT EXISTS proc.bp_playbook (
+    playbook_id     VARCHAR PRIMARY KEY,
+    playbook_name   TEXT NOT NULL,
+    trigger_kind    VARCHAR NOT NULL,   -- finding | event
+    trigger_match   JSONB NOT NULL DEFAULT '{}',  -- finding_type, or event type + context
+    playbook_status VARCHAR NOT NULL DEFAULT 'draft',
+    version         INTEGER NOT NULL DEFAULT 1,
+    authored_by     TEXT NOT NULL, approved_by TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS proc.bp_playbook_step (
+    step_id     VARCHAR PRIMARY KEY,
+    playbook_id VARCHAR NOT NULL REFERENCES proc.bp_playbook (playbook_id),
+    step_no     INTEGER NOT NULL,
+    action_slug VARCHAR NOT NULL,                -- key into the ActionRegistry
+    params      JSONB NOT NULL DEFAULT '{}',     -- e.g. ranking weights, email template
+    mode        VARCHAR NOT NULL DEFAULT 'human_gated',  -- human_gated | auto
+    condition   JSONB,
+    on_success  INTEGER, on_failure INTEGER      -- next step_no
+);
+CREATE TABLE IF NOT EXISTS proc.bp_playbook_run (
+    run_id      VARCHAR PRIMARY KEY,
+    playbook_id VARCHAR NOT NULL, finding_id VARCHAR, event_ref VARCHAR,
+    run_status  VARCHAR NOT NULL DEFAULT 'running',  -- running|awaiting_approval|done|failed|cancelled
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT now(), finished_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS proc.bp_playbook_run_step (
+    run_step_id VARCHAR PRIMARY KEY,
+    run_id      VARCHAR NOT NULL REFERENCES proc.bp_playbook_run (run_id),
+    step_no     INTEGER NOT NULL,
+    step_status VARCHAR NOT NULL DEFAULT 'pending', -- pending|awaiting_approval|done|failed|skipped
+    result      JSONB, acted_by VARCHAR, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+Engine + runner:
+- `PlaybookEngine` (`src/engines/playbook.py`) — load active playbooks, cache,
+  `playbook_for(trigger_kind, match)`, `reload()`, `rows=` injection.
+- `PlaybookRunner` (`src/services/playbook_runner.py`) — the orchestrator's
+  executor. Per step: the orchestrator re-checks `applicable_gates(context)`
+  first (a step breaching a gate is forced to `require_approval`/`deny`);
+  `human_gated` steps pause at `awaiting_approval`; `auto` steps (whitelisted)
+  run immediately; each executed step calls an agent via the **ActionRegistry**
+  and writes one `proc.bp_agent_actions` row; the **decision engine observes the
+  result** before moving on.
+
+ActionRegistry (`src/engines/action_registry.py`, mirror of P1's
+DetectorRegistry) — `slug → ActionSpec(handler, default_params)`. Phase-4 seed
+wraps only existing capabilities: `rank_suppliers` → supplier_ranking_agent
+(carries the migrated ranking weights), `draft_supplier_email` →
+email_drafting_agent, `open_negotiation` → negotiation_agent, `request_approval`
+→ approvals_agent, `notify_buyer`/`create_task` → action-centre,
+`update_finding_stage` → finding store, `link_to_deal` → deal assignment. The
+negotiation `Strategy` and the supplier-ranking config both become authored
+playbooks, so they run through the same machinery as everything else.
+
+## P3 — Decision Engine (after the playbook; checks outputs)
+
+Generalizes `ReasoningEngine.observe()` into the piece that evaluates playbook
+outputs and decides what happens next. Output rows:
+
+```sql
+CREATE TABLE IF NOT EXISTS proc.bp_decision (
+    decision_id     VARCHAR PRIMARY KEY,   -- deterministic: run_id + step_no (+ gate-set hash)
+    run_id          VARCHAR, finding_id VARCHAR, step_no INTEGER,
+    action          VARCHAR NOT NULL,      -- complete | retry | escalate | adapt | choose
+    chosen_option   VARCHAR,               -- when action = choose
+    resolution_path VARCHAR NOT NULL,      -- deterministic | llm_assisted_human
+    rationale       TEXT, confidence NUMERIC,
+    requires_human  BOOLEAN NOT NULL DEFAULT false,
+    llm_brief       JSONB,                 -- the reasoned brief shown to the human
+    final_choice    VARCHAR, decided_by VARCHAR,
+    status          VARCHAR NOT NULL DEFAULT 'open',  -- open | pending_human | resolved
+    decided_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_bp_decision_run ON proc.bp_decision (run_id);
+```
+
+Logic (after each step output, and at run end):
+1. **Can resolve clearly** (outputs unambiguous, confidence adequate, gates
+   agree): pick deterministically — continue, complete, or `retry`/`escalate`
+   per the inherited `observe()` rules. `resolution_path = "deterministic"`.
+2. **Cannot resolve clearly** (conflicting signals, contradicting gates, low
+   confidence, or a genuine fork): call **AgentNick** to build a **decision
+   brief** — the situation, the options and what each implies (financial / risk),
+   and a *recommended* option with reasoning — store it in `llm_brief`, set
+   `status = "pending_human"`, `requires_human = true`,
+   `resolution_path = "llm_assisted_human"`, and route to a **human for the
+   final call**. The human's `final_choice` is recorded; the orchestrator
+   resumes the run with it.
+
+Every decision is replayable from its stored inputs. This is the same loop the
+ReasoningEngine already has, generalized and wired.
+
+## End-to-end flow
+
+1. **Trigger** — a scheduled sweep raises a finding, **or** an event fires.
+2. **Select** — orchestrator picks the governing playbook
+   (`playbook_for(trigger_kind, match)`). If none matches, it uses the
+   single-step **default path** (Universal Envelope) — governance still runs.
+3. **Ingest** — orchestrator runs the rule engine (evaluate facts for this
+   case) and resolves `applicable_gates(context)` (allowed/not), injecting both
+   into the playbook context.
+4. **Act + Gate** — `PlaybookRunner` runs each step (human-gated by default),
+   re-checking policy before the action and logging to `bp_agent_actions`.
+5. **Observe** — the decision engine checks each step's output → complete /
+   retry / escalate / choose, escalating to a human (with an LLM brief) when it
+   cannot resolve clearly.
+6. **Surface** — human touchpoints (gated steps, escalated decisions) appear in
+   the Action-Centre UI; this layer becomes its backing API.
+
+## Error handling
+
+- A policy `applies_to` that fails to parse is ignored (logged), never crashes
+  the run.
+- If the LLM brief cannot be produced (model/GPU unavailable), the decision
+  defaults to the **safest** action (`escalate` + `requires_human`) — fail safe,
+  never fail open.
+- A playbook step that raises marks its `run_step` `failed` and follows
+  `on_failure`; one bad step never silently completes a run.
+- Engines degrade gracefully when `bp_sqldb` is unreachable (the `_safe_engine`
+  pattern; relevant in the current REDUCED-mode startup): empty policy/playbook
+  sets, decisions default to `escalate` + human.
+- No fabrication: decisions/actions are recorded only from real findings, real
+  policy rows, and real playbook steps.
+
+## Testing (no live model needed)
+
+- **Pure policy** — `applicable_gates`/`is_allowed` from injected `policy_rows`:
+  match by `applies_to`; most-restrictive resolution; priority tie-break.
+- **Negotiation parity** — `evaluate_policy_rails` via migrated gate policies
+  reproduces today's auto-approve/escalation (regression lock).
+- **Ranking parity** — `supplier_ranking_agent` reading weights from the
+  migrated Supplier Ranking playbook reproduces today's ranking output.
+- **Playbook engine/runner** — `playbook_for` selects by trigger; `human_gated`
+  step pauses at `awaiting_approval` and resumes on approval; `auto` runs; gate
+  breach forces approval; each step writes a `bp_agent_actions` row (fake cursor).
+- **Universal envelope** — a direct agent call with NO matching playbook still
+  runs the policy gate and the decision step, and still writes a
+  `bp_playbook_run` (`playbook_id` NULL/`'default'`) + `bp_decision` +
+  `bp_agent_actions` rows. Confirms governance is never bypassed.
+- **Decision engine** — clear output → deterministic action; conflict / low
+  confidence → `pending_human` with an `llm_brief` (LLM stubbed); inherited
+  escalate-on-low-confidence holds.
+- **Governance** — staged change sits `pending_approval`; promotion flips to
+  `active`; `bp_governance_change` records old→new.
+- **Live proof (acceptance):** a sweep finding and an event each select a
+  playbook; a human-gated run pauses for approval; decisions land in
+  `bp_decision`; actions in `bp_agent_actions`; legacy `bp_policy` config rows
+  are gone (migrated) and ranking/negotiation behaviour is unchanged.
+
+## Roadmap fit
+
+P1 detection foundation → **P2 pure policy + governance (this)** → **P3 decision
+engine + escalation (this)** → **P4 playbooks + orchestrator wiring (this)** →
+P5 rule-change-event + external-feed triggers (out of scope).
+
+## Decoupling summary
+
+| Future change | Absorbed by | Code change? |
+|---|---|---|
+| New permission | a `bp_policy` row (structured) | none |
+| Change an approval limit | edit the policy `applies_to`/`effect` | none (no deploy) |
+| New response strategy | a new authored `bp_playbook` + steps | none to engine |
+| New action capability | one `ActionRegistry` entry wrapping an agent | new handler only |
+| New trigger/event | a playbook with `trigger_kind='event'` | none to orchestrator |
+| New detection | a `bp_rule` row + (if new math) a detector primitive | rule row only / new primitive |
+```
