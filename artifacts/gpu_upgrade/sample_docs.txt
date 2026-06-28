@@ -1,0 +1,12 @@
+# Fixed sample for GPU-upgrade extraction bench (Workstream A).
+# Format: <s3_key> | <category>   (category: invoice | purchase_order | quote)
+# Same set used for both --label before and --label after.
+documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf | invoice
+documents/Invoice/AQUARIUS INV-25-051 for PO508084 .pdf | invoice
+documents/Invoice/CITY OF NEWPORT INV600253 for PO502004 .pdf | invoice
+documents/Quote/AQUARIUS QUT-25-032.pdf | quote
+documents/Quote/CITY OF NEWPORT QUT599390 .pdf | quote
+documents/Quote/DESIGN HOUSE AGENCY QUT DHA-2025-102.pdf | quote
+documents/PO/PO_PO405867.pdf | purchase_order
+documents/PO/PO_PO519829.pdf | purchase_order
+documents/po/Oracle Purchase Order.docx | purchase_order

@@ -1,0 +1,64 @@
+{
+  "label": "before",
+  "doc_count": 9,
+  "ok_count": 9,
+  "batch_total_s": 1465.93,
+  "mean_doc_s": 162.74,
+  "ollama_max_concurrent": "default",
+  "records": [
+    {
+      "key": "documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf",
+      "category": "invoice",
+      "elapsed_s": 379.22,
+      "signature": "2431f03b67d6b7c12de8fba7a15cdb818b44be9b"
+    },
+    {
+      "key": "documents/Invoice/AQUARIUS INV-25-051 for PO508084 .pdf",
+      "category": "invoice",
+      "elapsed_s": 229.99,
+      "signature": "4cb648b4224cbde7dc3a03720210ae7703acf048"
+    },
+    {
+      "key": "documents/Invoice/CITY OF NEWPORT INV600253 for PO502004 .pdf",
+      "category": "invoice",
+      "elapsed_s": 7.83,
+      "signature": "e87f7d4792d2c67fefd11d93525017383310bd60"
+    },
+    {
+      "key": "documents/Quote/AQUARIUS QUT-25-032.pdf",
+      "category": "quote",
+      "elapsed_s": 139.73,
+      "signature": "36c2166aec9265b46b544085bc1ebd73610e1288"
+    },
+    {
+      "key": "documents/Quote/CITY OF NEWPORT QUT599390 .pdf",
+      "category": "quote",
+      "elapsed_s": 143.17,
+      "signature": "7a116dd269a66b0569b30df21193fe07f89082de"
+    },
+    {
+      "key": "documents/Quote/DESIGN HOUSE AGENCY QUT DHA-2025-102.pdf",
+      "category": "quote",
+      "elapsed_s": 139.13,
+      "signature": "7341ddb23e68cd6191ad4d276046b5c8e468e3d6"
+    },
+    {
+      "key": "documents/PO/PO_PO405867.pdf",
+      "category": "purchase_order",
+      "elapsed_s": 139.13,
+      "signature": "680e7d6424b61d00d212ed454d28cc1fa1d2c720"
+    },
+    {
+      "key": "documents/PO/PO_PO519829.pdf",
+      "category": "purchase_order",
+      "elapsed_s": 143.2,
+      "signature": "dbf28920a8634b0d8cfabda3c599ba4ad84f515e"
+    },
+    {
+      "key": "documents/po/Oracle Purchase Order.docx",
+      "category": "purchase_order",
+      "elapsed_s": 143.23,
+      "signature": "ddea93aef325a4a237d1fc831ef2d890db0ab8cd"
+    }
+  ]
+}
