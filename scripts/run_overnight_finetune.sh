@@ -83,7 +83,7 @@ FROM ./model-Q4_K_M.gguf
 PARAMETER temperature 0
 PARAMETER num_predict 4096
 PARAMETER top_p 0.9
-PARAMETER num_gpu 25
+PARAMETER num_gpu -1
 PARAMETER repeat_penalty 1.1
 PARAMETER num_ctx 8192
 PARAMETER stop <|im_start|>
@@ -95,11 +95,29 @@ MODELEOF
 
 cd "$OUTPUT_DIR"
 ollama create BeyondProcwise/AgentNick:v2-finetuned -f Modelfile.finetuned
-cd -
+cd - >/dev/null
+
+echo ""
+echo "[6/6] EVAL GATE — candidate may replace production ONLY if it does not regress"
+# Promotion gate: score the freshly-built candidate against the current
+# production model on the held-out gold set. Promote to the production
+# extraction tag (:extract) ONLY on PROMOTE_OK. Never ship a regression.
+PROD_TAG="BeyondProcwise/AgentNick:extract"
+CAND_TAG="BeyondProcwise/AgentNick:v2-finetuned"
+.venv/bin/python scripts/gpu_upgrade/run_eval_gate.py \
+    --label nightly --baseline "$PROD_TAG" --candidate "$CAND_TAG" \
+    | tee "$OUTPUT_DIR/eval_gate.txt"
+
+if grep -q "verdict=PROMOTE_OK" "$OUTPUT_DIR/eval_gate.txt"; then
+    echo "EVAL GATE PASSED — promoting $CAND_TAG -> $PROD_TAG"
+    ollama cp "$CAND_TAG" "$PROD_TAG"
+    echo "PROMOTED: production extraction model updated to the new candidate."
+else
+    echo "EVAL GATE REFUSED (regression) — production $PROD_TAG left UNTOUCHED."
+    echo "Candidate kept as $CAND_TAG for inspection; no production change."
+fi
 
 echo ""
 echo "=== Fine-tuning Complete ==="
 echo "Finished: $(date)"
-echo "Model: BeyondProcwise/AgentNick:v2-finetuned"
-echo ""
-echo "To activate: update PROCWISE_EXTRACTION_MODEL in ollama_client.py and direct_extraction_service.py"
+echo "Candidate: $CAND_TAG (promoted to $PROD_TAG only if the eval gate passed above)"

@@ -1,0 +1,10 @@
+{
+  "label": "baseline",
+  "holdout_n": 32,
+  "baseline": {
+    "model": "BeyondProcwise/AgentNick:extract",
+    "doc_accuracy": 0.8426,
+    "exact_doc_rate": 0.1875,
+    "n": 32
+  }
+}
