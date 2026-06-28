@@ -1,0 +1,94 @@
+{
+  "label": "clean_after",
+  "workers": 8,
+  "ollama_base_url": "http://127.0.0.1:11440",
+  "ollama_max_concurrent": "8",
+  "doc_count": 9,
+  "ok_count": 9,
+  "batch_total_s": 14.16,
+  "mean_doc_s": 10.73,
+  "sum_doc_s": 96.58,
+  "records": [
+    {
+      "key": "documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf",
+      "category": "invoice",
+      "elapsed_s": 9.16,
+      "status": "pending",
+      "signature": "498dc850b7bf4086d3aeedd8548db1401183d5b1",
+      "n_fields": 16,
+      "line_items": 1
+    },
+    {
+      "key": "documents/Invoice/AQUARIUS INV-25-051 for PO508084 .pdf",
+      "category": "invoice",
+      "elapsed_s": 10.77,
+      "status": "pending",
+      "signature": "e6b206a00f58fa0d4fb917a3fd99af8eb8707878",
+      "n_fields": 15,
+      "line_items": 1
+    },
+    {
+      "key": "documents/Invoice/CITY OF NEWPORT INV600253 for PO502004 .pdf",
+      "category": "invoice",
+      "elapsed_s": 11.81,
+      "status": "pending",
+      "signature": "2009c9f6c8d1aab046959a585b69dfeda1596b6b",
+      "n_fields": 16,
+      "line_items": 1
+    },
+    {
+      "key": "documents/Quote/AQUARIUS QUT-25-032.pdf",
+      "category": "quote",
+      "elapsed_s": 10.87,
+      "status": "pending",
+      "signature": "b318d3c52f1395864c8a1a4b892f624eb3f3fdda",
+      "n_fields": 16,
+      "line_items": 1
+    },
+    {
+      "key": "documents/Quote/CITY OF NEWPORT QUT599390 .pdf",
+      "category": "quote",
+      "elapsed_s": 13.16,
+      "status": "pending",
+      "signature": "f1218b39685da826f6e67b7c8235b01b7d2e13fd",
+      "n_fields": 16,
+      "line_items": 2
+    },
+    {
+      "key": "documents/Quote/DESIGN HOUSE AGENCY QUT DHA-2025-102.pdf",
+      "category": "quote",
+      "elapsed_s": 7.77,
+      "status": "pending",
+      "signature": "1c573e02c06d638e3f3c71688de72556a42670c9",
+      "n_fields": 16,
+      "line_items": 1
+    },
+    {
+      "key": "documents/PO/PO_PO405867.pdf",
+      "category": "purchase_order",
+      "elapsed_s": 12.85,
+      "status": "pending",
+      "signature": "c906937c685309525c7b6669aa6abdc4781df1ac",
+      "n_fields": 18,
+      "line_items": 3
+    },
+    {
+      "key": "documents/PO/PO_PO519829.pdf",
+      "category": "purchase_order",
+      "elapsed_s": 14.15,
+      "status": "pending",
+      "signature": "4729539ec617f6bd68dc08dce830eb22119b7fac",
+      "n_fields": 20,
+      "line_items": 1
+    },
+    {
+      "key": "documents/po/Oracle Purchase Order.docx",
+      "category": "purchase_order",
+      "elapsed_s": 6.04,
+      "status": "pending",
+      "signature": "a563d7880e585158c1acac75a9836123b1cb4df3",
+      "n_fields": 19,
+      "line_items": 1
+    }
+  ]
+}

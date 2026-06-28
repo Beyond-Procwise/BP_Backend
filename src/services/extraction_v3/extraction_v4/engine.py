@@ -522,15 +522,49 @@ _LABEL_MAP_INVOICE = {
 }
 
 
+def _nuextract_call(template: dict, text: str) -> dict:
+    """Run a NuExtract template prompt through the managed Ollama client.
+
+    Routing via ollama_client shares the global concurrency semaphore + retry
+    with all other LLM traffic — previously these were raw, unthrottled POSTs
+    that could storm the daemon. Behaviour (prompt, parsing) is unchanged.
+    """
+    from src.services.ollama_client import ollama_generate
+
+    template_str = json.dumps(template, indent=2)
+    prompt = f"<|input|>\n{text}\n<|template|>\n{template_str}\n<|output|>"
+    raw_output = ollama_generate(
+        prompt, model=NUEXTRACT_MODEL, num_predict=2048, timeout=NUEXTRACT_TIMEOUT,
+    ) or ""
+    logger.debug("NuExtract raw output: %s", raw_output[:500])
+    return _parse_response(raw_output.strip())
+
+
+def _nuextract_chunks_parallel(chunks: list[str], fn) -> list[dict]:
+    """Call ``fn`` on each text chunk concurrently, preserving order.
+
+    Real concurrency is bounded by the ollama_client semaphore; this just feeds
+    it so chunks no longer run strictly one-at-a-time. Failed chunks yield {}.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _safe(chunk: str) -> dict:
+        try:
+            return fn(chunk)
+        except Exception as exc:
+            logger.warning("NuExtract extraction failed on chunk: %s", exc)
+            return {}
+
+    if len(chunks) <= 1:
+        return [_safe(c) for c in chunks]
+    with ThreadPoolExecutor(max_workers=min(8, len(chunks))) as ex:
+        return list(ex.map(_safe, chunks))
+
+
 def nuextract_extract_entities_invoice(text: str, labels: list[str] | None = None) -> dict[str, list[str]]:
     chunks = _split_text(text, max_chars=3000)
     entities: dict[str, list[str]] = {}
-    for chunk in chunks:
-        try:
-            extracted = _call_nuextract_invoice(chunk)
-        except Exception as exc:
-            logger.warning("NuExtract extraction failed on chunk: %s", exc)
-            continue
+    for extracted in _nuextract_chunks_parallel(chunks, _call_nuextract_invoice):
         for key, value in extracted.items():
             if key not in _LABEL_MAP_INVOICE:
                 continue
@@ -547,26 +581,7 @@ def nuextract_extract_entities_invoice(text: str, labels: list[str] | None = Non
 
 
 def _call_nuextract_invoice(text: str) -> dict:
-    template_str = json.dumps(INVOICE_TEMPLATE, indent=2)
-    prompt = f"""<|input|>
-{text}
-<|template|>
-{template_str}
-<|output|>"""
-    response = requests.post(
-        f"{OLLAMA_BASE_URL}/api/generate",
-        json={
-            "model": NUEXTRACT_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0, "num_predict": 2048},
-        },
-        timeout=NUEXTRACT_TIMEOUT,
-    )
-    response.raise_for_status()
-    raw_output = response.json().get("response", "").strip()
-    logger.debug("NuExtract raw output: %s", raw_output[:500])
-    return _parse_response(raw_output)
+    return _nuextract_call(INVOICE_TEMPLATE, text)
 
 
 PO_TEMPLATE = {
@@ -611,12 +626,7 @@ _LABEL_MAP_PO = {
 def nuextract_extract_entities_po(text: str, labels: list[str] | None = None) -> dict[str, list[str]]:
     chunks = _split_text(text, max_chars=3000)
     entities: dict[str, list[str]] = {}
-    for chunk in chunks:
-        try:
-            extracted = _call_nuextract_po(chunk)
-        except Exception as exc:
-            logger.warning("NuExtract extraction failed on chunk: %s", exc)
-            continue
+    for extracted in _nuextract_chunks_parallel(chunks, _call_nuextract_po):
         for key, value in extracted.items():
             if key not in _LABEL_MAP_PO:
                 continue
@@ -633,26 +643,7 @@ def nuextract_extract_entities_po(text: str, labels: list[str] | None = None) ->
 
 
 def _call_nuextract_po(text: str) -> dict:
-    template_str = json.dumps(PO_TEMPLATE, indent=2)
-    prompt = f"""<|input|>
-{text}
-<|template|>
-{template_str}
-<|output|>"""
-    response = requests.post(
-        f"{OLLAMA_BASE_URL}/api/generate",
-        json={
-            "model": NUEXTRACT_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0, "num_predict": 2048},
-        },
-        timeout=NUEXTRACT_TIMEOUT,
-    )
-    response.raise_for_status()
-    raw_output = response.json().get("response", "").strip()
-    logger.debug("NuExtract raw output: %s", raw_output[:500])
-    return _parse_response(raw_output)
+    return _nuextract_call(PO_TEMPLATE, text)
 
 
 def _parse_response(raw: str) -> dict:
@@ -5249,12 +5240,7 @@ _QUOTE_LABEL_MAP = {
 def nuextract_extract_entities_quote(text: str) -> dict[str, list[str]]:
     chunks = _split_text(text, max_chars=3000)
     entities: dict[str, list[str]] = {}
-    for chunk in chunks:
-        try:
-            extracted = _call_nuextract_quote(chunk)
-        except Exception as exc:
-            logger.warning("NuExtract extraction failed on chunk: %s", exc)
-            continue
+    for extracted in _nuextract_chunks_parallel(chunks, _call_nuextract_quote):
         for key, value in extracted.items():
             if key not in _QUOTE_LABEL_MAP:
                 continue
@@ -5271,26 +5257,7 @@ def nuextract_extract_entities_quote(text: str) -> dict[str, list[str]]:
 
 
 def _call_nuextract_quote(text: str) -> dict:
-    template_str = json.dumps(QUOTE_TEMPLATE, indent=2)
-    prompt = f"""<|input|>
-{text}
-<|template|>
-{template_str}
-<|output|>"""
-    response = requests.post(
-        f"{OLLAMA_BASE_URL}/api/generate",
-        json={
-            "model": NUEXTRACT_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0, "num_predict": 2048},
-        },
-        timeout=NUEXTRACT_TIMEOUT,
-    )
-    response.raise_for_status()
-    raw_output = response.json().get("response", "").strip()
-    logger.debug("NuExtract raw output: %s", raw_output[:500])
-    return _parse_response(raw_output)
+    return _nuextract_call(QUOTE_TEMPLATE, text)
 
 
 _QUOTE_NUM_PATTERNS_Q = [

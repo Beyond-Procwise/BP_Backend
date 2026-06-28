@@ -24,8 +24,10 @@ DEFAULT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick
 OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://api.ollama.com")
 OLLAMA_CLOUD_API_KEY = os.getenv("OLLAMA_CLOUD_API_KEY")
 
-# Max concurrent Ollama requests — match OLLAMA_NUM_PARALLEL (default 2)
-_MAX_CONCURRENT = int(os.getenv("OLLAMA_MAX_CONCURRENT", "2"))
+# Max concurrent Ollama requests — match OLLAMA_NUM_PARALLEL on the daemon.
+# Default 8 for the 96 GB RTX PRO 6000 Blackwell (was 2 for the old contended
+# card). Env-tunable so it can be dialled without a code change.
+_MAX_CONCURRENT = int(os.getenv("OLLAMA_MAX_CONCURRENT", "8"))
 _semaphore = threading.Semaphore(_MAX_CONCURRENT)
 
 # Retry and timeout — tuned for queued GPU inference
@@ -48,6 +50,7 @@ def ollama_generate(
     retries: int = MAX_RETRIES,
     stop: Optional[list] = None,
     think: bool = False,
+    fmt: Optional[str] = None,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -64,9 +67,9 @@ def ollama_generate(
         "temperature": temperature,
         "num_predict": num_predict,
     }
-    # num_gpu < 0 -> let Ollama auto-fit GPU layers (overflow to CPU). Forcing all
-    # layers on GPU (num_gpu=99) OOM-kills the runner for the 30B unified model when
-    # the card is contended. Only pin a specific count when explicitly requested.
+    # num_gpu < 0 -> let Ollama auto-fit GPU layers. On the 96 GB Blackwell card
+    # the 30B model (~18 GB) fits entirely on GPU, so auto-fit places all layers
+    # there (no CPU spill). Only pin a specific count when explicitly requested.
     if num_gpu is not None and num_gpu >= 0:
         options["num_gpu"] = num_gpu
     if stop:
@@ -82,6 +85,10 @@ def ollama_generate(
         # caller (extraction, agentic, summaries) — matching ollama_cloud_generate.
         "think": think,
     }
+    # Forward Ollama's structured-output mode (e.g. "json") when requested so
+    # callers that relied on format=json keep getting strict JSON back.
+    if fmt:
+        payload["format"] = fmt
 
     for attempt in range(1, retries + 1):
         acquired = _semaphore.acquire(timeout=SEMAPHORE_TIMEOUT)

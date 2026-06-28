@@ -3,7 +3,7 @@ FROM qwen3:30b
 PARAMETER temperature 0
 PARAMETER num_predict 4096
 PARAMETER top_p 0.9
-PARAMETER num_gpu 25
+PARAMETER num_gpu -1
 PARAMETER repeat_penalty 1.1
 PARAMETER num_ctx 8192
 
@@ -155,87 +155,6 @@ PAYMENT TERMS:
 - Net 30/60/90: Payment due in N days
 - 2/10 Net 30: 2% discount if paid within 10 days, full in 30
 - COD: Cash on delivery
-
-=== LEARNED VENDOR PATTERNS (auto-updated) ===
-
-LEARNED VENDOR PATTERNS (from successful extractions):
-- SUP-THRIVESTUDIOSLLC (Invoice), currency=GBP, extractions=44
-- Assurity Ltd (Purchase_Order), currency=GBP, extractions=40
-- Gomez, Good and Cross Trading Ltd (Purchase_Order), currency=GBP, extractions=36
-- Sarah Thompson (Invoice), currency=GBP, extractions=29
-- Dixon, Reynolds and Solomon (Invoice), currency=GBP, extractions=27
-- NexaSpark (Invoice), currency=GBP, extractions=26
-- city of newport (Invoice), currency=GBP, extractions=22
-- Daniel, Perry and Goodman Trading Ltd. (Quote), currency=GBP, extractions=21
-- Infotech (Invoice), currency=GBP, extractions=21
-- THRIVE STUDIOS LLC (Quote), currency=GBP, extractions=20
-- Williams, Reynolds and Aguirre Trading Ltd. (Quote), currency=GBP, extractions=20
-- Duncan LLC (Purchase_Order), currency=GBP, extractions=20
-- Wade Inc (Purchase_Order), currency=GBP, extractions=20
-- Perry Ltd (Purchase_Order), currency=GBP, extractions=20
-- Gomez, Good and Cross Trading Ltd (Quote), currency=GBP, extractions=18
-- TechNova Ltd (Quote), currency=GBP, extractions=18
-- Duncan LLC (Quote), currency=GBP, extractions=18
-- Duncan LLC (Invoice), currency=GBP, extractions=16
-- Wade Inc (Invoice), currency=GBP, extractions=16
-- SUP-SupplyXLtd (Quote), currency=GBP, extractions=16
-- Wells LLC (Invoice), currency=GBP, extractions=15
-- Dixon, Reynolds and Solomon (Purchase_Order), currency=GBP, extractions=15
-- TechWorld (Invoice), currency=GBP, extractions=13
-- SupplyX Ltd (Quote), currency=GBP, extractions=12
-- Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=11
-- InfoTech Consulting (Purchase_Order), currency=GBP, extractions=11
-- Rubilogy (Purchase_Order), currency=GBP, extractions=10
-- Eleanor Price Creative Studio (Purchase_Order), currency=GBP, extractions=10
-- Assurity Ltd (Invoice), currency=GBP, extractions=10
-- AquariusTeam (Purchase_Order), currency=GBP, extractions=10
-- Dell Workspace Solutions Ltd (Quote), currency=GBP, extractions=10
-- ELEANOR PRICE CREATIVE STUDIO (Quote), currency=GBP, extractions=9
-- NexaSpark (Purchase_Order), currency=GBP, extractions=9
-- Black and Sons (Quote), currency=GBP, extractions=9
-- NexaSpark (Quote), currency=GBP, extractions=9
-- THRIVE STUDIOS LLC (Invoice), currency=USD, extractions=9
-- PeopleFirst HR Solutions Ltd (Purchase_Order), currency=GBP, extractions=9
-- Wholesale Giants Ltd (Purchase_Order), currency=GBP, extractions=8
-- Wade Inc (Quote), currency=GBP, extractions=7
-- Wells LLC (Quote), currency=GBP, extractions=7
-- Rubilogy (Quote), currency=GBP, extractions=6
-- Sarah Thompson (Quote), currency=GBP, extractions=6
-- UrbanEdge Facilities Management Ltd (Purchase_Order), currency=GBP, extractions=6
-- Gomez, Good and Cross Trading Ltd. (Quote), currency=GBP, extractions=6
-- SUP-PeopleFirstHRSolutio (Quote), currency=GBP, extractions=6
-- DESIGN HOUSE AGENCY (Invoice), currency=GBP, extractions=6
-- Black and Sons (Invoice), currency=GBP, extractions=5
-- Gomez, Good and Cross (Invoice), currency=GBP, extractions=5
-- AquariusTeam (Invoice), currency=GBP, extractions=5
-- city of newport (Quote), currency=GBP, extractions=4
-
-=== LEARNED PATTERNS (auto-updated) ===
-
-LEARNED VENDOR PATTERNS (from successful extractions):
-- TECHWORLD GLOBAL (Invoice), currency=GBP, extractions=26
-- Assurity Ltd (Invoice), currency=GBP, extractions=24
-- THRIVE STUDIOS LLC (Invoice), currency=GBP, extractions=24
-- Assurity Ltd (Purchase_Order), currency=GBP, extractions=15
-- InfoTech Consulting Ltd (Invoice), currency=GBP, extractions=12
-- TECHNOVA LTD (Invoice), currency=GBP, extractions=10
-- GOMEZ, GOOD AND CROSS TRADING LTD (Invoice), currency=GBP, extractions=8
-- 800-531-8575 (Purchase_Order), currency=GBP, extractions=6
-- DESIGN HOUSE AGENCY (Invoice), currency=GBP, extractions=6
-- Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=5
-- NexaSparkideas (Invoice), currency=GBP, extractions=4
-- Becker Inc (Invoice), currency=GBP, extractions=4
-- GOMEZ, GOOD AND CROSS QUOTE TRADING LTD. UNKNOWN (Invoice), currency=GBP, extractions=2
-- TRADING LTD. (Invoice), currency=GBP, extractions=2
-- INV600820 (Invoice), currency=GBP, extractions=2
-- Lenovo (Invoice), currency=GBP, extractions=2
-- Sarah Thompson INV No: INV-2025-055 (Purchase_Order), currency=GBP, extractions=2
-- Sarah Thompson INV No: INV-2025-057 (Purchase_Order), currency=GBP, extractions=2
-- Sarah Thompson INV No: INV-2025-058 (Purchase_Order), currency=GBP, extractions=2
-- INV600784 (Invoice), currency=GBP, extractions=2
-- Rubilogy Ltd (Invoice), currency=GBP, extractions=2
-
-KNOWN SUPPLIERS (match against these): ABC Media, ALDENAIRE HIGH SCHOOL, Apparel Masters, AQUARIUS, Aquarius Marketing Ltd, AssurityLtd, Assurity Ltd, AUARIUS MARKETING, Becker Inc, Borcelle 121, BrightPeak Marketing Agency, City of Newport, Coffee Bliss Suppliers, CONDITIONS, Condor Logistics UK Ltd, Construction Masters, COTM CO de lum, CREATIVE DESIGN AGENCY, days Tax, Delivery Deadline, Dell Workspace Solutions Ltd, Description Qty Unit Price, Design House Agency, DIXON, REYNOLDS, Dixon, Reynolds and Solomon, DUNCAN, Duncan LLC, ELEANOR PRICE, Eleanor Price Creative Studio, Employee Experience & Engagement Programme, Ergeremiuc School C1 6s, extraBIZ, FamilyFun.com, FASHION ITEMS INC, Faucet Decor Solutions, Fauget, GOMEZ, GOOD, GOMEZ, GOOD AND CROSS, Gomez, Good and Cross Trading Ltd, Industrial Pendant Fixtures, InfoTech, InfoTech Consulting, Ingoude Company, Larpaira de pe, LEC Floor Lamp fAcyu, Lester Group 807, Meridian Business Park, MGM Souvenir Shop, NEXASPARK, NexaSpark Marketing Ltd
 
 === QUALITY STANDARDS ===
 

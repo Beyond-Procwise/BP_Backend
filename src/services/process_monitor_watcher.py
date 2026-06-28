@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 
 LISTEN_CHANNEL = "process_monitor_ready"
 DEFAULT_POLL_INTERVAL = 60.0
-DEFAULT_MAX_WORKERS = 4
+# Concurrent documents extracted at once. Raised 4 -> 8 for the 96 GB Blackwell
+# GPU (the old contended card could only sustain a few). Env-tunable.
+DEFAULT_MAX_WORKERS = int(os.getenv("PROCWISE_DOC_WORKERS", "8"))
 MAX_BACKOFF = 60.0
 
 

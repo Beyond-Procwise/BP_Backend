@@ -360,27 +360,18 @@ def _verify_substring(value: str, source_text_lower: str) -> bool:
 
 
 def _call_ollama(prompt: str) -> dict:
-    """POST to Ollama generate API with format=json. Returns parsed dict."""
-    response = requests.post(
-        f"{OLLAMA_BASE_URL}/api/generate",
-        json={
-            "model": LLM_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json",
-            # think=False: AgentNick:latest (Qwen3-30B Thinking) otherwise emits its
-            # output in `thinking` and leaves `response` empty, silently breaking the
-            # extraction LLM-fill. Disable reasoning so the JSON lands in `response`.
-            "think": False,
-            "options": {
-                "temperature": 0,
-                "num_predict": 2048,
-            },
-        },
-        timeout=LLM_TIMEOUT,
-    )
-    response.raise_for_status()
-    raw_output = (response.json().get("response") or "").strip()
+    """Generate via the managed Ollama client with format=json. Returns parsed dict.
+
+    Routes through ollama_client so the missing-required-field fill shares the
+    global concurrency semaphore + retry/backoff with all other LLM traffic
+    (previously a raw, unthrottled POST). think=False is the client default, so
+    AgentNick's Qwen3-30B "Thinking" still lands its JSON in `response`.
+    """
+    from src.services.ollama_client import ollama_generate
+
+    raw_output = (ollama_generate(
+        prompt, model=LLM_MODEL, num_predict=2048, timeout=LLM_TIMEOUT, fmt="json",
+    ) or "").strip()
     if not raw_output:
         return {}
     try:
