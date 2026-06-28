@@ -21,12 +21,22 @@ Environment="DB_CONNECT_TIMEOUT=1"
 TimeoutStartSec=300
 ```
 
-Apply:
+The exact file is version-controlled at
+`resources/deployment/procwise.service.d/dbtimeout.conf`. Apply it:
 ```bash
 sudo mkdir -p /etc/systemd/system/procwise.service.d
-sudo tee /etc/systemd/system/procwise.service.d/dbtimeout.conf < the block above
+sudo cp resources/deployment/procwise.service.d/dbtimeout.conf \
+        /etc/systemd/system/procwise.service.d/dbtimeout.conf
 sudo systemctl daemon-reload
 sudo systemctl restart procwise
+```
+
+**VERIFY it actually took** (a previous write failed silently and the box ran on
+code defaults for a while — always confirm):
+```bash
+sudo ls -la /etc/systemd/system/procwise.service.d/        # dbtimeout.conf present
+systemctl show procwise -p TimeoutStartUSec -p Environment | tr ' ' '\n' \
+    | grep -iE 'TimeoutStartUSec|DB_CONNECT_TIMEOUT'        # expect 5min + =1
 ```
 
 ## Behaviour
@@ -38,9 +48,24 @@ sudo systemctl restart procwise
   DB-coupled subsystems (orchestrator/scheduler, email + process watchers, pattern
   seeding, provenance, schema-DB-verify) are **skipped** (they otherwise
   retry-loop and block startup forever), and AgentNick + the reasoning engine come
-  up so `/agents/instruct` and other Ollama-based endpoints work. Measured boot:
-  **~56 s** to listening with the DB down. Verified: `/agents/instruct` →
-  `planner=llm`, multi-step plan.
+  up so `/agents/instruct` and other Ollama-based endpoints work. Measured boot to
+  listening with the DB down: **~24 s with this drop-in** (`DB_CONNECT_TIMEOUT=1`),
+  ~56 s on code defaults (`=5`). Verified: `/agents/instruct` → `planner=llm`,
+  multi-step plan.
+
+## Survives a reboot
+
+Confirmed reduced mode comes back automatically after a reboot. The conditions:
+- `systemctl is-enabled procwise` → **enabled** (`WantedBy=multi-user.target`,
+  ordered `After=` nvidia/docker/network-online).
+- `systemctl is-enabled ollama` → **enabled** (reasoning needs Ollama).
+- This drop-in is a file under `/etc/systemd/system/` → **persists** across reboots.
+- The graceful-startup logic is committed code on disk.
+
+On boot, systemd starts Ollama + procwise; procwise probes the (still-down) DB,
+logs `REDUCED mode`, skips DB subsystems, and binds its port in ~24 s — well under
+the 5-min `TimeoutStartSec`. (Validated via a cold `stop`+`start`, the safe proxy
+for a boot, rather than rebooting the shared host.)
 
 The graceful-startup logic itself is in `src/api/main.py` (lifespan) and
 `src/agents/base_agent.py` (resilient engine construction). The REDUCED mode is a
