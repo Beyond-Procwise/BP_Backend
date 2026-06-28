@@ -1,0 +1,67 @@
+
+======================================================================
+1. EXTRACTION POWER (live gold holdout via context_layer)
+======================================================================
+doc_accuracy=0.865  exact_doc_rate=0.083  n=12
+
+======================================================================
+2. REASONING — procurement task planning
+======================================================================
+[167.0s]
+1. Confirm the exact specification of the 500 ergonomic office chairs (e.g., model, features, compliance standards) to ensure like-for-like comparison across suppliers.  
+2. Request formal quotes from the three shortlisted suppliers, specifying:  
+   - Unit price (in GBP)  
+   - Total price (including delivery and taxes)  
+   - Delivery lead time (in weeks)  
+   - Payment terms  
+   - Warranty and return policy  
+3. Evaluate each quote based on:  
+   - Unit price (target: ≤ £80/unit)  
+   - Delivery timeline (must be ≤ 6 weeks)  
+   - Total cost (must be ≤ £40,000)  
+   - Supplier reliability (check past delivery performance, if available)  
+   - Compliance with procurement policy (e.g., sustainability, local sourcing)  
+4. Identify the supplier offering the best value:  
+   - If multiple suppliers meet price and delivery criteria, prioritize on-time delivery track record and contract te
+
+ASSESS: [('has>=4 numbered steps', True), ('mentions RFQ/quote', False), ('mentions budget/price', True), ('mentions evaluation/compare', True)]
+
+======================================================================
+3. NEGOTIATION — counter-offer strategy reasoning
+======================================================================
+[10.2s]
+Counter-offer: GBP 82/chair for 500 chairs, delivery in 6 weeks.
+
+Reasoning:  
+- Price: The quoted GBP 92 is 15.4% above target (GBP 78). A reduction to GBP 82 (11.5% above target) reflects a reasonable compromise, acknowledging the supplier’s cost structure while aligning with procurement goals.  
+- Lead time: The supplier’s 8-week lead time exceeds the required 6 weeks. A commitment to 6-week delivery is achievable with prioritized production and logistics planning, and is critical to meeting operational timelines.  
+- Leverage: The buyer can reference alternative suppliers with shorter lead times and lower pricing, and highlight the potential for volume consolidation (e.g., future orders) to incentivize compliance.  
+
+This counter-offer balances cost, delivery, and supplier performance 
+
+ASSESS: [('proposes a counter price', True), ('addresses lead time', True), ('gives reasoning', True)]
+
+======================================================================
+4. SUMMARY — coherent procurement summary
+======================================================================
+[5.8s]
+Supplier Assurity Ltd issued invoice INV609767 for PO521031, totaling GBP 12,480 inclusive of VAT, covering five line items of office furniture. The invoice is due in 30 days, aligning with standard payment terms. No discrepancies were noted between the PO and invoice in quantity or description. Procurement risk: No prior performance history or dispute records available for Assurity Ltd, indicating potential counterparty risk due to lack of verified track record.
+
+ASSESS: [('mentions supplier', True), ('mentions amount', True), ('coherent length', True)]
+
+======================================================================
+5. DOMAIN Q&A — procurement knowledge
+======================================================================
+[6.8s]
+A Purchase Order (PO) is a formal document issued by a buyer to a supplier, authorizing the purchase of goods or services at specified prices and quantities, serving as a binding commitment; an Invoice is a bill issued by the supplier after delivery, requesting payment for the goods or services provided. Matching them in a 3-way match—comparing the PO, the receiving report (or goods receipt), and the invoice—ensures that the buyer only pays for what was ordered, received, and at the agreed-upon price, preventing overpayment, fraud, and discrepancies, thereby maintaining financial accuracy and operational integrity in procurement.
+
+ASSESS: [('mentions PO', True), ('mentions invoice', True), ('mentions 3-way/match/goods receipt', True)]
+
+======================================================================
+SCORECARD
+======================================================================
+{
+  "extraction_doc_accuracy": 0.865,
+  "reasoning_steps": 10
+}
+ANALYSIS_DONE
