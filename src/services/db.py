@@ -1078,7 +1078,10 @@ def get_conn():
         )
 
     try:
-        conn = psycopg2.connect(dsn)
+        # Fail fast when the DB is unreachable (was an unbounded ~2-min hang that
+        # stalled app startup when the database is down). Env-tunable.
+        conn = psycopg2.connect(
+            dsn, connect_timeout=int(os.environ.get("DB_CONNECT_TIMEOUT", "5")))
         conn.autocommit = True
     except Exception:
         if os.environ.get("PYTEST_CURRENT_TEST"):

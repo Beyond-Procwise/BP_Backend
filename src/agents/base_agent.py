@@ -1009,7 +1009,9 @@ class BaseAgent:
                     exc_info=exc,
                 )
 
-        fallback_model = getattr(self.settings, "extraction_model", "gpt-oss")
+        # AgentNick-only: never fall back to a third-party model. If
+        # extraction_model is somehow unset, use the universal AgentNick tag.
+        fallback_model = getattr(self.settings, "extraction_model", None) or _UNIVERSAL_LOCAL_MODEL
         base_model = fallback_model
         resolver = getattr(self.agent_nick, "get_agent_model", None)
         if callable(resolver):
@@ -1479,15 +1481,43 @@ class AgentNick:
         self._initialise_static_policy_corpus()
 
         logger.info("Initializing core engines...")
-        self.prompt_engine = PromptEngine(self)
-        self.policy_engine = PolicyEngine(self)
-        self.query_engine = QueryEngine(self)
-        self.routing_engine = RoutingEngine(self)
-        self.process_routing_service = ProcessRoutingService(self)
-        self.workflow_memory = WorkflowMemoryService(self)
+        # Resilient construction: when the database is UNREACHABLE these
+        # governance/DB-backed engines fall back to a degraded (no-DB) instance
+        # so the server can still start and serve DB-independent endpoints
+        # (e.g. /agents/instruct reasoning, which uses Ollama, not the DB).
+        # DB-dependent features stay degraded until the database is restored.
+        # Failures are logged LOUDLY so the outage is never silent.
+        def _safe_engine(label, build, fallback):
+            try:
+                return build()
+            except Exception:
+                logger.error(
+                    "%s init failed — DATABASE UNREACHABLE? Falling back to a "
+                    "degraded no-DB instance; DB-dependent features will not work "
+                    "until the database is restored.", label, exc_info=True)
+                return fallback()
+
+        self.prompt_engine = _safe_engine(
+            "PromptEngine", lambda: PromptEngine(self),
+            lambda: PromptEngine(agent_nick=None, prompt_rows=[]))
+        self.policy_engine = _safe_engine(
+            "PolicyEngine", lambda: PolicyEngine(self),
+            lambda: PolicyEngine(agent_nick=None, policy_rows=[]))
+        self.query_engine = _safe_engine(
+            "QueryEngine", lambda: QueryEngine(self), lambda: None)
+        self.routing_engine = _safe_engine(
+            "RoutingEngine", lambda: RoutingEngine(self), lambda: None)
+        self.process_routing_service = _safe_engine(
+            "ProcessRoutingService", lambda: ProcessRoutingService(self), lambda: None)
+        self.workflow_memory = _safe_engine(
+            "WorkflowMemoryService", lambda: WorkflowMemoryService(self), lambda: None)
         self._agent_model_registry: Optional[Dict[str, str]] = None
         self._agent_model_fallback: Optional[str] = None
-        self._build_agent_model_registry()
+        try:
+            self._build_agent_model_registry()
+        except Exception:
+            logger.error("agent model registry build failed (DB unreachable?) — "
+                         "using model defaults", exc_info=True)
         logger.info("Engines initialized.")
 
         self.agents = {}
@@ -1674,7 +1704,10 @@ class AgentNick:
         return psycopg2.connect(
             host=self.settings.db_host, dbname=self.settings.db_name,
             user=self.settings.db_user, password=self.settings.db_password,
-            port=self.settings.db_port
+            port=self.settings.db_port,
+            # Fail fast when the DB is unreachable (was an unbounded ~2-min hang
+            # that stalled startup). Env-tunable.
+            connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
         )
 
     @contextmanager

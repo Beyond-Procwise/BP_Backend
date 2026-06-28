@@ -119,13 +119,38 @@ async def lifespan(app: FastAPI):
         from orchestration.reasoning_engine import ReasoningEngine
 
         pattern_service = PatternService(agent_nick)
-        pattern_service.ensure_table()
+        try:
+            pattern_service.ensure_table()
+        except Exception:
+            logger.exception("pattern_service.ensure_table failed (DB unreachable?) "
+                             "— continuing; pattern features degraded")
         context_service = ProcurementContextService(agent_nick)
         reasoning_engine = ReasoningEngine(
             agent_nick, auto_registry, pattern_service, context_service
         )
         agent_nick.reasoning_engine = reasoning_engine
         agent_nick.pattern_service = pattern_service
+        # Make AgentNick available to DB-independent endpoints (e.g. /agents/instruct
+        # reasoning, which uses Ollama, not the DB) as early as possible — BEFORE the
+        # DB-dependent init below, which degrades gracefully when the DB is unreachable.
+        state.agent_nick = agent_nick
+
+        # One-shot DB reachability probe (fast-fail). When the DB is DOWN we SKIP the
+        # DB-coupled subsystems below (pattern seeding, provenance, orchestrator,
+        # scheduler, email/process watchers) — several of them RETRY-LOOP on the DB
+        # and would otherwise BLOCK startup indefinitely (the server never binds its
+        # port). AgentNick + reasoning (/agents/instruct) still serve. Full features
+        # auto-recover on the next restart once the database is back.
+        db_reachable = False
+        try:
+            with agent_nick.get_db_connection() as _probe:
+                db_reachable = True
+            logger.info("DB reachability probe: OK")
+        except Exception:
+            logger.error(
+                "DB REACHABILITY PROBE FAILED — starting in REDUCED mode: AgentNick + "
+                "reasoning (/agents/instruct) available; extraction, scheduling, watchers "
+                "and persistence DISABLED until the database is restored.")
 
         # Pin the planning model (AgentNick:unified) resident on a background
         # thread so the first /agents/instruct call doesn't pay a ~2 min
@@ -135,75 +160,108 @@ async def lifespan(app: FastAPI):
             target=reasoning_engine.warm_up, name="planner-warmup", daemon=True
         ).start()
 
-        # Seed initial patterns if table is empty
-        from services.seed_patterns import seed_patterns
-        existing = pattern_service.get_patterns()
-        if not existing:
-            seed_patterns(pattern_service)
-            logger.info("Seeded initial procurement patterns")
+        # Seed initial patterns if table is empty (DB-dependent — skip when down)
+        if db_reachable:
+            try:
+                from services.seed_patterns import seed_patterns
+                existing = pattern_service.get_patterns()
+                if not existing:
+                    seed_patterns(pattern_service)
+                    logger.info("Seeded initial procurement patterns")
+            except Exception:
+                logger.exception("pattern seeding failed — continuing")
 
         # === Extraction V3: schema validation (fail-loud on drift) ===
-        try:
-            from src.services.extraction_v3.yaml_schema.loader import load_all_schemas, SchemaDriftError
-            extraction_v3_schemas = load_all_schemas()
-            state.extraction_v3_schemas = extraction_v3_schemas
-            logger.info(
-                "extraction_v3: loaded %d doc-type schemas: %s",
-                len(extraction_v3_schemas), list(extraction_v3_schemas.keys()),
-            )
-        except SchemaDriftError as exc:
-            logger.error("extraction_v3 schema drift detected; refusing to start: %s", exc)
-            raise  # crash startup loud
-        except Exception:
-            logger.exception("extraction_v3 schema load failed; continuing without v3 schemas")
+        # The validator verifies each schema against the DB; skip when the DB is
+        # down (extraction is disabled in reduced mode anyway) — otherwise it
+        # hangs on its own un-timed DB connect.
+        if db_reachable:
+            try:
+                from src.services.extraction_v3.yaml_schema.loader import load_all_schemas, SchemaDriftError
+                extraction_v3_schemas = load_all_schemas()
+                state.extraction_v3_schemas = extraction_v3_schemas
+                logger.info(
+                    "extraction_v3: loaded %d doc-type schemas: %s",
+                    len(extraction_v3_schemas), list(extraction_v3_schemas.keys()),
+                )
+            except SchemaDriftError as exc:
+                logger.error("extraction_v3 schema drift detected; refusing to start: %s", exc)
+                raise  # crash startup loud
+            except Exception:
+                logger.exception("extraction_v3 schema load failed; continuing without v3 schemas")
+                state.extraction_v3_schemas = {}
+        else:
             state.extraction_v3_schemas = {}
 
-        # Ensure provenance sidecar schema exists.
-        try:
-            from services.db import get_conn as _prov_db_get_conn
-            from src.services.extraction_v2.provenance import DDL as _PROV_DDL
-            with _prov_db_get_conn() as _pconn:
-                with _pconn.cursor() as _pcur:
-                    _pcur.execute(_PROV_DDL)
-                _pconn.commit()
-            logger.info("Extraction provenance schema ensured")
-        except Exception:
-            logger.exception(
-                "Extraction provenance schema init failed — "
-                "per-field provenance writes will silently no-op"
-            )
+        # Ensure provenance sidecar schema exists (DB-dependent — skip when down).
+        if db_reachable:
+            try:
+                from services.db import get_conn as _prov_db_get_conn
+                from src.services.extraction_v2.provenance import DDL as _PROV_DDL
+                with _prov_db_get_conn() as _pconn:
+                    with _pconn.cursor() as _pcur:
+                        _pcur.execute(_PROV_DDL)
+                    _pconn.commit()
+                logger.info("Extraction provenance schema ensured")
+            except Exception:
+                logger.exception(
+                    "Extraction provenance schema init failed — "
+                    "per-field provenance writes will silently no-op"
+                )
 
-        state.agent_nick = agent_nick
-        state.model_training_endpoint = ModelTrainingEndpoint(agent_nick)
-        orchestrator = Orchestrator(
-            agent_nick,
-            training_endpoint=state.model_training_endpoint,
-        )
-        state.orchestrator = orchestrator
-        state.rag_pipeline = RAGPipeline(agent_nick)
         state.agent_registry = agent_nick.agents
         state.supplier_interaction_agent = agents_dict.get("supplier_interaction")
         state.negotiation_agent = agents_dict.get("negotiation")
         state.email_watcher_runner = run_email_watcher_for_workflow
-        backend_scheduler = orchestrator.backend_scheduler
-        state.backend_scheduler = backend_scheduler
-        try:
-            email_watcher_service = backend_scheduler.get_email_watcher_service()
-        except Exception:
-            logger.exception("Failed to obtain email watcher service from backend scheduler")
-            email_watcher_service = None
-        state.email_watcher_service = email_watcher_service
+        # Defaults for DB-dependent components (overwritten on success below; they
+        # remain None in REDUCED mode when the database is unreachable).
+        state.model_training_endpoint = None
+        state.orchestrator = None
+        state.rag_pipeline = None
+        state.backend_scheduler = None
+        state.email_watcher_service = None
         state.email_watcher_owned = False
+        state.process_monitor_watcher = None
+        # Orchestrator + scheduler + watchers are DB-dependent; when the DB is
+        # unreachable they degrade (no extraction/scheduling) but must NOT abort
+        # startup — AgentNick + reasoning are already available above.
         try:
-            process_monitor_watcher = backend_scheduler.get_process_monitor_watcher()
+            if not db_reachable:
+                # Skip the DB-coupled subsystems entirely: the scheduler/email-watcher
+                # retry-loop on the DB and would block startup forever.
+                raise RuntimeError("DB unreachable — skipping orchestrator/scheduler/watchers")
+            state.model_training_endpoint = ModelTrainingEndpoint(agent_nick)
+            orchestrator = Orchestrator(
+                agent_nick,
+                training_endpoint=state.model_training_endpoint,
+            )
+            state.orchestrator = orchestrator
+            state.rag_pipeline = RAGPipeline(agent_nick)
+            backend_scheduler = orchestrator.backend_scheduler
+            state.backend_scheduler = backend_scheduler
+            try:
+                state.email_watcher_service = backend_scheduler.get_email_watcher_service()
+            except Exception:
+                logger.exception("Failed to obtain email watcher service from backend scheduler")
+                state.email_watcher_service = None
+            try:
+                state.process_monitor_watcher = backend_scheduler.get_process_monitor_watcher()
+            except Exception:
+                logger.exception("Failed to obtain process monitor watcher from backend scheduler")
+                state.process_monitor_watcher = None
+            logger.info("System initialized successfully.")
         except Exception:
-            logger.exception("Failed to obtain process monitor watcher from backend scheduler")
-            process_monitor_watcher = None
-        state.process_monitor_watcher = process_monitor_watcher
-        logger.info("System initialized successfully.")
+            logger.exception(
+                "Orchestrator/scheduler init failed (DATABASE UNREACHABLE?) — server "
+                "running in REDUCED mode: AgentNick + reasoning (/agents/instruct) "
+                "available; extraction, scheduling and persistence degraded until the "
+                "database is restored.")
     except Exception as e:
         logger.critical(f"FATAL: System initialization failed: {e}", exc_info=True)
-        state.agent_nick = None
+        # Preserve AgentNick/reasoning if already attached — a late DB-dependent
+        # failure must not take down DB-independent endpoints (/agents/instruct).
+        if not getattr(state, "agent_nick", None):
+            state.agent_nick = None
         state.model_training_endpoint = None
         state.orchestrator = None
         state.rag_pipeline = None
@@ -227,6 +285,7 @@ async def lifespan(app: FastAPI):
         if service and owned:
             try:
                 service.stop()
+
             except Exception:  # pragma: no cover - defensive shutdown
                 logger.exception("Failed to stop EmailWatcherService during shutdown")
         state.email_watcher_service = None
