@@ -59,3 +59,27 @@ edits the learned-patterns section).
 `:latest` now reasons/plans/negotiates instead of refusing, with no extraction
 regression. Logs: `agentnick_analysis_unified.log`, `agentnick_analysis_latest_fixed.log`.
 
+## Reasoning-engine end-to-end verification (2026-06-28)
+
+Drove the **real** `ReasoningEngine.reason_and_plan` (the exact code the
+`POST /agents/instruct` endpoint calls) against live `:unified`:
+- **`PLANNER=llm`** (AgentNick planned it) — NOT the degraded `rule_based_fallback`
+- `PLANNING_ERROR=None`, 58.9 s (within the 240 s timeout; the old 30 s failed every time)
+- Produced a coherent **12-step multi-agent plan** (requirements → opportunity_miner
+  → data_extraction → discrepancy_detection → quote_evaluation → quote_comparison →
+  supplier_ranking → negotiation → email_drafting → email_dispatch → email_watcher →
+  approvals) from a plain-English instruction.
+
+This **resolves the prior "Dynamic Planner Diagnosis"** (planner silently fell back
+to rule-based because AgentNick refused/timed out). Log: `reasoning_engine_e2e.log`.
+
+### Caveat — HTTP endpoint currently DB-blocked (environmental, not the reasoning logic)
+`POST /agents/instruct` returns "AgentNick not available" because the server's
+startup fails when it cannot reach the DB (`DB_HOST` = the RDS endpoint resolves to
+this box's own public IP `63.35.28.70` and hairpins/times out — the same
+connectivity issue seen early in the session). The PyTorch fix got startup PAST the
+old CUDA error ("Clients initialized"); the next blocker is DB reachability, which
+is environmental/networking — separate from AgentNick's reasoning, which is proven
+above via the real engine code. Fixing the RDS/local-DB reachability would restore
+the HTTP endpoint.
+

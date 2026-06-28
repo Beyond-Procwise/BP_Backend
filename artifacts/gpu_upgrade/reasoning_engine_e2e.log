@@ -1,0 +1,7 @@
+registry agents: 14 -> ['data_extraction', 'supplier_ranking', 'quote_comparison', 'opportunity_miner', 'email_drafting', 'negotiation', 'supplier_interaction', 'approvals']
+
+[58.9s] PLANNER=llm
+PLANNING_ERROR= None
+STEPS= [('requirements', 1, True), ('opportunity_miner', 1, True), ('data_extraction', 1, True), ('discrepancy_detection', 1, True), ('quote_evaluation', 1, True), ('quote_comparison', 1, True), ('supplier_ranking', 1, True), ('negotiation', 1, True), ('email_drafting', 1, True), ('email_dispatch', 1, True), ('email_watcher', 1, True), ('approvals', 1, True)]
+E2E_RESULT= LLM_PLAN_OK
+REASONING_E2E_DONE
