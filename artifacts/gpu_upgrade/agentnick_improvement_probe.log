@@ -1,0 +1,38 @@
+
+====================================================================
+A. GROUNDING / NO-FABRICATION (absent field -> abstain?)
+====================================================================
+[4.1s] po_id=None due_date=None  -> ABSTAINED (good)
+
+====================================================================
+B. KNOWLEDGE DEPTH (harder procurement questions)
+====================================================================
+[7.8s] 5/6 key concepts | Q: Incoterms: under DDP vs FOB, who bears import duties and at ...
+[18.1s] 4/4 key concepts | Q: Explain net-30 vs 2/10 net-30 payment terms and the effectiv...
+[13.8s] 4/4 key concepts | Q: In a 3-way match, which three documents are compared and wha...
+
+====================================================================
+C. LATENCY per task type
+====================================================================
+latency_s: {'extract_call': 0.5, 'short_qa': 5.4, 'plan': 11.9}
+
+====================================================================
+D. CONSISTENCY (same prompt x2, temp 0)
+====================================================================
+identical=False | step_counts=5 vs 5
+
+====================================================================
+IMPROVEMENT-SIGNAL SUMMARY
+====================================================================
+{
+  "grounding_abstains": true,
+  "knowledge_depth": "13/14",
+  "latency_s": {
+    "extract_call": 0.5,
+    "short_qa": 5.4,
+    "plan": 11.9
+  },
+  "consistency_identical": false,
+  "consistency_steps": "5 vs 5"
+}
+PROBE_DONE
