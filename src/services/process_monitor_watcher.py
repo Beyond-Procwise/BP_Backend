@@ -187,7 +187,8 @@ class ProcessMonitorWatcher:
                     RETURNING id, process_name, type, status, file_path,
                               start_ts, created_date, created_by,
                               lastmodified_date, end_ts, category,
-                              document_type, user_id, total_count
+                              document_type, user_id, total_count,
+                              session_id
                     """,
                     (datetime.now(timezone.utc), record_id),
                 )
