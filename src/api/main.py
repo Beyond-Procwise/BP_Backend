@@ -1,3 +1,4 @@
+import asyncio
 import sys, os, uvicorn, logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Protocol, cast
@@ -46,6 +47,7 @@ from agents.negotiation_agent import NegotiationAgent
 from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
 from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, promotion, summary, negotiate, opportunities
+from api.routers import ws as ws_router_mod
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -74,6 +76,7 @@ class ProcwiseAppState(Protocol):
     email_watcher_owned: bool
     process_monitor_watcher: Optional[Any]
     extraction_v3_schemas: dict
+    session_notify_listener: Optional[Any]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -192,6 +195,21 @@ async def lifespan(app: FastAPI):
             logger.exception("Failed to obtain process monitor watcher from backend scheduler")
             process_monitor_watcher = None
         state.process_monitor_watcher = process_monitor_watcher
+
+        # Start the session-status LISTEN → WebSocket bridge.
+        # Uses the current asyncio event loop so the background thread can
+        # schedule ws_manager coroutines safely.
+        try:
+            from services.session_notify_listener import SessionNotifyListener
+            _event_loop = asyncio.get_event_loop()
+            session_notify_listener = SessionNotifyListener(_event_loop)
+            session_notify_listener.start()
+            state.session_notify_listener = session_notify_listener
+            logger.info("SessionNotifyListener started")
+        except Exception:
+            logger.exception("Failed to start SessionNotifyListener")
+            state.session_notify_listener = None
+
         logger.info("System initialized successfully.")
     except Exception as e:
         logger.critical(f"FATAL: System initialization failed: {e}", exc_info=True)
@@ -208,6 +226,7 @@ async def lifespan(app: FastAPI):
         state.backend_scheduler = None
         state.process_monitor_watcher = None
         state.extraction_v3_schemas = {}
+        state.session_notify_listener = None
     yield
     if hasattr(state, "agent_nick"):
         state.agent_nick = None
@@ -224,6 +243,14 @@ async def lifespan(app: FastAPI):
         state.email_watcher_service = None
     if hasattr(state, "process_monitor_watcher"):
         state.process_monitor_watcher = None
+    if hasattr(state, "session_notify_listener"):
+        listener = state.session_notify_listener
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                logger.exception("Failed to stop SessionNotifyListener during shutdown")
+        state.session_notify_listener = None
     if hasattr(state, "email_watcher_owned"):
         state.email_watcher_owned = False
     if hasattr(state, "backend_scheduler"):
@@ -261,6 +288,12 @@ app = FastAPI(title="ProcWise API v4 (Definitive)", version="4.0", lifespan=life
 _origins = [o.strip() for o in os.getenv("PROCWISE_CORS_ORIGINS", "*").split(",") if o.strip()]
 _allow_creds = _origins != ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_allow_creds, allow_methods=["*"], allow_headers=["*"])
+
+# WebSocket routes are registered WITHOUT the global verify_api_key dependency
+# because browser native WebSocket cannot send custom headers during the
+# upgrade handshake.  The ws router enforces auth via the PROCWISE_API_KEY
+# query parameter (token=) when PROCWISE_API_KEY env var is set.
+app.include_router(ws_router_mod.router, dependencies=[])
 
 app.include_router(agents_router_mod.router)
 app.include_router(documents.router)
