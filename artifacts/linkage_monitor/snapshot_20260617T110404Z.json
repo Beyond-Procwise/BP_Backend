@@ -1,0 +1,489 @@
+{
+  "captured_at": "2026-06-17T11:04:04.794142+00:00",
+  "tier_counts": {
+    "quote": {
+      "raw": 11,
+      "stg": 11,
+      "trgt": 10
+    },
+    "purchase_order": {
+      "raw": 10,
+      "stg": 10,
+      "trgt": 10
+    },
+    "invoice": {
+      "raw": 16,
+      "stg": 16,
+      "trgt": 16
+    }
+  },
+  "line_items": {
+    "invoice/stg": {
+      "total": 20,
+      "problem_count": 3,
+      "problems": [
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-050",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        },
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-051",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        },
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-052",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        }
+      ]
+    },
+    "invoice/trgt": {
+      "total": 20,
+      "problem_count": 3,
+      "problems": [
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-050",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        },
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-051",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        },
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-052",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        }
+      ]
+    },
+    "po/stg": {
+      "total": 16,
+      "problem_count": 1,
+      "problems": [
+        {
+          "item_description": "Faber-CastellA4RuledNotebook White Cover",
+          "po_id": "526702",
+          "line_number": 3,
+          "quantity": 100.0,
+          "unit_price": 11.69,
+          "line_total": 116.9,
+          "_issues": [
+            "arithmetic_mismatch"
+          ]
+        }
+      ]
+    },
+    "po/trgt": {
+      "total": 16,
+      "problem_count": 1,
+      "problems": [
+        {
+          "item_description": "Faber-CastellA4RuledNotebook White Cover",
+          "po_id": "526702",
+          "line_number": 3,
+          "quantity": 100.0,
+          "unit_price": 11.69,
+          "line_total": 116.9,
+          "_issues": [
+            "arithmetic_mismatch"
+          ]
+        }
+      ]
+    },
+    "quote/stg": {
+      "total": 16,
+      "problem_count": 1,
+      "problems": [
+        {
+          "item_description": "Faber-Castell A4 Ruled Notebook, White Cover",
+          "quote_id": "128234",
+          "line_number": 3,
+          "quantity": 100,
+          "unit_price": 11.69,
+          "line_total": 116.9,
+          "_issues": [
+            "arithmetic_mismatch"
+          ]
+        }
+      ]
+    },
+    "quote/trgt": {
+      "total": 15,
+      "problem_count": 1,
+      "problems": [
+        {
+          "item_description": "Faber-Castell A4 Ruled Notebook, White Cover",
+          "quote_id": "128234",
+          "line_number": 3,
+          "quantity": 100,
+          "unit_price": 11.69,
+          "line_total": 116.9,
+          "_issues": [
+            "arithmetic_mismatch"
+          ]
+        }
+      ]
+    }
+  },
+  "discrepancies": [
+    {
+      "doc_type": "invoice",
+      "doc_pk_candidate": "INV-25-051",
+      "field_name": "line_items[0]",
+      "raw_value": null,
+      "expected_value": null,
+      "computed_value": null,
+      "issue_type": "line_missing_numbers",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "line 1 has no quantity / unit_price / line_amount \u2014 only the description was captured",
+      "source_file": "documents/Invoice/AQUARIUS INV-25-051 for PO508084 .pdf"
+    },
+    {
+      "doc_type": "invoice",
+      "doc_pk_candidate": "INV-25-052",
+      "field_name": "line_items[0]",
+      "raw_value": null,
+      "expected_value": null,
+      "computed_value": null,
+      "issue_type": "line_missing_numbers",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "line 1 has no quantity / unit_price / line_amount \u2014 only the description was captured",
+      "source_file": "documents/Invoice/AQUARIUS INV-25-052 for PO508084 .pdf"
+    },
+    {
+      "doc_type": "invoice",
+      "doc_pk_candidate": "INV-25-050",
+      "field_name": "line_items[0]",
+      "raw_value": null,
+      "expected_value": null,
+      "computed_value": null,
+      "issue_type": "line_missing_numbers",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "line 1 has no quantity / unit_price / line_amount \u2014 only the description was captured",
+      "source_file": "documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf"
+    },
+    {
+      "doc_type": "quote",
+      "doc_pk_candidate": "599390",
+      "field_name": "tax_amount",
+      "raw_value": "16670.00",
+      "expected_value": "16666.00",
+      "computed_value": "16670.00",
+      "issue_type": "tax_percent_mismatch",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "total_amount(83330.00) \u00d7 tax_percent(20.00%) = 16666.00 but tax_amount=16670.00.",
+      "source_file": "documents/Quote/CITY OF NEWPORT QUT599390 .pdf"
+    },
+    {
+      "doc_type": "quote",
+      "doc_pk_candidate": "DHA-2025-102",
+      "field_name": "line_items",
+      "raw_value": null,
+      "expected_value": null,
+      "computed_value": null,
+      "issue_type": "missing_line_items",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "no line items were extracted from this document \u2014 table_extractor + text-fallback both returned 0 rows",
+      "source_file": "documents/Quote/DESIGN HOUSE AGENCY QUT DHA-2025-102.pdf"
+    },
+    {
+      "doc_type": "quote",
+      "doc_pk_candidate": "128234",
+      "field_name": "line_items[2].line_total",
+      "raw_value": "116.9",
+      "expected_value": null,
+      "computed_value": "1169.0",
+      "issue_type": "line_total_mismatch",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "line 3: quantity 100 \u00d7 unit_price 11.69 = 1169.0 but line total printed as 116.9 (source-data inconsistency)",
+      "source_file": "documents/Quote/DUNCAN QUT128234.pdf"
+    },
+    {
+      "doc_type": "purchase_order",
+      "doc_pk_candidate": "526702",
+      "field_name": "line_items[2].line_total",
+      "raw_value": "116.9",
+      "expected_value": null,
+      "computed_value": "1169.0",
+      "issue_type": "line_total_mismatch",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "line 3: quantity 100 \u00d7 unit_price 11.69 = 1169.0 but line total printed as 116.9 (source-data inconsistency)",
+      "source_file": "documents/PO/DUNCAN PO526702 for QUT128234.pdf"
+    },
+    {
+      "doc_type": "invoice",
+      "doc_pk_candidate": "2025-292",
+      "field_name": "tax_amount",
+      "raw_value": "240.00",
+      "expected_value": "288.00",
+      "computed_value": "240.00",
+      "issue_type": "tax_percent_mismatch",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "invoice_amount(1440.00) \u00d7 tax_percent(20.00%) = 288.00 but tax_amount=240.00.",
+      "source_file": "documents/Invoice/ELEANOR PRICE INV2025-292 for PO389948.pdf"
+    }
+  ],
+  "held_in_raw": [],
+  "deal_status": {
+    "Deal_Linked": 36,
+    "Extracted": 1
+  },
+  "issues": [
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/stg",
+      "doc_pk": "INV-25-050",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-050",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/stg",
+      "doc_pk": "INV-25-051",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-051",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/stg",
+      "doc_pk": "INV-25-052",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-052",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/trgt",
+      "doc_pk": "INV-25-050",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-050",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/trgt",
+      "doc_pk": "INV-25-051",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-051",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/trgt",
+      "doc_pk": "INV-25-052",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-052",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "po/stg",
+      "doc_pk": "526702",
+      "issues": [
+        "arithmetic_mismatch"
+      ],
+      "row": {
+        "item_description": "Faber-CastellA4RuledNotebook White Cover",
+        "po_id": "526702",
+        "line_number": 3,
+        "quantity": 100.0,
+        "unit_price": 11.69,
+        "line_total": 116.9,
+        "_issues": [
+          "arithmetic_mismatch"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "po/trgt",
+      "doc_pk": "526702",
+      "issues": [
+        "arithmetic_mismatch"
+      ],
+      "row": {
+        "item_description": "Faber-CastellA4RuledNotebook White Cover",
+        "po_id": "526702",
+        "line_number": 3,
+        "quantity": 100.0,
+        "unit_price": 11.69,
+        "line_total": 116.9,
+        "_issues": [
+          "arithmetic_mismatch"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "quote/stg",
+      "doc_pk": "128234",
+      "issues": [
+        "arithmetic_mismatch"
+      ],
+      "row": {
+        "item_description": "Faber-Castell A4 Ruled Notebook, White Cover",
+        "quote_id": "128234",
+        "line_number": 3,
+        "quantity": 100,
+        "unit_price": 11.69,
+        "line_total": 116.9,
+        "_issues": [
+          "arithmetic_mismatch"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "quote/trgt",
+      "doc_pk": "128234",
+      "issues": [
+        "arithmetic_mismatch"
+      ],
+      "row": {
+        "item_description": "Faber-Castell A4 Ruled Notebook, White Cover",
+        "quote_id": "128234",
+        "line_number": 3,
+        "quantity": 100,
+        "unit_price": 11.69,
+        "line_total": 116.9,
+        "_issues": [
+          "arithmetic_mismatch"
+        ]
+      }
+    }
+  ]
+}

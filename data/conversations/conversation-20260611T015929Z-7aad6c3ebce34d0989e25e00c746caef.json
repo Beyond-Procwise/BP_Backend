@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"name\": \"rfq\"}, \"policies\": []}",
+  "response": "{\"agentic_plan\": \"1. Review the incoming context and clarify the task objectives.\\n2. Consult relevant knowledge bases, policies, and historical records.\\n3. Synthesise findings into structured outputs and recommended next actions.\", \"context_snapshot\": {\"workflow_id\": \"wf-knowledge\", \"agent_id\": \"agent-knowledge\", \"user_id\": \"user-knowledge\", \"manifest\": {\"task\": {\"name\": \"rfq\"}, \"policies\": []}}, \"action_id\": \"action-1\"}",
+  "metadata": {
+    "workflow_id": "wf-knowledge",
+    "agent_id": "agent-knowledge",
+    "agent_name": "SnapshotAgent"
+  }
+}

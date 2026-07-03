@@ -1,0 +1,125 @@
+======================================================================
+TIER ROW COUNTS
+======================================================================
+  proc.bp_quote_raw                    : 8
+  proc.bp_quote_stg                    : 3
+  proc.bp_quote_trgt                   : 2
+  proc.bp_purchase_order_raw           : 3
+  proc.bp_purchase_order_stg           : 2
+  proc.bp_purchase_order_trgt          : 2
+  proc.bp_invoice_raw                  : 2
+  proc.bp_invoice_stg                  : 2
+  proc.bp_invoice_trgt                 : 1
+  proc.bp_invoice_line_items_stg       : 17
+  proc.bp_invoice_line_items_trgt      : 3
+  proc.bp_po_line_items_trgt           : 4
+  proc.bp_quote_line_items_trgt        : 8
+
+======================================================================
+bp_invoice_raw: promotion_status + doc_pk
+======================================================================
+  {"raw_id": 2140, "doc_pk_candidate": "INV-005-41", "promotion_status": "promoted", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 09:55:55.409454+00:00"}
+  {"raw_id": 2141, "doc_pk_candidate": "INV-005-41", "promotion_status": "promoted", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 10:59:10.496726+00:00"}
+
+======================================================================
+bp_purchase_order_raw: promotion_status + doc_pk
+======================================================================
+  {"raw_id": 1088, "doc_pk_candidate": "PO519829", "promotion_status": "promoted", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 09:26:26.306632+00:00"}
+  {"raw_id": 1089, "doc_pk_candidate": "PO405867", "promotion_status": "promoted", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 09:42:58.611873+00:00"}
+  {"raw_id": 1090, "doc_pk_candidate": "PO405867", "promotion_status": "promoted", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 10:55:20.387156+00:00"}
+
+======================================================================
+bp_quote_raw: promotion_status + doc_pk
+======================================================================
+  {"raw_id": 511, "doc_pk_candidate": "Q618706", "promotion_status": "discrepancy", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 09:25:01.014303+00:00"}
+  {"raw_id": 512, "doc_pk_candidate": "136700", "promotion_status": "promoted", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 10:20:19.256365+00:00"}
+  {"raw_id": 513, "doc_pk_candidate": "Q-005-41", "promotion_status": "promoted", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 10:48:27.680905+00:00"}
+  {"raw_id": 514, "doc_pk_candidate": "25-032", "promotion_status": "promoted", "pipeline_version": "fde531a-renov", "extracted_at": "2026-06-12 12:09:53.019509+00:00"}
+  {"raw_id": 515, "doc_pk_candidate": "Q-005-41", "promotion_status": "promoted", "pipeline_version": "21900a1-renov", "extracted_at": "2026-06-15 09:29:03.163685+00:00"}
+  {"raw_id": 516, "doc_pk_candidate": "Q-005-41", "promotion_status": "promoted", "pipeline_version": "591468d-renov", "extracted_at": "2026-06-15 12:22:00.917567+00:00"}
+  {"raw_id": 517, "doc_pk_candidate": "Q-005-41", "promotion_status": "promoted", "pipeline_version": "7fbcf94-renov", "extracted_at": "2026-06-15 14:08:15.561220+00:00"}
+  {"raw_id": 518, "doc_pk_candidate": "Q-005-41", "promotion_status": "promoted", "pipeline_version": "f0db02b-renov", "extracted_at": "2026-06-15 15:33:48.193689+00:00"}
+
+======================================================================
+bp_deal_overview (one row per deal)
+======================================================================
+  {"deal_id": "DEAL_GOMEZ20260612113", "deal_name": "deal_gomez", "supplier_id": "SUP-GomezGoodAndCross", "supplier_name": "GOMEZ, GOOD AND CROSS TRADING LTD.", "buyer_id": "Assurity Ltd", "deal_date": "2023-09-12", "first_activity_date": "2023-09-12", "last_activity_date": "2023-09-12", "quote_count": 0, "po_count": 1, "invoice_count": 0, "quote_total": null, "po_total": "584.79", "invoice_total": null, "currency": "GBP", "converted_total_usd": "891.2200", "three_way_match": false, "price_variance_pct": "100.00", "cycle_days_quote_to_po": null, "cycle_days_po_to_invoice": null, "has_quote_anchor": false, "orphaned": true}
+  {"deal_id": "DEAL_TESTING0120260612127", "deal_name": "deal_testing01", "supplier_id": "SUP-Techworld", "supplier_name": "TechWorld", "buyer_id": "Assurity Ltd", "deal_date": "2023-07-18", "first_activity_date": "2023-06-25", "last_activity_date": "2023-07-01", "quote_count": 0, "po_count": 1, "invoice_count": 1, "quote_total": null, "po_total": "6750.00", "invoice_total": "6750.00", "currency": "GBP", "converted_total_usd": "19671.3200", "three_way_match": false, "price_variance_pct": "0.00", "cycle_days_quote_to_po": null, "cycle_days_po_to_invoice": 6, "has_quote_anchor": false, "orphaned": true}
+  {"deal_id": "DEAL_PERRY20260612131", "deal_name": "deal_perry", "supplier_id": "SUP-Perry", "supplier_name": null, "buyer_id": "Assurity Ltd", "deal_date": null, "first_activity_date": "2024-12-10", "last_activity_date": "2024-12-10", "quote_count": 1, "po_count": 0, "invoice_count": 0, "quote_total": "2447.70", "po_total": null, "invoice_total": null, "currency": "GBP", "converted_total_usd": "3730.8", "three_way_match": false, "price_variance_pct": null, "cycle_days_quote_to_po": null, "cycle_days_po_to_invoice": null, "has_quote_anchor": true, "orphaned": false}
+  {"deal_id": "DEAL_A2026052891", "deal_name": null, "supplier_id": "SUP-Techworld", "supplier_name": null, "buyer_id": "Assurity Ltd", "deal_date": null, "first_activity_date": "2023-06-15", "last_activity_date": "2023-06-15", "quote_count": 1, "po_count": 0, "invoice_count": 0, "quote_total": "6750.00", "po_total": null, "invoice_total": null, "currency": "GBP", "converted_total_usd": "9258.3", "three_way_match": false, "price_variance_pct": null, "cycle_days_quote_to_po": null, "cycle_days_po_to_invoice": null, "has_quote_anchor": true, "orphaned": false}
+
+======================================================================
+bp_deal_documents
+======================================================================
+  {"deal_id": "DEAL_A2026052891", "doc_type": "quote", "doc_pk": "Q-005-41", "doc_number": "Q-005-41", "amount": "6750.00", "currency": "GBP", "converted_amount_usd": "9258.3", "confidence_score": "100.00", "status": null}
+  {"deal_id": "DEAL_GOMEZ20260612113", "doc_type": "po", "doc_pk": "PO519829", "doc_number": "PO519829", "amount": "584.79", "currency": "GBP", "converted_amount_usd": "891.2200", "confidence_score": "100.00", "status": null}
+  {"deal_id": "DEAL_PERRY20260612131", "doc_type": "quote", "doc_pk": "136700", "doc_number": "136700", "amount": "2447.70", "currency": "GBP", "converted_amount_usd": "3730.8", "confidence_score": "100.00", "status": null}
+  {"deal_id": "DEAL_TESTING0120260612127", "doc_type": "invoice", "doc_pk": "INV-005-41", "doc_number": "INV-005-41", "amount": "6750.00", "currency": "GBP", "converted_amount_usd": "10287.00", "confidence_score": "94.44", "status": null}
+  {"deal_id": "DEAL_TESTING0120260612127", "doc_type": "po", "doc_pk": "PO405867", "doc_number": "PO405867", "amount": "6750.00", "currency": "GBP", "converted_amount_usd": "9384.3200", "confidence_score": "95.00", "status": null}
+
+======================================================================
+bp_deal_kpis (executive)
+======================================================================
+  {"deal_count": 4, "invoiced_total": null, "avg_cycle_days": null, "avg_days_to_po": null, "three_way_match_pct": "0", "price_variance_pct": null, "duplicate_count": 0, "no_po_spend": null, "complete_deal_count": 2, "orphaned_deal_count": 2, "orphaned_spend": "14084.79"}
+
+======================================================================
+bp_invoice_trgt: deal linkage
+======================================================================
+  {"deal_id": "DEAL_TESTING0120260612127", "deal_name": "deal_testing01", "document_id": "DEAL_TESTING0120260612127::invoice::INV-005-41", "deal_date": "2023-07-18", "confidence_score": "94.44"}
+
+======================================================================
+bp_purchase_order_trgt: deal linkage
+======================================================================
+  {"deal_id": "DEAL_TESTING0120260612127", "deal_name": "deal_testing01", "document_id": "DEAL_TESTING0120260612127::po::PO405867", "deal_date": "2023-07-18", "confidence_score": "95.00"}
+  {"deal_id": "DEAL_GOMEZ20260612113", "deal_name": "deal_gomez", "document_id": "DEAL_GOMEZ20260612113::po::PO519829", "deal_date": "2023-09-12", "confidence_score": "100.00"}
+
+======================================================================
+bp_quote_trgt: deal linkage
+======================================================================
+  {"deal_id": "DEAL_PERRY20260612131", "deal_name": "deal_perry", "document_id": "DEAL_PERRY20260612131::quote::136700", "deal_date": null, "confidence_score": "100.00"}
+  {"deal_id": "DEAL_A2026052891", "deal_name": null, "document_id": "DEAL_A2026052891::quote::Q-005-41", "deal_date": null, "confidence_score": "100.00"}
+recon ERR tuple index out of range
+
+======================================================================
+bp_agent_actions: action_type distribution
+======================================================================
+  {"action_type": "promote_held", "n": 5717}
+  {"action_type": "reconcile_skipped", "n": 128}
+  {"action_type": "discrepancy", "n": 38}
+  {"action_type": "context_synthesize", "n": 33}
+  {"action_type": "grounding_gate", "n": 33}
+  {"action_type": "persist", "n": 33}
+  {"action_type": "reconcile_match", "n": 25}
+  {"action_type": "reconcile_mismatch", "n": 11}
+  {"action_type": "promote_to_trgt", "n": 7}
+  {"action_type": "promote_approved", "n": 1}
+
+======================================================================
+bp_opportunity
+======================================================================
+  {"opportunity_id": "17", "detector_type": "Maverick Spend Detection", "supplier_name": "TechWorld", "item_description": "Full IT Partnership Bundle", "financial_impact_gbp": "81000.0", "realised_savings_gbp": null, "stage": "identified", "deal_id": null, "quote_id": null}
+  {"opportunity_id": "9", "detector_type": "Maverick Spend Detection", "supplier_name": "City of Newport", "item_description": "Tier 3 Marketing Services (Months 1-10) 3-5 Posts Per Week", "financial_impact_gbp": "100000.0", "realised_savings_gbp": null, "stage": "identified", "deal_id": null, "quote_id": null}
+
+======================================================================
+bp_prompt
+======================================================================
+  {"prompt_id": 1, "prompt_name": "supplier_ranking_justification", "prompt_type": "justification", "prompts_status": 1}
+  {"prompt_id": 2, "prompt_name": "rank_by_criteria", "prompt_type": "decomposition", "prompts_status": 1}
+  {"prompt_id": 3, "prompt_name": "negotiation_message_default", "prompt_type": "message", "prompts_status": 1}
+  {"prompt_id": 4, "prompt_name": "analysis", "prompt_type": "summary_persona", "prompts_status": 1}
+  {"prompt_id": 5, "prompt_name": "negotiation", "prompt_type": "summary_persona", "prompts_status": 1}
+  {"prompt_id": 6, "prompt_name": "compliance", "prompt_type": "summary_persona", "prompts_status": 1}
+
+======================================================================
+bp_policy
+======================================================================
+  {"policy_id": 1, "policy_name": "WeightAllocationPolicy", "policy_type": "supplier_ranking", "policy_status": 1}
+  {"policy_id": 2, "policy_name": "CategoricalScoringPolicy", "policy_type": "supplier_ranking", "policy_status": 1}
+  {"policy_id": 3, "policy_name": "NormalizationDirectionPolicy", "policy_type": "supplier_ranking", "policy_status": 1}
+  {"policy_id": 4, "policy_name": "ContractExpiryOpportunity", "policy_type": "opportunity", "policy_status": 1}
+  {"policy_id": 5, "policy_name": "PriceBenchmarkVariance", "policy_type": "opportunity", "policy_status": 1}
+  {"policy_id": 6, "policy_name": "VolumeConsolidation", "policy_type": "opportunity", "policy_status": 1}
+  {"policy_id": 7, "policy_name": "SupplierRiskAlert", "policy_type": "opportunity", "policy_status": 1}
+  {"policy_id": 8, "policy_name": "MaverickSpend", "policy_type": "opportunity", "policy_status": 1}
+
+[db_trace] DONE

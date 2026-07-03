@@ -1,0 +1,18 @@
+{
+  "label": "ft-candidate",
+  "holdout_n": 32,
+  "baseline": {
+    "model": "BeyondProcwise/AgentNick:extract",
+    "doc_accuracy": 0.8426,
+    "exact_doc_rate": 0.1875,
+    "n": 32
+  },
+  "candidate": {
+    "model": "BeyondProcwise/AgentNick:ft-candidate",
+    "doc_accuracy": 0.0,
+    "exact_doc_rate": 0.0,
+    "n": 32
+  },
+  "delta_doc_accuracy": -0.8426,
+  "verdict": "REGRESSION_REFUSE"
+}

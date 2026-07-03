@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {}, \"policies\": []}",
+  "response": "{\"agentic_plan\": \"1. Gather inputs\\n2. Compute outputs\", \"context_snapshot\": {\"workflow_id\": \"wf-1\", \"agent_id\": \"agent-1\", \"user_id\": \"user-1\", \"manifest\": {\"task\": {}, \"policies\": []}}, \"action_id\": \"action-1\"}",
+  "metadata": {
+    "workflow_id": "wf-1",
+    "agent_id": "agent-1",
+    "agent_name": "PlanningAgent"
+  }
+}

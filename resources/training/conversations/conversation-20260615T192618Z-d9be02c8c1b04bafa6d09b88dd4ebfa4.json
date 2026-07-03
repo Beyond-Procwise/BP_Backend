@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"opportunity_mining\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "{\"skipped\": true, \"reason\": \"missing_supplier_id\", \"agentic_plan\": \"1. Aggregate spend, contract, invoice, and supplier datasets relevant to the workflow scope.\\n2. Run heuristics and ML signals to detect anomalies, policy gaps, and savings opportunities.\\n3. Prioritise opportunities with structured context and recommend follow-up actions for downstream agents.\", \"context_snapshot\": {\"workflow_id\": \"503d039f-0279-4c36-9049-2733806a3da5\", \"agent_id\": \"opportunity_miner\", \"user_id\": \"AgentNick\", \"manifest\": {\"task\": {\"agent_type\": \"opportunity_mining\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}}, \"action_id\": \"74aba676-f20d-4bfb-88a4-040f9888156a\"}",
+  "metadata": {
+    "workflow_id": "503d039f-0279-4c36-9049-2733806a3da5",
+    "agent_id": "opportunity_miner",
+    "agent_name": "OpportunityMinerAgent"
+  }
+}

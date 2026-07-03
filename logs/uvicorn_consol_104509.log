@@ -1,0 +1,1593 @@
+INFO:     Started server process [3937016]
+INFO:     Waiting for application startup.
+2026-06-19 10:45:22,918 - INFO - api.main - API starting up...
+2026-06-19 10:45:22,918 - INFO - agents.base_agent - AgentNick is waking up...
+2026-06-19 10:45:22,918 - INFO - agents.base_agent - Initializing shared clients...
+2026-06-19 10:45:22,956 - INFO - sentence_transformers.SentenceTransformer - Load pretrained SentenceTransformer: BAAI/bge-large-en-v1.5
+2026-06-19 10:45:23,061 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333 "HTTP/1.1 200 OK"
+2026-06-19 10:45:23,724 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/learning "HTTP/1.1 200 OK"
+2026-06-19 10:45:23,735 - INFO - botocore.credentials - Found credentials in shared credentials file: ~/.aws/credentials
+2026-06-19 10:45:23,816 - INFO - agents.base_agent - Clients initialized.
+2026-06-19 10:45:24,146 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,171 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,252 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,330 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,412 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,493 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,561 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,630 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,701 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,773 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,826 - INFO - agents.base_agent - Static policy sync complete: 0 ingested, 10 skipped
+2026-06-19 10:45:24,826 - INFO - agents.base_agent - Initializing core engines...
+2026-06-19 10:45:24,881 - INFO - engines.policy_engine - PolicyEngine loaded 9 policies
+2026-06-19 10:45:24,912 - INFO - agents.base_agent - Engines initialized.
+2026-06-19 10:45:24,937 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 10:45:24,937 - INFO - agents.base_agent - Qdrant collection 'procwise_document_embeddings' already exists.
+2026-06-19 10:45:28,584 - INFO - agents.base_agent - Preloaded Ollama model 'BeyondProcwise/AgentNick:latest' with 24h keep_alive
+2026-06-19 10:45:28,690 - INFO - agents.base_agent - Neo4j connectivity verified at bolt://localhost:7687
+2026-06-19 10:45:28,690 - INFO - agents.base_agent - AgentNick is ready.
+2026-06-19 10:45:28,692 - INFO - agents.auto_registry - AutoRegistry loaded 14 agent definitions from /home/muthu/PycharmProjects/BP_Backend/agent_definitions.json
+2026-06-19 10:45:28,692 - INFO - agents.base_agent - Initialized agent: ApprovalsAgent on device cuda
+2026-06-19 10:45:28,692 - INFO - agents.auto_registry - Instantiated agent 'approvals' from agents.approvals_agent.ApprovalsAgent
+2026-06-19 10:45:28,692 - INFO - agents.base_agent - Initialized agent: DataExtractionAgent on device cuda
+2026-06-19 10:45:28,694 - INFO - httpx - HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+2026-06-19 10:45:28,694 - INFO - agents.data_extraction_agent - DataExtractionAgent using fast model 'BeyondProcwise/AgentNick:latest'
+2026-06-19 10:45:28,696 - INFO - agents.data_extraction_agent - ML extraction pipeline initialized successfully
+2026-06-19 10:45:28,696 - INFO - agents.data_extraction_agent - New extraction engine initialized with DB connection
+2026-06-19 10:45:28,696 - INFO - agents.auto_registry - Instantiated agent 'data_extraction' from agents.data_extraction_agent.DataExtractionAgent
+2026-06-19 10:45:28,696 - INFO - agents.base_agent - Initialized agent: DiscrepancyDetectionAgent on device cuda
+2026-06-19 10:45:28,696 - INFO - agents.auto_registry - Instantiated agent 'discrepancy_detection' from agents.discrepancy_detection_agent.DiscrepancyDetectionAgent
+2026-06-19 10:45:28,696 - INFO - agents.base_agent - Initialized agent: EmailDispatchAgent on device cuda
+2026-06-19 10:45:28,696 - INFO - agents.auto_registry - Instantiated agent 'email_dispatch' from agents.email_dispatch_agent.EmailDispatchAgent
+2026-06-19 10:45:28,696 - INFO - agents.base_agent - Initialized agent: EmailDraftingAgent on device cuda
+2026-06-19 10:45:28,696 - INFO - agents.auto_registry - Instantiated agent 'email_drafting' from agents.email_drafting_agent.EmailDraftingAgent
+2026-06-19 10:45:28,696 - INFO - agents.base_agent - Initialized agent: NegotiationAgent on device cuda
+2026-06-19 10:45:28,697 - INFO - agents.auto_registry - Instantiated agent 'negotiation' from agents.negotiation_agent.NegotiationAgent
+2026-06-19 10:45:28,697 - INFO - agents.base_agent - Initialized agent: OpportunityMinerAgent on device cuda
+2026-06-19 10:45:28,697 - WARNING - utils.reference_loader - Reference dataset 'opportunity_priority_config' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/opportunity_priority_config.json
+2026-06-19 10:45:28,697 - INFO - agents.opportunity_miner_agent - OpportunityMinerAgent using device: cuda
+2026-06-19 10:45:28,697 - INFO - agents.auto_registry - Instantiated agent 'opportunity_miner' from agents.opportunity_miner_agent.OpportunityMinerAgent
+2026-06-19 10:45:28,697 - INFO - agents.base_agent - Initialized agent: QuoteComparisonAgent on device cuda
+2026-06-19 10:45:28,697 - INFO - agents.auto_registry - Instantiated agent 'quote_comparison' from agents.quote_comparison_agent.QuoteComparisonAgent
+2026-06-19 10:45:28,697 - INFO - agents.base_agent - Initialized agent: QuoteEvaluationAgent on device cuda
+2026-06-19 10:45:28,697 - INFO - agents.auto_registry - Instantiated agent 'quote_evaluation' from agents.quote_evaluation_agent.QuoteEvaluationAgent
+2026-06-19 10:45:28,697 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.76it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.75it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.00it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 51.15it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.24it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.66it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.77it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 53.03it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.84it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.11it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 46.74it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 45.52it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.14it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.03it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.59it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.20it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 46.31it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.27it/s]
+2026-06-19 10:45:32,401 - INFO - agents.auto_registry - Instantiated agent 'rag' from agents.rag_agent.RAGAgent
+2026-06-19 10:45:32,402 - INFO - agents.base_agent - Initialized agent: RequirementsAgent on device cuda
+2026-06-19 10:45:32,403 - INFO - agents.auto_registry - Instantiated agent 'requirements' from agents.requirements_agent.RequirementsAgent
+2026-06-19 10:45:32,403 - INFO - agents.base_agent - Initialized agent: SupplierInteractionAgent on device cuda
+2026-06-19 10:45:32,403 - INFO - agents.auto_registry - Instantiated agent 'supplier_interaction' from agents.supplier_interaction_agent.SupplierInteractionAgent
+2026-06-19 10:45:32,403 - INFO - agents.base_agent - Initialized agent: SupplierRankingAgent on device cuda
+2026-06-19 10:45:32,403 - WARNING - utils.reference_loader - Reference dataset 'supplier_scoring_reference' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/supplier_scoring_reference.json
+2026-06-19 10:45:32,479 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 10:45:32,507 - INFO - agents.auto_registry - Instantiated agent 'supplier_ranking' from agents.supplier_ranking_agent.SupplierRankingAgent
+2026-06-19 10:45:32,558 - INFO - orchestration.reasoning_engine - Warming planning model BeyondProcwise/AgentNick:unified (pinning resident)...
+2026-06-19 10:45:32,844 - INFO - api.main - extraction_v3: loaded 4 doc-type schemas: ['contract', 'invoice', 'purchase_order', 'quote']
+2026-06-19 10:45:32,867 - INFO - api.main - Extraction provenance schema ensured
+2026-06-19 10:45:32,871 - INFO - orchestration.orchestrator - Declarative workflow engine initialized with 6 workflows
+2026-06-19 10:45:32,898 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 10:45:32,946 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #1 starting
+2026-06-19 10:45:32,946 - INFO - services.email_watcher - EmailWatcherService started (poll_interval=90s post_dispatch_interval=30s dispatch_wait=0s)
+2026-06-19 10:45:33,021 - INFO - services.process_monitor_watcher - process_monitor schema and trigger ensured
+2026-06-19 10:45:33,077 - INFO - services.process_monitor_watcher - ProcessMonitorWatcher started
+2026-06-19 10:45:33,182 - INFO - services.process_monitor_watcher - LISTEN connection established on channel 'process_monitor_ready'
+2026-06-19 10:45:33,324 - INFO - services.uicanvas_bridge - UicanvasBridge started
+2026-06-19 10:45:33,439 - INFO - services.promotion_listener_service - PromotionListenerService started
+2026-06-19 10:45:33,439 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+2026-06-19 10:45:33,527 - INFO - src.services.extraction.promotion - promotion listener armed on channel extraction_raw_ready_for_promotion
+2026-06-19 10:45:33,532 - INFO - services.uicanvas_bridge - UicanvasBridge listening on uicanvas.process_monitor_ready
+2026-06-19 10:45:33,648 - INFO - api.main - System initialized successfully.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:46450 - "GET /health HTTP/1.1" 200 OK
+2026-06-19 10:47:13,920 - INFO - orchestration.reasoning_engine - Planning model BeyondProcwise/AgentNick:unified warmed and pinned
+2026-06-19 10:47:33,041 - INFO - services.procurement_kg_builder - [KG] Loaded 75 Supplier nodes from proc.bp_supplier
+2026-06-19 10:47:33,264 - INFO - services.procurement_kg_builder - [KG] Loaded 0 Policy nodes from proc.bp_policy
+2026-06-19 10:47:33,284 - INFO - services.procurement_kg_builder - [KG] Created 3008 SUPPLIER_PARTY_TO_CONTRACT relationships
+2026-06-19 10:47:33,287 - INFO - services.procurement_kg_builder - [KG] Created 286 INVOICE_FROM_SUPPLIER relationships
+2026-06-19 10:47:33,290 - INFO - services.procurement_kg_builder - [KG] Created 445 INVOICE_REFERENCES_PO relationships
+2026-06-19 10:47:33,291 - INFO - services.procurement_kg_builder - [KG] Created 241 PO_FROM_SUPPLIER relationships
+2026-06-19 10:47:33,293 - INFO - services.procurement_kg_builder - [KG] Created 174 QUOTE_FROM_SUPPLIER relationships
+2026-06-19 10:47:33,297 - INFO - services.procurement_kg_builder - [KG] Created 643 LINE_OF_INVOICE relationships
+2026-06-19 10:47:33,299 - INFO - services.procurement_kg_builder - [KG] Created 252 LINE_OF_PO relationships
+2026-06-19 10:47:33,301 - INFO - services.procurement_kg_builder - [KG] Created 330 LINE_OF_QUOTE relationships
+2026-06-19 10:47:33,303 - INFO - services.procurement_kg_builder - [KG] Created 34 QUOTE_FOR_PO relationships
+2026-06-19 10:47:33,304 - INFO - services.procurement_kg_builder - [KG] Created 164 PO_LINE_FROM_QUOTE relationships
+2026-06-19 10:47:33,432 - INFO - services.procurement_kg_builder - [KG] Created 645 PO_REFERENCES_QUOTE relationships
+2026-06-19 10:47:33,459 - INFO - services.procurement_kg_builder - [KG] Inferred 3709 supplier nodes from extracted data
+2026-06-19 10:47:33,459 - INFO - services.procurement_kg_builder - [KG Builder] Complete: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 10:47:33,459 - INFO - services.backend_scheduler - KG sync completed: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 10:48:33,514 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 0, 'by_reason': {}, 'details': []}
+INFO:     183.82.250.27:34233 - "OPTIONS /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:59056 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:34233 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:59056 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:59056 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:59056 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40784 - "GET /health HTTP/1.1" 200 OK
+2026-06-19 10:50:33,757 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+INFO:     127.0.0.1:39622 - "POST /agents/instruct HTTP/1.1" 200 OK
+INFO:     183.82.250.27:34233 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:59056 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:24591 - "OPTIONS /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:43294 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:24591 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:24591 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:24591 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+2026-06-19 10:59:03,716 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #10 starting
+2026-06-19 11:03:33,812 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 0, 'by_reason': {}, 'details': []}
+2026-06-19 11:05:33,976 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+2026-06-19 11:14:04,598 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #20 starting
+2026-06-19 11:15:34,118 - INFO - services.model_sync_service - Model rebuilt successfully: BeyondProcwise/AgentNick:latest
+2026-06-19 11:15:36,853 - INFO - services.model_sync_service - Model pushed to registry: BeyondProcwise/AgentNick:latest
+2026-06-19 11:15:36,880 - INFO - src.services.summary_agent - summary precompute: 3 personas x 20 scopes = 60 generations
+2026-06-19 11:15:37,143 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:15:47,427 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:15:47,428 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:15:47,429 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=None
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=None
+2026-06-19 11:15:47,668 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+INFO:     183.82.250.27:40807 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:57890 - "OPTIONS /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:57890 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:40807 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:40807 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:40807 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+2026-06-19 11:15:57,916 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:15:57,917 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:15:57,918 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=TEST0012026061746
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=TEST0012026061746
+2026-06-19 11:15:58,166 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:08,411 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:08,412 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:16:08,412 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_132026061743
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_132026061743
+2026-06-19 11:16:08,656 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:18,896 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:18,897 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:16:18,898 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_072026061725
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_072026061725
+2026-06-19 11:16:19,143 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:29,385 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:29,385 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:16:29,386 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEALV2-INV-0526
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEALV2-INV-0526
+2026-06-19 11:16:29,935 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:40,177 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:40,178 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:16:40,179 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_022026061706
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_022026061706
+2026-06-19 11:16:40,421 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:50,668 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:16:50,668 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:16:50,669 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_042026061716
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_042026061716
+2026-06-19 11:16:50,946 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:01,207 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:01,208 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:17:01,209 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_062026061722
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_062026061722
+2026-06-19 11:17:01,459 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:11,714 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:11,715 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:17:11,717 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_102026061734
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_102026061734
+2026-06-19 11:17:11,973 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:22,231 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:22,231 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:17:22,233 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_142026061858
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_142026061858
+2026-06-19 11:17:22,488 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:32,765 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:32,766 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:17:32,767 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=TEST0082026061854
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=TEST0082026061854
+2026-06-19 11:17:33,024 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:43,273 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:43,274 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:17:43,275 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_092026061731
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_092026061731
+2026-06-19 11:17:43,536 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:53,787 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:17:53,789 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:17:53,790 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=TEST0062026061852
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=TEST0062026061852
+2026-06-19 11:17:54,057 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:04,312 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:04,313 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:18:04,314 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_012026061701
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_012026061701
+2026-06-19 11:18:04,592 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:14,851 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:14,852 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:18:14,852 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_122026061740
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_122026061740
+2026-06-19 11:18:15,122 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:25,386 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:25,387 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:18:25,388 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=TEST042026061849
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=TEST042026061849
+2026-06-19 11:18:25,972 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:36,241 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:36,242 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:18:36,243 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_082026061728
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_082026061728
+2026-06-19 11:18:36,492 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:46,736 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:46,738 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:18:46,739 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_112026061737
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_112026061737
+2026-06-19 11:18:47,000 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:57,571 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:18:57,572 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:18:57,574 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_032026061711
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_032026061711
+2026-06-19 11:18:57,846 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:08,118 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:08,118 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:19:08,119 - ERROR - src.services.summary_agent - precompute failed for persona=analysis deal_id=DEAL_SET_052026061719
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=analysis deal_id=DEAL_SET_052026061719
+2026-06-19 11:19:08,386 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:18,639 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:18,640 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:19:18,641 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=None
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=None
+2026-06-19 11:19:18,887 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:24,073 - INFO - services.process_monitor_watcher - Starting extraction for record 875: file_path=documents/Quote/VALUED MERCHANT QUT048597.pdf category=Quote
+2026-06-19 11:19:24,124 - INFO - src.services.extraction_v3.dispatch - Dispatching documents/Quote/VALUED MERCHANT QUT048597.pdf (quote) to extraction engine=hybrid_v4
+2026-06-19 11:19:24,175 - INFO - extraction_v4.engine - run_data_extraction: doc_type=quote file=documents/Quote/VALUED MERCHANT QUT048597.pdf
+2026-06-19 11:19:24,175 - ERROR - src.services.extraction_v3.dispatch - extraction pipeline failed (engine=hybrid_v4) for documents/Quote/VALUED MERCHANT QUT048597.pdf
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/dispatch.py", line 338, in dispatch_document
+    result = _run_hybrid_v4(file_path, doc_type)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/dispatch.py", line 144, in _run_hybrid_v4
+    raw_full = run_data_extraction(file_path, doc_type=engine_doc_type)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/extraction_v4/engine.py", line 7919, in run_data_extraction
+    raw = AgentController_quote().process(file_path)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/extraction_v4/engine.py", line 6841, in process
+    file_type = FileDetector.detect(file_path)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/extraction_v4/engine.py", line 135, in detect
+    raise FileNotFoundError(f"File not found: {file_path}")
+FileNotFoundError: File not found: documents/Quote/VALUED MERCHANT QUT048597.pdf
+2026-06-19 11:19:24,177 - ERROR - services.process_monitor_watcher - Extraction failed for record 875
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/process_monitor_watcher.py", line 416, in _process_record
+    raise RuntimeError(
+RuntimeError: Extraction error: File not found: documents/Quote/VALUED MERCHANT QUT048597.pdf
+2026-06-19 11:19:29,152 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:29,153 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:19:29,154 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=TEST0012026061746
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=TEST0012026061746
+2026-06-19 11:19:29,378 - INFO - services.process_monitor_watcher - Starting extraction for record 875: file_path=documents/Quote/VALUED MERCHANT QUT048597.pdf category=Quote
+2026-06-19 11:19:29,405 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:29,407 - INFO - src.services.extraction_v3.dispatch - Dispatching documents/Quote/VALUED MERCHANT QUT048597.pdf (quote) to extraction engine=hybrid_v4
+2026-06-19 11:19:29,407 - INFO - extraction_v4.engine - run_data_extraction: doc_type=quote file=documents/Quote/VALUED MERCHANT QUT048597.pdf
+2026-06-19 11:19:29,407 - ERROR - src.services.extraction_v3.dispatch - extraction pipeline failed (engine=hybrid_v4) for documents/Quote/VALUED MERCHANT QUT048597.pdf
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/dispatch.py", line 338, in dispatch_document
+    result = _run_hybrid_v4(file_path, doc_type)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/dispatch.py", line 144, in _run_hybrid_v4
+    raw_full = run_data_extraction(file_path, doc_type=engine_doc_type)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/extraction_v4/engine.py", line 7919, in run_data_extraction
+    raw = AgentController_quote().process(file_path)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/extraction_v4/engine.py", line 6841, in process
+    file_type = FileDetector.detect(file_path)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/extraction_v3/extraction_v4/engine.py", line 135, in detect
+    raise FileNotFoundError(f"File not found: {file_path}")
+FileNotFoundError: File not found: documents/Quote/VALUED MERCHANT QUT048597.pdf
+2026-06-19 11:19:29,407 - ERROR - services.process_monitor_watcher - Extraction failed for record 875
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/process_monitor_watcher.py", line 416, in _process_record
+    raise RuntimeError(
+RuntimeError: Extraction error: File not found: documents/Quote/VALUED MERCHANT QUT048597.pdf
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:23652 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:23652 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+2026-06-19 11:19:39,636 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:39,637 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:19:39,637 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_132026061743
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_132026061743
+2026-06-19 11:19:39,878 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:50,139 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:19:50,140 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:19:50,141 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_072026061725
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_072026061725
+2026-06-19 11:19:50,383 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:00,652 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:00,653 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:20:00,654 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEALV2-INV-0526
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEALV2-INV-0526
+2026-06-19 11:20:00,894 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:11,156 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:11,157 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:20:11,158 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_022026061706
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_022026061706
+2026-06-19 11:20:11,428 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:21,685 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:21,686 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:20:21,687 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_042026061716
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_042026061716
+2026-06-19 11:20:21,953 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:32,209 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:32,210 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:20:32,211 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_062026061722
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_062026061722
+2026-06-19 11:20:32,472 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:42,751 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:42,753 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:20:42,754 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_102026061734
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_102026061734
+2026-06-19 11:20:43,026 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+INFO:     183.82.250.27:55489 - "OPTIONS /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "OPTIONS /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+2026-06-19 11:20:53,273 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:20:53,273 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:20:53,274 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_142026061858
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_142026061858
+2026-06-19 11:20:53,525 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+2026-06-19 11:21:03,788 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:21:03,789 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:21:03,790 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=TEST0082026061854
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=TEST0082026061854
+2026-06-19 11:21:04,045 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:21:14,303 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:21:14,304 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:21:14,306 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_092026061731
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_092026061731
+2026-06-19 11:21:14,546 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+2026-06-19 11:21:24,806 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:21:24,806 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:21:24,807 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=TEST0062026061852
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=TEST0062026061852
+2026-06-19 11:21:25,057 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:21:35,320 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:21:35,321 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:21:35,322 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_012026061701
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_012026061701
+2026-06-19 11:21:35,577 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+INFO:     183.82.250.27:23652 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+2026-06-19 11:21:45,835 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:21:45,836 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:21:45,838 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_122026061740
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_122026061740
+2026-06-19 11:21:46,105 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+2026-06-19 11:21:56,348 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:21:56,349 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:21:56,351 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=TEST042026061849
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=TEST042026061849
+2026-06-19 11:21:56,610 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+2026-06-19 11:22:06,881 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:06,882 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:22:06,883 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_082026061728
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_082026061728
+2026-06-19 11:22:07,128 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:17,382 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:17,382 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:22:17,384 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_112026061737
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_112026061737
+2026-06-19 11:22:17,665 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:27,903 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:27,904 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:22:27,905 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_032026061711
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_032026061711
+2026-06-19 11:22:28,172 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:38,424 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:38,424 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:22:38,426 - ERROR - src.services.summary_agent - precompute failed for persona=negotiation deal_id=DEAL_SET_052026061719
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=negotiation deal_id=DEAL_SET_052026061719
+2026-06-19 11:22:38,691 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:55489 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+2026-06-19 11:22:48,929 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:48,930 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:22:48,931 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=None
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=None
+2026-06-19 11:22:49,200 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:59,483 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:22:59,484 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:22:59,485 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=TEST0012026061746
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=TEST0012026061746
+2026-06-19 11:22:59,722 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:09,975 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:09,976 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:23:09,977 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_132026061743
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_132026061743
+2026-06-19 11:23:10,237 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:20,479 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:20,480 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:23:20,481 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_072026061725
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_072026061725
+2026-06-19 11:23:20,739 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:31,008 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:31,010 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:23:31,011 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEALV2-INV-0526
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEALV2-INV-0526
+2026-06-19 11:23:31,292 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:41,561 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:41,561 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:23:41,563 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_022026061706
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_022026061706
+2026-06-19 11:23:41,830 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:52,086 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:23:52,088 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:23:52,089 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_042026061716
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_042026061716
+2026-06-19 11:23:52,351 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:02,636 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:02,637 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:24:02,638 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_062026061722
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_062026061722
+2026-06-19 11:24:02,875 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:13,128 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:13,129 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:24:13,130 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_102026061734
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_102026061734
+2026-06-19 11:24:13,375 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:23,620 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:23,620 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:24:23,621 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_142026061858
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_142026061858
+2026-06-19 11:24:23,902 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:34,165 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:34,166 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:24:34,167 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=TEST0082026061854
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=TEST0082026061854
+2026-06-19 11:24:34,441 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:44,699 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:44,701 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:24:44,702 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_092026061731
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_092026061731
+2026-06-19 11:24:44,961 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:55,212 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:24:55,213 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:24:55,214 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=TEST0062026061852
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=TEST0062026061852
+2026-06-19 11:24:55,469 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:05,732 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:05,733 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:25:05,734 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_012026061701
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_012026061701
+2026-06-19 11:25:05,995 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:16,301 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:16,302 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:25:16,304 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_122026061740
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_122026061740
+2026-06-19 11:25:16,574 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:26,828 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:26,829 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:25:26,830 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=TEST042026061849
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=TEST042026061849
+2026-06-19 11:25:27,086 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:37,332 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:37,332 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:25:37,333 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_082026061728
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_082026061728
+2026-06-19 11:25:37,592 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:47,861 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:47,862 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:25:47,863 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_112026061737
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_112026061737
+2026-06-19 11:25:48,139 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:58,408 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:25:58,409 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:25:58,409 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_032026061711
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_032026061711
+2026-06-19 11:25:58,659 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 1/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:26:08,927 - ERROR - src.services.ollama_client - Ollama Cloud request failed (attempt 2/2): 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 202, in ollama_cloud_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://api.ollama.com/api/generate
+2026-06-19 11:26:08,928 - ERROR - src.services.ollama_client - Ollama Cloud request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+2026-06-19 11:26:08,930 - ERROR - src.services.summary_agent - precompute failed for persona=compliance deal_id=DEAL_SET_052026061719
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 379, in precompute_summaries
+    generate_summary(persona, deal_id=deal_id, conn=conn)
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/summary_agent.py", line 257, in generate_summary
+    raise SummarizationError(
+src.services.summary_agent.SummarizationError: empty summary for persona=compliance deal_id=DEAL_SET_052026061719
+2026-06-19 11:26:08,931 - INFO - services.backend_scheduler - summary precompute completed: {'generated': 0, 'failed': 60, 'personas': 3, 'scopes': 20}
+2026-06-19 11:27:08,996 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 0, 'by_reason': {}, 'details': []}
+2026-06-19 11:27:09,203 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+INFO:     127.0.0.1:39340 - "GET /docs HTTP/1.1" 200 OK
+2026-06-19 11:29:05,475 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #30 starting
+2026-06-19 11:42:09,266 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 0, 'by_reason': {}, 'details': []}
+2026-06-19 11:42:09,444 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+2026-06-19 11:44:06,420 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #40 starting
+2026-06-19 11:57:09,505 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 1, 'by_reason': {'low_extraction_confidence': 1}, 'details': [{'doc_type': 'quote', 'doc_pk': '048597', 'action': 'held', 'reason': 'low_extraction_confidence', 'F': None}]}
+2026-06-19 11:57:09,683 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+2026-06-19 11:59:07,298 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #50 starting
+INFO:     183.82.250.27:31954 - "OPTIONS /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:15352 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:31954 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:15352 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:31954 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:15352 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-06-19 12:02:38,632 - INFO - api.main - CUDA cache released on shutdown (allocated=3.34GiB reserved=3.36GiB)
+2026-06-19 12:02:38,632 - INFO - api.main - API shutting down.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [3937016]

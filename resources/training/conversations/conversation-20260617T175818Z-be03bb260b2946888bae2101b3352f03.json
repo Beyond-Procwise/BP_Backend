@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"requirements_to_ranking\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "Requirement REQ-20260617-37333163 captured: Ergonomic Office Chairs, qty 25, to London HQ, by 2026-08-15.",
+  "metadata": {
+    "workflow_id": "482e13cb-6b24-4953-9d05-0bbdea720189",
+    "agent_id": "requirements",
+    "agent_name": "RequirementsAgent"
+  }
+}

@@ -1,0 +1,249 @@
+INFO:     Started server process [3815594]
+INFO:     Waiting for application startup.
+2026-06-19 08:58:56,934 - INFO - api.main - API starting up...
+2026-06-19 08:58:56,934 - INFO - agents.base_agent - AgentNick is waking up...
+2026-06-19 08:58:56,934 - INFO - agents.base_agent - Initializing shared clients...
+2026-06-19 08:58:56,971 - INFO - sentence_transformers.SentenceTransformer - Load pretrained SentenceTransformer: BAAI/bge-large-en-v1.5
+2026-06-19 08:58:57,090 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333 "HTTP/1.1 200 OK"
+2026-06-19 08:59:06,751 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/learning "HTTP/1.1 200 OK"
+2026-06-19 08:59:06,764 - INFO - botocore.credentials - Found credentials in shared credentials file: ~/.aws/credentials
+2026-06-19 08:59:07,023 - INFO - agents.base_agent - Clients initialized.
+2026-06-19 08:59:07,362 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,389 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,467 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,552 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,639 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,707 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,778 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,847 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,919 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:07,997 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 08:59:08,042 - INFO - agents.base_agent - Static policy sync complete: 0 ingested, 10 skipped
+2026-06-19 08:59:08,042 - INFO - agents.base_agent - Initializing core engines...
+2026-06-19 08:59:08,101 - INFO - engines.policy_engine - PolicyEngine loaded 9 policies
+2026-06-19 08:59:08,136 - INFO - agents.base_agent - Engines initialized.
+2026-06-19 08:59:08,164 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 08:59:08,169 - INFO - agents.base_agent - Qdrant collection 'procwise_document_embeddings' already exists.
+2026-06-19 08:59:35,793 - INFO - agents.base_agent - Preloaded Ollama model 'BeyondProcwise/AgentNick:latest' with 24h keep_alive
+2026-06-19 08:59:35,975 - INFO - agents.base_agent - Neo4j connectivity verified at bolt://localhost:7687
+2026-06-19 08:59:35,976 - INFO - agents.base_agent - AgentNick is ready.
+2026-06-19 08:59:35,977 - INFO - agents.auto_registry - AutoRegistry loaded 14 agent definitions from /home/muthu/PycharmProjects/BP_Backend/agent_definitions.json
+2026-06-19 08:59:35,977 - INFO - agents.base_agent - Initialized agent: ApprovalsAgent on device cuda
+2026-06-19 08:59:35,977 - INFO - agents.auto_registry - Instantiated agent 'approvals' from agents.approvals_agent.ApprovalsAgent
+2026-06-19 08:59:35,977 - INFO - agents.base_agent - Initialized agent: DataExtractionAgent on device cuda
+2026-06-19 08:59:35,979 - INFO - httpx - HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+2026-06-19 08:59:35,980 - INFO - agents.data_extraction_agent - DataExtractionAgent using fast model 'BeyondProcwise/AgentNick:latest'
+2026-06-19 08:59:35,981 - INFO - agents.data_extraction_agent - ML extraction pipeline initialized successfully
+2026-06-19 08:59:35,981 - INFO - agents.data_extraction_agent - New extraction engine initialized with DB connection
+2026-06-19 08:59:35,981 - INFO - agents.auto_registry - Instantiated agent 'data_extraction' from agents.data_extraction_agent.DataExtractionAgent
+2026-06-19 08:59:35,982 - INFO - agents.base_agent - Initialized agent: DiscrepancyDetectionAgent on device cuda
+2026-06-19 08:59:35,982 - INFO - agents.auto_registry - Instantiated agent 'discrepancy_detection' from agents.discrepancy_detection_agent.DiscrepancyDetectionAgent
+2026-06-19 08:59:35,982 - INFO - agents.base_agent - Initialized agent: EmailDispatchAgent on device cuda
+2026-06-19 08:59:35,982 - INFO - agents.auto_registry - Instantiated agent 'email_dispatch' from agents.email_dispatch_agent.EmailDispatchAgent
+2026-06-19 08:59:35,982 - INFO - agents.base_agent - Initialized agent: EmailDraftingAgent on device cuda
+2026-06-19 08:59:35,982 - INFO - agents.auto_registry - Instantiated agent 'email_drafting' from agents.email_drafting_agent.EmailDraftingAgent
+2026-06-19 08:59:35,982 - INFO - agents.base_agent - Initialized agent: NegotiationAgent on device cuda
+2026-06-19 08:59:35,982 - INFO - agents.auto_registry - Instantiated agent 'negotiation' from agents.negotiation_agent.NegotiationAgent
+2026-06-19 08:59:35,982 - INFO - agents.base_agent - Initialized agent: OpportunityMinerAgent on device cuda
+2026-06-19 08:59:35,982 - WARNING - utils.reference_loader - Reference dataset 'opportunity_priority_config' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/opportunity_priority_config.json
+2026-06-19 08:59:35,982 - INFO - agents.opportunity_miner_agent - OpportunityMinerAgent using device: cuda
+2026-06-19 08:59:35,982 - INFO - agents.auto_registry - Instantiated agent 'opportunity_miner' from agents.opportunity_miner_agent.OpportunityMinerAgent
+2026-06-19 08:59:35,982 - INFO - agents.base_agent - Initialized agent: QuoteComparisonAgent on device cuda
+2026-06-19 08:59:35,982 - INFO - agents.auto_registry - Instantiated agent 'quote_comparison' from agents.quote_comparison_agent.QuoteComparisonAgent
+2026-06-19 08:59:35,982 - INFO - agents.base_agent - Initialized agent: QuoteEvaluationAgent on device cuda
+2026-06-19 08:59:35,982 - INFO - agents.auto_registry - Instantiated agent 'quote_evaluation' from agents.quote_evaluation_agent.QuoteEvaluationAgent
+2026-06-19 08:59:35,982 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.46it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.46it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 44.11it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.68it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.98it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.88it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.86it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.31it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.55it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.76it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.78it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 46.83it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.03it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.20it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.23it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.54it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.48it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.36it/s]
+2026-06-19 08:59:56,081 - INFO - agents.auto_registry - Instantiated agent 'rag' from agents.rag_agent.RAGAgent
+2026-06-19 08:59:56,083 - INFO - agents.base_agent - Initialized agent: RequirementsAgent on device cuda
+2026-06-19 08:59:56,083 - INFO - agents.auto_registry - Instantiated agent 'requirements' from agents.requirements_agent.RequirementsAgent
+2026-06-19 08:59:56,083 - INFO - agents.base_agent - Initialized agent: SupplierInteractionAgent on device cuda
+2026-06-19 08:59:56,083 - INFO - agents.auto_registry - Instantiated agent 'supplier_interaction' from agents.supplier_interaction_agent.SupplierInteractionAgent
+2026-06-19 08:59:56,083 - INFO - agents.base_agent - Initialized agent: SupplierRankingAgent on device cuda
+2026-06-19 08:59:56,083 - WARNING - utils.reference_loader - Reference dataset 'supplier_scoring_reference' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/supplier_scoring_reference.json
+2026-06-19 08:59:56,157 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 08:59:56,181 - INFO - agents.auto_registry - Instantiated agent 'supplier_ranking' from agents.supplier_ranking_agent.SupplierRankingAgent
+2026-06-19 08:59:56,507 - INFO - api.main - extraction_v3: loaded 4 doc-type schemas: ['contract', 'invoice', 'purchase_order', 'quote']
+2026-06-19 08:59:56,538 - INFO - api.main - Extraction provenance schema ensured
+2026-06-19 08:59:56,542 - INFO - orchestration.orchestrator - Declarative workflow engine initialized with 6 workflows
+2026-06-19 08:59:56,569 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 08:59:56,570 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #1 starting
+2026-06-19 08:59:56,570 - INFO - services.email_watcher - EmailWatcherService started (poll_interval=90s post_dispatch_interval=30s dispatch_wait=0s)
+2026-06-19 08:59:56,635 - INFO - services.process_monitor_watcher - process_monitor schema and trigger ensured
+2026-06-19 08:59:56,704 - INFO - services.process_monitor_watcher - ProcessMonitorWatcher started
+2026-06-19 08:59:56,827 - INFO - services.process_monitor_watcher - LISTEN connection established on channel 'process_monitor_ready'
+2026-06-19 08:59:56,947 - INFO - services.uicanvas_bridge - UicanvasBridge started
+2026-06-19 08:59:57,064 - INFO - services.promotion_listener_service - PromotionListenerService started
+2026-06-19 08:59:57,070 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+2026-06-19 08:59:57,177 - INFO - services.uicanvas_bridge - UicanvasBridge listening on uicanvas.process_monitor_ready
+2026-06-19 08:59:57,177 - INFO - src.services.extraction.promotion - promotion listener armed on channel extraction_raw_ready_for_promotion
+2026-06-19 08:59:57,467 - INFO - api.main - System initialized successfully.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54248 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54262 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54266 - "POST /agents/instruct HTTP/1.1" 200 OK
+2026-06-19 09:01:56,656 - INFO - services.procurement_kg_builder - [KG] Loaded 75 Supplier nodes from proc.bp_supplier
+2026-06-19 09:01:56,895 - INFO - services.procurement_kg_builder - [KG] Loaded 0 Policy nodes from proc.bp_policy
+2026-06-19 09:01:56,919 - INFO - services.procurement_kg_builder - [KG] Created 3008 SUPPLIER_PARTY_TO_CONTRACT relationships
+2026-06-19 09:01:56,923 - INFO - services.procurement_kg_builder - [KG] Created 286 INVOICE_FROM_SUPPLIER relationships
+2026-06-19 09:01:56,925 - INFO - services.procurement_kg_builder - [KG] Created 445 INVOICE_REFERENCES_PO relationships
+2026-06-19 09:01:56,927 - INFO - services.procurement_kg_builder - [KG] Created 241 PO_FROM_SUPPLIER relationships
+2026-06-19 09:01:56,930 - INFO - services.procurement_kg_builder - [KG] Created 174 QUOTE_FROM_SUPPLIER relationships
+2026-06-19 09:01:56,933 - INFO - services.procurement_kg_builder - [KG] Created 643 LINE_OF_INVOICE relationships
+2026-06-19 09:01:56,935 - INFO - services.procurement_kg_builder - [KG] Created 252 LINE_OF_PO relationships
+2026-06-19 09:01:56,937 - INFO - services.procurement_kg_builder - [KG] Created 330 LINE_OF_QUOTE relationships
+2026-06-19 09:01:56,938 - INFO - services.procurement_kg_builder - [KG] Created 34 QUOTE_FOR_PO relationships
+2026-06-19 09:01:56,939 - INFO - services.procurement_kg_builder - [KG] Created 164 PO_LINE_FROM_QUOTE relationships
+2026-06-19 09:01:57,042 - INFO - services.procurement_kg_builder - [KG] Created 645 PO_REFERENCES_QUOTE relationships
+2026-06-19 09:01:57,067 - INFO - services.procurement_kg_builder - [KG] Inferred 3709 supplier nodes from extracted data
+2026-06-19 09:01:57,068 - INFO - services.procurement_kg_builder - [KG Builder] Complete: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 09:01:57,068 - INFO - services.backend_scheduler - KG sync completed: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+INFO:     127.0.0.1:50766 - "POST /agents/instruct HTTP/1.1" 200 OK
+2026-06-19 09:02:57,135 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 0, 'by_reason': {}, 'details': []}
+2026-06-19 09:03:17,558 - ERROR - agents.data_extraction_agent - DataExtractionAgent failed: 'dict' object has no attribute 'input_data'
+2026-06-19 09:03:17,559 - ERROR - agents.data_extraction_agent - {"event": "batch_error", "workflow_id": null, "agent": "DataExtractionAgent", "timestamp": "2026-06-19T09:03:17.559019Z", "error": "'dict' object has no attribute 'input_data'"}
+2026-06-19 09:03:17,559 - INFO - agents.data_extraction_agent - {"event": "batch_complete", "workflow_id": null, "agent": "DataExtractionAgent", "timestamp": "2026-06-19T09:03:17.559143Z", "status": "failed", "documents_total": 0, "documents_success": 0, "documents_failed": 0}
+2026-06-19 09:03:17,559 - ERROR - orchestration.reasoning_engine - Agent 'discrepancy_detection' raised an exception
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/orchestration/reasoning_engine.py", line 573, in _execute_step
+    result = agent.run(task_input, context=wf_ctx)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: DiscrepancyDetectionAgent.run() got multiple values for argument 'context'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/orchestration/reasoning_engine.py", line 575, in _execute_step
+    result = agent.run(task_input)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/muthu/PycharmProjects/BP_Backend/src/agents/discrepancy_detection_agent.py", line 28, in run
+    docs: List[Dict] = context.input_data.get("extracted_docs", [])
+                       ^^^^^^^^^^^^^^^^^^
+AttributeError: 'dict' object has no attribute 'input_data'
+INFO:     127.0.0.1:49234 - "POST /agents/instruct HTTP/1.1" 200 OK
+2026-06-19 09:04:57,343 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-06-19 09:08:59,366 - INFO - api.main - CUDA cache released on shutdown (allocated=3.34GiB reserved=3.36GiB)
+2026-06-19 09:08:59,367 - INFO - api.main - API shutting down.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [3815594]
+INFO:     Started server process [3829339]
+INFO:     Waiting for application startup.
+2026-06-19 09:09:33,546 - INFO - api.main - API starting up...
+2026-06-19 09:09:33,546 - INFO - agents.base_agent - AgentNick is waking up...
+2026-06-19 09:09:33,546 - INFO - agents.base_agent - Initializing shared clients...
+2026-06-19 09:09:33,584 - INFO - sentence_transformers.SentenceTransformer - Load pretrained SentenceTransformer: BAAI/bge-large-en-v1.5
+2026-06-19 09:09:33,696 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333 "HTTP/1.1 200 OK"
+2026-06-19 09:09:34,342 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/learning "HTTP/1.1 200 OK"
+2026-06-19 09:09:34,353 - INFO - botocore.credentials - Found credentials in shared credentials file: ~/.aws/credentials
+2026-06-19 09:09:34,433 - INFO - agents.base_agent - Clients initialized.
+2026-06-19 09:09:34,759 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:34,786 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:34,866 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:34,941 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,010 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,080 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,150 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,220 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,290 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,359 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,416 - INFO - agents.base_agent - Static policy sync complete: 0 ingested, 10 skipped
+2026-06-19 09:09:35,416 - INFO - agents.base_agent - Initializing core engines...
+2026-06-19 09:09:35,464 - INFO - engines.policy_engine - PolicyEngine loaded 9 policies
+2026-06-19 09:09:35,494 - INFO - agents.base_agent - Engines initialized.
+2026-06-19 09:09:35,518 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,519 - INFO - agents.base_agent - Qdrant collection 'procwise_document_embeddings' already exists.
+2026-06-19 09:09:35,700 - INFO - agents.base_agent - Preloaded Ollama model 'BeyondProcwise/AgentNick:latest' with 24h keep_alive
+2026-06-19 09:09:35,805 - INFO - agents.base_agent - Neo4j connectivity verified at bolt://localhost:7687
+2026-06-19 09:09:35,806 - INFO - agents.base_agent - AgentNick is ready.
+2026-06-19 09:09:35,807 - INFO - agents.auto_registry - AutoRegistry loaded 14 agent definitions from /home/muthu/PycharmProjects/BP_Backend/agent_definitions.json
+2026-06-19 09:09:35,807 - INFO - agents.base_agent - Initialized agent: ApprovalsAgent on device cuda
+2026-06-19 09:09:35,807 - INFO - agents.auto_registry - Instantiated agent 'approvals' from agents.approvals_agent.ApprovalsAgent
+2026-06-19 09:09:35,807 - INFO - agents.base_agent - Initialized agent: DataExtractionAgent on device cuda
+2026-06-19 09:09:35,809 - INFO - httpx - HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+2026-06-19 09:09:35,809 - INFO - agents.data_extraction_agent - DataExtractionAgent using fast model 'BeyondProcwise/AgentNick:latest'
+2026-06-19 09:09:35,811 - INFO - agents.data_extraction_agent - ML extraction pipeline initialized successfully
+2026-06-19 09:09:35,811 - INFO - agents.data_extraction_agent - New extraction engine initialized with DB connection
+2026-06-19 09:09:35,811 - INFO - agents.auto_registry - Instantiated agent 'data_extraction' from agents.data_extraction_agent.DataExtractionAgent
+2026-06-19 09:09:35,811 - INFO - agents.base_agent - Initialized agent: DiscrepancyDetectionAgent on device cuda
+2026-06-19 09:09:35,811 - INFO - agents.auto_registry - Instantiated agent 'discrepancy_detection' from agents.discrepancy_detection_agent.DiscrepancyDetectionAgent
+2026-06-19 09:09:35,812 - INFO - agents.base_agent - Initialized agent: EmailDispatchAgent on device cuda
+2026-06-19 09:09:35,812 - INFO - agents.auto_registry - Instantiated agent 'email_dispatch' from agents.email_dispatch_agent.EmailDispatchAgent
+2026-06-19 09:09:35,812 - INFO - agents.base_agent - Initialized agent: EmailDraftingAgent on device cuda
+2026-06-19 09:09:35,812 - INFO - agents.auto_registry - Instantiated agent 'email_drafting' from agents.email_drafting_agent.EmailDraftingAgent
+2026-06-19 09:09:35,812 - INFO - agents.base_agent - Initialized agent: NegotiationAgent on device cuda
+2026-06-19 09:09:35,812 - INFO - agents.auto_registry - Instantiated agent 'negotiation' from agents.negotiation_agent.NegotiationAgent
+2026-06-19 09:09:35,812 - INFO - agents.base_agent - Initialized agent: OpportunityMinerAgent on device cuda
+2026-06-19 09:09:35,812 - WARNING - utils.reference_loader - Reference dataset 'opportunity_priority_config' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/opportunity_priority_config.json
+2026-06-19 09:09:35,812 - INFO - agents.opportunity_miner_agent - OpportunityMinerAgent using device: cuda
+2026-06-19 09:09:35,812 - INFO - agents.auto_registry - Instantiated agent 'opportunity_miner' from agents.opportunity_miner_agent.OpportunityMinerAgent
+2026-06-19 09:09:35,812 - INFO - agents.base_agent - Initialized agent: QuoteComparisonAgent on device cuda
+2026-06-19 09:09:35,812 - INFO - agents.auto_registry - Instantiated agent 'quote_comparison' from agents.quote_comparison_agent.QuoteComparisonAgent
+2026-06-19 09:09:35,812 - INFO - agents.base_agent - Initialized agent: QuoteEvaluationAgent on device cuda
+2026-06-19 09:09:35,812 - INFO - agents.auto_registry - Instantiated agent 'quote_evaluation' from agents.quote_evaluation_agent.QuoteEvaluationAgent
+2026-06-19 09:09:35,812 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.89it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.88it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 46.32it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.64it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.02it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 46.58it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.82it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.07it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 46.67it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.01it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 44.50it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 45.70it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.50it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 51.43it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 44.44it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.45it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.99it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.93it/s]
+2026-06-19 09:09:39,438 - INFO - agents.auto_registry - Instantiated agent 'rag' from agents.rag_agent.RAGAgent
+2026-06-19 09:09:39,439 - INFO - agents.base_agent - Initialized agent: RequirementsAgent on device cuda
+2026-06-19 09:09:39,439 - INFO - agents.auto_registry - Instantiated agent 'requirements' from agents.requirements_agent.RequirementsAgent
+2026-06-19 09:09:39,439 - INFO - agents.base_agent - Initialized agent: SupplierInteractionAgent on device cuda
+2026-06-19 09:09:39,439 - INFO - agents.auto_registry - Instantiated agent 'supplier_interaction' from agents.supplier_interaction_agent.SupplierInteractionAgent
+2026-06-19 09:09:39,440 - INFO - agents.base_agent - Initialized agent: SupplierRankingAgent on device cuda
+2026-06-19 09:09:39,440 - WARNING - utils.reference_loader - Reference dataset 'supplier_scoring_reference' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/supplier_scoring_reference.json
+2026-06-19 09:09:39,468 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 09:09:39,492 - INFO - agents.auto_registry - Instantiated agent 'supplier_ranking' from agents.supplier_ranking_agent.SupplierRankingAgent
+2026-06-19 09:09:39,808 - INFO - api.main - extraction_v3: loaded 4 doc-type schemas: ['contract', 'invoice', 'purchase_order', 'quote']
+2026-06-19 09:09:39,831 - INFO - api.main - Extraction provenance schema ensured
+2026-06-19 09:09:39,835 - INFO - orchestration.orchestrator - Declarative workflow engine initialized with 6 workflows
+2026-06-19 09:09:39,859 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 09:09:39,860 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #1 starting
+2026-06-19 09:09:39,861 - INFO - services.email_watcher - EmailWatcherService started (poll_interval=90s post_dispatch_interval=30s dispatch_wait=0s)
+2026-06-19 09:09:39,902 - INFO - services.process_monitor_watcher - process_monitor schema and trigger ensured
+2026-06-19 09:09:39,966 - INFO - services.process_monitor_watcher - ProcessMonitorWatcher started
+2026-06-19 09:09:40,010 - INFO - services.process_monitor_watcher - LISTEN connection established on channel 'process_monitor_ready'
+2026-06-19 09:09:40,234 - INFO - services.uicanvas_bridge - UicanvasBridge started
+2026-06-19 09:09:40,327 - INFO - services.promotion_listener_service - PromotionListenerService started
+2026-06-19 09:09:40,328 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+2026-06-19 09:09:40,360 - INFO - services.uicanvas_bridge - UicanvasBridge listening on uicanvas.process_monitor_ready
+2026-06-19 09:09:40,426 - INFO - src.services.extraction.promotion - promotion listener armed on channel extraction_raw_ready_for_promotion
+2026-06-19 09:09:40,532 - INFO - api.main - System initialized successfully.
+INFO:     Application startup complete.
+ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 8000): address already in use
+INFO:     Waiting for application shutdown.
+2026-06-19 09:09:40,855 - INFO - api.main - CUDA cache released on shutdown (allocated=3.34GiB reserved=3.36GiB)
+2026-06-19 09:09:40,855 - INFO - api.main - API shutting down.
+INFO:     Application shutdown complete.

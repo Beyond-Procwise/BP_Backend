@@ -1,0 +1,560 @@
+### EVAL+PROMOTE START 17:35:21
+[1] ollama create BeyondProcwise/AgentNick:ft-candidate (imports safetensors -> GGUF; takes a few min)...
+copying file sha256:3fd169731d2cbde95e10bf356d66d5997fd885dd8dbb6fb4684da3f23b2585d8 100% [K
+converting model [K
+creating new layer sha256:760cc7d201077d5d6e2ecf82e6bcb0048a7be6bc338963ff5a3834eba633f0a5 [K
+creating new layer sha256:7ded936e0a73f3e9097d2ed679d32275602f9e7b3242467b0289fc6bccb02ae8 [K
+writing manifest [K
+success [K[?25h[?2026l
+candidate registered
+[2] EVAL GATE: candidate vs production baseline (real context_layer over gold holdout)
+holdout=32 examples; baseline_model=BeyondProcwise/AgentNick:extract
+BASELINE doc_accuracy=0.8426 exact=0.1875 n=32 (180s)
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T174747Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8838 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T174814Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8838 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T174840Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8865 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T174907Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8838 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T174933Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8306 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175000Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7760 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175027Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8853 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175053Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7442 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175120Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=9219 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175147Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=13553 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175213Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8919 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175240Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8911 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175306Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8699 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175333Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8485 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175359Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7701 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175426Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7732 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175452Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8332 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175519Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7413 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175545Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7879 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175612Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8403 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175638Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7580 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175705Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8769 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175731Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8141 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175758Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8853 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175825Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8535 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175852Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8072 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175918Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8345 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T175945Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7470 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T180011Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7474 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T180038Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8318 response=0 error=)
+context_layer: LLM returned nothing for doc_type=quote
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T180104Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7495 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+Ollama request failed (attempt 1/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed (attempt 2/2): 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/services/ollama_client.py", line 109, in ollama_generate
+    response.raise_for_status()
+  File "/home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 500 Server Error: Internal Server Error for url: http://127.0.0.1:11434/api/generate
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:ft-candidate)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260628T180131Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=7903 response=0 error=)
+context_layer: LLM returned nothing for doc_type=purchase_order
+CANDIDATE doc_accuracy=0.0000 delta=-0.8426 verdict=REGRESSION_REFUSE (848s)
+wrote /home/muthu/PycharmProjects/BP_Backend/artifacts/gpu_upgrade/eval_ft-candidate.json
+[3] REGRESSION_REFUSE -> production BeyondProcwise/AgentNick:extract UNCHANGED. Candidate kept as BeyondProcwise/AgentNick:ft-candidate for inspection.
+### EVAL+PROMOTE DONE 18:01:31

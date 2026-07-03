@@ -1,0 +1,37 @@
+warmup (documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf) ...
+[0;93m2026-06-28 14:44:50.175302257 [W:onnxruntime:Default, device_discovery.cc:325 DiscoverDevicesForPlatform] GPU device discovery failed: device_discovery.cc:92 ReadFileContents Failed to open file: "/sys/class/drm/card0/device/vendor"[m
+[32m[INFO] 2026-06-28 14:44:50,304 [RapidOCR] base.py:22: Using engine_name: onnxruntime[0m
+[32m[INFO] 2026-06-28 14:44:50,309 [RapidOCR] download_file.py:60: File exists and is valid: /home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/rapidocr/models/ch_PP-OCRv4_det_mobile.onnx[0m
+[32m[INFO] 2026-06-28 14:44:50,309 [RapidOCR] main.py:57: Using /home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/rapidocr/models/ch_PP-OCRv4_det_mobile.onnx[0m
+[32m[INFO] 2026-06-28 14:44:50,376 [RapidOCR] base.py:22: Using engine_name: onnxruntime[0m
+[32m[INFO] 2026-06-28 14:44:50,377 [RapidOCR] download_file.py:60: File exists and is valid: /home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/rapidocr/models/ch_ppocr_mobile_v2.0_cls_mobile.onnx[0m
+[32m[INFO] 2026-06-28 14:44:50,377 [RapidOCR] main.py:57: Using /home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/rapidocr/models/ch_ppocr_mobile_v2.0_cls_mobile.onnx[0m
+[32m[INFO] 2026-06-28 14:44:50,410 [RapidOCR] base.py:22: Using engine_name: onnxruntime[0m
+[32m[INFO] 2026-06-28 14:44:50,418 [RapidOCR] download_file.py:60: File exists and is valid: /home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/rapidocr/models/ch_PP-OCRv4_rec_mobile.onnx[0m
+[32m[INFO] 2026-06-28 14:44:50,418 [RapidOCR] main.py:57: Using /home/muthu/PycharmProjects/BP_Backend/.venv/lib/python3.12/site-packages/rapidocr/models/ch_PP-OCRv4_rec_mobile.onnx[0m
+Loading weights:   0%|          | 0/770 [00:00<?, ?it/s]Loading weights: 100%|██████████| 770/770 [00:00<00:00, 12015.51it/s]
+inline promote failed: bench-noop
+     7.31s  498dc850b7bf  pending   documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf
+
+timed batch: 9 docs, 8 workers, OLLAMA_BASE_URL=http://127.0.0.1:11434 MAX_CONCURRENT=8
+inline promote failed: bench-noop
+     6.09s  57bfd1248870  pending   documents/Quote/DESIGN HOUSE AGENCY QUT DHA-2025-102.pdf
+inline promote failed: bench-noop
+    11.73s  498dc850b7bf  pending   documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf
+inline promote failed: bench-noop
+    14.69s  e6b206a00f58  pending   documents/Invoice/AQUARIUS INV-25-051 for PO508084 .pdf
+inline promote failed: bench-noop
+    14.69s  b318d3c52f13  pending   documents/Quote/AQUARIUS QUT-25-032.pdf
+inline promote failed: bench-noop
+    15.33s  2009c9f6c8d1  pending   documents/Invoice/CITY OF NEWPORT INV600253 for PO502004 .pdf
+inline promote failed: bench-noop
+    16.04s  c906937c6853  pending   documents/PO/PO_PO405867.pdf
+inline promote failed: bench-noop
+    10.25s  cd3ebf82fdbc  pending   documents/po/Oracle Purchase Order.docx
+inline promote failed: bench-noop
+    18.04s  4729539ec617  pending   documents/PO/PO_PO519829.pdf
+inline promote failed: bench-noop
+    45.96s  f1218b39685d  pending   documents/Quote/CITY OF NEWPORT QUT599390 .pdf
+
+batch_total=45.96s  mean_doc=16.98s  sum_doc=152.82s  ok=9/9
+wrote /home/muthu/PycharmProjects/BP_Backend/artifacts/gpu_upgrade/renov_prod_np8_dedicated.json

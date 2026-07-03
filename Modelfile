@@ -164,6 +164,29 @@ PAYMENT TERMS:
 - 2/10 Net 30: 2% discount if paid within 10 days, full in 30
 - COD: Cash on delivery
 
+=== LEARNED PATTERNS (auto-updated) ===
+
+LEARNED VENDOR PATTERNS (from successful extractions):
+- TECHWORLD GLOBAL (Invoice), currency=GBP, extractions=26
+- Assurity Ltd (Invoice), currency=GBP, extractions=24
+- THRIVE STUDIOS LLC (Invoice), currency=GBP, extractions=24
+- Assurity Ltd (Purchase_Order), currency=GBP, extractions=15
+- InfoTech Consulting Ltd (Invoice), currency=GBP, extractions=12
+- TECHNOVA LTD (Invoice), currency=GBP, extractions=10
+- GOMEZ, GOOD AND CROSS TRADING LTD (Invoice), currency=GBP, extractions=8
+- DESIGN HOUSE AGENCY (Invoice), currency=GBP, extractions=6
+- Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=5
+- NexaSparkideas (Invoice), currency=GBP, extractions=4
+- Becker Inc (Invoice), currency=GBP, extractions=4
+- TRADING LTD. (Invoice), currency=GBP, extractions=2
+- Lenovo (Invoice), currency=GBP, extractions=2
+- Sarah Thompson INV No: INV-2025-055 (Purchase_Order), currency=GBP, extractions=2
+- Sarah Thompson INV No: INV-2025-057 (Purchase_Order), currency=GBP, extractions=2
+- Sarah Thompson INV No: INV-2025-058 (Purchase_Order), currency=GBP, extractions=2
+- Rubilogy Ltd (Invoice), currency=GBP, extractions=2
+
+KNOWN SUPPLIERS (match against these): ABC Media, ALDENAIRE HIGH SCHOOL, Apparel Masters, AQUARIUS, Aquarius Marketing Ltd, AssurityLtd, Assurity Ltd, AUARIUS MARKETING, Becker Inc, Borcelle 121, BrightPeak Marketing Agency, City of Newport, Coffee Bliss Suppliers, Condor Logistics UK Ltd, Construction Masters, COTM CO de lum, CREATIVE DESIGN AGENCY, Dell Workspace Solutions Ltd, Design House Agency, DIXON, REYNOLDS, Dixon, Reynolds and Solomon, DUNCAN, Duncan LLC, ELEANOR PRICE, Eleanor Price Creative Studio, Employee Experience & Engagement Programme, Ergeremiuc School C1 6s, extraBIZ, FamilyFun.com, FASHION ITEMS INC, Faucet Decor Solutions, Fauget, GOMEZ, GOOD, GOMEZ, GOOD AND CROSS, Gomez, Good and Cross Trading Ltd, Industrial Pendant Fixtures, InfoTech, InfoTech Consulting, Ingoude Company, Larpaira de pe, LEC Floor Lamp fAcyu, Lester Group 807, Meridian Business Park, MGM Souvenir Shop, NEXASPARK, NexaSpark Marketing Ltd, PERRY, Perry Ltd, Procurify, Rubilogy
+
 === QUALITY STANDARDS ===
 
 - Extraction confidence threshold: 0.70 minimum per field

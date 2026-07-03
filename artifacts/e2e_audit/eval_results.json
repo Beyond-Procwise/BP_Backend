@@ -1,0 +1,98 @@
+{
+  "BeyondProcwise/AgentNick:extract": {
+    "doc_accuracy": 0.8482,
+    "exact_doc_rate": 0.1875,
+    "n_scored": 16,
+    "total_fields": 211,
+    "total_correct": 180,
+    "elapsed_s": 283.2,
+    "worst": [
+      {
+        "pk": "128300",
+        "doc_type": "quote",
+        "accuracy": 0.6364,
+        "mismatches": [
+          {
+            "field": "total_amount",
+            "expected": 2399.7,
+            "got": 799.9
+          },
+          {
+            "field": "tax_percent",
+            "expected": 20.0,
+            "got": 6.28
+          },
+          {
+            "field": "tax_amount",
+            "expected": 479.94,
+            "got": 50.23
+          },
+          {
+            "field": "total_amount_incl_tax",
+            "expected": 2879.64,
+            "got": 850.13
+          }
+        ]
+      },
+      {
+        "pk": "INV609767",
+        "doc_type": "invoice",
+        "accuracy": 0.6667,
+        "mismatches": [
+          {
+            "field": "po_id",
+            "expected": "521031",
+            "got": "PO521031"
+          },
+          {
+            "field": "requested_by",
+            "expected": "Daniel Kerr",
+            "got": null
+          },
+          {
+            "field": "requested_date",
+            "expected": "2024-01-01",
+            "got": "2024-01-02"
+          },
+          {
+            "field": "invoice_date",
+            "expected": "2024-01-01",
+            "got": "2024-01-02"
+          }
+        ]
+      },
+      {
+        "pk": "502004",
+        "doc_type": "purchase_order",
+        "accuracy": 0.7059,
+        "mismatches": [
+          {
+            "field": "supplier_name",
+            "expected": "City of Newport",
+            "got": "City of Newport Council"
+          },
+          {
+            "field": "requested_by",
+            "expected": "Civic Centre Building",
+            "got": null
+          },
+          {
+            "field": "expected_delivery_date",
+            "expected": "2019-07-08",
+            "got": "2019-12-31"
+          },
+          {
+            "field": "delivery_address_line1",
+            "expected": "45 Riverfront Plaza",
+            "got": "45 Riverfront Plaza, Civic Centre Building, Newport"
+          },
+          {
+            "field": "delivery_address_line2",
+            "expected": "Civic Centre Building",
+            "got": null
+          }
+        ]
+      }
+    ]
+  }
+}

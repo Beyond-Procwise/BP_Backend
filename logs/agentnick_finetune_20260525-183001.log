@@ -1,0 +1,56 @@
+=== AgentNick daily fine-tune ===
+Start (UTC): Mon May 25 18:30:01 UTC 2026
+Start (IST): Tue May 26 00:00:01 IST 2026
+Host: i-031e36fa2f6045e3a
+
+--- GPU state (before) ---
+name, memory.total [MiB], memory.used [MiB], memory.free [MiB]
+NVIDIA A10G, 23028 MiB, 18541 MiB, 4182 MiB
+
+--- procwise state (before) ---
+active
+
+--- Stopping procwise to free GPU ---
+--- GPU state (after stop) ---
+memory.used [MiB], memory.free [MiB]
+8746 MiB, 13977 MiB
+
+--- Triggering run_overnight_finetune.sh (8h30m hard limit) ---
+=== AgentNick Overnight Fine-tuning ===
+Started: Mon May 25 18:30:18 UTC 2026
+
+[1/5] Building training dataset...
+Building overnight fine-tuning dataset...
+  Auto-collected: 47 examples
+  Existing QLoRA: 73 examples
+  Multi-agent + accuracy: 8 examples
+  ProcWise knowledge: 34 examples
+
+Total: 162 training examples → /home/muthu/PycharmProjects/BP_Backend/data/training/overnight_finetune.jsonl
+File size: 305.7 KB
+
+[2/5] Starting QLoRA fine-tuning...
+Traceback (most recent call last):
+  File "/home/muthu/PycharmProjects/BP_Backend/src/training/pipeline.py", line 301, in _train_model
+    from unsloth import FastLanguageModel  # type: ignore
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'unsloth'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<string>", line 20, in <module>
+  File "/home/muthu/PycharmProjects/BP_Backend/src/training/pipeline.py", line 306, in _train_model
+    raise ModuleNotFoundError(
+ModuleNotFoundError: Training dependencies missing: No module named 'unsloth'
+
+--- Result ---
+exit code: 1
+End (UTC): Mon May 25 18:30:19 UTC 2026
+End (IST): Tue May 26 00:00:19 IST 2026
+STATUS: FAILED rc=1
+
+--- Restarting procwise ---
+--- procwise state (after) ---
+active
+End-of-wrapper (UTC): Mon May 25 18:30:34 UTC 2026

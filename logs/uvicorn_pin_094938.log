@@ -1,0 +1,400 @@
+INFO:     Started server process [3895741]
+INFO:     Waiting for application startup.
+2026-06-19 09:49:51,711 - INFO - api.main - API starting up...
+2026-06-19 09:49:51,711 - INFO - agents.base_agent - AgentNick is waking up...
+2026-06-19 09:49:51,711 - INFO - agents.base_agent - Initializing shared clients...
+2026-06-19 09:49:51,751 - INFO - sentence_transformers.SentenceTransformer - Load pretrained SentenceTransformer: BAAI/bge-large-en-v1.5
+2026-06-19 09:49:51,867 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333 "HTTP/1.1 200 OK"
+2026-06-19 09:49:52,517 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/learning "HTTP/1.1 200 OK"
+2026-06-19 09:49:52,528 - INFO - botocore.credentials - Found credentials in shared credentials file: ~/.aws/credentials
+2026-06-19 09:49:52,635 - INFO - agents.base_agent - Clients initialized.
+2026-06-19 09:49:53,059 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,086 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,159 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,228 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,299 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,368 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,439 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,508 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,587 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,665 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,714 - INFO - agents.base_agent - Static policy sync complete: 0 ingested, 10 skipped
+2026-06-19 09:49:53,714 - INFO - agents.base_agent - Initializing core engines...
+2026-06-19 09:49:53,773 - INFO - engines.policy_engine - PolicyEngine loaded 9 policies
+2026-06-19 09:49:53,805 - INFO - agents.base_agent - Engines initialized.
+2026-06-19 09:49:53,830 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 09:49:53,831 - INFO - agents.base_agent - Qdrant collection 'procwise_document_embeddings' already exists.
+2026-06-19 09:50:23,862 - WARNING - agents.base_agent - Ollama model preload failed (non-critical): HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=30)
+2026-06-19 09:50:23,969 - INFO - agents.base_agent - Neo4j connectivity verified at bolt://localhost:7687
+2026-06-19 09:50:23,969 - INFO - agents.base_agent - AgentNick is ready.
+2026-06-19 09:50:23,970 - INFO - agents.auto_registry - AutoRegistry loaded 14 agent definitions from /home/muthu/PycharmProjects/BP_Backend/agent_definitions.json
+2026-06-19 09:50:23,970 - INFO - agents.base_agent - Initialized agent: ApprovalsAgent on device cuda
+2026-06-19 09:50:23,970 - INFO - agents.auto_registry - Instantiated agent 'approvals' from agents.approvals_agent.ApprovalsAgent
+2026-06-19 09:50:23,971 - INFO - agents.base_agent - Initialized agent: DataExtractionAgent on device cuda
+2026-06-19 09:50:24,022 - INFO - httpx - HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+2026-06-19 09:50:24,022 - INFO - agents.data_extraction_agent - DataExtractionAgent using fast model 'BeyondProcwise/AgentNick:latest'
+2026-06-19 09:50:24,024 - INFO - agents.data_extraction_agent - ML extraction pipeline initialized successfully
+2026-06-19 09:50:24,024 - INFO - agents.data_extraction_agent - New extraction engine initialized with DB connection
+2026-06-19 09:50:24,024 - INFO - agents.auto_registry - Instantiated agent 'data_extraction' from agents.data_extraction_agent.DataExtractionAgent
+2026-06-19 09:50:24,025 - INFO - agents.base_agent - Initialized agent: DiscrepancyDetectionAgent on device cuda
+2026-06-19 09:50:24,025 - INFO - agents.auto_registry - Instantiated agent 'discrepancy_detection' from agents.discrepancy_detection_agent.DiscrepancyDetectionAgent
+2026-06-19 09:50:24,025 - INFO - agents.base_agent - Initialized agent: EmailDispatchAgent on device cuda
+2026-06-19 09:50:24,025 - INFO - agents.auto_registry - Instantiated agent 'email_dispatch' from agents.email_dispatch_agent.EmailDispatchAgent
+2026-06-19 09:50:24,025 - INFO - agents.base_agent - Initialized agent: EmailDraftingAgent on device cuda
+2026-06-19 09:50:24,025 - INFO - agents.auto_registry - Instantiated agent 'email_drafting' from agents.email_drafting_agent.EmailDraftingAgent
+2026-06-19 09:50:24,025 - INFO - agents.base_agent - Initialized agent: NegotiationAgent on device cuda
+2026-06-19 09:50:24,025 - INFO - agents.auto_registry - Instantiated agent 'negotiation' from agents.negotiation_agent.NegotiationAgent
+2026-06-19 09:50:24,025 - INFO - agents.base_agent - Initialized agent: OpportunityMinerAgent on device cuda
+2026-06-19 09:50:24,025 - WARNING - utils.reference_loader - Reference dataset 'opportunity_priority_config' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/opportunity_priority_config.json
+2026-06-19 09:50:24,025 - INFO - agents.opportunity_miner_agent - OpportunityMinerAgent using device: cuda
+2026-06-19 09:50:24,025 - INFO - agents.auto_registry - Instantiated agent 'opportunity_miner' from agents.opportunity_miner_agent.OpportunityMinerAgent
+2026-06-19 09:50:24,025 - INFO - agents.base_agent - Initialized agent: QuoteComparisonAgent on device cuda
+2026-06-19 09:50:24,025 - INFO - agents.auto_registry - Instantiated agent 'quote_comparison' from agents.quote_comparison_agent.QuoteComparisonAgent
+2026-06-19 09:50:24,026 - INFO - agents.base_agent - Initialized agent: QuoteEvaluationAgent on device cuda
+2026-06-19 09:50:24,026 - INFO - agents.auto_registry - Instantiated agent 'quote_evaluation' from agents.quote_evaluation_agent.QuoteEvaluationAgent
+2026-06-19 09:50:24,026 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+2026-06-19 09:50:24,187 - WARNING - utils.gpu - Cross encoder 'BAAI/bge-reranker-large' could not be loaded on cuda due to CUDA OOM (GPU likely held by Ollama models); falling back to CPU. Error: CUDA out of memory. Tried to allocate 2.08 GiB. GPU 0 has a total capacity of 22.30 GiB of which 142.06 MiB is free. Process 3743925 has 300.51 MiB memory in use. Process 3861136 has 8.51 GiB memory in use. Including non-PyTorch memory, this process has 1.54 GiB memory in use. Process 3895924 has 10.21 GiB memory in use. Process 3895862 has 1.54 GiB memory in use. Of the allocated memory 1.25 GiB is allocated by PyTorch, and 3.53 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.45it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.44it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 34.24it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.77it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.63it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.10it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 46.81it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 52.02it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.59it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 55.73it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.84it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.38it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.99it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.07it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.61it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.09it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.02it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.48it/s]
+2026-06-19 09:50:27,574 - INFO - agents.auto_registry - Instantiated agent 'rag' from agents.rag_agent.RAGAgent
+2026-06-19 09:50:27,576 - INFO - agents.base_agent - Initialized agent: RequirementsAgent on device cuda
+2026-06-19 09:50:27,576 - INFO - agents.auto_registry - Instantiated agent 'requirements' from agents.requirements_agent.RequirementsAgent
+2026-06-19 09:50:27,576 - INFO - agents.base_agent - Initialized agent: SupplierInteractionAgent on device cuda
+2026-06-19 09:50:27,576 - INFO - agents.auto_registry - Instantiated agent 'supplier_interaction' from agents.supplier_interaction_agent.SupplierInteractionAgent
+2026-06-19 09:50:27,576 - INFO - agents.base_agent - Initialized agent: SupplierRankingAgent on device cuda
+2026-06-19 09:50:27,576 - WARNING - utils.reference_loader - Reference dataset 'supplier_scoring_reference' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/supplier_scoring_reference.json
+2026-06-19 09:50:27,649 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 09:50:27,700 - INFO - agents.auto_registry - Instantiated agent 'supplier_ranking' from agents.supplier_ranking_agent.SupplierRankingAgent
+2026-06-19 09:50:27,748 - INFO - orchestration.reasoning_engine - Warming planning model BeyondProcwise/AgentNick:unified (pinning resident)...
+2026-06-19 09:50:28,083 - INFO - api.main - extraction_v3: loaded 4 doc-type schemas: ['contract', 'invoice', 'purchase_order', 'quote']
+2026-06-19 09:50:28,108 - INFO - api.main - Extraction provenance schema ensured
+2026-06-19 09:50:28,112 - INFO - orchestration.orchestrator - Declarative workflow engine initialized with 6 workflows
+2026-06-19 09:50:28,137 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 09:50:28,139 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #1 starting
+2026-06-19 09:50:28,139 - INFO - services.email_watcher - EmailWatcherService started (poll_interval=90s post_dispatch_interval=30s dispatch_wait=0s)
+2026-06-19 09:50:28,202 - INFO - services.process_monitor_watcher - process_monitor schema and trigger ensured
+2026-06-19 09:50:28,292 - INFO - services.process_monitor_watcher - ProcessMonitorWatcher started
+2026-06-19 09:50:28,398 - INFO - services.process_monitor_watcher - LISTEN connection established on channel 'process_monitor_ready'
+2026-06-19 09:50:28,544 - INFO - services.uicanvas_bridge - UicanvasBridge started
+2026-06-19 09:50:28,670 - INFO - services.promotion_listener_service - PromotionListenerService started
+2026-06-19 09:50:28,670 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+2026-06-19 09:50:28,757 - INFO - src.services.extraction.promotion - promotion listener armed on channel extraction_raw_ready_for_promotion
+2026-06-19 09:50:28,779 - INFO - services.uicanvas_bridge - UicanvasBridge listening on uicanvas.process_monitor_ready
+2026-06-19 09:50:28,880 - INFO - api.main - System initialized successfully.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:51424 - "GET /health HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+2026-06-19 09:52:28,236 - INFO - services.procurement_kg_builder - [KG] Loaded 75 Supplier nodes from proc.bp_supplier
+2026-06-19 09:52:28,512 - INFO - services.procurement_kg_builder - [KG] Loaded 0 Policy nodes from proc.bp_policy
+2026-06-19 09:52:28,533 - INFO - services.procurement_kg_builder - [KG] Created 3008 SUPPLIER_PARTY_TO_CONTRACT relationships
+2026-06-19 09:52:28,536 - INFO - services.procurement_kg_builder - [KG] Created 286 INVOICE_FROM_SUPPLIER relationships
+2026-06-19 09:52:28,539 - INFO - services.procurement_kg_builder - [KG] Created 445 INVOICE_REFERENCES_PO relationships
+2026-06-19 09:52:28,541 - INFO - services.procurement_kg_builder - [KG] Created 241 PO_FROM_SUPPLIER relationships
+2026-06-19 09:52:28,543 - INFO - services.procurement_kg_builder - [KG] Created 174 QUOTE_FROM_SUPPLIER relationships
+2026-06-19 09:52:28,547 - INFO - services.procurement_kg_builder - [KG] Created 643 LINE_OF_INVOICE relationships
+2026-06-19 09:52:28,549 - INFO - services.procurement_kg_builder - [KG] Created 252 LINE_OF_PO relationships
+2026-06-19 09:52:28,551 - INFO - services.procurement_kg_builder - [KG] Created 330 LINE_OF_QUOTE relationships
+2026-06-19 09:52:28,552 - INFO - services.procurement_kg_builder - [KG] Created 34 QUOTE_FOR_PO relationships
+2026-06-19 09:52:28,553 - INFO - services.procurement_kg_builder - [KG] Created 164 PO_LINE_FROM_QUOTE relationships
+2026-06-19 09:52:28,693 - INFO - services.procurement_kg_builder - [KG] Created 645 PO_REFERENCES_QUOTE relationships
+2026-06-19 09:52:28,719 - INFO - services.procurement_kg_builder - [KG] Inferred 3709 supplier nodes from extracted data
+2026-06-19 09:52:28,719 - INFO - services.procurement_kg_builder - [KG Builder] Complete: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 09:52:28,719 - INFO - services.backend_scheduler - KG sync completed: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 09:52:45,311 - INFO - orchestration.reasoning_engine - Planning model BeyondProcwise/AgentNick:unified warmed and pinned
+2026-06-19 09:53:28,768 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 0, 'by_reason': {}, 'details': []}
+INFO:     183.82.250.27:60397 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+2026-06-19 09:53:49,857 - INFO - agents.base_agent - DataExtractionAgent: starting
+2026-06-19 09:53:49,859 - INFO - agents.data_extraction_agent - {"event": "batch_start", "workflow_id": "663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc", "agent": "data_extraction", "timestamp": "2026-06-19T09:53:49.859681Z", "s3_object_key": "Purchase_Order/TECHNOVA LTD PO513058.pdf"}
+2026-06-19 09:53:49,859 - INFO - agents.data_extraction_agent - {"event": "document_queue_built", "workflow_id": "663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc", "agent": "data_extraction", "timestamp": "2026-06-19T09:53:49.859880Z", "documents_discovered": 1}
+2026-06-19 09:53:49,860 - INFO - agents.data_extraction_agent - Processing 1 documents using 1 worker threads (configured max=16, s3_pool=64)
+2026-06-19 09:53:49,860 - INFO - agents.data_extraction_agent - Processing Purchase_Order/TECHNOVA LTD PO513058.pdf
+2026-06-19 09:53:49,861 - INFO - agents.data_extraction_agent - {"event": "document_start", "workflow_id": "663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc", "agent": "data_extraction", "timestamp": "2026-06-19T09:53:49.861360Z", "object_key": "Purchase_Order/TECHNOVA LTD PO513058.pdf"}
+2026-06-19 09:53:50,046 - INFO - agents.data_extraction_agent - page_route decision=digital page=1 digital_chars=487 ocr_chars=0
+2026-06-19 09:53:50,072 - WARNING - agents.extraction_engine - Failed to load suppliers from database: relation "proc.supplier" does not exist
+LINE 1: SELECT supplier_name, trading_name FROM proc.supplier WHERE ...
+                                                ^
+
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+2026-06-19 09:53:58,223 - INFO - agents.extraction_engine - AI identified supplier: Assurity Ltd
+2026-06-19 09:53:58,253 - WARNING - agents.extraction_engine - Failed to load suppliers from database: relation "proc.supplier" does not exist
+LINE 1: SELECT supplier_name, trading_name FROM proc.supplier WHERE ...
+                                                ^
+
+2026-06-19 09:53:58,318 - INFO - agents.data_extraction_agent - Loaded vendor profile for 'Assurity Ltd' (doc_type=Purchase_Order, extractions=14)
+2026-06-19 09:53:58,525 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 09:53:58,604 - INFO - httpx - HTTP Request: PUT https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings/points?wait=true "HTTP/1.1 200 OK"
+2026-06-19 09:53:58,714 - INFO - agents.extraction_engine - Detected document type: po
+2026-06-19 09:53:58,715 - INFO - agents.extraction_engine - Detected file type: pdf
+2026-06-19 09:53:58,723 - INFO - agents.extraction_engine - Digital PDF – running block-level layout extraction.
+MuPDF error: format error: No common ancestor in structure tree
+
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+2026-06-19 09:54:00,905 - INFO - agents.extraction_engine - Extracted 371 characters of text, 71 word boxes, 10 layout fields.
+2026-06-19 09:54:00,905 - INFO - agents.extraction_engine - Running spaCy NER...
+2026-06-19 09:54:00,905 - INFO - agents.extraction_engine - Loading spaCy model: en_core_web_sm
+2026-06-19 09:54:01,495 - INFO - agents.extraction_engine - spaCy model loaded.
+2026-06-19 09:54:01,511 - INFO - agents.extraction_engine - Running NuExtract NER...
+2026-06-19 09:54:07,992 - INFO - agents.extraction_engine - Running PurchaseOrderExtractor...
+2026-06-19 09:54:08,032 - WARNING - agents.extraction_engine - Failed to load suppliers from database: relation "proc.supplier" does not exist
+LINE 1: SELECT supplier_name, trading_name FROM proc.supplier WHERE ...
+                                                ^
+
+2026-06-19 09:54:08,033 - INFO - agents.data_extraction_agent - New extraction engine succeeded: doc_type=po, keys=['document_type', 'po_data', 'line_items']
+2026-06-19 09:54:08,035 - INFO - agents.data_extraction_agent - New extraction engine: 14 header fields, 1 line items in 9.4s
+2026-06-19 09:54:08,151 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 09:54:08,251 - INFO - httpx - HTTP Request: PUT https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings/points?wait=true "HTTP/1.1 200 OK"
+2026-06-19 09:54:08,303 - INFO - services.vendor_profile_service - Vendor profile updated: supplier='Assurity Ltd' doc_type='Purchase_Order'
+2026-06-19 09:54:08,303 - INFO - agents.data_extraction_agent - Document extraction coverage 100% for proc.purchase_order_agent (header)
+2026-06-19 09:54:08,303 - INFO - agents.data_extraction_agent - Document extraction coverage 100% for proc.po_line_items_agent (line_items)
+2026-06-19 09:54:08,303 - INFO - agents.data_extraction_agent - {"event": "document_complete", "workflow_id": "663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc", "agent": "data_extraction", "timestamp": "2026-06-19T09:54:08.303397Z", "object_key": "Purchase_Order/TECHNOVA LTD PO513058.pdf", "status": "success", "doc_type": "Purchase_Order", "record_id": "513058", "needs_review": false, "duration_seconds": 18.442042954964563, "warnings": [], "errors": []}
+2026-06-19 09:54:08,303 - INFO - agents.base_agent - Initialized agent: DiscrepancyDetectionAgent on device cuda
+2026-06-19 09:54:08,304 - INFO - agents.base_agent - DiscrepancyDetectionAgent: starting
+2026-06-19 09:54:08,331 - INFO - services.process_routing_service - Using provided workflow_id 663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc for process DiscrepancyDetectionAgent
+2026-06-19 09:54:08,360 - INFO - services.process_routing_service - Logged process DiscrepancyDetectionAgent with id 282 (workflow_id=663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc)
+2026-06-19 09:54:08,388 - INFO - services.process_routing_service - Recorded run 30e739c2-a59e-477e-be0e-7cecb4ca651c for process 282 with status 1
+2026-06-19 09:54:08,421 - INFO - services.process_routing_service - Logged action 8efaf53d-3dbc-4287-9563-b4f4f9af8945 for process 282 with status completed
+2026-06-19 09:54:08,422 - INFO - agents.base_agent - DiscrepancyDetectionAgent: completed with status success
+2026-06-19 09:54:08,447 - INFO - agents.data_extraction_agent - {"event": "batch_complete", "workflow_id": "663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc", "agent": "data_extraction", "timestamp": "2026-06-19T09:54:08.447903Z", "duration_seconds": 18.588225540937856, "documents_total": 1, "documents_success": 1, "documents_failed": 0, "mismatches": 0, "status": "success"}
+2026-06-19 09:54:08,449 - INFO - services.process_routing_service - Using provided workflow_id 663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc for process DataExtractionAgent
+2026-06-19 09:54:08,476 - INFO - services.process_routing_service - Logged process DataExtractionAgent with id 283 (workflow_id=663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc)
+2026-06-19 09:54:08,505 - INFO - services.process_routing_service - Recorded run c67cd50e-664e-4927-bc49-59b10d3c1f46 for process 283 with status 1
+2026-06-19 09:54:08,535 - INFO - services.process_routing_service - Logged action 4697e629-15e7-44e7-8b6c-95ccab0c99e4 for process 283 with status completed
+2026-06-19 09:54:08,535 - INFO - agents.base_agent - DataExtractionAgent: completed with status success
+2026-06-19 09:54:08,559 - INFO - agents.base_agent - DiscrepancyDetectionAgent: starting
+2026-06-19 09:54:08,585 - INFO - services.process_routing_service - Using provided workflow_id 663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc for process DiscrepancyDetectionAgent
+2026-06-19 09:54:08,612 - INFO - services.process_routing_service - Logged process DiscrepancyDetectionAgent with id 284 (workflow_id=663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc)
+2026-06-19 09:54:08,640 - INFO - services.process_routing_service - Recorded run 875f4653-3969-4e48-a18c-e9d99d4729d4 for process 284 with status 1
+2026-06-19 09:54:08,667 - INFO - services.process_routing_service - Logged action fb46a90a-df5d-46b3-9fd2-b946d61a4934 for process 284 with status completed
+2026-06-19 09:54:08,667 - INFO - agents.base_agent - DiscrepancyDetectionAgent: completed with status success
+INFO:     127.0.0.1:47982 - "POST /agents/instruct HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60397 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8160 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8160 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:20762 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+2026-06-19 09:55:28,945 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+INFO:     183.82.250.27:60397 - "OPTIONS /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:20762 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8160 - "OPTIONS /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:60397 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8160 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8160 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8160 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8160 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8160 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8160 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8160 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8160 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:20762 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8160 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8160 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8160 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+2026-06-19 10:03:58,895 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #10 starting
+INFO:     183.82.250.27:9231 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8327 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8327 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8327 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:8327 - "OPTIONS /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:8327 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+2026-06-19 10:08:29,001 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 0, 'by_reason': {}, 'details': []}
+2026-06-19 10:10:29,186 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+INFO:     183.82.250.27:9231 - "OPTIONS /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+2026-06-19 10:18:59,702 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #20 starting
+2026-06-19 10:20:29,323 - INFO - services.model_sync_service - Model rebuilt successfully: BeyondProcwise/AgentNick:latest
+2026-06-19 10:20:38,982 - INFO - services.model_sync_service - Model pushed to registry: BeyondProcwise/AgentNick:latest
+2026-06-19 10:20:39,015 - INFO - src.services.summary_agent - summary precompute: 3 personas x 20 scopes = 60 generations
+2026-06-19 10:21:22,073 - WARNING - src.services.ollama_client - Ollama Cloud returned empty response (attempt 1/2, model=qwen3.5:397b)
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 404 Not Found
+2026-06-19 10:21:54,671 - WARNING - src.services.ollama_client - Ollama Cloud returned empty response (attempt 1/2, model=qwen3.5:397b)
+INFO:     183.82.250.27:9231 - "OPTIONS /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:59399 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:9231 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+2026-06-19 10:24:33,063 - WARNING - src.services.ollama_client - Ollama Cloud returned empty response (attempt 1/2, model=qwen3.5:397b)
+2026-06-19 10:27:11,578 - WARNING - src.services.ollama_client - Ollama Cloud returned empty response (attempt 1/2, model=qwen3.5:397b)
+INFO:     183.82.250.27:57881 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:2542 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:2542 - "OPTIONS /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:2542 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:2542 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+2026-06-19 10:30:11,758 - INFO - services.backend_scheduler - summary precompute completed: {'generated': 60, 'failed': 0, 'personas': 3, 'scopes': 20}
+2026-06-19 10:31:11,807 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 0, 'by_reason': {}, 'details': []}
+2026-06-19 10:31:11,983 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0}
+INFO:     183.82.250.27:29091 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:15294 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:15294 - "OPTIONS /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:29091 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:15294 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:29091 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+2026-06-19 10:34:00,587 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #30 starting
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:15294 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:29091 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:15294 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:29091 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "OPTIONS /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /summary?persona=analysis&deal_id=DEAL_SET_092026061731 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:15294 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:58767 - "GET /deals/DEAL_SET_092026061731/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:29091 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:15294 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:15294 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:15294 - "GET /analyse/commitment-average-proposed-volume?dealId=&timeRange= HTTP/1.1" 404 Not Found
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-06-19 10:45:09,440 - INFO - api.main - CUDA cache released on shutdown (allocated=1.26GiB reserved=1.29GiB)
+2026-06-19 10:45:09,440 - INFO - api.main - API shutting down.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [3895741]

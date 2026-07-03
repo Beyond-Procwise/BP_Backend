@@ -1,0 +1,3 @@
+holdout=32 examples; baseline_model=BeyondProcwise/AgentNick:extract
+BASELINE doc_accuracy=0.8426 exact=0.1875 n=32 (89s)
+wrote /home/muthu/PycharmProjects/BP_Backend/artifacts/gpu_upgrade/eval_baseline.json

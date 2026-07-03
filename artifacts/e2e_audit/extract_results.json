@@ -1,0 +1,1480 @@
+{
+  "final": true,
+  "results": [
+    {
+      "label": "SYNTHETIC",
+      "path": "tmp2yy3jt1d_synthetic_invoice.pdf",
+      "doc_type": "invoice",
+      "parse_text_len": 475,
+      "doc_pk": "INV-2025-0042",
+      "judge_calls": 0,
+      "pipeline_version": "v4.0.0-hybrid",
+      "n_committed": 22,
+      "n_residuals": 0,
+      "committed": [
+        {
+          "field": "invoice_id",
+          "value": "INV-2025-0042",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "po_id",
+          "value": "PO-7891",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "supplier_name",
+          "value": "Pinnacle Manufacturing Group",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "buyer_id",
+          "value": "Pinnacle Manufacturing Group",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "requested_date",
+          "value": "2025-03-15",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_date",
+          "value": "2025-03-15",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "due_date",
+          "value": "2025-04-14",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "payment_terms",
+          "value": "30",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "currency",
+          "value": "GBP",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_amount",
+          "value": "1250.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "value": "1500.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "exchange_rate_to_usd",
+          "value": "1.270000",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "converted_amount_usd",
+          "value": "1905.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "country",
+          "value": "United Kingdom",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].item_description",
+          "value": "Steel brackets (box of 50)",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].quantity",
+          "value": "10",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].unit_price",
+          "value": "75.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].line_amount",
+          "value": "750.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].item_description",
+          "value": "Industrial fasteners M8",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].quantity",
+          "value": "20",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].unit_price",
+          "value": "25.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].line_amount",
+          "value": "500.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        }
+      ],
+      "residuals": [],
+      "elapsed_s": 84.4,
+      "ground_truth_score": {
+        "fields_checked": 8,
+        "correct": 6,
+        "accuracy_pct": 75.0,
+        "detail": {
+          "invoice_id": {
+            "expected": "INV-2025-0042",
+            "actual": "INV-2025-0042",
+            "match": true
+          },
+          "invoice_date": {
+            "expected": "2025-03-15",
+            "actual": "2025-03-15",
+            "match": true
+          },
+          "po_id": {
+            "expected": "PO-7891",
+            "actual": "PO-7891",
+            "match": true
+          },
+          "supplier_name": {
+            "expected": "Acme Industrial Supplies Ltd",
+            "actual": "Pinnacle Manufacturing Group",
+            "match": false
+          },
+          "currency": {
+            "expected": "GBP",
+            "actual": "GBP",
+            "match": true
+          },
+          "invoice_amount": {
+            "expected": "1250.00",
+            "actual": "1250.00",
+            "match": true
+          },
+          "tax_amount": {
+            "expected": "250.00",
+            "actual": null,
+            "match": false
+          },
+          "invoice_total_incl_tax": {
+            "expected": "1500.00",
+            "actual": "1500.00",
+            "match": true
+          }
+        }
+      }
+    },
+    {
+      "label": "REAL",
+      "path": "MASTER Invoice for PO1.pdf",
+      "doc_type": "invoice",
+      "parse_text_len": 799,
+      "doc_pk": "01-2024-002",
+      "judge_calls": 0,
+      "pipeline_version": "v4.0.0-hybrid",
+      "n_committed": 31,
+      "n_residuals": 0,
+      "committed": [
+        {
+          "field": "invoice_id",
+          "value": "01-2024-002",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "supplier_name",
+          "value": "Fauget",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "buyer_id",
+          "value": "Borcelle",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "requested_date",
+          "value": "2025-06-05",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_date",
+          "value": "2025-06-05",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "due_date",
+          "value": "2025-07-05",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "payment_terms",
+          "value": "30",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "currency",
+          "value": "GBP",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_amount",
+          "value": "15405.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_amount",
+          "value": "1540.50",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "value": "17065.50",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "exchange_rate_to_usd",
+          "value": "1.270000",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "converted_amount_usd",
+          "value": "21673.19",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "country",
+          "value": "United Kingdom",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].item_description",
+          "value": "Laptop",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].quantity",
+          "value": "8",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].unit_price",
+          "value": "9200.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].item_description",
+          "value": "LED Monitor",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].quantity",
+          "value": "12",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].unit_price",
+          "value": "3240.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].item_description",
+          "value": "Mouse",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].quantity",
+          "value": "25",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].unit_price",
+          "value": "2125.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].item_description",
+          "value": "Software License",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].quantity",
+          "value": "6",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].unit_price",
+          "value": "840.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        }
+      ],
+      "residuals": [],
+      "elapsed_s": 78.4
+    },
+    {
+      "label": "REAL",
+      "path": "MASTER Invoice for PO10.pdf",
+      "doc_type": "invoice",
+      "parse_text_len": 713,
+      "doc_pk": "INV-204872",
+      "judge_calls": 0,
+      "pipeline_version": "v4.0.0-hybrid",
+      "n_committed": 24,
+      "n_residuals": 0,
+      "committed": [
+        {
+          "field": "invoice_id",
+          "value": "INV-204872",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "po_id",
+          "value": "189990",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "supplier_name",
+          "value": "Industrial Pendant Fixtures",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "buyer_id",
+          "value": "Cormier Lighting Company",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "requested_date",
+          "value": "2020-05-20",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_date",
+          "value": "2020-05-20",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "due_date",
+          "value": "2020-08-18",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "payment_terms",
+          "value": "90",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "currency",
+          "value": "USD",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_amount",
+          "value": "400.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_amount",
+          "value": "40.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "value": "460.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "exchange_rate_to_usd",
+          "value": "1.000000",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "converted_amount_usd",
+          "value": "460.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "country",
+          "value": "United Kingdom",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].item_description",
+          "value": "Industrial Pendant Fixtures",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].quantity",
+          "value": "sets",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].unit_price",
+          "value": "40.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].item_description",
+          "value": "Smart Wi-Fi Ceiling Panels",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].quantity",
+          "value": "pcs",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].unit_price",
+          "value": "360.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        }
+      ],
+      "residuals": [],
+      "elapsed_s": 57.6
+    },
+    {
+      "label": "REAL",
+      "path": "MASTER Invoice for PO11.pdf",
+      "doc_type": "invoice",
+      "parse_text_len": 706,
+      "doc_pk": "INV-504932",
+      "judge_calls": 0,
+      "pipeline_version": "v4.0.0-hybrid",
+      "n_committed": 43,
+      "n_residuals": 0,
+      "committed": [
+        {
+          "field": "invoice_id",
+          "value": "INV-504932",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "po_id",
+          "value": "120",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "supplier_name",
+          "value": "Procurify",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "buyer_id",
+          "value": "Procurify - Neil Hastings",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "requested_date",
+          "value": "2020-04-05",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_date",
+          "value": "2020-04-05",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "due_date",
+          "value": "2020-04-15",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "payment_terms",
+          "value": "10",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "currency",
+          "value": "USD",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_amount",
+          "value": "2007.97",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_percent",
+          "value": "4.8",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_amount",
+          "value": "95.41",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "value": "1799.98",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "exchange_rate_to_usd",
+          "value": "1.000000",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "converted_amount_usd",
+          "value": "1799.98",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].item_description",
+          "value": "1 Lenovo ThinkPad",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].quantity",
+          "value": "2",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].unit_price",
+          "value": "899.99",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].line_amount",
+          "value": "1799.98",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].tax_percent",
+          "value": "4.8",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].tax_amount",
+          "value": "86.40",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].total_amount_incl_tax",
+          "value": "1886.38",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].item_description",
+          "value": "2 Monitor Stand",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].quantity",
+          "value": "1",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].unit_price",
+          "value": "79.99",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].line_amount",
+          "value": "79.99",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].tax_percent",
+          "value": "4.8",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].tax_amount",
+          "value": "3.84",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].total_amount_incl_tax",
+          "value": "83.83",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].item_description",
+          "value": "3 USB-C Hub",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].quantity",
+          "value": "2",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].unit_price",
+          "value": "35.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].line_amount",
+          "value": "70.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].tax_percent",
+          "value": "4.8",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].tax_amount",
+          "value": "3.36",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].total_amount_incl_tax",
+          "value": "73.36",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].item_description",
+          "value": "4 Logitech Wireless Mouse Taxes: $95.41 Shipping: $0.00 Total Cost: $2103.38 USD All inquiries can be sent to accounts@procurify.com",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].quantity",
+          "value": "2",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].unit_price",
+          "value": "29.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].line_amount",
+          "value": "58.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].tax_percent",
+          "value": "4.8",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].tax_amount",
+          "value": "2.78",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].total_amount_incl_tax",
+          "value": "60.78",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        }
+      ],
+      "residuals": [],
+      "elapsed_s": 46.6
+    },
+    {
+      "label": "REAL",
+      "path": "MASTER Invoice for PO13.pdf",
+      "doc_type": "invoice",
+      "parse_text_len": 1271,
+      "doc_pk": "INV-880187",
+      "judge_calls": 0,
+      "pipeline_version": "v4.0.0-hybrid",
+      "n_committed": 79,
+      "n_residuals": 0,
+      "committed": [
+        {
+          "field": "invoice_id",
+          "value": "INV-880187",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "po_id",
+          "value": "1000587",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "supplier_name",
+          "value": "TechTonic Electronic, Inc.",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "buyer_id",
+          "value": "Ship To:",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "requested_date",
+          "value": "2021-12-20",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_date",
+          "value": "2021-12-20",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "due_date",
+          "value": "2022-01-19",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "payment_terms",
+          "value": "30",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "currency",
+          "value": "USD",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_amount",
+          "value": "10505.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_amount",
+          "value": "1050.50",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "value": "11555.50",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "exchange_rate_to_usd",
+          "value": "1.000000",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "converted_amount_usd",
+          "value": "11555.50",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "region",
+          "value": "New York",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].item_description",
+          "value": "300GB USB3.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].quantity",
+          "value": "2",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].unit_price",
+          "value": "120.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].line_amount",
+          "value": "240.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].tax_amount",
+          "value": "24.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].total_amount_incl_tax",
+          "value": "264.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].item_description",
+          "value": "RF Compatible, Wi-Fi",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].quantity",
+          "value": "5",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].unit_price",
+          "value": "25.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].line_amount",
+          "value": "125.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].tax_amount",
+          "value": "12.50",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].total_amount_incl_tax",
+          "value": "137.50",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].item_description",
+          "value": "XPS-900X 110VAC",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].quantity",
+          "value": "4",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].unit_price",
+          "value": "650.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].line_amount",
+          "value": "2600.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].tax_amount",
+          "value": "260.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[2].total_amount_incl_tax",
+          "value": "2860.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].item_description",
+          "value": "ZetaDrive X250",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].quantity",
+          "value": "7",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].unit_price",
+          "value": "100.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].line_amount",
+          "value": "700.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].tax_amount",
+          "value": "70.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[3].total_amount_incl_tax",
+          "value": "770.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[4].item_description",
+          "value": "10.1\" HD Touchscreen",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[4].quantity",
+          "value": "2",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[4].unit_price",
+          "value": "500.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[4].line_amount",
+          "value": "1000.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[4].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[4].tax_amount",
+          "value": "100.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[4].total_amount_incl_tax",
+          "value": "1100.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[5].item_description",
+          "value": "256GB Storage | 12GB RAM",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[5].quantity",
+          "value": "2",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[5].unit_price",
+          "value": "1350.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[5].line_amount",
+          "value": "2700.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[5].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[5].tax_amount",
+          "value": "270.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[5].total_amount_incl_tax",
+          "value": "2970.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[6].item_description",
+          "value": "Bluetooth 5.3",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[6].quantity",
+          "value": "2",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[6].unit_price",
+          "value": "70.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[6].line_amount",
+          "value": "140.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[6].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[6].tax_amount",
+          "value": "14.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[6].total_amount_incl_tax",
+          "value": "154.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[7].item_description",
+          "value": "Xwave B354 MSR",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[7].quantity",
+          "value": "1",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[7].unit_price",
+          "value": "600.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[7].line_amount",
+          "value": "600.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[7].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[7].tax_amount",
+          "value": "60.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[7].total_amount_incl_tax",
+          "value": "660.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[8].item_description",
+          "value": "Intel i7 (13th Gen) | 16GB RAM | 512GB SSD",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[8].quantity",
+          "value": "2 Total: 11,555.50",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[8].unit_price",
+          "value": "1200.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[8].line_amount",
+          "value": "2400.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[8].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[8].tax_amount",
+          "value": "240.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[8].total_amount_incl_tax",
+          "value": "2640.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        }
+      ],
+      "residuals": [],
+      "elapsed_s": 41.5
+    },
+    {
+      "label": "REAL",
+      "path": "MASTER Invoice for PO15.pdf",
+      "doc_type": "invoice",
+      "parse_text_len": 777,
+      "doc_pk": "INV-600489",
+      "judge_calls": 0,
+      "pipeline_version": "v4.0.0-hybrid",
+      "n_committed": 24,
+      "n_residuals": 0,
+      "committed": [
+        {
+          "field": "invoice_id",
+          "value": "INV-600489",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "po_id",
+          "value": "900052",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "supplier_name",
+          "value": "extraBIZ",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "buyer_id",
+          "value": "TheBizWiz",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "requested_date",
+          "value": "2020-05-20",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_date",
+          "value": "2020-05-20",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "due_date",
+          "value": "2020-06-19",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "payment_terms",
+          "value": "30",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "currency",
+          "value": "USD",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_amount",
+          "value": "270.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "tax_amount",
+          "value": "27.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "value": "322.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "exchange_rate_to_usd",
+          "value": "1.000000",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "converted_amount_usd",
+          "value": "322.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "region",
+          "value": "New Jersey",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].item_description",
+          "value": "50cm x 50cm Cardboard Boxes",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].quantity",
+          "value": "pcs",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].unit_price",
+          "value": "150.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[0].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].item_description",
+          "value": "5cm Packing Tape",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].quantity",
+          "value": "pks",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].unit_price",
+          "value": "120.00",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        },
+        {
+          "field": "line_items[1].tax_percent",
+          "value": "10.0",
+          "conf": 0.9,
+          "model": "hybrid_v4"
+        }
+      ],
+      "residuals": [],
+      "elapsed_s": 37.5
+    }
+  ]
+}

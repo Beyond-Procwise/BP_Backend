@@ -1,0 +1,23 @@
+{
+  "BeyondProcwise/AgentNick:extract": {
+    "doc_accuracy": 0.8482,
+    "exact_doc_rate": 0.1875,
+    "n": 16,
+    "fields": "180/211",
+    "elapsed_s": 221.4
+  },
+  "BeyondProcwise/AgentNick:extract-ft": {
+    "doc_accuracy": 0.0,
+    "exact_doc_rate": 0.0,
+    "n": 16,
+    "fields": "0/211",
+    "elapsed_s": 498.6
+  },
+  "_verdict": {
+    "baseline": 0.8482,
+    "candidate": 0.0,
+    "delta": -0.8482,
+    "verdict": "BELOW_BASELINE",
+    "caveat": "holdout seen in training (train-on-test); directional only"
+  }
+}

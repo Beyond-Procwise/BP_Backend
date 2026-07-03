@@ -1,0 +1,10 @@
+adapter: no doc_pk for invoice -- header keys=['invoice_id', 'po_id', 'supplier_name', 'buyer_id', 'requisition_id', 'requested_by', 'requested_date', 'invoice_date', 'due_date', 'invoice_paid_date', 'payment_terms', 'currency', 'invoice_amount', 'tax_percent', 'tax_amount', 'invoice_total_incl_tax', 'shipping_fee', 'exchange_rate_to_usd', 'converted_amount_usd', 'country', 'region', 'invoice_status', 'ai_flag_required', 'trigger_type', 'trigger_context_description', 'created_date', 'created_by', 'last_modified_by', 'last_modified_date']
+[nd] HR Invoice_2.jpeg (.jpeg) dt=invoice -> pk=None hdr=10 resid=0 6.3s 
+[nd] HR Quote v2.xlsx (.xlsx) dt=quote -> pk=QTE-2026-01521 hdr=12 resid=0 0.0s 
+No line items could be extracted.
+[nd] Office Clean Invoice1.docx (.docx) dt=invoice -> pk=INV-2026-01602 hdr=12 resid=0 2.1s 
+[nd] Office Clean Invoice1.pdf (.pdf) dt=invoice -> pk=INV-2026-01602 hdr=15 resid=0 5.6s 
+[nd] Office Clean_PO520512_QTE-2026-01844_watermark.docx (.docx) dt=po -> pk=PO5206512 hdr=15 resid=0 2.2s 
+[nd] PO520556_QTE-2026-01521_HRInvoice2.docx (.docx) dt=invoice -> pk=PO5206556 hdr=14 resid=0 2.2s 
+[nd] PO520556_QTE-2026-01521_watermark.docx (.docx) dt=po -> pk=PO5206556 hdr=17 resid=0 2.0s 
+[nd] DONE

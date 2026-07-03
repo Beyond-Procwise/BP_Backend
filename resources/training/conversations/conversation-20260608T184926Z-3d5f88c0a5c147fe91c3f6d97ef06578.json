@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"opportunity_mining\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "No quotes found",
+  "metadata": {
+    "workflow_id": "2b361e7c-6e71-44d5-89fe-7f7ac030fc26",
+    "agent_id": "quote_evaluation",
+    "agent_name": "QuoteEvaluationAgent"
+  }
+}

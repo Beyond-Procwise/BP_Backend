@@ -5,4 +5,26 @@ To install, run:
   sudo systemctl status procwise    # check status
   journalctl -u procwise -f         # tail logs
   sudo systemctl restart procwise   # restart
-  sudo systemctl stop procwise      # stop
+  sudo systemctl stop pwe rocwise      # stop
+
+  Start / manage the service (systemd, needs sudo):
+  sudo systemctl start procwise      # start
+  sudo systemctl restart procwise    # restart (clean start)
+  sudo systemctl stop procwise       # stop
+  sudo systemctl status procwise     # quick status
+
+  Monitor the logs:
+  # Live tail (follow) — most common
+  sudo journalctl -u procwise -f
+
+  # Last 100 lines
+  sudo journalctl -u procwise -n 100 --no-pager
+
+  # Since the most recent boot / a time window
+  sudo journalctl -u procwise --since "10 minutes ago" --no-pager
+
+  # Only errors
+  sudo journalctl -u procwise -p err -n 50 --no-pager
+
+  Confirm the API is actually answering:
+  curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:8000/health

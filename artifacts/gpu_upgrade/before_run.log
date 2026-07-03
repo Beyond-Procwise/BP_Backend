@@ -1,0 +1,46 @@
+MuPDF error: format error: No common ancestor in structure tree
+
+supplier_index: DB hydration failed (connection to server at "procwisemvpdb01.cluster-cpae0sg4mrk8.eu-west-1.rds.amazonaws.com" (63.35.28.70), port 5432 failed: Connection timed out
+	Is the server running on that host and accepting TCP/IP connections?
+); falling back to JSON
+LLM extraction failed: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=240) -- skipping fill
+   379.22s  2431f03b67d6  documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf
+MuPDF error: format error: No common ancestor in structure tree
+
+   229.99s  4cb648b4224c  documents/Invoice/AQUARIUS INV-25-051 for PO508084 .pdf
+MuPDF error: format error: No common ancestor in structure tree
+
+     7.83s  e87f7d4792d2  documents/Invoice/CITY OF NEWPORT INV600253 for PO502004 .pdf
+MuPDF error: format error: No common ancestor in structure tree
+
+quote supplier pre-resolve failed: connection to server at "procwisemvpdb01.cluster-cpae0sg4mrk8.eu-west-1.rds.amazonaws.com" (63.35.28.70), port 5432 failed: Connection timed out
+	Is the server running on that host and accepting TCP/IP connections?
+ -- using raw value
+   139.73s  36c2166aec92  documents/Quote/AQUARIUS QUT-25-032.pdf
+MuPDF error: format error: No common ancestor in structure tree
+
+quote supplier pre-resolve failed: connection to server at "procwisemvpdb01.cluster-cpae0sg4mrk8.eu-west-1.rds.amazonaws.com" (63.35.28.70), port 5432 failed: Connection timed out
+	Is the server running on that host and accepting TCP/IP connections?
+ -- using raw value
+   143.17s  7a116dd269a6  documents/Quote/CITY OF NEWPORT QUT599390 .pdf
+MuPDF error: format error: No common ancestor in structure tree
+
+quote supplier pre-resolve failed: connection to server at "procwisemvpdb01.cluster-cpae0sg4mrk8.eu-west-1.rds.amazonaws.com" (63.35.28.70), port 5432 failed: Connection timed out
+	Is the server running on that host and accepting TCP/IP connections?
+ -- using raw value
+   139.13s  7341ddb23e68  documents/Quote/DESIGN HOUSE AGENCY QUT DHA-2025-102.pdf
+PO supplier pre-resolve failed: connection to server at "procwisemvpdb01.cluster-cpae0sg4mrk8.eu-west-1.rds.amazonaws.com" (63.35.28.70), port 5432 failed: Connection timed out
+	Is the server running on that host and accepting TCP/IP connections?
+ -- skipping
+   139.13s  680e7d6424b6  documents/PO/PO_PO405867.pdf
+PO supplier pre-resolve failed: connection to server at "procwisemvpdb01.cluster-cpae0sg4mrk8.eu-west-1.rds.amazonaws.com" (63.35.28.70), port 5432 failed: Connection timed out
+	Is the server running on that host and accepting TCP/IP connections?
+ -- skipping
+   143.20s  dbf28920a863  documents/PO/PO_PO519829.pdf
+PO supplier pre-resolve failed: connection to server at "procwisemvpdb01.cluster-cpae0sg4mrk8.eu-west-1.rds.amazonaws.com" (63.35.28.70), port 5432 failed: Connection timed out
+	Is the server running on that host and accepting TCP/IP connections?
+ -- skipping
+   143.23s  ddea93aef325  documents/po/Oracle Purchase Order.docx
+
+batch_total=1465.93s  mean=162.74s  ok=9/9
+wrote /home/muthu/PycharmProjects/BP_Backend/artifacts/gpu_upgrade/bench_before.json

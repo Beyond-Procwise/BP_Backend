@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {}, \"policies\": []}",
+  "response": "{\"mismatches\": [], \"summary\": {\"documents_processed\": 1, \"documents_successful\": 1, \"documents_with_issues\": 0}, \"agentic_plan\": \"1. Review extracted documents and ingestion warnings from upstream agents.\\n2. Cross-check key header fields against warehouse tables to detect mismatches.\\n3. Log discrepancies with remediation guidance for downstream review.\", \"context_snapshot\": {\"workflow_id\": \"663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc\", \"agent_id\": \"discrepancy_detection\", \"user_id\": \"reasoning_engine\", \"manifest\": {\"task\": {}, \"policies\": []}}, \"action_id\": \"8efaf53d-3dbc-4287-9563-b4f4f9af8945\"}",
+  "metadata": {
+    "workflow_id": "663ad0ff-a3f5-43cf-a7e6-2c4d68db75dc",
+    "agent_id": "discrepancy_detection",
+    "agent_name": "DiscrepancyDetectionAgent"
+  }
+}

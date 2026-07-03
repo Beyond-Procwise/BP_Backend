@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"requirements_to_ranking\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "{\"session_id\": \"ab1e9731254b49ee8cf27cd56e8110f0\", \"requirement_id\": \"REQ-20260617-c9045265\", \"complete\": false, \"next_question\": \"What is the title for this requirement?\", \"completeness_score\": 0.8, \"missing_fields\": [\"title\"], \"requirement\": {\"category\": \"Furniture\", \"quantity\": 25, \"delivery_location\": \"London HQ\", \"needed_by_date\": \"2026-08-15\"}, \"agentic_plan\": \"1. Load the requirement session and seed it with category history.\\n2. Extract field values from the buyer's message or pasted brief.\\n3. Ask the next question, or finalize and hand off when complete.\", \"context_snapshot\": {\"workflow_id\": \"60981b24-522a-43ee-b98a-1d31bdd1135a\", \"agent_id\": \"requirements\", \"user_id\": \"AgentNick\", \"manifest\": {\"task\": {\"agent_type\": \"requirements_to_ranking\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}}, \"action_id\": \"787ea9f5-1720-46ed-96ce-ea8a740a9430\"}",
+  "metadata": {
+    "workflow_id": "60981b24-522a-43ee-b98a-1d31bdd1135a",
+    "agent_id": "requirements",
+    "agent_name": "RequirementsAgent"
+  }
+}

@@ -1,0 +1,12 @@
+[eval] total examples=82 | holdout(capped)=16
+[eval] running BeyondProcwise/AgentNick:latest ...
+Ollama read timeout (attempt 1/2, model=BeyondProcwise/AgentNick:latest, timeout=120s) — retrying in 10s
+Ollama read timeout (attempt 2/2, model=BeyondProcwise/AgentNick:latest, timeout=120s) — retrying in 20s
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:latest)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260616T151214Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8040 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+Ollama read timeout (attempt 1/2, model=BeyondProcwise/AgentNick:latest, timeout=120s) — retrying in 10s
+Ollama read timeout (attempt 2/2, model=BeyondProcwise/AgentNick:latest, timeout=120s) — retrying in 20s
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:latest)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260616T151624Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8040 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice

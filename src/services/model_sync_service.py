@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -20,6 +21,46 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "BeyondProcwise/AgentNick:latest"
 MODELFILE_PATH = Path(__file__).resolve().parents[2] / "Modelfile"
 SYNC_INTERVAL_HOURS = 6
+
+# Substrings that mark a "supplier name" as document noise (table headers, totals
+# rows, fragments) rather than a real vendor. Extraction occasionally mislabels
+# these as supplier_name; we must not feed them back into the model prompt.
+_SUPPLIER_DENY_SUBSTR = (
+    "unknown", "description", "qty", "unit price", "delivery deadline",
+    "days tax", "subtotal", "grand total", "quantity", "deadline",
+    "conditions", "amount due", "ship to", "bill to", "page ",
+)
+# Phone-number-ish: only digits, spaces and phone punctuation.
+_PHONE_RE = re.compile(r"^[\d\s().+\-]{7,}$")
+# Document-id fragments mislabelled as suppliers (INV600820, PO507269, QUT110500).
+_DOC_ID_RE = re.compile(r"^(inv|po|qut|quo|req|gr|grn)[\-_ ]?\d{3,}$", re.IGNORECASE)
+
+
+def is_valid_supplier_name(name: Any) -> bool:
+    """True iff *name* looks like a real vendor (not table noise / id / phone).
+
+    Conservative: it only rejects clear non-suppliers so that legitimate vendors
+    (single-token names like 'Infotech', punctuated names like 'Gomez, Good and
+    Cross Trading Ltd') are always kept.
+    """
+    if not name:
+        return False
+    n = str(name).strip()
+    if len(n) < 3 or len(n) > 60:
+        return False
+    low = n.lower()
+    if any(token in low for token in _SUPPLIER_DENY_SUBSTR):
+        return False
+    if _PHONE_RE.match(n):
+        return False
+    if _DOC_ID_RE.match(n):
+        return False
+    # Must contain a run of at least two letters, and not be mostly digits.
+    if not re.search(r"[A-Za-z]{2,}", n):
+        return False
+    if sum(c.isdigit() for c in n) > len(n) / 2:
+        return False
+    return True
 
 
 class ModelSyncService:
@@ -116,6 +157,8 @@ class ModelSyncService:
 
             lines = ["LEARNED VENDOR PATTERNS (from successful extractions):"]
             for name, doc_type, date_fmt, currency, count in rows:
+                if not is_valid_supplier_name(name):
+                    continue
                 parts = [f"- {name} ({doc_type})"]
                 if date_fmt:
                     parts.append(f"dates={date_fmt}")
@@ -139,7 +182,8 @@ class ModelSyncService:
                             LIMIT 100
                             """
                         )
-                        suppliers = [r[0] for r in cur.fetchall() if r[0]]
+                        suppliers = [r[0] for r in cur.fetchall()
+                                     if is_valid_supplier_name(r[0])]
                         if suppliers:
                             lines.append("")
                             lines.append(
@@ -168,11 +212,13 @@ class ModelSyncService:
         if not vendor_knowledge:
             return modelfile
 
-        import re
-
-        # Remove ALL existing learned pattern sections first
+        # Remove ALL existing learned-pattern sections first. Historically two
+        # different markers were emitted ("=== LEARNED PATTERNS (auto-updated) ==="
+        # and the legacy "=== LEARNED VENDOR PATTERNS (auto-updated) ==="); the old
+        # cleanup only matched the first, so the legacy one accumulated forever.
+        # Match BOTH so nothing duplicates.
         modelfile = re.sub(
-            r"\n*=== LEARNED PATTERNS \(auto-updated\) ===\n.*?(?==== |\"\"\")",
+            r"\n*=== LEARNED (?:VENDOR )?PATTERNS \(auto-updated\) ===\n.*?(?==== |\"\"\")",
             "\n",
             modelfile,
             flags=re.DOTALL,

@@ -1,0 +1,11 @@
+[eval] total examples=82 | holdout(capped)=16
+[eval] running BeyondProcwise/AgentNick:extract ...
+[eval] BeyondProcwise/AgentNick:extract: doc_acc=0.8482 exact=0.1875 fields=180/211 in 283s
+[eval] running BeyondProcwise/AgentNick:unified ...
+Ollama read timeout (attempt 1/2, model=BeyondProcwise/AgentNick:unified, timeout=120s) — retrying in 10s
+Ollama read timeout (attempt 2/2, model=BeyondProcwise/AgentNick:unified, timeout=120s) — retrying in 20s
+Ollama request failed after 2 attempts (model=BeyondProcwise/AgentNick:unified)
+[llm-diag] captured failure → /home/muthu/PycharmProjects/BP_Backend/artifacts/llm_failures/20260616T152557Z_anon_ollama_generate.exhauste.json (site=ollama_generate.exhausted prompt=8040 response=0 error=)
+context_layer: LLM returned nothing for doc_type=invoice
+context_layer: failed to parse JSON output (head="<|endoftext|>Write a short story about a young girl named Lily who discovers a magical book in her grandmother's attic. The book is old and bound in leather, with strange symbols etched into the cover")
+context_layer: failed to parse JSON output (head='<|endoftext|>Write a 100-word summary of the article about the impact of climate change on global agriculture, focusing on crop yields, food security, and adaptation strategies. Use formal language an')

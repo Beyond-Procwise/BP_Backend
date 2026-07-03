@@ -1,0 +1,209 @@
+{
+  "candidate": "AgentNick:unified",
+  "doc_accuracy": 0.0,
+  "exact_doc_rate": 0.0,
+  "n_scored": 16,
+  "fields": "0/211",
+  "elapsed_s": 412.1,
+  "baseline_extract": 0.8482,
+  "delta": -0.8482,
+  "verdict": "BELOW_BASELINE",
+  "worst": [
+    {
+      "pk": "INV600261",
+      "doc_type": "invoice",
+      "accuracy": 0.0,
+      "mismatches": [
+        {
+          "field": "invoice_id",
+          "expected": "INV600261",
+          "got": null
+        },
+        {
+          "field": "po_id",
+          "expected": "PO502004",
+          "got": null
+        },
+        {
+          "field": "requested_by",
+          "expected": "William Barnes City of Newport",
+          "got": null
+        },
+        {
+          "field": "requested_date",
+          "expected": "2019-03-22",
+          "got": null
+        },
+        {
+          "field": "invoice_date",
+          "expected": "2019-03-22",
+          "got": null
+        },
+        {
+          "field": "due_date",
+          "expected": "2019-04-21",
+          "got": null
+        },
+        {
+          "field": "currency",
+          "expected": "GBP",
+          "got": null
+        },
+        {
+          "field": "invoice_amount",
+          "expected": 8333.0,
+          "got": null
+        },
+        {
+          "field": "tax_percent",
+          "expected": 20.0,
+          "got": null
+        },
+        {
+          "field": "tax_amount",
+          "expected": 1666.6,
+          "got": null
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "expected": 9999.6,
+          "got": null
+        },
+        {
+          "field": "country",
+          "expected": "United Kingdom",
+          "got": null
+        }
+      ]
+    },
+    {
+      "pk": "INV600262",
+      "doc_type": "invoice",
+      "accuracy": 0.0,
+      "mismatches": [
+        {
+          "field": "invoice_id",
+          "expected": "INV600262",
+          "got": null
+        },
+        {
+          "field": "po_id",
+          "expected": "PO502004",
+          "got": null
+        },
+        {
+          "field": "requested_by",
+          "expected": "William Barnes City of Newport",
+          "got": null
+        },
+        {
+          "field": "requested_date",
+          "expected": "2019-04-22",
+          "got": null
+        },
+        {
+          "field": "invoice_date",
+          "expected": "2019-04-22",
+          "got": null
+        },
+        {
+          "field": "due_date",
+          "expected": "2019-05-22",
+          "got": null
+        },
+        {
+          "field": "currency",
+          "expected": "GBP",
+          "got": null
+        },
+        {
+          "field": "invoice_amount",
+          "expected": 8333.0,
+          "got": null
+        },
+        {
+          "field": "tax_percent",
+          "expected": 20.0,
+          "got": null
+        },
+        {
+          "field": "tax_amount",
+          "expected": 1666.6,
+          "got": null
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "expected": 9999.6,
+          "got": null
+        },
+        {
+          "field": "country",
+          "expected": "United Kingdom",
+          "got": null
+        }
+      ]
+    },
+    {
+      "pk": "4759276",
+      "doc_type": "invoice",
+      "accuracy": 0.0,
+      "mismatches": [
+        {
+          "field": "invoice_id",
+          "expected": "4759276",
+          "got": null
+        },
+        {
+          "field": "po_id",
+          "expected": "506789",
+          "got": null
+        },
+        {
+          "field": "requested_date",
+          "expected": "2025-12-12",
+          "got": null
+        },
+        {
+          "field": "invoice_date",
+          "expected": "2025-12-12",
+          "got": null
+        },
+        {
+          "field": "due_date",
+          "expected": "2026-03-12",
+          "got": null
+        },
+        {
+          "field": "currency",
+          "expected": "GBP",
+          "got": null
+        },
+        {
+          "field": "invoice_amount",
+          "expected": 15000.0,
+          "got": null
+        },
+        {
+          "field": "tax_percent",
+          "expected": 20.0,
+          "got": null
+        },
+        {
+          "field": "tax_amount",
+          "expected": 3000.0,
+          "got": null
+        },
+        {
+          "field": "invoice_total_incl_tax",
+          "expected": 18000.0,
+          "got": null
+        },
+        {
+          "field": "country",
+          "expected": "United Kingdom",
+          "got": null
+        }
+      ]
+    }
+  ]
+}

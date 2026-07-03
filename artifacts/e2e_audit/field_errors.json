@@ -1,0 +1,54 @@
+{
+  "doc_accuracy": 0.8482,
+  "n": 16,
+  "top_field_errors": [
+    [
+      "requested_by",
+      6
+    ],
+    [
+      "due_date",
+      5
+    ],
+    [
+      "expected_delivery_date",
+      3
+    ],
+    [
+      "supplier_address",
+      2
+    ],
+    [
+      "po_id",
+      2
+    ],
+    [
+      "quote_id",
+      1
+    ],
+    [
+      "buyer_address",
+      1
+    ],
+    [
+      "requested_date",
+      1
+    ],
+    [
+      "invoice_date",
+      1
+    ],
+    [
+      "total_amount",
+      1
+    ],
+    [
+      "tax_percent",
+      1
+    ],
+    [
+      "tax_amount",
+      1
+    ]
+  ]
+}

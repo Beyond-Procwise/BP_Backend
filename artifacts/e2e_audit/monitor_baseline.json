@@ -1,0 +1,13 @@
+{
+  "process_monitor": 2,
+  "bp_invoice_raw": 0,
+  "bp_purchase_order_raw": 0,
+  "bp_quote_raw": 2,
+  "bp_invoice_trgt": 0,
+  "bp_purchase_order_trgt": 0,
+  "bp_quote_trgt": 1,
+  "bp_opportunity": 2,
+  "bp_agent_actions": 17,
+  "bp_deal_overview": 1,
+  "_captured": "overnight-tick6"
+}

@@ -1,0 +1,326 @@
+{
+  "captured_at": "2026-06-17T10:44:03.817550+00:00",
+  "tier_counts": {
+    "quote": {
+      "raw": 5,
+      "stg": 5,
+      "trgt": 4
+    },
+    "purchase_order": {
+      "raw": 5,
+      "stg": 5,
+      "trgt": 4
+    },
+    "invoice": {
+      "raw": 11,
+      "stg": 11,
+      "trgt": 10
+    }
+  },
+  "line_items": {
+    "invoice/stg": {
+      "total": 11,
+      "problem_count": 3,
+      "problems": [
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-050",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        },
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-051",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        },
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-052",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        }
+      ]
+    },
+    "invoice/trgt": {
+      "total": 10,
+      "problem_count": 3,
+      "problems": [
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-050",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        },
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-051",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        },
+        {
+          "item_description": "Marketing and Brand Development Services",
+          "invoice_id": "INV-25-052",
+          "line_no": 1,
+          "quantity": null,
+          "unit_price": null,
+          "line_amount": null,
+          "_issues": [
+            "null_line_amount",
+            "no_numbers"
+          ]
+        }
+      ]
+    },
+    "po/stg": {
+      "total": 6,
+      "problem_count": 0,
+      "problems": []
+    },
+    "po/trgt": {
+      "total": 5,
+      "problem_count": 0,
+      "problems": []
+    },
+    "quote/stg": {
+      "total": 5,
+      "problem_count": 0,
+      "problems": []
+    },
+    "quote/trgt": {
+      "total": 4,
+      "problem_count": 0,
+      "problems": []
+    }
+  },
+  "discrepancies": [
+    {
+      "doc_type": "invoice",
+      "doc_pk_candidate": "INV-25-051",
+      "field_name": "line_items[0]",
+      "raw_value": null,
+      "expected_value": null,
+      "computed_value": null,
+      "issue_type": "line_missing_numbers",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "line 1 has no quantity / unit_price / line_amount \u2014 only the description was captured",
+      "source_file": "documents/Invoice/AQUARIUS INV-25-051 for PO508084 .pdf"
+    },
+    {
+      "doc_type": "invoice",
+      "doc_pk_candidate": "INV-25-052",
+      "field_name": "line_items[0]",
+      "raw_value": null,
+      "expected_value": null,
+      "computed_value": null,
+      "issue_type": "line_missing_numbers",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "line 1 has no quantity / unit_price / line_amount \u2014 only the description was captured",
+      "source_file": "documents/Invoice/AQUARIUS INV-25-052 for PO508084 .pdf"
+    },
+    {
+      "doc_type": "invoice",
+      "doc_pk_candidate": "INV-25-050",
+      "field_name": "line_items[0]",
+      "raw_value": null,
+      "expected_value": null,
+      "computed_value": null,
+      "issue_type": "line_missing_numbers",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "line 1 has no quantity / unit_price / line_amount \u2014 only the description was captured",
+      "source_file": "documents/Invoice/AQUARIUS INV-25-050 for PO508084 .pdf"
+    },
+    {
+      "doc_type": "quote",
+      "doc_pk_candidate": "599390",
+      "field_name": "tax_amount",
+      "raw_value": "16670.00",
+      "expected_value": "16666.00",
+      "computed_value": "16670.00",
+      "issue_type": "tax_percent_mismatch",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "total_amount(83330.00) \u00d7 tax_percent(20.00%) = 16666.00 but tax_amount=16670.00.",
+      "source_file": "documents/Quote/CITY OF NEWPORT QUT599390 .pdf"
+    },
+    {
+      "doc_type": "quote",
+      "doc_pk_candidate": "DHA-2025-102",
+      "field_name": "line_items",
+      "raw_value": null,
+      "expected_value": null,
+      "computed_value": null,
+      "issue_type": "missing_line_items",
+      "severity": "warning",
+      "blocks_promotion": false,
+      "notes": "no line items were extracted from this document \u2014 table_extractor + text-fallback both returned 0 rows",
+      "source_file": "documents/Quote/DESIGN HOUSE AGENCY QUT DHA-2025-102.pdf"
+    }
+  ],
+  "held_in_raw": [],
+  "deal_status": {
+    "Deal_Linked": 18,
+    "Extracted": 3
+  },
+  "issues": [
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/stg",
+      "doc_pk": "INV-25-050",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-050",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/stg",
+      "doc_pk": "INV-25-051",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-051",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/stg",
+      "doc_pk": "INV-25-052",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-052",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/trgt",
+      "doc_pk": "INV-25-050",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-050",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/trgt",
+      "doc_pk": "INV-25-051",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-051",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    },
+    {
+      "kind": "line_item",
+      "doc_type": "invoice/trgt",
+      "doc_pk": "INV-25-052",
+      "issues": [
+        "null_line_amount",
+        "no_numbers"
+      ],
+      "row": {
+        "item_description": "Marketing and Brand Development Services",
+        "invoice_id": "INV-25-052",
+        "line_no": 1,
+        "quantity": null,
+        "unit_price": null,
+        "line_amount": null,
+        "_issues": [
+          "null_line_amount",
+          "no_numbers"
+        ]
+      }
+    }
+  ]
+}

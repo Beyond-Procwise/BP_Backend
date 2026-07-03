@@ -1,0 +1,414 @@
+INFO:     Started server process [4049197]
+INFO:     Waiting for application startup.
+2026-06-19 12:02:53,072 - INFO - api.main - API starting up...
+2026-06-19 12:02:53,072 - INFO - agents.base_agent - AgentNick is waking up...
+2026-06-19 12:02:53,072 - INFO - agents.base_agent - Initializing shared clients...
+2026-06-19 12:02:53,111 - INFO - sentence_transformers.SentenceTransformer - Load pretrained SentenceTransformer: BAAI/bge-large-en-v1.5
+2026-06-19 12:02:53,221 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333 "HTTP/1.1 200 OK"
+2026-06-19 12:02:53,877 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/learning "HTTP/1.1 200 OK"
+2026-06-19 12:02:53,889 - INFO - botocore.credentials - Found credentials in shared credentials file: ~/.aws/credentials
+2026-06-19 12:02:53,968 - INFO - agents.base_agent - Clients initialized.
+2026-06-19 12:02:54,298 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,326 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,398 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,480 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,548 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,620 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,688 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,759 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,830 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,897 - INFO - httpx - HTTP Request: POST https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/static_policy/points/scroll "HTTP/1.1 200 OK"
+2026-06-19 12:02:54,943 - INFO - agents.base_agent - Static policy sync complete: 0 ingested, 10 skipped
+2026-06-19 12:02:54,943 - INFO - agents.base_agent - Initializing core engines...
+2026-06-19 12:02:55,006 - INFO - engines.policy_engine - PolicyEngine loaded 9 policies
+2026-06-19 12:02:55,052 - INFO - agents.base_agent - Engines initialized.
+2026-06-19 12:02:55,077 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 12:02:55,077 - INFO - agents.base_agent - Qdrant collection 'procwise_document_embeddings' already exists.
+2026-06-19 12:03:25,109 - WARNING - agents.base_agent - Ollama model preload failed (non-critical): HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=30)
+2026-06-19 12:03:25,217 - INFO - agents.base_agent - Neo4j connectivity verified at bolt://localhost:7687
+2026-06-19 12:03:25,217 - INFO - agents.base_agent - AgentNick is ready.
+2026-06-19 12:03:25,219 - INFO - agents.auto_registry - AutoRegistry loaded 14 agent definitions from /home/muthu/PycharmProjects/BP_Backend/agent_definitions.json
+2026-06-19 12:03:25,219 - INFO - agents.base_agent - Initialized agent: ApprovalsAgent on device cuda
+2026-06-19 12:03:25,219 - INFO - agents.auto_registry - Instantiated agent 'approvals' from agents.approvals_agent.ApprovalsAgent
+2026-06-19 12:03:25,220 - INFO - agents.base_agent - Initialized agent: DataExtractionAgent on device cuda
+2026-06-19 12:03:25,221 - INFO - httpx - HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+2026-06-19 12:03:25,222 - INFO - agents.data_extraction_agent - DataExtractionAgent using fast model 'BeyondProcwise/AgentNick:latest'
+2026-06-19 12:03:25,224 - INFO - agents.data_extraction_agent - ML extraction pipeline initialized successfully
+2026-06-19 12:03:25,224 - INFO - agents.data_extraction_agent - New extraction engine initialized with DB connection
+2026-06-19 12:03:25,224 - INFO - agents.auto_registry - Instantiated agent 'data_extraction' from agents.data_extraction_agent.DataExtractionAgent
+2026-06-19 12:03:25,224 - INFO - agents.base_agent - Initialized agent: DiscrepancyDetectionAgent on device cuda
+2026-06-19 12:03:25,224 - INFO - agents.auto_registry - Instantiated agent 'discrepancy_detection' from agents.discrepancy_detection_agent.DiscrepancyDetectionAgent
+2026-06-19 12:03:25,224 - INFO - agents.base_agent - Initialized agent: EmailDispatchAgent on device cuda
+2026-06-19 12:03:25,224 - INFO - agents.auto_registry - Instantiated agent 'email_dispatch' from agents.email_dispatch_agent.EmailDispatchAgent
+2026-06-19 12:03:25,224 - INFO - agents.base_agent - Initialized agent: EmailDraftingAgent on device cuda
+2026-06-19 12:03:25,224 - INFO - agents.auto_registry - Instantiated agent 'email_drafting' from agents.email_drafting_agent.EmailDraftingAgent
+2026-06-19 12:03:25,224 - INFO - agents.base_agent - Initialized agent: NegotiationAgent on device cuda
+2026-06-19 12:03:25,224 - INFO - agents.auto_registry - Instantiated agent 'negotiation' from agents.negotiation_agent.NegotiationAgent
+2026-06-19 12:03:25,224 - INFO - agents.base_agent - Initialized agent: OpportunityMinerAgent on device cuda
+2026-06-19 12:03:25,224 - WARNING - utils.reference_loader - Reference dataset 'opportunity_priority_config' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/opportunity_priority_config.json
+2026-06-19 12:03:25,224 - INFO - agents.opportunity_miner_agent - OpportunityMinerAgent using device: cuda
+2026-06-19 12:03:25,224 - INFO - agents.auto_registry - Instantiated agent 'opportunity_miner' from agents.opportunity_miner_agent.OpportunityMinerAgent
+2026-06-19 12:03:25,225 - INFO - agents.base_agent - Initialized agent: QuoteComparisonAgent on device cuda
+2026-06-19 12:03:25,225 - INFO - agents.auto_registry - Instantiated agent 'quote_comparison' from agents.quote_comparison_agent.QuoteComparisonAgent
+2026-06-19 12:03:25,225 - INFO - agents.base_agent - Initialized agent: QuoteEvaluationAgent on device cuda
+2026-06-19 12:03:25,225 - INFO - agents.auto_registry - Instantiated agent 'quote_evaluation' from agents.quote_evaluation_agent.QuoteEvaluationAgent
+2026-06-19 12:03:25,225 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.82it/s]Batches: 100%|██████████| 1/1 [00:00<00:00,  3.82it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 44.90it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.45it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.11it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.08it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 51.57it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.06it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.36it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 51.86it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.05it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 48.86it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 52.66it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.42it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 49.12it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 50.32it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.92it/s]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 47.64it/s]
+2026-06-19 12:03:28,887 - INFO - agents.auto_registry - Instantiated agent 'rag' from agents.rag_agent.RAGAgent
+2026-06-19 12:03:28,889 - INFO - agents.base_agent - Initialized agent: RequirementsAgent on device cuda
+2026-06-19 12:03:28,889 - INFO - agents.auto_registry - Instantiated agent 'requirements' from agents.requirements_agent.RequirementsAgent
+2026-06-19 12:03:28,889 - INFO - agents.base_agent - Initialized agent: SupplierInteractionAgent on device cuda
+2026-06-19 12:03:28,889 - INFO - agents.auto_registry - Instantiated agent 'supplier_interaction' from agents.supplier_interaction_agent.SupplierInteractionAgent
+2026-06-19 12:03:28,889 - INFO - agents.base_agent - Initialized agent: SupplierRankingAgent on device cuda
+2026-06-19 12:03:28,890 - WARNING - utils.reference_loader - Reference dataset 'supplier_scoring_reference' not found at /home/muthu/PycharmProjects/BP_Backend/resources/reference_data/supplier_scoring_reference.json
+2026-06-19 12:03:28,960 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 12:03:28,988 - INFO - agents.auto_registry - Instantiated agent 'supplier_ranking' from agents.supplier_ranking_agent.SupplierRankingAgent
+2026-06-19 12:03:29,037 - INFO - orchestration.reasoning_engine - Warming planning model BeyondProcwise/AgentNick:unified (pinning resident)...
+2026-06-19 12:03:29,314 - INFO - api.main - extraction_v3: loaded 4 doc-type schemas: ['contract', 'invoice', 'purchase_order', 'quote']
+2026-06-19 12:03:29,318 - INFO - orchestration.reasoning_engine - Planning model BeyondProcwise/AgentNick:unified warmed and pinned
+2026-06-19 12:03:29,340 - INFO - api.main - Extraction provenance schema ensured
+2026-06-19 12:03:29,346 - INFO - orchestration.orchestrator - Declarative workflow engine initialized with 6 workflows
+2026-06-19 12:03:29,371 - INFO - httpx - HTTP Request: GET https://c4880301-8aae-434c-b0a5-a1a849ae1864.eu-central-1-0.aws.cloud.qdrant.io:6333/collections/procwise_document_embeddings "HTTP/1.1 200 OK"
+2026-06-19 12:03:29,373 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #1 starting
+2026-06-19 12:03:29,373 - INFO - services.email_watcher - EmailWatcherService started (poll_interval=90s post_dispatch_interval=30s dispatch_wait=0s)
+2026-06-19 12:03:29,415 - INFO - services.process_monitor_watcher - process_monitor schema and trigger ensured
+2026-06-19 12:03:29,472 - INFO - services.process_monitor_watcher - ProcessMonitorWatcher started
+2026-06-19 12:03:29,569 - INFO - services.process_monitor_watcher - LISTEN connection established on channel 'process_monitor_ready'
+2026-06-19 12:03:29,714 - INFO - services.uicanvas_bridge - UicanvasBridge started
+2026-06-19 12:03:29,832 - INFO - services.promotion_listener_service - PromotionListenerService started
+2026-06-19 12:03:29,833 - INFO - agents.base_agent - Initialized agent: RAGAgent on device cuda
+2026-06-19 12:03:29,926 - INFO - src.services.extraction.promotion - promotion listener armed on channel extraction_raw_ready_for_promotion
+2026-06-19 12:03:29,934 - INFO - services.uicanvas_bridge - UicanvasBridge listening on uicanvas.process_monitor_ready
+2026-06-19 12:03:30,039 - INFO - api.main - System initialized successfully.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52020 - "GET /health HTTP/1.1" 200 OK
+2026-06-19 12:04:20,633 - INFO - services.process_monitor_watcher - Starting extraction for record 874: file_path=documents/Invoice/TECHNOVA QUT103107 .pdf category=Invoice
+2026-06-19 12:04:20,672 - INFO - services.process_monitor_watcher - Starting extraction for record 875: file_path=documents/Quote/VALUED MERCHANT QUT048597.pdf category=Quote
+2026-06-19 12:04:20,790 - INFO - src.services.extraction_v3.dispatch - Resolved S3 key 'documents/Quote/VALUED MERCHANT QUT048597.pdf' -> local temp file for extraction
+2026-06-19 12:04:20,790 - INFO - src.services.extraction_v3.dispatch - Dispatching documents/Quote/VALUED MERCHANT QUT048597.pdf (quote) to extraction engine=hybrid_v4
+2026-06-19 12:04:20,828 - INFO - extraction_v4.engine - run_data_extraction: doc_type=quote file=/tmp/tmpcq88csg2.pdf
+2026-06-19 12:04:20,828 - INFO - extraction_v4.engine - Detected file type: pdf
+2026-06-19 12:04:20,836 - INFO - extraction_v4.engine - Digital PDF – running block-level layout extraction (quote).
+2026-06-19 12:04:20,844 - INFO - src.services.extraction_v3.dispatch - Resolved S3 key 'documents/Invoice/TECHNOVA QUT103107 .pdf' -> local temp file for extraction
+2026-06-19 12:04:20,854 - INFO - src.services.extraction_v3.dispatch - Dispatching documents/Invoice/TECHNOVA QUT103107 .pdf (invoice) to extraction engine=hybrid_v4
+2026-06-19 12:04:20,854 - INFO - extraction_v4.engine - run_data_extraction: doc_type=invoice file=/tmp/tmpzdhcarsr.pdf
+MuPDF error: format error: No common ancestor in structure tree
+2026-06-19 12:04:20,860 - INFO - extraction_v4.engine - Detected file type: pdf
+
+2026-06-19 12:04:20,885 - INFO - extraction_v4.engine - Digital PDF – running block-level layout extraction.
+MuPDF error: format error: No common ancestor in structure tree
+
+2026-06-19 12:04:23,269 - INFO - extraction_v4.engine - Extracted 270 characters, 96 word boxes, 9 layout fields.
+2026-06-19 12:04:23,269 - INFO - extraction_v4.engine - Running spaCy NER...
+2026-06-19 12:04:23,269 - INFO - extraction_v4.engine - Loading spaCy model: en_core_web_sm
+2026-06-19 12:04:23,598 - INFO - extraction_v4.engine - Extracted 443 characters of text, 117 word boxes, 12 layout fields.
+2026-06-19 12:04:23,608 - INFO - extraction_v4.engine - Running spaCy NER...
+2026-06-19 12:04:23,614 - INFO - extraction_v4.engine - Loading spaCy model: en_core_web_sm
+2026-06-19 12:04:24,023 - INFO - extraction_v4.engine - spaCy model loaded.
+2026-06-19 12:04:24,132 - INFO - extraction_v4.engine - spaCy model loaded.
+2026-06-19 12:04:24,145 - INFO - extraction_v4.engine - Running NuExtract NER (quote)...
+2026-06-19 12:04:24,157 - INFO - extraction_v4.engine - Running NuExtract NER...
+INFO:     183.82.250.27:33198 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:63343 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:33198 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:63343 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+2026-06-19 12:05:29,499 - INFO - services.procurement_kg_builder - [KG] Loaded 75 Supplier nodes from proc.bp_supplier
+2026-06-19 12:05:29,741 - INFO - services.procurement_kg_builder - [KG] Loaded 0 Policy nodes from proc.bp_policy
+2026-06-19 12:05:29,762 - INFO - services.procurement_kg_builder - [KG] Created 3008 SUPPLIER_PARTY_TO_CONTRACT relationships
+2026-06-19 12:05:29,765 - INFO - services.procurement_kg_builder - [KG] Created 286 INVOICE_FROM_SUPPLIER relationships
+2026-06-19 12:05:29,768 - INFO - services.procurement_kg_builder - [KG] Created 445 INVOICE_REFERENCES_PO relationships
+2026-06-19 12:05:29,770 - INFO - services.procurement_kg_builder - [KG] Created 241 PO_FROM_SUPPLIER relationships
+2026-06-19 12:05:29,772 - INFO - services.procurement_kg_builder - [KG] Created 174 QUOTE_FROM_SUPPLIER relationships
+2026-06-19 12:05:29,775 - INFO - services.procurement_kg_builder - [KG] Created 643 LINE_OF_INVOICE relationships
+2026-06-19 12:05:29,777 - INFO - services.procurement_kg_builder - [KG] Created 252 LINE_OF_PO relationships
+2026-06-19 12:05:29,779 - INFO - services.procurement_kg_builder - [KG] Created 330 LINE_OF_QUOTE relationships
+2026-06-19 12:05:29,780 - INFO - services.procurement_kg_builder - [KG] Created 34 QUOTE_FOR_PO relationships
+2026-06-19 12:05:29,789 - INFO - services.procurement_kg_builder - [KG] Created 164 PO_LINE_FROM_QUOTE relationships
+2026-06-19 12:05:29,893 - INFO - services.procurement_kg_builder - [KG] Created 645 PO_REFERENCES_QUOTE relationships
+2026-06-19 12:05:29,919 - INFO - services.procurement_kg_builder - [KG] Inferred 3709 supplier nodes from extracted data
+2026-06-19 12:05:29,919 - INFO - services.procurement_kg_builder - [KG Builder] Complete: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 12:05:29,919 - INFO - services.backend_scheduler - KG sync completed: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 12:06:24,229 - WARNING - extraction_v4.engine - NuExtract extraction failed on chunk: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+2026-06-19 12:06:24,229 - INFO - extraction_v4.engine - Running QuoteExtractor...
+2026-06-19 12:06:24,256 - INFO - src.services.extraction_v3.extraction_v4.supplier_index - supplier_index: hydrated 75 names from DB
+2026-06-19 12:06:24,267 - WARNING - extraction_v4.engine - NuExtract extraction failed on chunk: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+2026-06-19 12:06:24,268 - INFO - extraction_v4.engine - Running InvoiceExtractor...
+2026-06-19 12:06:24,305 - INFO - extraction_v4.llm_extractor - LLM context layer: quote has 3 empty extractable fields: ['tax_percent', 'validity_date', 'po_number']
+2026-06-19 12:06:24,305 - INFO - extraction_v4.llm_extractor - LLM context layer: invoice has 9 empty extractable fields: ['requested_date', 'due_date', 'requested_by', 'tax_percent', 'invoice_number', 'buyer_address', 'po_number', 'payment_terms', 'supplier_address']
+2026-06-19 12:06:29,981 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 1, 'by_reason': {'low_extraction_confidence': 1}, 'details': [{'doc_type': 'quote', 'doc_pk': '048597', 'action': 'held', 'reason': 'low_extraction_confidence', 'F': None}]}
+INFO:     183.82.250.27:33198 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:63343 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:33198 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:63343 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:33198 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:63343 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+2026-06-19 12:07:24,367 - WARNING - extraction_v4.llm_extractor - LLM extraction failed: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60) -- skipping fill
+2026-06-19 12:07:24,367 - WARNING - extraction_v4.llm_extractor - LLM extraction failed: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60) -- skipping fill
+2026-06-19 12:07:24,662 - WARNING - src.services.extraction_v3.extraction_v4.adapter - adapter: no doc_pk for invoice -- header keys=['invoice_id', 'po_id', 'supplier_name', 'buyer_id', 'requisition_id', 'requested_by', 'requested_date', 'invoice_date', 'due_date', 'invoice_paid_date', 'payment_terms', 'currency', 'invoice_amount', 'tax_percent', 'tax_amount', 'invoice_total_incl_tax', 'shipping_fee', 'exchange_rate_to_usd', 'converted_amount_usd', 'country', 'region', 'invoice_status', 'ai_flag_required', 'trigger_type', 'trigger_context_description', 'created_date', 'created_by', 'last_modified_by', 'last_modified_date']
+2026-06-19 12:07:24,671 - WARNING - src.services.extraction_v3.dispatch - doc-type mismatch: requested category='invoice' but content looks like 'quote' -- re-routing /tmp/tmpzdhcarsr.pdf
+2026-06-19 12:07:24,672 - INFO - extraction_v4.engine - run_data_extraction: doc_type=quote file=/tmp/tmpzdhcarsr.pdf
+2026-06-19 12:07:24,672 - INFO - extraction_v4.engine - Detected file type: pdf
+2026-06-19 12:07:24,679 - INFO - extraction_v4.engine - Digital PDF – running block-level layout extraction (quote).
+MuPDF error: format error: No common ancestor in structure tree
+
+2026-06-19 12:07:24,765 - INFO - src.services.extraction_v3.supplier_resolver - supplier_resolver: loaded classifier from /home/muthu/PycharmProjects/BP_Backend/models/supplier_name_classifier.joblib (threshold=0.44)
+2026-06-19 12:07:24,777 - INFO - src.services.extraction_v3.supplier_resolver - supplier_resolver: exact match 'Assurity Ltd' → SUP-AssurityLtd
+2026-06-19 12:07:24,778 - INFO - src.services.extraction_v3.dispatch - quote pre-resolve: supplier_id 'Assurity Ltd' -> 'SUP-AssurityLtd'
+2026-06-19 12:07:25,105 - INFO - src.services.extraction_v3.persistence - write_raw OK doc_type=quote doc_pk=048597 raw_id=564 source=documents/Quote/VALUED MERCHANT QUT048597.pdf
+2026-06-19 12:07:25,166 - INFO - src.services.extraction_v3.persistence - promote_to_stg OK doc_type=quote doc_pk=048597 raw_id=564 fields=21
+2026-06-19 12:07:25,176 - INFO - src.services.extraction_v3.persistence - persist OK doc_type=quote doc_pk=048597 raw_id=564 fields=21 discrepancies=8 critical=0 promoted=True
+2026-06-19 12:07:25,202 - INFO - services.process_monitor_watcher - Extraction completed for record 875: quote pk=048597 fields=None lines=None discrep=None conf=0.9000000000000001
+2026-06-19 12:07:25,203 - WARNING - services.process_monitor_watcher - ZERO_LINE_ITEMS for record 875: quote pk=048597 persisted with 0 line items — verify against source PDF
+2026-06-19 12:07:25,294 - INFO - services.procurement_kg_builder - [KG] Loaded 75 Supplier nodes from proc.bp_supplier
+2026-06-19 12:07:25,533 - INFO - services.procurement_kg_builder - [KG] Loaded 0 Policy nodes from proc.bp_policy
+2026-06-19 12:07:25,554 - INFO - services.procurement_kg_builder - [KG] Created 3008 SUPPLIER_PARTY_TO_CONTRACT relationships
+2026-06-19 12:07:25,557 - INFO - services.procurement_kg_builder - [KG] Created 286 INVOICE_FROM_SUPPLIER relationships
+2026-06-19 12:07:25,560 - INFO - services.procurement_kg_builder - [KG] Created 445 INVOICE_REFERENCES_PO relationships
+2026-06-19 12:07:25,562 - INFO - services.procurement_kg_builder - [KG] Created 241 PO_FROM_SUPPLIER relationships
+2026-06-19 12:07:25,564 - INFO - services.procurement_kg_builder - [KG] Created 174 QUOTE_FROM_SUPPLIER relationships
+2026-06-19 12:07:25,567 - INFO - services.procurement_kg_builder - [KG] Created 643 LINE_OF_INVOICE relationships
+2026-06-19 12:07:25,569 - INFO - services.procurement_kg_builder - [KG] Created 252 LINE_OF_PO relationships
+2026-06-19 12:07:25,571 - INFO - services.procurement_kg_builder - [KG] Created 330 LINE_OF_QUOTE relationships
+2026-06-19 12:07:25,572 - INFO - services.procurement_kg_builder - [KG] Created 34 QUOTE_FOR_PO relationships
+2026-06-19 12:07:25,574 - INFO - services.procurement_kg_builder - [KG] Created 164 PO_LINE_FROM_QUOTE relationships
+2026-06-19 12:07:25,675 - INFO - services.procurement_kg_builder - [KG] Created 645 PO_REFERENCES_QUOTE relationships
+2026-06-19 12:07:25,702 - INFO - services.procurement_kg_builder - [KG] Inferred 3709 supplier nodes from extracted data
+2026-06-19 12:07:25,702 - INFO - services.procurement_kg_builder - [KG Builder] Complete: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 12:07:25,702 - INFO - services.process_monitor_watcher - KG synced after extraction of record 875
+2026-06-19 12:07:25,729 - INFO - services.process_monitor_watcher - Collected training example: quote pk=048597 conf=0.90 → /home/muthu/PycharmProjects/BP_Backend/src/data/training/auto_collected_examples.jsonl
+2026-06-19 12:07:27,071 - INFO - extraction_v4.engine - Extracted 435 characters, 117 word boxes, 12 layout fields.
+2026-06-19 12:07:27,071 - INFO - extraction_v4.engine - Running spaCy NER...
+2026-06-19 12:07:27,087 - INFO - extraction_v4.engine - Running NuExtract NER (quote)...
+2026-06-19 12:08:30,287 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0, 'summaries': {'processed': 3, 'skipped': 0, 'failed': 0, 'deal_ids': ['DEAL_SET_152026061859', 'TEST0052026061851', 'TEST0042026061850']}}
+INFO:     183.82.250.27:63343 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:33198 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+2026-06-19 12:09:27,187 - WARNING - extraction_v4.engine - NuExtract extraction failed on chunk: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+2026-06-19 12:09:27,188 - INFO - extraction_v4.engine - Running QuoteExtractor...
+2026-06-19 12:09:27,245 - INFO - src.services.extraction_v3.supplier_resolver - supplier_resolver: exact match 'Assurity Ltd' → SUP-AssurityLtd
+2026-06-19 12:09:27,245 - INFO - src.services.extraction_v3.dispatch - quote pre-resolve: supplier_id 'Assurity Ltd' -> 'SUP-AssurityLtd'
+2026-06-19 12:09:27,246 - INFO - src.services.extraction_v3.dispatch - doc-type re-route SUCCESS: pk='QUT103107' recovered as quote
+2026-06-19 12:09:27,410 - INFO - src.services.extraction_v3.persistence - write_raw OK doc_type=quote doc_pk=QUT103107 raw_id=565 source=documents/Invoice/TECHNOVA QUT103107 .pdf
+2026-06-19 12:09:27,457 - INFO - src.services.extraction_v3.persistence - promote_to_stg OK doc_type=quote doc_pk=QUT103107 raw_id=565 fields=21
+2026-06-19 12:09:27,473 - INFO - src.services.extraction_v3.persistence - persist OK doc_type=quote doc_pk=QUT103107 raw_id=565 fields=21 discrepancies=8 critical=0 promoted=True
+2026-06-19 12:09:27,498 - INFO - services.process_monitor_watcher - Extraction completed for record 874: quote pk=QUT103107 fields=None lines=None discrep=None conf=0.9000000000000001
+2026-06-19 12:09:27,498 - WARNING - services.process_monitor_watcher - ZERO_LINE_ITEMS for record 874: quote pk=QUT103107 persisted with 0 line items — verify against source PDF
+2026-06-19 12:09:27,608 - INFO - services.procurement_kg_builder - [KG] Loaded 75 Supplier nodes from proc.bp_supplier
+2026-06-19 12:09:27,838 - INFO - services.procurement_kg_builder - [KG] Loaded 0 Policy nodes from proc.bp_policy
+2026-06-19 12:09:27,857 - INFO - services.procurement_kg_builder - [KG] Created 3008 SUPPLIER_PARTY_TO_CONTRACT relationships
+2026-06-19 12:09:27,860 - INFO - services.procurement_kg_builder - [KG] Created 286 INVOICE_FROM_SUPPLIER relationships
+2026-06-19 12:09:27,866 - INFO - services.procurement_kg_builder - [KG] Created 445 INVOICE_REFERENCES_PO relationships
+2026-06-19 12:09:27,868 - INFO - services.procurement_kg_builder - [KG] Created 241 PO_FROM_SUPPLIER relationships
+2026-06-19 12:09:27,870 - INFO - services.procurement_kg_builder - [KG] Created 174 QUOTE_FROM_SUPPLIER relationships
+2026-06-19 12:09:27,874 - INFO - services.procurement_kg_builder - [KG] Created 643 LINE_OF_INVOICE relationships
+2026-06-19 12:09:27,876 - INFO - services.procurement_kg_builder - [KG] Created 252 LINE_OF_PO relationships
+2026-06-19 12:09:27,878 - INFO - services.procurement_kg_builder - [KG] Created 330 LINE_OF_QUOTE relationships
+2026-06-19 12:09:27,880 - INFO - services.procurement_kg_builder - [KG] Created 34 QUOTE_FOR_PO relationships
+2026-06-19 12:09:27,881 - INFO - services.procurement_kg_builder - [KG] Created 164 PO_LINE_FROM_QUOTE relationships
+2026-06-19 12:09:27,982 - INFO - services.procurement_kg_builder - [KG] Created 645 PO_REFERENCES_QUOTE relationships
+2026-06-19 12:09:28,008 - INFO - services.procurement_kg_builder - [KG] Inferred 3709 supplier nodes from extracted data
+2026-06-19 12:09:28,008 - INFO - services.procurement_kg_builder - [KG Builder] Complete: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 12:09:28,008 - INFO - services.process_monitor_watcher - KG synced after extraction of record 874
+2026-06-19 12:09:28,034 - INFO - services.process_monitor_watcher - Collected training example: quote pk=QUT103107 conf=0.90 → /home/muthu/PycharmProjects/BP_Backend/src/data/training/auto_collected_examples.jsonl
+INFO:     183.82.250.27:63343 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:33198 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+2026-06-19 12:09:40,107 - INFO - services.process_monitor_watcher - Starting extraction for record 874: file_path=documents/Invoice/TECHNOVA QUT103107 .pdf category=Invoice
+2026-06-19 12:09:40,232 - INFO - src.services.extraction_v3.dispatch - Resolved S3 key 'documents/Invoice/TECHNOVA QUT103107 .pdf' -> local temp file for extraction
+2026-06-19 12:09:40,233 - INFO - src.services.extraction_v3.dispatch - Dispatching documents/Invoice/TECHNOVA QUT103107 .pdf (invoice) to extraction engine=hybrid_v4
+2026-06-19 12:09:40,233 - INFO - extraction_v4.engine - run_data_extraction: doc_type=invoice file=/tmp/tmpdqp78evw.pdf
+2026-06-19 12:09:40,233 - INFO - extraction_v4.engine - Detected file type: pdf
+2026-06-19 12:09:40,241 - INFO - extraction_v4.engine - Digital PDF – running block-level layout extraction.
+MuPDF error: format error: No common ancestor in structure tree
+
+2026-06-19 12:09:42,558 - INFO - extraction_v4.engine - Extracted 443 characters of text, 117 word boxes, 12 layout fields.
+2026-06-19 12:09:42,559 - INFO - extraction_v4.engine - Running spaCy NER...
+2026-06-19 12:09:42,575 - INFO - extraction_v4.engine - Running NuExtract NER...
+2026-06-19 12:11:42,676 - WARNING - extraction_v4.engine - NuExtract extraction failed on chunk: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+2026-06-19 12:11:42,676 - INFO - extraction_v4.engine - Running InvoiceExtractor...
+2026-06-19 12:11:42,692 - INFO - extraction_v4.llm_extractor - LLM context layer: invoice has 9 empty extractable fields: ['requested_date', 'due_date', 'requested_by', 'tax_percent', 'invoice_number', 'buyer_address', 'po_number', 'payment_terms', 'supplier_address']
+INFO:     183.82.250.27:63343 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:33198 - "OPTIONS /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:33198 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:63343 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+2026-06-19 12:12:42,753 - WARNING - extraction_v4.llm_extractor - LLM extraction failed: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60) -- skipping fill
+2026-06-19 12:12:42,762 - WARNING - src.services.extraction_v3.extraction_v4.adapter - adapter: no doc_pk for invoice -- header keys=['invoice_id', 'po_id', 'supplier_name', 'buyer_id', 'requisition_id', 'requested_by', 'requested_date', 'invoice_date', 'due_date', 'invoice_paid_date', 'payment_terms', 'currency', 'invoice_amount', 'tax_percent', 'tax_amount', 'invoice_total_incl_tax', 'shipping_fee', 'exchange_rate_to_usd', 'converted_amount_usd', 'country', 'region', 'invoice_status', 'ai_flag_required', 'trigger_type', 'trigger_context_description', 'created_date', 'created_by', 'last_modified_by', 'last_modified_date']
+2026-06-19 12:12:42,773 - WARNING - src.services.extraction_v3.dispatch - doc-type mismatch: requested category='invoice' but content looks like 'quote' -- re-routing /tmp/tmpdqp78evw.pdf
+2026-06-19 12:12:42,773 - INFO - extraction_v4.engine - run_data_extraction: doc_type=quote file=/tmp/tmpdqp78evw.pdf
+2026-06-19 12:12:42,773 - INFO - extraction_v4.engine - Detected file type: pdf
+2026-06-19 12:12:42,780 - INFO - extraction_v4.engine - Digital PDF – running block-level layout extraction (quote).
+MuPDF error: format error: No common ancestor in structure tree
+
+2026-06-19 12:12:45,115 - INFO - extraction_v4.engine - Extracted 435 characters, 117 word boxes, 12 layout fields.
+2026-06-19 12:12:45,115 - INFO - extraction_v4.engine - Running spaCy NER...
+2026-06-19 12:12:45,132 - INFO - extraction_v4.engine - Running NuExtract NER (quote)...
+INFO:     183.82.250.27:63343 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:33198 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+2026-06-19 12:14:45,225 - WARNING - extraction_v4.engine - NuExtract extraction failed on chunk: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+2026-06-19 12:14:45,226 - INFO - extraction_v4.engine - Running QuoteExtractor...
+2026-06-19 12:14:45,292 - INFO - src.services.extraction_v3.supplier_resolver - supplier_resolver: exact match 'Assurity Ltd' → SUP-AssurityLtd
+2026-06-19 12:14:45,293 - INFO - src.services.extraction_v3.dispatch - quote pre-resolve: supplier_id 'Assurity Ltd' -> 'SUP-AssurityLtd'
+2026-06-19 12:14:45,293 - INFO - src.services.extraction_v3.dispatch - doc-type re-route SUCCESS: pk='QUT103107' recovered as quote
+2026-06-19 12:14:45,445 - INFO - src.services.extraction_v3.persistence - write_raw OK doc_type=quote doc_pk=QUT103107 raw_id=566 source=documents/Invoice/TECHNOVA QUT103107 .pdf
+2026-06-19 12:14:45,494 - INFO - src.services.extraction_v3.persistence - promote_to_stg OK doc_type=quote doc_pk=QUT103107 raw_id=566 fields=21
+2026-06-19 12:14:45,522 - INFO - src.services.extraction_v3.persistence - persist OK doc_type=quote doc_pk=QUT103107 raw_id=566 fields=21 discrepancies=8 critical=0 promoted=True
+2026-06-19 12:14:45,559 - INFO - services.process_monitor_watcher - Extraction completed for record 874: quote pk=QUT103107 fields=None lines=None discrep=None conf=0.9000000000000001
+2026-06-19 12:14:45,559 - WARNING - services.process_monitor_watcher - ZERO_LINE_ITEMS for record 874: quote pk=QUT103107 persisted with 0 line items — verify against source PDF
+2026-06-19 12:14:45,641 - INFO - services.procurement_kg_builder - [KG] Loaded 75 Supplier nodes from proc.bp_supplier
+2026-06-19 12:14:45,863 - INFO - services.procurement_kg_builder - [KG] Loaded 0 Policy nodes from proc.bp_policy
+2026-06-19 12:14:45,882 - INFO - services.procurement_kg_builder - [KG] Created 3008 SUPPLIER_PARTY_TO_CONTRACT relationships
+2026-06-19 12:14:45,885 - INFO - services.procurement_kg_builder - [KG] Created 286 INVOICE_FROM_SUPPLIER relationships
+2026-06-19 12:14:45,888 - INFO - services.procurement_kg_builder - [KG] Created 445 INVOICE_REFERENCES_PO relationships
+2026-06-19 12:14:45,890 - INFO - services.procurement_kg_builder - [KG] Created 241 PO_FROM_SUPPLIER relationships
+2026-06-19 12:14:45,892 - INFO - services.procurement_kg_builder - [KG] Created 174 QUOTE_FROM_SUPPLIER relationships
+2026-06-19 12:14:45,895 - INFO - services.procurement_kg_builder - [KG] Created 643 LINE_OF_INVOICE relationships
+2026-06-19 12:14:45,897 - INFO - services.procurement_kg_builder - [KG] Created 252 LINE_OF_PO relationships
+2026-06-19 12:14:45,899 - INFO - services.procurement_kg_builder - [KG] Created 330 LINE_OF_QUOTE relationships
+2026-06-19 12:14:45,900 - INFO - services.procurement_kg_builder - [KG] Created 34 QUOTE_FOR_PO relationships
+2026-06-19 12:14:45,901 - INFO - services.procurement_kg_builder - [KG] Created 164 PO_LINE_FROM_QUOTE relationships
+2026-06-19 12:14:46,002 - INFO - services.procurement_kg_builder - [KG] Created 645 PO_REFERENCES_QUOTE relationships
+2026-06-19 12:14:46,027 - INFO - services.procurement_kg_builder - [KG] Inferred 3709 supplier nodes from extracted data
+2026-06-19 12:14:46,028 - INFO - services.procurement_kg_builder - [KG Builder] Complete: {'Supplier': 75, 'Contract': 0, 'Invoice': 0, 'InvoiceLine': 0, 'PurchaseOrder': 0, 'POLine': 0, 'Quote': 0, 'QuoteLine': 0, 'Category': 0, 'Approval': 0, 'Policy': 0, 'rel_SUPPLIER_PARTY_TO_CONTRACT': 3008, 'rel_INVOICE_FROM_SUPPLIER': 286, 'rel_INVOICE_REFERENCES_PO': 445, 'rel_PO_FROM_SUPPLIER': 241, 'rel_QUOTE_FROM_SUPPLIER': 174, 'rel_LINE_OF_INVOICE': 643, 'rel_LINE_OF_PO': 252, 'rel_LINE_OF_QUOTE': 330, 'rel_QUOTE_FOR_PO': 34, 'rel_PO_LINE_FROM_QUOTE': 164, 'rel_CATEGORY_HAS_PARENT': 0, 'rel_CONTRACT_COVERS_CATEGORY': 0, 'finance_approvals': 4, 'procurement_approvals': 4, 'risk_components': 5, 'finance_hierarchy': 5, 'tprm_profiles': 2, 'rel_PO_REFERENCES_QUOTE': 645, 'inferred_suppliers': 3709}
+2026-06-19 12:14:46,028 - INFO - services.process_monitor_watcher - KG synced after extraction of record 874
+2026-06-19 12:17:00,161 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #10 starting
+INFO:     183.82.250.27:5814 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:3706 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:3706 - "OPTIONS /deals/TEST00132026061965/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:3706 - "GET /deals/TEST00132026061965/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:3706 - "GET /deals/TEST00132026061965/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:3706 - "OPTIONS /summary?persona=analysis&deal_id=TEST00132026061965 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:3706 - "GET /summary?persona=analysis&deal_id=TEST00132026061965 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "GET /deals/TEST00132026061965/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:3706 - "GET /summary?persona=analysis&deal_id=TEST00132026061965 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "GET /deals/TEST00132026061965/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "GET /deals/TEST00132026061965/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "GET /deals/TEST00132026061965/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "GET /deals/TEST00132026061965/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "GET /deals/TEST00132026061965/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "GET /summary?persona=analysis&deal_id=TEST00132026061965 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "GET /summary?persona=analysis&deal_id=TEST00132026061965 HTTP/1.1" 404 Not Found
+2026-06-19 12:21:30,347 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 2, 'by_reason': {'low_extraction_confidence': 2}, 'details': [{'doc_type': 'quote', 'doc_pk': 'QUT103107', 'action': 'held', 'reason': 'low_extraction_confidence', 'F': None}, {'doc_type': 'quote', 'doc_pk': '048597', 'action': 'held', 'reason': 'low_extraction_confidence', 'F': None}]}
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:3706 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:3706 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "OPTIONS /summary?persona=analysis&deal_id=TEST0092026061861 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /summary?persona=analysis&deal_id=TEST0092026061861 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "OPTIONS /summary?persona=analysis&deal_id=TEST0092026061861 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /summary?persona=analysis&deal_id=TEST0092026061861 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+2026-06-19 12:23:30,611 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0, 'summaries': {'processed': 3, 'skipped': 0, 'failed': 0, 'deal_ids': ['TEST0052026061851', 'DEAL_SET_152026061859', 'TEST0042026061850']}}
+INFO:     183.82.250.27:5814 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:3706 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:5814 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:3706 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:3706 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:3706 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+2026-06-19 12:32:01,051 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #20 starting
+INFO:     183.82.250.27:42104 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:16659 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:16659 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:42104 - "OPTIONS /deals/TEST0092026061861/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /deals/TEST0092026061861/negotiate HTTP/1.1" 404 Not Found
+2026-06-19 12:33:30,729 - INFO - services.model_sync_service - Model rebuilt successfully: BeyondProcwise/AgentNick:latest
+2026-06-19 12:33:33,610 - INFO - services.model_sync_service - Model pushed to registry: BeyondProcwise/AgentNick:latest
+2026-06-19 12:33:33,641 - INFO - src.services.summary_agent - summary precompute: 3 personas x 20 scopes = 60 generations
+INFO:     183.82.250.27:42104 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:16659 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:16659 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:42104 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:16659 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:16659 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:42104 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:16659 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:16659 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:42104 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:42104 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:42104 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:42104 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:42104 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:42104 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:63340 - "OPTIONS /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:19471 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:63340 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:19471 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60270 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:44107 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:18760 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:38567 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:38567 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:18760 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:18760 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:18760 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:18760 - "OPTIONS /deals/DEAL_SET_132026061743/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:38567 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:52941 - "OPTIONS /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:12874 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:18760 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:38567 - "GET /deals/DEAL_SET_132026061743/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:12874 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:52941 - "GET /deals/DEAL_SET_052026061719/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:12874 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:12874 - "GET /summary?persona=analysis&deal_id=DEAL_SET_052026061719 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:38567 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_132026061743 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:38567 - "GET /summary?persona=analysis&deal_id=DEAL_SET_132026061743 HTTP/1.1" 200 OK
+2026-06-19 12:47:01,928 - INFO - services.email_watcher - EmailWatcherService heartbeat: poll #30 starting
+INFO:     183.82.250.27:44107 - "OPTIONS /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60270 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:44107 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:44107 - "GET /deals/DEAL_SET_212026061974/negotiate HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:44107 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:44107 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+INFO:     183.82.250.27:44107 - "GET /summary?persona=analysis&deal_id=DEAL_SET_212026061974 HTTP/1.1" 404 Not Found
+2026-06-19 12:50:14,856 - INFO - services.backend_scheduler - summary precompute completed: {'generated': 60, 'failed': 0, 'personas': 3, 'scopes': 20}
+INFO:     183.82.250.27:44107 - "OPTIONS /deals/DEAL_SET_132026061743/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60270 - "OPTIONS /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:44107 - "GET /deals/DEAL_SET_132026061743/negotiate HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60270 - "GET /opportunities/dashboard?limit=100&currentGraph=&dealId=&timeRange= HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60270 - "OPTIONS /summary?persona=analysis&deal_id=DEAL_SET_132026061743 HTTP/1.1" 200 OK
+INFO:     183.82.250.27:60270 - "GET /summary?persona=analysis&deal_id=DEAL_SET_132026061743 HTTP/1.1" 200 OK
+2026-06-19 12:51:14,920 - INFO - services.backend_scheduler - trgt promotion completed: {'promoted': 0, 'held': 2, 'by_reason': {'low_extraction_confidence': 2}, 'details': [{'doc_type': 'quote', 'doc_pk': 'QUT103107', 'action': 'held', 'reason': 'low_extraction_confidence', 'F': None}, {'doc_type': 'quote', 'doc_pk': '048597', 'action': 'held', 'reason': 'low_extraction_confidence', 'F': None}]}
+2026-06-19 12:51:15,200 - INFO - services.backend_scheduler - deal assignment completed: {'forward_linked': 0, 'backward_linked': 0, 'reconciled': 0, 'propagated': 0, 'conflicts_flagged': 0, 'metadata_filled': 0, 'deal_dates_set': 0, 'tiers_mirrored': 0, 'map_pruned': 0, 'status_reconciled': 0, 'summaries': {'processed': 3, 'skipped': 0, 'failed': 0, 'deal_ids': ['DEAL_SET_152026061859', 'TEST0052026061851', 'TEST0042026061850']}}
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-06-19 12:54:49,330 - INFO - api.main - CUDA cache released on shutdown (allocated=3.34GiB reserved=3.36GiB)
+2026-06-19 12:54:49,330 - INFO - api.main - API shutting down.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [4049197]
