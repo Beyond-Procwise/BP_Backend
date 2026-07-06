@@ -1,0 +1,3 @@
+{"type":"server-started","port":60186,"host":"0.0.0.0","url_host":"localhost","url":"http://localhost:60186/?key=2cc9dc9fe9cf24efe03875d3535f8ac9cf9b412f30096597e288fdf897c31ed1","screen_dir":"/home/muthu/PycharmProjects/BP_Backend/.superpowers/brainstorm/2774346-1781730853/content","state_dir":"/home/muthu/PycharmProjects/BP_Backend/.superpowers/brainstorm/2774346-1781730853/state","idle_timeout_ms":14400000}
+{"type":"screen-added","file":"/home/muthu/PycharmProjects/BP_Backend/.superpowers/brainstorm/2774346-1781730853/content/requirements-screen.html"}
+{"type":"server-stopped","reason":"idle timeout"}

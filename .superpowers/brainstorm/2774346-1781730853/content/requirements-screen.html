@@ -1,0 +1,128 @@
+<h2>Proposed: "New Requirement" screen</h2>
+<p class="subtitle">Mocked up in your app's real colours &amp; layout. Three ways to start a requirement — guided form, your history, or a document upload — all feeding the same fields.</p>
+
+<style>
+  .bp-app{font-family:'Poppins',system-ui,sans-serif;display:flex;border-radius:12px;overflow:hidden;border:1px solid #d8dee3;box-shadow:0 6px 24px rgba(0,0,0,.12);background:#eef1f3}
+  .bp-side{width:172px;background:#001745;color:#cdd6e4;padding:14px 0;flex-shrink:0}
+  .bp-brand{color:#fff;font-weight:600;font-size:13px;padding:4px 16px 14px}
+  .bp-nav{font-size:12.5px;padding:9px 16px;display:flex;gap:9px;align-items:center;color:#9fb0c7}
+  .bp-nav.active{color:#fff;border-left:3px solid #1cc2f3;background:rgba(28,194,243,.10)}
+  .bp-main{flex:1;background:#f3f4f6;padding:18px 20px;min-width:0}
+  .bp-h1{font-size:17px;font-weight:600;color:#13344a;margin:0}
+  .bp-sub{font-size:12px;color:#6b7a86;margin:2px 0 14px}
+  .bp-quick{display:flex;gap:12px;margin-bottom:16px}
+  .bp-qcard{flex:1;background:#fff;border:1px solid #e2e7ea;border-radius:10px;padding:13px 14px}
+  .bp-qcard .t{font-weight:600;font-size:12.5px;color:#165668;display:flex;gap:7px;align-items:center}
+  .bp-qcard .d{font-size:11px;color:#7d8a93;margin-top:4px;line-height:1.35}
+  .bp-drop{border:1.5px dashed #2a8598;border-radius:8px;background:#f0f8fa;padding:10px;text-align:center;color:#2a8598;font-size:11px;margin-top:9px}
+  .bp-body{display:flex;gap:14px}
+  .bp-form{flex:2;background:#fff;border:1px solid #e2e7ea;border-radius:10px;padding:16px}
+  .bp-bar{height:6px;background:#e7eb8;border-radius:4px;background:#e6eaed;overflow:hidden;margin-bottom:14px}
+  .bp-bar>i{display:block;height:100%;width:60%;background:linear-gradient(90deg,#2a8598,#00e396)}
+  .bp-field{margin-bottom:12px}
+  .bp-label{font-size:11px;font-weight:600;color:#485a66;text-transform:uppercase;letter-spacing:.3px}
+  .bp-input{margin-top:4px;border:1px solid #d4dade;border-radius:7px;padding:8px 10px;font-size:12.5px;color:#22323c;background:#fff;display:flex;justify-content:space-between;align-items:center}
+  .bp-input.filled{border-color:#9fd8c9;background:#f5fcf9}
+  .bp-hint{font-size:10.5px;color:#2a8598;margin-top:3px}
+  .bp-row{display:flex;gap:10px}
+  .bp-row>.bp-field{flex:1}
+  .bp-aside{flex:1;background:#fff;border:1px solid #e2e7ea;border-radius:10px;padding:14px;min-width:0}
+  .bp-aside h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;color:#485a66;letter-spacing:.3px}
+  .bp-hcard{border:1px solid #e8ecee;border-radius:8px;padding:9px;margin-bottom:8px;font-size:11px;color:#4a5862}
+  .bp-hcard b{color:#13344a}
+  .bp-use{color:#2a8598;font-weight:600;cursor:pointer;font-size:10.5px}
+  .bp-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
+  .bp-btn{font-size:12px;border-radius:7px;padding:8px 16px;font-weight:600;cursor:pointer}
+  .bp-btn.primary{background:#165668;color:#fff;border:none}
+  .bp-btn.ghost{background:#fff;color:#5a6a74;border:1px solid #d4dade}
+  .bp-chip{display:inline-block;font-size:10px;background:#e7f6f1;color:#0a8f6a;border-radius:20px;padding:2px 9px;font-weight:600}
+</style>
+
+<div class="mockup">
+  <div class="mockup-header">Preview · New Requirement (matches your live theme)</div>
+  <div class="mockup-body" style="padding:0;background:#eef1f3">
+    <div class="bp-app">
+      <div class="bp-side">
+        <div class="bp-brand">▸ Beyond ProcWise</div>
+        <div class="bp-nav">▦ Dashboard</div>
+        <div class="bp-nav active">📝 Requirements</div>
+        <div class="bp-nav">◎ Opportunities</div>
+        <div class="bp-nav">⇄ Negotiate</div>
+        <div class="bp-nav">🗂 Actions</div>
+      </div>
+      <div class="bp-main">
+        <div class="bp-h1">New Requirement</div>
+        <div class="bp-sub">Tell us what you need to buy — we'll guide you and fill in what we already know.</div>
+
+        <div class="bp-quick">
+          <div class="bp-qcard">
+            <div class="t">⬆ Start from a document</div>
+            <div class="d">Drop a spec, email or old order — we'll read it and pre-fill the form.</div>
+            <div class="bp-drop">Drag a PDF/Word file here, or click to browse</div>
+          </div>
+          <div class="bp-qcard">
+            <div class="t">🕘 Start from a past purchase</div>
+            <div class="d">Reuse the details from something you've bought before.</div>
+            <div class="bp-hcard" style="margin-top:9px">
+              <b>Office Chairs</b> · 40 units · Acme Ltd<span class="bp-use" style="float:right">Use ›</span><br>
+              <span style="color:#8b97a0">last ordered Mar 2026 · £8,200</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="bp-body">
+          <div class="bp-form">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span class="bp-label" style="text-transform:none;font-size:12px;color:#13344a">Requirement details</span>
+              <span class="bp-chip">3 of 5 complete</span>
+            </div>
+            <div class="bp-bar"><i></i></div>
+
+            <div class="bp-field">
+              <div class="bp-label">Title</div>
+              <div class="bp-input"><span style="color:#9aa6ad">e.g. Office Chairs Refresh</span><span>✎</span></div>
+            </div>
+            <div class="bp-row">
+              <div class="bp-field">
+                <div class="bp-label">Category</div>
+                <div class="bp-input filled">Office Furniture <span>▾</span></div>
+                <div class="bp-hint">↳ matched from your history</div>
+              </div>
+              <div class="bp-field">
+                <div class="bp-label">Quantity</div>
+                <div class="bp-input filled">40 <span>✎</span></div>
+              </div>
+            </div>
+            <div class="bp-row">
+              <div class="bp-field">
+                <div class="bp-label">Delivery location</div>
+                <div class="bp-input filled">London HQ <span>✎</span></div>
+              </div>
+              <div class="bp-field">
+                <div class="bp-label">Needed by</div>
+                <div class="bp-input"><span style="color:#9aa6ad">Pick a date</span><span>📅</span></div>
+              </div>
+            </div>
+            <div class="bp-actions">
+              <div class="bp-btn ghost">Save draft</div>
+              <div class="bp-btn primary">Submit &amp; find suppliers ›</div>
+            </div>
+          </div>
+
+          <div class="bp-aside">
+            <h4>Assistant</h4>
+            <div style="font-size:11.5px;color:#3f4d57;line-height:1.5;background:#f5f8fa;border-radius:8px;padding:10px">
+              I still need a <b>title</b> and a <b>needed-by date</b>.<br><br>
+              For 40 office chairs to London, your usual suppliers are <b>Acme</b> and <b>Orbit</b>.
+            </div>
+            <h4 style="margin-top:14px">Suggested from history</h4>
+            <div class="bp-hcard">Standard delivery ~ <b>2 weeks</b><span class="bp-use" style="float:right">Apply ›</span></div>
+            <div class="bp-hcard">Typical budget <b>£8,200</b><span class="bp-use" style="float:right">Apply ›</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:14px">This is a clickable static mockup (not wired up yet). Does this match what you had in mind — guided form in the middle, history help on the right, document upload at the top? Tell me in the terminal and I'll adjust.</p>
