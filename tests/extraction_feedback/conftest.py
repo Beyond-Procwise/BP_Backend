@@ -58,6 +58,39 @@ def seed_hint(db_required):
 
 
 @pytest.fixture
+def seed_telemetry(db_required):
+    """Insert bp_extraction_telemetry rows for a test vendor; clean up by vendor after."""
+    vendors: set[str] = set()
+
+    def _seed(doc_type, vendor_key, doc_pk, discrepancy_types=None, missing_required=None):
+        vendors.add(vendor_key)
+        disc = json.dumps(discrepancy_types or {})
+        n_disc = sum((discrepancy_types or {}).values()) if discrepancy_types else 0
+        with get_conn() as c:
+            with c.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO proc.bp_extraction_telemetry "
+                    "(captured_at, doc_type, vendor_hint, doc_pk, discrepancy_types, n_discrepancies, missing_required) "
+                    "VALUES (now(), %s, %s, %s, %s::jsonb, %s, %s)",
+                    (doc_type, vendor_key, doc_pk, disc, n_disc, missing_required),
+                )
+            c.commit()
+
+    yield _seed
+
+    with get_conn() as c:
+        with c.cursor() as cur:
+            for v in vendors:
+                cur.execute("DELETE FROM proc.bp_extraction_telemetry WHERE vendor_hint=%s", (v,))
+                cur.execute("DELETE FROM proc.bp_extraction_hint_proposal WHERE vendor_key=%s", (v,))
+                cur.execute(
+                    "DELETE FROM proc.bp_prompt WHERE prompt_type='extraction_vendor_hint' AND prompt_name LIKE %s",
+                    (f"vhint::%::{v}::%",),
+                )
+        c.commit()
+
+
+@pytest.fixture
 def cleanup_hint_names(db_required):
     """Delete any extraction_vendor_hint / proposal rows for given names/scopes after a test."""
     names: list[str] = []
