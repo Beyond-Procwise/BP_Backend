@@ -101,3 +101,50 @@ def test_uncited_fields_not_applied(monkeypatch):
     with get_conn() as c, c.cursor() as cur:
         cur.execute("SELECT website_url FROM proc.bp_supplier WHERE supplier_id=%s", (f"{IDP}2",))
         assert cur.fetchone()[0] in (None, "")
+
+
+# ---- human approve + review-list payload ----
+def _seed_enrichment(supplier_id, fields, matched_name, name_match, status="pending"):
+    import json as _j
+    from src.services.db import get_conn as _gc
+    with _gc() as c:
+        with c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO proc.bp_supplier_enrichment (supplier_id, model, fields, citations, confidence, raw, apply_status, applied_fields) "
+                "VALUES (%s,'test',%s::jsonb,%s::jsonb,%s,%s::jsonb,%s,'{}'::jsonb) RETURNING enrichment_id",
+                (supplier_id, _j.dumps(fields), _j.dumps(["https://acme.example/about"]), 0.9,
+                 _j.dumps({"matched_name": matched_name, "name_match": name_match}), status),
+            )
+            eid = cur.fetchone()[0]
+        c.commit()
+    return eid
+
+
+def test_apply_enrichment_fills_empty(monkeypatch):
+    _seed(f"{IDP}4", "Acme Widgets Ltd")  # all empty
+    fields = {"website_url": {"value": "https://acme.example", "source_url": "https://acme.example/about", "confidence": 0.9}}
+    eid = _seed_enrichment(f"{IDP}4", fields, "Acme Widgets Ltd", 100.0)
+    with get_conn() as c:
+        res = R.apply_enrichment(eid, "reviewer1", c)
+    assert res["status"] == "applied" and "website_url" in res["applied"]
+    with get_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT website_url FROM proc.bp_supplier WHERE supplier_id=%s", (f"{IDP}4",))
+        assert cur.fetchone()[0] == "https://acme.example"
+
+
+def test_enrichment_review_payload_has_matched_name_and_citations():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from src.api.routers import supplier_research as SRR
+    _seed(f"{IDP}5", "Beta Corp Ltd")
+    fields = {"website_url": {"value": "https://beta.example", "source_url": "https://acme.example/about", "confidence": 0.9}}
+    eid = _seed_enrichment(f"{IDP}5", fields, "Beta Corp Limited", 96.0)
+
+    app = FastAPI(); app.include_router(SRR.router)
+    data = TestClient(app).get("/suppliers/enrichment/reviews?status=pending").json()
+    mine = [r for r in data["reviews"] if r["enrichment_id"] == eid]
+    assert mine, "pending enrichment should appear in the review payload"
+    r = mine[0]
+    assert r["matched_name"] == "Beta Corp Limited"
+    assert r["citations"] and "would_fill" in r and "website_url" in r["would_fill"]
+    assert "current" in r

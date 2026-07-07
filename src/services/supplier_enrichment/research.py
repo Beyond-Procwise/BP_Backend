@@ -237,6 +237,35 @@ def research_and_enrich(supplier_id: str, conn) -> dict:
             "fields": fields, "applied": applied, "confidence": overall, "citations": sorted(seen)}
 
 
+def apply_enrichment(enrichment_id: int, reviewer: str, conn) -> dict:
+    """Human-approve a pending enrichment: apply its cited facts to EMPTY, non-
+    sensitive supplier columns (the reviewer is the entity confirmation, so this
+    bypasses the auto name-match gate — but still never overwrites and never
+    touches sensitive fields)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT supplier_id, fields, apply_status FROM proc.bp_supplier_enrichment "
+            "WHERE enrichment_id = %s FOR UPDATE",
+            (enrichment_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"enrichment {enrichment_id} not found")
+        supplier_id, fields, status = row
+        if status == "rejected":
+            raise ValueError("enrichment was rejected")
+        if isinstance(fields, str):
+            fields = json.loads(fields or "{}")
+        applied = _apply(cur, supplier_id, fields or {})
+        cur.execute(
+            "UPDATE proc.bp_supplier_enrichment SET apply_status='applied', applied_fields=%s::jsonb, "
+            "reviewed_by=%s, reviewed_date=now() WHERE enrichment_id=%s",
+            (json.dumps(applied), reviewer, enrichment_id),
+        )
+    conn.commit()
+    return {"enrichment_id": enrichment_id, "status": "applied", "applied": applied}
+
+
 def reject_enrichment(enrichment_id: int, reviewer: str, conn) -> dict:
     with conn.cursor() as cur:
         cur.execute(
