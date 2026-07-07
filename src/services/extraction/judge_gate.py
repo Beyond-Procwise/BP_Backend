@@ -20,6 +20,8 @@ candidates) and coherence are deferred until that base case is closed.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Any
 
 from src.services.extraction.pattern_registry import PatternRegistry
@@ -60,6 +62,17 @@ def run_grounded_judge_for_gaps(
         if c.confidence > prev:
             best_conf[c.field] = c.confidence
 
+    # Budget the last-resort judge. Each call is a blocking Ollama round-trip;
+    # a document with many unfilled required fields (e.g. when L1/L2 got little)
+    # would otherwise fire one call per field sequentially and take minutes. The
+    # authoritative context_layer runs AFTER this and fills any skipped fields,
+    # so bounding the judge is safe. Configurable via env; never silently
+    # truncate — skipped fields are logged.
+    max_calls = int(os.getenv("EXTRACTION_JUDGE_MAX_CALLS", "12"))
+    budget_s = float(os.getenv("EXTRACTION_JUDGE_BUDGET_S", "25"))
+    started = time.monotonic()
+    skipped: list[str] = []
+
     new_candidates: list[Candidate] = []
     judge_calls = 0
     for f in registry.schema.fields:
@@ -71,6 +84,9 @@ def run_grounded_judge_for_gaps(
         threshold = float(getattr(f, "confidence_threshold", 0.0) or 0.0)
         if best_conf.get(f.name, -1.0) >= threshold and best_conf.get(f.name, -1.0) >= 0:
             # Already covered by L1 or L2; the judge does NOT override
+            continue
+        if judge_calls >= max_calls or (time.monotonic() - started) >= budget_s:
+            skipped.append(f.name)
             continue
         try:
             v3_cand = call_grounded_last_resort(
@@ -99,9 +115,10 @@ def run_grounded_judge_for_gaps(
             confidence=float(v3_cand.confidence),
         ))
 
-    if judge_calls:
+    if judge_calls or skipped:
         log.info(
-            "judge_gate: doc_type=%s judge_calls=%d filled=%d",
-            registry.doc_type, judge_calls, len(new_candidates),
+            "judge_gate: doc_type=%s judge_calls=%d filled=%d skipped=%d%s",
+            registry.doc_type, judge_calls, len(new_candidates), len(skipped),
+            f" (budget reached; context_layer will fill: {skipped})" if skipped else "",
         )
     return new_candidates
