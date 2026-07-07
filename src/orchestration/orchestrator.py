@@ -265,6 +265,43 @@ class Orchestrator:
         """Backward compatible alias for :meth:`execute_extraction_flow`."""
         return self.execute_extraction_flow(s3_prefix, s3_object_key, **kwargs)
 
+    def _apply_governance_envelope(self, workflow_name, context, enriched_input):
+        """Resolve + inject the governed policy/prompt for an agentic workflow.
+
+        Deterministic (no LLM). Excludes document_extraction (must stay
+        deterministic). Flag-gated (WORKFLOW_GOVERNANCE_ENABLED) and fail-open —
+        any error → return None and the workflow runs exactly as before.
+        """
+        import os
+        if os.getenv("WORKFLOW_GOVERNANCE_ENABLED", "1") in ("0", "false", "False"):
+            return None
+        if workflow_name == "document_extraction":
+            return None
+        try:
+            from src.services.governance_tools.envelope import resolve_governance
+            env = resolve_governance(workflow_name)
+            if not env or (not env.get("policies") and not env.get("prompts")):
+                return None
+            if isinstance(enriched_input, dict):
+                enriched_input["governed"] = env
+            try:
+                context.input_data["governed"] = env
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from src.services.agent_actions import record_action
+                record_action(phase="governance", action_type="governance_applied",
+                              agent=env.get("agent"),
+                              summary=f"governance envelope for {workflow_name}", details=env)
+            except Exception:  # noqa: BLE001
+                pass
+            logger.info("governance envelope applied for %s: %d policies, %d prompts",
+                        workflow_name, len(env.get("policies", [])), len(env.get("prompts", [])))
+            return env
+        except Exception:  # noqa: BLE001 - fail open
+            logger.debug("governance envelope failed for %s", workflow_name, exc_info=True)
+            return None
+
     def execute_workflow(
         self, workflow_name: str, input_data: Dict, user_id: str = None
     ) -> Dict:
@@ -307,6 +344,12 @@ class Orchestrator:
                 knowledge_base=manifest.get("knowledge", {}),
             )
             context.apply_manifest(manifest)
+
+            # --- Governance envelope: resolve + inject the governed policy/prompt
+            # for agentic workflows (deterministic; extraction excluded; flag-gated;
+            # fail-open). Additive — agents unaffected unless they read `governed`.
+            governance_applied = self._apply_governance_envelope(
+                workflow_name, context, enriched_input)
 
             # Validate against policies
             if not self._validate_workflow(workflow_name, context):
@@ -373,6 +416,10 @@ class Orchestrator:
                 result = self._execute_supplier_interaction_workflow(context)
             else:
                 result = self._execute_generic_workflow(workflow_name, context)
+
+            # Attach the governance that shaped this run (traceability).
+            if governance_applied and isinstance(result, dict):
+                result.setdefault("governance_applied", governance_applied)
 
             self._publish_workflow_complete(
                 workflow_name=workflow_name,
