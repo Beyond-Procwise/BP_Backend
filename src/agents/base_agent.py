@@ -49,7 +49,7 @@ except Exception:  # pragma: no cover - optional dependency failures handled gra
 logger = logging.getLogger(__name__)
 
 
-_UNIVERSAL_LOCAL_MODEL = "BeyondProcwise/AgentNick:latest"
+_UNIVERSAL_LOCAL_MODEL = "BeyondProcwise/AgentNick:unified"
 
 
 def _build_fallback_models() -> Tuple[str, ...]:

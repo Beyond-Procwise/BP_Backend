@@ -247,10 +247,10 @@ class Settings(BaseSettings):
     # qwen2.5:32b/7b defaults referenced models that are not pulled in Ollama
     # and produced 404 fallback-chain errors.
     local_primary_model: str = Field(
-        default="BeyondProcwise/AgentNick:latest", env="LOCAL_PRIMARY_MODEL"
+        default="BeyondProcwise/AgentNick:unified", env="LOCAL_PRIMARY_MODEL"
     )
     local_fallback_model: str = Field(
-        default="BeyondProcwise/AgentNick:latest", env="LOCAL_FALLBACK_MODEL"
+        default="BeyondProcwise/AgentNick:unified", env="LOCAL_FALLBACK_MODEL"
     )
 
     # LoRA Adapter Paths
@@ -317,7 +317,11 @@ class Settings(BaseSettings):
     imap_mailbox: str = Field(default="INBOX", env="IMAP_MAILBOX")
     imap_search_criteria: str = Field(default="ALL", env="IMAP_SEARCH_CRITERIA")
 
-    extraction_model: str = "BeyondProcwise/AgentNick:latest"
+    # NOTE: despite the name, this is a GENERIC non-extraction reasoning fallback
+    # (used by base_agent fallback tuples + model_selector). Live document
+    # extraction uses PROCWISE_EXTRACTION_MODEL / document_extraction_model
+    # (AgentNick:extract), NOT this. Kept as the single reasoning brain.
+    extraction_model: str = "BeyondProcwise/AgentNick:unified"
     llm_backend: str = Field(default="ollama", env="LLM_BACKEND")
     langchain_provider: str = Field(default="ollama", env="LANGCHAIN_PROVIDER")
     langchain_model: Optional[str] = Field(
@@ -345,7 +349,7 @@ class Settings(BaseSettings):
     document_extraction_model: str = Field(
         default="BeyondProcwise/AgentNick:latest", env="DOCUMENT_EXTRACTION_MODEL"
     )
-    rag_model: str = Field(default="BeyondProcwise/AgentNick:latest", env="RAG_LLM_MODEL")
+    rag_model: str = Field(default="BeyondProcwise/AgentNick:unified", env="RAG_LLM_MODEL")
     # ``BAAI/bge-large-en-v1.5`` provides state-of-the-art dense retrieval
     # performance for procurement terminology while remaining compatible with
     # Qdrant's HNSW indexes. The model outputs 1024 dimensional vectors which

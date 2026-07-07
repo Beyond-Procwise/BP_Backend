@@ -66,7 +66,20 @@ class Observation:
 # ---------------------------------------------------------------------------
 
 _OLLAMA_URL = "http://localhost:11434/api/generate"
-_OLLAMA_MODEL = "BeyondProcwise/AgentNick:latest"
+
+
+def _reasoning_model() -> str:
+    """The single non-extraction reasoning brain (AgentNick:unified), resolved
+    from settings so it tracks the LOCAL_PRIMARY_MODEL config rather than a
+    hardcoded tag."""
+    try:
+        from config.settings import Settings
+        return getattr(Settings(), "local_primary_model", None) or "BeyondProcwise/AgentNick:unified"
+    except Exception:
+        return "BeyondProcwise/AgentNick:unified"
+
+
+_OLLAMA_MODEL = _reasoning_model()
 
 # High-value task threshold (mirrors NegotiationStrategyEngine.escalation_threshold)
 _HIGH_VALUE_THRESHOLD = 50_000.0
@@ -448,21 +461,20 @@ class ReasoningEngine:
             "Use only agent IDs from the catalogue above."
         )
 
-        payload = json.dumps(
-            {"model": _OLLAMA_MODEL, "prompt": prompt, "stream": False}
-        ).encode("utf-8")
-
-        req = urllib.request.Request(
-            _OLLAMA_URL,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-
-        response_text = raw.get("response", "")
+        # Route through the managed Ollama client on the single reasoning brain
+        # (AgentNick:unified). think=False is required: unified is a hybrid
+        # reasoning model that otherwise emits its answer in a `thinking` field
+        # and leaves `response` empty.
+        from src.services.ollama_client import ollama_generate
+        response_text = ollama_generate(
+            prompt,
+            model=_reasoning_model(),
+            think=False,
+            temperature=0,
+            num_predict=2048,
+            timeout=30,
+            retries=1,
+        ) or ""
         # Extract JSON block (the model may wrap it in markdown code fences)
         json_start = response_text.find("{")
         json_end = response_text.rfind("}") + 1
