@@ -1,4 +1,4 @@
-"""Best-effort writer for the proc.agent_actions event log.
+"""Best-effort writer for the proc.bp_agent_actions event log.
 
 One row per action/step. Writes are best-effort: any failure is logged and
 swallowed so a logging problem can never break extraction. Callers may pass an
@@ -33,7 +33,7 @@ _COLUMNS = (
 )
 
 _INSERT = (
-    "INSERT INTO proc.agent_actions ("
+    "INSERT INTO proc.bp_agent_actions ("
     + ", ".join(_COLUMNS)
     + ") VALUES (" + ", ".join(["%s"] * len(_COLUMNS)) + ")"
 )
@@ -76,7 +76,7 @@ def _write_on_shared_conn(conn: Any, run) -> None:
     """Run an INSERT on a caller-owned conn inside a SAVEPOINT.
 
     A logging write must never poison the caller's transaction. Without a
-    savepoint, a failed INSERT into proc.agent_actions (e.g. the table is
+    savepoint, a failed INSERT into proc.bp_agent_actions (e.g. the table is
     missing in some environment) would leave psycopg2 in an aborted-transaction
     state, so the caller's subsequent commit would silently discard its own rows
     (e.g. the discrepancy rows in write_discrepancies). The savepoint confines
