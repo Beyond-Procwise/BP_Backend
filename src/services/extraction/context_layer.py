@@ -287,7 +287,16 @@ def synthesize(
         return raw_candidates
 
     filename_hints = parse_filename_hints(file_path)
-    prompt = _build_prompt(doc_type, full_text, fields, raw_candidates, filename_hints)
+    # Human-approved per-vendor hints (extraction feedback loop). Fail-open: any
+    # error here must never break extraction — fall back to no hints.
+    try:
+        from src.services.extraction_feedback.hint_store import HINT_STORE
+        from src.services.extraction_feedback.vendor_key import vendor_key
+        vhints = HINT_STORE.hints_for(doc_type, vendor_key(file_path))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("context_layer: vendor-hint lookup skipped: %s", exc)
+        vhints = None
+    prompt = _build_prompt(doc_type, full_text, fields, raw_candidates, filename_hints, vhints)
     raw = _call_llm(prompt)
     if not raw:
         log.warning("context_layer: LLM returned nothing for doc_type=%s", doc_type)
@@ -484,6 +493,7 @@ def _build_prompt(
     fields: list[tuple[str, str, str]],
     candidates: dict[str, Any],
     filename_hints: dict[str, str] | None = None,
+    vhints: list[str] | None = None,
 ) -> str:
     capped = full_text[:MAX_DOC_TEXT_CHARS]
     field_lines = "\n".join(f'  "{n}" ({t}): {d}' for n, t, d in fields)
@@ -540,6 +550,20 @@ def _build_prompt(
         )
     else:
         fn_block = ""
+    # Vendor-specific advisory hints, human-approved via the extraction feedback
+    # loop. Additive and advisory ONLY — the OUTPUT RULES / grounding / invariants
+    # below remain authoritative, so a hint can never introduce a fabricated value.
+    # Empty when there are no active hints → prompt is byte-identical to the
+    # pre-feedback-loop prompt (no behavioural change on the un-learned path).
+    if vhints:
+        vh_lines = "\n".join(f"  - {h}" for h in vhints)
+        vhint_block = (
+            "VENDOR-SPECIFIC HINTS (advisory — apply ONLY if grounded verbatim in the\n"
+            "document; never fabricate a value that is not present):\n"
+            f"{vh_lines}\n\n"
+        )
+    else:
+        vhint_block = ""
     return (
         f"{_PROMPT_HEADER}\n"
         f"DOCUMENT TYPE: {doc_type}\n\n"
@@ -547,6 +571,7 @@ def _build_prompt(
         f"DOCUMENT TEXT:\n\"\"\"\n{capped}\n\"\"\"\n\n"
         f"FIELDS TO EXTRACT:\n{field_lines}\n\n"
         f"CANDIDATE HINTS (from regex/NER — may be wrong):\n{hint_lines}\n\n"
+        f"{vhint_block}"
         f"{_PROMPT_RULES}"
         f"JSON OUTPUT:"
     )
