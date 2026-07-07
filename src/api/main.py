@@ -48,6 +48,7 @@ from agents.supplier_interaction_agent import SupplierInteractionAgent
 from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, promotion, summary, negotiate, opportunities,session
 from api.routers import ws as ws_router_mod
 from api.routers import extraction_feedback as extraction_feedback_router
+from api.routers import supplier_review as supplier_review_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -312,6 +313,7 @@ app.include_router(training.router)
 app.include_router(vendors.build_router())
 app.include_router(metrics.router)
 app.include_router(extraction_feedback_router.router)
+app.include_router(supplier_review_router.router)
 app.include_router(deal_summary.router)
 app.include_router(negotiate.router)
 app.include_router(opportunities.router)

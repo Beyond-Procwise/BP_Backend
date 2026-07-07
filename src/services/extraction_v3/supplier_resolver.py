@@ -124,6 +124,78 @@ _MIN_NAME_LEN = 3
 # distinctive part of the name. Below this, we auto-create a new supplier.
 _FUZZY_THRESHOLD = 92
 
+# Supplier-match review band. A close-call decision (near, but not clearly the
+# same or clearly distinct) is FLAGGED for human confirmation rather than acted
+# on silently. Straddles _FUZZY_THRESHOLD:
+#   [_REVIEW_LOW, 92)  → auto-CREATED a supplier, but it's a possible duplicate.
+#   [92, _REVIEW_HIGH) → auto-LINKED to a supplier, but it's a possible false merge.
+# Outside the band the auto-decision is confident and no review is raised.
+_REVIEW_LOW = float(os.getenv("SUPPLIER_REVIEW_LOW", "82"))
+_REVIEW_HIGH = float(os.getenv("SUPPLIER_REVIEW_HIGH", "96"))
+_REVIEW_ENABLED = os.getenv("SUPPLIER_REVIEW_ENABLED", "1") not in ("0", "false", "False")
+
+
+def _lookup_alias(name: str, cur) -> str | None:
+    """Return the canonical supplier_id for a human-confirmed alias, or None."""
+    try:
+        cur.execute(
+            "SELECT supplier_id FROM proc.bp_supplier_alias "
+            "WHERE LOWER(alias_name) = LOWER(%s) LIMIT 1",
+            (name,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:  # noqa: BLE001 - table may not exist yet; fail open
+        return None
+
+
+def _emit_review(cur, *, extracted_name, decision, chosen_id, candidate_id,
+                 candidate_name, score, doc_type, doc_pk, trace_id) -> None:
+    """Flag a close-call supplier decision for human review. Best-effort."""
+    if not _REVIEW_ENABLED:
+        return
+    try:
+        cur.execute(
+            "SELECT 1 FROM proc.bp_supplier_review "
+            "WHERE LOWER(extracted_name) = LOWER(%s) AND candidate_supplier_id = %s "
+            "AND status = 'pending' LIMIT 1",
+            (extracted_name, candidate_id),
+        )
+        if cur.fetchone():
+            return  # already flagged and pending
+        cur.execute(
+            "INSERT INTO proc.bp_supplier_review "
+            "(extracted_name, decision, chosen_supplier_id, candidate_supplier_id, "
+            " candidate_supplier_name, score, doc_type, doc_pk, trace_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (extracted_name, decision, chosen_id, candidate_id, candidate_name,
+             score, doc_type, doc_pk, trace_id),
+        )
+        log.info("supplier_resolver: flagged review %r (%s, candidate=%s, score=%.1f)",
+                 extracted_name, decision, candidate_id, score)
+    except Exception:  # noqa: BLE001
+        log.debug("supplier_resolver: review emit failed", exc_info=True)
+
+
+def _create_supplier(cur, display_name: str) -> str:
+    """Insert a new bp_supplier row (SUP-<slug>) and return its id."""
+    new_id = f"SUP-{_slug(display_name)}"
+    cur.execute(
+        "SELECT supplier_id FROM proc.bp_supplier WHERE supplier_id = %s LIMIT 1",
+        (new_id,),
+    )
+    if cur.fetchone():
+        log.info("supplier_resolver: collision resolved — reusing %s", new_id)
+        return new_id
+    cur.execute(
+        "INSERT INTO proc.bp_supplier "
+        "(supplier_id, supplier_name, trading_name, created_date, created_by) "
+        "VALUES (%s, %s, %s, NOW(), %s)",
+        (new_id, display_name, display_name, "ExtractionV3-AutoDiscovery"),
+    )
+    log.info("supplier_resolver: auto-created supplier '%s' → %s", display_name, new_id)
+    return new_id
+
 # Business-entity suffixes stripped BEFORE the WRatio comparison so the
 # distinctive part of the name dominates the score. Without this, every
 # "X Ltd" / "Y INC" pair scores ~85 against each other regardless of stem.
@@ -412,7 +484,8 @@ def _slug(name: str) -> str:
     return slug
 
 
-def resolve_or_create_supplier(name: str, conn) -> str | None:
+def resolve_or_create_supplier(name: str, conn, *, doc_type: str | None = None,
+                               doc_pk: str | None = None, trace_id: str | None = None) -> str | None:
     """Resolve supplier `name` to a canonical supplier_id.
 
     Steps:
@@ -464,6 +537,12 @@ def resolve_or_create_supplier(name: str, conn) -> str | None:
 
     try:
         with conn.cursor() as cur:
+            # --- 0. Human-confirmed alias (deterministic; never re-flagged) ---
+            alias_id = _lookup_alias(display_name, cur)
+            if alias_id:
+                log.debug("supplier_resolver: alias '%s' → %s", display_name, alias_id)
+                return alias_id
+
             # --- 1. Exact match ---
             cur.execute(
                 """
@@ -476,76 +555,122 @@ def resolve_or_create_supplier(name: str, conn) -> str | None:
             )
             row = cur.fetchone()
             if row:
-                log.info(
-                    "supplier_resolver: exact match '%s' → %s", display_name, row[0]
-                )
+                log.info("supplier_resolver: exact match '%s' → %s", display_name, row[0])
                 return row[0]
 
-            # --- 2. Fuzzy match ---
+            # --- 2. Fuzzy: find the single best candidate ---
+            best_id: str | None = None
+            best_name: str | None = None
+            best_score = 0.0
             try:
-                from rapidfuzz import fuzz, process as rf_process
+                from rapidfuzz import fuzz
 
-                cur.execute(
-                    "SELECT supplier_id, supplier_name FROM proc.bp_supplier"
-                )
-                all_suppliers = cur.fetchall()  # list of (id, name)
-                if all_suppliers:
-                    choices = {row[0]: row[1] for row in all_suppliers if row[1]}
-                    # Strip business suffix from query AND each candidate so
-                    # we score on the distinctive stem. Falls back to the raw
-                    # name if stripping leaves nothing meaningful.
-                    q_stem = _strip_biz_suffix(display_name) or display_name
-                    best_id: str | None = None
-                    best_score = 0.0
-                    for sid, sname in choices.items():
-                        c_stem = _strip_biz_suffix(sname) or sname
-                        score = fuzz.WRatio(q_stem, c_stem)
-                        if score > best_score:
-                            best_score = score
-                            best_id = sid
-                    if best_score >= _FUZZY_THRESHOLD and best_id:
-                        log.info(
-                            "supplier_resolver: fuzzy match '%s' → %s (score=%.1f)",
-                            display_name, best_id, best_score,
-                        )
-                        return best_id
+                cur.execute("SELECT supplier_id, supplier_name FROM proc.bp_supplier")
+                q_stem = _strip_biz_suffix(display_name) or display_name
+                for sid, sname in cur.fetchall():
+                    if not sname:
+                        continue
+                    c_stem = _strip_biz_suffix(sname) or sname
+                    score = fuzz.WRatio(q_stem, c_stem)
+                    if score > best_score:
+                        best_score, best_id, best_name = score, sid, sname
             except ImportError:
                 log.warning("supplier_resolver: rapidfuzz not available; skipping fuzzy match")
 
-            # --- 3. Auto-create ---
-            slug = _slug(display_name)
-            new_id = f"SUP-{slug}"
+            # --- 3. Decide (unchanged): link at/above threshold, else create ---
+            if best_score >= _FUZZY_THRESHOLD and best_id:
+                chosen, decision = best_id, "linked"
+                log.info("supplier_resolver: fuzzy match '%s' → %s (score=%.1f)",
+                         display_name, best_id, best_score)
+            else:
+                chosen, decision = _create_supplier(cur, display_name), "created"
 
-            # Check collision (rare but possible with very similar names)
-            # Note: bp_supplier has no PK constraint so we guard manually.
-            cur.execute(
-                "SELECT supplier_id FROM proc.bp_supplier WHERE supplier_id = %s LIMIT 1",
-                (new_id,),
-            )
-            if cur.fetchone():
-                # ID already exists — return it (another thread beat us to it)
-                log.info(
-                    "supplier_resolver: collision resolved — reusing %s", new_id
+            # --- 4. Flag close calls for human review (best-effort) ---
+            if chosen and best_id and _REVIEW_LOW <= best_score < _REVIEW_HIGH:
+                _emit_review(
+                    cur, extracted_name=display_name, decision=decision,
+                    chosen_id=chosen, candidate_id=best_id, candidate_name=best_name,
+                    score=float(best_score), doc_type=doc_type, doc_pk=doc_pk,
+                    trace_id=trace_id,
                 )
-                return new_id
-
-            cur.execute(
-                """
-                INSERT INTO proc.bp_supplier
-                    (supplier_id, supplier_name, trading_name,
-                     created_date, created_by)
-                VALUES (%s, %s, %s, NOW(), %s)
-                """,
-                (new_id, display_name, display_name, "ExtractionV3-AutoDiscovery"),
-            )
-            log.info(
-                "supplier_resolver: auto-created supplier '%s' → %s",
-                display_name, new_id,
-            )
-            return new_id
+            return chosen
 
     except Exception:
-        log.exception(
-            "supplier_resolver: unexpected error resolving '%s'", display_name
-        )
+        log.exception("supplier_resolver: unexpected error resolving '%s'", display_name)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Human review resolution (confirm / reject) — drives bp_supplier_alias so the
+# decision is durable and future documents of the variant resolve consistently.
+# The document's literal extracted value is never altered.
+# ---------------------------------------------------------------------------
+def _add_alias(cur, alias_name: str, supplier_id: str, actor: str) -> None:
+    cur.execute(
+        "SELECT alias_id FROM proc.bp_supplier_alias WHERE LOWER(alias_name) = LOWER(%s)",
+        (alias_name,),
+    )
+    row = cur.fetchone()
+    if row:
+        cur.execute(
+            "UPDATE proc.bp_supplier_alias SET supplier_id = %s, created_by = %s WHERE alias_id = %s",
+            (supplier_id, actor, row[0]),
+        )
+    else:
+        cur.execute(
+            "INSERT INTO proc.bp_supplier_alias (alias_name, supplier_id, created_by) VALUES (%s, %s, %s)",
+            (alias_name, supplier_id, actor),
+        )
+
+
+def confirm_review(review_id: int, reviewer: str, conn) -> dict:
+    """Human says the extracted name IS the candidate supplier: alias it to the
+    canonical candidate so every future document of that variant resolves there."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT extracted_name, candidate_supplier_id, status "
+            "FROM proc.bp_supplier_review WHERE review_id = %s FOR UPDATE",
+            (review_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"review {review_id} not found")
+        name, candidate, status = row
+        if status != "pending":
+            raise ValueError(f"review {review_id} is '{status}', not pending")
+        _add_alias(cur, name, candidate, reviewer)
+        cur.execute(
+            "UPDATE proc.bp_supplier_review SET status = 'confirmed', reviewed_by = %s, "
+            "reviewed_date = now() WHERE review_id = %s",
+            (reviewer, review_id),
+        )
+    conn.commit()
+    return {"review_id": review_id, "status": "confirmed", "alias": name, "supplier_id": candidate}
+
+
+def reject_review(review_id: int, reviewer: str, conn) -> dict:
+    """Human says the extracted name is a DISTINCT supplier from the candidate:
+    ensure it has its own supplier_id and alias it there (so it isn't re-flagged
+    or re-merged). Already-persisted rows are not repointed (v1)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT extracted_name, decision, chosen_supplier_id, candidate_supplier_id, status "
+            "FROM proc.bp_supplier_review WHERE review_id = %s FOR UPDATE",
+            (review_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"review {review_id} not found")
+        name, decision, chosen, candidate, status = row
+        if status != "pending":
+            raise ValueError(f"review {review_id} is '{status}', not pending")
+        # If it was auto-linked into the candidate, it needs its own supplier now.
+        distinct_id = _create_supplier(cur, name) if decision == "linked" else chosen
+        _add_alias(cur, name, distinct_id, reviewer)
+        cur.execute(
+            "UPDATE proc.bp_supplier_review SET status = 'rejected', reviewed_by = %s, "
+            "reviewed_date = now() WHERE review_id = %s",
+            (reviewer, review_id),
+        )
+    conn.commit()
+    return {"review_id": review_id, "status": "rejected", "alias": name, "supplier_id": distinct_id}

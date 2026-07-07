@@ -384,7 +384,8 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
 
             if supplier_name_for_resolve:
                 try:
-                    sid = resolve_or_create_supplier(supplier_name_for_resolve, conn)
+                    sid = resolve_or_create_supplier(
+                        supplier_name_for_resolve, conn, doc_type=doc_type)
                     if sid:
                         raw_data["supplier_id"] = sid
                 except Exception as exc:  # noqa: BLE001
