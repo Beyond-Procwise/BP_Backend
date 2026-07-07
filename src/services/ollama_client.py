@@ -36,6 +36,24 @@ RETRY_MAX_DELAY = 30  # seconds
 DEFAULT_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "600"))
 SEMAPHORE_TIMEOUT = 600  # wait up to 10 min for a slot — Ollama queues internally
 
+# How long Ollama keeps the model resident in VRAM. The server default is short
+# (5m), so between sparsely-arriving documents the extraction model gets evicted
+# and every next document pays the full cold-load from disk (~60s on network
+# storage). Pinning keep_alive on every request keeps the model resident — a
+# pure latency win with byte-identical output. "-1" = never unload; a duration
+# like "24h" also works. Overridable via OLLAMA_KEEP_ALIVE (.env already sets -1).
+# Ollama accepts keep_alive as an int (seconds; -1 = never unload) OR a duration
+# string ("24h"), but NOT a numeric string ("-1" → 400 Bad Request). Coerce a
+# numeric env value to int so both "-1" and "24h" are valid on the wire.
+def _coerce_keep_alive(v: str | int) -> str | int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return v
+
+
+KEEP_ALIVE = _coerce_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", "-1"))
+
 
 def ollama_generate(
     prompt: str,
@@ -47,6 +65,7 @@ def ollama_generate(
     num_gpu: int = 99,
     retries: int = MAX_RETRIES,
     stop: Optional[list] = None,
+    keep_alive: str | int = KEEP_ALIVE,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -70,6 +89,7 @@ def ollama_generate(
         "model": model,
         "prompt": prompt,
         "stream": False,
+        "keep_alive": keep_alive,
         "options": options,
     }
 
@@ -231,11 +251,11 @@ def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
     try:
         response = requests.post(
             f"{OLLAMA_BASE_URL}/api/generate",
-            json={"model": model, "prompt": "", "keep_alive": "24h"},
+            json={"model": model, "prompt": "", "keep_alive": KEEP_ALIVE},
             timeout=timeout,
         )
         response.raise_for_status()
-        logger.info("Preloaded Ollama model '%s' with 24h keep_alive", model)
+        logger.info("Preloaded Ollama model '%s' with keep_alive=%s", model, KEEP_ALIVE)
         return True
     except Exception as exc:
         logger.warning("Ollama model preload failed (non-critical): %s", exc)

@@ -1720,20 +1720,20 @@ class AgentNick:
             )
 
     def _preload_ollama_model(self) -> None:
-        """Preload the primary LLM model into Ollama's VRAM with keep_alive.
+        """Preload the live extraction model into Ollama's VRAM with keep_alive.
 
-        Sends a minimal request so the model is loaded and stays resident,
-        avoiding cold-start latency on the first real agent request.
+        Warms the model the live renovation extraction pipeline actually calls
+        (ollama_client.DEFAULT_MODEL = PROCWISE_EXTRACTION_MODEL, i.e.
+        AgentNick:extract) — NOT settings.extraction_model, which is stale
+        (:latest) and only used by the legacy data_extraction_agent path. This
+        avoids the ~60s cold-load from disk on the first document after a
+        server/Ollama restart, and pins it resident with the same keep_alive the
+        pipeline uses. preload_model uses a 120s timeout — long enough for a true
+        cold-load (the old 30s timeout silently failed on cold disk).
         """
-        model = getattr(self.settings, "extraction_model", None) or "qwen2.5:32b"
         try:
-            import requests as _req
-            _req.post(
-                "http://localhost:11434/api/generate",
-                json={"model": model, "prompt": "", "keep_alive": "24h"},
-                timeout=30,
-            )
-            logger.info("Preloaded Ollama model '%s' with 24h keep_alive", model)
+            from src.services.ollama_client import preload_model
+            preload_model()
         except Exception as exc:
             logger.warning("Ollama model preload failed (non-critical): %s", exc)
 
