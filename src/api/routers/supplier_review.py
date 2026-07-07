@@ -30,6 +30,77 @@ class ReviewBody(BaseModel):
     reviewer: str = "api"
 
 
+@router.get("/reviews/queue")
+def reviews_queue(limit: int = 100):
+    """One combined supplier-review queue for the UI: name-match/duplicate reviews
+    AND web-research enrichment approvals, in a uniform shape with per-item actions."""
+    from src.services.supplier_enrichment import research as R
+    items: list[dict] = []
+    with get_conn() as c, c.cursor() as cur:
+        # 1) supplier-identity reviews (name-match + duplicate sweep)
+        cur.execute(
+            f"SELECT {_COLS} FROM proc.bp_supplier_review WHERE status='pending' "
+            "ORDER BY created_date DESC LIMIT %s", (limit,),
+        )
+        mcols = [d[0] for d in cur.description]
+        for row in cur.fetchall():
+            r = dict(zip(mcols, row))
+            dup = r["decision"] == "existing_dup"
+            items.append({
+                "review_type": "supplier_match",
+                "id": r["review_id"],
+                "supplier_id": r["chosen_supplier_id"],
+                "supplier_name": r["extracted_name"],
+                "title": (f"Possible duplicate: {r['extracted_name']!r} ~ {r['candidate_supplier_name']!r}"
+                          if dup else
+                          f"Supplier match: {r['extracted_name']!r} ~ {r['candidate_supplier_name']!r}"),
+                "score": float(r["score"]) if r["score"] is not None else None,
+                "created_date": r["created_date"],
+                "detail": {"extracted_name": r["extracted_name"], "decision": r["decision"],
+                           "candidate_supplier_id": r["candidate_supplier_id"],
+                           "candidate_supplier_name": r["candidate_supplier_name"], "doc_pk": r["doc_pk"]},
+                "actions": [
+                    {"label": "Same supplier (merge)", "method": "POST", "path": f"/suppliers/reviews/{r['review_id']}/confirm"},
+                    {"label": "Different supplier", "method": "POST", "path": f"/suppliers/reviews/{r['review_id']}/reject"},
+                ],
+            })
+
+        # 2) web-research enrichment approvals
+        cur.execute(
+            "SELECT e.enrichment_id, e.supplier_id, s.supplier_name, e.raw->>'matched_name', "
+            "NULLIF(e.raw->>'name_match','')::float, e.confidence, e.fields, e.citations, e.created_date "
+            "FROM proc.bp_supplier_enrichment e LEFT JOIN proc.bp_supplier s ON s.supplier_id = e.supplier_id "
+            "WHERE e.apply_status = 'pending' ORDER BY e.created_date DESC LIMIT %s", (limit,),
+        )
+        enrich_rows = cur.fetchall()
+        for eid, sid, sname, matched, nm, conf, fields, citations, created in enrich_rows:
+            fields = fields or {}
+            cur.execute("SELECT " + ", ".join(R._APPLY_COLUMNS) + " FROM proc.bp_supplier WHERE supplier_id = %s", (sid,))
+            sv = cur.fetchone()
+            current = dict(zip(R._APPLY_COLUMNS, sv)) if sv else {}
+            would_fill = [col for col in R._APPLY_COLUMNS
+                          if fields.get(col) and (current.get(col) is None or str(current.get(col)).strip() == "")]
+            items.append({
+                "review_type": "supplier_enrichment",
+                "id": eid,
+                "supplier_id": sid,
+                "supplier_name": sname,
+                "title": (f"Enrich {sname!r}: matched {matched!r}, would fill {would_fill}"
+                          if would_fill else f"Enrich {sname!r}: nothing verified (matched {matched!r})"),
+                "score": float(conf) if conf is not None else None,
+                "created_date": created,
+                "detail": {"matched_name": matched, "name_match": nm, "would_fill": would_fill,
+                           "current": current, "fields": fields, "citations": citations or []},
+                "actions": [
+                    {"label": "Approve (fill empty fields)", "method": "POST", "path": f"/suppliers/enrichment/{eid}/apply"},
+                    {"label": "Reject", "method": "POST", "path": f"/suppliers/enrichment/{eid}/reject"},
+                ],
+            })
+
+    items.sort(key=lambda x: x["created_date"] or "", reverse=True)
+    return {"count": len(items), "items": items}
+
+
 @router.get("/reviews")
 def list_reviews(status: str = "pending", limit: int = 100):
     with get_conn() as c, c.cursor() as cur:

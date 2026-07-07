@@ -148,3 +148,36 @@ def test_enrichment_review_payload_has_matched_name_and_citations():
     assert r["matched_name"] == "Beta Corp Limited"
     assert r["citations"] and "would_fill" in r and "website_url" in r["would_fill"]
     assert "current" in r
+
+
+def test_reviews_queue_combines_match_and_enrichment():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from src.api.routers import supplier_review as SRV
+    # a supplier-match review
+    with get_conn() as c:
+        with c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO proc.bp_supplier_review (extracted_name, decision, chosen_supplier_id, "
+                "candidate_supplier_id, candidate_supplier_name, score, status) "
+                "VALUES (%s,'existing_dup',%s,%s,%s,90,'pending') RETURNING review_id",
+                (f"{IDP}Q A", f"SUP-{IDP}QA", f"SUP-{IDP}QB", f"{IDP}Q B"))
+            mrid = cur.fetchone()[0]
+        c.commit()
+    # an enrichment approval
+    _seed(f"{IDP}Q1", "Queue Corp Ltd")
+    eid = _seed_enrichment(f"{IDP}Q1", {"website_url": {"value": "https://q.example", "source_url": "https://acme.example/about", "confidence": 0.9}}, "Queue Corp Limited", 96.0)
+    try:
+        app = FastAPI(); app.include_router(SRV.router)
+        q = TestClient(app).get("/suppliers/reviews/queue").json()
+        by_id = {(i["review_type"], i["id"]): i for i in q["items"]}
+        assert ("supplier_match", mrid) in by_id
+        enr = by_id[("supplier_enrichment", eid)]
+        assert "website_url" in enr["detail"]["would_fill"]
+        assert any("/apply" in a["path"] for a in enr["actions"])
+        assert any("/confirm" in a["path"] for a in by_id[("supplier_match", mrid)]["actions"])
+    finally:
+        with get_conn() as c:
+            with c.cursor() as cur:
+                cur.execute("DELETE FROM proc.bp_supplier_review WHERE review_id=%s", (mrid,))
+            c.commit()
