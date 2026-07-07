@@ -304,7 +304,22 @@ def synthesize(
 
     parsed = _parse_json(raw)
     if parsed is None:
-        log.warning("context_layer: failed to parse JSON output (head=%r)", raw[:200])
+        # The model produced degenerate/lazy output (e.g. an abbreviated
+        # `{"po_id": "...", ...}` with a literal ellipsis) that isn't valid JSON.
+        # A temperature-0 retry reproduces it verbatim, so retry ONCE with a
+        # temperature bump + an explicit no-abbreviation instruction. This only
+        # fires on parse failure, so documents that parse first-try are
+        # unaffected (byte-identical behaviour).
+        log.warning("context_layer: invalid JSON (head=%r) — corrective retry", raw[:200])
+        corrective = prompt + (
+            "\n\nYOUR PREVIOUS OUTPUT WAS INVALID. Return the COMPLETE JSON object now: "
+            "include EVERY field key with an explicit value or null. Do NOT abbreviate, "
+            "do NOT use '...', '…', or any placeholder. Output ONLY the JSON object."
+        )
+        raw = _call_llm(corrective, temperature=0.3)
+        parsed = _parse_json(raw) if raw else None
+    if parsed is None:
+        log.warning("context_layer: no valid JSON after corrective retry for doc_type=%s", doc_type)
         return raw_candidates
 
     cleaned = _validate_and_bind(parsed, full_text, fields)
@@ -592,12 +607,15 @@ import os as _os
 _LLM_MODEL = _os.getenv("PROCWISE_AGENTNICK_MODEL", "BeyondProcwise/AgentNick:extract")
 
 
-def _call_llm(prompt: str) -> str | None:
+def _call_llm(prompt: str, temperature: float = 0.0) -> str | None:
     """Run the prompt through Ollama BeyondProcwise/AgentNick.
 
-    Temperature 0 (deterministic), num_predict sized for the widest schema,
-    short retry budget. A failed call returns None and the document blocks
-    with a missing-required discrepancy — no fabrication, no silent partial.
+    Temperature defaults to 0 (deterministic). A non-zero temperature is used
+    only for the corrective retry in ``synthesize`` — a deterministic call that
+    produced a degenerate/lazy output (e.g. an abbreviated ``{..., ...}``) would
+    reproduce it verbatim on retry, so bumping the temperature breaks the loop.
+    A failed call returns None and the document blocks with a missing-required
+    discrepancy — no fabrication, no silent partial.
     """
     try:
         from src.services.ollama_client import ollama_generate
@@ -605,7 +623,7 @@ def _call_llm(prompt: str) -> str | None:
             prompt,
             model=_LLM_MODEL,
             num_predict=MAX_RESPONSE_TOKENS,
-            temperature=0.0,
+            temperature=temperature,
             retries=2,
             timeout=120,
         )
