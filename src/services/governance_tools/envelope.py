@@ -28,13 +28,19 @@ def resolve_governance(workflow_name: str, agent: str | None = None) -> dict:
         GT.refresh()
         agent = agent or _WORKFLOW_AGENT.get(workflow_name, workflow_name)
         gov = GT.list_governance(agent) or {"prompts": [], "policies": []}
-        policies = list(gov.get("policies") or [])
-        # Also match a policy by the workflow name itself (policy_type), if distinct.
+        policies: list[dict] = []
+        seen: set = set()
+        # Primary policy WITH details (rules/weights/thresholds) so agents can
+        # actually consume the governed values, not just see a summary.
         pol = GT.get_policy(workflow_name)
-        if pol and pol.get("policy_type") and not any(
-            p.get("policy_type") == pol.get("policy_type") for p in policies
-        ):
-            policies.append({"policy_type": pol.get("policy_type"), "slug": pol.get("slug")})
+        if pol and pol.get("policy_type"):
+            policies.append({"policy_type": pol.get("policy_type"), "slug": pol.get("slug"),
+                             "details": pol.get("details")})
+            seen.add(pol.get("policy_type"))
+        for p in gov.get("policies") or []:
+            if p.get("policy_type") not in seen:
+                policies.append({"policy_type": p.get("policy_type"), "slug": p.get("slug")})
+                seen.add(p.get("policy_type"))
         return {"agent": agent, "policies": policies, "prompts": list(gov.get("prompts") or [])}
     except Exception:  # noqa: BLE001 - fail open
         log.debug("resolve_governance failed for %s", workflow_name, exc_info=True)

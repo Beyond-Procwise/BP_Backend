@@ -545,6 +545,32 @@ class SupplierRankingAgent(BaseAgent):
         rules = details.get("rules")
         return dict(rules) if isinstance(rules, dict) else {}
 
+    def _governed_default_weights(self, context: "AgentContext") -> Dict[str, float]:
+        """Default weights from the orchestrator-injected governance envelope
+        (context.input_data['governed']), or {} if none. Never raises."""
+        try:
+            gov = (getattr(context, "input_data", None) or {}).get("governed") or {}
+            for policy in gov.get("policies") or []:
+                details = policy.get("details")
+                if isinstance(details, str):
+                    import ast
+                    import json as _json
+                    try:
+                        details = _json.loads(details)
+                    except Exception:
+                        try:
+                            details = ast.literal_eval(details)
+                        except Exception:
+                            details = {}
+                if isinstance(details, dict):
+                    dw = (details.get("rules") or {}).get("default_weights")
+                    if isinstance(dw, dict) and dw:
+                        return {k: float(v) for k, v in dw.items()
+                                if isinstance(v, (int, float)) or str(v).replace(".", "", 1).isdigit()}
+        except Exception:  # noqa: BLE001
+            logger.debug("supplier_ranking: governed weights read failed", exc_info=True)
+        return {}
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -794,6 +820,12 @@ class SupplierRankingAgent(BaseAgent):
         weight_policy = self._find_policy(policy_bundle, "WeightAllocationPolicy")
         weight_rules = self._extract_policy_rules(weight_policy)
         default_weights = weight_rules.get("default_weights", {})
+        # Prefer the governance the orchestrator injected (single governed source),
+        # falling back to the code-resolved bundle when absent.
+        governed_weights = self._governed_default_weights(context)
+        if governed_weights:
+            default_weights = governed_weights
+            logger.info("supplier_ranking: using governed weights from envelope: %s", governed_weights)
         override_weights_map: Dict[str, float] = {}
         for key in ("metric_weights", "weights", "weightings", "default_weights"):
             override_weights_map = self._coerce_numeric_map(instructions.get(key))
