@@ -67,6 +67,7 @@ def ollama_generate(
     stop: Optional[list] = None,
     keep_alive: str | int = KEEP_ALIVE,
     think: Optional[bool] = None,
+    format: Optional[Any] = None,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -101,6 +102,12 @@ def ollama_generate(
     }
     if think is not None:
         payload["think"] = think
+    # Ollama structured outputs: a JSON schema (or the literal "json") passed as
+    # ``format`` constrains generation to conforming output via grammar-guided
+    # decoding — invalid tokens are masked, so the model cannot emit malformed
+    # JSON or abbreviated placeholders.
+    if format is not None:
+        payload["format"] = format
 
     for attempt in range(1, retries + 1):
         acquired = _semaphore.acquire(timeout=SEMAPHORE_TIMEOUT)

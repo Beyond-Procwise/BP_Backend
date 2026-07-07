@@ -297,6 +297,8 @@ def synthesize(
         log.debug("context_layer: vendor-hint lookup skipped: %s", exc)
         vhints = None
     prompt = _build_prompt(doc_type, full_text, fields, raw_candidates, filename_hints, vhints)
+    # Fast path: free-form generation (grammar-constrained decoding is reliable
+    # but ~3x slower, so it is reserved for the retry below).
     raw = _call_llm(prompt)
     if not raw:
         log.warning("context_layer: LLM returned nothing for doc_type=%s", doc_type)
@@ -310,13 +312,25 @@ def synthesize(
         # temperature bump + an explicit no-abbreviation instruction. This only
         # fires on parse failure, so documents that parse first-try are
         # unaffected (byte-identical behaviour).
-        log.warning("context_layer: invalid JSON (head=%r) — corrective retry", raw[:200])
-        corrective = prompt + (
-            "\n\nYOUR PREVIOUS OUTPUT WAS INVALID. Return the COMPLETE JSON object now: "
-            "include EVERY field key with an explicit value or null. Do NOT abbreviate, "
-            "do NOT use '...', '…', or any placeholder. Output ONLY the JSON object."
-        )
-        raw = _call_llm(corrective, temperature=0.3)
+        # Grammar-constrained retry: with a JSON schema as Ollama's `format`,
+        # invalid tokens are masked so the model CANNOT emit an abbreviated
+        # placeholder — it must return a complete, schema-conforming object. This
+        # is a hard guarantee, unlike a temperature bump (which sometimes
+        # reproduces the same degenerate output). Only fires when the free-form
+        # first pass failed to parse, so healthy docs never pay its overhead.
+        # Toggle via EXTRACTION_CONSTRAINED_DECODING (falls back to a temperature
+        # bump when disabled).
+        log.warning("context_layer: invalid JSON (head=%r) — %s retry", raw[:200],
+                    "constrained" if _CONSTRAINED_DECODING else "temperature")
+        if _CONSTRAINED_DECODING:
+            raw = _call_llm(prompt, fmt=_build_schema(fields))
+        else:
+            corrective = prompt + (
+                "\n\nYOUR PREVIOUS OUTPUT WAS INVALID. Return the COMPLETE JSON object now: "
+                "include EVERY field key with an explicit value or null. Do NOT abbreviate, "
+                "do NOT use '...', '…', or any placeholder. Output ONLY the JSON object."
+            )
+            raw = _call_llm(corrective, temperature=0.3)
         parsed = _parse_json(raw) if raw else None
     if parsed is None:
         log.warning("context_layer: no valid JSON after corrective retry for doc_type=%s", doc_type)
@@ -606,16 +620,37 @@ def _build_prompt(
 import os as _os
 _LLM_MODEL = _os.getenv("PROCWISE_AGENTNICK_MODEL", "BeyondProcwise/AgentNick:extract")
 
+# Constrain generation to a JSON schema (Ollama structured outputs). This makes
+# invalid/lazy output (e.g. an abbreviated `{..., ...}`) structurally impossible
+# and forces the exact field-name set, so the model can't drop keys or drift
+# them. IMPORTANT: constrain STRUCTURE only, not value FORMAT — each field
+# accepts string/number/null so the model still writes natural values (a rigid
+# value grammar hurts accuracy); downstream _validate_and_bind normalizes and
+# grounds them. Toggle with EXTRACTION_CONSTRAINED_DECODING (default on).
+_CONSTRAINED_DECODING = _os.getenv("EXTRACTION_CONSTRAINED_DECODING", "1") not in ("0", "false", "False")
 
-def _call_llm(prompt: str, temperature: float = 0.0) -> str | None:
+
+def _build_schema(fields: list[tuple[str, str, str]]) -> dict:
+    """JSON schema over the header field names — structure-only, permissive values."""
+    names = [n for n, _, _ in fields]
+    return {
+        "type": "object",
+        "properties": {n: {"type": ["string", "number", "null"]} for n in names},
+        "required": names,
+        "additionalProperties": False,
+    }
+
+
+def _call_llm(prompt: str, temperature: float = 0.0, fmt=None) -> str | None:
     """Run the prompt through Ollama BeyondProcwise/AgentNick.
 
     Temperature defaults to 0 (deterministic). A non-zero temperature is used
     only for the corrective retry in ``synthesize`` — a deterministic call that
     produced a degenerate/lazy output (e.g. an abbreviated ``{..., ...}``) would
     reproduce it verbatim on retry, so bumping the temperature breaks the loop.
-    A failed call returns None and the document blocks with a missing-required
-    discrepancy — no fabrication, no silent partial.
+    ``fmt`` (when set) is a JSON schema forwarded as Ollama's ``format`` for
+    grammar-constrained decoding. A failed call returns None and the document
+    blocks with a missing-required discrepancy — no fabrication, no silent partial.
     """
     try:
         from src.services.ollama_client import ollama_generate
@@ -626,6 +661,7 @@ def _call_llm(prompt: str, temperature: float = 0.0) -> str | None:
             temperature=temperature,
             retries=2,
             timeout=120,
+            format=fmt,
         )
     except Exception as exc:  # noqa: BLE001
         log.error("context_layer: ollama call failed: %s", exc)
