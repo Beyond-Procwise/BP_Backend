@@ -52,3 +52,4 @@ docling==2.93.0
 # Install paddle GPU wheel from: https://www.paddlepaddle.org.cn/packages/stable/cu123/
 paddlepaddle-gpu==3.1.0
 paddleocr==3.5.0
+ddgs
