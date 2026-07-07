@@ -210,6 +210,14 @@ async def lifespan(app: FastAPI):
             logger.exception("Failed to start SessionNotifyListener")
             state.session_notify_listener = None
 
+        # Warm the extraction-hint cache so approved per-vendor hints are live
+        # from the first document (extraction feedback loop).
+        try:
+            from src.services.extraction_feedback.hint_store import HINT_STORE
+            logger.info("ExtractionHintStore: %d active hints loaded", HINT_STORE.refresh())
+        except Exception:
+            logger.exception("ExtractionHintStore init failed (non-critical)")
+
         logger.info("System initialized successfully.")
     except Exception as e:
         logger.critical(f"FATAL: System initialization failed: {e}", exc_info=True)

@@ -338,6 +338,7 @@ class BackendScheduler:
     TRGT_PROMOTION_JOB_NAME = "trgt-promotion"
 
     DEAL_ASSIGNMENT_JOB_NAME = "deal-assignment"
+    EXTRACTION_FEEDBACK_JOB_NAME = "extraction-feedback"
 
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
@@ -346,6 +347,7 @@ class BackendScheduler:
         self._register_summary_precompute_job()
         self._register_trgt_promotion_job()
         self._register_deal_assignment_job()
+        self._register_extraction_feedback_job()
 
     def _register_trgt_promotion_job(self) -> None:
         """Register the periodic _stg -> _trgt promotion job.
@@ -375,6 +377,42 @@ class BackendScheduler:
             interval=timedelta(minutes=max(1, minutes)),
             initial_delay=timedelta(minutes=3),
         )
+
+    def _register_extraction_feedback_job(self) -> None:
+        """Register the extraction feedback-loop proposer job.
+
+        Scans extraction telemetry for recurring per-vendor failures and drafts
+        PENDING hint proposals for human approval (propose-only — nothing is
+        applied automatically). Enable/disable with EXTRACTION_FEEDBACK_ENABLED
+        (default enabled); interval via EXTRACTION_FEEDBACK_INTERVAL_MINUTES
+        (default 1440 = daily).
+        """
+        import os
+        if os.environ.get("EXTRACTION_FEEDBACK_ENABLED", "1").strip() not in ("1", "true", "True"):
+            logger.info("extraction feedback job disabled by EXTRACTION_FEEDBACK_ENABLED")
+            return
+        if self.EXTRACTION_FEEDBACK_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("EXTRACTION_FEEDBACK_INTERVAL_MINUTES", "1440"))
+        except ValueError:
+            minutes = 1440
+        self.register_job(
+            self.EXTRACTION_FEEDBACK_JOB_NAME,
+            self._run_extraction_feedback,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=10),
+        )
+
+    def _run_extraction_feedback(self) -> None:
+        """Draft pending per-vendor hint proposals from recent telemetry."""
+        try:
+            from src.services.extraction_feedback.proposer import propose_all
+            created = propose_all()
+            if created:
+                logger.info("extraction feedback: created %d hint proposals", len(created))
+        except Exception:
+            logger.exception("extraction feedback proposer job failed")
 
     def _run_trgt_promotion(self) -> None:
         """Catch up stranded _raw rows, then promote confidence/link-gated _stg

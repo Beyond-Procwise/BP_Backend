@@ -82,10 +82,13 @@ async def reload_governance(agent_nick=Depends(get_agent_nick)):
     try:
         agent_nick.policy_engine.reload_policies()
         agent_nick.prompt_engine.refresh()
+        from src.services.extraction_feedback.hint_store import HINT_STORE
+        hints = HINT_STORE.refresh()
         return {
             "status": "success",
             "prompts": len(agent_nick.prompt_engine.all_prompts()),
             "policies": len(agent_nick.policy_engine.list_policies()),
+            "extraction_vendor_hints": hints,
         }
     except Exception as e:  # pragma: no cover - defensive
         logger.error(f"Failed to reload governance: {e}")
