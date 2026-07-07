@@ -55,12 +55,13 @@ def _sq(s) -> str:
 
 
 def _vendor_hint(file_path: str) -> str | None:
-    """Leading supplier token of the filename — a coarse layout/vendor pattern key."""
-    base = os.path.basename(file_path or "")
-    m = _VENDOR.match(base)
-    if m:
-        return m.group(1).strip().rstrip(",").strip()
-    return (base.split()[0] if base.split() else None)
+    """Leading supplier token of the filename — a coarse layout/vendor pattern key.
+
+    Delegates to the shared vendor_key so the feedback proposer (producer) and
+    context_layer (consumer) derive the identical key. Behaviour-preserving.
+    """
+    from src.services.extraction_feedback.vendor_key import vendor_key
+    return vendor_key(file_path)
 
 
 def _stg_columns(cur, table: str) -> list[str]:
