@@ -66,6 +66,7 @@ def ollama_generate(
     retries: int = MAX_RETRIES,
     stop: Optional[list] = None,
     keep_alive: str | int = KEEP_ALIVE,
+    think: Optional[bool] = None,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -76,6 +77,12 @@ def ollama_generate(
     multi-turn output ("{\"user\":...{\"assistant\":..."); stopping at
     the first ``"\n}\n\n{"`` boundary or a ``{"user":`` literal cuts the
     runaway off after the first valid JSON object.
+
+    ``think`` controls hybrid reasoning models (e.g. AgentNick:unified). When
+    left as None it is not sent (the model's default applies — correct for the
+    extraction specialist). Pass ``think=False`` for reasoning models so the
+    answer lands in ``response`` instead of a separate ``thinking`` field that
+    this function does not return — otherwise ``response`` comes back empty.
     """
     model = model or DEFAULT_MODEL
     options: Dict[str, Any] = {
@@ -92,6 +99,8 @@ def ollama_generate(
         "keep_alive": keep_alive,
         "options": options,
     }
+    if think is not None:
+        payload["think"] = think
 
     for attempt in range(1, retries + 1):
         acquired = _semaphore.acquire(timeout=SEMAPHORE_TIMEOUT)

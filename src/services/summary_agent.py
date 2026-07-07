@@ -14,15 +14,18 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.services.db import get_conn
-from src.services.ollama_client import ollama_cloud_generate
+from src.services.ollama_client import ollama_generate
 from src.services.deal_summary import gather_deal_context, _build_prompt
 
 log = logging.getLogger(__name__)
 
-# Summaries run on the Ollama Cloud API (remote), keeping the local GPU free for
-# AgentNick extraction. Default is the Qwen 3.5 cloud model; override via
-# PROCWISE_SUMMARY_MODEL.
-_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "qwen3.5:397b")
+# Summaries run on the LOCAL Ollama GPU (AgentNick:unified, the consolidated
+# non-extraction brain). This was previously routed to the Ollama Cloud API to
+# keep the small A10G free for extraction, but on the 96GB Blackwell there is
+# ample room for both models — and the cloud host (api.ollama.com) does not host
+# the custom AgentNick model, so cloud calls 404'd and retried. Override the
+# model via PROCWISE_SUMMARY_MODEL.
+_SUMMARY_MODEL = os.getenv("PROCWISE_SUMMARY_MODEL", "BeyondProcwise/AgentNick:unified")
 
 
 class SummarizationError(RuntimeError):
@@ -245,13 +248,14 @@ def generate_summary(
             return None
         is_current = True
 
-    text = ollama_cloud_generate(
+    text = ollama_generate(
         _build_persona_prompt(framing, facts),
         model=_SUMMARY_MODEL,
         temperature=0.0,
         num_predict=1024,
         timeout=120,
         retries=2,
+        think=False,  # AgentNick:unified is a reasoning model — keep answer in `response`
     )
     if not text or not text.strip():
         raise SummarizationError(
