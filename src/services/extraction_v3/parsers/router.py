@@ -67,4 +67,12 @@ def parse(path: Path | str) -> ParsedDocument:
                 return fallback
         return doc
 
+    if suffix in (".xlsx", ".xls"):
+        from .spreadsheet_backend import parse_xlsx
+        return parse_xlsx(p)
+
+    if suffix == ".csv":
+        from .spreadsheet_backend import parse_csv
+        return parse_csv(p)
+
     raise ValueError(f"unsupported file format: {suffix}")

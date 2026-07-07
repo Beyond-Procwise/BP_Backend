@@ -49,7 +49,7 @@ class Page(BaseModel):
 
 class ParsedDocument(BaseModel):
     source_path: str
-    file_format: Literal["pdf-native", "pdf-scanned", "docx", "image"]
+    file_format: Literal["pdf-native", "pdf-scanned", "docx", "image", "spreadsheet"]
     pages: list[Page]
     full_text: str
     parser_backend: str
