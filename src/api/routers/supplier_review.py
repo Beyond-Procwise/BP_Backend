@@ -43,6 +43,13 @@ def list_reviews(status: str = "pending", limit: int = 100):
     return {"count": len(rows), "reviews": rows}
 
 
+@router.post("/reviews/sweep")
+def sweep_duplicates(min_score: float | None = None):
+    """Scan existing suppliers for likely duplicates and flag them for review."""
+    with get_conn() as c:
+        return SR.sweep_supplier_duplicates(c, min_score=min_score)
+
+
 @router.post("/reviews/{review_id}/confirm")
 def confirm_review(review_id: int, body: ReviewBody):
     """The extracted name IS the candidate supplier — merge (alias to canonical)."""

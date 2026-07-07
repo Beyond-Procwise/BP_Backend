@@ -150,31 +150,42 @@ def _lookup_alias(name: str, cur) -> str | None:
 
 
 def _emit_review(cur, *, extracted_name, decision, chosen_id, candidate_id,
-                 candidate_name, score, doc_type, doc_pk, trace_id) -> None:
-    """Flag a close-call supplier decision for human review. Best-effort."""
+                 candidate_name, score, doc_type, doc_pk, trace_id) -> int | None:
+    """Flag a close-call supplier decision for human review. Best-effort.
+
+    Returns the new review_id, or None if skipped (already flagged / disabled)
+    or on error.
+    """
     if not _REVIEW_ENABLED:
-        return
+        return None
     try:
+        # Skip if an equivalent pair is already flagged (either direction) or
+        # already resolved (confirmed/rejected) — never re-flag a decided pair.
         cur.execute(
-            "SELECT 1 FROM proc.bp_supplier_review "
-            "WHERE LOWER(extracted_name) = LOWER(%s) AND candidate_supplier_id = %s "
-            "AND status = 'pending' LIMIT 1",
-            (extracted_name, candidate_id),
+            "SELECT 1 FROM proc.bp_supplier_review WHERE "
+            "((LOWER(extracted_name) = LOWER(%s) AND candidate_supplier_id = %s) OR "
+            " (chosen_supplier_id = %s AND candidate_supplier_id = %s) OR "
+            " (chosen_supplier_id = %s AND candidate_supplier_id = %s)) "
+            "AND status IN ('pending','confirmed','rejected') LIMIT 1",
+            (extracted_name, candidate_id, chosen_id, candidate_id, candidate_id, chosen_id),
         )
         if cur.fetchone():
-            return  # already flagged and pending
+            return None
         cur.execute(
             "INSERT INTO proc.bp_supplier_review "
             "(extracted_name, decision, chosen_supplier_id, candidate_supplier_id, "
             " candidate_supplier_name, score, doc_type, doc_pk, trace_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING review_id",
             (extracted_name, decision, chosen_id, candidate_id, candidate_name,
              score, doc_type, doc_pk, trace_id),
         )
+        rid = cur.fetchone()[0]
         log.info("supplier_resolver: flagged review %r (%s, candidate=%s, score=%.1f)",
                  extracted_name, decision, candidate_id, score)
+        return rid
     except Exception:  # noqa: BLE001
         log.debug("supplier_resolver: review emit failed", exc_info=True)
+        return None
 
 
 def _create_supplier(cur, display_name: str) -> str:
@@ -674,3 +685,61 @@ def reject_review(review_id: int, reviewer: str, conn) -> dict:
         )
     conn.commit()
     return {"review_id": review_id, "status": "rejected", "alias": name, "supplier_id": distinct_id}
+
+
+def sweep_supplier_duplicates(conn, min_score: float | None = None) -> dict:
+    """Pairwise fuzzy-scan of all bp_supplier rows; flag likely-duplicate pairs
+    into the review queue for human confirm/reject.
+
+    Idempotent: skips pairs already aliased or already flagged/decided (either
+    direction). Canonical = the older row (by created_date, then supplier_id);
+    the other becomes the review's extracted_name (the one that would be merged
+    on confirm). O(n²) — fine for the current supplier count.
+    """
+    import datetime as _dt
+    if min_score is None:
+        min_score = float(os.getenv("SUPPLIER_SWEEP_MIN_SCORE", "88"))
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        return {"flagged": 0, "error": "rapidfuzz unavailable"}
+
+    flagged = 0
+    compared = 0
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT supplier_id, supplier_name, created_date FROM proc.bp_supplier "
+            "WHERE supplier_name IS NOT NULL AND length(trim(supplier_name)) >= %s",
+            (_MIN_NAME_LEN,),
+        )
+        items = [(sid, sname, _strip_biz_suffix(sname) or sname, cdate)
+                 for sid, sname, cdate in cur.fetchall()]
+        n = len(items)
+        for i in range(n):
+            ai, aname, astem, adate = items[i]
+            akey = (adate or _dt.datetime.min, ai)
+            for j in range(i + 1, n):
+                bi, bname, bstem, bdate = items[j]
+                compared += 1
+                score = fuzz.WRatio(astem, bstem)
+                if score < min_score:
+                    continue
+                bkey = (bdate or _dt.datetime.min, bi)
+                # Older = canonical (candidate to keep); newer = extracted (to merge).
+                if akey <= bkey:
+                    canon_id, canon_name, other_id, other_name = ai, aname, bi, bname
+                else:
+                    canon_id, canon_name, other_id, other_name = bi, bname, ai, aname
+                if _lookup_alias(other_name, cur):
+                    continue  # already resolved to something
+                rid = _emit_review(
+                    cur, extracted_name=other_name, decision="existing_dup",
+                    chosen_id=other_id, candidate_id=canon_id, candidate_name=canon_name,
+                    score=float(score), doc_type=None, doc_pk=None, trace_id=None,
+                )
+                if rid:
+                    flagged += 1
+    conn.commit()
+    log.info("supplier_resolver: duplicate sweep flagged %d pairs (min_score=%.0f, compared=%d, suppliers=%d)",
+             flagged, min_score, compared, n)
+    return {"flagged": flagged, "compared": compared, "min_score": min_score, "suppliers": n}
