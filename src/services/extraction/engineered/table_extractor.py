@@ -18,7 +18,12 @@ log = logging.getLogger(__name__)
 
 
 def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | None:
-    """Match header cell text to a line-item field by canonical_labels."""
+    """Match header cell text to a line-item field by canonical_labels.
+
+    Substring matches pick the LONGEST (most specific) matching label, so a
+    generic label like "Unit" (unit_of_measure) cannot steal a specific column
+    like "Unit Price" (unit_price) just because its field is listed first.
+    """
     h = (header_text or "").strip().lower()
     if not h:
         return None
@@ -27,12 +32,46 @@ def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | No
         for lbl in (f.canonical_labels or []):
             if h == lbl.lower():
                 return f.name
-    # substring fallback (handles "Unit Price ($)" → "Unit Price")
+    # substring: choose the most specific (longest) matching label
+    best_field: str | None = None
+    best_len = -1
     for f in line_fields:
         for lbl in (f.canonical_labels or []):
-            if lbl.lower() in h or h in lbl.lower():
-                return f.name
-    return None
+            ll = lbl.lower()
+            if ll in h or h in ll:
+                if len(ll) > best_len:
+                    best_len = len(ll)
+                    best_field = f.name
+    return best_field
+
+
+def _find_header(tbl: Any, line_fields: list[FieldSpec]) -> tuple[int | None, dict[int, str]]:
+    """Locate the column-header row and its column→field map.
+
+    Tries the table's declared header row first; if that yields no recognised
+    columns (spreadsheets put the real "Description | Qty | Unit Price" header
+    below title/metadata rows), scans for the row with the most field matches.
+    """
+    n = len(tbl.rows)
+    order: list[int] = []
+    if tbl.header_row_index is not None and 0 <= tbl.header_row_index < n:
+        order.append(tbl.header_row_index)
+    order += [i for i in range(n) if i not in order]
+
+    best_i: int | None = None
+    best_map: dict[int, str] = {}
+    for i in order:
+        cmap: dict[int, str] = {}
+        for cell in tbl.rows[i]:
+            fld = _header_to_field(cell.text, line_fields)
+            if fld:
+                cmap.setdefault(cell.col_index, fld)
+        if len(cmap) > len(best_map):
+            best_i, best_map = i, cmap
+        # A declared header with 2+ recognised columns is trusted as-is.
+        if i == tbl.header_row_index and len(cmap) >= 2:
+            break
+    return best_i, best_map
 
 
 _AMOUNT_CLEAN_RE = re.compile(r"[^\d.\-]")
@@ -87,20 +126,16 @@ def extract_line_items(parsed: Any, schema: DocSchema) -> list[Candidate]:
     line_index = 0
     for page in parsed.pages:
         for tbl in page.tables:
-            if tbl.header_row_index is None or tbl.header_row_index >= len(tbl.rows):
+            if not tbl.rows:
                 continue
-            header_row = tbl.rows[tbl.header_row_index]
-            # Map column index → field name
-            col_to_field: dict[int, str] = {}
-            for cell in header_row:
-                fld = _header_to_field(cell.text, line_fields)
-                if fld:
-                    col_to_field[cell.col_index] = fld
-            if not col_to_field:
+            header_idx, col_to_field = _find_header(tbl, line_fields)
+            if header_idx is None or not col_to_field:
                 continue  # no recognised columns
 
             for ri, row in enumerate(tbl.rows):
-                if ri == tbl.header_row_index:
+                # Skip the header and any title/metadata rows above it — line
+                # items only appear BELOW the column header.
+                if ri <= header_idx:
                     continue
                 # First pass: gather candidate values for this row so we can
                 # decide whether it qualifies as a line item BEFORE emitting.
