@@ -69,6 +69,50 @@ def test_log_process_defaults_status_zero(monkeypatch):
     assert stored_details["workflow_id"] == "wf-fixed"
 
 
+class _EmptyCursor:
+    def execute(self, sql, params=None):
+        self.sql = sql
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        pass
+
+
+class _EmptyConn:
+    def cursor(self):
+        return _EmptyCursor()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        pass
+
+
+def test_load_agent_links_parses_agents_envelope():
+    """Regression: agent_definitions.json is an {"agents": [...]} envelope.
+
+    Iterating the dict directly yields its keys (strings), which used to raise
+    AttributeError: 'str' object has no attribute 'get' and silently wiped every
+    agent's governed prompt/policy defaults. agent_defs must be populated.
+    """
+    agent = SimpleNamespace(
+        get_db_connection=lambda: _EmptyConn(),
+        settings=SimpleNamespace(script_user="tester"),
+    )
+    prs = ProcessRoutingService(agent)
+    agent_defs, prompt_map, policy_map = prs._load_agent_links()
+    # Real slugs from src/agent_definitions.json must resolve to their classes.
+    assert agent_defs, "agent_defs should not be empty"
+    assert agent_defs.get("opportunity_miner") == "OpportunityMinerAgent"
+    assert agent_defs.get("email_drafting") == "EmailDraftingAgent"
+
+
 def test_validate_workflow_id_success(monkeypatch):
     agent = SimpleNamespace(
         get_db_connection=lambda: None,

@@ -636,11 +636,15 @@ class ProcessRoutingService:
         prompt_ids_catalog: set[int] = set()
         policy_ids_catalog: set[int] = set()
 
-        # Load agent definitions from the bundled JSON file instead of the DB
+        # Load agent definitions from the bundled JSON file instead of the DB.
+        # The file is an {"agents": [...]} envelope; tolerate a bare list too.
         path = Path(__file__).resolve().parents[1] / "agent_definitions.json"
         with path.open() as f:
             data = json.load(f)
-        for item in data:
+        agent_items = data.get("agents", []) if isinstance(data, dict) else data
+        for item in agent_items:
+            if not isinstance(item, dict):
+                continue
             agent_class = item.get("agentType", "")
             if not agent_class:
                 continue
