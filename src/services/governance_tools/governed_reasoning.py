@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 
 import requests
 
@@ -40,9 +41,106 @@ _SYSTEM = (
     "database. Do NOT rely on assumptions about rules or weights. For the task: FIRST call "
     "list_governance (optionally with the relevant agent) to see what governance exists, then "
     "call get_policy and/or get_prompt to fetch the applicable governed policy (rules/weights/"
-    "thresholds) and prompt template, and APPLY them in your answer. State which governance you "
-    "used. Then give a concise, governed answer."
+    "thresholds) and prompt template, and APPLY them in your answer. Only reference governance "
+    "you actually fetched via the tools; never name a policy or prompt you did not fetch. After "
+    "your concise governed answer, end with a single final line, exactly:\n"
+    'CITED: {"policies": ["<slug>", ...], "prompts": ["<prompt_name>", ...]}\n'
+    "listing ONLY the governance you fetched with the tools (empty lists if none)."
 )
+
+_NUDGE = (
+    "You answered without consulting the governed rules. First call list_governance and the "
+    "relevant get_policy / get_prompt to fetch the applicable governance, then give your "
+    "governed answer with the final CITED line."
+)
+
+
+def _split_citations(content: str) -> tuple[str, dict]:
+    """Split a final answer into (prose, declared_citations).
+
+    The model is asked to end with `CITED: {json}`. Parse it robustly; on any
+    failure treat the whole content as prose with no declared citations.
+    """
+    cited = {"policies": [], "prompts": []}
+    text = content or ""
+    m = re.search(r"CITED\s*:", text, re.IGNORECASE)
+    if not m:
+        return text.strip(), cited
+    prose = text[: m.start()].strip()
+    tail = text[m.end():]
+    brace = tail.find("{")
+    if brace != -1:
+        try:
+            obj = json.loads(tail[brace: tail.rfind("}") + 1])
+            if isinstance(obj, dict):
+                for key in ("policies", "prompts"):
+                    vals = obj.get(key) or []
+                    if isinstance(vals, list):
+                        cited[key] = [str(v) for v in vals if str(v).strip()]
+        except Exception:  # noqa: BLE001
+            pass
+    return prose, cited
+
+
+def _norm(s: str) -> str:
+    """Lowercase and fold underscores/whitespace so `foo_bar_policy` and
+    `Foo Bar Policy` compare equal."""
+    return re.sub(r"[\s_]+", " ", str(s or "").lower()).strip()
+
+
+def _prose_unfetched(prose: str, catalog: dict, fetched_policies: set,
+                     fetched_prompts: set) -> dict:
+    """Governance names that appear in the prose but were never fetched.
+
+    Catches the "honest CITED, fabricated prose" case the citation cross-check
+    misses. Conservative to avoid false positives: only DISTINCTIVE identifiers
+    (2+ tokens) are scanned, matched as a whole normalized phrase; fetched names
+    are never flagged even when named in prose.
+    """
+    norm_prose = _norm(prose)
+    hits = {"policies": [], "prompts": []}
+    for slug in catalog.get("policies", []):
+        if str(slug).lower() in fetched_policies:
+            continue
+        n = _norm(slug)
+        if len(n.split()) >= 2 and n in norm_prose:
+            hits["policies"].append(slug)
+    for name in catalog.get("prompts", []):
+        if str(name).lower() in fetched_prompts:
+            continue
+        n = _norm(name)
+        if len(n.split()) >= 2 and n in norm_prose:
+            hits["prompts"].append(name)
+    return hits
+
+
+def _dedupe(values: list) -> list:
+    """Order-preserving, case-insensitive de-duplication."""
+    seen, out = set(), []
+    for v in values:
+        k = str(v).lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(v)
+    return out
+
+
+def _finalize(content: str, used: dict, fetched_policies: set, fetched_prompts: set,
+              catalog: dict, rounds: int) -> dict:
+    """Ground the answer: cross-check declared citations AND scan the prose,
+    both against what was actually fetched."""
+    answer, cited = _split_citations(content)
+    prose_hits = _prose_unfetched(answer, catalog, fetched_policies, fetched_prompts)
+    unsupported = {
+        "policies": _dedupe([c for c in cited["policies"] if c.lower() not in fetched_policies]
+                            + prose_hits["policies"]),
+        "prompts": _dedupe([c for c in cited["prompts"] if c.lower() not in fetched_prompts]
+                           + prose_hits["prompts"]),
+    }
+    if unsupported["policies"] or unsupported["prompts"]:
+        log.warning("governed_reasoning ungrounded citations dropped: %s", unsupported)
+    return {"answer": answer, "governance_used": used,
+            "unsupported": unsupported, "rounds": rounds}
 
 
 def _chat(messages: list[dict]) -> dict:
@@ -58,7 +156,21 @@ def _chat(messages: list[dict]) -> dict:
 def govern(task: str, agent: str | None = None) -> dict:
     """Run AgentNick over a task with governance tools. Returns answer + governance_used."""
     GT.refresh()
+    # Full catalog of governance that exists — the vocabulary the prose scan
+    # checks against. Fail-open to empty (scan then no-ops).
+    try:
+        cat = GT.list_governance(None) or {}
+        catalog = {
+            "policies": [p.get("slug") for p in (cat.get("policies") or []) if p.get("slug")],
+            "prompts": [p.get("prompt_name") for p in (cat.get("prompts") or []) if p.get("prompt_name")],
+        }
+    except Exception:  # noqa: BLE001
+        catalog = {"policies": [], "prompts": []}
     used: dict = {"prompts": [], "policies": []}
+    fetched_policies: set[str] = set()   # slugs actually returned by get_policy
+    fetched_prompts: set[str] = set()    # names actually returned by get_prompt
+    any_tool_call = False                # did the model call any tool at all?
+    nudged = False                       # corrective retry fired at most once
     messages = [
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": (f"Agent: {agent}\n" if agent else "") + f"Task: {task}"},
@@ -70,11 +182,18 @@ def govern(task: str, agent: str | None = None) -> dict:
             msg = _chat(messages)
         except Exception as exc:  # noqa: BLE001
             log.warning("governed_reasoning chat failed: %s", exc)
-            return {"answer": "", "governance_used": used, "rounds": rounds, "error": str(exc)[:200]}
+            return {"answer": "", "governance_used": used, "unsupported": {"policies": [], "prompts": []},
+                    "rounds": rounds, "error": str(exc)[:200]}
         messages.append(msg)
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
-            return {"answer": msg.get("content") or "", "governance_used": used, "rounds": rounds}
+            # Model wants to answer. If it never consulted governance, nudge once.
+            if not any_tool_call and not nudged:
+                nudged = True
+                messages.append({"role": "user", "content": _NUDGE})
+                continue
+            return _finalize(msg.get("content") or "", used, fetched_policies, fetched_prompts, catalog, rounds)
+        any_tool_call = True
         for tc in tool_calls:
             fn = tc.get("function", {})
             name = fn.get("name")
@@ -90,17 +209,21 @@ def govern(task: str, agent: str | None = None) -> dict:
                 res = GT.get_policy(str(args.get("query", "")))
                 if res:
                     used["policies"].append({"policy_type": res.get("policy_type"), "slug": res.get("slug")})
+                    if res.get("slug"):
+                        fetched_policies.add(str(res["slug"]).lower())
             elif name == "get_prompt":
                 res = GT.get_prompt(str(args.get("query", "")))
                 if res:
                     used["prompts"].append({"prompt_name": res.get("prompt_name"), "prompt_type": res.get("prompt_type")})
+                    if res.get("prompt_name"):
+                        fetched_prompts.add(str(res["prompt_name"]).lower())
             else:
                 res = {"error": "unknown tool"}
             messages.append({"role": "tool", "name": name, "content": json.dumps(res, default=str)})
     # rounds exhausted → ask for a final answer
-    messages.append({"role": "user", "content": "Give your final governed answer now."})
+    messages.append({"role": "user", "content": "Give your final governed answer now, ending with the CITED line."})
     try:
         final = _chat(messages).get("content") or ""
     except Exception:  # noqa: BLE001
         final = ""
-    return {"answer": final, "governance_used": used, "rounds": rounds}
+    return _finalize(final, used, fetched_policies, fetched_prompts, catalog, rounds)
