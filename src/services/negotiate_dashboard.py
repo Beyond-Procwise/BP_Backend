@@ -190,7 +190,7 @@ def negotiation_kpis(cur, deal_id: str, d: Optional[dict] = None) -> list[dict]:
     closure_str = closure.strftime("%d %B %Y") if hasattr(closure, "strftime") else (str(closure) if closure else "")
     savings_val = "awaiting quote" if not quote else _money(savings, ccy)
     return [
-        {"label": "Total Cost", "value": _money(total_cost, ccy)},
+        {"label": "Total Cost", "value": _money(total_cost, ccy), "positive": True},
         {"label": "Savings", "value": savings_val, "positive": savings >= 0},
         {"label": "Price Change", "value": f"{price_change_pct:.1f}%", "positive": price_change_pct <= 0},
         {"label": "Volume Change", "value": str(int(volume)) if volume is not None else "0",
@@ -312,11 +312,16 @@ def cost_over_time(cur, deal_id: str) -> list[dict]:
     out = []
     for dt, typ, amt in events:
         cum[typ] += amt
+        # Quote, PO and Invoice for a three-way-matched deal all represent the
+        # SAME spend, so summing them triple-counts. "Overall" is the actual
+        # cost consumed: prefer the most concrete stream (invoiced), falling
+        # back to committed (PO) then proposed (Quote).
+        overall = cum["Invoice"] or cum["PO"] or cum["Quote"]
         out.append({
             "time": dt.isoformat() if hasattr(dt, "isoformat") else str(dt),
             "PO": round(cum["PO"], 2), "Invoice": round(cum["Invoice"], 2),
             "Quote": round(cum["Quote"], 2),
-            "Overall": round(cum["PO"] + cum["Invoice"] + cum["Quote"], 2),
+            "Overall": round(overall, 2),
         })
     return out
 
@@ -333,6 +338,18 @@ def volume_trend(cur, deal_id: str) -> list[dict]:
         "join proc.bp_purchase_order_trgt p on p.po_id=li.po_id "
         "where p.deal_id=%s and p.order_date is not null "
         "group by 1,2 order by 2", (deal_id,))
+    if not rows:
+        # Quote-only deals have no POs yet — fall back to the proposed volume
+        # from quotes so the chart reflects the deal instead of rendering blank.
+        # Mirrors the Volume KPI fallback in _volume_total.
+        rows = _rows(cur,
+            "select to_char(date_trunc('month', q.quote_date),'Mon') mon, "
+            "date_trunc('month', q.quote_date) m, "
+            "coalesce(sum(li.quantity),0) vol, avg(li.unit_price) aup "
+            "from proc.bp_quote_line_items_trgt li "
+            "join proc.bp_quote_trgt q on q.quote_id=li.quote_id "
+            "where q.deal_id=%s and q.quote_date is not null "
+            "group by 1,2 order by 2", (deal_id,))
     return [{"month": r["mon"], "Volume": round(_f(r["vol"]) or 0, 2),
              "AvgUnitPrice": round(_f(r["aup"]) or 0, 2)} for r in rows]
 
@@ -374,6 +391,14 @@ def demand_vs_volume(cur, deal_id: str) -> list[dict]:
         "from proc.bp_po_line_items_trgt li "
         "join proc.bp_purchase_order_trgt p on p.po_id=li.po_id "
         "where p.deal_id=%s and p.order_date is not null group by 1,2 order by 2", (deal_id,))
+    if not rows:
+        # Quote-only deals: fall back to proposed volume from quotes (see volume_trend).
+        rows = _rows(cur,
+            "select to_char(date_trunc('month', q.quote_date),'Mon') mon, "
+            "date_trunc('month', q.quote_date) m, coalesce(sum(li.quantity),0) vol "
+            "from proc.bp_quote_line_items_trgt li "
+            "join proc.bp_quote_trgt q on q.quote_id=li.quote_id "
+            "where q.deal_id=%s and q.quote_date is not null group by 1,2 order by 2", (deal_id,))
     return [{"month": r["mon"], "demand": None, "volume": round(_f(r["vol"]) or 0, 2)} for r in rows]
 
 

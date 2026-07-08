@@ -99,12 +99,73 @@ def gather_deal_context(deal_id: str, conn: Any = None) -> Optional[dict]:
         return _gather(own, deal_id)
 
 
+def _strip_fx(obj):
+    """Drop USD-conversion fields (e.g. converted_amount_usd, exchange_rate_to_usd)
+    so the summary reports the deal in its NATIVE currency, matching the GBP
+    dashboards. The stored conversion is also internally inconsistent, so feeding
+    it to the LLM produced summaries headlined in USD."""
+    if isinstance(obj, dict):
+        return {k: _strip_fx(v) for k, v in obj.items() if not k.lower().endswith("_usd")}
+    if isinstance(obj, list):
+        return [_strip_fx(v) for v in obj]
+    return obj
+
+
+_DOC_SINGULAR = {"quotes": "quote", "purchase_orders": "purchase_order", "invoices": "invoice"}
+
+
+def _doc_facts(typ: str, d: dict) -> dict:
+    """One compact, native-currency fact record per document."""
+    total = d.get("total_amount")
+    if total is None:
+        total = d.get("invoice_amount")
+    incl = d.get("total_amount_incl_tax")
+    if incl is None:
+        incl = d.get("invoice_total_incl_tax")
+    return {
+        "type": typ,
+        "supplier": d.get("supplier_name") or d.get("supplier_id"),
+        "buyer": d.get("buyer_name") or d.get("buyer_id"),
+        "currency": d.get("currency"),
+        "total_amount": total,
+        "tax_percent": d.get("tax_percent"),
+        "total_incl_tax": incl,
+        "date": d.get("quote_date") or d.get("order_date") or d.get("invoice_date"),
+        "line_item_count": len(d.get("line_items") or []),
+    }
+
+
+def _summary_facts(ctx: dict) -> dict:
+    """Curate a small, native-currency fact sheet for the LLM.
+
+    The raw context (SELECT * rows + the agent-actions audit log) contains
+    USD-converted amounts and internal event blobs that made the model headline
+    figures in USD and sometimes describe the JSON instead of the deal. We feed
+    only the fields a deal summary needs, in native currency, and drop the
+    audit-log noise entirely.
+    """
+    docs = []
+    for key, typ in _DOC_SINGULAR.items():
+        for d in ctx.get("documents", {}).get(key, []):
+            docs.append(_doc_facts(typ, d))
+    discrepancies = [_strip_fx(x) for x in (ctx.get("discrepancies") or [])][:20]
+    return {
+        "deal_id": ctx.get("deal_id"),
+        "deal_name": ctx.get("deal_name"),
+        "document_count": len(docs),
+        "documents": docs,
+        "discrepancies": discrepancies,
+    }
+
+
 def _build_prompt(ctx: dict) -> str:
-    facts = json.dumps(ctx, indent=2, default=str)
+    facts = json.dumps(_summary_facts(ctx), indent=2, default=str)
     return (
         "You are a procurement analyst. Using ONLY the JSON facts below, write a "
         "SHORT, precise summary of the deal. Do not fabricate or infer values that "
-        "are not present; if something is absent, leave it out.\n\n"
+        "are not present; if something is absent, leave it out. Report every "
+        "monetary value in the deal's native currency (the `currency` and "
+        "`total_amount`/`invoice_amount` fields); never convert currencies.\n\n"
         "Respond in EXACTLY this format and keep it tight:\n"
         "<one or two plain-English sentences: supplier, buyer, the documents "
         "involved (quote/PO/invoice), and total value with currency>\n"
@@ -151,6 +212,10 @@ def summarize_deal(deal_id: str, conn: Any = None) -> Optional[dict]:
         num_predict=400,
         timeout=120,
         retries=2,
+        # AgentNick:unified is a reasoning model — keep the answer in `response`
+        # instead of a separate `thinking` field, otherwise the summary comes
+        # back empty ("Summary not available") or as a salvaged JSON blob.
+        think=False,
     )
     if not text or not text.strip():
         raise SummarizationError(f"empty summary for deal {deal_id}")

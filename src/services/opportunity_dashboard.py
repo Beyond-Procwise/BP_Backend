@@ -63,11 +63,12 @@ def opportunities_data(cur) -> dict:
         " count(*) filter (where stage = any(%s)) identified, "
         " count(*) filter (where stage = any(%s)) closed, "
         " count(*) filter (where stage = any(%s)) in_flight, "
+        " coalesce(sum(financial_impact_gbp) filter (where stage = any(%s)),0) in_flight_value, "
         " coalesce(sum(financial_impact_gbp),0) potential, "
         " coalesce(sum(realised_savings_gbp) filter (where stage='realised'),0) realised, "
         " count(distinct category_id) filter (where category_id is not null) cat_impact "
         "from proc.bp_opportunity",
-        (list(_OPEN), list(_CLOSED), list(_INFLIGHT)))
+        (list(_OPEN), list(_CLOSED), list(_INFLIGHT), list(_INFLIGHT)))
     a = agg[0] if agg else {}
     # period-over-period change: this month vs previous month (by detected_on)
     cur_prev = _rows(cur,
@@ -94,6 +95,7 @@ def opportunities_data(cur) -> dict:
         "categoryImpact": int(_f(a.get("cat_impact"))),
         "catImpChange": _pct_change(0, 0),
         "inFlight": int(_f(a.get("in_flight"))),
+        "inFlightValue": _money(a.get("in_flight_value")),
         "inFlightChange": _pct_change(_f(c.get("cur_if")), _f(c.get("prev_if"))),
     }
 
