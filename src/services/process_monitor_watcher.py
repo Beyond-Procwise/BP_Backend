@@ -313,7 +313,8 @@ class ProcessMonitorWatcher:
                         cur.execute(
                             "SELECT id FROM proc.process_monitor "
                             "WHERE file_path = %s AND content_hash IS NOT NULL "
-                            "AND content_hash <> %s AND status = 'Extracted' "
+                            "AND content_hash <> %s "
+                            "AND status NOT IN ('Completed', 'Running', 'Extraction_Failed') "
                             "AND id <> %s LIMIT 1",
                             (file_path, content_hash, record_id),
                         )
@@ -364,10 +365,16 @@ class ProcessMonitorWatcher:
                                 "UPDATE proc.process_monitor SET content_hash = %s WHERE id = %s",
                                 (content_hash, record_id),
                             )
+                            # Any prior row that shares this content hash and is
+                            # not itself an unprocessed/failed row. The
+                            # authoritative success gate is _data_needs_reextraction
+                            # (data actually present in the _trgt table), so we do
+                            # not over-restrict on status here — a processed doc may
+                            # be 'Extracted', 'Deal_Linked', etc.
                             cur.execute(
                                 "SELECT id, file_path, category FROM proc.process_monitor "
                                 "WHERE content_hash = %s AND id <> %s "
-                                "AND status IN ('Extracted', 'Extracting') "
+                                "AND status NOT IN ('Completed', 'Running', 'Extraction_Failed') "
                                 "ORDER BY id ASC LIMIT 1",
                                 (content_hash, record_id),
                             )
@@ -379,27 +386,38 @@ class ProcessMonitorWatcher:
                                     "Content duplicate: record %s identical to %s — marking duplicate",
                                     record_id, prior[0],
                                 )
+                                # Essential: mark duplicate. Must succeed before
+                                # any best-effort logging so a log failure can
+                                # never prevent the skip.
                                 cur.execute(
                                     "UPDATE proc.process_monitor SET doc_action = 'duplicate' WHERE id = %s",
                                     (record_id,),
                                 )
-                                cur.execute(
-                                    "INSERT INTO proc.bp_discrepancy_data "
-                                    "(doc_type, record_id, field_name, rule_name, severity, "
-                                    "extracted_value, expected_value, message, file_path) "
-                                    "VALUES (%s, %s, 'content_hash', 'duplicate_document', 'warning', "
-                                    "%s, %s, %s, %s)",
-                                    (category, str(record_id), content_hash, str(prior[0]),
-                                     f"Duplicate upload: identical content to record {prior[0]}",
-                                     file_path),
-                                )
-                                # Record a session outcome so the session resolves
-                                # and the WebSocket still fires for this upload.
-                                cur.execute(
-                                    "SELECT proc.fn_record_outcome(%s, %s, 'target')",
-                                    (file_path, category),
-                                )
                                 is_duplicate = True
+                                # Best-effort: audit note (non-blocking severity).
+                                try:
+                                    cur.execute(
+                                        "INSERT INTO proc.bp_extraction_discrepancy "
+                                        "(doc_type, source_file, doc_pk_candidate, field_name, "
+                                        "raw_value, expected_value, issue_type, severity, status, "
+                                        "notes, blocks_promotion) "
+                                        "VALUES (%s, %s, %s, 'content_hash', %s, %s, "
+                                        "'duplicate_document', 'warning', 'open', %s, FALSE)",
+                                        (category or "", file_path, str(prior[0]),
+                                         content_hash, str(prior[0]),
+                                         f"Duplicate upload: identical content to record {prior[0]}"),
+                                    )
+                                except Exception:
+                                    logger.debug("duplicate audit-log insert failed", exc_info=True)
+                                # Best-effort: record a session outcome so the
+                                # session resolves and the WebSocket still fires.
+                                try:
+                                    cur.execute(
+                                        "SELECT proc.fn_record_outcome(%s, %s, 'target')",
+                                        (file_path, category),
+                                    )
+                                except Exception:
+                                    logger.debug("duplicate session-outcome record failed", exc_info=True)
                     finally:
                         conn.close()
                 except Exception:
