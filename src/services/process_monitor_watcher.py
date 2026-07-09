@@ -143,42 +143,14 @@ class ProcessMonitorWatcher:
         """Atomically claim a record by transitioning Completed -> Extracting.
 
         Returns the record dict if successfully claimed, None otherwise.
-        Performs an early duplicate check before claiming to reduce
-        unnecessary processing and log noise.
+        Duplicate detection is content-hash based and lives in
+        _process_record (off the listener thread) so it can stamp doc_action.
         """
         with self._processing_lock:
             if record_id in self._processing_ids:
                 return None
         try:
             with conn.cursor() as cur:
-                # Early duplicate check — skip before claiming to reduce noise
-                cur.execute(
-                    "SELECT file_path, category FROM proc.process_monitor WHERE id = %s",
-                    (record_id,),
-                )
-                pre_row = cur.fetchone()
-                if pre_row and pre_row[0]:
-                    file_path, category = pre_row
-                    cur.execute(
-                        "SELECT id FROM proc.process_monitor "
-                        "WHERE file_path = %s AND status IN ('Extracted', 'Extracting') AND id != %s "
-                        "LIMIT 1",
-                        (file_path, record_id),
-                    )
-                    dup = cur.fetchone()
-                    if dup and not self._data_needs_reextraction(cur, file_path, category or ""):
-                        logger.debug(
-                            "Early dedup: record %s is duplicate of %s — skipping claim",
-                            record_id, dup[0],
-                        )
-                        # Mark as extracted without processing
-                        cur.execute(
-                            "UPDATE proc.process_monitor SET status = 'Extracted', "
-                            "end_ts = %s, lastmodified_date = %s WHERE id = %s AND status IN ('Completed', 'Running')",
-                            (datetime.now(timezone.utc), datetime.now(timezone.utc), record_id),
-                        )
-                        return None
-
                 cur.execute(
                     """
                     UPDATE proc.process_monitor
@@ -289,8 +261,8 @@ class ProcessMonitorWatcher:
             with self._processing_lock:
                 self._processing_ids.discard(record_id)
 
-    def _mark_failed(self, record_id: int, error: str) -> None:
-        """Mark a record as failed extraction."""
+    def _mark_failed(self, record_id: int, error: str, doc_action: Optional[str] = None) -> None:
+        """Mark a record as failed extraction (optionally with a doc_action)."""
         try:
             conn = self._get_connection()
             try:
@@ -299,11 +271,13 @@ class ProcessMonitorWatcher:
                         """
                         UPDATE proc.process_monitor
                         SET status = 'Extraction_Failed',
+                            doc_action = COALESCE(%s, doc_action),
                             end_ts = %s,
                             lastmodified_date = %s
                         WHERE id = %s
                         """,
                         (
+                            doc_action,
                             datetime.now(timezone.utc),
                             datetime.now(timezone.utc),
                             record_id,
@@ -319,6 +293,43 @@ class ProcessMonitorWatcher:
             with self._processing_lock:
                 self._processing_ids.discard(record_id)
 
+    def _stamp_quality_action(
+        self, record_id: int, file_path: str,
+        content_hash: Optional[str], result: dict,
+    ) -> None:
+        """Stamp a per-document quality signal after a successful extraction.
+
+        Precedence: needs_review (low quality) wins over updated (provenance).
+        Never overwrites an already-set doc_action (e.g. 'duplicate').
+        """
+        from src.services.extraction.content_hash import quality_action_from_result
+        action = quality_action_from_result(result)
+        try:
+            conn = self._get_connection()
+            try:
+                with conn.cursor() as cur:
+                    if action is None and content_hash and file_path:
+                        # Same file re-uploaded with CHANGED content → 'updated'
+                        cur.execute(
+                            "SELECT id FROM proc.process_monitor "
+                            "WHERE file_path = %s AND content_hash IS NOT NULL "
+                            "AND content_hash <> %s AND status = 'Extracted' "
+                            "AND id <> %s LIMIT 1",
+                            (file_path, content_hash, record_id),
+                        )
+                        if cur.fetchone():
+                            action = "updated"
+                    if action:
+                        cur.execute(
+                            "UPDATE proc.process_monitor SET doc_action = %s "
+                            "WHERE id = %s AND doc_action IS NULL",
+                            (action, record_id),
+                        )
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("quality-action stamp failed for record %s", record_id, exc_info=True)
+
     def _process_record(self, record: Dict[str, Any]) -> None:
         """Dispatch to AgentNick (primary agent) for document processing."""
         record_id = record["id"]
@@ -332,55 +343,70 @@ class ProcessMonitorWatcher:
             category,
         )
 
-        # Check for duplicate file_path (same document already extracted)
-        # Only skip if the data actually exists in the target bp_ table,
-        # not just based on process_monitor status (which can be stale
-        # after DB cleanup).
+        # --- Content-hash duplicate / update detection ---
+        # Hash the incoming bytes (same resolver the parser uses). A genuine
+        # duplicate is content-identical to a prior row whose data still
+        # exists in a _trgt table — mark it and skip re-extraction.
+        content_hash = None
         if file_path:
+            from src.services.extraction.content_hash import compute_content_hash
             try:
-                conn = self._get_connection()
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT id FROM proc.process_monitor "
-                            "WHERE file_path = %s AND status IN ('Extracted', 'Extracting') AND id != %s "
-                            "LIMIT 1",
-                            (file_path, record_id),
-                        )
-                        existing = cur.fetchone()
-                        # Verify data actually exists in the target table
-                        if existing and not self._data_needs_reextraction(
-                            cur, file_path, category
-                        ):
-                            pass  # genuine duplicate — proceed to skip
-                        else:
-                            existing = None  # stale marker — allow re-extraction
-                        if existing:
-                            logger.info(
-                                "Duplicate detected: record %s has same file_path as "
-                                "already-extracted record %s — logging discrepancy",
-                                record_id, existing[0],
-                            )
-                            # Log duplicate to discrepancy table
-                            cur.execute(
-                                "INSERT INTO proc.bp_discrepancy_data "
-                                "(doc_type, record_id, field_name, rule_name, severity, "
-                                "extracted_value, expected_value, message, file_path) "
-                                "VALUES (%s, %s, 'file_path', 'duplicate_document', 'warning', "
-                                "%s, %s, %s, %s)",
-                                (
-                                    category, str(record_id), file_path,
-                                    str(existing[0]),
-                                    f"Duplicate upload: same file already extracted as record {existing[0]}",
-                                    file_path,
-                                ),
-                            )
-                            self._mark_extracted(record_id)
-                            return
-                finally:
-                    conn.close()
+                content_hash = compute_content_hash(file_path)
             except Exception:
-                logger.debug("Duplicate check failed", exc_info=True)
+                logger.debug("content hash failed for record %s", record_id, exc_info=True)
+            if content_hash:
+                is_duplicate = False
+                try:
+                    conn = self._get_connection()
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "UPDATE proc.process_monitor SET content_hash = %s WHERE id = %s",
+                                (content_hash, record_id),
+                            )
+                            cur.execute(
+                                "SELECT id, file_path, category FROM proc.process_monitor "
+                                "WHERE content_hash = %s AND id <> %s "
+                                "AND status IN ('Extracted', 'Extracting') "
+                                "ORDER BY id ASC LIMIT 1",
+                                (content_hash, record_id),
+                            )
+                            prior = cur.fetchone()
+                            if prior and not self._data_needs_reextraction(
+                                cur, prior[1], prior[2] or ""
+                            ):
+                                logger.info(
+                                    "Content duplicate: record %s identical to %s — marking duplicate",
+                                    record_id, prior[0],
+                                )
+                                cur.execute(
+                                    "UPDATE proc.process_monitor SET doc_action = 'duplicate' WHERE id = %s",
+                                    (record_id,),
+                                )
+                                cur.execute(
+                                    "INSERT INTO proc.bp_discrepancy_data "
+                                    "(doc_type, record_id, field_name, rule_name, severity, "
+                                    "extracted_value, expected_value, message, file_path) "
+                                    "VALUES (%s, %s, 'content_hash', 'duplicate_document', 'warning', "
+                                    "%s, %s, %s, %s)",
+                                    (category, str(record_id), content_hash, str(prior[0]),
+                                     f"Duplicate upload: identical content to record {prior[0]}",
+                                     file_path),
+                                )
+                                # Record a session outcome so the session resolves
+                                # and the WebSocket still fires for this upload.
+                                cur.execute(
+                                    "SELECT proc.fn_record_outcome(%s, %s, 'target')",
+                                    (file_path, category),
+                                )
+                                is_duplicate = True
+                    finally:
+                        conn.close()
+                except Exception:
+                    logger.debug("content dedup failed for record %s", record_id, exc_info=True)
+                if is_duplicate:
+                    self._mark_extracted(record_id)
+                    return
 
         try:
             # Renovation feature flag: when set, route through the new
@@ -436,6 +462,7 @@ class ProcessMonitorWatcher:
                        result.get("pk"), result.get("raw_persisted"))
                 )
             self._mark_extracted(record_id)
+            self._stamp_quality_action(record_id, file_path, content_hash, result)
             confidence = result.get("confidence", 0)
             error_count = result.get("errors", 0)
             # Legacy v3 dispatch returns result["pk"]; the renovation
@@ -529,7 +556,8 @@ class ProcessMonitorWatcher:
 
         except Exception as exc:
             logger.exception("Extraction failed for record %s", record_id)
-            self._mark_failed(record_id, str(exc))
+            _da = "unsupported" if "unsupported" in str(exc).lower() else None
+            self._mark_failed(record_id, str(exc), doc_action=_da)
 
     def _collect_training_example(
         self, record_id: int, doc_type: str, pk: str,

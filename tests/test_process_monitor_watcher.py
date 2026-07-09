@@ -185,3 +185,101 @@ class TestLifecycle:
         assert watcher._orchestrator is None
         watcher.update_orchestrator(mock_orchestrator)
         assert watcher._orchestrator is mock_orchestrator
+
+
+class _RecordingCursor:
+    """Cursor double that records executed SQL and serves scripted fetchone rows."""
+    def __init__(self, fetch_script):
+        # fetch_script: list of rows returned by successive fetchone() calls
+        self._script = list(fetch_script)
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((" ".join(sql.split()), params))
+
+    def fetchone(self):
+        return self._script.pop(0) if self._script else None
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+
+class _RecordingConn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+    def close(self):
+        pass
+
+
+class TestDocAction:
+    def test_content_duplicate_marks_doc_action(self, dummy_nick):
+        w = ProcessMonitorWatcher(dummy_nick)
+        # fetchone script: 1) prior row with same hash (id, file_path, category)
+        cur = _RecordingCursor(fetch_script=[(7, "documents/po/orig.pdf", "po")])
+        conn = _RecordingConn(cur)
+        with patch.object(w, "_get_connection", return_value=conn), \
+             patch("src.services.extraction.content_hash.compute_content_hash",
+                   return_value="abc123"), \
+             patch.object(w, "_data_needs_reextraction", return_value=False), \
+             patch.object(w, "_mark_extracted") as mark_ext:
+            with w._processing_lock:
+                w._processing_ids.add(42)
+            w._process_record({"id": 42, "file_path": "documents/po/dup.pdf",
+                               "category": "po", "user_id": 1})
+        sqls = " || ".join(s for s, _ in cur.executed)
+        assert "doc_action = 'duplicate'" in sqls or "doc_action='duplicate'" in sqls
+        assert "fn_record_outcome" in sqls
+        mark_ext.assert_called_once_with(42)
+
+    def test_no_prior_hash_proceeds_to_extract(self, dummy_nick):
+        w = ProcessMonitorWatcher(dummy_nick)
+        cur = _RecordingCursor(fetch_script=[None])  # no prior row
+        conn = _RecordingConn(cur)
+        with patch.object(w, "_get_connection", return_value=conn), \
+             patch("src.services.extraction.content_hash.compute_content_hash",
+                   return_value="abc123"), \
+             patch.dict("os.environ", {"EXTRACTION_RENOVATION_ENABLED": "0"}), \
+             patch("src.services.extraction_v3.dispatch.dispatch_document",
+                   return_value={"status": "promoted", "pk": "PO123",
+                                 "confidence": 0.95, "errors": 0}) as disp, \
+             patch.object(w, "_mark_extracted"), \
+             patch.object(w, "_stamp_quality_action") as stamp:
+            with w._processing_lock:
+                w._processing_ids.add(43)
+            w._process_record({"id": 43, "file_path": "documents/po/new.pdf",
+                               "category": "po", "user_id": 1})
+        disp.assert_called_once()
+        stamp.assert_called_once()
+
+    def test_stamp_quality_action_updated(self, dummy_nick):
+        w = ProcessMonitorWatcher(dummy_nick)
+        # prior row with same file_path, different hash → 'updated'
+        cur = _RecordingCursor(fetch_script=[(9,)])
+        conn = _RecordingConn(cur)
+        with patch.object(w, "_get_connection", return_value=conn):
+            w._stamp_quality_action(
+                44, "documents/po/x.pdf", "hashNEW",
+                {"confidence": 0.95, "pk": "PO9", "missing": []})
+        sqls = " || ".join(s for s, _ in cur.executed)
+        assert "doc_action" in sqls
+        assert any(p and "updated" in p for _, p in cur.executed if p)
+
+    def test_stamp_quality_action_needs_review(self, dummy_nick):
+        w = ProcessMonitorWatcher(dummy_nick)
+        cur = _RecordingCursor(fetch_script=[])
+        conn = _RecordingConn(cur)
+        with patch.object(w, "_get_connection", return_value=conn):
+            w._stamp_quality_action(
+                45, "documents/po/y.pdf", "h",
+                {"confidence": 0.4, "pk": "PO1", "missing": []})
+        assert any(p and "needs_review" in p for _, p in cur.executed if p)
