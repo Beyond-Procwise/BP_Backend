@@ -337,6 +337,7 @@ class ProcessMonitorWatcher:
         file_path = record.get("file_path", "")
         category = record.get("category", "")
         user_id = record.get("user_id")
+        session_id = record.get("session_id")
         logger.info(
             "Starting extraction for record %s: file_path=%s category=%s",
             record_id,
@@ -409,15 +410,29 @@ class ProcessMonitorWatcher:
                                     )
                                 except Exception:
                                     logger.debug("duplicate audit-log insert failed", exc_info=True)
-                                # Best-effort: record a session outcome so the
-                                # session resolves and the WebSocket still fires.
-                                try:
-                                    cur.execute(
-                                        "SELECT proc.fn_record_outcome(%s, %s, 'target')",
-                                        (file_path, category),
-                                    )
-                                except Exception:
-                                    logger.debug("duplicate session-outcome record failed", exc_info=True)
+                                # Best-effort: record a session outcome for THIS
+                                # record's session so the session resolves and the
+                                # WebSocket still fires. We use the record's own
+                                # session_id directly — fn_record_outcome resolves
+                                # session_id by file_path, which is ambiguous for a
+                                # re-upload (the same file_path exists in several
+                                # sessions), so it would attach the outcome to the
+                                # wrong session.
+                                if session_id:
+                                    try:
+                                        cur.execute(
+                                            "INSERT INTO proc.session_document_outcome "
+                                            "(session_id, file_path, document_type, outcome) "
+                                            "VALUES (%s, %s, %s, 'target') "
+                                            "ON CONFLICT (session_id, file_path) DO NOTHING",
+                                            (session_id, file_path, category),
+                                        )
+                                        cur.execute(
+                                            "SELECT proc.fn_try_resolve_session(%s)",
+                                            (session_id,),
+                                        )
+                                    except Exception:
+                                        logger.debug("duplicate session-outcome record failed", exc_info=True)
                     finally:
                         conn.close()
                 except Exception:

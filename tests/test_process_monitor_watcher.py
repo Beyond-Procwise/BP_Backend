@@ -235,10 +235,33 @@ class TestDocAction:
             with w._processing_lock:
                 w._processing_ids.add(42)
             w._process_record({"id": 42, "file_path": "documents/po/dup.pdf",
-                               "category": "po", "user_id": 1})
+                               "category": "po", "user_id": 1,
+                               "session_id": "S-1"})
         sqls = " || ".join(s for s, _ in cur.executed)
         assert "doc_action = 'duplicate'" in sqls or "doc_action='duplicate'" in sqls
-        assert "fn_record_outcome" in sqls
+        # Session outcome recorded against THIS record's session_id (not by
+        # file_path, which is ambiguous for a re-upload), then resolved.
+        assert "session_document_outcome" in sqls
+        assert "fn_try_resolve_session" in sqls
+        assert any(p and "S-1" in p for _, p in cur.executed if p)
+        mark_ext.assert_called_once_with(42)
+
+    def test_content_duplicate_without_session_skips_outcome(self, dummy_nick):
+        w = ProcessMonitorWatcher(dummy_nick)
+        cur = _RecordingCursor(fetch_script=[(7, "documents/po/orig.pdf", "po")])
+        conn = _RecordingConn(cur)
+        with patch.object(w, "_get_connection", return_value=conn), \
+             patch("src.services.extraction.content_hash.compute_content_hash",
+                   return_value="abc123"), \
+             patch.object(w, "_data_needs_reextraction", return_value=False), \
+             patch.object(w, "_mark_extracted") as mark_ext:
+            with w._processing_lock:
+                w._processing_ids.add(42)
+            w._process_record({"id": 42, "file_path": "documents/po/dup.pdf",
+                               "category": "po", "user_id": 1})  # no session_id
+        sqls = " || ".join(s for s, _ in cur.executed)
+        assert "doc_action = 'duplicate'" in sqls or "doc_action='duplicate'" in sqls
+        assert "session_document_outcome" not in sqls  # nothing to resolve
         mark_ext.assert_called_once_with(42)
 
     def test_no_prior_hash_proceeds_to_extract(self, dummy_nick):
