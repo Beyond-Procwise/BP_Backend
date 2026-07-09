@@ -87,6 +87,26 @@ def _get_resolved_session(session_id: str) -> dict | None:
                 category  = extra[0] if extra else None
                 deal_name = extra[1] if extra else None
 
+                # Per-document quality-action breakdown (additive)
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE doc_action = 'duplicate'),
+                        COUNT(*) FILTER (WHERE doc_action = 'updated'),
+                        COUNT(*) FILTER (WHERE doc_action = 'needs_review'),
+                        COUNT(*) FILTER (WHERE doc_action = 'unsupported'),
+                        COALESCE(
+                            json_agg(json_build_object(
+                                'file_path', file_path, 'doc_action', doc_action))
+                                FILTER (WHERE doc_action IS NOT NULL),
+                            '[]'::json)
+                    FROM proc.process_monitor
+                    WHERE session_id = %s
+                    """,
+                    (session_id,),
+                )
+                da = cur.fetchone() or (0, 0, 0, 0, [])
+
                 return {
                     "session_id":    session_id,
                     "action_status": action_status,
@@ -94,6 +114,11 @@ def _get_resolved_session(session_id: str) -> dict | None:
                     "target":        target,
                     "discrepancy":   discrepancy,
                     "failed":        failed,
+                    "duplicate":     da[0] or 0,
+                    "updated":       da[1] or 0,
+                    "needs_review":  da[2] or 0,
+                    "unsupported":   da[3] or 0,
+                    "documents":     da[4] or [],
                     "resolved_at":   resolved_at.strftime("%Y-%m-%dT%H:%M:%SZ") if resolved_at else None,
                     "category":      category,
                     "deal_name":     deal_name,
