@@ -434,6 +434,16 @@ async def embed_documents(
         if resolved_user:
             metadata["uploaded_by"] = resolved_user
 
+        # RAGService.search() narrows the uploaded collection with a
+        # FieldCondition(key="session_id") whenever a session is in play. Without
+        # this payload field the filter matches nothing, so an attached document
+        # is embedded successfully and then never retrieved -- the answer falls
+        # back to "couldn't find that information". Must match the token passed
+        # to activate_uploaded_context() below.
+        session_scope = header_session or resolved_user
+        if session_scope:
+            metadata["session_id"] = session_scope
+
         try:
             embedded = embedding_service.embed_document(
                 filename=filename,

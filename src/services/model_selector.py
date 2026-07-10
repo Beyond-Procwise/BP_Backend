@@ -1634,6 +1634,14 @@ class RAGPipeline:
             lowered = str(key or "").lower()
             if lowered in self._BLOCKED_PAYLOAD_KEYS:
                 return True
+            # `session_id` is not an internal marker: RAGService.search() scopes the
+            # uploaded-documents collection with FieldCondition(key="session_id"),
+            # so every legitimately retrievable attachment carries it. Blocking it
+            # here made uploaded documents unreachable -- the search matched, then
+            # every hit was discarded as "internal". Keep blocking session_state,
+            # session_trace and friends.
+            if lowered == "session_id":
+                continue
             if any(
                 marker in lowered
                 for marker in (
