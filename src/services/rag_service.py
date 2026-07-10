@@ -1192,6 +1192,14 @@ class RAGService:
         combined_filter, session_key = self._separate_session_scope(
             combined_filter, session_id
         )
+        # `auto_conditions` are keyword heuristics: the word "invoice" in the query
+        # pins source_type == 'Invoice'. That must not narrow the uploaded-documents
+        # collection. A user who attaches a file has already named the document, and
+        # the caller pins it by document_id; applying the heuristic on top silently
+        # excluded the attachment whenever the classifier disagreed with the wording
+        # (e.g. a file named *_Invoice_* classified source_type 'PO' answered
+        # "I couldn't find that information"). Keep the caller's explicit filter only.
+        explicit_filter, _ = self._separate_session_scope(filters, session_id)
         policy_mode = bool(policy_mode or self._looks_like_policy_query(base_query, hint_text))
         search_text = rewritten_query or base_query
         focus_document_types = {
@@ -1407,8 +1415,10 @@ class RAGService:
 
         session_specific_filter: Optional[models.Filter] = None
         if session_key:
+            # Built from `explicit_filter`, not `combined_filter`: see the note above
+            # on keyword auto_conditions excluding the user's own attachment.
             session_specific_filter = self._merge_filters(
-                combined_filter,
+                explicit_filter,
                 [
                     models.FieldCondition(
                         key="session_id",

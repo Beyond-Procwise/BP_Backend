@@ -34,6 +34,14 @@ class DummyQdrant:
         self.search_calls.append(kwargs)
         return []
 
+    def query_points(self, **kwargs):
+        """RAGService moved to Qdrant's Query API; this double was left on the old
+        `search()` entrypoint, so every assertion over `search_calls` saw an empty
+        list and four tests failed with AttributeError."""
+        kwargs.pop("search_params", None)
+        self.search_calls.append(kwargs)
+        return SimpleNamespace(points=[])
+
 
 class DummyCrossEncoder:
     def __init__(self, *args, **kwargs):
