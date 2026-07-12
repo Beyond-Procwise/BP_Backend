@@ -932,6 +932,8 @@ class SupplierRankingAgent(BaseAgent):
             "SupplierRankingAgent: Ranking complete with %d entries", len(ranking)
         )
 
+        self._persist_ranking(ranking, getattr(context, "workflow_id", None))
+
         output_data = {
             "ranking": ranking,
             "supplier_profiles": profiles,
@@ -952,6 +954,50 @@ class SupplierRankingAgent(BaseAgent):
                 next_agents=["EmailDraftingAgent"],
             ),
         )
+
+    def _persist_ranking(self, ranking: List[Dict], workflow_id: Optional[str]) -> None:
+        """Write the computed ranking to proc.bp_supplier_ranking.
+
+        This agent computed genuine scores (final/price/delivery/risk) and then threw them
+        away: the result lived only in the workflow blackboard and the HTTP response, and
+        vanished when the run ended. Nothing persisted it, so the Suppliers view could only
+        ever show master data with no ranking. (proc.procurement_flow — the table an earlier
+        design intended — has 0 rows.)
+
+        Best-effort: a persistence failure must not fail the ranking.
+        """
+        if not ranking:
+            return
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    for e in ranking:
+                        sid = e.get("supplier_id")
+                        if not sid:
+                            continue
+                        cur.execute(
+                            """
+                            INSERT INTO proc.bp_supplier_ranking
+                                (workflow_id, supplier_id, supplier_name, rank_position,
+                                 rank_count, final_score, price_score, delivery_score,
+                                 risk_score, payment_terms_score, avg_unit_price, total_spend,
+                                 po_count, invoice_count, lead_time_days, justification)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            """,
+                            (
+                                workflow_id, str(sid), e.get("supplier_name"),
+                                e.get("rank_position"), e.get("rank_count"),
+                                e.get("final_score"), e.get("price_score"),
+                                e.get("delivery_score"), e.get("risk_score"),
+                                e.get("payment_terms_score"), e.get("avg_unit_price"),
+                                e.get("total_spend"), e.get("po_count"),
+                                e.get("invoice_count"), e.get("lead_time_days"),
+                                e.get("justification"),
+                            ),
+                        )
+            logger.info("SupplierRankingAgent: persisted %d ranking row(s)", len(ranking))
+        except Exception as exc:  # pragma: no cover - persistence is best-effort
+            logger.error("Failed to persist supplier ranking: %s", exc)
 
     # ------------------------------------------------------------------
     # Data loading helpers

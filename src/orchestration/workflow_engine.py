@@ -558,9 +558,19 @@ class WorkflowEngine:
                 value = result.data.get(output_field)
                 if value:
                     state.shared_data[output_field] = value
-            # Also merge pass_fields
+            # Also merge pass_fields — but an EMPTY value must not erase a value that is
+            # already on the blackboard. A blanket .update() did exactly that: the
+            # opportunity miner returns supplier_candidates=[] when it finds none, which
+            # wiped a caller-supplied candidate list, so _has_supplier_candidates was always
+            # False and rank_suppliers was ALWAYS skipped. SupplierRankingAgent could never
+            # run — which is why nothing it produced was ever persisted or displayed.
+            #
+            # Same stance as output_to_shared directly above (`if value:`): a node may
+            # introduce a new key with any value, but it may not blank out an existing one.
             if result.pass_fields:
-                state.shared_data.update(result.pass_fields)
+                for k, v in result.pass_fields.items():
+                    if v or k not in state.shared_data:
+                        state.shared_data[k] = v
             # Derive any computed shared values (e.g. product_category from
             # findings) so the declarative path matches the legacy behaviour.
             if node.post_process is not None:

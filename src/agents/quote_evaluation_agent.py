@@ -232,6 +232,10 @@ class QuoteEvaluationAgent(BaseAgent):
                     "retrieval_strategy": retrieval_strategy,
                 }
             )
+            self._persist_evaluation(
+                output_data.get("quotes") or [],
+                getattr(context, "workflow_id", None),
+            )
             logger.debug("QuoteEvaluationAgent output: %s", output_data)
             logger.info(
                 "QuoteEvaluationAgent returning %d supplier quotes",
@@ -742,6 +746,51 @@ class QuoteEvaluationAgent(BaseAgent):
         except Exception:  # pragma: no cover - best effort
             logger.exception("failed to fetch supplier responses")
             return []
+
+    def _persist_evaluation(self, quotes, workflow_id):
+        """Write evaluated quotes to proc.bp_quote_evaluation.
+
+        This agent persisted nothing: its evaluation lived only in the workflow blackboard
+        and the HTTP response. The table an earlier design intended, proc.supplier_responses,
+        was never created — the agent still READS it (see the "TODO: no bp_supplier_responses
+        table yet" above), which is why the Quotes view has nothing to enrich its rows with.
+
+        Only the fields this agent actually computes are stored. Nothing is invented:
+        `category` has no source anywhere in the extracted corpus and is deliberately absent.
+
+        Best-effort: a persistence failure must not fail the evaluation.
+        """
+        rows = [q for q in (quotes or []) if isinstance(q, dict) and q.get("quote_id")]
+        if not rows:
+            return
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    for q in rows:
+                        cur.execute(
+                            """
+                            INSERT INTO proc.bp_quote_evaluation
+                                (workflow_id, quote_id, supplier_id, deal_id, currency,
+                                 total_amount, total_line_amount, avg_unit_price,
+                                 line_items_count, category_match)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            """,
+                            (
+                                workflow_id,
+                                str(q.get("quote_id")),
+                                q.get("supplier_id"),
+                                q.get("deal_id"),
+                                q.get("currency"),
+                                q.get("total_amount"),
+                                q.get("total_line_amount"),
+                                q.get("avg_unit_price"),
+                                q.get("line_items_count"),
+                                q.get("category_match"),
+                            ),
+                        )
+            logger.info("QuoteEvaluationAgent: persisted %d evaluation row(s)", len(rows))
+        except Exception as exc:  # pragma: no cover - persistence is best-effort
+            logger.error("Failed to persist quote evaluation: %s", exc)
 
     def _to_native(self, obj):
         """Recursively convert numpy types to native Python types."""
