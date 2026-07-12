@@ -23,6 +23,7 @@ from src.services.extraction_v3.binding.type_binder import bind_typed
 from src.services.extraction_v3.binding.invariants_runner import run_invariants
 from src.services.extraction_v3.judge.orchestrator import run_judge_orchestrator
 from src.services.extraction_v3.judge.contracts import InvariantResultSummary
+from src.services.extraction_v3.grounding import ground_committed_fields
 # Register the VLM extractor in the registry
 import src.services.extraction_v3.extractors.vlm  # noqa
 
@@ -501,6 +502,67 @@ class PipelineV3:
                 final_confidence=cand.confidence,
             ))
 
+        # 6a. Printed-total authority: a figure the document explicitly LABELS beats a
+        # model's guess. Runs before every derivation below so they build on the truth.
+        #
+        # On Invoice_INV618706.pdf the totals block prints:
+        #     SUB TOTAL   £1169.58
+        #     TAX (20%)   £233.920
+        #     GRAND TOTAL £1403.50
+        # The VLM misread the grand total as the sub-total (1169.58) — the two sit in the
+        # same column — and tax was then back-derived from that, understating both. The
+        # document states all three outright, so we take it at its word.
+        #
+        # Only fires on an explicit label + value on the SAME line, and only overrides a
+        # value that actually disagrees. This is the project's regex-primary /
+        # AI-judge-final direction: the printed literal is the most reliable source there is.
+        if schema.doc_type == "invoice" and parsed is not None:
+            from src.services.extraction_v2.parsers.amounts import parse_amount as _parse_amount
+            _LABELLED_TOTALS = (
+                ("invoice_total_incl_tax",
+                 r"(?:GRAND\s*TOTAL|TOTAL\s*DUE|AMOUNT\s*DUE|BALANCE\s*DUE|TOTAL\s*\(?incl)"),
+                ("tax_amount",
+                 r"(?:TAX|VAT|GST|HST)\s*(?:\(\s*\d+(?:\.\d+)?\s*%\s*\))?"),
+            )
+            _committed_by_path = {cf.field_path: cf for cf in committed}
+            for _field, _label in _LABELLED_TOTALS:
+                _re_labelled = re.compile(
+                    _label + r"[\s:|\.]*([£€\$¥₹]\s*[\d,]+(?:\.\d+)?)",
+                    re.IGNORECASE,
+                )
+                _m = _re_labelled.search(parsed.full_text)
+                if not _m:
+                    continue
+                _printed_raw = _m.group(1)
+                _printed = _parse_amount(re.sub(r"[£€\$¥₹\s]", "", _printed_raw))
+                if _printed is None:
+                    continue
+                _existing = _committed_by_path.get(_field)
+                try:
+                    _same = _existing is not None and abs(float(_existing.value) - float(_printed)) < 0.01
+                except (TypeError, ValueError):
+                    _same = False
+                if _same:
+                    continue  # model already agrees with the page — nothing to correct
+                log.info(
+                    "Printed-total authority: %s ← %s (doc prints %r; model said %s) for %s",
+                    _field, _printed, _m.group(0).strip(),
+                    _existing.value if _existing else "nothing", path.name,
+                )
+                committed = [cf for cf in committed if cf.field_path != _field]
+                residuals = [rf for rf in residuals if rf.field_path != _field]
+                committed.append(CommittedField(
+                    field_path=_field,
+                    value=str(_printed),
+                    page=_existing.page if _existing else 1,
+                    bbox=_existing.bbox if _existing else (0.0, 0.0, 0.0, 0.0),
+                    evidence_text=_m.group(0).strip(),
+                    model="printed_total_authority",
+                    model_confidence=0.95,
+                    judge_actions=[],
+                    final_confidence=0.95,
+                ))
+
         # 6e. Tax-percent regex recovery: run BEFORE 6b so that invoice_amount
         # recovery has access to the tax rate when computing the pre-tax subtotal.
         # If tax_percent was not extracted by any extractor but the document
@@ -716,6 +778,27 @@ class PipelineV3:
                         ))
                 except (ValueError, TypeError):
                     pass
+
+        # 6e. Grounding guard: demote hallucinated (ungrounded) header values to
+        # residuals so a value absent from the document is routed to review
+        # instead of promoted to the final tables. Uses a format-tolerant match
+        # (whitespace/case-normalized, date-aware, digit-signature) so correct
+        # values whose evidence_text was reformatted are preserved; deterministic
+        # pipeline_recovery derivations and synthetic ids are exempt. See
+        # grounding.py and FINDINGS.md F1. Runs BEFORE doc_pk determination so a
+        # hallucinated invoice_id is dropped and the synthetic-id fallback (7b)
+        # routes the row to manual review.
+        _header = [cf for cf in committed if not cf.field_path.startswith(HEADER_LINE_ITEM_PREFIX)]
+        _lines = [cf for cf in committed if cf.field_path.startswith(HEADER_LINE_ITEM_PREFIX)]
+        _kept, residuals = ground_committed_fields(_header, residuals, parsed.full_text)
+        _n_blocked = len(_header) - len(_kept)
+        if _n_blocked:
+            _blocked_paths = sorted({cf.field_path for cf in _header} - {cf.field_path for cf in _kept})
+            log.warning(
+                "Grounding guard demoted %d ungrounded field(s) for %s: %s",
+                _n_blocked, path.name, ", ".join(_blocked_paths),
+            )
+        committed = _kept + _lines
 
         # 7. Determine doc_pk from the committed fields (the field whose YAML
         # name matches the schema's doc_pk; for invoice that's invoice_id)
