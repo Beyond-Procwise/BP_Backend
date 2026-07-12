@@ -419,6 +419,30 @@ def dispatch_document(
                         ),
                     ))
 
+            # A line that HAS quantity/unit_price but NO amount is the dangerous
+            # case: the check above passes (some numerics are present) and the
+            # qty×unit reconciliation below skips on a NULL amount, so the line
+            # sails through with its money missing. That is exactly how
+            # Invoice_INV618706 booked its UNIT PRICE (£584.79) as the invoice
+            # total instead of £1,169.58, silently, at 94% confidence.
+            _amt_col_missing = _RECOVERED_LINE_AMOUNT_COL.get(doc_type, "line_amount")
+            for li_idx, li in enumerate(line_items):
+                has_qty_or_price = any(
+                    li.get(k) not in (None, "", 0) for k in ("quantity", "unit_price")
+                )
+                if has_qty_or_price and li.get(_amt_col_missing) in (None, ""):
+                    discrepancies.append(Discrepancy(
+                        field_name=f"line_items[{li_idx}].{_amt_col_missing}",
+                        issue_type="line_missing_amount",
+                        severity="warning",
+                        blocks_promotion=False,
+                        notes=(
+                            f"line {li_idx + 1} printed a quantity/unit price but its "
+                            f"{_amt_col_missing} was not captured — the line's money is "
+                            f"missing, so header totals derived from these lines are unsafe"
+                        ),
+                    ))
+
             # Source-data reconciliation: when a line prints quantity,
             # unit_price AND a line total that don't agree (qty × unit_price
             # ≠ line total), the DOCUMENT itself is internally inconsistent.
@@ -445,6 +469,34 @@ def dispatch_document(
                                 f"(source-data inconsistency)"
                             ),
                         ))
+
+    # The completeness verdict must become a discrepancy, not just a log line.
+    # It was previously computed AFTER the discrepancy list was written (see the
+    # `completeness_status` assignment further down), so a document whose line
+    # items don't reconcile to its own header subtotal promoted with
+    # n_discrepancies=0. Invoice_INV618706 promoted at 94.44% confidence with
+    # status 'line_sum_mismatch' and nothing in the queue — the 2x money error
+    # was detected and then dropped on the floor.
+    if has_line_schema and line_items:
+        _post = _completeness.assess(
+            doc_type, columns, line_items, has_line_schema=has_line_schema,
+        )
+        if _post.status == "line_sum_mismatch":
+            _hdr = _completeness.header_subtotal(doc_type, columns)
+            _lsum = _completeness.line_sum(doc_type, line_items)
+            discrepancies.append(Discrepancy(
+                field_name="line_items",
+                issue_type="line_sum_mismatch",
+                severity="warning",
+                blocks_promotion=False,
+                raw_value=str(_lsum) if _lsum is not None else None,
+                expected_value=str(_hdr) if _hdr is not None else None,
+                notes=(
+                    f"line items sum to {_lsum} but the document's header subtotal is "
+                    f"{_hdr} — the lines and the header disagree. Values kept verbatim; "
+                    f"flagged for review."
+                ),
+            ))
 
     blocking = any(d.blocks_promotion for d in discrepancies)
     promotion_status = "discrepancy" if blocking else "pending"
