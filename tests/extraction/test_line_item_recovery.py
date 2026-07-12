@@ -18,7 +18,7 @@ FULL_TEXT = (
 
 
 def test_recovers_grounded_line_items(monkeypatch):
-    monkeypatch.setattr(context_layer, "_call_llm", lambda prompt: (
+    monkeypatch.setattr(context_layer, "_call_llm", lambda prompt, **_kw: (
         '[{"description":"Design services - phase 1","quantity":1,"unit_price":600.0,"amount":600.0},'
         '{"description":"Hosting - annual","quantity":1,"unit_price":400.0,"amount":400.0}]'
     ))
@@ -31,7 +31,7 @@ def test_recovers_grounded_line_items(monkeypatch):
 
 def test_drops_ungrounded_rows(monkeypatch):
     # "Consulting fee" is NOT in FULL_TEXT -> must be dropped (no fabrication).
-    monkeypatch.setattr(context_layer, "_call_llm", lambda prompt: (
+    monkeypatch.setattr(context_layer, "_call_llm", lambda prompt, **_kw: (
         '[{"description":"Consulting fee","amount":999.0},'
         '{"description":"Hosting - annual","amount":400.0}]'
     ))
@@ -41,7 +41,7 @@ def test_drops_ungrounded_rows(monkeypatch):
 
 
 def test_llm_failure_returns_empty(monkeypatch):
-    def _boom(prompt):
+    def _boom(prompt, **_kw):
         raise RuntimeError("ollama down")
     monkeypatch.setattr(context_layer, "_call_llm", _boom)
     assert context_layer.synthesize_line_items("invoice", FULL_TEXT) == []
@@ -58,7 +58,7 @@ def test_non_json_response_returns_empty(monkeypatch):
 
 def test_drops_row_with_ungrounded_amount(monkeypatch):
     # Description IS in the text but the amount (777.0) is NOT -> drop it.
-    monkeypatch.setattr(context_layer, "_call_llm", lambda prompt: (
+    monkeypatch.setattr(context_layer, "_call_llm", lambda prompt, **_kw: (
         '[{"description":"Hosting - annual","amount":777.0}]'
     ))
     items = context_layer.synthesize_line_items("invoice", FULL_TEXT)
