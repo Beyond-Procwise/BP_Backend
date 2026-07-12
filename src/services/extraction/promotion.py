@@ -176,6 +176,68 @@ def _to_decimal(v: Any) -> Decimal | None:
         return None
 
 
+# Money fields that represent what the DOCUMENT says. If one of these was absent
+# from the document and we computed it, that is an inference and must be recorded.
+# FX columns (exchange_rate_to_usd / converted_amount_usd) are deliberately NOT
+# listed: those are legitimately derived by design, not read off the page.
+_INFERRABLE_MONEY: dict[str, tuple[str, ...]] = {
+    "invoice": ("invoice_amount", "tax_amount", "invoice_total_incl_tax"),
+    "purchase_order": ("total_amount", "tax_amount", "total_amount_incl_tax"),
+    "quote": ("total_amount", "tax_amount", "total_amount_incl_tax"),
+}
+
+
+def _log_derived_money(
+    cur, doc_type: str, raw_id: int, captured: dict[str, Any], derived: dict[str, Any],
+) -> int:
+    """Record every money field the pipeline INFERRED rather than read.
+
+    _compute_derived fills a missing tax_amount as subtotal x pct and a missing
+    total as subtotal + tax. That is inference, and until now it happened silently:
+    the resulting row satisfies subtotal + tax == total by construction, so the
+    reconciliation check passes and nothing downstream can tell a figure the
+    document stated from one we invented. Invoice_INV618706 was booked with a tax
+    of 116.96 and a total of 701.75 that appear nowhere on the page.
+
+    The value is still written (the safety net is useful) — but it is now declared.
+    Non-blocking: this is provenance, not an error.
+    """
+    fields = _INFERRABLE_MONEY.get(doc_type)
+    if not fields:
+        return 0
+    pk_col = _STG_PK.get(doc_type)
+    doc_pk = derived.get(pk_col) if pk_col else None
+    source_file = derived.get("source_file")
+    n = 0
+    for f in fields:
+        was_absent = captured.get(f) in (None, "")
+        now_present = derived.get(f) not in (None, "")
+        if was_absent and now_present:
+            cur.execute(
+                """
+                INSERT INTO proc.bp_extraction_discrepancy
+                    (doc_type, raw_id, source_file, doc_pk_candidate,
+                     field_name, raw_value, expected_value, computed_value,
+                     issue_type, severity, status, notes, blocks_promotion)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    doc_type, raw_id, source_file, str(doc_pk) if doc_pk else None,
+                    f, None, None, str(derived.get(f)),
+                    "value_derived", "warning", "open",
+                    (
+                        f"{f} was not captured from the document — it was COMPUTED "
+                        f"as {derived.get(f)} by the derived-value safety net. The "
+                        f"figure does not appear on the page; treat it as inferred, "
+                        f"not as source data."
+                    ),
+                    False,
+                ),
+            )
+            n += 1
+    return n
+
+
 def _check_tax_total_consistency(
     cur, doc_type: str, raw_id: int, row: dict[str, Any],
 ) -> int:
@@ -299,6 +361,16 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             # tax/total values and sets the deterministic FX conversion.
             # Genuine document miscalculations are NOT touched here — those are
             # flagged in the discrepancy table by dispatch.
+            # Snapshot what the DOCUMENT actually printed, before anything is
+            # derived from it. _check_tax_total_consistency below must judge the
+            # captured values, not values we computed ourselves: _compute_derived
+            # fills a missing tax_amount as subtotal x pct and a missing total as
+            # subtotal + tax, so a derived row satisfies subtotal + tax == total
+            # BY CONSTRUCTION and the check can never fire. That is how
+            # Invoice_INV618706 passed reconciliation on 584.79 + 116.96 = 701.75 —
+            # three figures that were all wrong, and all derived from each other.
+            captured_data = dict(raw_data)
+
             try:
                 from src.services.extraction.context_layer import _compute_derived
                 raw_data = _compute_derived(raw_data)
@@ -397,8 +469,18 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             # by more than 0.50 (rounding tolerance), record a discrepancy.
             # Per "no auto-fix" rule — we surface the mismatch for human
             # review, but the extracted values are kept as-is.
+            # Judged against captured_data (pre-derivation), so the check sees what
+            # the document printed. A figure the document did not state is absent
+            # here and the check skips it — there is nothing to reconcile. A figure
+            # the document DID state and got wrong is now caught instead of being
+            # silently smoothed over by our own arithmetic.
             _discrepancies_logged = _check_tax_total_consistency(
-                cur, doc_type, raw_id, raw_data,
+                cur, doc_type, raw_id, captured_data,
+            )
+            # Declare anything the safety net inferred. Without this a computed
+            # tax/total is indistinguishable from one the document actually printed.
+            _discrepancies_logged += _log_derived_money(
+                cur, doc_type, raw_id, captured_data, raw_data,
             )
 
             # 1d. Audit columns — every stg row is stamped with the system
