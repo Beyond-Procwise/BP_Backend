@@ -269,6 +269,42 @@ def parse_with_docling(
                 "docling_backend: python-docx augmentation failed for %s: %s", p, _e
             )
 
+    # ------------------------------------------------------------------ #
+    # PDF augmentation: pdfplumber supplemental text-layer scan          #
+    # The PDF counterpart of the DOCX scan above, and for the same       #
+    # reason. Docling's markdown export can CLIP the final column of a   #
+    # table: on Invoice_INV618706.pdf the TOTAL header comes back as     #
+    # "T" and the line total "£1169.58" as "£1", while the SUB TOTAL /   #
+    # TAX / GRAND TOTAL values vanish altogether.                        #
+    #                                                                    #
+    # full_text is the corpus the grounding guard checks values against, #
+    # so a figure missing here is rejected as a hallucination even when  #
+    # the VLM read it correctly off the page. That silently turned a     #
+    # £1,169.58 invoice into £584.79: net/tax/total were all discarded   #
+    # and the amount re-derived from unit_price, ignoring quantity.      #
+    #                                                                    #
+    # pdfplumber reads the native text layer and is unaffected by the    #
+    # table-export bug. Append-only: nothing docling already produced is #
+    # altered, so documents it parses correctly are untouched.           #
+    # ------------------------------------------------------------------ #
+    if str(file_format).startswith("pdf"):
+        try:
+            import pdfplumber as _pdfplumber
+            _pdf_extras: list[str] = []
+            with _pdfplumber.open(p) as _pdf:
+                for _page in _pdf.pages:
+                    for _line in (_page.extract_text() or "").splitlines():
+                        _line = _line.strip()
+                        if _line and _line not in full_text:
+                            _pdf_extras.append(_line)
+            if _pdf_extras:
+                full_text = full_text + "\n" + "\n".join(_pdf_extras)
+        except Exception as _e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "docling_backend: pdfplumber augmentation failed for %s: %s", p, _e
+            )
+
     return ParsedDocument(
         source_path=str(p),
         file_format=file_format,

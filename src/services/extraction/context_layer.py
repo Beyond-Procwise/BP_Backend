@@ -436,7 +436,9 @@ def synthesize_line_items(
         return []
     prompt = _build_line_items_prompt(doc_type, full_text, header_subtotal)
     try:
-        raw = _call_llm(prompt)
+        # Grammar-constrained: the model MUST emit the line_items array. Left
+        # unconstrained it answers in prose and every line is silently dropped.
+        raw = _call_llm(prompt, fmt=_LINE_ITEMS_SCHEMA)
     except Exception:  # noqa: BLE001
         return []
     items = _parse_line_items_json(raw or "")
@@ -639,6 +641,35 @@ def _build_schema(fields: list[tuple[str, str, str]]) -> dict:
         "required": names,
         "additionalProperties": False,
     }
+
+
+# Grammar for the line-item pass. Without it the model answers in prose and every
+# line is discarded: on Invoice_INV618706.pdf AgentNick read the table correctly
+# ("Acer | TravelMate P2 | Qty: 2 | Price: £584.79 | Total: £1169.58") but wrote it
+# as text, _parse_line_items_json() returned [], and the pipeline silently kept the
+# wrong regex reading instead. The header pass already constrains its output this
+# way (_build_schema); the line-item pass simply never did.
+_LINE_ITEMS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "line_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string"},
+                    "quantity": {"type": ["number", "string", "null"]},
+                    "unit_price": {"type": ["number", "string", "null"]},
+                    "amount": {"type": ["number", "string", "null"]},
+                },
+                "required": ["description", "amount"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["line_items"],
+    "additionalProperties": False,
+}
 
 
 def _call_llm(prompt: str, temperature: float = 0.0, fmt=None) -> str | None:
