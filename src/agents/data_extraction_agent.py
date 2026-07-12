@@ -1346,6 +1346,18 @@ class DataExtractionAgent(BaseAgent):
         return items
 
     # ============================ PUBLIC API ==============================
+    def _orchestrated(self, context: AgentContext) -> bool:
+        """True when a workflow graph is driving this agent.
+
+        The document_extraction graph now carries a real `detect_discrepancies` node, so
+        under orchestration this agent must NOT also run detection itself — that would run
+        the agent twice and write every finding to bp_extraction_discrepancy twice.
+
+        Standalone (`DataExtractionAgent(...).run(ctx)` with no orchestrator) there is no
+        node to do it, so the in-process call is kept and behaviour is unchanged.
+        """
+        return self.get_workflow_context() is not None
+
     def run(self, context: AgentContext) -> AgentOutput:
         try:
             s3_prefix = context.input_data.get("s3_prefix")
@@ -1376,7 +1388,20 @@ class DataExtractionAgent(BaseAgent):
                 for doc in docs
                 if doc.get("status") in {"error", "failed"}
             ]
-            if processing_issues:
+            # Discrepancy detection is an ORCHESTRATED NODE, not something this agent
+            # instantiates. It used to construct DiscrepancyDetectionAgent directly, which
+            # bypassed the registry, the shared blackboard and the policy gate — the agent
+            # was orchestrated in name only. It is now a real node in the
+            # document_extraction graph (workflow_definitions.build_extraction_workflow),
+            # fed from the extracted_docs / processing_issues this agent publishes below.
+            #
+            # Kept in-process ONLY when this agent is run standalone (no orchestrator
+            # driving a graph), so a direct DataExtractionAgent.run() still validates.
+            if self._orchestrated(context):
+                discrepancy_result = AgentOutput(
+                    status=AgentStatus.SUCCESS, data={"mismatches": []},
+                )
+            elif processing_issues:
                 discrepancy_result = self._run_discrepancy_detection(
                     docs, context, processing_issues
                 )
@@ -1418,6 +1443,10 @@ class DataExtractionAgent(BaseAgent):
             }
             if mismatches:
                 data["mismatches"] = mismatches
+            # Published for the orchestrated detect_discrepancies node (its input_mapping
+            # reads extract_documents.extracted_docs / .processing_issues).
+            data["extracted_docs"] = docs
+            data["processing_issues"] = processing_issues
             duration = time.perf_counter() - batch_start
             failures = [doc for doc in docs if doc.get("status") != "success"]
             self._log_workflow_event(

@@ -146,11 +146,26 @@ def _has_responses(state: WorkflowState) -> bool:
 # Workflow: Document Extraction
 # ---------------------------------------------------------------------------
 
+def _has_extracted_docs(state: WorkflowState) -> bool:
+    """Only run discrepancy detection when extraction actually produced documents."""
+    payload = state.node_results.get("extract_documents", {}) or {}
+    return bool(
+        payload.get("extracted_docs")
+        or payload.get("processing_issues")
+        or payload.get("details")
+    )
+
+
 def build_extraction_workflow() -> WorkflowGraph:
     """Workflow: Extract structured data from procurement documents.
 
     Graph:
-        extract_documents -> [discrepancy_detection]
+        extract_documents -> detect_discrepancies   (when documents were produced)
+
+    The discrepancy node is now REAL. This docstring has claimed it since the graph was
+    written, but no node was ever added: DataExtractionAgent instead hard-instantiated
+    DiscrepancyDetectionAgent inside itself (data_extraction_agent.py), bypassing the
+    registry, the blackboard and the policy gate. It is an orchestrated node like any other.
     """
     graph = WorkflowGraph(
         name="document_extraction",
@@ -160,9 +175,26 @@ def build_extraction_workflow() -> WorkflowGraph:
     graph.add_node(WorkflowNode(
         name="extract_documents",
         agent_type="data_extraction",
-        output_to_shared=["details", "summary"],
+        output_to_shared=["details", "summary", "extracted_docs", "processing_issues"],
         required=True,
     ))
+
+    graph.add_node(WorkflowNode(
+        name="detect_discrepancies",
+        agent_type="discrepancy_detection",
+        input_mapping={
+            "extract_documents.extracted_docs": "extracted_docs",
+            "extract_documents.processing_issues": "processing_issues",
+        },
+        output_to_shared=["mismatches", "summary"],
+        required=False,   # a detection failure must not fail the extraction
+    ))
+
+    graph.add_edge(
+        "extract_documents", "detect_discrepancies",
+        condition=_has_extracted_docs,
+        label="documents_extracted",
+    )
 
     return graph
 

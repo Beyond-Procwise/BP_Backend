@@ -2745,6 +2745,37 @@ class Orchestrator:
                 wf_ctx.record_result(agent_name, data)
         except Exception:  # pragma: no cover - defensive
             logger.debug("record_result failed for %s", agent_name, exc_info=True)
+        self._audit_agent_run(wf_ctx, agent_name, result)
+
+    def _audit_agent_run(self, wf_ctx: Any, agent_name: str, result: Any) -> None:
+        """Write one proc.bp_agent_actions row per agent execution.
+
+        Agent runs were NOT audited. The orchestrator only ever recorded
+        'governance_applied'; the dedicated AuditService was dead code (zero references
+        anywhere), so nothing recorded WHICH agent ran, under which workflow, or how it
+        finished. Phase 2 asks for audit trails — this is the choke-point every agent result
+        passes through, from both the graph engine (_EngineAgentWiring) and the single-agent
+        path (_execute_agent), so one hook here covers every route.
+
+        Best-effort: an audit failure must never fail the workflow.
+        """
+        try:
+            from src.services.agent_actions import record_action
+
+            status = getattr(getattr(result, "status", None), "value", None) or str(
+                getattr(result, "status", "unknown")
+            )
+            record_action(
+                phase="orchestration",
+                action_type="agent_executed",
+                agent=agent_name,
+                status=status,
+                summary=f"{agent_name} -> {status}",
+                deal_id=(getattr(wf_ctx, "shared", {}) or {}).get("deal_id"),
+                trace_id=getattr(wf_ctx, "workflow_id", None),
+            )
+        except Exception:  # pragma: no cover - auditing must never break a run
+            logger.debug("agent-run audit failed for %s", agent_name, exc_info=True)
 
     def _context_service(self) -> Any:
         """Return a shared ProcurementContextService, reusing AgentNick's where

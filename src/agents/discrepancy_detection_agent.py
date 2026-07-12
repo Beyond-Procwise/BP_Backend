@@ -211,31 +211,45 @@ class DiscrepancyDetectionAgent(BaseAgent):
         )
 
     def _persist_mismatches(self, mismatches: List[Dict]) -> None:
-        """Store discrepancies in proc.data_discrepancy for auditing."""
+        """Store findings in proc.bp_extraction_discrepancy — the table the UI reads.
+
+        This agent used to write to proc.data_discrepancy, a private table it CREATE'd
+        lazily on first use. Nothing read it, and it never even came into existence: the
+        Action Centre reads proc.bp_extraction_discrepancy, and the Detection module reads
+        proc.bp_detection_finding (empty). Three tables, no overlap — so every finding this
+        agent ever produced was invisible.
+
+        One row per failed check (the table is field-level, not document-level), tagged
+        issue_type='agent_<check>' so its findings are distinguishable from the extraction
+        pipeline's own. Non-blocking: this is review signal, not a promotion gate.
+        """
         if not mismatches:
             return
         try:
             with self.agent_nick.get_db_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS proc.data_discrepancy (
-                            id SERIAL PRIMARY KEY,
-                            doc_type TEXT NOT NULL,
-                            record_id TEXT NOT NULL,
-                            details JSONB NOT NULL,
-                            created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
-                        )
-                        """
-                    )
                     for mis in mismatches:
-                        cur.execute(
-                            "INSERT INTO proc.data_discrepancy (doc_type, record_id, details) VALUES (%s, %s, %s)",
-                            (
-                                mis.get("doc_type"),
-                                mis.get("id"),
-                                json.dumps(mis.get("checks", {})),
-                            ),
-                        )
+                        doc_type = mis.get("doc_type") or "unknown"
+                        doc_pk = str(mis.get("id") or "unknown")
+                        for check, detail in (mis.get("checks") or {}).items():
+                            cur.execute(
+                                """
+                                INSERT INTO proc.bp_extraction_discrepancy
+                                    (doc_type, source_file, doc_pk_candidate, field_name,
+                                     issue_type, severity, status, notes, blocks_promotion)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    doc_type,
+                                    f"agent:{self.__class__.__name__}",
+                                    doc_pk,
+                                    check,
+                                    f"agent_{check}",
+                                    "warning",
+                                    "open",
+                                    str(detail),
+                                    False,
+                                ),
+                            )
         except Exception as exc:  # pragma: no cover - database connectivity
             logger.error("Failed to persist discrepancies: %s", exc)
