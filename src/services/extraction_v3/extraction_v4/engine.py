@@ -287,14 +287,71 @@ def _pdf_clean_text(text: str) -> str:
 
 class PDFParser:
     @staticmethod
-    def extract_text(file_path: str) -> str:
+    def _fitz_text(file_path: str) -> str:
         text_parts: list[str] = []
         with fitz.open(file_path) as doc:
             for page in doc:
                 page_text = page.get_text("text")
                 if page_text:
                     text_parts.append(page_text.strip())
-        return _pdf_clean_text("\n".join(text_parts))
+        return "\n".join(text_parts)
+
+    @staticmethod
+    def _pdfplumber_text(file_path: str) -> str:
+        import pdfplumber
+
+        parts: list[str] = []
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    parts.append(page_text.strip())
+        return "\n".join(parts)
+
+    @staticmethod
+    def extract_text(file_path: str) -> str:
+        """Faithful text layer for a born-digital PDF.
+
+        Read with BOTH backends and keep whichever is more complete, then append
+        anything the other saw that the winner missed. Neither is reliable alone:
+
+        * PyMuPDF silently DROPS glyphs on some layouts. On Invoice_INV618706.pdf it
+          renders the TOTAL column header as "TO" and "£1169.58" as "£11", and the
+          SUB TOTAL / TAX / GRAND TOTAL values disappear completely — 1169.58 is not
+          even in its word list. The engine's find_subtotal()/find_total() then match
+          nothing, and the invoice is booked at its unit price (£584.79 for 2 units).
+        * pdfplumber reads that file correctly, but is weaker on other layouts.
+
+        Union-of-both keeps extraction faithful to the document — which is the point:
+        we capture what is printed, and let discrepancy analysis judge it. Extra text
+        never invents a value; missing text silently invents a wrong one.
+        """
+        try:
+            fitz_text = PDFParser._fitz_text(file_path)
+        except Exception:
+            fitz_text = ""
+        try:
+            plumber_text = PDFParser._pdfplumber_text(file_path)
+        except Exception:
+            plumber_text = ""
+
+        if not plumber_text:
+            return _pdf_clean_text(fitz_text)
+        if not fitz_text:
+            return _pdf_clean_text(plumber_text)
+
+        # Prefer the richer read, then append the other's unique lines so nothing is lost.
+        primary, secondary = (
+            (plumber_text, fitz_text)
+            if len(plumber_text) >= len(fitz_text)
+            else (fitz_text, plumber_text)
+        )
+        extras = [
+            ln for ln in (l.strip() for l in secondary.splitlines())
+            if ln and ln not in primary
+        ]
+        merged = primary + ("\n" + "\n".join(extras) if extras else "")
+        return _pdf_clean_text(merged)
 
     @staticmethod
     def extract_text_by_page(file_path: str) -> list[str]:
