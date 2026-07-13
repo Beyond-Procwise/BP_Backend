@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Repos.** Gateway: `/home/muthu/PycharmProjects/beyond-procwaise-Api/beyond_procwaise_api` (branch `Development`). UI: `/home/muthu/PycharmProjects/beyond_procwise_ui` (branch `spendiq-ui`). This plan document lives in BP_Backend but **no BP_Backend source changes are in Stage 1**.
+- **Repos.** Gateway: `/home/muthu/PycharmProjects/beyond-procwaise-Api` (branch `spendiq-ui`; the Nest app is under `beyond_procwaise_api/`). UI: `/home/muthu/PycharmProjects/beyond_procwise_ui` (branch `spendiq-ui`). Both repos are already on `spendiq-ui` — that is where the SpendIQ lineage lives. Do not switch branches. This plan document lives in BP_Backend but **no BP_Backend source changes are in Stage 1**.
 - **Never push to `main`.** All work stays on the branches above.
 - **No Claude attribution in commit messages.** No `Co-Authored-By: Claude`.
 - **DB naming:** new tables/columns use the `bp_` prefix; indexes use `ix_bp_<table>_<col>`.
