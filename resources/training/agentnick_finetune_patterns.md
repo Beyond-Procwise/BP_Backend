@@ -70,6 +70,70 @@ JSON parser returned `[]` and the pipeline silently fell back to the (wrong) reg
    examples for the line-item task specifically. It follows the schema on the header task
    (which was constrained) and not on the line-item task (which was not).
 
+### A7. A prior in the prompt becomes a hallucination in the output
+**Observed (2026-07-13):** the extraction prompt contained the line
+*"UK invoices very commonly use 20% VAT."* A **US** invoice that printed
+`Tax (10%): $2,861.00` two lines above its total was persisted with `tax = 5,316.00` —
+exactly `subtotal × 20%`. Across eight variants of one document the tax came out as
+20%, 10%, 10%, 10%, 20%, **7.69%**, 20%, 20%: non-deterministic, and mostly invented.
+
+**Pattern:** a helpful-sounding statistical prior ("usually 20%") is indistinguishable, at
+generation time, from a fact about *this* document. The model reaches for it whenever the
+real value is hard to read. **Do not put population statistics in an extraction prompt.**
+State the rule instead: *there is no default rate — read the one printed, or output null.*
+
+### A8. The word "Total" in a label does not make it the total
+**Observed (2026-07-13):** a vehicle invoice printed
+`Vehicle Price: $26,580.00 / Accessories Total: $2,030.00 / Tax (10%): $2,861.00 /
+Dealer Fee: $450.00 / Total Sale Price: $31,921.00`.
+The model reported `tax = 2,030.00` (the **Accessories Total**) and the net as
+`26,580.00` (the **Vehicle Price** — one component of five).
+
+**Pattern:** documents label components with the word "Total" (`Accessories Total`,
+`Line Total`, `Sub|total|`, a `Total` table-column header). The grand total is the value
+that settles the **whole document** — normally the last money value and the largest.
+Teach the distinction explicitly; a regex that matches bare `total` makes the identical
+mistake (it read `Sub**total**: $1964.00` as the invoice total until anchored to line-start).
+
+### A9. Where a document itemises and never prints a subtotal
+**Observed (2026-07-13):** on the layout above there is no `Subtotal:` line at all. The
+model reported the largest single component (the vehicle price) as the invoice net.
+The true pre-tax net is `grand_total − tax = 31,921.00 − 2,861.00 = 29,060.00`
+(= 26,580 + 2,030 + 450 ✓).
+
+**Pattern:** absence of a `Subtotal` label is not permission to substitute a component.
+Derive the net from two values that ARE printed. Arithmetic over grounded inputs is
+legitimate; picking a component and calling it the net is not.
+
+### A10. Charges sit between the subtotal and the total — closure must allow them
+**Observed (2026-07-13):** `Subtotal: $1964.00  Shipping: $9.20  Tax: $196.40 /
+Total: $2169.60`. A closure check of `subtotal + tax == total` **fails** here by exactly
+the shipping (9.20) and would reject a perfectly consistent invoice.
+
+**Pattern:** the invariant is `subtotal + charges + tax == grand_total`, where charges are
+shipping / freight / handling / dealer fees. Get this wrong and the checker rejects good
+documents, which trains everyone to ignore it.
+
+### A11. Self-check the arithmetic BEFORE answering
+**Pattern (the invariant that would have caught A7–A10):** a money block that does not add
+up is wrong even when each figure looks plausible on its own. `subtotal + charges + tax`
+must equal `grand_total`. Teach the model to re-read the block when it does not balance.
+
+**How it was applied:** three independent signals (model / printed-label reads / closure),
+with the *document's own arithmetic* as referee. The model wins whenever its figures close
+— so layouts it already handles are untouched — and printed values only take over when the
+model's set does not close and theirs does. When neither closes, keep what is grounded and
+leave the rest NULL for the discrepancy engine. **Never synthesise the missing number.**
+
+**Measured effect of teaching this in the prompt (2026-07-13):** on the apparel invoice
+AgentNick alone went from `tax = null` (→ fabricated 98.20) to reading `196.40` correctly;
+on the vehicle invoice from a fabricated `5,316.00` to the printed `2,861.00`. It still
+reports a component as the net on the itemised layout and still emits a `tax_percent` that
+is not printed — i.e. **prompt teaching moved it a long way and did not finish the job**.
+The closure reconciliation is what makes the result correct; the prompt is what makes the
+model's own answer usable. Both are needed. This is the A6 lesson again: do not rely on
+prompt discipline alone.
+
 ---
 
 ## B. Orchestration — patterns for routing/agent behaviour
@@ -109,6 +173,19 @@ An eval set that would have caught today's bugs:
 5. A document whose printed totals are **internally inconsistent** — the source is wrong and
    must be captured wrong, then flagged (tests "do not silently correct").
 6. A multi-supplier tender (catches the "sum of all quotes treated as one quote" error).
+7. A **non-UK invoice stating a non-20% tax rate** (catches A7 — the 20% prior). The whole
+   corpus was UK/20%, which is precisely why a hallucinated 20% scored as correct.
+8. An invoice with a **component labelled "… Total"** that is not the grand total
+   (catches A8), and one that **itemises with no `Subtotal` line at all** (catches A9).
+9. An invoice with **shipping/freight between subtotal and tax** (catches A10 — a closure
+   check of `subtotal + tax == total` wrongly rejects it).
+10. An invoice in a currency whose **symbol contradicts the corpus default** (a `$` document
+    in a GBP-heavy corpus was booked as GBP, silently rescaling `converted_amount_usd`).
+
+> Note on scoring: items 7–10 are all *money* failures that an eval built from the existing
+> corpus reports as 100% correct, because the corpus contains no example of any of them.
+> An eval set that cannot fail is not measuring anything — same trap as the qty=1 blind spot
+> in item 1.
 
 ## D. What must NOT be learned/stored
 - No supplier names, invoice numbers, amounts, addresses, or document text.

@@ -491,12 +491,37 @@ _PROMPT_RULES = """OUTPUT RULES:
 7. CRITICAL: distinguish SUPPLIER (issuer) from BUYER (recipient). The supplier appears in the masthead/heading of an invoice or quote and in the addressee block of a PO. The buyer is the other one. Never swap them.
 8. Reject layout noise. "QTY", "TOTAL", "DESCRIPTION", "SUBTOTAL", street addresses, postcodes, and product/service names are NOT supplier names, buyer names, or person names.
 
-TAX + TOTAL RECOVERY (very important — many invoices have these but in awkward layouts):
-- A typical procurement money block has THREE values in order: Subtotal / Tax / Grand Total. They are NOT always labelled side by side — sometimes the labels are in one column and the numbers stack below in a second column.
+TAX + TOTAL RECOVERY (the money block — get this right, it is the whole point of the document):
+
+THE ONE RULE THAT OVERRIDES EVERYTHING: report the number the document PRINTS. Never calculate a money value you could have read. If it is on the page, read it.
+
+- A typical money block has THREE values: Subtotal / Tax / Grand Total. They are not always side by side — sometimes the labels are in one column and the numbers stack below in a second column.
 - Pattern A — labelled rows:  "Subtotal: £8,333  Tax (20%): £1,666.60  Total: £9,999.60"
-- Pattern B — stacked column: rows of just numbers under a header, where the FIRST number is the subtotal, the SECOND is the tax amount, the THIRD is the grand total. Verify with `subtotal + tax ≈ grand_total`.
-- Pattern C — single "Total Amount Due" with one number: that's the GRAND TOTAL (incl. tax). If the doc shows ONLY this single number with no separate tax/subtotal line, set invoice_amount = grand_total - tax (if tax_amount is derivable from "Tax (X%)" anywhere), otherwise leave invoice_amount = grand_total and tax_amount = null.
-- UK invoices very commonly use 20% VAT. If you can see "Tax (20%)" anywhere, even without an explicit amount, you can pair it with the subtotal in the SAME block. DO NOT compute the tax — only report the value as it appears in the document.
+- Pattern B — stacked column: rows of bare numbers under a header, where the FIRST is the subtotal, the SECOND the tax, the THIRD the grand total. Verify with `subtotal + tax ≈ grand_total`.
+- Pattern C — a single "Total Amount Due": that is the GRAND TOTAL (incl. tax). With no separate tax/subtotal line, leave invoice_amount = grand_total and tax_amount = null. Do not invent the split.
+
+"TOTAL" IN A LABEL DOES NOT MAKE IT THE GRAND TOTAL. Many labels contain the word and are only COMPONENTS:
+    Accessories Total:   $2,030.00     <- a component. NOT the grand total.
+    Subtotal:            $1,964.00     <- pre-tax net. NOT the grand total.
+    Line Total / Total (as a table column header)  <- a line amount. NOT the grand total.
+  The grand total is the one that settles the WHOLE document — "Total:", "Grand Total:", "Total Sale Price:", "Total Amount Due:". It is normally the LAST money value and the LARGEST.
+
+TAX:
+- Read the printed tax amount. "Tax: $196.40" → tax_amount = 196.40. "Tax (10%): $2,861.00" → tax_amount = 2861.00 AND tax_percent = 10.
+- NEVER compute tax from a percentage. NEVER assume a rate. There is no default rate — not 20%, not anything. A US invoice can say 10%, a document can charge no tax at all.
+- Only output tax_percent if a percentage is LITERALLY PRINTED next to the tax. If the page shows a tax amount but no "%", output tax_amount and leave tax_percent null. Inventing a percentage is how a wrong tax gets computed downstream.
+
+CHARGES BETWEEN SUBTOTAL AND TOTAL — shipping, freight, handling, dealer fees. They are why the block may not close on subtotal + tax alone:
+    Subtotal: $1964.00   Shipping: $9.20   Tax: $196.40   Total: $2169.60
+    (1964.00 + 9.20 + 196.40 = 2169.60)
+
+WHEN THE DOCUMENT ITEMISES AND NEVER PRINTS A SUBTOTAL — e.g. a vehicle invoice listing
+"Vehicle Price: $26,580.00 / Accessories Total: $2,030.00 / Tax (10%): $2,861.00 / Dealer Fee: $450.00 / Total Sale Price: $31,921.00" — there is no "Subtotal" line. Do NOT report one component (the vehicle price) as the invoice net. The pre-tax net is grand_total − tax = 31,921.00 − 2,861.00 = 29,060.00.
+
+CHECK YOUR OWN ARITHMETIC BEFORE YOU ANSWER:
+    subtotal + charges + tax  ==  grand total
+  If it does not balance, you have misread one of them. Go back and re-read the money block. A set of numbers that does not add up is wrong even when each one looks plausible.
+
 - Never put the GRAND TOTAL into invoice_amount/total_amount (those are pre-tax subtotals). The grand total goes into *_total_incl_tax.
 
 COUNTRY + REGION DERIVATION (from any visible address):
