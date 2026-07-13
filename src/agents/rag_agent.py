@@ -1172,7 +1172,17 @@ class RAGAgent(BaseAgent):
         html_parts: List[str] = ["<section>"]
         for index, (header, body) in enumerate(sections):
             heading = header.strip()
-            if not heading and isinstance(plan_sections, list) and index < len(plan_sections):
+            # A header-less section at index 0 is the preamble — text that ran ahead of the
+            # first "## " marker (an acknowledgement, or the no-context fallback). Borrowing
+            # plan["sections"][0] to name it produced the duplicate you could see in the UI:
+            # the preamble rendered as <h2>Overview</h2> and the real "## Overview" section
+            # followed as <h3>Overview</h3>. A preamble is a lead paragraph; it has no title.
+            if (
+                not heading
+                and index > 0
+                and isinstance(plan_sections, list)
+                and index < len(plan_sections)
+            ):
                 heading = str(plan_sections[index]).strip().replace("_", " ").title()
             tag = "h2" if index == 0 else "h3"
             if heading:

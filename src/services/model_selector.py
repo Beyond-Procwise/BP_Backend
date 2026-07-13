@@ -27,6 +27,7 @@ from qdrant_client import models
 from agents.base_agent import AgentStatus
 from agents.rag_agent import RAGAgent
 from services.redis_client import get_redis_client
+from . import corpus_facts
 from .rag_service import RAGService
 from .nltk_pipeline import NLTKProcessor
 from utils.gpu import configure_gpu, load_cross_encoder
@@ -379,6 +380,14 @@ class RAGPipeline:
         self._static_agent = RAGAgent(agent_nick)
         threshold = getattr(self.settings, "static_qa_confidence_threshold", 0.68)
         self._static_confidence_threshold = max(0.0, min(float(threshold), 1.0))
+        # The static QA set (resources/reference_data/procwise_mvp_chat_questions.json) is 65
+        # canned demo answers naming suppliers that do not exist: "Global Facilities and
+        # BrightStage are top outliers", "TechCore ... based on spend". None of them appear in
+        # bp_supplier. They were reaching users as fact through two paths — a short-circuit
+        # that returned the canned text as the whole answer, and an injection into the LLM
+        # context with no confidence gate — and the answers looked authoritative because they
+        # were written to. Off unless a demo explicitly asks for it.
+        self._enable_static_qa = bool(getattr(self.settings, "enable_static_qa", False))
         self.rag = RAGService(agent_nick)
         model_name = getattr(
             self.settings,
@@ -802,6 +811,8 @@ class RAGPipeline:
     def _try_static_answer(
         self, query: str, user_id: str, *, session_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
+        if not self._enable_static_qa:
+            return None
         try:
             output = self._static_agent.run(
                 query=query,
@@ -2265,7 +2276,12 @@ class RAGPipeline:
             "System (Joshi)\n"
             "You are Joshi, the ProcWise SME. Sound like a caring, capable coworker—warm, semi-formal, and concise without seeming scripted. "
             "Open with a brief acknowledgement or collegial greeting when it feels natural (e.g., 'Thanks for the question—', 'Happy to help!'). "
-            "Answer only from the provided retrieval context or known static guidance. If the context is thin, explain the gap in one sentence or ask a single clarifying question instead of guessing. "
+            # "or known static guidance" used to sit here, and it was doing real damage: it
+            # told the model that anything it recalled was fair game, so canned demo suppliers
+            # in the context were repeated as fact. The answer is now allowed to rest on the
+            # supplied context and nothing else.
+            "Answer only from the provided retrieval context. If the context is thin, explain the gap in one sentence or ask a single clarifying question instead of guessing. "
+            "Never name a supplier, amount, document, or date that does not appear in the supplied context. If you do not have the figure, say that you do not have it — do not supply a plausible one. "
             "Paraphrase the source material instead of copying it verbatim, and translate jargon into plain language so a busy sourcing manager can act quickly. "
             "Structure the answer as one or two short paragraphs, adding short bullet or numbered lists whenever you walk through multiple considerations, steps, or recommendations. Wrap up with a clear takeaway or next step. "
             "Do not expose internal details, identifiers, or placeholders, and avoid boilerplate openers or stock phrases. "
@@ -2569,7 +2585,40 @@ class RAGPipeline:
         reranked = self.rag.search(query, **search_kwargs)
         knowledge_items = self._prepare_knowledge_items(reranked)
 
-        if knowledge_items and not restrict_to_uploaded:
+        # Questions about our own corpus ("which suppliers do we buy from", "what did we
+        # spend", "what is still open") have exact answers, and they live in Postgres, not in
+        # a vector store. Nothing in this path had ever asked the database — which is the real
+        # reason the ask bar invented suppliers: with no facts to ground it, the nearest text
+        # in Qdrant won by default. These rows are counted, not retrieved, so they go in first.
+        if not restrict_to_uploaded:
+            try:
+                corpus = corpus_facts.fetch_facts(self.agent_nick, query)
+            except Exception:
+                logger.exception("Corpus fact lookup failed")
+                corpus = None
+            if corpus:
+                rendered = corpus_facts.render_facts(corpus)
+                if rendered.strip():
+                    knowledge_items.insert(0, {
+                        "payload": {
+                            "source": "corpus_facts",
+                            "intent": corpus.get("intent"),
+                            "answer": rendered,
+                            "collection_name": "corpus_facts",
+                            "source_label": "Your extracted documents",
+                        },
+                        "collection": "corpus_facts",
+                        "source_label": "Your extracted documents",
+                        "document": "Extracted documents (live)",
+                        "summary": rendered,
+                    })
+
+        # The second leak path for the canned demo answers, and the worse of the two: this one
+        # had no confidence gate whatsoever — only a SUCCESS check, and RAGAgent._select_topic
+        # has no similarity floor, so it always succeeds with *something*. The nearest canned
+        # answer was appended to the knowledge context for every question, and the model
+        # dutifully repeated its supplier names.
+        if self._enable_static_qa and knowledge_items and not restrict_to_uploaded:
             try:
                 static_output = self._static_agent.run(
                     query=query,
@@ -2579,7 +2628,11 @@ class RAGPipeline:
             except Exception:
                 logger.exception("Static procurement QA lookup failed during context build")
             else:
-                if static_output.status is AgentStatus.SUCCESS:
+                if (
+                    static_output.status is AgentStatus.SUCCESS
+                    and float(static_output.confidence or 0.0)
+                    >= self._static_confidence_threshold
+                ):
                     payload = static_output.data or {}
                     answer_text = payload.get("answer")
                     if isinstance(answer_text, str) and answer_text.strip():
