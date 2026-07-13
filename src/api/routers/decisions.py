@@ -69,6 +69,55 @@ def decide_finding(
     return payload
 
 
+class ActionRequest(BaseModel):
+    action: str
+    user_id: Optional[str] = None
+    # Only for apply_value, when the operator supplies a figure other than the expected.
+    value: Optional[str] = None
+    # Required when the action contradicts what the evidence supports. Recorded against
+    # the actor. Not a flag — a sentence.
+    override_reason: Optional[str] = None
+
+
+@router.post("/finding/{finding_id}/action")
+def act_on_finding(
+    finding_id: str,
+    body: ActionRequest,
+    agent_nick=Depends(get_agent_nick),
+) -> Dict[str, Any]:
+    """Carry out the human's decision on a finding. The engine advises; it does not veto.
+
+    This is what the Action Centre buttons call, and it does the thing:
+    `apply_value` writes the corrected figure onto the finding (the UI used to post the
+    action and drop the value, so "Apply value" never applied one), `flag` leaves the
+    finding OPEN, `dismiss` closes it as accepted risk.
+
+    Human-in-the-loop, precisely:
+      * the engine states what the evidence supports before anything happens;
+      * if the human's action contradicts that, the call comes back with
+        requires_override=true and the reasoning — it will not proceed on a bare click;
+      * supply override_reason to go ahead. Who acted, what they were told, and why they
+        went the other way are all recorded on proc.bp_decision.
+
+    The human is never blocked. They are asked to mean it.
+
+    The source extraction is never overwritten — the correction is recorded against the
+    finding, so what the document actually said stays intact.
+    """
+    from engines.decision_engine import DecisionEngine
+
+    result = DecisionEngine(agent_nick).execute(
+        finding_id,
+        body.action,
+        user_id=body.user_id or "api",
+        value=body.value,
+        override_reason=body.override_reason,
+    )
+    if result.get("error") and not result.get("requires_override"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
 @router.get("/{decision_id}")
 def get_decision(decision_id: int, agent_nick=Depends(get_agent_nick)) -> Dict[str, Any]:
     """The decision, and every fact it was computed from."""

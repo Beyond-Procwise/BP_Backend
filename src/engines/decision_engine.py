@@ -247,20 +247,41 @@ class DecisionEngine:
                 )
             )
 
-        # There is no variance_amount column. Derive the money at stake from the two
-        # figures that disagree, and only when BOTH are numeric — a mismatch between
-        # two strings has no financial value we can assert.
+        # There is no variance_amount column, so the money at stake has to be derived —
+        # and the table uses TWO conventions for computed_value, which must not be
+        # conflated:
+        #
+        #   sum_mismatch / tax_percent_mismatch  -> computed_value is an ABSOLUTE value
+        #        (expected 440.00, computed 460.0)      variance = |computed - expected|
+        #
+        #   amount_over_po / line_amount_over_po -> computed_value is ALREADY THE DELTA,
+        #        written with an explicit sign          variance = |computed|
+        #        (expected 28610.00, computed +950.00)
+        #
+        # Treating the signed delta as an absolute gives |950 - 28610| = 27,660 for a
+        # finding whose real over-billing is 950 — wrong by a factor of 29, and wrong in
+        # the direction that makes a trivial exception look like a catastrophe. The sign
+        # is the tell, and it is present on 100% of the delta-style rows.
+        raw_computed = str(row.get("computed_value") or "").strip()
         expected = self._num(row.get("expected_value"))
-        computed = self._num(row.get("computed_value"))
+        computed = self._num(raw_computed)
         variance: Optional[Decimal] = None
-        if expected is not None and computed is not None:
+        derivation: Optional[str] = None
+
+        if computed is not None and raw_computed[:1] in ("+", "-"):
+            variance = abs(computed)
+            derivation = "computed_value is already the delta (explicitly signed)"
+        elif expected is not None and computed is not None:
             variance = abs(computed - expected)
+            derivation = "derived: abs(computed_value - expected_value)"
+
+        if variance is not None:
             facts["variance"] = str(variance)
             evidence.append(
                 Evidence(
                     fact="variance",
                     value=str(variance),
-                    source="derived: abs(computed_value - expected_value)",
+                    source=derivation or "derived",
                     reference=ref,
                 )
             )
@@ -402,6 +423,232 @@ class DecisionEngine:
             return decision.decision_id
         except Exception:
             logger.exception("failed to persist decision to proc.bp_decision")
+            return None
+
+    # ------------------------------------------------------------------
+    # Execution — actually do the thing
+    # ------------------------------------------------------------------
+    #
+    # Every one of these used to be a toast. In particular "Apply value" never
+    # applied a value: the UI posted {id, action} and dropped the corrected figure on
+    # the floor, so the finding was closed and the correction was lost.
+    #
+    # Note what is NOT done here: the extracted source data is never overwritten.
+    # bp_extraction_discrepancy carries resolved_value / resolution_action /
+    # resolved_by for exactly this purpose — the correction is RECORDED against the
+    # finding, leaving what the document actually said intact. Destroying the
+    # extraction to make a number look right would defeat the point of extracting it.
+
+    # Verbs that close a finding. `flag` is deliberately absent: flagging something is
+    # how you ask for attention, not how you make it go away.
+    CLOSING_ACTIONS = {"apply_value", "confirm", "approve", "reject", "dismiss"}
+    KNOWN_ACTIONS = CLOSING_ACTIONS | {"flag", "escalate", "hold", "assign", "investigate", "query"}
+
+    def execute(
+        self,
+        finding_id: str,
+        action: str,
+        *,
+        user_id: str = "api",
+        value: Optional[str] = None,
+        override_reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Carry out the HUMAN's decision, with the engine advising.
+
+        These are human-in-the-loop actions, so the human is the authority. The engine
+        does NOT get a veto: refusing to act would not be human-in-the-loop, it would
+        be automation overruling the person accountable for the call.
+
+        What the engine does instead:
+          * it states what the evidence supports, BEFORE anything happens;
+          * if the human's action contradicts that, it asks for a reason and will not
+            proceed on a bare click — an override must be deliberate;
+          * it records who acted, what the engine advised, and why they went the other
+            way, so the override is answerable afterwards.
+
+        A confirmation is not friction for its own sake. Closing a GBP 27,660 critical
+        over-billing should take one more second and leave a name against it.
+        """
+        action = (action or "").strip().lower()
+        if action not in self.KNOWN_ACTIONS:
+            return {"applied": False, "error": f"unknown action '{action}'"}
+
+        recommendation = self.decide_finding(finding_id, requested=action)
+
+        row = self._fetch_finding(finding_id)
+        if not row:
+            return {
+                "applied": False,
+                "error": f"finding {finding_id} not found",
+                "recommendation": recommendation.to_dict(),
+            }
+
+        # Does the human's action contradict the evidence? Closing a finding the engine
+        # says must escalate is the case that matters.
+        conflicts = action in self.CLOSING_ACTIONS and recommendation.escalated
+
+        if conflicts and not override_reason:
+            # Not a refusal — a confirmation step. The human may absolutely do this;
+            # they just have to mean it, and say why. Everything needed to make that
+            # call is returned: the verdict, the reasoning, and the evidence behind it.
+            return {
+                "applied": False,
+                "requires_override": True,
+                "recommendation": recommendation.to_dict(),
+                "prompt": (
+                    f"The evidence does not support '{action}' here: "
+                    f"{recommendation.rationale} You can still proceed, but the reason "
+                    "will be recorded against your name."
+                ),
+            }
+
+        # Work out the new state of the finding.
+        if action == "apply_value":
+            # THE fix: actually carry the expected value across. Closing this without
+            # writing resolved_value is what "Apply value" has always done.
+            resolved_value = value or row.get("expected_value")
+            if resolved_value is None:
+                return {
+                    "applied": False,
+                    "error": (
+                        "There is no expected value to apply on this finding, and none "
+                        "was supplied. Supply one explicitly, or use a different action."
+                    ),
+                    "recommendation": recommendation.to_dict(),
+                }
+            new_status, resolved = "resolved", str(resolved_value)
+        elif action == "confirm":
+            # Confirming says "what we extracted was right" — so the resolved value is
+            # the extracted one, not the expected one.
+            new_status, resolved = "resolved", str(
+                row.get("computed_value") or row.get("raw_value") or ""
+            ) or None
+        elif action in ("dismiss", "reject"):
+            new_status, resolved = "ignored", None
+        elif action == "approve":
+            new_status, resolved = "resolved", value
+        elif action == "flag":
+            # Stays OPEN. A flag is a request for a human, not a resolution.
+            new_status, resolved = "flagged", None
+        elif action == "hold":
+            new_status, resolved = "on_hold", None
+        else:  # escalate | assign | investigate | query
+            new_status, resolved = "escalated", None
+
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    if new_status in ("resolved", "ignored"):
+                        cur.execute(
+                            """
+                            UPDATE proc.bp_extraction_discrepancy
+                               SET status = %s,
+                                   resolution_action = %s,
+                                   resolved_value = %s,
+                                   resolved_by = %s,
+                                   resolved_at = NOW()
+                             WHERE discrepancy_id::text = %s
+                            """,
+                            (new_status, action, resolved, user_id, str(finding_id)),
+                        )
+                    else:
+                        # Open states keep resolved_* NULL — they are not resolved.
+                        cur.execute(
+                            """
+                            UPDATE proc.bp_extraction_discrepancy
+                               SET status = %s,
+                                   resolution_action = %s
+                             WHERE discrepancy_id::text = %s
+                            """,
+                            (new_status, action, str(finding_id)),
+                        )
+                conn.commit()
+        except Exception:
+            logger.exception("failed to apply action %s to finding %s", action, finding_id)
+            return {
+                "applied": False,
+                "error": "could not update the finding",
+                "recommendation": recommendation.to_dict(),
+            }
+
+        # Record what the ENGINE advised alongside what the HUMAN actually did. Storing
+        # only the outcome would lose the most interesting fact in the row: that someone
+        # was told the evidence said otherwise and went ahead anyway.
+        decision_id = self._record_human_action(
+            recommendation,
+            human_action=action,
+            actor=user_id,
+            override_reason=override_reason if conflicts else None,
+        )
+
+        return {
+            "applied": True,
+            "action": action,
+            "finding_id": str(finding_id),
+            "new_status": new_status,
+            # What was actually written. For apply_value this is the number carried
+            # across — the thing the button has always claimed to do and never did.
+            "resolved_value": resolved,
+            "overridden": bool(conflicts),
+            "override_reason": override_reason if conflicts else None,
+            "actioned_by": user_id,
+            "decision_id": decision_id,
+            "recommendation": recommendation.to_dict(),
+        }
+
+    def _record_human_action(
+        self,
+        recommendation: "Decision",
+        *,
+        human_action: str,
+        actor: str,
+        override_reason: Optional[str],
+    ) -> Optional[int]:
+        """Persist the engine's advice, the human's action, and any override."""
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO proc.bp_decision (
+                            subject_type, subject_id, deal_id, supplier_id,
+                            decision, resolution, rationale,
+                            policy_id, policy_name, facts, evidence,
+                            status, actioned_by, actioned_at, override_reason,
+                            agent, created_by
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s)
+                        RETURNING decision_id
+                        """,
+                        (
+                            recommendation.subject_type,
+                            recommendation.subject_id,
+                            recommendation.deal_id,
+                            recommendation.supplier_id,
+                            # `decision` is what actually happened — the human's call.
+                            human_action,
+                            recommendation.resolution,
+                            # The rationale keeps the ENGINE's reasoning, so the row shows
+                            # what the human was told at the moment they decided.
+                            recommendation.rationale,
+                            recommendation.policy_id,
+                            recommendation.policy_name,
+                            json.dumps(recommendation.facts, default=str),
+                            json.dumps(
+                                [e.to_dict() for e in recommendation.evidence], default=str
+                            ),
+                            "overridden" if override_reason else "actioned",
+                            actor,
+                            override_reason,
+                            "decision_engine",
+                            actor,
+                        ),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+            return int(row[0]) if row else None
+        except Exception:
+            logger.exception("failed to record human action on proc.bp_decision")
             return None
 
     def trace(self, decision_id: int) -> Optional[Dict[str, Any]]:
