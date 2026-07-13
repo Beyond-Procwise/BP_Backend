@@ -60,16 +60,28 @@ class NLTKProcessor:
         VP: {<VB.*><NP|PP|RB>*}
     """
 
+    # Sentences opening with these are conversational padding and get dropped.
+    #
+    # "based on" USED TO BE IN THIS LIST, and it was quietly destroying answers.
+    # "Based on the verified records, you have exactly 19 invoices in total" is not
+    # filler — it is the answer, and "Based on..." is precisely how a grounded model
+    # introduces the evidence it is resting on. Every reply that cited its source in
+    # that idiom had its most factual sentence deleted, leaving text like "This total
+    # includes 7 from X and 7 from Y" with the total itself missing.
     _FILLER_PREFIXES = (
         "thanks for flagging",
         "here's what i can confirm",
         "as an ai",
-        "based on",
         "sure, i can help",
         "most definitely",
         "great! here",
         "you're in the right place",
     )
+
+    # Belt and braces for the prefixes that remain: a sentence carrying a figure is
+    # never padding. Dropping it loses information that cannot be recovered
+    # downstream, so no prefix match is allowed to remove one.
+    _CARRIES_A_FACT = re.compile(r"\d")
 
     _TOXICITY_PATTERNS = (
         re.compile(r"\b(?:idiot|stupid|dumb)\b", re.IGNORECASE),
@@ -203,10 +215,16 @@ class NLTKProcessor:
         sentences = sent_tokenize(clean) if clean else []  # type: ignore[operator]
         filtered: List[str] = []
         for sentence in sentences or [clean]:
-            lowered = sentence.strip().lower()
-            if any(lowered.startswith(prefix) for prefix in self._FILLER_PREFIXES):
+            stripped = sentence.strip()
+            lowered = stripped.lower()
+            is_filler = any(
+                lowered.startswith(prefix) for prefix in self._FILLER_PREFIXES
+            )
+            # A sentence with a number in it is carrying information. Never discard
+            # it as padding, whatever it happens to open with.
+            if is_filler and not self._CARRIES_A_FACT.search(stripped):
                 continue
-            filtered.append(sentence.strip())
+            filtered.append(stripped)
 
         if not filtered:
             filtered = [clean]

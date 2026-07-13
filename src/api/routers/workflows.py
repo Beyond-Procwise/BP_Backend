@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator, ConfigDict
 
 from orchestration.orchestrator import Orchestrator
@@ -840,6 +841,92 @@ async def ask_question(
         product_type=req.product_type,
     )
     return result
+
+
+@router.post("/ask/stream")
+async def ask_question_stream(
+    req: AskRequest,
+    request: Request,
+    pipeline: RAGPipeline = Depends(get_rag_pipeline),
+):
+    """Stream an answer as Server-Sent Events.
+
+    The same grounded pipeline as POST /ask — same retrieval, same corpus facts,
+    same session continuity — but the answer arrives progressively instead of
+    after a 10-30s stare at a spinner.
+
+    Events (each `data:` is one JSON object with a `type`):
+      stage  - retrieving | grounded (with the sources) | generating
+      delta  - a piece of ANSWER PROSE. Not raw model output: the model replies in
+               JSON, so the tokens are decoded out of the `answer` field before
+               they are sent (see JsonFieldStreamer). The client can append these
+               straight to the screen.
+      done   - the final answer, follow-ups and retrieved documents
+      error  - something failed; the message is included
+
+    The pipeline is blocking and CPU/GPU-bound, so it runs in a worker thread and
+    pushes events onto a queue that this coroutine drains. Doing it inline would
+    block the event loop and stall every other request on the server.
+    """
+    import queue as _queue
+
+    events: _queue.Queue = _queue.Queue()
+    _DONE = object()
+
+    header_session = (request.headers.get("x-session-id") or "").strip() or None
+    resolved_session = req.session_id or header_session or req.user_id
+
+    def _on_event(kind: str, payload: Dict[str, Any]) -> None:
+        events.put({"type": kind, **payload})
+
+    def _work() -> None:
+        try:
+            result = pipeline.answer_question(
+                query=req.query,
+                user_id=req.user_id,
+                session_id=resolved_session,
+                model_name=req.model_name,
+                doc_type=req.doc_type,
+                product_type=req.product_type,
+                on_event=_on_event,
+            )
+            events.put(
+                {
+                    "type": "done",
+                    "answer": result.get("answer") or "",
+                    "follow_ups": result.get("follow_ups") or [],
+                    "retrieved_documents": result.get("retrieved_documents") or [],
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("ask stream failed")
+            events.put({"type": "error", "message": str(exc)[:300]})
+        finally:
+            events.put(_DONE)
+
+    async def _publish():
+        loop = asyncio.get_running_loop()
+        task = loop.run_in_executor(None, _work)
+        try:
+            while True:
+                event = await loop.run_in_executor(None, events.get)
+                if event is _DONE:
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            await task
+
+    return StreamingResponse(
+        _publish(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # nginx buffers proxied responses by default, which would hold the
+            # whole stream back and deliver it in one lump — defeating the point.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/rank")

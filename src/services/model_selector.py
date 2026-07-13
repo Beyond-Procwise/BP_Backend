@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Set
 
 from html import escape
 import ollama
@@ -28,6 +28,7 @@ from agents.base_agent import AgentStatus
 from agents.rag_agent import RAGAgent
 from services.redis_client import get_redis_client
 from . import corpus_facts
+from .json_field_stream import JsonFieldStreamer
 from .rag_service import RAGService
 from .nltk_pipeline import NLTKProcessor
 from utils.gpu import configure_gpu, load_cross_encoder
@@ -2288,8 +2289,20 @@ class RAGPipeline:
         formatted = re.sub(r"\n{3,}", "\n\n", formatted)
         return formatted.strip()
 
-    def _generate_response(self, prompt: str, model: str) -> Dict:
-        """Calls :func:`ollama.chat` once to get answer and follow-ups."""
+    def _generate_response(
+        self,
+        prompt: str,
+        model: str,
+        on_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict:
+        """Calls :func:`ollama.chat` once to get answer and follow-ups.
+
+        ``on_delta`` streams the answer to the caller as it is produced. The model
+        replies with ``format: "json"``, so the raw token stream is JSON syntax —
+        emitting it verbatim would put `{"answer": "Th` on the user's screen. The
+        deltas handed to ``on_delta`` are the decoded contents of the ``answer``
+        field only (see JsonFieldStreamer), so what arrives is prose.
+        """
         system = (
             "System (Joshi)\n"
             "You are Joshi, the ProcWise SME. Sound like a caring, capable coworker—warm, semi-formal, and concise without seeming scripted. "
@@ -2331,15 +2344,25 @@ class RAGPipeline:
             "format": "json",
         }
 
-        stream_enabled = bool(getattr(settings, "stream_llm_responses", False))
+        # Stream whenever the caller wants deltas, regardless of the global setting:
+        # an SSE request cannot be served by a blocking call.
+        stream_enabled = bool(
+            on_delta or getattr(settings, "stream_llm_responses", False)
+        )
         if stream_enabled:
             try:
                 stream = ollama.chat(**{**chat_kwargs, "stream": True})
                 content_chunks: List[str] = []
+                field_stream = JsonFieldStreamer("answer") if on_delta else None
                 for event in stream:
                     fragment = (event or {}).get("message", {}).get("content")
-                    if fragment:
-                        content_chunks.append(fragment)
+                    if not fragment:
+                        continue
+                    content_chunks.append(fragment)
+                    if field_stream is not None and not field_stream.complete:
+                        text = field_stream.feed(fragment)
+                        if text:
+                            on_delta(text)
                 content = "".join(content_chunks)
                 if content:
                     return json.loads(content)
@@ -2370,7 +2393,26 @@ class RAGPipeline:
         files: Optional[List[tuple[bytes, str]]] = None,
         doc_type: Optional[str] = None,
         product_type: Optional[str] = None,
+        on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict:
+        """Answer a question against the retrieved corpus.
+
+        ``on_event(kind, payload)`` is an optional hook for streaming callers. It
+        fires as the answer is built — ``stage`` for progress (retrieving,
+        grounding, generating) and ``delta`` for each piece of answer prose. The
+        blocking behaviour is unchanged when it is not supplied, so the existing
+        POST /workflows/ask contract is untouched.
+        """
+
+        def _emit(kind: str, **payload: Any) -> None:
+            if on_event is None:
+                return
+            try:
+                on_event(kind, payload)
+            except Exception:  # pragma: no cover - a broken consumer must not
+                # take down the answer it is consuming.
+                logger.debug("ask on_event consumer raised", exc_info=True)
+
         llm_to_use = self.default_llm_model
         logger.info(
             "Answering query with model '%s' and filters: doc_type='%s', product_type='%s'",
@@ -2378,6 +2420,7 @@ class RAGPipeline:
             doc_type,
             product_type,
         )
+        _emit("stage", stage="retrieving")
 
         history = self.history_manager.get_history(user_id)
         history_fingerprint = self._build_history_fingerprint(history)
@@ -2742,6 +2785,26 @@ class RAGPipeline:
         draft_answer = self._build_structured_answer(query, enumerated_items, ad_hoc_context)
         base_followups = self._build_followups(query, enumerated_items)
 
+        # Tell the caller what this answer is standing on, BEFORE the prose starts.
+        # The sources are the whole basis for trusting it, and they are known now —
+        # withholding them until the end would mean the user reads the answer with
+        # no idea where it came from.
+        _emit(
+            "stage",
+            stage="grounded",
+            documents=len(retrieved_documents_payloads),
+            sources=[
+                s
+                for s in (
+                    p.get("source_label") or p.get("collection_name")
+                    for p in retrieved_documents_payloads
+                )
+                if s
+            ][:8],
+            corpus_facts=bool(corpus_context),
+        )
+        _emit("stage", stage="generating", model=llm_to_use)
+
         prompt = self._compose_llm_prompt(
             query,
             context_body,
@@ -2750,7 +2813,11 @@ class RAGPipeline:
             ad_hoc_context,
             corpus_context=corpus_context,
         )
-        llm_payload = self._generate_response(prompt, llm_to_use)
+        llm_payload = self._generate_response(
+            prompt,
+            llm_to_use,
+            on_delta=(lambda text: _emit("delta", text=text)) if on_event else None,
+        )
         answer = self._finalise_llm_answer(
             llm_payload.get("answer"), raw_nltk_features, draft_answer
         )
