@@ -1803,9 +1803,24 @@ class RAGPipeline:
         draft_answer: str,
         nltk_features: Optional[Dict[str, Any]],
         ad_hoc_context: str,
+        corpus_context: str = "",
     ) -> str:
         redacted_query = self._redact_identifiers(query)
         lines: List[str] = [f"User question: {redacted_query}"]
+
+        # Counted rows from our own tables. These go in verbatim and ahead of everything else,
+        # and they deliberately bypass the draft builder: that builder reshapes retrieved text
+        # into templated prose, which is right for a policy snippet and destroys a table of
+        # figures. These are the numbers, they are not up for paraphrase, and where they
+        # disagree with anything the vector store returned, they win — retrieval finds text
+        # that reads like an answer, which is not the same as the answer.
+        if corpus_context:
+            lines.append(
+                "Verified data from the customer's own documents (authoritative — these are "
+                "counted records, not retrieved text). Answer the question from these figures, "
+                "name these entities and no others, and quote the numbers exactly as given:\n"
+                + corpus_context
+            )
 
         sentiment = (nltk_features or {}).get("sentiment") if nltk_features else None
         descriptor = self._sentiment_descriptor(sentiment)
@@ -2590,6 +2605,7 @@ class RAGPipeline:
         # a vector store. Nothing in this path had ever asked the database — which is the real
         # reason the ask bar invented suppliers: with no facts to ground it, the nearest text
         # in Qdrant won by default. These rows are counted, not retrieved, so they go in first.
+        corpus_context = ""
         if not restrict_to_uploaded:
             try:
                 corpus = corpus_facts.fetch_facts(self.agent_nick, query)
@@ -2599,6 +2615,7 @@ class RAGPipeline:
             if corpus:
                 rendered = corpus_facts.render_facts(corpus)
                 if rendered.strip():
+                    corpus_context = rendered
                     knowledge_items.insert(0, {
                         "payload": {
                             "source": "corpus_facts",
@@ -2728,6 +2745,7 @@ class RAGPipeline:
             draft_answer,
             raw_nltk_features,
             ad_hoc_context,
+            corpus_context=corpus_context,
         )
         llm_payload = self._generate_response(prompt, llm_to_use)
         answer = self._finalise_llm_answer(

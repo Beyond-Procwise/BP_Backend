@@ -57,6 +57,13 @@ def _rows(cur, sql: str, limit: int = _MAX_ROWS) -> List[Dict[str, Any]]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def _one(cur, sql: str) -> List[Dict[str, Any]]:
+    """A single aggregate row — no LIMIT, because a total must not be truncated."""
+    cur.execute(sql)
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
 def _fetch(cur, intent: str) -> Dict[str, Any]:
     if intent == "policies":
         # The governed policy set (proc.bp_policy) is what the agents are actually held to.
@@ -88,6 +95,10 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
 
     if intent == "suppliers":
         return {
+            "totals": _one(cur, """
+                SELECT COUNT(DISTINCT i.supplier_id)::int AS suppliers_we_have_invoices_from,
+                       (SELECT COUNT(*)::int FROM proc.bp_supplier) AS suppliers_on_record
+                  FROM proc.bp_invoice_trgt i"""),
             "suppliers_we_buy_from": _rows(cur, """
                 SELECT s.supplier_name,
                        COUNT(i.invoice_id)::int          AS invoices,
@@ -125,6 +136,17 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
 
     if intent == "findings":
         return {
+            # The totals come first and are stated outright. The by-type list below is capped
+            # at ten rows out of sixteen, and a model handed a truncated list will add it up
+            # and present the sum as the total — it answered "647 unresolved cases" against a
+            # real 685. Never make it do arithmetic it cannot check; give it the total.
+            "totals": _one(cur, """
+                SELECT COUNT(*)::int AS open_findings_total,
+                       COUNT(*) FILTER (WHERE severity = 'critical')::int AS critical_total,
+                       COUNT(DISTINCT issue_type)::int AS distinct_issue_types,
+                       COUNT(DISTINCT doc_pk_candidate)::int AS documents_affected
+                  FROM proc.bp_extraction_discrepancy
+                 WHERE status = 'open'"""),
             "open_findings_by_type": _rows(cur, """
                 SELECT issue_type,
                        COUNT(*)::int AS findings,
