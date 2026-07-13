@@ -141,19 +141,36 @@ def ensure_payment_terms_score(df: pd.DataFrame) -> pd.DataFrame:
             _normalize_days_to_score
         )
 
-    na_mask = df["payment_terms_score"].isna()
-    if na_mask.any():
-        logger.warning(
-            "Imputing neutral payment_terms_score=50 for %d row(s) with unknown terms",
-            int(na_mask.sum()),
+    # A supplier whose payment terms we never read does not get a score. Imputing a
+    # neutral 50 here made every unmeasured supplier look measured, and defeated the
+    # weight renormalisation downstream (an all-NaN metric is meant to drop out of the
+    # weighted sum; a column of 50s never does). NaN means "not measured" and is the
+    # honest answer.
+    unknown = int(df["payment_terms_score"].isna().sum())
+    if unknown:
+        logger.info(
+            "payment_terms_score left NULL for %d supplier(s) with no terms on file",
+            unknown,
         )
-        df.loc[na_mask, "payment_terms_score"] = 50.0
 
     return df
 
 
 class SupplierRankingAgent(BaseAgent):
     """Rank suppliers using procurement data, policies and contextual scores."""
+
+    # Which way is "good" for each metric, when no NormalizationDirectionPolicy says
+    # otherwise. Without these, a criterion could hold real numbers yet never be scored:
+    # the weight map accepts a criterion on its raw column, but scoring needs a _score
+    # column, and only the normaliser creates one. The metric would then drop out
+    # silently -- and a supplier with usable data would be ranked as though they had none.
+    # Governance policy still overrides these.
+    DEFAULT_SCORE_DIRECTIONS = {
+        "price": "lower_is_better",
+        "risk": "lower_is_better",
+        "delivery": "higher_is_better",
+        "payment_terms": "higher_is_better",
+    }
 
     AGENTIC_PLAN_STEPS = (
         "Aggregate supplier performance, spend, and policy context relevant to the query.",
@@ -734,6 +751,37 @@ class SupplierRankingAgent(BaseAgent):
         df = self._merge_supplier_metrics(df, tables)
         profiles = self._build_supplier_profiles(tables, df["supplier_id"].astype(str))
 
+        # Competitive quotes are the one place real, comparable supplier signal lives.
+        # The supplier master (proc.bp_supplier) is a name registry: risk_score,
+        # delivery_lead_time_days, incoterms and credit_limit_amount are empty for all
+        # 87 rows, which is why this agent could only ever score 0.00. Rank suppliers on
+        # what they actually bid for THIS deal instead.
+        self._deal_priced = False
+        deal_id = context.input_data.get("deal_id")
+        deal_id = str(deal_id).strip() if deal_id else None
+        if not deal_id and "supplier_id" in df.columns:
+            deal_id = self._infer_deal_id(df["supplier_id"].dropna().astype(str))
+
+        if deal_id:
+            deal_quotes = self._load_deal_quotes(deal_id)
+            if not deal_quotes.empty:
+                df = df.merge(deal_quotes, on="supplier_id", how="left")
+                self._deal_priced = True
+                self._deal_id = deal_id
+                logger.info(
+                    "Deal %s: loaded standing offers from %d supplier(s) for price scoring",
+                    deal_id,
+                    len(deal_quotes),
+                )
+            else:
+                logger.info("Deal %s: no quotes found; no price signal to rank on", deal_id)
+        else:
+            logger.info(
+                "No deal to rank on: these suppliers did not compete against each other. "
+                "There is no global fallback -- the supplier master holds no risk, "
+                "delivery or reliability data to score."
+            )
+
         external_profiles = context.input_data.get("supplier_category_profiles")
         if isinstance(external_profiles, str):
             try:
@@ -850,10 +898,17 @@ class SupplierRankingAgent(BaseAgent):
         }
 
         if not weights:
+            # avg_unit_price counts as price signal: _prepare_scoring_columns promotes it
+            # to `price` below when there is no competitive quote to score instead.
+            fallback_sources = {"price": ("price", "avg_unit_price")}
             fallback_metrics = [
                 metric
                 for metric in ("price", "delivery", "risk", "payment_terms")
-                if metric in df.columns or f"{metric}_score" in df.columns
+                if any(
+                    col in df.columns
+                    for col in fallback_sources.get(metric, (metric,))
+                )
+                or f"{metric}_score" in df.columns
             ]
             if fallback_metrics:
                 equal_weight = 1.0 / len(fallback_metrics)
@@ -863,27 +918,84 @@ class SupplierRankingAgent(BaseAgent):
         df = ensure_payment_terms_score(df)
         scored_df = self._score_categorical_criteria(df, weights.keys(), policy_bundle)
         norm_policy = self._find_policy(policy_bundle, "NormalizationDirectionPolicy")
-        direction_map = self._extract_policy_rules(norm_policy)
+        # Built-in directions first, governed policy on top -- so a criterion always has a
+        # way to be scored, but the DB can still override how.
+        direction_map = {
+            crit: direction
+            for crit, direction in self.DEFAULT_SCORE_DIRECTIONS.items()
+            if crit in weights
+        }
+        direction_map.update(self._extract_policy_rules(norm_policy) or {})
         scored_df = self._normalize_numeric_scores(scored_df, direction_map)
+
+        # Authoritative price scoring: deal-scoped, and NULL unless suppliers actually
+        # competed. Runs after the generic normaliser so it overrides any global
+        # price pass, which would rank a supplier against unrelated deals.
+        if getattr(self, "_deal_priced", False):
+            scored_df = self._score_deal_price(scored_df)
 
         normalised_weights = self._normalise_weight_map(scored_df, weights)
         if normalised_weights:
             weights = normalised_weights
 
-        scored_df["final_score"] = 0.0
-        for crit, weight in weights.items():
-            score_col = f"{crit}_score"
-            if score_col not in scored_df.columns:
-                logger.warning("Criterion column missing: %s", score_col)
-                continue
-            scored_df["final_score"] += (
-                pd.to_numeric(scored_df[score_col].fillna(0), errors="coerce")
-                * float(weight)
+        # Score each supplier only on the metrics we actually hold for them, renormalising
+        # that supplier's weights over those metrics.
+        #
+        # The previous fillna(0) charged a supplier the full weight of every metric while
+        # scoring them 0 on any they were missing -- so a supplier whose payment terms we
+        # simply never read was ranked as though they had offered the worst terms on the
+        # table. That punishes gaps in OUR data as if they were faults in THEIR bid.
+        #
+        # A supplier with no measurable metric at all scores NaN, not 0.0: we have no
+        # opinion on them, and saying "0" would be inventing one.
+        criteria_cols = {
+            crit: f"{crit}_score"
+            for crit in weights
+            if f"{crit}_score" in scored_df.columns
+        }
+        for crit in weights:
+            if crit not in criteria_cols:
+                logger.warning("Criterion column missing: %s_score", crit)
+
+        if criteria_cols:
+            score_frame = scored_df[list(criteria_cols.values())].apply(
+                pd.to_numeric, errors="coerce"
             )
+            weight_row = pd.Series(
+                {col: float(weights[crit]) for crit, col in criteria_cols.items()}
+            )
+            present = score_frame.notna()
+            weighted_sum = (score_frame.fillna(0) * weight_row).sum(axis=1)
+            weight_present = present.mul(weight_row, axis=1).sum(axis=1)
+            scored_df["final_score"] = np.where(
+                weight_present > 0, weighted_sum / weight_present, np.nan
+            )
+            scored_df["scored_on"] = present.apply(
+                lambda r: [c.removesuffix("_score") for c in present.columns[r.values]],
+                axis=1,
+            )
+        else:
+            scored_df["final_score"] = np.nan
+            scored_df["scored_on"] = [[] for _ in range(len(scored_df))]
 
         scored_df = self._apply_flow_bonus(
             scored_df, flow_index, flow_name_index, alias_tokens_map
         )
+
+        # Refuse to publish a ranking we cannot stand behind. Emitting a confident-looking
+        # table of 0.00s (which is what this agent did until now) is worse than failing:
+        # a buyer cannot tell "these suppliers are bad" from "we knew nothing about them".
+        if scored_df["final_score"].isna().all():
+            reason = (
+                "insufficient data to rank: no supplier had a measurable metric. "
+                "Competitive price scoring needs a deal_id with 2+ supplier quotes; "
+                "the supplier master holds no risk or delivery data to fall back on."
+            )
+            logger.warning("SupplierRankingAgent: %s", reason)
+            return self._with_plan(
+                context,
+                AgentOutput(status=AgentStatus.FAILED, data={}, error=reason),
+            )
 
         ranked_df = scored_df.sort_values(
             by="final_score", ascending=False
@@ -1292,6 +1404,186 @@ class SupplierRankingAgent(BaseAgent):
         tables["procurement_flow"] = flow
         return tables
 
+    # ------------------------------------------------------------------
+    # Deal-scoped competitive quotes
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _quote_version(quote_id: Any) -> Optional[int]:
+        """Pull the bidding round out of a quote_id like 'STC-RFQ-2204 (V3 (BAFO))'."""
+        if not isinstance(quote_id, str):
+            return None
+        match = re.search(r"\(\s*V(\d+)", quote_id, re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+
+    def _infer_deal_id(self, supplier_ids: Iterable[str]) -> Optional[str]:
+        """Find the deal these suppliers actually competed on, when nobody named one.
+
+        Only a deal where 2+ of the candidates bid is useful -- one bidder is not a
+        contest. Where several qualify we take the one the most candidates bid on, and
+        refuse to choose on a tie rather than silently ranking against an arbitrary deal.
+        """
+        suppliers = [str(s).strip() for s in supplier_ids if str(s).strip()]
+        if len(suppliers) < 2:
+            return None
+
+        df = self._read_table(
+            "proc.bp_quote_trgt",
+            "supplier_id = ANY(%s) AND deal_id IS NOT NULL",
+            ([suppliers],),
+            columns=("deal_id", "supplier_id"),
+        )
+        if df.empty:
+            return None
+
+        counts = (
+            df.drop_duplicates(["deal_id", "supplier_id"])
+            .groupby("deal_id")["supplier_id"]
+            .nunique()
+            .sort_values(ascending=False)
+        )
+        contested = counts[counts >= 2]
+        if contested.empty:
+            return None
+        if len(contested) > 1 and contested.iloc[0] == contested.iloc[1]:
+            logger.warning(
+                "Candidates bid on %d deals with equal participation; cannot tell which "
+                "one to rank. Pass deal_id explicitly.",
+                int((contested == contested.iloc[0]).sum()),
+            )
+            return None
+
+        deal_id = str(contested.index[0])
+        logger.info(
+            "Inferred deal %s for ranking (%d of the candidate suppliers bid on it)",
+            deal_id,
+            int(contested.iloc[0]),
+        )
+        return deal_id
+
+    def _load_deal_quotes(self, deal_id: str) -> pd.DataFrame:
+        """Each supplier's live offer on one deal, plus how they got there.
+
+        Suppliers bid in rounds (V1 -> V2 -> V3/BAFO). Only the latest round is a real,
+        standing offer; the superseded ones are history. Treating all of them as separate
+        bids would both invent competitors that do not exist and triple-count a single
+        supplier's money.
+        """
+        quotes = self._read_table(
+            "proc.bp_quote_trgt",
+            "deal_id = %s AND supplier_id IS NOT NULL",
+            (deal_id,),
+            columns=(
+                "quote_id",
+                "deal_id",
+                "supplier_id",
+                "quote_date",
+                "total_amount",
+                "currency",
+            ),
+        )
+        if quotes.empty:
+            return pd.DataFrame()
+
+        quotes = quotes.copy()
+        quotes["total_amount"] = pd.to_numeric(quotes["total_amount"], errors="coerce")
+        quotes["_version"] = quotes["quote_id"].apply(self._quote_version)
+        quotes["_qdate"] = pd.to_datetime(quotes["quote_date"], errors="coerce")
+
+        rows: List[Dict[str, Any]] = []
+        for supplier_id, grp in quotes.groupby("supplier_id", dropna=True):
+            priced = grp.dropna(subset=["total_amount"])
+            if priced.empty:
+                continue
+            # Latest round wins: explicit version if the supplier used one, else date.
+            # If neither can order the bids, we cannot tell which offer stands, so we
+            # decline to guess -- we take the single row only when there is just one.
+            ordered = priced.sort_values(
+                by=["_version", "_qdate"], ascending=True, na_position="first"
+            )
+            if ordered["_version"].notna().any() or ordered["_qdate"].notna().any():
+                latest = ordered.iloc[-1]
+                opening = ordered.iloc[0]
+            elif len(ordered) == 1:
+                latest = opening = ordered.iloc[0]
+            else:
+                logger.warning(
+                    "Deal %s supplier %s: %d quotes with no version or date to order "
+                    "them by; cannot identify the standing offer, skipping",
+                    deal_id,
+                    supplier_id,
+                    len(ordered),
+                )
+                continue
+
+            final_amount = float(latest["total_amount"])
+            open_amount = float(opening["total_amount"])
+            concession_pct = None
+            if open_amount > 0 and len(ordered) > 1:
+                concession_pct = round((open_amount - final_amount) / open_amount * 100, 2)
+
+            rows.append(
+                {
+                    "supplier_id": str(supplier_id).strip(),
+                    "price": final_amount,  # lower is better; scored within the deal
+                    "final_quote_amount": final_amount,
+                    "opening_quote_amount": open_amount,
+                    "quote_currency": latest.get("currency"),
+                    "quote_rounds": int(len(ordered)),
+                    "concession_pct": concession_pct,
+                    "winning_quote_id": latest.get("quote_id"),
+                }
+            )
+
+        return pd.DataFrame(rows)
+
+    def _score_deal_price(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Score the standing offers against each other. 100 = cheapest on this deal.
+
+        Price is only meaningful against a rival. A lone bidder gets NULL, not 100 -- an
+        uncontested quote is no evidence of a good price, and scoring it top would let a
+        single-supplier deal masquerade as a competitive win.
+        """
+        out = df.copy()
+        if "price" not in out.columns:
+            return out
+
+        vals = pd.to_numeric(out["price"], errors="coerce")
+        bidders = int(vals.notna().sum())
+        if bidders < 2:
+            if bidders == 1:
+                logger.info(
+                    "Only one supplier bid on this deal; price_score left NULL "
+                    "(nothing to compare against)"
+                )
+            out["price_score"] = np.nan
+            return out
+
+        # Score each bid against the CHEAPEST bid, not across the min-max spread.
+        #
+        # Min-max stretches whatever gap exists across the full 0-100 scale, so on the
+        # live TEST005 deal it scored Northgate 0.00 against SteelCore's 100.00 -- when
+        # Northgate was 1.1% more expensive. All three bids sat within GBP 3,050 of each
+        # other. The ordering was right but the numbers slandered the runners-up, and a
+        # buyer reading "0 out of 100" would draw a conclusion the data does not support.
+        #
+        # Ratio-to-best keeps the same ordering and makes the score mean something
+        # absolute: 98.9 means "1.1% off the best price".
+        cheapest = float(vals.min())
+        if cheapest <= 0:
+            logger.warning(
+                "Cheapest bid on this deal is %s; cannot score price as a ratio", cheapest
+            )
+            out["price_score"] = np.nan
+            return out
+
+        out["price_score"] = (100.0 * cheapest / vals).round(2)
+        return out
+
     def _read_table(
         self,
         table: str,
@@ -1638,9 +1930,23 @@ class SupplierRankingAgent(BaseAgent):
     def _prepare_scoring_columns(self, df: pd.DataFrame, weights: Dict[str, float]) -> pd.DataFrame:
         """Prepare scoring columns with vector similarity if available."""
         result = df.copy()
-        
-        # Process regular scoring columns
-        # ...existing code...
+
+        # Give the "price" criterion something to score. Nothing ever populated a `price`
+        # column outside a deal, so ranking on price silently scored every supplier 0.00
+        # even when their historical unit prices were sitting right there in
+        # avg_unit_price (derived from PO and invoice lines).
+        #
+        # A live quote on the deal is the better signal and already sets `price`, so this
+        # only fills the gap when there is no competitive bid to use.
+        if "price" not in result.columns and "avg_unit_price" in result.columns:
+            historical = pd.to_numeric(result["avg_unit_price"], errors="coerce")
+            if historical.notna().any():
+                result["price"] = historical
+                logger.info(
+                    "No competitive quote for this deal; scoring price on historical "
+                    "avg_unit_price for %d supplier(s)",
+                    int(historical.notna().sum()),
+                )
 
         # Add vector similarity scores if available
         if "vector_embedding" in result.columns:
@@ -1684,17 +1990,25 @@ class SupplierRankingAgent(BaseAgent):
                 continue
             vals = pd.to_numeric(df[raw_col], errors="coerce")
             if vals.isna().all():
-                out[score_col] = 0.0
+                # Unmeasured, not zero. A 0.0 here asserts "we measured this and it was
+                # the worst possible"; NaN says "no data", which is what we actually know.
+                # It also lets _normalise_weight_map drop the criterion instead of
+                # dragging every supplier's composite score down by its weight.
+                out[score_col] = np.nan
                 continue
             min_v, max_v = vals.min(), vals.max()
+            # 0-100, matching payment_terms_score and price_score. This used to emit a
+            # 0-10 scale while payment terms emitted 0-100, so payment terms silently
+            # carried ~10x its configured weight in the composite. Harmless while every
+            # score was 0.0; a real distortion now that scores carry data.
             if max_v - min_v == 0:
-                out[score_col] = 10.0
+                out[score_col] = 100.0
             else:
                 range_diff = float(max_v - min_v)
                 if direction == "lower_is_better":
-                    out[score_col] = 10 * (max_v - vals) / range_diff
+                    out[score_col] = 100 * (max_v - vals) / range_diff
                 else:
-                    out[score_col] = 10 * (vals - min_v) / range_diff
+                    out[score_col] = 100 * (vals - min_v) / range_diff
         return out
 
     def _normalise_weight_map(
@@ -1704,14 +2018,15 @@ class SupplierRankingAgent(BaseAgent):
         for crit, weight in weights.items():
             if weight <= 0:
                 continue
+            # Only a criterion with a real _score column can contribute. Accepting one on
+            # the strength of its raw column let weights and scoring disagree: the weight
+            # map kept the criterion, the scoring loop skipped it for want of a _score
+            # column, and its weight silently vanished from the composite.
             score_col = f"{crit}_score"
-            raw_col = crit
-            series = None
-            if score_col in df.columns:
-                series = pd.to_numeric(df[score_col], errors="coerce")
-            elif raw_col in df.columns:
-                series = pd.to_numeric(df[raw_col], errors="coerce")
-            if series is None or series.isna().all():
+            if score_col not in df.columns:
+                continue
+            series = pd.to_numeric(df[score_col], errors="coerce")
+            if series.isna().all():
                 continue
             available[crit] = float(weight)
         if not available:
@@ -1875,29 +2190,100 @@ class SupplierRankingAgent(BaseAgent):
             coverage = self._coverage_from_flow_entry(entry)
             coverage_values.append(coverage)
         augmented["flow_coverage"] = coverage_values
-        if "final_score" in augmented.columns:
-            augmented["final_score"] = augmented["final_score"] * (
-                1.0 + augmented["flow_coverage"].fillna(0.0) * 0.1
-            )
+        # Coverage is reported, not scored. This used to multiply final_score by up to
+        # 1.1x, which was inert while every score was 0.0 but would silently reorder
+        # suppliers now that scores are real -- a supplier could out-rank a cheaper rival
+        # on nothing but having more documents on file. A ranking a buyer cannot trace
+        # back to the quoted prices is not one they can defend, so the bonus stays off
+        # until it is a deliberate, tested choice.
         return augmented
 
+    @staticmethod
+    def _negotiation_note(row: pd.Series) -> str:
+        """The deal's price story in plain figures. Narrated, never scored.
+
+        Rewarding a big concession would reward opening high, so movement across rounds
+        stays out of the score -- but a buyer still needs to see it to read the room.
+        """
+        final_amount = row.get("final_quote_amount")
+        if not isinstance(final_amount, (int, float)) or pd.isna(final_amount):
+            return ""
+
+        currency = row.get("quote_currency") or ""
+        symbol = {"GBP": "£", "USD": "$", "EUR": "€"}.get(str(currency).upper(), "")
+        unit = symbol if symbol else (f"{currency} " if currency else "")
+
+        note = f"Standing offer: {unit}{final_amount:,.2f}"
+        quote_id = row.get("winning_quote_id")
+        if isinstance(quote_id, str) and quote_id.strip():
+            note += f" ({quote_id.strip()})"
+
+        rounds = row.get("quote_rounds")
+        opening = row.get("opening_quote_amount")
+        concession = row.get("concession_pct")
+        if (
+            isinstance(rounds, (int, float))
+            and rounds > 1
+            and isinstance(opening, (int, float))
+            and isinstance(concession, (int, float))
+            and not pd.isna(concession)
+        ):
+            direction = "down" if concession > 0 else "up"
+            note += (
+                f", {direction} {abs(concession):.1f}% from their {unit}{opening:,.2f} "
+                f"opener across {int(rounds)} rounds"
+            )
+        note += "."
+        return note
+
     def _generate_justification(self, row: pd.Series, criteria: Iterable[str]) -> str:
-        if not self.justification_template:
-            return "No justification template available."
+        # Lead with facts we can point at in the source documents. The LLM's job is to
+        # phrase them, not to supply them -- when it was handed nothing but a score it
+        # produced "achieved a final score of 0.00. Risk: N/A. No further details."
+        scored_on = list(row.get("scored_on") or [])
         breakdown = []
         for crit in criteria:
             score_col = f"{crit}_score"
             if score_col in row:
                 score_value = row.get(score_col)
-                if isinstance(score_value, (int, float)):
-                    breakdown.append(f"- {crit.replace('_', ' ').title()}: {score_value:.2f}")
+                if isinstance(score_value, (int, float)) and not pd.isna(score_value):
+                    breakdown.append(f"- {crit.replace('_', ' ').title()}: {score_value:.2f}/100")
                 else:
-                    breakdown.append(f"- {crit.replace('_', ' ').title()}: N/A")
-        prompt = self.justification_template["prompt_template"].format(
-            supplier_name=row.get("supplier_name", "Unknown"),
-            final_score=row.get("final_score", 0.0),
-            score_breakdown="\n".join(breakdown),
+                    breakdown.append(
+                        f"- {crit.replace('_', ' ').title()}: not measured (no data on file)"
+                    )
+
+        negotiation = self._negotiation_note(row)
+        final_score = row.get("final_score")
+        facts = []
+        if negotiation:
+            facts.append(negotiation)
+        if scored_on:
+            facts.append(
+                "Scored on: " + ", ".join(c.replace("_", " ") for c in scored_on) + "."
+            )
+
+        # A deterministic, fully-grounded justification. Used verbatim if the LLM is
+        # unavailable, so a ranking is never left unexplained.
+        deterministic = " ".join(facts) if facts else "No measurable data for this supplier."
+
+        if not self.justification_template:
+            return deterministic
+
+        score_text = (
+            f"{final_score:.2f}/100"
+            if isinstance(final_score, (int, float)) and not pd.isna(final_score)
+            else "not scored (no measurable data)"
         )
+        try:
+            prompt = self.justification_template["prompt_template"].format(
+                supplier_name=row.get("supplier_name", "Unknown"),
+                final_score=score_text,
+                score_breakdown="\n".join(breakdown + ([negotiation] if negotiation else [])),
+            )
+        except KeyError:
+            logger.warning("Justification template missing an expected field; using facts only")
+            return deterministic
         try:
             fallback_model = getattr(self.settings, "extraction_model", None)
             resolver = getattr(self.agent_nick, "get_agent_model", None)
@@ -1915,10 +2301,13 @@ class SupplierRankingAgent(BaseAgent):
                     if isinstance(candidate, str) and candidate.strip():
                         model_name = candidate.strip()
             resp = self.call_ollama(prompt, model=model_name)
-            return resp.get("response", "").strip()
+            text = (resp.get("response") or "").strip()
+            # Fall back to the grounded facts rather than shipping an empty or failed
+            # justification: an unexplained ranking is not actionable for a buyer.
+            return text if text else deterministic
         except Exception:
-            logger.exception("Justification generation failed")
-            return "Justification generation failed."
+            logger.exception("Justification generation failed; falling back to source facts")
+            return deterministic
 
     def _prepare_ranking_entry(
         self, row: pd.Series, profile: Optional[Dict], weights: Dict[str, float]
@@ -1926,13 +2315,23 @@ class SupplierRankingAgent(BaseAgent):
         # Coerce score/metric fields to JSON-native types so that pandas NA,
         # numpy scalars, and other non-serialisable objects never leak into the
         # API response.
-        raw_final = row.get("final_score", 0.0)
-        final_score_safe = _json_safe(raw_final)
+        # NULL, never 0.0, for an unmeasured score. 0.0 asserts "we measured this supplier
+        # and they scored bottom"; NULL says "we have no data on them". Collapsing the
+        # second into the first is how this agent came to publish a table of confident
+        # 0.00s about suppliers it knew nothing about.
+        final_score_safe = _json_safe(row.get("final_score"))
         entry = {
             "supplier_id": _json_safe(row.get("supplier_id")),
             "supplier_name": _json_safe(row.get("supplier_name")),
-            "final_score": final_score_safe if isinstance(final_score_safe, (int, float)) else 0.0,
+            "final_score": final_score_safe if isinstance(final_score_safe, (int, float)) else None,
+            "scored_on": list(row.get("scored_on") or []),
             "price_score": _json_safe(row.get("price_score")),
+            "final_quote_amount": _json_safe(row.get("final_quote_amount")),
+            "opening_quote_amount": _json_safe(row.get("opening_quote_amount")),
+            "quote_currency": _json_safe(row.get("quote_currency")),
+            "quote_rounds": _json_safe(row.get("quote_rounds")),
+            "concession_pct": _json_safe(row.get("concession_pct")),
+            "winning_quote_id": _json_safe(row.get("winning_quote_id")),
             "delivery_score": _json_safe(row.get("delivery_score")),
             "risk_score": _json_safe(row.get("risk_score")),
             "payment_terms_score": _json_safe(row.get("payment_terms_score")),

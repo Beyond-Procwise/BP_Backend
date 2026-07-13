@@ -1692,6 +1692,15 @@ class Orchestrator:
         if category_hint and not input_data.get("product_category"):
             input_data["product_category"] = category_hint
 
+        # SupplierRankingAgent needs to know WHICH deal it is ranking. Suppliers are only
+        # comparable against rivals who bid on the same requirement -- there is no
+        # meaningful global score, because the supplier master carries no performance data.
+        # If the caller did not name a deal, the miner's payload usually knows it; failing
+        # that the agent infers it from the candidates' shared quotes.
+        if not input_data.get("deal_id"):
+            mined_deal = (opportunity_payload or {}).get("deal_id") if should_run_opportunity else None
+            if mined_deal:
+                input_data["deal_id"] = mined_deal
 
         # Get supplier data for ranking
         input_data["supplier_data"] = self.query_engine.fetch_supplier_data(

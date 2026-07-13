@@ -266,6 +266,97 @@ def test_supplier_ranking_injects_missing_candidates(monkeypatch):
     assert any(entry["supplier_name"] == "Beta" for entry in output.data["ranking"])
 
 
+def test_deal_price_scored_against_cheapest_bid():
+    """Scores must reflect how close the race actually was.
+
+    Min-max normalisation scored a supplier 1.1% off the best price as 0.00/100 -- true
+    ordering, but a slanderous number. Ratio-to-best makes the score mean something
+    absolute: 98.9 == "1.1% off the winning bid".
+    """
+    agent = SupplierRankingAgent.__new__(SupplierRankingAgent)
+    df = pd.DataFrame(
+        {
+            "supplier_id": ["SteelCore", "AFS", "Northgate"],
+            "price": [279210.0, 281570.0, 282260.0],
+        }
+    )
+    scored = agent._score_deal_price(df)
+    by_id = dict(zip(scored["supplier_id"], scored["price_score"]))
+
+    assert by_id["SteelCore"] == pytest.approx(100.0)
+    assert by_id["AFS"] == pytest.approx(99.16, abs=0.01)
+    assert by_id["Northgate"] == pytest.approx(98.92, abs=0.01)
+
+
+def test_lone_bidder_gets_no_price_score():
+    """An uncontested quote is no evidence of a good price, so it scores NULL not 100."""
+    agent = SupplierRankingAgent.__new__(SupplierRankingAgent)
+    scored = agent._score_deal_price(
+        pd.DataFrame({"supplier_id": ["Solo"], "price": [1000.0]})
+    )
+    assert pd.isna(scored.loc[0, "price_score"])
+
+
+def test_latest_bidding_round_is_the_standing_offer(monkeypatch):
+    """Only the newest round is a live offer; superseded ones are history, not rivals."""
+    agent = SupplierRankingAgent.__new__(SupplierRankingAgent)
+    quotes = pd.DataFrame(
+        {
+            "quote_id": ["STC-1 (V1)", "STC-1 (V2)", "STC-1 (V3 (BAFO))"],
+            "deal_id": ["D1"] * 3,
+            "supplier_id": ["SteelCore"] * 3,
+            "quote_date": ["2026-07-02", "2026-07-03", "2026-07-04"],
+            "total_amount": [292900.0, 287620.0, 279210.0],
+            "currency": ["GBP"] * 3,
+        }
+    )
+    monkeypatch.setattr(agent, "_read_table", lambda *a, **k: quotes)
+
+    loaded = agent._load_deal_quotes("D1")
+
+    assert len(loaded) == 1, "three rounds from one supplier are one offer, not three bids"
+    row = loaded.iloc[0]
+    assert row["final_quote_amount"] == pytest.approx(279210.0)
+    assert row["opening_quote_amount"] == pytest.approx(292900.0)
+    assert row["quote_rounds"] == 3
+    assert row["concession_pct"] == pytest.approx(4.67, abs=0.01)
+
+
+def test_ranking_refuses_to_publish_when_nothing_is_measurable(monkeypatch):
+    """No data must fail loudly, not emit a confident table of 0.00s.
+
+    A buyer cannot tell "these suppliers are bad" from "we knew nothing about them",
+    so a ranking we have no basis for must not be published at all.
+    """
+    nick = DummyNick()
+    agent = SupplierRankingAgent(nick)
+    monkeypatch.setattr(agent, "_load_procurement_tables", lambda *_: {})
+    monkeypatch.setattr(agent, "_merge_supplier_metrics", lambda df, _tables: df)
+    monkeypatch.setattr(agent, "_build_supplier_profiles", lambda _t, ids: {})
+    monkeypatch.setattr(agent, "_read_table", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(agent, "_generate_justification", lambda row, criteria: "ok")
+
+    # Names only -- exactly what proc.bp_supplier holds today.
+    df = pd.DataFrame(
+        {"supplier_id": ["S1", "S2"], "supplier_name": ["Alpha", "Beta"]}
+    )
+    context = AgentContext(
+        workflow_id="wf1",
+        agent_id="supplier_ranking",
+        user_id="user",
+        input_data={
+            "supplier_data": df,
+            "intent": {"parameters": {"criteria": ["price", "risk"], "top_n": 2}},
+            "query": "rank suppliers",
+        },
+    )
+
+    output = agent.run(context)
+
+    assert output.status == AgentStatus.FAILED
+    assert "insufficient data" in (output.error or "").lower()
+
+
 def test_supplier_ranking_normalises_weights_to_available_metrics(monkeypatch):
     nick = DummyNick()
     agent = SupplierRankingAgent(nick)
@@ -564,11 +655,19 @@ def test_ensure_payment_terms_score_from_terms_text():
     result = ensure_payment_terms_score(df.copy())
     assert pytest.approx(66.67, abs=0.01) == result.loc[0, "payment_terms_score"]
 
-def test_ensure_payment_terms_score_imputes_unknown(caplog):
+def test_ensure_payment_terms_score_leaves_unknown_null(caplog):
+    """Unreadable terms must score NULL, never a neutral 50.
+
+    This previously imputed 50.0, which claimed we had measured a supplier we had not.
+    It also defeated weight renormalisation: an all-unknown metric is meant to drop out
+    of the weighted sum, and a column of 50s never does.
+    """
     df = pd.DataFrame({"supplier": ["S1"], "payment_terms": ["Deferred"]})
     with caplog.at_level("INFO"):
         result = ensure_payment_terms_score(df.copy())
-    assert result.loc[0, "payment_terms_score"] == 50.0
+    assert result.loc[0, "payment_terms_score"] is None or pd.isna(
+        result.loc[0, "payment_terms_score"]
+    )
     assert any("payment_terms_score" in record.getMessage() for record in caplog.records)
 
 
