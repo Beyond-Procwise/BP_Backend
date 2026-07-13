@@ -48,13 +48,20 @@ def _run_requirements_turn(app_state: Any, payload: Dict[str, Any]) -> Dict[str,
     reaching the orchestrator off ``request.app.state``.
     """
     import uuid
-    from agents.agent_factory import AgentFactory
     from agents.base_agent import AgentContext
 
     orchestrator = getattr(app_state, "orchestrator", None)
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Orchestrator unavailable")
-    agent = AgentFactory(orchestrator.agent_nick).create("requirements")
+
+    # Take the agent from the live registry, not from a second factory. This route
+    # used to build its own RequirementsAgent via AgentFactory, whose AGENT_CONTRACTS
+    # duplicated agent_definitions.json — so the agent serving this endpoint was a
+    # different object, built from a different catalogue, than the one the
+    # orchestrator dispatched. One registry, one instance.
+    agent = orchestrator.agent_nick.agents.get("requirements")
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Requirements agent not registered")
     ctx = AgentContext(
         workflow_id=payload.get("session_id") or uuid.uuid4().hex,
         agent_id="requirements",

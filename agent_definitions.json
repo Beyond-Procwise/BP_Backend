@@ -184,7 +184,7 @@
       "agentId": 11,
       "agentType": "EmailWatcherAgent",
       "slug": "email_watcher",
-      "class_path": null,
+      "class_path": "agents.email_watcher_agent.EmailWatcherAgent",
       "description": "Monitors inbound supplier email responses and maps replies to workflow threads.",
       "role": "communicator",
       "capabilities": ["email_watching"],

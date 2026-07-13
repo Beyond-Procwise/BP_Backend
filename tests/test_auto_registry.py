@@ -1,5 +1,6 @@
 """Tests for AutoRegistry — declarative agent discovery and lazy instantiation."""
 
+import json
 import sys
 import os
 
@@ -33,8 +34,12 @@ def registry() -> AutoRegistry:
 
 
 class TestFromJson:
-    def test_loads_13_agents(self, registry):
-        assert len(registry.agent_ids) == 13
+    def test_loads_every_agent_in_the_catalogue(self, registry):
+        # Was a hardcoded `== 13`, which went stale the moment `requirements` was
+        # added and stayed red. Derive the count from the catalogue itself so the
+        # test tracks the file instead of a magic number.
+        expected = len(json.loads(_DEFINITIONS_JSON.read_text())["agents"])
+        assert len(registry.agent_ids) == expected
 
     def test_raises_on_missing_file(self, tmp_path):
         with pytest.raises(FileNotFoundError):
@@ -69,7 +74,8 @@ class TestFromJson:
     def test_default_path_resolves(self):
         """from_json() with no argument should find the project-root JSON."""
         reg = AutoRegistry.from_json()
-        assert len(reg.agent_ids) == 13
+        expected = len(json.loads(_DEFINITIONS_JSON.read_text())["agents"])
+        assert len(reg.agent_ids) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +94,7 @@ class TestAgentIds:
             "quote_comparison", "opportunity_miner", "email_drafting",
             "negotiation", "supplier_interaction", "email_dispatch",
             "approvals", "discrepancy_detection", "rag", "email_watcher",
+            "requirements",
         }
         assert expected == set(registry.agent_ids)
 
@@ -127,9 +134,13 @@ class TestGetContract:
         contract = registry.get_contract("rag")
         assert len(contract.description) > 0
 
-    def test_email_watcher_has_no_class_path(self, registry):
+    def test_email_watcher_is_instantiable(self, registry):
+        # This test used to assert `class_path is None` — it pinned the bug in
+        # place. email_watcher shipped with a null class_path, so it never entered
+        # the registry, while the supplier_interaction graph declared it as a
+        # required node and therefore failed on every run. It now has a class_path.
         contract = registry.get_contract("email_watcher")
-        assert contract.class_path is None
+        assert contract.class_path == "agents.email_watcher_agent.EmailWatcherAgent"
 
     def test_unknown_agent_raises_key_error(self, registry):
         with pytest.raises(KeyError, match="No agent registered"):
@@ -236,10 +247,28 @@ class TestDescribeForLlm:
         description = registry.describe_for_llm()
         assert "Available Procurement Agents" in description
 
-    def test_noninstantiable_agents_flagged(self, registry):
-        description = registry.describe_for_llm()
-        # email_watcher has no class_path; should be flagged as inline service
+    def test_noninstantiable_agents_flagged(self, tmp_path):
+        # Was asserted against the live catalogue on the assumption that
+        # email_watcher would always be non-instantiable — which is exactly the
+        # defect we fixed. Test the CAPABILITY against a synthetic agent instead,
+        # so it keeps working no matter what the real catalogue contains.
+        defs = tmp_path / "defs.json"
+        defs.write_text(
+            '{"agents": [{"slug": "inline_only", "class_path": null, '
+            '"capabilities": [], "required_inputs": [], "output_fields": [], '
+            '"description": "A service with no class."}]}'
+        )
+        description = AutoRegistry.from_json(str(defs)).describe_for_llm()
         assert "inline service" in description
+
+    def test_every_real_agent_is_instantiable(self, registry):
+        """No agent in the live catalogue should be missing a class_path."""
+        orphans = [
+            slug
+            for slug in registry.agent_ids
+            if not registry.get_contract(slug).class_path
+        ]
+        assert not orphans, f"agents with no class_path never enter the registry: {orphans}"
 
     def test_length_is_reasonable(self, registry):
         description = registry.describe_for_llm()
@@ -284,10 +313,17 @@ class TestGetAgentErrors:
         with pytest.raises(KeyError):
             registry.get_agent("does_not_exist")
 
-    def test_raises_value_error_for_no_class_path(self):
-        registry = AutoRegistry.from_json(str(_DEFINITIONS_JSON))
+    def test_raises_value_error_for_no_class_path(self, tmp_path):
+        # Used email_watcher as its example of a class_path-less agent, which is
+        # no longer true (and should never have been). Use a synthetic one.
+        defs = tmp_path / "defs.json"
+        defs.write_text(
+            '{"agents": [{"slug": "inline_only", "class_path": null, '
+            '"capabilities": [], "required_inputs": [], "output_fields": []}]}'
+        )
+        registry = AutoRegistry.from_json(str(defs))
         with pytest.raises(ValueError, match="no class_path"):
-            registry.get_agent("email_watcher")
+            registry.get_agent("inline_only")
 
     def test_raises_import_error_for_bad_module(self, tmp_path):
         bad_json = tmp_path / "bad_module.json"

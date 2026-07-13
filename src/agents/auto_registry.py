@@ -24,8 +24,10 @@ from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-# Default location: two levels up from this file (project root)
-_DEFAULT_JSON_PATH = Path(__file__).resolve().parent.parent.parent / "agent_definitions.json"
+# The one canonical catalogue path. Do not re-derive it here: a second copy of
+# agent_definitions.json used to sit in src/, and half the codebase loaded that
+# one instead of this, so the two could silently disagree about which agents exist.
+from agents.definitions import DEFINITIONS_PATH as _DEFAULT_JSON_PATH  # noqa: E402
 
 
 @dataclass

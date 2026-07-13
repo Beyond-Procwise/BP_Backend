@@ -90,13 +90,18 @@ class AgentManifestService:
     # Definition loading
     # ------------------------------------------------------------------
     def _load_definitions(self) -> Dict[str, AgentDefinition]:
-        definitions_path = Path(__file__).resolve().parents[1] / "agent_definitions.json"
+        # This used to json.load() the file directly and iterate the result. The
+        # file is an {"agents": [...]} envelope, so iterating it yielded the key
+        # "agents" (a str), which failed the isinstance check below and was
+        # skipped — the mapping came back empty on every call. The shared loader
+        # unwraps the envelope.
+        from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
+
         entries: Iterable[Dict[str, Any]] = []
         try:
-            with open(definitions_path, "r", encoding="utf-8") as handle:
-                entries = json.load(handle)
+            entries = load_agent_definitions()
         except Exception:  # pragma: no cover - defensive
-            logger.exception("Unable to load agent definitions from %s", definitions_path)
+            logger.exception("Unable to load agent definitions from %s", DEFINITIONS_PATH)
             return {}
 
         mapping: Dict[str, AgentDefinition] = {}

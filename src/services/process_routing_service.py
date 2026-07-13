@@ -638,10 +638,9 @@ class ProcessRoutingService:
 
         # Load agent definitions from the bundled JSON file instead of the DB.
         # The file is an {"agents": [...]} envelope; tolerate a bare list too.
-        path = Path(__file__).resolve().parents[1] / "agent_definitions.json"
-        with path.open() as f:
-            data = json.load(f)
-        agent_items = data.get("agents", []) if isinstance(data, dict) else data
+        from agents.definitions import load_agent_definitions
+
+        agent_items = load_agent_definitions()
         for item in agent_items:
             if not isinstance(item, dict):
                 continue

@@ -513,6 +513,38 @@ def build_requirements_to_ranking_workflow() -> WorkflowGraph:
 
 
 # ---------------------------------------------------------------------------
+# Workflow: Approvals
+# ---------------------------------------------------------------------------
+
+def build_approvals_workflow() -> WorkflowGraph:
+    """Workflow: gate a spend amount against the governed approval threshold.
+
+    Graph:
+        decide_approval
+
+    A single-node graph, deliberately. `approvals` was absent from the registry
+    entirely, so `POST /workflows/approvals` fell through to
+    `_execute_generic_workflow` — a routing-rule chain that is not the declarative
+    path the rest of the system uses. Registering it here means the approvals
+    endpoint runs through the same WorkflowEngine, gets the same audit row in
+    proc.bp_agent_actions, and the same governance envelope as every other agent.
+    """
+    graph = WorkflowGraph(
+        name="approvals",
+        description="Gate a spend amount against the governed approval threshold",
+    )
+
+    graph.add_node(WorkflowNode(
+        name="decide_approval",
+        agent_type="approvals",
+        output_to_shared=["decision", "approved", "threshold", "grounding", "approval_id"],
+        required=True,
+    ))
+
+    return graph
+
+
+# ---------------------------------------------------------------------------
 # Workflow Registry
 # ---------------------------------------------------------------------------
 
@@ -523,6 +555,7 @@ WORKFLOW_REGISTRY = {
     "opportunity_mining": build_opportunity_workflow,
     "supplier_interaction": build_supplier_interaction_workflow,
     "requirements_to_ranking": build_requirements_to_ranking_workflow,
+    "approvals": build_approvals_workflow,
 }
 
 

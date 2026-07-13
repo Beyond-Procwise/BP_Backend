@@ -495,7 +495,9 @@ class Orchestrator:
         policies, which can occur many times within a single workflow.
         """
 
-        path = Path(__file__).resolve().parents[1] / "agent_definitions.json"
+        from agents.definitions import DEFINITIONS_PATH
+
+        path = DEFINITIONS_PATH
         with path.open() as f:
             data = json.load(f)
 

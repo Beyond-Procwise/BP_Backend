@@ -136,9 +136,16 @@ class NegotiationRequest(BaseModel):
 
 class ApprovalRequest(BaseModel):
     amount: float
+    currency: Optional[str] = None
     supplier_id: Optional[str] = None
     threshold: Optional[float] = None
     user_id: Optional[str] = None
+    # Link the approval back to what it is about, so a decision in the Action
+    # Centre can be traced to the finding/deal that raised it. Without these the
+    # approval row is an orphan: an amount with no subject.
+    deal_id: Optional[str] = None
+    rfq_id: Optional[str] = None
+    finding_id: Optional[str] = None
 
 
 class SupplierInteractionRequest(BaseModel):
@@ -1456,15 +1463,13 @@ def detect_discrepancy(
 )
 def get_agent_types():
     """Return the agent catalogue defined in ``agent_definitions.json``."""
-    file_path = os.path.join(os.path.dirname(__file__), "..", "..", "agent_definitions.json")
+    from agents.definitions import load_agent_definitions
+
     try:
-        with open(file_path, "r") as f:
-            data = json.load(f)
-        agents = data["agents"] if isinstance(data, dict) else data
-        return [AgentType(**agent) for agent in agents]
+        return [AgentType(**agent) for agent in load_agent_definitions()]
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="agent_definitions.json not found")
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=f"Invalid agent definitions: {exc}")
 
 
