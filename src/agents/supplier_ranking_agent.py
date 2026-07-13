@@ -7,7 +7,7 @@ import multiprocessing
 import re
 import warnings
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+import threading
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Set
 
@@ -165,6 +165,9 @@ class SupplierRankingAgent(BaseAgent):
     # column, and only the normaliser creates one. The metric would then drop out
     # silently -- and a supplier with usable data would be ranked as though they had none.
     # Governance policy still overrides these.
+    # A hung LLM must not hostage the ranking; past this we ship the grounded facts.
+    JUSTIFICATION_TIMEOUT_S = 45
+
     DEFAULT_SCORE_DIRECTIONS = {
         "price": "lower_is_better",
         "risk": "lower_is_better",
@@ -2270,19 +2273,24 @@ class SupplierRankingAgent(BaseAgent):
         if not self.justification_template:
             return deterministic
 
-        score_text = (
-            f"{final_score:.2f}/100"
-            if isinstance(final_score, (int, float)) and not pd.isna(final_score)
-            else "not scored (no measurable data)"
-        )
+        # The governed template formats final_score as a number ({final_score:.2f}), so it
+        # must stay numeric. An unscored supplier has no number to give it -- hand back the
+        # grounded facts rather than feeding the template a string it will choke on.
+        if not isinstance(final_score, (int, float)) or pd.isna(final_score):
+            return deterministic
+
         try:
             prompt = self.justification_template["prompt_template"].format(
                 supplier_name=row.get("supplier_name", "Unknown"),
-                final_score=score_text,
+                final_score=float(final_score),
                 score_breakdown="\n".join(breakdown + ([negotiation] if negotiation else [])),
             )
-        except KeyError:
-            logger.warning("Justification template missing an expected field; using facts only")
+        except (KeyError, IndexError, ValueError) as exc:
+            # A governed template is DB-editable, so a bad placeholder is an operational
+            # reality, not a code bug. It must not take the whole ranking down with it.
+            logger.warning(
+                "Justification template could not be rendered (%s); using source facts", exc
+            )
             return deterministic
         try:
             fallback_model = getattr(self.settings, "extraction_model", None)
@@ -2300,7 +2308,40 @@ class SupplierRankingAgent(BaseAgent):
                 else:
                     if isinstance(candidate, str) and candidate.strip():
                         model_name = candidate.strip()
-            resp = self.call_ollama(prompt, model=model_name)
+            # Bound the LLM call. The ollama client is built without a timeout, so an
+            # unresponsive model blocks forever -- and it took the entire ranking down
+            # with it: a live run hung indefinitely because AgentNick:unified stopped
+            # answering (GPU idle, model loaded, no reply). Phrasing is a nicety; the
+            # ranking is the product, and it must not hostage itself to the LLM.
+            #
+            # A plain daemon thread, deliberately not ThreadPoolExecutor: the executor
+            # registers an atexit hook that JOINS its threads, so abandoning a hung call
+            # leaves the interpreter unable to exit (and `with` is worse still -- its
+            # __exit__ waits on the very call we just timed out on, so the timeout fires,
+            # we choose the fallback, then block on the hung request anyway).
+            # A daemon thread is abandoned cleanly and dies with the process.
+            box: Dict[str, Any] = {}
+
+            def _ask_model() -> None:
+                try:
+                    box["resp"] = self.call_ollama(prompt, model=model_name)
+                except Exception as exc:  # surfaced on the calling thread below
+                    box["exc"] = exc
+
+            worker = threading.Thread(
+                target=_ask_model, name="supplier-ranking-justification", daemon=True
+            )
+            worker.start()
+            worker.join(self.JUSTIFICATION_TIMEOUT_S)
+            if worker.is_alive():
+                logger.warning(
+                    "Justification LLM did not answer within %ss; using source facts",
+                    self.JUSTIFICATION_TIMEOUT_S,
+                )
+                return deterministic
+            if "exc" in box:
+                raise box["exc"]
+            resp = box.get("resp") or {}
             text = (resp.get("response") or "").strip()
             # Fall back to the grounded facts rather than shipping an empty or failed
             # justification: an unexplained ranking is not actionable for a buyer.
