@@ -10,12 +10,14 @@
 
 Click **Reports** on the home page, fill in the report name / type / period, click **Generate**, and you land in the report builder on a blank "Untitled report". There is no way to reach a report you saved earlier. The three fields you just filled in are silently thrown away.
 
-Underneath that, two further problems make the feature dishonest rather than merely awkward:
+Underneath that, two further problems mean the feature has no working data path at all:
 
-- Every number in the builder is **fabricated**. The KPIs and charts are hardcoded constants frozen at Jan–Mar 2025. A "report" generated today reflects nothing in the database.
+- Every number in the builder is a **hardcoded constant in the browser**, frozen at Jan–Mar 2025. There is no endpoint behind the tiles, so there is nothing to point at a customer's data when they arrive — only a rewrite.
 - **Export PDF** is `window.print()`. It prints the screen. No file is produced, nothing is stored, and nothing can be shared.
 
-This spec covers all three: the missing front door, the fake data, and the fake export.
+This spec covers all three: the missing front door, the missing data path, and the fake export.
+
+**Scope decision (2026-07-13):** the tiles **keep showing demo values for now** — a customer's real numbers only exist once their documents are flowing in. But the demo values move *behind the real API*, so the UI, gateway, period filter and export all run end-to-end against a real data path from day one. Going live for a customer becomes a config flip plus SQL, not a rewrite. See Stage 2.
 
 ---
 
@@ -77,58 +79,68 @@ Backfill existing rows by parsing the `· vN` suffix off `report_name` (base nam
 
 ---
 
-### Stage 2 — Live data
+### Stage 2 — Make the data flow real (values stay demo for now)
 
-Replace the two lookups (`METRICS[period][metric]`, `GRAPHS[key]`) with real figures from the database.
+**The decision.** The tiles keep showing demo numbers for now — a customer's real figures only exist once their documents are flowing in, and today's corpus is too thin to demo against (see the £0 note below). What changes is **where those numbers come from**. Today they are hardcoded in the browser, which means there is no data path at all: nothing to switch on, nothing to test, and a rewrite of the builder on the day a customer arrives.
+
+So: **move the demo data out of the browser and behind the real endpoint**, serving it through the exact contract the live query will implement. Everything — UI, gateway, period filtering, export — runs end-to-end against a real API from day one. Going live for a customer then means implementing the live provider and flipping a flag, not touching the builder.
 
 **Approach.** One new gateway endpoint returns everything a report needs in a single round-trip, rather than the builder firing twenty calls:
 
 `GET /spendiq/report-data?from=<ISO date>&to=<ISO date>` →
-`{ period: {from, to}, kpis: { <key>: {big, delta, tone, bullets[], sparkline[]} }, series: { <key>: {labels[], data[]|bars[]+line[]} } }`
+```
+{ source: 'demo' | 'live',
+  period: { from, to },
+  kpis:   { <key>: { big, delta, tone, bullets[], sparkline[] } },
+  series: { <key>: { labels[], data[] | bars[]+line[] } } }
+```
 
-The builder fetches this once per period change and renders from it. The shape deliberately mirrors the existing `METRICS`/`GRAPHS` objects so the renderers barely change.
+The shape deliberately mirrors the existing `METRICS` / `GRAPHS` objects, so the builder's renderers barely change — they stop reading a constant and start reading a fetched payload.
 
-**Period becomes real.** Today the period selector only picks which hardcoded slice to read, and the existing `/spendiq/metrics` and `/spendiq/trends` endpoints accept **no date filter at all**. Both need `from`/`to` plumbed through their SQL. The selector's fixed Mar/Feb/Jan 2025 options are replaced by real ranges (This month / This quarter / Year to date / Custom).
+**Two providers, one contract.** Behind that endpoint sit two implementations selected by config (`REPORTS_DATA_SOURCE=demo|live`, defaulting to `demo`):
 
-**Honest tile-by-tile mapping.** This is the part that determines what "live data" actually means. Verified against the gateway's SQL and the `bp_*_trgt` schema:
+- **`demo`** — serves the current constants, relocated server-side and extended to cover all 8 KPIs and all 12 charts (including the four that have no live source today). It respects the `from`/`to` window by slicing its series, so period switching genuinely exercises the same code path the live provider will.
+- **`live`** — the real SQL, per the mapping table below. Implemented for the tiles that *can* be real; the rest raise a clear "no data source" for that tile rather than silently returning demo figures. Nothing in the UI changes when the flag flips.
+
+**`source` is returned in the payload, and the UI renders a `Demo data` badge whenever it is `demo`** — on screen and on the exported PDF. Demo numbers are fine; demo numbers that a customer mistakes for their own are not. This is the one non-negotiable in this stage.
+
+**Period becomes real plumbing.** Today the selector only picks which hardcoded slice to read, and `/spendiq/metrics` and `/spendiq/trends` accept **no date filter at all**. The new endpoint takes a real `from`/`to`, the demo provider honours it, and the live provider plumbs it into the SQL. The fixed Mar/Feb/Jan 2025 options are replaced by real ranges (This month / This quarter / Year to date / Custom).
+
+**Live-readiness of each tile.** This is what the `live` provider can and cannot do today — i.e. what a customer actually gets when the flag flips. Verified against the gateway's SQL and the `bp_*_trgt` schema:
 
 *KPIs (8):*
 
-| Tile | Source | Status |
+| Tile | Live source | Ready? |
 |---|---|---|
-| Savings Secured | `bp_opportunity.realised_savings_gbp` | Live — **but see below: currently £0** |
-| In-Flight Negotiations | `bp_opportunity` (open stages) | Live |
-| Opportunity Pipeline | `bp_opportunity.financial_impact_gbp` | Live |
-| Cycle Time to PO | `bp_deal_overview.cycle_days_quote_to_po` | Live |
-| 3-Way Match | `bp_deal_overview.three_way_match` | Live |
-| Non-PO Spend | `bp_invoice_trgt` vs `bp_purchase_order_trgt` (PO-backed share) | Live |
-| Duplicate Risk | `bp_extraction_discrepancy` (duplicate findings) | Live |
-| **Tail Spend Visibility** | **needs a spend category / contract taxonomy — none exists** | **Blocked** |
+| Savings Secured | `bp_opportunity.realised_savings_gbp` | Query works — **but returns £0 today** (see below) |
+| In-Flight Negotiations | `bp_opportunity` (open stages) | Yes |
+| Opportunity Pipeline | `bp_opportunity.financial_impact_gbp` | Yes |
+| Cycle Time to PO | `bp_deal_overview.cycle_days_quote_to_po` | Yes |
+| 3-Way Match | `bp_deal_overview.three_way_match` | Yes |
+| Non-PO Spend | `bp_invoice_trgt` vs `bp_purchase_order_trgt` (PO-backed share) | Yes |
+| Duplicate Risk | `bp_extraction_discrepancy` (duplicate findings) | Yes |
+| **Tail Spend Visibility** | needs a spend-category / contract taxonomy | **No — data does not exist** |
 
 *Charts (12):*
 
-| Tile | Source | Status |
+| Tile | Live source | Ready? |
 |---|---|---|
-| Committed spend & savings | `trends.spendByMonth` + `trends.savings` | Live |
-| Realised savings trend | `trends.savings` | Live |
-| Committed spend by month | `trends.spendByMonth` | Live |
-| Quote volume | `trends.quoteVolume` | Live |
-| 3-way match trend | `trends.matchRate` | Live |
-| Cycle time to PO | `trends.cycleTime` | Live |
-| Off-contract spend | `trends.offContract` | Live |
-| Top suppliers by spend | `metrics.topSuppliers` | Live |
-| Compliance rate | no distinct compliance series; would duplicate 3-way match | **Cut** |
-| Tail spend breakdown | only maverick findings exist, not a full 4-way composition | **Cut** |
-| **Spend by category** | **no category column exists in any extracted table** (`spendiq.service.ts:566`) | **Blocked** |
-| **Supplier risk profile** (radar) | only a single `risk_score`; the radar needs 6 dimensions | **Blocked** |
+| Committed spend & savings | `trends.spendByMonth` + `trends.savings` | Yes |
+| Realised savings trend | `trends.savings` | Yes |
+| Committed spend by month | `trends.spendByMonth` | Yes |
+| Quote volume | `trends.quoteVolume` | Yes |
+| 3-way match trend | `trends.matchRate` | Yes |
+| Cycle time to PO | `trends.cycleTime` | Yes |
+| Off-contract spend | `trends.offContract` | Yes |
+| Top suppliers by spend | `metrics.topSuppliers` | Yes |
+| Compliance rate | no distinct compliance series exists; would duplicate 3-way match | **No — needs contract linkage** |
+| Tail spend breakdown | only maverick findings exist, not a 4-way composition | **No — partial data only** |
+| **Spend by category** | no category column exists in **any** extracted table (`spendiq.service.ts:566`) | **No — data does not exist** |
+| **Supplier risk profile** (radar) | only a single `risk_score`; the radar needs 6 dimensions | **No — data does not exist** |
 
-**How blocked tiles are handled.** They are **removed from the palette and Graph Library** — not left in place showing invented numbers. Any *already-saved* report that references one renders an explicit "No data source" placeholder rather than a fabricated figure. This follows the project's standing rule: if the data isn't there, show nothing, never fabricate.
+So when a customer's data arrives, **7 of 8 KPIs and 8 of 12 charts light up immediately**. The other five need data the platform does not yet capture — a spend-category taxonomy, contract linkage, and multi-dimension supplier risk. Those are data-capture projects, not UI work, and they are out of scope here. Until then those five tiles keep serving demo values from the `demo` provider, clearly badged.
 
-Net: **6 of 8 KPIs and 8 of 12 charts go live.** Making the remaining four real requires capturing data the platform does not currently hold (a spend category taxonomy; multi-dimension supplier risk). That is a data-capture project, not a UI one, and it is out of scope here.
-
-**Expect the headline number to fall off a cliff.** "Savings Secured" currently shows a fabricated **£525,700**. The real figure is **£0** — all 24 rows in `bp_opportunity` sit at stage `identified`, and nothing has ever been marked realised (the gateway already measures this and returns zero). The *pipeline* figure is real and non-zero; realised savings is not. Going live means the flagship KPI on the Executive template reads £0 until opportunities are actually progressed through their stages.
-
-This is the correct behaviour and the whole point of the exercise, but it is a visible, board-facing change and should not be a surprise on the day it ships. If the Executive template needs a credible headline before then, the honest candidates are Opportunity Pipeline (real) or Non-PO Spend (real).
+**The £0 that is coming.** Worth knowing now, even though it doesn't bite while we're on demo data: "Savings Secured" shows a demo **£525,700**, but the live query against today's corpus returns **£0**. All 24 rows in `bp_opportunity` sit at stage `identified`; nothing has ever been marked realised. The *pipeline* figure is real and healthy — realised savings is genuinely zero until opportunities are progressed through their stages. That is a data/process gap, not a bug, and it is exactly the kind of thing the badge exists to stop us papering over.
 
 **Dead code.** Roughly half the RB6 module is an unreachable earlier generation (`SECTION_DEFS`, the hero/breakdown/cycle/compliance card renderers, the word-budget enforcer and its canned narrative drafts, `HERO`, `SUMMARIES`, `HERO_TREND_VALUES`, `CYCLE_TREND`, `TEMPLATE_DEFAULTS`). It is where much of the fake data lives. It gets deleted as part of this stage.
 
@@ -161,7 +173,8 @@ This is the correct behaviour and the whole point of the exercise, but it is a v
 Per the project's standing requirement, each stage is proved on the **running local stack against live `bp_sqldb`**, not only by tests:
 
 - **Stage 1:** save two reports with several versions each; confirm the index groups them correctly, opens the right snapshot, and that delete works. Confirm Generate from the home modal carries the name/type/period through.
-- **Stage 2:** for each live tile, cross-check the rendered figure against a direct SQL query on `bp_sqldb`. A tile is only "live" if the number matches. Confirm blocked tiles are absent from the palette and that a saved report referencing one shows the placeholder, not a number.
+- **Stage 2:** confirm the builder renders with **zero hardcoded values left in `engine.js`** — every figure on screen must have arrived over `GET /spendiq/report-data`. Prove it by changing a value in the demo provider server-side and seeing the UI change without touching the frontend. Confirm changing the period re-fetches and re-renders. Confirm the `Demo data` badge appears on screen and in the exported PDF.
+  Then flip `REPORTS_DATA_SOURCE=live` on the local stack and confirm: the ready tiles render real figures that match a direct SQL query against `bp_sqldb`; the five not-ready tiles show an explicit "no data source" state rather than silently falling back to demo numbers; and the badge disappears. Flip it back to `demo`. **This flip is the whole point of the stage — if it isn't exercised, the stage isn't done.**
 - **Stage 3:** export a report to PDF, download it from the returned URL, open it, and confirm every block present on screen is present in the file (including `stages`/`donut` KPIs). Confirm `report_url` is populated.
 
 Local stack notes: start BP_Backend **with `.env`** (extraction path depends on it) and the gateway with `node --experimental-global-webcrypto`. Never `pkill -f uvicorn`.
@@ -170,7 +183,7 @@ Local stack notes: start BP_Backend **with `.env`** (extraction path depends on 
 
 ## 5. Out of scope
 
-- Building a spend **category taxonomy**, or multi-dimension **supplier risk** scoring. Both are data-capture work; until they exist, the four blocked tiles stay out.
+- Building a spend **category taxonomy**, contract linkage, or multi-dimension **supplier risk** scoring. All are data-capture work. Until they exist, the five tiles that depend on them keep serving demo values (badged) and their `live` implementations stay unwritten.
 - Replacing `agentCompose` — the builder's "✨ Generate" narrative button — with a real LLM call. It is currently keyword matching over hardcoded numbers, not AI. Once Stage 2 lands it would at least be keyword matching over *real* numbers. Pointing it at the AgentNick control plane is a natural follow-on, deliberately not bundled here.
 - Scheduled / emailed reports.
 - Sharing and permissions on individual reports (the `/spendiq` route is gated by `routeAccess['dashboard']`; reports have no permission of their own).
@@ -179,7 +192,9 @@ Local stack notes: start BP_Backend **with `.env`** (extraction path depends on 
 
 ## 6. Risks
 
-- **Stage 2 is the risky one.** The figures behind the live tiles are only as good as the extracted corpus. Some series are thin (7 deals, 24 opportunities), so charts will look sparse where the demo data looked smooth. A sparse true series beats a smooth invented one, but it will look worse, and that should be expected rather than treated as a bug. And, as above, Savings Secured drops from a fictional £525,700 to a true £0.
+- **The main risk of keeping demo data is that the demo path becomes the only path that ever gets exercised.** The `live` provider would rot quietly and we'd discover it on a customer's first day. Two mitigations, both cheap, both mandatory: the live flip is part of Stage 2's definition of done (above), and the demo provider must not be a special case in the UI — same endpoint, same contract, same renderers, one config value apart.
+
+- **When the flip does happen, the numbers will look worse, and that is correct.** The extracted corpus is thin (7 deals, 24 opportunities), so real charts will be sparse where demo charts are smooth, and Savings Secured drops from a fictional £525,700 to a true £0. A sparse honest series beats a smooth invented one. Expect it; don't treat it as a regression.
 
 - **Do not feed report tiles from the wrong sources.** Three surfaces in the gateway look like analytics but are not usable here, and wiring a tile to one of them would reintroduce exactly the fabrication this stage removes:
   - `GET /dashboard` and `GET /invoices/getAllInvoiceData` read the **seeded `uicanvas` demo tables**, whose "savings" is a flat 6% of spend and whose currency mix is fake.
