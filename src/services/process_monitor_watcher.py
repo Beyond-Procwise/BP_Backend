@@ -31,6 +31,11 @@ MAX_BACKOFF = 60.0
 class ProcessMonitorWatcher:
     """Watches proc.process_monitor for completed uploads and triggers extraction."""
 
+    # How long to wait for an announced upload to actually land before giving up. The
+    # row is created at presign time, so the browser's S3 PUT is still in flight when we
+    # are first told about it; a large document on a slow link needs room to finish.
+    FILE_WAIT_TIMEOUT_S = float(os.getenv("UPLOAD_FILE_WAIT_TIMEOUT_S", "120"))
+
     def __init__(
         self,
         agent_nick,
@@ -331,6 +336,46 @@ class ProcessMonitorWatcher:
         except Exception:
             logger.debug("quality-action stamp failed for record %s", record_id, exc_info=True)
 
+    def _await_file(self, file_path: str) -> bool:
+        """Wait for the uploaded object to actually exist before extracting it.
+
+        Extraction is kicked off by a DB trigger that fires when the gateway INSERTs the
+        process_monitor row -- and the gateway does that at PRESIGN time, before the
+        browser has PUT the bytes to S3. So the very first look can legitimately find
+        nothing: we are racing the upload we ourselves announced.
+
+        Failing on that first miss marked a perfectly good upload 'Extraction_Failed',
+        and nothing ever retried it. Wait for the file instead; only give up if it truly
+        never lands.
+        """
+        from src.services.extraction.parser import _resolve_to_local
+
+        deadline = time.monotonic() + self.FILE_WAIT_TIMEOUT_S
+        delay = 1.0
+        while True:
+            try:
+                resolved, needs_cleanup = _resolve_to_local(str(file_path))
+            except FileNotFoundError:
+                pass
+            except Exception:
+                # Not an "it isn't there yet" problem (bad credentials, bucket
+                # misconfigured...). Let the pipeline run and report the real error
+                # rather than mistranslating it into "upload never arrived".
+                return True
+            else:
+                if needs_cleanup:
+                    try:
+                        os.unlink(resolved)
+                    except OSError:
+                        pass
+                return True
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 8.0)
+
     def _process_record(self, record: Dict[str, Any]) -> None:
         """Dispatch to AgentNick (primary agent) for document processing."""
         record_id = record["id"]
@@ -344,6 +389,19 @@ class ProcessMonitorWatcher:
             file_path,
             category,
         )
+
+        # Do not read the file until it is actually there -- we are racing the upload.
+        if file_path and not self._await_file(file_path):
+            logger.error(
+                "Record %s: %r never arrived within %ss; not extracting",
+                record_id, file_path, self.FILE_WAIT_TIMEOUT_S,
+            )
+            self._mark_failed(
+                record_id,
+                f"upload never arrived: {file_path} absent after "
+                f"{self.FILE_WAIT_TIMEOUT_S}s",
+            )
+            return
 
         # --- Content-hash duplicate / update detection ---
         # Hash the incoming bytes (same resolver the parser uses). A genuine
