@@ -498,6 +498,27 @@ def dispatch_document(
                 ),
             ))
 
+    # Three-way match: what does this document say that its purchase order does not?
+    #
+    # Everything above is the document arguing with ITSELF (its lines don't sum to its
+    # header, a required field is missing). None of it is what a buyer actually needs,
+    # which is the document arguing with the PO: a line that was never ordered, a price
+    # above the one agreed, a PO number that does not exist. That comparison was being
+    # computed in linking_engine, reduced to a confidence score, and discarded.
+    try:
+        from src.services.extraction.three_way_match import check_against_po
+
+        po_findings = check_against_po(doc_type, columns, line_items)
+        if po_findings:
+            log.info(
+                "three-way match: %d finding(s) against the purchase order (%s)",
+                len(po_findings),
+                ", ".join(sorted({f.issue_type for f in po_findings})),
+            )
+        discrepancies.extend(po_findings)
+    except Exception:  # noqa: BLE001 — a match failure must not lose the extraction
+        log.exception("three-way match failed; extraction stands, no PO findings raised")
+
     blocking = any(d.blocks_promotion for d in discrepancies)
     promotion_status = "discrepancy" if blocking else "pending"
 

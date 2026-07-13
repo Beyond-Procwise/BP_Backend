@@ -340,6 +340,7 @@ def synthesize(
     # Settle the money block against the document's own arithmetic before anything is
     # derived. _compute_derived only fills fields that are still None, so a value agreed
     # here can no longer be replaced by one computed from a hallucinated tax percentage.
+    cleaned = _recover_identifiers(cleaned, full_text)
     cleaned = _reconcile_money(cleaned, full_text, doc_type)
     cleaned = _compute_derived(cleaned)
     log.info(
@@ -1256,6 +1257,76 @@ def _money_closes(sub: float | None, tax: float | None, tot: float | None,
     if sub is None or tax is None or tot is None:
         return False
     return abs((sub + extras + tax) - tot) <= max(tol, abs(tot) * 1e-4)
+
+
+# The label an identifier sits next to, per field. Used only to repair a bad read.
+_ID_LABELS: dict[str, tuple[str, ...]] = {
+    "po_id": (
+        r"purchase\s+order\s+(?:number|no\.?|#)",
+        r"p\.?\s*o\.?\s*(?:number|no\.?|#)",
+        r"po\s*#",
+        r"order\s+number",
+    ),
+    "invoice_id": (r"invoice\s*(?:number|no\.?|#)", r"inv\s*#"),
+    "quote_id": (r"quot(?:e|ation)\s*(?:number|no\.?|#)", r"quote\s*#"),
+}
+
+
+def _is_label_not_value(v: Any) -> bool:
+    """Is this 'identifier' actually the caption next to the identifier?
+
+    Observed: a PO printed "PO#:      10238-102" -- the label and the value separated by a
+    wide gap of whitespace -- and the model returned po_id = "PO#:". It is a literal
+    substring of the document, so grounding passed it; it is a heading, so it is worthless.
+    Every downstream match against that PO then failed.
+    """
+    s = str(v or "").strip()
+    if not s:
+        return True
+    # A caption ends at its colon, and an identifier has something to identify with.
+    if s.endswith((":", "#", "-", "/")):
+        return True
+    if not re.search(r"[A-Za-z0-9]", s.rstrip(":#")):
+        return True
+    return bool(re.fullmatch(
+        r"(?:purchase\s+order|p\.?o\.?|po|invoice|inv|quote|quotation|order|ref(?:erence)?)"
+        r"\s*(?:number|no\.?|#)?\s*[:#]?",
+        s, re.IGNORECASE,
+    ))
+
+
+def _recover_identifiers(row: dict[str, Any], full_text: str) -> dict[str, Any]:
+    """Read an identifier off the page when the model returned a label, or nothing."""
+    if not full_text:
+        return row
+    for field, labels in _ID_LABELS.items():
+        if field not in row:
+            continue
+        current = row.get(field)
+        if current is not None and not _is_label_not_value(current):
+            continue  # the model read a real value — leave it alone
+        for lab in labels:
+            m = re.search(
+                rf"{lab}\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9/\-_.]{{1,40}})",
+                full_text, re.IGNORECASE,
+            )
+            if m:
+                value = m.group(1).strip(" .,:;")
+                if value and not _is_label_not_value(value):
+                    log.info(
+                        "context_layer: %s=%r read from the document's printed label (was %r)",
+                        field, value, current,
+                    )
+                    row[field] = value
+                    break
+        else:
+            if current is not None and _is_label_not_value(current):
+                log.info(
+                    "context_layer: dropping %s=%r — that is a label, not an identifier",
+                    field, current,
+                )
+                row[field] = None
+    return row
 
 
 def _reconcile_money(row: dict[str, Any], full_text: str, doc_type: str) -> dict[str, Any]:
