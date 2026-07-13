@@ -268,11 +268,13 @@ class TestDocAction:
         w = ProcessMonitorWatcher(dummy_nick)
         cur = _RecordingCursor(fetch_script=[None])  # no prior row
         conn = _RecordingConn(cur)
+        # One pipeline now: src/services/extraction/. The EXTRACTION_RENOVATION_ENABLED
+        # flag and the legacy extraction_v3 dispatch behind it are gone.
         with patch.object(w, "_get_connection", return_value=conn), \
              patch("src.services.extraction.content_hash.compute_content_hash",
                    return_value="abc123"), \
-             patch.dict("os.environ", {"EXTRACTION_RENOVATION_ENABLED": "0"}), \
-             patch("src.services.extraction_v3.dispatch.dispatch_document",
+             patch.object(w, "_await_file", return_value=True), \
+             patch("src.services.extraction.dispatch.dispatch_document",
                    return_value={"status": "promoted", "pk": "PO123",
                                  "confidence": 0.95, "errors": 0}) as disp, \
              patch.object(w, "_mark_extracted"), \

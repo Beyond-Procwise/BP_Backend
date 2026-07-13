@@ -214,8 +214,8 @@ LEARNED VENDOR PATTERNS (from successful extractions):
 
 LEARNED VENDOR PATTERNS (from successful extractions):
 - TECHWORLD GLOBAL (Invoice), currency=GBP, extractions=26
-- Assurity Ltd (Invoice), currency=GBP, extractions=24
 - THRIVE STUDIOS LLC (Invoice), currency=GBP, extractions=24
+- Assurity Ltd (Invoice), currency=GBP, extractions=24
 - Assurity Ltd (Purchase_Order), currency=GBP, extractions=15
 - InfoTech Consulting Ltd (Invoice), currency=GBP, extractions=12
 - TECHNOVA LTD (Invoice), currency=GBP, extractions=10
@@ -223,16 +223,17 @@ LEARNED VENDOR PATTERNS (from successful extractions):
 - 800-531-8575 (Purchase_Order), currency=GBP, extractions=6
 - DESIGN HOUSE AGENCY (Invoice), currency=GBP, extractions=6
 - Eleanor Price Creative Studio (Invoice), currency=GBP, extractions=5
-- NexaSparkideas (Invoice), currency=GBP, extractions=4
 - Becker Inc (Invoice), currency=GBP, extractions=4
-- GOMEZ, GOOD AND CROSS QUOTE TRADING LTD. UNKNOWN (Invoice), currency=GBP, extractions=2
-- TRADING LTD. (Invoice), currency=GBP, extractions=2
-- INV600820 (Invoice), currency=GBP, extractions=2
+- NexaSparkideas (Invoice), currency=GBP, extractions=4
+- INV600784 (Invoice), currency=GBP, extractions=3
 - Lenovo (Invoice), currency=GBP, extractions=2
 - Sarah Thompson INV No: INV-2025-055 (Purchase_Order), currency=GBP, extractions=2
 - Sarah Thompson INV No: INV-2025-057 (Purchase_Order), currency=GBP, extractions=2
+- INV600820 (Invoice), currency=GBP, extractions=2
 - Sarah Thompson INV No: INV-2025-058 (Purchase_Order), currency=GBP, extractions=2
-- INV600784 (Invoice), currency=GBP, extractions=2
+- TRADING LTD. (Invoice), currency=GBP, extractions=2
+- GOMEZ, GOOD AND CROSS QUOTE TRADING LTD. UNKNOWN (Invoice), currency=GBP, extractions=2
+- Tectonic IT Supplies Ltd (Invoice), currency=VAT, extractions=2
 - Rubilogy Ltd (Invoice), currency=GBP, extractions=2
 
 KNOWN SUPPLIERS (match against these): ABC Media, AFS Alloy and Fabrication Specialists Ltd, ALDENAIRE HIGH SCHOOL, Apparel Masters, AQUARIUS, Aquarius Marketing Ltd, AssurityLtd, Assurity Ltd, AUARIUS MARKETING, Becker Inc, Borcelle 121, Bramwell Supplies Ltd, BrightPeak Marketing Agency, City of Newport, ClearPath Systems Ltd, Coffee Bliss Suppliers, CONDITIONS, Condor Logistics UK Ltd, Construction Masters, COTM CO de lum, CREATIVE DESIGN AGENCY, days Tax, Delivery Deadline, Dell Workspace Solutions Ltd, Description Qty Unit Price, Design House Agency, DIXON, REYNOLDS, Dixon, Reynolds and Solomon, DUNCAN, Duncan LLC, ELEANOR PRICE, Eleanor Price Creative Studio, Employee Experience & Engagement Programme, Ergeremiuc School C1 6s, extraBIZ, FamilyFun.com, FASHION ITEMS INC, Faucet Decor Solutions, Fauget, GOMEZ, GOOD, GOMEZ, GOOD AND CROSS, Gomez, Good and Cross Trading Ltd, Industrial Pendant Fixtures, InfoTech, InfoTech Consulting, Ingoude Company, Kingsway Office Supplies Ltd, Larpaira de pe, LEC Floor Lamp fAcyu, Lester Group 807

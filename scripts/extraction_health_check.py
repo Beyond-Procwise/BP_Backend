@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import Settings  # noqa: E402
 import psycopg2  # noqa: E402
+from src.services.extraction_v3.grounding import is_value_grounded  # noqa: E402
 
 STUCK_MINUTES = int(os.getenv("HEALTH_STUCK_MINUTES", "15"))
 MAX_STUCK_RETRIES = int(os.getenv("HEALTH_MAX_STUCK_RETRIES", "3"))
@@ -90,9 +91,12 @@ def _ensure_metrics_tables(cur) -> None:
             stuck_rows_failed    INT,
             audit_sample         INT,
             audit_violations     INT,
-            failed_reaped        INT
+            failed_reaped        INT,
+            doc_pk_collisions    INT
         );
         CREATE INDEX IF NOT EXISTS idx_health_metrics_recorded ON proc.bp_extraction_health_metrics (recorded_at);
+        ALTER TABLE proc.bp_extraction_health_metrics
+            ADD COLUMN IF NOT EXISTS doc_pk_collisions INT;
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS proc.bp_extraction_hallucination_audit (
@@ -161,10 +165,50 @@ def stuck_row_recovery(cur) -> tuple[int, int]:
     return reset, failed
 
 
+_PK_FIELD = {"invoice": "invoice_id", "purchase_order": "po_id",
+             "quote": "quote_id", "contract": "contract_id"}
+
+
+def _audit_is_violation(value, evidence_text, model, snapshots) -> bool:
+    """True iff ``value`` is a genuine hallucination.
+
+    A value is a hallucination only when it is ungrounded (by the format-tolerant
+    match used by the live pipeline) in EVERY snapshot that shares its doc_pk.
+    Checking all snapshots — not just the most recent — removes the false
+    positives that doc_pk collisions used to cause (the value belongs to a
+    sibling document under the same id). With no snapshot available the value
+    cannot be verified, so it is not counted as a violation.
+    """
+    texts = [ft for ft in snapshots if ft]
+    if not texts:
+        return False
+    return not any(
+        is_value_grounded(value or "", evidence_text or "", ft, model=model or "")
+        for ft in texts
+    )
+
+
+def _classify_collision(rows) -> bool:
+    """True iff ``rows`` (each ``(source_file, text_hash)``) is a genuine doc_pk
+    collision: >1 distinct source file AND >1 distinct document text. Same-file
+    re-extractions and identical content re-uploaded under a new name are not
+    collisions.
+    """
+    files = {f for f, _ in rows}
+    texts = {t for _, t in rows}
+    return len(files) > 1 and len(texts) > 1
+
+
 def hallucination_audit(cur) -> tuple[int, int]:
-    """Sample recent provenance rows; verify evidence_text in full_text."""
+    """Sample recent provenance rows; flag values ungrounded in the source doc.
+
+    Uses the same format-tolerant grounding as the live pipeline (see
+    ``grounding.is_value_grounded``) and checks every snapshot sharing the
+    doc_pk, so reformatted-but-correct values and doc_pk collisions are no longer
+    over-reported.
+    """
     cur.execute("""
-        SELECT provenance_id, doc_type, doc_pk, field_path, value, evidence_text
+        SELECT provenance_id, doc_type, doc_pk, field_path, value, evidence_text, model
           FROM proc.bp_extraction_provenance_v3
          WHERE extracted_at > NOW() - INTERVAL '1 hour'
          ORDER BY RANDOM() LIMIT %s""", (AUDIT_SAMPLE_SIZE,))
@@ -173,39 +217,68 @@ def hallucination_audit(cur) -> tuple[int, int]:
         return 0, 0
 
     violations = 0
-    for prov_id, doc_type, doc_pk, field_path, value, evidence_text in sample:
-        # Find the parser_snapshot for this doc_pk
+    for prov_id, doc_type, doc_pk, field_path, value, evidence_text, model in sample:
         raw_table = _RAW_TABLES.get(doc_type)
-        if not raw_table:
+        pk_field = _PK_FIELD.get(doc_type)
+        if not raw_table or not pk_field:
             continue
-        pk_field = {"invoice": "invoice_id", "purchase_order": "po_id",
-                    "quote": "quote_id", "contract": "contract_id"}.get(doc_type)
+        # Fetch ALL snapshots sharing this doc_pk (not just the latest) so a
+        # value belonging to a sibling collision document is not mis-flagged.
         cur.execute(
             f"SELECT parser_snapshot FROM {raw_table} WHERE {pk_field}=%s "
-            f"ORDER BY extracted_at DESC LIMIT 1",
+            f"ORDER BY extracted_at DESC LIMIT 20",
             (doc_pk,),
         )
-        row = cur.fetchone()
-        if not row or not row[0]:
-            # _raw may have been deleted post-promotion; we'd need to keep
-            # parser_snapshot alive somewhere for true post-hoc audits.
-            # For now, skip when snapshot unavailable.
+        snapshots = [
+            r[0].get("full_text") for r in cur.fetchall()
+            if r[0] and isinstance(r[0], dict)
+        ]
+        if not snapshots:
+            # _raw purged post-promotion — cannot verify; skip (not a violation).
             continue
-        snapshot = row[0]
-        full_text = snapshot.get("full_text") if isinstance(snapshot, dict) else None
-        if not full_text:
-            continue
-        if evidence_text and evidence_text not in full_text:
+        if _audit_is_violation(value, evidence_text, model, snapshots):
             violations += 1
             cur.execute(
                 """INSERT INTO proc.bp_extraction_hallucination_audit
                        (provenance_id, doc_type, doc_pk, field_path, value, evidence_text, reason)
-                   VALUES (%s,%s,%s,%s,%s,%s,'evidence_text_not_in_full_text')""",
+                   VALUES (%s,%s,%s,%s,%s,%s,'value_not_grounded_in_document')""",
                 (prov_id, doc_type, doc_pk, field_path, value, evidence_text),
             )
             _emit("hallucination_violation", provenance_id=prov_id, doc_type=doc_type,
                   doc_pk=doc_pk, field=field_path, value=value)
     return len(sample), violations
+
+
+def doc_pk_collision_audit(cur) -> int:
+    """Detect genuine doc_pk collisions across the _raw tables and surface them.
+
+    A collision is one doc_pk mapping to multiple DISTINCT documents (different
+    source file AND different parser text). Each is emitted as a
+    ``doc_pk_collision`` event for monitoring; the count is returned so the
+    health snapshot can track it. Read-only — does not mutate pipeline data.
+    """
+    collisions = 0
+    for doc_type, raw_table in _RAW_TABLES.items():
+        pk_field = _PK_FIELD.get(doc_type)
+        if not pk_field:
+            continue
+        try:
+            cur.execute(
+                f"""SELECT {pk_field} AS pk,
+                           array_agg(source_file) AS files,
+                           array_agg(md5(COALESCE(parser_snapshot->>'full_text',''))) AS texts
+                      FROM {raw_table}
+                     WHERE {pk_field} IS NOT NULL
+                     GROUP BY {pk_field}
+                    HAVING COUNT(*) > 1""")
+        except Exception:
+            continue
+        for pk, files, texts in cur.fetchall():
+            if _classify_collision(list(zip(files, texts))):
+                collisions += 1
+                _emit("doc_pk_collision", doc_type=doc_type, doc_pk=pk,
+                      source_files=sorted(set(files)))
+    return collisions
 
 
 def backlog_metrics(cur) -> dict[str, int]:
@@ -234,6 +307,7 @@ def main() -> None:
 
         reset, failed = stuck_row_recovery(cur)
         sample, violations = hallucination_audit(cur)
+        collisions = doc_pk_collision_audit(cur)
         backlog = backlog_metrics(cur)
 
         # Write a metrics snapshot row
@@ -241,18 +315,19 @@ def main() -> None:
                          (invoice_active_hitl, po_active_hitl, quote_active_hitl, contract_active_hitl,
                           invoice_raw_total, po_raw_total, quote_raw_total, contract_raw_total,
                           stuck_rows_reset, stuck_rows_failed,
-                          audit_sample, audit_violations, failed_reaped)
+                          audit_sample, audit_violations, failed_reaped, doc_pk_collisions)
                        VALUES (%(invoice_active_hitl)s, %(purchase_order_active_hitl)s,
                                %(quote_active_hitl)s, %(contract_active_hitl)s,
                                %(invoice_raw_total)s, %(purchase_order_raw_total)s,
                                %(quote_raw_total)s, %(contract_raw_total)s,
-                               %(reset)s, %(failed)s, %(sample)s, %(violations)s, 0)""",
+                               %(reset)s, %(failed)s, %(sample)s, %(violations)s, 0, %(collisions)s)""",
                     {**backlog, "reset": reset, "failed": failed,
-                     "sample": sample, "violations": violations})
+                     "sample": sample, "violations": violations, "collisions": collisions})
 
         _emit("health_summary", duration_ms=int((time.time() - started) * 1000),
               stuck_reset=reset, stuck_failed=failed,
-              audit_sample=sample, audit_violations=violations, **backlog)
+              audit_sample=sample, audit_violations=violations,
+              doc_pk_collisions=collisions, **backlog)
         conn.close()
     except Exception as exc:
         _emit("health_error", error=str(exc), traceback=traceback.format_exc())

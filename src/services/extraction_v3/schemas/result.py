@@ -8,6 +8,7 @@ ResidualReason = Literal[
     "invariant_critical_failed",
     "judge_incoherent",
     "bind_error_no_resolution",
+    "ungrounded_value",
 ]
 
 JudgeAction = Literal["tiebreaker", "grounded_last_resort", "schema_coherence"]
