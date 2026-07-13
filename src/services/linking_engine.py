@@ -322,20 +322,29 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
     src_lines = source_lines or []
     tgt_lines = target_lines or []
 
-    q_src = (_to_float(source_row.get("confidence_score")) or 0.0) / 100.0
-    q_tgt = (_to_float(target_row.get("confidence_score")) or 0.0) / 100.0
-
+    # Evidence quality is about the EVIDENCE, not about how many optional fields the
+    # documents happened to fill in.
+    #
+    # This used q = confidence_score / 100 as a "quality proxy" — and confidence_score is
+    # COMPLETENESS (see promotion._compute_confidence_score: required fields score 2,
+    # optional 1, as a percentage of the schema). So a document that simply does not state
+    # an incoterm discounted every signal it matched on, and then the same figure was
+    # multiplied over the whole score again as Q. Penalised twice for being an ordinary
+    # document.
+    #
+    # Measured: an invoice matching its own PO on EVERY signal — reference, supplier,
+    # amount, currency, line items, dates — scored F = 75.5 against a gate of 80. The gate
+    # was unreachable by a perfect match, so no invoice could ever promote, and no deal
+    # could ever form.
+    #
+    # A signal we could actually evaluate (both values present, compared) is fully observed
+    # evidence: q = 1. A signal we could not evaluate is no evidence: q = 0. Nothing in
+    # between, because there is nothing in between.
     signals = []
     for spec in profile["signals"]:
         s, status = _signal_match(spec["kind"], source_row, target_row, src_lines, tgt_lines,
                                   profile["date_field"], set_amount_usd)
-        # Stage 1B/1C: normalized/system fields (currency) trust = 1.0; else conf proxy.
-        if spec["kind"] == "currency":
-            q = 1.0
-        else:
-            q = min(q_src if q_src else 1.0, q_tgt if q_tgt else 1.0)
-        if status == "MISSING":
-            q = 0.0  # missing field carries no reliable evidence
+        q = 0.0 if status == "MISSING" else 1.0
         r = q * spec["appl"]
         c = spec["weight"] * r * (2.0 * s - 1.0)
         signals.append({**spec, "s": s, "q": q, "r": r, "c": c, "status": status})
@@ -369,8 +378,14 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
         if sig["status"] == "CONFLICT" and sig["tier"] == 1:
             F_cap = min(F_cap, sig["cap"])
 
-    # Q: pipeline/extraction quality proxy
-    Q = min(q_src if q_src else 1.0, q_tgt if q_tgt else 1.0)
+    # Q was the same completeness figure applied a SECOND time, as a multiplier over the
+    # whole score. With a PO at 70% completeness it capped F at ~61 outright: the 80 gate
+    # was mathematically unreachable regardless of the evidence, for 11 of 28 invoices.
+    #
+    # Evidence coverage is already carried by C (how much of the weighted signal set we
+    # could actually observe), which is the honest version of this idea. Whether a document
+    # filled in its optional fields tells us nothing about whether it belongs to this PO.
+    Q = 1.0
 
     F = min(F_cap, P_raw * C * S * Q) * 100.0
     return {
@@ -603,8 +618,31 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
     link = score_link(row, po, cfg["profile"], src_lines, tgt_lines, set_amount_usd=set_amount)
     if conf < MIN_CONFIDENCE:
         return po, link, "low_extraction_confidence"
+
     if link["F"] < MIN_LINK_SCORE:
-        return po, link, "low_link_score"
+        # "Does this document belong to this PO?" and "is this document correct?" are two
+        # different questions, and the F score was answering them as one.
+        #
+        # Tier-1 signals are IDENTITY: the PO reference and the supplier. A conflict there
+        # means the invoice belongs somewhere else — hold it.
+        #
+        # Tier-2/3 signals are CORRECTNESS: amount, line set, dates. An invoice that cites
+        # PO2023010, comes from the right supplier, and bills MORE than the PO authorised
+        # unambiguously belongs to PO2023010. The amount conflict is the finding — it is
+        # exactly what the three-way match already raised as `amount_over_po` — and holding
+        # the document out of _trgt makes that over-billing invisible in the product,
+        # because _trgt is the only tier the product reads. We would be hiding the very
+        # thing a buyer needs to see.
+        identity_conflict = any(
+            s["status"] == "CONFLICT" and s["tier"] == 1 for s in link["signals"]
+        )
+        po_ref_ok = any(
+            s["id"] == "po_ref" and s["status"] == "OK" for s in link["signals"]
+        )
+        if identity_conflict or not po_ref_ok:
+            return po, link, "low_link_score"
+        # Identity holds; the disagreement is commercial. File it, flagged.
+
     return po, link, None
 
 
