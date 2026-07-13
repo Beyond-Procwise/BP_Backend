@@ -1,0 +1,283 @@
+"""One bounded tool-calling loop for AgentNick.
+
+There were three hand-rolled Ollama tool loops in this codebase — one in
+`governance_tools/governed_reasoning.py` (governance tools), one in
+`supplier_enrichment/research.py` (web tools), and a fake one behind
+`/stream/plan` that never called an agent at all. Each re-implemented the same
+mechanics (round cap, tool dispatch, argument coercion, error handling) and each
+was reachable only from a single API router. Meanwhile `BaseAgent` had no tool
+support whatsoever, so no agent in the registry could call a tool, and AgentNick
+— the thing nominally in charge — had no `run()` at all.
+
+This is that loop, extracted once. It is deliberately dumb: it does not know what
+a policy or an agent is. Callers supply `Tool`s; the runtime calls them and keeps
+a record.
+
+The record is the point. Every tool call and every result is captured on the
+returned `ToolRunResult.calls`, so an answer or a decision can be traced back to
+the facts that produced it instead of being taken on trust.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Sequence
+
+import requests
+
+log = logging.getLogger(__name__)
+
+_OLLAMA_CHAT = (
+    os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
+)
+# AgentNick is the only base model. Never repoint this at another family.
+_DEFAULT_MODEL = os.getenv("AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified")
+_DEFAULT_MAX_ROUNDS = int(os.getenv("TOOL_RUNTIME_MAX_ROUNDS", "6"))
+_DEFAULT_TIMEOUT_S = int(os.getenv("TOOL_RUNTIME_TIMEOUT_S", "180"))
+
+# Results are fed back to the model as text. A tool that returns a huge blob
+# (e.g. a full document) would blow the context window and evict the task itself,
+# so results are truncated. The cap is generous enough for a policy body or a
+# page of corpus facts.
+_MAX_RESULT_CHARS = int(os.getenv("TOOL_RUNTIME_MAX_RESULT_CHARS", "6000"))
+
+
+@dataclass
+class Tool:
+    """A callable the model may invoke, plus the schema it is advertised under."""
+
+    name: str
+    description: str
+    parameters: Dict[str, Any]  # JSON Schema for the arguments object
+    handler: Callable[..., Any]
+
+    def schema(self) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+@dataclass
+class ToolCall:
+    """One invocation, and what came back. This is the audit record."""
+
+    name: str
+    arguments: Dict[str, Any]
+    ok: bool
+    result: Any = None
+    error: Optional[str] = None
+    duration_ms: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "tool": self.name,
+            "arguments": self.arguments,
+            "ok": self.ok,
+            "result": self.result,
+            "error": self.error,
+            "duration_ms": self.duration_ms,
+        }
+
+
+@dataclass
+class ToolRunResult:
+    answer: str = ""
+    calls: List[ToolCall] = field(default_factory=list)
+    rounds: int = 0
+    error: Optional[str] = None
+
+    @property
+    def tools_used(self) -> List[str]:
+        return [c.name for c in self.calls if c.ok]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "answer": self.answer,
+            "rounds": self.rounds,
+            "error": self.error,
+            "tools_used": self.tools_used,
+            # The full trace: what was asked of each tool and what it returned.
+            "trace": [c.to_dict() for c in self.calls],
+        }
+
+
+def _coerce_args(raw: Any) -> Dict[str, Any]:
+    """Ollama sometimes hands back arguments as a JSON string rather than a dict."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def _render_result(value: Any) -> str:
+    """Render a tool result for the model, bounded in size."""
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, default=str)
+        except Exception:  # noqa: BLE001
+            text = str(value)
+    if len(text) > _MAX_RESULT_CHARS:
+        return text[:_MAX_RESULT_CHARS] + f"\n...[truncated, {len(text)} chars total]"
+    return text
+
+
+def _chat(
+    messages: List[Dict[str, Any]],
+    schemas: List[Dict[str, Any]],
+    model: str,
+    timeout: int,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        # Reasoning-tuned models return an EMPTY `response`/content unless think is
+        # off. Leaving this on silently yields blank answers.
+        "think": False,
+        "keep_alive": -1,
+        "options": {"temperature": 0, "num_predict": 2048},
+    }
+    if schemas:
+        payload["tools"] = schemas
+    response = requests.post(_OLLAMA_CHAT, json=payload, timeout=timeout)
+    response.raise_for_status()
+    return response.json().get("message", {}) or {}
+
+
+def run_tools(
+    task: str,
+    tools: Sequence[Tool],
+    system: str,
+    *,
+    model: Optional[str] = None,
+    max_rounds: int = _DEFAULT_MAX_ROUNDS,
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+    require_tool_use: bool = False,
+    nudge: Optional[str] = None,
+) -> ToolRunResult:
+    """Run AgentNick over ``task``, letting it call ``tools`` until it answers.
+
+    Bounded by ``max_rounds``. Never raises to the caller: transport failures come
+    back as ``ToolRunResult.error`` with whatever was gathered so far, because a
+    dead Ollama should degrade the answer, not take down the request.
+
+    ``require_tool_use`` nudges the model once if it tries to answer without
+    consulting a single tool. That is the anti-hallucination guard: for a grounded
+    question, an answer produced without looking anything up is a guess.
+    """
+    model = model or _DEFAULT_MODEL
+    by_name = {t.name: t for t in tools}
+    schemas = [t.schema() for t in tools]
+
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": task},
+    ]
+
+    result = ToolRunResult()
+    nudged = False
+    any_tool_call = False
+
+    for _ in range(max_rounds):
+        result.rounds += 1
+        try:
+            message = _chat(messages, schemas, model, timeout_s)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tool_runtime chat failed: %s", exc)
+            result.error = str(exc)[:300]
+            return result
+
+        messages.append(message)
+        tool_calls = message.get("tool_calls") or []
+
+        if not tool_calls:
+            content = message.get("content") or ""
+            # The model wants to answer. If it never looked anything up and the
+            # caller demanded grounding, push back exactly once.
+            if require_tool_use and not any_tool_call and not nudged:
+                nudged = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": nudge
+                        or (
+                            "You answered without calling any tool. Do not rely on "
+                            "assumptions. Call the tools you need to establish the "
+                            "facts, then answer from what they return."
+                        ),
+                    }
+                )
+                continue
+            result.answer = content
+            return result
+
+        any_tool_call = True
+        for call in tool_calls:
+            fn = call.get("function") or {}
+            name = fn.get("name") or ""
+            args = _coerce_args(fn.get("arguments"))
+            tool = by_name.get(name)
+
+            started = time.monotonic()
+            if tool is None:
+                record = ToolCall(
+                    name=name,
+                    arguments=args,
+                    ok=False,
+                    error=f"unknown tool '{name}'",
+                )
+            else:
+                try:
+                    value = tool.handler(**args)
+                    record = ToolCall(name=name, arguments=args, ok=True, result=value)
+                except TypeError as exc:
+                    # Bad arguments from the model — tell it, don't crash.
+                    record = ToolCall(
+                        name=name,
+                        arguments=args,
+                        ok=False,
+                        error=f"invalid arguments: {exc}",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("tool %s failed", name)
+                    record = ToolCall(
+                        name=name, arguments=args, ok=False, error=str(exc)[:300]
+                    )
+            record.duration_ms = int((time.monotonic() - started) * 1000)
+            result.calls.append(record)
+
+            messages.append(
+                {
+                    "role": "tool",
+                    "name": name,
+                    "content": _render_result(
+                        record.result if record.ok else {"error": record.error}
+                    ),
+                }
+            )
+
+    # Ran out of rounds. Return the last thing said rather than nothing.
+    result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
+    for message in reversed(messages):
+        if message.get("role") == "assistant" and message.get("content"):
+            result.answer = message["content"]
+            break
+    return result

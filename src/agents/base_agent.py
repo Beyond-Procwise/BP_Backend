@@ -1485,10 +1485,39 @@ class AgentNick:
         logger.info("Engines initialized.")
 
         self.agents = {}
+        # Set by api/main.py once the catalogue is loaded. AgentNick needs it to
+        # advertise the agents as tools it can call.
+        self.auto_registry = None
         self._initialize_qdrant_collection()
         self._preload_ollama_model()
         self._verify_neo4j()
         logger.info("AgentNick is ready.")
+
+    # ------------------------------------------------------------------
+    # Control
+    # ------------------------------------------------------------------
+    def reason(self, task: str, **kwargs):
+        """Plan and act on ``task`` by calling tools.
+
+        This is the method AgentNick never had. The class was a dependency
+        container with no way to *do* anything; the LLM half of "AgentNick" was
+        only ever called for one-shot completions inside individual agents, and
+        the ReasoningEngine that was supposed to close the loop was constructed at
+        startup and never invoked.
+
+        Now AgentNick chooses: it can run any registered agent, fetch any governed
+        policy or prompt, and query the real corpus — and the trace records what it
+        called and what came back. See orchestration/agentnick_control.
+        """
+        from orchestration.agentnick_control import reason as _reason
+
+        return _reason(self, task, **kwargs)
+
+    def tools(self):
+        """Every tool AgentNick can call. Useful for introspection and tests."""
+        from orchestration.agentnick_control import build_tools
+
+        return build_tools(self)
 
     def _initialise_static_policy_corpus(self) -> None:
         """Ensure the static policy knowledge base is synchronised."""

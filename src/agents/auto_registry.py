@@ -255,6 +255,63 @@ class AutoRegistry:
         return instance
 
     # ------------------------------------------------------------------
+    # Tool schemas — the agents, as things AgentNick can call
+    # ------------------------------------------------------------------
+
+    def tool_schemas(self) -> List[Dict[str, Any]]:
+        """Advertise every instantiable agent as a JSON-schema function tool.
+
+        Derived entirely from the contracts already in agent_definitions.json —
+        ``required_inputs`` becomes the schema's ``required`` list — so there is
+        no second catalogue to keep in step. An agent that gains an input in the
+        JSON gains it here for free.
+
+        Agents with no ``class_path`` are omitted: they cannot be instantiated, so
+        offering them to the model would only invite a call that must fail.
+        """
+        schemas: List[Dict[str, Any]] = []
+        for slug in self.agent_ids:
+            contract = self._contracts[slug]
+            if not contract.class_path:
+                continue
+
+            properties: Dict[str, Any] = {
+                name: {"type": "string", "description": f"{name} for {slug}"}
+                for name in contract.required_inputs
+            }
+            # A free-form payload escape hatch: agents take richer input than the
+            # contract's flat required_inputs can express (nested quotes, line
+            # items). Without this the model can only ever pass scalars.
+            properties["payload_json"] = {
+                "type": "string",
+                "description": (
+                    "Optional JSON object, as a string, with any additional input "
+                    f"fields for {slug}. Merged into the agent's input."
+                ),
+            }
+
+            outputs = ", ".join(contract.output_fields) or "none"
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": f"run_{slug}",
+                        "description": (
+                            f"{contract.description} "
+                            f"Capabilities: {', '.join(contract.capabilities) or 'none'}. "
+                            f"Returns: {outputs}."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": properties,
+                            "required": list(contract.required_inputs),
+                        },
+                    },
+                }
+            )
+        return schemas
+
+    # ------------------------------------------------------------------
     # LLM description
     # ------------------------------------------------------------------
 
