@@ -1818,7 +1818,10 @@ class RAGPipeline:
             lines.append(
                 "Verified data from the customer's own documents (authoritative — these are "
                 "counted records, not retrieved text). Answer the question from these figures, "
-                "name these entities and no others, and quote the numbers exactly as given:\n"
+                "name these entities and no others, and quote the numbers exactly as given. "
+                "Where a 'totals' block is present it is the whole truth; every other list is "
+                "a top-N sample. Never reach a count by tallying the rows you can see — a "
+                "sample is not the population, and the totals are already given to you:\n"
                 + corpus_context
             )
 

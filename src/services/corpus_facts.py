@@ -170,7 +170,22 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
 
     if intent == "invoices":
         return {
-            "invoices": _rows(cur, """
+            "totals": _one(cur, """
+                SELECT COUNT(*)::int AS invoices_total,
+                       COUNT(*) FILTER (WHERE po_id IS NOT NULL)::int AS citing_a_po
+                  FROM proc.bp_invoice_trgt"""),
+            # The per-supplier count is stated, never left to be inferred. The list below is a
+            # top-N sample, and asked "who has the most invoices" a model handed a sample will
+            # count the rows in it — it answered "Coffee Bliss: 8 invoices" off a 10-row list
+            # when the true count is 7. If a number can be counted in SQL, it is counted here.
+            "invoice_count_by_supplier": _rows(cur, """
+                SELECT s.supplier_name, COUNT(*)::int AS invoices
+                  FROM proc.bp_invoice_trgt i
+                  JOIN proc.bp_supplier s ON s.supplier_id = i.supplier_id
+                 GROUP BY s.supplier_name
+                 ORDER BY invoices DESC
+                 LIMIT %s"""),
+            "largest_invoices_sample": _rows(cur, """
                 SELECT i.invoice_id, s.supplier_name, i.invoice_amount, i.currency,
                        i.invoice_date, i.po_id
                   FROM proc.bp_invoice_trgt i
