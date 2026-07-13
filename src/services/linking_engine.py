@@ -520,12 +520,66 @@ def _set_amount_for_invoice(cur, po_id) -> Optional[float]:
     return _to_float(cur.fetchone()[0])
 
 
+def _resolve_po_supplier_id(cur, po: dict) -> None:
+    """Give the PO the supplier_id the link scorer compares against.
+
+    The scorer matches src.supplier_id to tgt.supplier_id, and
+    bp_purchase_order_stg HAS NO supplier_id COLUMN — it carries supplier_name. So the
+    supplier signal came back MISSING (q=0.00) for every invoice/PO pair ever scored, and
+    the strongest evidence in the whole comparison contributed nothing.
+
+    Measured on a correct pair (invoice → its own PO, right supplier, matching lines):
+    F = 15.4 against a promotion gate of 80. Nothing could ever link, so nothing could ever
+    become a deal.
+
+    Resolve the name to the master's id here, at comparison time. No schema change: the PO
+    row is enriched in memory, and what gets written to _trgt is untouched.
+    """
+    if po.get("supplier_id") or not po.get("supplier_name"):
+        return
+    name = str(po["supplier_name"]).strip()
+    if not name:
+        return
+    cur.execute(
+        "SELECT supplier_id FROM proc.bp_supplier "
+        "WHERE lower(supplier_name) = lower(%s) LIMIT 1",
+        (name,),
+    )
+    hit = cur.fetchone()
+    if hit:
+        po["supplier_id"] = hit[0]
+        return
+    # Fuzzy fallback, so an "Ltd"/"Ld" difference between the PO and the invoice does not
+    # silently kill the signal. Deliberately does NOT create a supplier: scoring a link is
+    # a read, and an evaluation pass must not mint master data as a side effect.
+    try:
+        from rapidfuzz import fuzz
+
+        from src.services.extraction_v3.supplier_resolver import _strip_biz_suffix
+
+        cur.execute("SELECT supplier_id, supplier_name FROM proc.bp_supplier")
+        stem = _strip_biz_suffix(name)
+        best, best_score = None, 0.0
+        for sid, sname in cur.fetchall():
+            if not sname:
+                continue
+            score = fuzz.WRatio(stem, _strip_biz_suffix(sname))
+            if score > best_score:
+                best, best_score = sid, score
+        if best and best_score >= 92:  # same bar the extractor uses to auto-link
+            po["supplier_id"] = best
+    except Exception:  # noqa: BLE001 — a resolver failure must not break promotion
+        log.debug("could not resolve PO supplier %r to an id", name, exc_info=True)
+
+
 def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[dict], Optional[str]]:
     """Score one staged row against its parent PO. Returns (po, link, reason).
     ``reason`` is set when the row fails a gate (held); None means promotable."""
     cfg = _DOC[doc_type]
     pk, pk_val = cfg["pk"], row[cfg["pk"]]
     po = _find_parent_po(cur, row.get("po_id"))
+    if po is not None:
+        _resolve_po_supplier_id(cur, po)
     conf = _to_float(row.get("confidence_score")) or 0.0
     if row.get("po_id") is None:
         # A quote is raised BEFORE the PO exists, so carrying no PO reference is the normal
