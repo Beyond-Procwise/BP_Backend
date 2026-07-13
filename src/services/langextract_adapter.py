@@ -53,7 +53,7 @@ _LANGEXTRACT_ALLOWED_FIELDS = frozenset({
 
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL",
-                          "BeyondProcwise/AgentNick:extract")
+                          "BeyondProcwise/AgentNick:unified")
 
 
 def _build_examples(doc_type: str):

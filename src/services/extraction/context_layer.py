@@ -649,7 +649,12 @@ def _build_prompt(
 # 1am-9am IST frees GPU for the larger model). Override with the
 # PROCWISE_AGENTNICK_MODEL env var.
 import os as _os
-_LLM_MODEL = _os.getenv("PROCWISE_AGENTNICK_MODEL", "BeyondProcwise/AgentNick:extract")
+# ONE model for the whole platform. AgentNick:unified extracts as well as the retired
+# :extract specialist did and does it faster (measured: 6/6 exact on the money gold set
+# including the layouts that broke the old model, 0 regressions across the 14 live
+# invoices, ~1.4s/doc vs up to 5.3s). A second model was a second thing to teach, to
+# evaluate and to keep in sync -- and the knowledge only ever landed in one of them.
+_LLM_MODEL = _os.getenv("PROCWISE_AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified")
 
 # Constrain generation to a JSON schema (Ollama structured outputs). This makes
 # invalid/lazy output (e.g. an abbreviated `{..., ...}`) structurally impossible

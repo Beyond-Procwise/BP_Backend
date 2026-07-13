@@ -17,7 +17,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:extract")
+DEFAULT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick:unified")
 
 # Ollama Cloud (remote, authenticated) — used for non-critical tasks like
 # summarization so the local GPU stays dedicated to AgentNick extraction.
