@@ -1295,6 +1295,21 @@ def _is_label_not_value(v: Any) -> bool:
     ))
 
 
+def _read_labelled_id(full_text: str, labels: tuple[str, ...]) -> str | None:
+    """The identifier the document prints against one of these labels, or None."""
+    for lab in labels:
+        # Stay on the label's own line — see the note in _recover_identifiers.
+        m = re.search(
+            rf"{lab}[ \t|:#]*([A-Za-z0-9][A-Za-z0-9/\-_.]{{1,40}})",
+            full_text, re.IGNORECASE,
+        )
+        if m:
+            value = m.group(1).strip(" .,:;")
+            if value and not _is_label_not_value(value):
+                return value
+    return None
+
+
 def _recover_identifiers(row: dict[str, Any], full_text: str) -> dict[str, Any]:
     """Read an identifier off the page when the model returned a label, or nothing."""
     if not full_text:
@@ -1303,11 +1318,34 @@ def _recover_identifiers(row: dict[str, Any], full_text: str) -> dict[str, Any]:
         if field not in row:
             continue
         current = row.get(field)
+        printed = _read_labelled_id(full_text, labels)
+
+        # The model dropped a prefix. The page says "Quote Number: QTE-2026-01521" and it
+        # returned "2026-01521" -- close enough to look right, wrong enough that nothing
+        # downstream can ever match it. If what it gave us is a fragment of what the
+        # document actually prints, the document wins.
+        if (
+            printed
+            and current
+            and str(current) != printed
+            and str(current) in printed
+        ):
+            log.info(
+                "context_layer: %s=%r → %r (the model returned a fragment of the printed id)",
+                field, current, printed,
+            )
+            row[field] = printed
+            continue
+
         if current is not None and not _is_label_not_value(current):
             continue  # the model read a real value — leave it alone
         for lab in labels:
+            # Stay on the label's own line. A spreadsheet renders as
+            # "Quote Number | QTE-2026-01521" (pipe separator), while an OCR'd invoice puts
+            # "INVOICE NO" on its own line with the date beneath it — let the pattern cross
+            # a newline and it happily reads the date as the invoice number.
             m = re.search(
-                rf"{lab}\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9/\-_.]{{1,40}})",
+                rf"{lab}[ \t|:#]*([A-Za-z0-9][A-Za-z0-9/\-_.]{{1,40}})",
                 full_text, re.IGNORECASE,
             )
             if m:
