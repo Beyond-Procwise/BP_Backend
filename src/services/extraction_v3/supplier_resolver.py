@@ -210,8 +210,14 @@ def _create_supplier(cur, display_name: str) -> str:
 # Business-entity suffixes stripped BEFORE the WRatio comparison so the
 # distinctive part of the name dominates the score. Without this, every
 # "X Ltd" / "Y INC" pair scores ~85 against each other regardless of stem.
+# `Ld` / `Lt` are OCR of `Ltd` with a character dropped, and they are not cosmetic: the
+# suffix is stripped BEFORE the fuzzy comparison, so an unrecognised one strips
+# asymmetrically. "PeopleFirst HR Solutions Ltd" reduced to "PeopleFirst HR" while the
+# scanned "PeopleFirst HR Solutions Ld" reduced to nothing at all — 90.0 against a
+# threshold of 92, so the same company was minted a second time under a second id, and
+# every downstream join (ranking, deal linking) then failed on the split.
 _BIZ_SUFFIX_RE = re.compile(
-    r"\s*[,\.]?\s*\b(?:LLC|Ltd|Limited|Inc|Incorporated|Pvt|Pvt\.?\s*Ltd|"
+    r"\s*[,\.]?\s*\b(?:LLC|Ltd|Ld|Lt|Limited|Inc|Incorporated|Pvt|Pvt\.?\s*Ltd|"
     r"Private\s+Limited|GmbH|Corp|Corporation|Co\.?|Company|Studios|Agency|"
     r"Group|Solutions|Services|Holdings|Enterprises?|Partnership|LLP|"
     r"PLC|AG|S\.?A\.?|N\.?V\.?|S\.?L\.?|S\.?r\.?l\.?|B\.?V\.?)\b\.?\s*$",
