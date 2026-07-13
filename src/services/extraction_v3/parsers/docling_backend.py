@@ -242,6 +242,41 @@ def parse_with_docling(
         full_text = full_text + "\n" + "\n".join(floating_parts)
 
     # ------------------------------------------------------------------ #
+    # PDF augmentation: the embedded text layer                          #
+    # Docling can drop a whole region of a native PDF -- PO13 prints     #
+    # "PO #1000587" in the top-right and neither the markdown export nor #
+    # page_tokens contained it, so the purchase order reached _stg with  #
+    # NO NUMBER AT ALL and could never be matched by anything. The text  #
+    # is right there in the PDF's own text layer; pdftotext reads it     #
+    # without trouble. Same remedy as the DOCX scan below: append what   #
+    # docling missed, so the recovery regexes can see it.                #
+    # ------------------------------------------------------------------ #
+    if file_format == "pdf-native":
+        # poppler, not pypdf. Measured on PO13, whose number sits in a top-right block:
+        # docling produced 167 characters and pypdf 88, and NEITHER contained the PO
+        # number -- while `pdftotext -layout` reads it without trouble. Two readers
+        # agreeing that text is absent does not make it absent.
+        try:
+            import subprocess as _sp
+
+            _out = _sp.run(
+                ["pdftotext", "-layout", str(p), "-"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            _pdf_extras = [
+                _line.strip()
+                for _line in (_out.stdout or "").splitlines()
+                if _line.strip() and _line.strip() not in full_text
+            ]
+            if _pdf_extras:
+                full_text = full_text + "\n" + "\n".join(_pdf_extras)
+        except Exception as _e:  # noqa: BLE001 - augmentation must never fail the parse
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "docling_backend: pdftotext augmentation unavailable for %s: %s", p, _e
+            )
+
+    # ------------------------------------------------------------------ #
     # DOCX augmentation: python-docx supplemental table scan             #
     # Docling sometimes renders DOCX tables as empty cells (e.g. when    #
     # cell content is computed via OOXML formulas or has complex          #

@@ -340,7 +340,9 @@ def synthesize(
     # Settle the money block against the document's own arithmetic before anything is
     # derived. _compute_derived only fills fields that are still None, so a value agreed
     # here can no longer be replaced by one computed from a hallucinated tax percentage.
-    cleaned = _recover_identifiers(cleaned, full_text)
+    cleaned = _recover_identifiers(
+        cleaned, full_text, valid_fields={f[0] for f in fields}
+    )
     cleaned = _reconcile_money(cleaned, full_text, doc_type)
     cleaned = _compute_derived(cleaned)
     log.info(
@@ -1310,32 +1312,42 @@ def _read_labelled_id(full_text: str, labels: tuple[str, ...]) -> str | None:
     return None
 
 
-def _recover_identifiers(row: dict[str, Any], full_text: str) -> dict[str, Any]:
+def _recover_identifiers(
+    row: dict[str, Any], full_text: str, valid_fields: set[str] | None = None
+) -> dict[str, Any]:
     """Read an identifier off the page when the model returned a label, or nothing."""
     if not full_text:
         return row
     for field, labels in _ID_LABELS.items():
-        if field not in row:
+        # Recover a field the schema HAS, not merely one the model happened to mention.
+        # Keying off `field in row` meant that when the model omitted po_id from its JSON
+        # altogether -- which is exactly what it does on "PO #1000587", where the number is
+        # jammed against the hash -- there was nothing to repair and the PO went to _stg
+        # with no number at all. A missing key is the case this exists for.
+        if valid_fields is not None:
+            if field not in valid_fields:
+                continue
+        elif field not in row:
             continue
         current = row.get(field)
         printed = _read_labelled_id(full_text, labels)
 
-        # The model dropped a prefix. The page says "Quote Number: QTE-2026-01521" and it
-        # returned "2026-01521" -- close enough to look right, wrong enough that nothing
-        # downstream can ever match it. If what it gave us is a fragment of what the
-        # document actually prints, the document wins.
-        if (
-            printed
-            and current
-            and str(current) != printed
-            and str(current) in printed
-        ):
-            log.info(
-                "context_layer: %s=%r → %r (the model returned a fragment of the printed id)",
-                field, current, printed,
-            )
-            row[field] = printed
-            continue
+        # The model got the identifier nearly right, in one of the two ways that make it
+        # useless downstream:
+        #   too little — page says "Quote Number: QTE-2026-01521", it returned "2026-01521"
+        #   too much   — page says "PO #1000587", it returned "PO #1000587" (label and all)
+        # Either way the id no longer equals what anything else will join on. The value the
+        # document prints against the label wins.
+        if printed and current and str(current) != printed:
+            cur_s = str(current)
+            if cur_s in printed or printed in cur_s:
+                log.info(
+                    "context_layer: %s=%r → %r (the model %s the printed identifier)",
+                    field, current, printed,
+                    "truncated" if cur_s in printed else "included the label with",
+                )
+                row[field] = printed
+                continue
 
         if current is not None and not _is_label_not_value(current):
             continue  # the model read a real value — leave it alone

@@ -566,11 +566,61 @@ def _do_copy(cur, doc_type: str, row: dict, po: Optional[dict] = None) -> int:
                        canonical_po=canonical_po)
 
 
+def _promote_purchase_orders(cur) -> tuple[int, int]:
+    """Promote staged POs on their own extraction confidence. Returns (promoted, held).
+
+    A purchase order has no parent to be scored against — it IS the parent, the anchor the
+    whole deal hangs off. So it was never in the promotion config at all: a PO only reached
+    _trgt as a side-effect of some invoice or quote promoting against it
+    (`_ensure_po_in_trgt`). Upload 46 purchase orders and nothing else, and the Purchase
+    Orders screen stays empty, because _trgt is the only tier the product reads.
+
+    Same shape of bug as quotes being held for a PO that had not been raised yet: a document
+    that is nobody's child was treated as though it must be somebody's child.
+    """
+    promoted = held = 0
+    rows = _rows(cur,
+                 f"select * from {_PO['stg']} s where s.po_id is not null "
+                 f"and not exists (select 1 from {_PO['trgt']} t where t.po_id = s.po_id)")
+    for row in rows:
+        conf = _to_float(row.get("confidence_score")) or 0.0
+        if conf < MIN_CONFIDENCE:
+            held += 1
+            record_action(
+                phase=PHASE_CONSOLIDATION, action_type="promote_held",
+                doc_type="purchase_order", doc_pk=str(row["po_id"]), agent="linking_engine",
+                status="skipped", confidence=conf,
+                summary=f"held purchase_order {row['po_id']}: low_extraction_confidence",
+                details={"reason": "low_extraction_confidence", "confidence": conf},
+                conn=cur.connection)
+            continue
+        _ensure_po_in_trgt(cur, row)
+        promoted += 1
+        record_action(
+            phase=PHASE_CONSOLIDATION, action_type="promote_to_trgt",
+            doc_type="purchase_order", doc_pk=str(row["po_id"]), agent="linking_engine",
+            status="ok", confidence=conf,
+            summary=f"promoted purchase_order {row['po_id']} (anchor: nothing to link against)",
+            details={"decision": "anchor", "confidence": conf},
+            conn=cur.connection)
+    return promoted, held
+
+
 def _promote(conn, doc_types, limit) -> dict:
     cur = conn.cursor()
     promoted, held = 0, 0
     by_reason: dict[str, int] = {}
     details: list[dict] = []
+
+    # Anchors first: a child promoting needs its PO present, and a PO uploaded on its own
+    # must still reach the product.
+    po_promoted, po_held = _promote_purchase_orders(cur)
+    promoted += po_promoted
+    held += po_held
+    if po_held:
+        by_reason["low_extraction_confidence"] = by_reason.get("low_extraction_confidence", 0) + po_held
+    if po_promoted or po_held:
+        details.append({"doc_type": "purchase_order", "promoted": po_promoted, "held": po_held})
 
     for doc_type in doc_types:
         cfg = _DOC[doc_type]
