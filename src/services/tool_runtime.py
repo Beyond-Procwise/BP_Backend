@@ -162,6 +162,116 @@ def _chat(
     return response.json().get("message", {}) or {}
 
 
+def run_tools_stream(
+    task: str,
+    tools: Sequence[Tool],
+    system: str,
+    *,
+    model: Optional[str] = None,
+    max_rounds: int = _DEFAULT_MAX_ROUNDS,
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+    on_tool: Optional[Callable[[ToolCall], None]] = None,
+    on_delta: Optional[Callable[[str], None]] = None,
+) -> ToolRunResult:
+    """Same loop, but the FINAL answer is streamed out through ``on_delta``.
+
+    Tool-calling rounds are not streamed — there is nothing to show while the model is
+    deciding which tool to call, and a half-formed tool call is not something a user
+    should ever see. ``on_tool`` fires once per call so the UI can say what is being
+    looked up. Only once the model stops calling tools and starts writing prose do the
+    tokens flow.
+    """
+    model = model or _DEFAULT_MODEL
+    by_name = {t.name: t for t in tools}
+    schemas = [t.schema() for t in tools]
+
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": task},
+    ]
+    result = ToolRunResult()
+
+    for _ in range(max_rounds):
+        result.rounds += 1
+        try:
+            payload: Dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "think": False,
+                "keep_alive": -1,
+                "options": {"temperature": 0, "num_predict": 2048},
+                "tools": schemas,
+            }
+            response = requests.post(
+                _OLLAMA_CHAT, json=payload, timeout=timeout_s, stream=True
+            )
+            response.raise_for_status()
+
+            content_parts: List[str] = []
+            tool_calls: List[Dict[str, Any]] = []
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                message = chunk.get("message") or {}
+                if message.get("tool_calls"):
+                    tool_calls.extend(message["tool_calls"])
+                fragment = message.get("content")
+                if fragment:
+                    content_parts.append(fragment)
+                    # Only prose reaches the caller, and only when no tool call is in
+                    # flight for this round.
+                    if on_delta and not tool_calls:
+                        on_delta(fragment)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tool_runtime stream failed: %s", exc)
+            result.error = str(exc)[:300]
+            return result
+
+        content = "".join(content_parts)
+        if not tool_calls:
+            result.answer = content
+            return result
+
+        messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+        for call in tool_calls:
+            fn = call.get("function") or {}
+            name = fn.get("name") or ""
+            args = _coerce_args(fn.get("arguments"))
+            tool = by_name.get(name)
+            started = time.monotonic()
+            if tool is None:
+                record = ToolCall(name=name, arguments=args, ok=False, error=f"unknown tool '{name}'")
+            else:
+                try:
+                    record = ToolCall(
+                        name=name, arguments=args, ok=True, result=tool.handler(**args)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("tool %s failed", name)
+                    record = ToolCall(name=name, arguments=args, ok=False, error=str(exc)[:300])
+            record.duration_ms = int((time.monotonic() - started) * 1000)
+            result.calls.append(record)
+            if on_tool:
+                on_tool(record)
+            messages.append(
+                {
+                    "role": "tool",
+                    "name": name,
+                    "content": _render_result(
+                        record.result if record.ok else {"error": record.error}
+                    ),
+                }
+            )
+
+    result.error = f"max_rounds ({max_rounds}) exhausted without a final answer"
+    return result
+
+
 def run_tools(
     task: str,
     tools: Sequence[Tool],

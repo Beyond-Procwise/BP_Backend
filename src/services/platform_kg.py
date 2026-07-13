@@ -108,9 +108,9 @@ def sync(path: Optional[Path] = None) -> dict[str, int]:
             for sc in doc.get("screens") or []:
                 s.run(
                     "MERGE (n:Screen {id:$id}) "
-                    "SET n.name=$name, n.shows=$shows, n.known_gap=$gap",
+                    "SET n.name=$name, n.shows=$shows, n.known_gap=$gap, n.how_to=$how_to",
                     id=sc["id"], name=sc.get("name"), shows=sc.get("shows"),
-                    gap=sc.get("known_gap"),
+                    gap=sc.get("known_gap"), how_to=sc.get("how_to"),
                 )
                 counts["Screen"] += 1
                 for ep in sc.get("backed_by") or []:
@@ -180,8 +180,8 @@ def describe(topic: str, limit: int = 8) -> list[dict[str, Any]]:
         RETURN 'Agent' AS kind, a.name AS name, a.does AS detail, hay
       UNION
         MATCH (c:Screen)
-        WITH c, toLower(c.name + ' ' + coalesce(c.shows,'') + ' ' + coalesce(c.known_gap,'') + ' ' + coalesce(c.id,'')) AS hay,
-             trim(coalesce(c.shows,'') + ' ' + coalesce(c.known_gap,'')) AS det
+        WITH c, toLower(c.name + ' ' + coalesce(c.shows,'') + ' ' + coalesce(c.known_gap,'') + ' ' + coalesce(c.how_to,'') + ' ' + coalesce(c.id,'')) AS hay,
+             trim(coalesce(c.how_to,'') + ' ' + coalesce(c.shows,'') + ' ' + coalesce(c.known_gap,'')) AS det
         RETURN 'Screen' AS kind, c.name AS name, det AS detail, hay
       UNION
         MATCH (g:Gap)
