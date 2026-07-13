@@ -510,6 +510,18 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
     po = _find_parent_po(cur, row.get("po_id"))
     conf = _to_float(row.get("confidence_score")) or 0.0
     if row.get("po_id") is None:
+        # A quote is raised BEFORE the PO exists, so carrying no PO reference is the normal
+        # state of a standalone quote, not a defect. Holding for a parent that has not been
+        # raised yet kept every uploaded quote out of _trgt permanently -- and _trgt is what
+        # the product reads, so the document was invisible in the UI forever. There is
+        # nothing to link against, so it promotes on extraction confidence alone.
+        #
+        # Invoices still require their PO: that reference is the three-way match, and an
+        # invoice without one is a genuine exception for a human to look at.
+        if doc_type == "quote":
+            if conf < MIN_CONFIDENCE:
+                return None, None, "low_extraction_confidence"
+            return None, None, None
         return None, None, "no_parent_reference"
     if po is None:
         return None, None, "parent_not_found"
@@ -574,18 +586,27 @@ def _promote(conn, doc_types, limit) -> dict:
             if reason is None:  # PROMOTE
                 n_lines = _do_copy(cur, doc_type, row, po=po)
                 promoted += 1
-                warn = link["F"] < _BAND_AUTO
+                # A standalone quote promotes with no parent, so there is no link to score.
+                # Everything below used to dereference link/po unconditionally.
+                warn = bool(link) and link["F"] < _BAND_AUTO
+                if link is not None:
+                    summary = f"promoted {doc_type} {pk_val} (F={link['F']}, {link['decision']})"
+                    det = {"F": link["F"], "decision": link["decision"], "parent_po": po["po_id"],
+                           "lines": n_lines, "signals": link["signals"],
+                           "P_raw": link["P_raw"], "C": link["C"], "Q": link["Q"]}
+                else:
+                    summary = f"promoted {doc_type} {pk_val} (standalone: no parent PO raised yet)"
+                    det = {"F": None, "decision": "unlinked", "parent_po": None,
+                           "lines": n_lines}
                 record_action(
                     phase=PHASE_CONSOLIDATION, action_type="promote_to_trgt",
                     doc_type=doc_type, doc_pk=str(pk_val), agent="linking_engine",
-                    status="warn" if warn else "ok", confidence=link["F"],
-                    summary=f"promoted {doc_type} {pk_val} (F={link['F']}, {link['decision']})",
-                    details={"F": link["F"], "decision": link["decision"], "parent_po": po["po_id"],
-                             "lines": n_lines, "signals": link["signals"],
-                             "P_raw": link["P_raw"], "C": link["C"], "Q": link["Q"]},
-                    conn=conn)
+                    status="warn" if warn else "ok",
+                    confidence=(link["F"] if link else None),
+                    summary=summary, details=det, conn=conn)
                 details.append({"doc_type": doc_type, "doc_pk": pk_val, "action": "promoted",
-                                "F": link["F"], "decision": link["decision"]})
+                                "F": (link["F"] if link else None),
+                                "decision": (link["decision"] if link else "unlinked")})
             else:  # HELD
                 held += 1
                 by_reason[reason] = by_reason.get(reason, 0) + 1
