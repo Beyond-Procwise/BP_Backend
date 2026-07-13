@@ -337,6 +337,10 @@ def synthesize(
         return raw_candidates
 
     cleaned = _validate_and_bind(parsed, full_text, fields)
+    # Settle the money block against the document's own arithmetic before anything is
+    # derived. _compute_derived only fills fields that are still None, so a value agreed
+    # here can no longer be replaced by one computed from a hallucinated tax percentage.
+    cleaned = _reconcile_money(cleaned, full_text, doc_type)
     cleaned = _compute_derived(cleaned)
     log.info(
         "context_layer: doc_type=%s synthesized %d fields (non-null)",
@@ -1129,6 +1133,199 @@ def _validate_and_bind(
         else:
             out[name] = v
     return out
+
+
+# ---------------------------------------------------------------------------
+# Grounded money block: read the totals the document actually prints
+# ---------------------------------------------------------------------------
+
+# A labelled money value: "Tax: $196.40", "Tax (10%):  $2,861.00",
+# "Total Sale Price:   $31,921.00", "Subtotal: $1964.00".
+# The colon is required on purpose: without it, "Total" matches the *column
+# header* of a line-item table and we would read a line amount as the invoice total.
+_MONEY_NUM = r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)"
+
+# Tried in order, first hit wins — specific labels before the generic one.
+#
+# The generic "total" is anchored to the start of a line (allowing markdown "## ").
+# Unanchored it matched the tail of "Sub|total|: $1964.00" and of
+# "Accessories |Total|: $2,030.00", reading a component as the invoice's grand total.
+_LABELS_GRAND_TOTAL: tuple[str, ...] = (
+    r"(?<![A-Za-z])grand\s+total",
+    r"(?<![A-Za-z])total\s+sale\s+price",
+    r"(?<![A-Za-z])total\s+amount\s+due",
+    r"(?<![A-Za-z])invoice\s+total",
+    r"(?<![A-Za-z])balance\s+due",
+    r"(?<![A-Za-z])amount\s+due",
+    r"(?<![A-Za-z])total\s+due",
+    r"(?m)^[#>*\s]*total",
+)
+_LABELS_SUBTOTAL: tuple[str, ...] = (
+    r"(?<![A-Za-z])sub-?\s*total",
+    r"(?<![A-Za-z])net\s+(?:amount|total)",
+)
+_LABELS_TAX: tuple[str, ...] = (
+    r"(?<![A-Za-z])sales\s+tax",
+    r"(?<![A-Za-z])tax",
+    r"(?<![A-Za-z])vat",
+    r"(?<![A-Za-z])gst",
+)
+# Charges that legitimately sit between the subtotal and the grand total. Without these
+# the closure check rejects a perfectly consistent invoice: PO8 prints
+# subtotal 1964.00 + shipping 9.20 + tax 196.40 = total 2169.60, and 1964 + 196.40 alone
+# lands 9.20 short.
+_LABELS_EXTRA_CHARGES: tuple[str, ...] = (
+    r"(?<![A-Za-z])shipping(?:\s*(?:&|and)\s*handling)?",
+    r"(?<![A-Za-z])freight",
+    r"(?<![A-Za-z])delivery\s+charge",
+    r"(?<![A-Za-z])carriage",
+    r"(?<![A-Za-z])dealer\s+fee",
+    r"(?<![A-Za-z])handling",
+)
+
+# money fields by doc_type: (subtotal_field, tax_field, grand_total_field)
+_MONEY_FIELDS: dict[str, tuple[str, str, str]] = {
+    "invoice": ("invoice_amount", "tax_amount", "invoice_total_incl_tax"),
+    "quote": ("total_amount", "tax_amount", "total_amount_incl_tax"),
+    "purchase_order": ("total_amount", "tax_amount", "total_amount_incl_tax"),
+}
+
+
+def _read_labelled_money(text: str, labels: tuple[str, ...]) -> float | None:
+    """The number the document prints against one of these labels, or None.
+
+    Never computes a value — every result is a literal substring of the document.
+    The colon is required: without it the generic "Total" matches the *column header*
+    of a line-item table and we would read a line amount as the document's total.
+    """
+    for label_re in labels:
+        pat = rf"{label_re}\s*(?:\([^)]*\))?\s*:\s*[\$£€]?\s*{_MONEY_NUM}"
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            try:
+                return float(m.group(1).replace(",", ""))
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _as_float(v: Any) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _money_closes(sub: float | None, tax: float | None, tot: float | None,
+                  extras: float = 0.0, tol: float = 0.02) -> bool:
+    """Does subtotal + extras (shipping/fees) + tax add up to the grand total?
+
+    This is the document's own arithmetic, and it is the only referee we can trust:
+    it does not care whether a number came from the model or from a pattern match.
+    """
+    if sub is None or tax is None or tot is None:
+        return False
+    return abs((sub + extras + tax) - tot) <= max(tol, abs(tot) * 1e-4)
+
+
+def _reconcile_money(row: dict[str, Any], full_text: str, doc_type: str) -> dict[str, Any]:
+    """Settle the money block by agreement, not by trusting any single reader.
+
+    Three independent signals, then let the document's own arithmetic decide:
+
+      1. the MODEL's values (primary — it generalises to layouts nobody anticipated),
+      2. the values the document PRINTS against labelled totals (corroboration),
+      3. the closure invariant  subtotal + shipping/fees + tax == grand total.
+
+    The model wins whenever its own numbers add up — that keeps every layout it already
+    handles working, and avoids a pattern match overruling a reader that understood the
+    page. We only fall back to the printed values when the model's set does NOT close and
+    the printed set DOES. And when neither closes, we keep whatever is grounded and leave
+    the rest NULL for the discrepancy engine, rather than inventing a number.
+
+    What this replaces: the model returned tax=null on
+    "Subtotal: $1964.00  Shipping: $9.20  Tax: $196.40 / Total: $2169.60", hallucinated
+    tax_percent=5, and a downstream step then derived tax = 1964 x 5% = 98.20 and
+    total = 2062.20. Both real values were printed on the page; both were overwritten
+    with fiction, and nothing noticed because nothing checked that they added up.
+    """
+    fields = _MONEY_FIELDS.get(doc_type)
+    if not fields or not full_text:
+        return row
+    sub_f, tax_f, tot_f = fields
+
+    m_sub, m_tax, m_tot = (_as_float(row.get(f)) for f in (sub_f, tax_f, tot_f))
+    p_sub = _read_labelled_money(full_text, _LABELS_SUBTOTAL)
+    p_tax = _read_labelled_money(full_text, _LABELS_TAX)
+    p_tot = _read_labelled_money(full_text, _LABELS_GRAND_TOTAL)
+    # Charges that legitimately sit between subtotal and total, so closure can allow them.
+    extras = _read_labelled_money(full_text, _LABELS_EXTRA_CHARGES) or 0.0
+
+    # Some layouts print no subtotal at all (the vehicle invoice itemises Vehicle Price /
+    # Accessories / Dealer Fee and never sums them), so the pre-tax net is the difference
+    # of two values read off the page — arithmetic over grounded inputs, not a guess.
+    if p_sub is None and p_tot is not None and p_tax is not None:
+        p_sub = round(p_tot - p_tax, 2)
+
+    model_closes = _money_closes(m_sub, m_tax, m_tot) or _money_closes(m_sub, m_tax, m_tot, extras)
+    printed_closes = _money_closes(p_sub, p_tax, p_tot) or _money_closes(p_sub, p_tax, p_tot, extras)
+
+    if model_closes:
+        chosen, why = (m_sub, m_tax, m_tot), "model (its figures add up)"
+    elif printed_closes:
+        chosen, why = (p_sub, p_tax, p_tot), "document's printed totals (the model's did not add up)"
+    else:
+        # Nobody is self-consistent. Prefer a printed value over a model guess field by
+        # field — a printed value is at least literally on the page — and leave the rest
+        # as-is for the invariant checks to flag. Never synthesise the missing one.
+        chosen = (
+            p_sub if p_sub is not None else m_sub,
+            p_tax if p_tax is not None else m_tax,
+            p_tot if p_tot is not None else m_tot,
+        )
+        why = "neither set closes — kept printed values where available, flagged for review"
+
+    if (m_sub, m_tax, m_tot) != chosen:
+        log.info(
+            "context_layer: money reconciled from %s — subtotal=%s tax=%s total=%s "
+            "(model said %s/%s/%s)",
+            why, chosen[0], chosen[1], chosen[2], m_sub, m_tax, m_tot,
+        )
+    for field, value in zip((sub_f, tax_f, tot_f), chosen):
+        if value is not None:
+            row[field] = value
+
+    # A tax PERCENT the document never prints is an invention, and _compute_derived will
+    # happily multiply by it. Drop it unless a '%' actually appears against a tax label.
+    # (Observed: tax_percent=5 on a document showing no percentage anywhere.)
+    if row.get("tax_percent") is not None:
+        prints_a_rate = any(
+            re.search(rf"{lab}[^\n]{{0,24}}%", full_text, re.IGNORECASE)
+            for lab in _LABELS_TAX
+        )
+        if not prints_a_rate:
+            log.info(
+                "context_layer: dropping tax_percent=%r — the document prints no tax rate",
+                row.get("tax_percent"),
+            )
+            row["tax_percent"] = None
+
+    # A '$' document is not GBP. Currency scales converted_amount_usd, so a wrong code
+    # silently rescales the money. Only correct when the document uses exactly one symbol
+    # and carries no explicit ISO code that might legitimately disagree.
+    symbols = {"$": "USD", "£": "GBP", "€": "EUR"}
+    seen = {code for sym, code in symbols.items() if sym in full_text}
+    current = row.get("currency")
+    if len(seen) == 1 and current:
+        only = seen.pop()
+        if current != only and not re.search(rf"\b{re.escape(current)}\b", full_text):
+            log.info(
+                "context_layer: currency %r → %r (the document only uses '%s' and never says %r)",
+                current, only, [s for s, c in symbols.items() if c == only][0], current,
+            )
+            row["currency"] = only
+
+    return row
 
 
 # ---------------------------------------------------------------------------
