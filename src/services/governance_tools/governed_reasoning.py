@@ -34,6 +34,25 @@ _TOOLS = [
         "name": "get_prompt",
         "description": "Fetch a governed prompt template by name, type, or agent.",
         "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+    # The platform's model of itself, held in the knowledge graph. Retrieved on demand,
+    # deliberately NOT baked into the system prompt: the platform description is a few
+    # thousand tokens, and in a SYSTEM block it would be charged on every call and eat a
+    # third of an 8k context -- slowing every extraction to teach the model something
+    # extraction does not need. Here it costs nothing until it is asked for.
+    {"type": "function", "function": {
+        "name": "describe_platform",
+        "description": (
+            "Look up how ProcWise itself works: the ingest pipeline and its stages, the "
+            "promotion gates, the agents and the tables they read/write, the SpendIQ "
+            "screens and the endpoints behind them, and the known gaps. Use this whenever "
+            "a question is about the SYSTEM (how a document flows, which agent decides "
+            "what, where a buyer sees something, what is broken) rather than about the "
+            "procurement data itself."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "topic": {"type": "string",
+                      "description": "e.g. 'upload', 'promotion', 'quote', 'supplier ranking', 'invoices screen'"}},
+            "required": ["topic"]}}},
 ]
 
 _SYSTEM = (
@@ -217,6 +236,16 @@ def govern(task: str, agent: str | None = None) -> dict:
                     used["prompts"].append({"prompt_name": res.get("prompt_name"), "prompt_type": res.get("prompt_type")})
                     if res.get("prompt_name"):
                         fetched_prompts.add(str(res["prompt_name"]).lower())
+            elif name == "describe_platform":
+                # Fail soft: if Neo4j is down the model should carry on answering the
+                # procurement question rather than the whole turn dying over a lookup.
+                try:
+                    from src.services.platform_kg import describe
+
+                    res = {"facts": describe(str(args.get("topic", "")))}
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("describe_platform unavailable: %s", exc)
+                    res = {"error": "platform knowledge graph unavailable", "facts": []}
             else:
                 res = {"error": "unknown tool"}
             messages.append({"role": "tool", "name": name, "content": json.dumps(res, default=str)})

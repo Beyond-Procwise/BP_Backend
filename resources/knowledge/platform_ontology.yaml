@@ -1,0 +1,193 @@
+# ProcWise platform ontology — the system's model of ITSELF.
+#
+# The knowledge graph already holds ~10k relationships about the DATA (suppliers,
+# invoices, POs, quotes). It held nothing about the PLATFORM: no process, no stage, no
+# agent, no screen. So AgentNick could reason about a supplier and not about how a
+# document reaches that supplier, which agent decides what, or where a buyer sees it.
+#
+# Every fact below was verified against the running system on 2026-07-13 (live upload
+# traced end to end, DB inspected, UI driven in Chrome). Where something is broken or
+# absent it says so — a knowledge graph that only records the happy path teaches the
+# model to expect one.
+#
+# Loaded by src/services/platform_kg.py into Neo4j.
+
+processes:
+  - id: document_ingest
+    name: Document ingest
+    summary: >
+      A document travels UI -> gateway -> S3 -> Postgres trigger -> BP_Backend watcher ->
+      extraction -> _raw -> _stg -> _trgt -> API -> UI. It is only visible in the product
+      once it reaches _trgt.
+    stages:
+      - id: ui_capture
+        name: UI capture
+        detail: >
+          SpendIQ dropzones call siqPickFiles(documentType), which feeds a hidden file
+          input to the React bridge window.__SPENDIQ_UPLOAD__.
+        component: beyond_procwise_ui/src/modules/SpendIQ/engine.js
+      - id: presign
+        name: Presign (and this is where the pipeline REALLY starts)
+        detail: >
+          POST /data-integration/presigned-url returns an S3 PUT url + processId +
+          sessionId, and INSERTs proc.process_monitor with status='Running'. That INSERT
+          fires the DB trigger — so extraction begins BEFORE the browser has uploaded the
+          file. The watcher therefore waits for the object to land (UPLOAD_FILE_WAIT_TIMEOUT_S).
+        component: beyond_procwaise_api Data-integration.controller
+      - id: s3_put
+        name: Browser PUTs the file to S3
+        detail: >
+          A bare fetch with no Authorization header — an auth header invalidates the
+          presigned signature. Key is documents/{documentType}/{fileName}, which is NOT
+          unique: two users uploading 'quote.pdf' overwrite each other.
+      - id: confirm
+        name: Confirm upload
+        detail: >
+          POST /data-integration/confirm-upload sets status='Completed'. It does NOT
+          trigger extraction, despite the UI comment saying so — the trigger already fired
+          at presign.
+      - id: extract
+        name: Extraction
+        detail: >
+          proc.process_monitor status Running -> Extracting -> Extracted|Extraction_Failed.
+          One pipeline only: src/services/extraction/ (L1 regex -> L2 engineered ->
+          L3 judge). AgentNick:unified does the reading.
+        component: src/services/extraction/dispatch.py
+      - id: raw
+        name: "_raw — one row per DOCUMENT"
+        detail: >
+          bp_*_raw keeps a row per uploaded document (process_monitor_id). This is the tier
+          that preserves every version of a document.
+      - id: stg
+        name: "_stg — one row per BUSINESS KEY"
+        detail: >
+          bp_*_stg is keyed on the document's business id (invoice_id / quote_id / po_id).
+          Two documents carrying the SAME invoice number collapse to one row here — the
+          later upload updates the earlier. Supplier resolution happens on the way in.
+      - id: trgt
+        name: "_trgt — the only tier the product reads"
+        detail: >
+          bp_*_trgt is the final tier. If a document does not reach _trgt it is invisible in
+          the UI, no matter that extraction succeeded. Promotion is gated (see promotion).
+      - id: surface
+        name: API -> UI
+        detail: The Node gateway reads _trgt and serves /spendiq/* to SpendIQ.
+
+  - id: promotion
+    name: Promotion (_stg -> _trgt)
+    summary: >
+      The confidence/link gate that decides whether an extracted document becomes visible.
+    stages:
+      - id: gate_invoice
+        name: Invoice needs its parent PO
+        detail: >
+          An invoice must reference a PO — that reference IS the three-way match. Without
+          one it is held (no_parent_reference / parent_not_found) for a human.
+      - id: gate_quote
+        name: A quote needs no PO
+        detail: >
+          A quote is raised BEFORE the PO exists, so carrying no PO reference is its normal
+          state. It promotes on extraction confidence alone. (Until 2026-07-13 quotes were
+          held waiting for a parent that had not been raised yet, so every uploaded quote was
+          invisible forever.)
+      - id: gate_conf
+        name: Confidence floor
+        detail: PROMOTE_MIN_CONFIDENCE (90) on extraction; PROMOTE_MIN_LINK_SCORE (80) on the link.
+    component: src/services/linking_engine.py
+
+  - id: money_reading
+    name: Reading the money block
+    summary: >
+      Three signals reconciled by the document's own arithmetic — the model's figures, the
+      printed labelled totals, and closure (subtotal + charges + tax == grand total). The
+      model wins whenever its numbers add up. Nothing is ever synthesised: an unreadable
+      value stays NULL and raises a discrepancy.
+    component: src/services/extraction/context_layer.py
+
+agents:
+  - id: data_extraction
+    name: DataExtractionAgent
+    does: Reads a document into structured fields + line items.
+    reads: [process_monitor]
+    writes: [bp_invoice_raw, bp_quote_raw, bp_purchase_order_raw]
+  - id: discrepancy_detection
+    name: DiscrepancyDetectionAgent
+    does: Raises findings when a document contradicts itself or its PO.
+    writes: [bp_extraction_discrepancy]
+  - id: supplier_ranking
+    name: SupplierRankingAgent
+    does: >
+      Ranks the suppliers competing on ONE deal, on their standing (latest) quote, scored as
+      a ratio to the cheapest bid. Needs 2+ bidders. Unmeasured metrics stay NULL, never 0.
+    reads: [bp_quote_trgt, bp_supplier]
+    writes: [bp_supplier_ranking]
+  - id: opportunity_miner
+    name: OpportunityMinerAgent
+    does: Finds savings opportunities; supplies supplier_candidates to ranking.
+    writes: [bp_opportunity]
+  - id: quote_evaluation
+    name: QuoteEvaluationAgent
+    does: Scores quotes on a deal.
+    writes: [bp_quote_evaluation]
+
+screens:
+  - id: analyse
+    name: Analyse
+    shows: KPIs, trends, insights over the extracted corpus.
+    backed_by: [/spendiq/metrics, /spendiq/analyse, /spendiq/spend-series]
+  - id: quotes
+    name: Quotes
+    shows: Every quote in _trgt.
+    backed_by: [/spendiq/quotes]
+    reads_tables: [bp_quote_trgt]
+  - id: purchase_orders
+    name: Purchase orders
+    backed_by: [/spendiq/purchase-orders]
+    reads_tables: [bp_purchase_order_trgt]
+  - id: invoices
+    name: Invoices
+    shows: Invoices.
+    backed_by: []
+    known_gap: >
+      There is NO /spendiq/invoices endpoint. The nav shows a count but the view has no
+      dedicated data source.
+  - id: suppliers
+    name: Suppliers
+    backed_by: [/spendiq/suppliers]
+    reads_tables: [bp_supplier, bp_supplier_ranking, bp_invoice_trgt]
+    known_gap: >
+      The gateway returns rankScore, but the Suppliers table renders no score column — the
+      supplier ranking is invisible in the UI by choice (2026-07-13).
+  - id: action_centre
+    name: Action Centre
+    shows: Discrepancies + actions raised against documents.
+    backed_by: [/spendiq/discrepancies, /spendiq/alerts]
+    reads_tables: [bp_extraction_discrepancy]
+  - id: compliance
+    name: Compliance
+    backed_by: [/spendiq/discrepancies/metrics]
+  - id: negotiations
+    name: Negotiations
+    backed_by: [/spendiq/negotiations]
+  - id: tprm
+    name: Third-party risk
+    backed_by: [/spendiq/tprm/suppliers]
+
+models:
+  - id: agentnick_unified
+    name: BeyondProcwise/AgentNick:unified
+    role: >
+      The ONE model. Extraction and reasoning both. The :extract specialist was retired on
+      2026-07-13 — unified matched it exactly on the money gold set and ran faster.
+
+known_gaps:
+  - id: s3_key_collision
+    what: S3 keys are documents/{type}/{filename} with no uniqueness — same filename overwrites.
+  - id: doc_identity
+    what: >
+      Two documents with the same invoice number collapse to one _stg row; the later
+      overwrites the earlier. _raw keeps both.
+  - id: no_ingest_status_ui
+    what: >
+      The UI cannot show a user whether their upload extracted. No invoices endpoint, and
+      the upload websocket delivers no progress frames — the 'done' event is a 45s timeout.
