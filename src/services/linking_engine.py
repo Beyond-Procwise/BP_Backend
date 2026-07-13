@@ -30,7 +30,25 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Tunables (env-overridable)
 # ---------------------------------------------------------------------------
-MIN_CONFIDENCE = float(os.getenv("PROMOTE_MIN_CONFIDENCE", "90"))   # _stg extraction conf
+# The floor below which a staged row is not trusted enough to publish.
+#
+# Read `promotion._compute_confidence_score` before touching this: the score is
+# COMPLETENESS, not correctness. Required fields score 2, optional fields 1, and the total
+# is a percentage of the schema. Its own docstring says it: "a row that has every required
+# field filled but no secondaries lands at ~50%."
+#
+# It was set to 90, which demanded that a document carry ~90% of every field the schema
+# defines. Real documents do not: a purchase order that states no incoterm, no requisition
+# id and no delivery region is a perfectly ordinary purchase order, and it scored 70-85 and
+# was held. On the SpendIQDocs corpus that silently held 14 of 25 documents -- every one of
+# them extracted correctly. We were rejecting documents for not containing fields they were
+# never going to contain.
+#
+# A row missing a REQUIRED field never gets this far: extraction raises a blocking
+# `missing_required` discrepancy and the row never reaches _stg. So the floor's only job is
+# to catch a near-empty extraction, and 50 -- the score of a document with all its required
+# fields and no optional ones -- is where that line actually sits.
+MIN_CONFIDENCE = float(os.getenv("PROMOTE_MIN_CONFIDENCE", "50"))   # _stg extraction conf
 MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))   # F auto-promote gate
 REVIEW_MIN = float(os.getenv("PROMOTE_REVIEW_MIN", "65"))           # F floor for human review
 
