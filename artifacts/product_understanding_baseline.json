@@ -1,0 +1,255 @@
+{
+  "bare": {
+    "coverage": 0.4394,
+    "leak_rate": 0.0,
+    "empty_rate": 0.0,
+    "by_category": {
+      "entity": 0.5,
+      "flow": 0.3333,
+      "gap": 0.0,
+      "gate": 0.75,
+      "screen": 0.5,
+      "why": 0.5
+    },
+    "per_question": [
+      {
+        "id": "flow_upload_to_visible",
+        "coverage": 0.3333,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "read_automatically",
+          "not_visible_until_passes"
+        ],
+        "answer": "You tap the **Upload** button, select your invoice file, and see a progress bar appear on the screen. Once it finishes, you\u2019ll see a green checkmark and a message like \u201cUploaded successfully\u201d \u2014 the file now appears in your **Documents** list, usually under a section labeled **\u201cPending\u201d** or **\u201cProcessing.\u201d**\n\nYou\u2019ll see the invoice listed with a status indicator \u2014 it might say **\u201cProcessing\u201d** or "
+      },
+      {
+        "id": "flow_upload_where",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "analyse_or_opportunity"
+        ],
+        "answer": "To upload a purchase order in ProcWise:\n\n1. Open the deal you\u2019re working on.\n2. On the screen, look for a section labeled **\"Documents\"** or **\"Attachments\"** \u2014 it\u2019s usually in the middle or right side of the screen.\n3. You\u2019ll see a button that says **\"Upload a file\"** or shows a cloud icon with an arrow pointing up.\n4. Tap or click that button.\n5. Choose your purchase order from your device \u2014 it "
+      },
+      {
+        "id": "gate_invoice_needs_po",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "needs_matching_po"
+        ],
+        "answer": "If your invoice extracted correctly \u2014 the numbers look right, and the details appear accurate \u2014 but it never showed up in the product, here\u2019s what might be happening:\n\nYou may have uploaded the invoice, but it didn\u2019t complete the final step of being **approved and added to your deal**.\n\nCheck the following on your screen:\n\n1. **Look for a \"Pending Review\" or \"Needs Approval\" status** \u2014 sometimes, "
+      },
+      {
+        "id": "gate_quote_no_po",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [],
+        "answer": "No \u2014 a quote does not need a matching purchase order to become visible.  \n\nWhen you create a quote in ProcWise, it appears immediately in your document list, just like any other document. You can view, edit, and send it to a vendor right away.  \n\nA purchase order is only required if you're converting the quote into a formal order \u2014 but the quote itself is visible and actionable from the moment you"
+      },
+      {
+        "id": "why_no_supplier_ranking",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "needs_two_bidders"
+        ],
+        "answer": "If you open a deal and don\u2019t see a supplier ranking, it means the system hasn\u2019t yet evaluated or assigned a ranking to the suppliers for that specific deal.\n\nThis can happen for a few reasons:\n\n- **The deal is still in progress** \u2014 Supplier rankings are typically calculated after you\u2019ve added suppliers and they\u2019ve responded with quotes or proposals. If no suppliers have submitted offers yet, there"
+      },
+      {
+        "id": "why_duplicate_invoice_number",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "later_wins"
+        ],
+        "answer": "If two different people upload two different documents with the same invoice number, the product will show you both documents side by side, clearly labeled with who uploaded them and when. You\u2019ll see a notification that says \u201cDuplicate Invoice Number Detected\u201d \u2014 this means the system has flagged the same invoice number appearing in two separate uploads.\n\nYou\u2019ll be able to review both documents, co"
+      },
+      {
+        "id": "why_money_null",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "never_invented"
+        ],
+        "answer": "On the invoice screen, you\u2019ll see the total field blank \u2014 that means the system didn\u2019t automatically calculate it because it couldn\u2019t confirm the correct amount based on the data provided.\n\nThe system doesn\u2019t estimate totals because accuracy is critical. If the total is missing, it\u2019s usually because one or more line items (like quantity, rate, or tax) weren\u2019t filled in correctly, or the invoice fo"
+      },
+      {
+        "id": "entity_deal",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "groups_documents"
+        ],
+        "answer": "In plain terms, a **deal** in this product is a single business agreement or transaction you're working on \u2014 like selling a service, signing a contract, or closing a sale.\n\nYou\u2019ll see each deal as a separate item in your list, with details like the customer\u2019s name, the amount, the stage it\u2019s in (like \"proposal sent\" or \"waiting for signature\"), and any documents attached (like a contract or invoic"
+      },
+      {
+        "id": "entity_discrepancy",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "mismatch"
+        ],
+        "answer": "A **discrepancy** is a difference between what\u2019s in your document (like an invoice or purchase order) and what\u2019s expected \u2014 for example, the amount, item, or date doesn\u2019t match what was agreed upon.\n\nOn your screen, you\u2019ll see a **discrepancy alert** \u2014 usually highlighted in red or marked with a warning icon \u2014 next to the specific line or field that doesn\u2019t match.\n\nWhat you should do:\n1. **Review "
+      },
+      {
+        "id": "gap_no_upload_progress",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "honest_no"
+        ],
+        "answer": "Yes \u2014 when you upload a document, you\u2019ll see a progress bar right on the upload screen. It shows how much of the file has been sent, and once the upload is complete, you\u2019ll see a checkmark if it succeeded, or a red error icon if it failed.\n\nIf it fails, the screen will show a clear message explaining what went wrong \u2014 like \"File too large\" or \"Connection issue\" \u2014 and you can try again right away.\n"
+      },
+      {
+        "id": "gap_same_filename",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "they_collide"
+        ],
+        "answer": "No, there\u2019s no problem with you and your colleague both uploading a file called 'quote.pdf'.  \n\nWhen you upload your file, you\u2019ll see it listed in the document section with the name you gave it \u2014 for example, \"quote.pdf (uploaded by you)\". Your colleague\u2019s file will appear as \"quote.pdf (uploaded by [colleague\u2019s name])\".  \n\nEach file is uniquely identified by who uploaded it and when, so there\u2019s n"
+      }
+    ]
+  },
+  "kg": {
+    "coverage": 0.2576,
+    "leak_rate": 0.0,
+    "empty_rate": 0.0,
+    "by_category": {
+      "entity": 0.25,
+      "flow": 0.3333,
+      "gap": 0.5,
+      "gate": 0.25,
+      "screen": 0.0,
+      "why": 0.1667
+    },
+    "per_question": [
+      {
+        "id": "flow_upload_to_visible",
+        "coverage": 0.3333,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "read_automatically",
+          "not_visible_until_passes"
+        ],
+        "answer": "I don't have access to the internal details of how ProcWise processes documents at this time. I can't explain what happens after you upload an invoice or why it might not be showing yet. \n\nFor now, try refreshing the page or checking the \"Invoices\" tab again. If it still doesn\u2019t appear, the document may be stuck in processing or there could be an issue with the upload. You may want to contact supp"
+      },
+      {
+        "id": "flow_upload_where",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "analyse_or_opportunity",
+          "drop_or_attach"
+        ],
+        "answer": "I don't know where to upload a purchase order because the platform description is currently unavailable. Please check back later or contact support for assistance."
+      },
+      {
+        "id": "gate_invoice_needs_po",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "needs_matching_po",
+          "held_for_human"
+        ],
+        "answer": "I don't know why your invoice didn't show up in the product, even though the numbers extracted correctly. I can't access the internal details of the system to explain what might have gone wrong. Please check with your team or support for help."
+      },
+      {
+        "id": "gate_quote_no_po",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "quote_comes_first"
+        ],
+        "answer": "I don't know how quotes and purchase orders are handled in terms of visibility within ProcWise. I can't confirm whether a quote needs a matching purchase order to become visible, as this information isn't available in the current knowledge base."
+      },
+      {
+        "id": "why_no_supplier_ranking",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "needs_two_bidders",
+          "ranks_quotes"
+        ],
+        "answer": "I don't know why your deal has no supplier ranking. The system doesn't show rankings if there aren't enough suppliers evaluated, or if the deal hasn't progressed past the initial stages where rankings are calculated. You may want to check if suppliers have been added and if their responses have been processed. If the issue persists, contact support for help."
+      },
+      {
+        "id": "why_duplicate_invoice_number",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "collapse_to_one",
+          "later_wins"
+        ],
+        "answer": "I don't know how the product handles two different documents with the same invoice number."
+      },
+      {
+        "id": "why_money_null",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "never_invented"
+        ],
+        "answer": "I don't know why the total is blank on your invoice. The system doesn't automatically calculate or estimate totals \u2014 it relies on the invoice data being clearly visible and correctly extracted. If the total is missing, it may be because the system couldn't read it due to formatting, poor image quality, or the field being obscured. You\u2019ll need to check the invoice image and ensure the total is clea"
+      },
+      {
+        "id": "entity_deal",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "groups_documents"
+        ],
+        "answer": "I don't have access to the platform description at this time, so I can't provide a confirmed explanation of what a 'deal' is in ProcWise. I recommend checking the app's help section or contacting support for the most accurate and up-to-date information."
+      },
+      {
+        "id": "entity_discrepancy",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "mismatch",
+          "human_reviews"
+        ],
+        "answer": "I don't know what a discrepancy is in the context of ProcWise, or what you should do about one. I can't provide guidance on this until I have more information about how the system defines or handles discrepancies."
+      },
+      {
+        "id": "gap_no_upload_progress",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [],
+        "answer": "I don't know how the upload progress screen works in ProcWise. I can't describe the interface or what you'd see during or after uploading a document."
+      },
+      {
+        "id": "gap_same_filename",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "missed": [
+          "they_collide"
+        ],
+        "answer": "I don't know how the platform handles duplicate filenames during uploads. Please check with your team or contact support for clarification."
+      }
+    ]
+  }
+}
