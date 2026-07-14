@@ -551,6 +551,74 @@ def test_process_documents_with_explicit_keys_fetches_exactly_those_no_listing(m
     assert len(result["details"]) == 2
 
 
+def test_process_documents_with_a_bare_string_s3_object_keys_is_one_key_not_chars(monkeypatch):
+    """Found during live verification of CRITICAL 3: a human answering the (shared)
+    s3_object_keys HITL field by TYPING a single key gets a bare string, not a
+    list — the free-text fallback next to the file picker submits exactly that.
+    `for key in s3_object_keys` over a plain string iterates its CHARACTERS
+    ('d','o','c',...), so a real, existing key would be shredded into
+    single-letter non-matches and always report "matched no documents", even
+    when the file is right there. A bare string must be treated as ONE key.
+    """
+    nick = SimpleNamespace(
+        settings=SimpleNamespace(
+            s3_bucket_name="bucket",
+            s3_prefixes=["should/never/be/used/"],
+            data_extraction_max_workers=2,
+            qdrant_collection_name="collection",
+            extraction_model="model",
+            document_extraction_model="parser",
+            force_ocr_vendors=[],
+        ),
+        s3_pool_size=2,
+    )
+    agent = DataExtractionAgent(nick)
+    monkeypatch.setattr(
+        agent, "_iter_s3_keys",
+        lambda client, prefix: (_ for _ in ()).throw(
+            AssertionError(f"_iter_s3_keys must never be called (prefix={prefix!r})")
+        ),
+    )
+
+    @contextmanager
+    def fake_borrow():
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(agent, "_borrow_s3_client", fake_borrow)
+
+    processed: List[str] = []
+    monkeypatch.setattr(
+        agent, "_process_single_document",
+        lambda key, *, context=None: processed.append(key) or {"object_key": key, "status": "success"},
+    )
+
+    class ImmediateExecutor:
+        def __init__(self, max_workers):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            class ImmediateFuture:
+                def result(self_inner):
+                    return fn(*args, **kwargs)
+
+            return ImmediateFuture()
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", ImmediateExecutor)
+    monkeypatch.setattr(concurrent.futures, "as_completed", lambda futures: futures)
+
+    result = agent._process_documents(s3_object_keys="documents/workspace/A.pdf")
+
+    assert processed == ["documents/workspace/A.pdf"]
+    assert result["status"] == "completed"
+    assert len(result["details"]) == 1
+
+
 def test_vectorize_structured_data_creates_points(monkeypatch):
     captured = {}
 

@@ -1619,7 +1619,16 @@ class DataExtractionAgent(BaseAgent):
             # EXACTLY these. No prefix listing, no globbing, no common-prefix
             # arithmetic that could sweep in every other document that happens
             # to share the same (shared, flat) upload folder.
-            for key in s3_object_keys:
+            #
+            # s3_object_keys is also the field a human can answer by hand-typing
+            # a single key into the free-text fallback next to the picker (both
+            # answer the same HITL request) — that arrives as a bare STRING, not
+            # a list. `for key in "a/b.pdf"` would iterate its CHARACTERS, so a
+            # real, existing key would be shredded into single letters and
+            # always come back as "matched no documents". Treat a string as ONE
+            # key, exactly like s3_object_key below.
+            keys_iter = [s3_object_keys] if isinstance(s3_object_keys, str) else s3_object_keys
+            for key in keys_iter:
                 if key:
                     key_map.setdefault(key, None)
         elif s3_object_key:
