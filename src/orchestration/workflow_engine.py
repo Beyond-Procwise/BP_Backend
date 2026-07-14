@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 class NodeStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_INPUT = "awaiting_input"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
