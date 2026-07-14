@@ -74,9 +74,16 @@ class DummyNick:
         self.settings = SimpleNamespace(
             extraction_model="gpt-oss", script_user="tester"
         )
-        # Minimal query engine stub for agent initialisation
+        # Minimal query engine stub for agent initialisation. The fetch_*
+        # methods below must exist (returning legitimately-empty frames)
+        # rather than being absent -- an absent method raises AttributeError,
+        # which the agent now correctly treats as a load FAILURE rather than
+        # "queried and found nothing", and refuses to rank on top of it.
         self.query_engine = SimpleNamespace(
-            fetch_supplier_data=lambda *_: []
+            fetch_supplier_data=lambda *_: [],
+            fetch_purchase_order_data=lambda **_: pd.DataFrame(),
+            fetch_invoice_data=lambda **_: pd.DataFrame(),
+            fetch_procurement_flow=lambda **_: pd.DataFrame(),
         )
 
 
@@ -355,6 +362,66 @@ def test_ranking_refuses_to_publish_when_nothing_is_measurable(monkeypatch):
 
     assert output.status == AgentStatus.FAILED
     assert "insufficient data" in (output.error or "").lower()
+
+
+def test_ranking_does_not_return_clean_success_when_invoice_load_fails(monkeypatch):
+    """A load FAILURE (exception) is not the same as legitimately-empty data.
+
+    Before the fix, ``_load_procurement_tables`` swallowed the exception from
+    ``fetch_invoice_data``, substituted an empty DataFrame, and the agent kept
+    going -- returning AgentStatus.SUCCESS as if the ranking were computed
+    from complete evidence. That is a lie: the ranking was computed with a
+    material evidence source missing, not with a source that was checked and
+    found empty. The agent must not present that as a clean, unqualified
+    success.
+    """
+    nick = DummyNick()
+
+    def _raise_invoice_load(*_args, **_kwargs):
+        raise RuntimeError("relation \"proc.bp_invoice_trgt\" boom")
+
+    nick.query_engine = SimpleNamespace(
+        fetch_supplier_data=lambda *_: [],
+        fetch_purchase_order_data=lambda **_: pd.DataFrame(),
+        fetch_invoice_data=_raise_invoice_load,
+        fetch_procurement_flow=lambda **_: pd.DataFrame(),
+    )
+
+    agent = SupplierRankingAgent(nick)
+    monkeypatch.setattr(agent, "_read_table", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(agent, "_generate_justification", lambda row, criteria: "ok")
+
+    df = pd.DataFrame(
+        {
+            "supplier_id": ["S1", "S2"],
+            "supplier_name": ["Alpha", "Beta"],
+            "price": [50.0, 40.0],
+        }
+    )
+    context = AgentContext(
+        workflow_id="wf1",
+        agent_id="supplier_ranking",
+        user_id="user",
+        input_data={
+            "supplier_data": df,
+            "intent": {"parameters": {"criteria": ["price"], "top_n": 2}},
+            "query": "rank suppliers",
+        },
+    )
+
+    output = agent.run(context)
+
+    # Whatever representation is chosen, it must not be a clean, silent
+    # SUCCESS that hides the fact that invoice evidence failed to load.
+    if output.status == AgentStatus.SUCCESS:
+        failures = output.data.get("evidence_load_failures") or []
+        assert "invoices" in failures, (
+            "SUCCESS was returned without naming the invoice load failure "
+            "in the output -- this hides the missing evidence."
+        )
+    else:
+        assert output.status == AgentStatus.FAILED
+        assert "invoice" in (output.error or "").lower()
 
 
 def test_supplier_ranking_normalises_weights_to_available_metrics(monkeypatch):

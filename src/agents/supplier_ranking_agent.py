@@ -751,6 +751,29 @@ class SupplierRankingAgent(BaseAgent):
                 if sid
             }
         tables = self._load_procurement_tables(supplier_scope, df)
+        load_failures = tables.pop("_load_failures", []) if isinstance(tables, dict) else []
+        if load_failures:
+            # These are load FAILURES (exceptions), not "checked and found
+            # empty" tables. Purchase orders, invoices, and procurement flow
+            # feed spend/delivery/price metrics that materially affect the
+            # score, so ranking on top of a failed load would present a
+            # result as sound when the evidence behind it is missing. Refuse,
+            # the same way we refuse to publish a ranking with no measurable
+            # metric at all.
+            reason = (
+                "cannot compute a trustworthy ranking: failed to load "
+                f"evidence ({', '.join(sorted(load_failures))}). Ranking "
+                "withheld rather than computed from partial/missing data."
+            )
+            logger.error("SupplierRankingAgent: %s", reason)
+            return self._with_plan(
+                context,
+                AgentOutput(
+                    status=AgentStatus.FAILED,
+                    data={"evidence_load_failures": load_failures},
+                    error=reason,
+                ),
+            )
         df = self._merge_supplier_metrics(df, tables)
         profiles = self._build_supplier_profiles(tables, df["supplier_id"].astype(str))
 
@@ -1325,6 +1348,7 @@ class SupplierRankingAgent(BaseAgent):
                 }
 
         tables: Dict[str, pd.DataFrame] = {}
+        load_failures: List[str] = []
 
         try:
             po_df = self.query_engine.fetch_purchase_order_data(
@@ -1334,6 +1358,7 @@ class SupplierRankingAgent(BaseAgent):
         except Exception:
             logger.exception("Failed to load purchase orders")
             po_df = pd.DataFrame()
+            load_failures.append("purchase_orders")
         tables["purchase_orders"] = self._map_supplier_ids(po_df, ("supplier_name",))
 
         try:
@@ -1344,6 +1369,7 @@ class SupplierRankingAgent(BaseAgent):
         except Exception:
             logger.exception("Failed to load invoices")
             invoice_df = pd.DataFrame()
+            load_failures.append("invoices")
         tables["invoices"] = self._map_supplier_ids(invoice_df, ("supplier_name",))
 
         po_ids: List[str] = []
@@ -1398,6 +1424,7 @@ class SupplierRankingAgent(BaseAgent):
         except Exception:
             logger.exception("Failed to load procurement flow")
             flow = pd.DataFrame()
+            load_failures.append("procurement_flow")
         flow = self._map_supplier_ids(flow, ("supplier_name",))
         if not flow.empty and suppliers and "supplier_id" in flow.columns:
             supplier_series = flow["supplier_id"].apply(self._coerce_supplier_id)
@@ -1405,6 +1432,11 @@ class SupplierRankingAgent(BaseAgent):
             flow = flow[mask].copy()
             flow["supplier_id"] = supplier_series.loc[flow.index]
         tables["procurement_flow"] = flow
+        # Not a data table -- surfaced separately so the caller can tell
+        # "loaded, legitimately empty" apart from "failed to load". Never
+        # silently drop this: a ranking computed while evidence failed to
+        # load must not be presented as sound.
+        tables["_load_failures"] = load_failures
         return tables
 
     # ------------------------------------------------------------------
