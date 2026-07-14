@@ -33,8 +33,12 @@ def test_get_agent_types_returns_list_from_real_definitions_file():
     assert isinstance(body, list)
     assert body, "expected at least one agent in agent_definitions.json"
     first = body[0]
-    for required in ("agentId", "agentType", "description", "dependencies"):
+    for required in ("agentId", "slug", "description", "dependencies"):
         assert required in first, f"missing field {required!r}: {first}"
+
+    # `agentType` carried the Python class name and is deliberately gone: nothing consumed
+    # it (the UI resolves agents by slug), so it only ever leaked our internals to callers.
+    assert "agentType" not in first, "the Python class name is back in the public catalogue"
 
 
 def test_get_agent_types_count_matches_definitions_file():

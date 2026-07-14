@@ -99,9 +99,18 @@ def test_workflow_types_endpoint():
 
     resp = client.get("/workflows/types")
     assert resp.status_code == 200
-    types = [item["agentType"] for item in resp.json()]
-    assert "OpportunityMinerAgent" in types
-    assert "DiscrepancyDetectionAgent" in types
+    body = resp.json()
+
+    # The catalogue is keyed by slug. It used to also carry `agentType` — the Python class
+    # name — which nothing consumed: the UI looks agents up by slug and the gateway never
+    # reads it. It was shipping our class names to the browser for no one.
+    slugs = [item["slug"] for item in body]
+    assert "opportunity_miner" in slugs
+    assert "discrepancy_detection" in slugs
+
+    # And the class names must not come back.
+    assert "OpportunityMinerAgent" not in resp.text
+    assert "DiscrepancyDetectionAgent" not in resp.text
 
 
 def test_email_workflow_returns_action_id(monkeypatch):
