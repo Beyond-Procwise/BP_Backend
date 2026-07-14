@@ -847,6 +847,54 @@ def test_run_propagates_discrepancy_fail(monkeypatch):
     assert output.error == "db down"
 
 
+def test_run_rejects_a_blank_explicit_source_instead_of_defaulting_to_the_corpus(monkeypatch):
+    """CRITICAL 2, THE regression guard. {"s3_prefix": ""} is a source that WAS
+    supplied and was blank — not the absence of a source. It must never be
+    silently swapped for settings.s3_prefixes (the default corpus sweep).
+    _process_documents must not even be called.
+    """
+    nick = SimpleNamespace(settings=SimpleNamespace(extraction_model="m", s3_prefixes=["everything/"]))
+    agent = DataExtractionAgent(nick)
+
+    was_called = []
+    monkeypatch.setattr(
+        agent, "_process_documents",
+        lambda *a, **k: was_called.append(True) or {"status": "completed", "details": []},
+    )
+
+    ctx = AgentContext(
+        workflow_id="w1", agent_id="data_extraction", user_id="u1",
+        input_data={"s3_prefix": "", "query": None},
+    )
+    output = agent.run(ctx)
+    assert not was_called, "_process_documents must not run against a blank explicit source"
+    assert output.status is AgentStatus.FAILED
+    assert "blank" in output.error.lower()
+    assert "s3_prefix" in output.error
+
+
+def test_run_with_no_source_at_all_still_sweeps_the_default_corpus(monkeypatch):
+    """Regression guard for the OTHER half of CRITICAL 2: when NO source key is
+    present at all (the scheduled default-corpus sweep), behaviour is unchanged
+    — _process_documents runs and a SUCCESS with zero docs is not an error."""
+    nick = SimpleNamespace(settings=SimpleNamespace(extraction_model="m"))
+    agent = DataExtractionAgent(nick)
+
+    monkeypatch.setattr(
+        agent, "_process_documents",
+        lambda p, k, **kwargs: {"status": "completed", "details": []},
+    )
+    monkeypatch.setattr(
+        DataExtractionAgent, "_run_discrepancy_detection",
+        lambda self, docs, ctx: AgentOutput(status=AgentStatus.SUCCESS, data={"mismatches": []}),
+    )
+
+    ctx = AgentContext(workflow_id="w1", agent_id="data_extraction", user_id="u1", input_data={})
+    output = agent.run(ctx)
+    assert output.status is AgentStatus.SUCCESS
+    assert output.data["summary"]["documents_provided"] == 0
+
+
 def test_llm_structured_pass_populates_header(monkeypatch):
     """Initial LLM pass should provide structured values and context."""
 

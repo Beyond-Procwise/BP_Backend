@@ -427,3 +427,62 @@ def test_get_run_surfaces_status_and_404s_for_unknown_run(client, _cleanup_test_
     assert r.status_code == 404
 
     client.delete(f"/agent-workflows/{wid}")
+
+
+def test_a_blank_payload_value_still_elicits_not_executes(client, _cleanup_test_rows, monkeypatch):
+    """CRITICAL 2, THE regression guard, at the HTTP layer.
+
+    POST /agent-workflows/{id}/run with a payload of {"s3_prefix": "", "query": None}
+    used to satisfy BOTH nodes' elicit groups (key presence, values never inspected)
+    and execute the workflow immediately, silently sweeping the entire default
+    corpus data_extraction would fall back to. It must now ask the same questions
+    as an empty payload would.
+    """
+    created_workflow_ids, created_run_ids = _cleanup_test_rows
+
+    calls = _spy_on_engine(client, monkeypatch)
+
+    wid = client.post("/agent-workflows", json={"name": "hitl-test", "graph": GRAPH}).json()["workflow_id"]
+    created_workflow_ids.append(wid)
+
+    run = client.post(
+        f"/agent-workflows/{wid}/run",
+        json={"payload": {"s3_prefix": "", "query": None}},
+    ).json()
+    created_run_ids.append(run["run_id"])
+
+    assert run["status"] == "awaiting_input"
+    fields = {q["required_field"] for q in run["pending"]}
+    assert "s3_object_keys" in fields
+    assert "query" in fields
+    assert calls == [], "the workflow must not have executed against a blank source"
+
+    client.delete(f"/agent-workflows/{wid}")
+
+
+def test_submitting_a_blank_answer_is_rejected(client, _cleanup_test_rows):
+    """CRITICAL 2: POST /runs/{id}/input {"answer": ""} used to mark the question
+    answered and (once it was the last open question) execute the workflow on a
+    blank. It must be rejected outright, and the question must remain open.
+    """
+    created_workflow_ids, created_run_ids = _cleanup_test_rows
+
+    wid = client.post("/agent-workflows", json={"name": "hitl-test", "graph": GRAPH}).json()["workflow_id"]
+    created_workflow_ids.append(wid)
+
+    run = client.post(f"/agent-workflows/{wid}/run", json={"payload": {}}).json()
+    created_run_ids.append(run["run_id"])
+    assert run["status"] == "awaiting_input"
+    request_id = run["pending"][0]["request_id"]
+
+    r = client.post(
+        f"/agent-workflows/runs/{run['run_id']}/input",
+        json={"request_id": request_id, "answer": ""},
+    )
+    assert r.status_code == 400, r.text
+
+    got = client.get(f"/agent-workflows/runs/{run['run_id']}")
+    still_open_ids = {q["request_id"] for q in got.json()["pending"]}
+    assert request_id in still_open_ids, "a rejected blank answer must leave the question open"
+
+    client.delete(f"/agent-workflows/{wid}")

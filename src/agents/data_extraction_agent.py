@@ -1358,6 +1358,11 @@ class DataExtractionAgent(BaseAgent):
         """
         return self.get_workflow_context() is not None
 
+    # The three source fields, in the order _process_documents prefers them
+    # (exact keys > single exact key > prefix listing). Used to detect a
+    # "supplied but blank" source (CRITICAL 2).
+    _SOURCE_FIELDS = ("s3_object_keys", "s3_object_key", "s3_prefix")
+
     def run(self, context: AgentContext) -> AgentOutput:
         try:
             raw_input = context.input_data if isinstance(context.input_data, dict) else {}
@@ -1375,6 +1380,38 @@ class DataExtractionAgent(BaseAgent):
                 s3_object_key=s3_object_key,
                 s3_object_keys=s3_object_keys,
             )
+
+            # CRITICAL 2: a source key that is PRESENT but blank/empty (e.g. a UI
+            # form submitted with an empty field, or a caller sending
+            # {"s3_prefix": ""}) is a source that WAS supplied — never the same
+            # as no source being supplied at all. It must never be silently
+            # swapped for settings.s3_prefixes (the default corpus sweep). Only
+            # the true ABSENCE of every one of these keys means "no source at
+            # all", which is the scheduled default-corpus sweep and is left
+            # completely unchanged below.
+            supplied = {k: raw_input[k] for k in self._SOURCE_FIELDS if k in raw_input}
+            non_blank = {k: v for k, v in supplied.items() if v}
+            if supplied and not non_blank:
+                err = (
+                    "a document source was supplied but was blank/empty ("
+                    + ", ".join(sorted(supplied)) + "); refusing to fall back "
+                    "to the default corpus"
+                )
+                self._log_workflow_event(
+                    event="batch_complete",
+                    workflow_id=workflow_id,
+                    agent_name=agent_name,
+                    duration_seconds=time.perf_counter() - batch_start,
+                    documents_total=0,
+                    documents_success=0,
+                    documents_failed=0,
+                    status="failed",
+                    error=err,
+                )
+                return self._with_plan(
+                    context, AgentOutput(status=AgentStatus.FAILED, data={}, error=err),
+                )
+
             batch_status = "success"
             mismatches: List[Dict[str, Any]] = []
             data = self._process_documents(

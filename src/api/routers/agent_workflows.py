@@ -48,6 +48,21 @@ class AnswerBody(BaseModel):
     answered_by: str = "human"
 
 
+def _is_blank_answer(value: Any) -> bool:
+    """None, an empty/whitespace-only string, or an empty list/dict — the same
+    "presence isn't enough, the value must be real" test elicitation.py applies
+    to a group before treating it as satisfied (see CRITICAL 2). Without this,
+    ``POST /runs/{id}/input {"answer": ""}`` marked the question answered and,
+    once it was the last open one, executed the workflow on a blank."""
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    if isinstance(value, (list, dict)) and len(value) == 0:
+        return True
+    return False
+
+
 def _entry_of(graph: Dict[str, Any]) -> str:
     targets = {e["target"] for e in (graph.get("edges") or [])}
     return next(n["id"] for n in graph["nodes"] if n["id"] not in targets)
@@ -163,6 +178,9 @@ def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, A
     workflow_input_request_repo.answer for why the audit trail depends on
     this.
     """
+    if _is_blank_answer(body.answer):
+        raise HTTPException(status_code=400, detail="answer must not be blank")
+
     owner_run_id = reqrepo.request_run_id(body.request_id)
     if owner_run_id is None:
         raise HTTPException(status_code=404, detail=f"No such request {body.request_id}")

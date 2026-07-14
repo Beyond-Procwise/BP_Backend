@@ -45,6 +45,25 @@ def _ancestors(node_id: str, edges: List[Dict[str, str]]) -> Set[str]:
     return seen
 
 
+def _has_real_value(container: Dict[str, Any], key: str) -> bool:
+    """Is ``key`` present in ``container`` AND carrying an actual, non-empty value?
+
+    A group used to be satisfied by mere key PRESENCE — ``available = ... | set(payload)
+    | set(answers)`` never looked at the values. That meant a blank input
+    ({"s3_prefix": ""}) or an unanswered None ({"query": None}) satisfied the group
+    exactly as well as a real answer, and the workflow executed on nothing. A key
+    whose value is None/""/[]/{} does NOT satisfy — only a genuine value does.
+    """
+    if key not in container:
+        return False
+    value = container[key]
+    if value is None:
+        return False
+    if isinstance(value, (str, list, dict, tuple, set)) and len(value) == 0:
+        return False
+    return True
+
+
 def pending_requests(
     graph: Dict[str, Any],
     payload: Dict[str, Any],
@@ -63,10 +82,17 @@ def pending_requests(
         for anc in _ancestors(node["id"], edges):
             upstream_keys.update(_outputs_of(by_id[anc]["agent_slug"]))
 
-        available = upstream_keys | set(payload) | set(answers)
-
         for group in get_elicit(slug):
-            if any(k in available for k in group["any_of"]):
+            # An upstream node's output is presence-only here (its actual value
+            # doesn't exist yet at elicitation time — it is produced when that
+            # node runs), so key presence is the right test for it. payload and
+            # answers, by contrast, carry real values right now, so a blank one
+            # must not satisfy the group.
+            satisfied = any(k in upstream_keys for k in group["any_of"]) or any(
+                _has_real_value(payload, k) or _has_real_value(answers, k)
+                for k in group["any_of"]
+            )
+            if satisfied:
                 continue
             requests.append(
                 InputRequest(

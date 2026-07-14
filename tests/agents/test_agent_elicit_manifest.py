@@ -23,8 +23,11 @@ def test_data_extraction_asks_for_documents():
     # document picker (the only UI path that actually knows what it uploaded)
     # must answer into this field — never a computed common prefix over a
     # shared upload folder (CRITICAL 1).
-    assert g["any_of"][0] == "s3_object_keys"
-    assert {"s3_prefix", "s3_object_key"} <= set(g["any_of"])
+    # document_ids is gone: it was never read by the agent and could never be
+    # answered (any_of[0] is always the required_field), so a payload/answer
+    # keyed on it silently satisfied the group and swept the entire default
+    # corpus (CRITICAL 2).
+    assert g["any_of"] == ["s3_object_keys", "s3_prefix", "s3_object_key"]
     assert g["type"] == "document_ids"
     assert g["prompt"]
 

@@ -32,8 +32,42 @@ def test_a_group_satisfied_by_the_run_payload_is_not_asked_for():
 
 
 def test_any_member_of_the_group_satisfies_it():
-    reqs = pending_requests(EXTRACT_THEN_RANK, payload={"document_ids": [1, 2]}, answers={})
+    """Real member of the group (s3_object_keys, the exact-keys list the document
+    picker submits) satisfies it. This USED to assert the opposite of real
+    behaviour: it answered with document_ids, a field that was in the any_of
+    but which the agent never read and could never actually be answered
+    (pending_requests always asks for any_of[0]) — so the old assertion
+    certified a guarantee the code could not honour."""
+    reqs = pending_requests(
+        EXTRACT_THEN_RANK, payload={"s3_object_keys": ["documents/workspace/a.pdf"]}, answers={}
+    )
     assert not [r for r in reqs if r.node_id == "n1"]
+
+
+def test_document_ids_no_longer_satisfies_the_group():
+    """document_ids was removed from data_extraction's any_of (CRITICAL 2): it was
+    unanswerable (any_of[0] is always the required_field asked for) and unread by
+    the agent, so answering it used to silently satisfy the group and let a run
+    sweep the entire default corpus. It must now still be asked for."""
+    reqs = pending_requests(EXTRACT_THEN_RANK, payload={"document_ids": [1, 2]}, answers={})
+    assert [r.node_id for r in reqs if r.node_id == "n1"] == ["n1"]
+
+
+def test_a_blank_value_does_not_satisfy_a_group():
+    """CRITICAL 2, THE regression guard: a key's mere PRESENCE in the payload used
+    to satisfy a group, even when its value was blank. A UI form field submitted
+    empty (or a caller sending {"s3_prefix": ""}) must still be asked for."""
+    reqs = pending_requests(
+        EXTRACT_THEN_RANK,
+        payload={"s3_prefix": "", "s3_object_key": None, "s3_object_keys": []},
+        answers={},
+    )
+    assert [r.node_id for r in reqs if r.node_id == "n1"] == ["n1"]
+
+
+def test_a_blank_answer_does_not_satisfy_a_group():
+    reqs = pending_requests(EXTRACT_THEN_RANK, payload={}, answers={"s3_prefix": ""})
+    assert [r.node_id for r in reqs if r.node_id == "n1"] == ["n1"]
 
 
 def test_a_prior_human_answer_satisfies_a_group():
