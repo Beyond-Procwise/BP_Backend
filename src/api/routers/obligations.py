@@ -81,6 +81,40 @@ def obligations_for_contract(document_id: str):
     }
 
 
+@router.get("/summary")
+def obligations_summary():
+    """Portfolio view: every contract we tried to read, and what came of it.
+
+    The runs are the point. A contract whose extraction FAILED has no obligations, so a
+    list of obligations alone renders it as invisible rather than as broken — the same
+    green zero, just moved into the UI. Callers must be able to see the failures.
+    """
+    runs = _rows(
+        """
+        SELECT document_id, status, n_grounded, n_dropped, error, created_date
+          FROM proc.bp_contract_obligation_run
+         ORDER BY created_date DESC
+        """,
+        (),
+    )
+    by_type = _rows(
+        """
+        SELECT obligation_type, count(*) AS n
+          FROM proc.bp_contract_obligation
+         GROUP BY obligation_type
+        """,
+        (),
+    )
+    return {
+        "contracts_read": len(runs),
+        "contracts_failed": sum(1 for r in runs if r["status"] == "failed"),
+        "total_obligations": sum(r["n_grounded"] for r in runs),
+        "total_dropped_ungrounded": sum(r["n_dropped"] for r in runs),
+        "by_type": {r["obligation_type"]: r["n"] for r in by_type},
+        "runs": runs,
+    }
+
+
 @router.get("")
 def search_obligations(
     party: str | None = Query(None, description="Entity bound by the obligation, e.g. a supplier"),
