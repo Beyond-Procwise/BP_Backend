@@ -1359,8 +1359,9 @@ class DataExtractionAgent(BaseAgent):
         return self.get_workflow_context() is not None
 
     # The three source fields, in the order _process_documents prefers them
-    # (exact keys > single exact key > prefix listing). Used to detect a
-    # "supplied but blank" source (CRITICAL 2).
+    # (exact keys > single exact key > prefix listing). Used both to detect a
+    # "supplied but blank" source (CRITICAL 2) and to build the C3 error
+    # message for a reference that matched nothing.
     _SOURCE_FIELDS = ("s3_object_keys", "s3_object_key", "s3_prefix")
 
     def run(self, context: AgentContext) -> AgentOutput:
@@ -1411,6 +1412,7 @@ class DataExtractionAgent(BaseAgent):
                 return self._with_plan(
                     context, AgentOutput(status=AgentStatus.FAILED, data={}, error=err),
                 )
+            explicit_source = bool(non_blank)
 
             batch_status = "success"
             mismatches: List[Dict[str, Any]] = []
@@ -1418,6 +1420,31 @@ class DataExtractionAgent(BaseAgent):
                 s3_prefix, s3_object_key, s3_object_keys=s3_object_keys, context=context,
             )
             docs = data.get("details", [])
+
+            if explicit_source and not docs:
+                # CRITICAL 3: an explicit reference (exact keys, a single key, or
+                # a prefix) was supplied and matched ZERO documents in S3. This
+                # must never report a green, empty success — that is exactly how
+                # a run over the right documents and a run over none at all used
+                # to look identical.
+                ref = non_blank.get("s3_object_keys") or non_blank.get("s3_object_key") \
+                    or non_blank.get("s3_prefix")
+                err = f"the document reference you supplied matched no documents: {ref!r}"
+                self._log_workflow_event(
+                    event="batch_complete",
+                    workflow_id=workflow_id,
+                    agent_name=agent_name,
+                    duration_seconds=time.perf_counter() - batch_start,
+                    documents_total=0,
+                    documents_success=0,
+                    documents_failed=0,
+                    status="failed",
+                    error=err,
+                )
+                return self._with_plan(
+                    context, AgentOutput(status=AgentStatus.FAILED, data={}, error=err),
+                )
+
             processing_issues = [
                 {
                     "doc_type": doc.get("doc_type", "Unknown"),

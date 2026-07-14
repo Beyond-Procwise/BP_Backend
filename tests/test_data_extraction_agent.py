@@ -895,6 +895,31 @@ def test_run_with_no_source_at_all_still_sweeps_the_default_corpus(monkeypatch):
     assert output.data["summary"]["documents_provided"] == 0
 
 
+def test_run_fails_when_an_explicit_reference_matches_no_documents(monkeypatch):
+    """CRITICAL 3, THE regression guard. An explicit document reference (a
+    prefix, a key, or a list of keys) that matches ZERO documents in S3 must
+    FAIL loudly — not report a green, empty success. This is the exact bug: a
+    human types 'INV-DOES-NOT-EXIST' and the workflow reports 'completed'
+    having extracted nothing.
+    """
+    nick = SimpleNamespace(settings=SimpleNamespace(extraction_model="m"))
+    agent = DataExtractionAgent(nick)
+
+    monkeypatch.setattr(
+        agent, "_process_documents",
+        lambda p, k, **kwargs: {"status": "completed", "details": []},
+    )
+
+    ctx = AgentContext(
+        workflow_id="w1", agent_id="data_extraction", user_id="u1",
+        input_data={"s3_prefix": "INV-DOES-NOT-EXIST"},
+    )
+    output = agent.run(ctx)
+    assert output.status is AgentStatus.FAILED
+    assert "INV-DOES-NOT-EXIST" in output.error
+    assert "matched no documents" in output.error
+
+
 def test_llm_structured_pass_populates_header(monkeypatch):
     """Initial LLM pass should provide structured values and context."""
 
