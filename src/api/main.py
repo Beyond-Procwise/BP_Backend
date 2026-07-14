@@ -240,6 +240,44 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("ExtractionHintStore init failed (non-critical)")
 
+        # ------------------------------------------------------------------
+        # These two MUST live here, inside lifespan.
+        #
+        # They were written as @app.on_event("startup") handlers, and this app is constructed
+        # with lifespan=... — which makes FastAPI ignore on_event entirely. So both ran
+        # exactly never, in silence, and the only way to notice was that a log line you
+        # expected was not there.
+        # ------------------------------------------------------------------
+
+        # Teach the output-safety gate our real route table, so it can recognise one of our
+        # own endpoints being quoted back at a user. Without this it falls back to pattern
+        # matching alone — which does still catch leaks, but it is the weaker half.
+        try:
+            from services import output_safety as _osafe
+
+            _osafe.register_routes(
+                [getattr(r, "path", "") for r in app.routes if getattr(r, "path", "")]
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("output-safety route registration failed", exc_info=True)
+
+        # Push the platform's model of itself into the graph. This had NO programmatic caller
+        # at all: sync() ran only from its own __main__, so the ontology could be edited and
+        # nothing would propagate — the assistant went on answering from whatever had last
+        # been synced by hand, and nothing said so. MERGE-on-id, so it is idempotent per boot.
+        # A missing platform description degrades answers; it must not stop documents being
+        # processed, so this never raises.
+        try:
+            from services.platform_kg import sync as _sync_ontology
+
+            counts = await run_in_threadpool(_sync_ontology)
+            logger.info("platform ontology synced to the knowledge graph: %s", counts)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "could not sync the platform ontology; the assistant will answer from "
+                "whatever was last synced", exc_info=True,
+            )
+
         logger.info("System initialized successfully.")
     except Exception as e:
         logger.critical(f"FATAL: System initialization failed: {e}", exc_info=True)
@@ -476,38 +514,10 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
 app.add_middleware(OutputSafetyMiddleware)
 
 
-@app.on_event("startup")
-async def _register_routes_with_safety_gate():
-    """Teach the gate what our real routes are, so it can spot one being quoted back."""
-    osafe.register_routes(
-        [getattr(r, "path", "") for r in app.routes if getattr(r, "path", "")]
-    )
-
-
-@app.on_event("startup")
-async def _sync_platform_ontology():
-    """Push the platform's model of itself into the graph.
-
-    This had no programmatic caller at all — `platform_kg.sync()` ran only from its own
-    `__main__` block. So the ontology could be edited and nothing would propagate: the agent
-    went on answering from whatever had last been synced by hand, and there was no way to
-    tell from the outside that it was stale. Improving the knowledge is pointless while the
-    pipe to it is manual.
-
-    MERGE-on-id, so this is idempotent and safe on every boot. If the graph is unreachable
-    the app still starts — a missing platform description degrades the agent's answers, it
-    does not stop documents being processed.
-    """
-    try:
-        from services.platform_kg import sync
-
-        counts = await run_in_threadpool(sync)
-        logger.info("platform ontology synced to the knowledge graph: %s", counts)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "could not sync the platform ontology; the assistant will answer from whatever "
-            "was last synced", exc_info=True,
-        )
+# NOTE: do not add @app.on_event("startup") handlers to this app. It is constructed with
+# lifespan=..., which makes FastAPI ignore on_event entirely — a handler added here runs
+# never, and says nothing about it. Two of them did exactly that. Startup work belongs in
+# `lifespan` above.
 
 
 @app.get("/", tags=["General"])

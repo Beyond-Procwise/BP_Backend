@@ -34,13 +34,27 @@ ONTOLOGY_PATH = (
 
 
 def _driver():
+    """Connect the way the rest of the app connects.
+
+    This read NEO4J_URI straight out of os.environ, and the app does not put it there — it
+    loads config through pydantic Settings, from .env. So under uvicorn the variable was
+    empty, _driver() raised "NEO4J_URI is not configured", and the graph was unreachable to
+    this module ALONE while `base_agent` cheerfully logged "Neo4j connectivity verified" from
+    the same process. The support agent then told users "I can't access the internal details
+    of the system" — which read like a careful refusal and was actually a broken connection.
+
+    Sharing the app's config makes that class of lie impossible: if the app can reach Neo4j,
+    so can this.
+    """
     from neo4j import GraphDatabase
 
-    uri = os.getenv("NEO4J_URI")
-    user = os.getenv("NEO4J_USERNAME")
-    pwd = os.getenv("NEO4J_PASSWORD")
+    from config.settings import settings
+
+    uri = settings.neo4j_uri or os.getenv("NEO4J_URI")
     if not uri:
-        raise RuntimeError("NEO4J_URI is not configured")
+        raise RuntimeError("Neo4j is not configured")
+    user = settings.neo4j_username or os.getenv("NEO4J_USERNAME")
+    pwd = settings.neo4j_password or os.getenv("NEO4J_PASSWORD")
     return GraphDatabase.driver(uri, auth=(user, pwd))
 
 
