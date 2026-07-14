@@ -56,6 +56,7 @@ from api.routers import extraction_feedback as extraction_feedback_router
 from api.routers import supplier_review as supplier_review_router
 from api.routers import supplier_research as supplier_research_router
 from api.routers import governance as governance_router
+from api.routers import obligations as obligations_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -344,6 +345,7 @@ app.include_router(opportunities.router)
 app.include_router(promotion.router)
 app.include_router(summary.router)
 app.include_router(session.router)
+app.include_router(obligations_router.router)
 
 
 # ======================================================================================

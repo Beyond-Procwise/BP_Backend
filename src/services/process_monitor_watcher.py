@@ -573,6 +573,20 @@ class ProcessMonitorWatcher:
                         record_id, doc_type, pk,
                     )
 
+            # Contract obligations: the field extractor above read the contract's TABLES.
+            # This reads its PROSE — the clauses stating who must do what, when, and what
+            # happens if they don't. Runs on a thread because it takes minutes per contract
+            # and must not stall the watcher behind one document. It never writes to the
+            # field-extraction tables, so it cannot affect the accuracy of the work above.
+            if doc_type == "contract":
+                from src.services.obligations.obligation_service import run_for_document
+                threading.Thread(
+                    target=run_for_document,
+                    args=(str(record_id), file_path, self._agent_nick),
+                    daemon=True,
+                    name=f"obligations-{record_id}",
+                ).start()
+
             logger.info(
                 "Extraction completed for record %s: %s pk=%s fields=%s lines=%s discrep=%s conf=%s",
                 record_id, doc_type, pk,
