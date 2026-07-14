@@ -8,11 +8,29 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from services.db import get_conn
 
 logger = logging.getLogger(__name__)
+
+# A run claimed for execution transitions to 'executing' and is excluded from
+# future claims (see claim_for_execution) so it can never run twice. But if
+# the worker that claimed it is killed mid-run — OOM, segfault, deploy
+# restart, a hung LLM/GPU call that gets reaped — the row is left stuck at
+# 'executing' forever, with no in-process exception ever firing to mark it
+# 'failed' (which IS reclaimable). Past this window, an 'executing' run is
+# treated as abandoned and becomes reclaimable again.
+#
+# Correctness trade-off (deliberate, not accidental): a run that is
+# GENUINELY still executing past this window COULD be reclaimed and executed
+# a second time — for HITL workflows that dispatch real emails, that means a
+# second email. 30 minutes is chosen because it is far longer than any real
+# run of this system's LLM/GPU agents is expected to take, making that
+# double-execution scenario implausible while still bounding how long a
+# hard-crashed run stays wedged with no recovery path.
+STALE_EXECUTING_WINDOW = timedelta(minutes=30)
 
 DDL = """
 CREATE SCHEMA IF NOT EXISTS proc;
@@ -133,15 +151,26 @@ def claim_for_execution(run_id: str) -> bool:
     ONE caller ever transitions the run to 'executing' and therefore only
     one caller ever executes the workflow. Everyone else must treat the run
     as already in flight (or already finished) and must not execute again.
+
+    A run that has been stuck at 'executing' for longer than
+    STALE_EXECUTING_WINDOW is also claimable — see that constant's docstring
+    for why, and for the correctness trade-off this reopens. This stays a
+    SINGLE atomic conditional UPDATE ... RETURNING (services/db.py sets
+    conn.autocommit = True, so a separate Python-side staleness check
+    followed by an UPDATE would reintroduce the exact double-execution race
+    this claim exists to prevent).
     """
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """UPDATE proc.bp_workflow_run
                   SET status = 'executing', updated_at = now()
-                WHERE run_id = %s AND status NOT IN ('executing', 'completed')
+                WHERE run_id = %s
+                  AND (status NOT IN ('executing', 'completed')
+                       OR (status = 'executing'
+                           AND updated_at < now() - %s::interval))
             RETURNING run_id""",
-            (run_id,),
+            (run_id, f"{STALE_EXECUTING_WINDOW.total_seconds()} seconds"),
         )
         won = cur.fetchone() is not None
         cur.close()

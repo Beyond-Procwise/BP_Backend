@@ -281,3 +281,85 @@ def test_final_answer_replay_executes_workflow_only_once(client, _cleanup_test_r
     assert r2.json()["status"] == "completed"
 
     client.delete(f"/agent-workflows/{wid}")
+
+
+def test_stale_executing_claim_can_be_reclaimed(client, _cleanup_test_rows):
+    """FINDING 1(a): a run wedged in 'executing' by a killed worker (OOM,
+    segfault, deploy restart, a hung LLM/GPU call that got reaped) must not
+    be wedged forever with no recovery path — past STALE_EXECUTING_WINDOW it
+    becomes reclaimable again. Equally important: a FRESH 'executing' run
+    must NOT be reclaimable — that is the original double-execution guard
+    still doing its job, and this test must prove both halves.
+    """
+    from datetime import timedelta
+
+    from repositories import workflow_input_request_repo as reqrepo
+    from services.db import get_conn
+
+    created_workflow_ids, created_run_ids = _cleanup_test_rows
+
+    wid = client.post("/agent-workflows", json={"name": "hitl-test", "graph": GRAPH}).json()["workflow_id"]
+    created_workflow_ids.append(wid)
+
+    # --- Half 1: a STALE 'executing' run CAN be reclaimed -------------------
+    stale_run_id = "awf-stale-claim-test"
+    created_run_ids.append(stale_run_id)
+    reqrepo.create_run(stale_run_id, agent_workflow_id=wid, payload={}, status="pending")
+
+    # Simulate a worker that claimed the run and was then killed mid-run,
+    # never reaching finish_run(): force status='executing' with an
+    # updated_at OLDER than the staleness window, via direct SQL (not
+    # through claim_for_execution, since we need to backdate the timestamp).
+    stale_age = reqrepo.STALE_EXECUTING_WINDOW + timedelta(minutes=5)
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE proc.bp_workflow_run
+                  SET status = 'executing', updated_at = now() - %s::interval
+                WHERE run_id = %s""",
+            (f"{stale_age.total_seconds()} seconds", stale_run_id),
+        )
+        cur.close()
+
+    assert reqrepo.claim_for_execution(stale_run_id) is True, (
+        "a run stuck 'executing' past STALE_EXECUTING_WINDOW must be reclaimable"
+    )
+
+    # --- Half 2: a FRESH 'executing' run CANNOT be reclaimed ----------------
+    fresh_run_id = "awf-fresh-claim-test"
+    created_run_ids.append(fresh_run_id)
+    reqrepo.create_run(fresh_run_id, agent_workflow_id=wid, payload={}, status="pending")
+
+    assert reqrepo.claim_for_execution(fresh_run_id) is True   # first claim wins, sets updated_at = now()
+    assert reqrepo.claim_for_execution(fresh_run_id) is False, (
+        "a run that is genuinely still executing (fresh updated_at) must NOT be reclaimable"
+    )
+
+    client.delete(f"/agent-workflows/{wid}")
+
+
+def test_get_run_surfaces_status_and_404s_for_unknown_run(client, _cleanup_test_rows):
+    """FINDING 1(b): GET /agent-workflows/runs/{run_id} must return the run's
+    real persisted status — not just its pending questions, which made an
+    unknown run and a completed run indistinguishable — and must 404 for a
+    run_id that was never created.
+    """
+    created_workflow_ids, created_run_ids = _cleanup_test_rows
+
+    wid = client.post("/agent-workflows", json={"name": "hitl-test", "graph": GRAPH}).json()["workflow_id"]
+    created_workflow_ids.append(wid)
+
+    run = client.post(f"/agent-workflows/{wid}/run", json={"payload": {}}).json()
+    created_run_ids.append(run["run_id"])
+    assert run["status"] == "awaiting_input"
+
+    got = client.get(f"/agent-workflows/runs/{run['run_id']}")
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["status"] == "awaiting_input"
+    assert body["pending"]
+
+    r = client.get("/agent-workflows/runs/no-such-run-id-at-all")
+    assert r.status_code == 404
+
+    client.delete(f"/agent-workflows/{wid}")

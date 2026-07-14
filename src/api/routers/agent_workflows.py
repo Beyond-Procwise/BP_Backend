@@ -138,7 +138,19 @@ def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str,
 
 @router.get("/runs/{run_id}")
 def get_run(run_id: str) -> Dict[str, Any]:
-    return {"run_id": run_id, "pending": reqrepo.open_requests(run_id)}
+    """Surface the run's real persisted status alongside its pending questions,
+    so an operator/UI can tell 'executing' / 'completed' / 'failed' /
+    'awaiting_input' apart — an unknown run and a completed run were
+    previously indistinguishable (both returned an empty ``pending`` list).
+    """
+    run_row = reqrepo.get_run(run_id)
+    if run_row is None:
+        raise HTTPException(status_code=404, detail=f"No such run {run_id}")
+    return {
+        "run_id": run_id,
+        "status": run_row["status"],
+        "pending": reqrepo.open_requests(run_id),
+    }
 
 
 @router.post("/runs/{run_id}/input")
@@ -186,9 +198,12 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
     if not reqrepo.claim_for_execution(run_id):
         run_row = reqrepo.get_run(run_id)
         status = run_row["status"] if run_row else "completed"
+        # Same shape as the winning path below (node_statuses, errors included)
+        # so a client never has to special-case the claim-lost response.
         return {
             "run_id": run_id, "status": status, "pending": [],
             "nodes": _describe_nodes(wf["graph"]),
+            "node_statuses": {}, "errors": [],
         }
 
     try:
