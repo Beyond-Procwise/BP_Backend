@@ -1708,11 +1708,19 @@ class SupplierRankingAgent(BaseAgent):
         if "avg_unit_price" in result.columns:
             missing_price = result["avg_unit_price"].isna()
             if "po_line_spend" in result.columns and "total_volume" in result.columns:
-                # Fix deprecated use_inf_as_na
+                # A supplier with no PO-line evidence (both spend and volume NaN, e.g. no
+                # matching PO lines at all) must end up NaN here, not a fabricated 0.0.
+                # The trailing .fillna(0) this used to have turned "we have no idea" into
+                # "this supplier's price is literally zero" -- which then normalised to a
+                # *perfect* price_score of 100.00 (0 reads as the cheapest possible bid),
+                # letting a supplier with zero evidence outrank one with a real price.
+                # Division by inf/-inf (a real spend over zero volume) still collapses to
+                # NaN via the replace() below -- also honestly "we can't compute a unit
+                # price", not zero.
                 calculated = (
-                    result["po_line_spend"].fillna(0) / 
+                    result["po_line_spend"].fillna(0) /
                     result["total_volume"].replace([np.inf, -np.inf], np.nan)
-                ).fillna(0)
+                )
                 # Ensure compatible dtype
                 result.loc[missing_price, "avg_unit_price"] = calculated[missing_price].astype(float)
 
@@ -2037,7 +2045,13 @@ class SupplierRankingAgent(BaseAgent):
             # carried ~10x its configured weight in the composite. Harmless while every
             # score was 0.0; a real distortion now that scores carry data.
             if max_v - min_v == 0:
-                out[score_col] = 100.0
+                # vals.min()/max() skip NaN, so "everyone measured is tied" can be true
+                # even while some suppliers in this same column have NO value at all
+                # (raw_col is NaN for them). Only the MEASURED rows get the tied score --
+                # assigning it to the whole column handed an unmeasured supplier a
+                # "perfect" 100 they never earned, just because the suppliers who DID
+                # have data happened to tie.
+                out[score_col] = np.where(vals.notna(), 100.0, np.nan)
             else:
                 range_diff = float(max_v - min_v)
                 if direction == "lower_is_better":

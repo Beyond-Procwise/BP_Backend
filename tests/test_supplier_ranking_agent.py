@@ -329,6 +329,221 @@ def test_latest_bidding_round_is_the_standing_offer(monkeypatch):
     assert row["concession_pct"] == pytest.approx(4.67, abs=0.01)
 
 
+def test_merge_supplier_metrics_leaves_avg_unit_price_null_with_no_po_lines():
+    """N2 root cause: a supplier with ZERO purchase-order lines must not get a
+    fabricated avg_unit_price of 0.0.
+
+    Live bug: three suppliers with 0 invoices/0 POs in the DB were persisted
+    with avg_unit_price = 0.00, which then normalised to a *perfect*
+    price_score of 100.00 -- 0 looked like the cheapest possible bid, and
+    beat every supplier with a real, non-zero price. 0.0 asserts "we priced
+    this at zero"; NaN says "we have no idea", which is the honest answer
+    for a supplier with no PO-line evidence at all.
+    """
+    nick = DummyNick()
+    agent = SupplierRankingAgent(nick)
+
+    supplier_df = pd.DataFrame(
+        {"supplier_id": ["REAL", "GHOST"], "supplier_name": ["Real Co", "Ghost Co"]}
+    )
+    agent._prime_supplier_aliases(supplier_df, [])
+
+    purchase_orders = pd.DataFrame(
+        {
+            "po_id": ["PO1"],
+            "supplier_id": ["REAL"],
+            "supplier_name": ["Real Co"],
+            "total_amount": [1000.0],
+            "payment_terms": ["Net 30"],
+            "order_date": ["2026-01-01"],
+            "expected_delivery_date": ["2026-01-10"],
+        }
+    )
+    po_lines = pd.DataFrame(
+        {
+            "po_id": ["PO1"],
+            "unit_price": [50.0],
+            "quantity": [20.0],
+            "line_total": [1000.0],
+            "item_description": ["Widget"],
+        }
+    )
+    tables = {
+        "purchase_orders": purchase_orders,
+        "po_lines": po_lines,
+        "invoices": pd.DataFrame(),
+        "invoice_lines": pd.DataFrame(),
+        "procurement_flow": pd.DataFrame(),
+    }
+
+    result = agent._merge_supplier_metrics(supplier_df, tables)
+    by_id = result.set_index("supplier_id")
+
+    assert by_id.loc["REAL", "avg_unit_price"] == pytest.approx(50.0)
+    assert pd.isna(by_id.loc["GHOST", "avg_unit_price"]), (
+        "a supplier with no PO-line evidence must have avg_unit_price = NaN, "
+        f"not a fabricated value (got {by_id.loc['GHOST', 'avg_unit_price']!r})"
+    )
+
+
+def test_normalize_numeric_scores_does_not_score_unmeasured_supplier_as_perfect():
+    """N2: a tie among the suppliers that DO have data must not spill a 100
+    onto a supplier who has NO data at all for that metric.
+
+    Before the fix, ``out[score_col] = 100.0`` was assigned to the WHOLE
+    column whenever the measured values tied -- including rows whose raw
+    value was NaN. A supplier with no price simply not being included in
+    the tie must not make them "tied for best" by accident.
+    """
+    agent = SupplierRankingAgent.__new__(SupplierRankingAgent)
+    df = pd.DataFrame(
+        {
+            "supplier_id": ["A", "B", "GHOST"],
+            "price": [50.0, 50.0, None],
+        }
+    )
+
+    scored = agent._normalize_numeric_scores(df, {"price": "lower_is_better"})
+    by_id = scored.set_index("supplier_id")["price_score"]
+
+    assert by_id["A"] == pytest.approx(100.0)
+    assert by_id["B"] == pytest.approx(100.0)
+    assert pd.isna(by_id["GHOST"]), (
+        "a supplier with no price at all must not inherit the tied-suppliers' "
+        f"perfect score (got {by_id['GHOST']!r})"
+    )
+
+
+def test_ghost_suppliers_with_zero_evidence_do_not_outrank_a_real_bidder(monkeypatch):
+    """End-to-end reproduction of the live bug: suppliers with 0 invoices and
+    0 purchase orders must not receive a fabricated price of 0.0 (which reads
+    as "the cheapest bid possible") and rank ABOVE a supplier with a real,
+    evidenced price.
+    """
+    nick = DummyNick()
+
+    real_pos = pd.DataFrame(
+        {
+            "po_id": ["PO1"],
+            "supplier_id": ["SUP-REAL"],
+            "supplier_name": ["Real Co"],
+            "total_amount": [1000.0],
+            "payment_terms": ["Net 30"],
+            "order_date": ["2026-01-01"],
+            "expected_delivery_date": ["2026-01-10"],
+        }
+    )
+    real_po_lines = pd.DataFrame(
+        {
+            "po_id": ["PO1"],
+            "unit_price": [50.0],
+            "quantity": [20.0],
+            "line_total": [1000.0],
+            "item_description": ["Widget"],
+        }
+    )
+
+    nick.query_engine = SimpleNamespace(
+        fetch_supplier_data=lambda *_: [],
+        fetch_purchase_order_data=lambda **_: real_pos.copy(),
+        fetch_invoice_data=lambda **_: pd.DataFrame(),
+        fetch_procurement_flow=lambda **_: pd.DataFrame(),
+    )
+
+    agent = SupplierRankingAgent(nick)
+    monkeypatch.setattr(agent, "_generate_justification", lambda row, criteria: "ok")
+    monkeypatch.setattr(
+        agent,
+        "_read_table",
+        lambda table, *a, **k: (
+            real_po_lines.copy() if "po_line_items" in table else pd.DataFrame()
+        ),
+    )
+
+    df = pd.DataFrame(
+        {
+            "supplier_id": ["SUP-REAL", "SUP-GHOST1", "SUP-GHOST2"],
+            "supplier_name": ["Real Co", "Ghost One", "Ghost Two"],
+        }
+    )
+
+    context = AgentContext(
+        workflow_id="wf1",
+        agent_id="supplier_ranking",
+        user_id="user",
+        input_data={
+            "supplier_data": df,
+            "intent": {"parameters": {"criteria": ["price"], "top_n": 3}},
+            "query": "rank suppliers",
+        },
+    )
+
+    output = agent.run(context)
+
+    assert output.status == AgentStatus.SUCCESS, output.error
+    by_id = {e["supplier_id"]: e for e in output.data["ranking"]}
+
+    assert "SUP-REAL" in by_id
+    assert by_id["SUP-REAL"]["price_score"] == pytest.approx(100.0), (
+        "the only supplier with real price evidence must score on its own merits"
+    )
+    for ghost_id in ("SUP-GHOST1", "SUP-GHOST2"):
+        if ghost_id in by_id:
+            ghost_score = by_id[ghost_id].get("price_score")
+            assert ghost_score is None or pd.isna(ghost_score) or ghost_score < 100.0, (
+                f"{ghost_id} has zero evidence and must not out-score the real bidder "
+                f"(got price_score={ghost_score!r})"
+            )
+            assert (by_id[ghost_id].get("final_score") or 0) <= (
+                by_id["SUP-REAL"].get("final_score") or 0
+            ), f"{ghost_id} (no evidence) must not outrank SUP-REAL (real evidence)"
+
+    # SUP-REAL, the only supplier with actual evidence, must be rank 1.
+    assert by_id["SUP-REAL"]["rank_position"] == 1
+
+
+def test_ranking_of_suppliers_with_no_evidence_at_all_refuses_to_publish(monkeypatch):
+    """N2: ranking a set of suppliers with NO evidence anywhere (no POs, no
+    invoices, no quotes) must return the honest 'cannot rank' result, not a
+    confident 1/2/3 ranking of fabricated perfect scores.
+
+    Deliberately does NOT monkeypatch ``_load_procurement_tables`` /
+    ``_merge_supplier_metrics`` -- this must hold through the REAL merge
+    code path, which is exactly where the live fabrication bug lived.
+    """
+    nick = DummyNick()
+    agent = SupplierRankingAgent(nick)
+    monkeypatch.setattr(agent, "_read_table", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(agent, "_generate_justification", lambda row, criteria: "ok")
+
+    df = pd.DataFrame(
+        {
+            "supplier_id": ["SUP-MgmSouvenirShop", "SUP-TechtonicElectronicInc", "SUP-XyzLtd"],
+            "supplier_name": ["MGM Souvenir Shop", "TechTonic Electronic, Inc.", "xyz ltd"],
+        }
+    )
+    context = AgentContext(
+        workflow_id="wf1",
+        agent_id="supplier_ranking",
+        user_id="user",
+        input_data={
+            "supplier_data": df,
+            "intent": {"parameters": {"criteria": ["price"], "top_n": 3}},
+            "query": "rank suppliers",
+        },
+    )
+
+    output = agent.run(context)
+
+    assert output.status == AgentStatus.FAILED, (
+        "suppliers with zero evidence anywhere must not receive a ranking "
+        f"(got status={output.status}, data={output.data})"
+    )
+    assert "insufficient data" in (output.error or "").lower() or "no evidence" in (
+        output.error or ""
+    ).lower()
+
+
 def test_ranking_refuses_to_publish_when_nothing_is_measurable(monkeypatch):
     """No data must fail loudly, not emit a confident table of 0.00s.
 
