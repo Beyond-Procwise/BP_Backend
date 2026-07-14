@@ -47,6 +47,7 @@ from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
 from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, promotion, summary, negotiate, opportunities,session
 from api.routers import ws as ws_router_mod
+from api.routers import agent_workflows as agent_workflows_router
 from api.routers import decisions as decisions_router
 from api.routers import support as support_router
 from api.routers import extraction_feedback as extraction_feedback_router
@@ -318,6 +319,7 @@ app.include_router(vendors.build_router())
 app.include_router(metrics.router)
 app.include_router(extraction_feedback_router.router)
 app.include_router(decisions_router.router)
+app.include_router(agent_workflows_router.router)
 app.include_router(support_router.router)
 app.include_router(supplier_review_router.router)
 app.include_router(supplier_research_router.router)

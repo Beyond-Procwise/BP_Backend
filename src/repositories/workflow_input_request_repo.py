@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from services.db import get_conn
 
@@ -18,22 +18,33 @@ DDL = """
 CREATE SCHEMA IF NOT EXISTS proc;
 
 CREATE TABLE IF NOT EXISTS proc.bp_workflow_input_request (
-    request_id     BIGSERIAL PRIMARY KEY,
-    workflow_id    TEXT NOT NULL,          -- the RUN id
-    node_name      TEXT NOT NULL,
-    agent_slug     TEXT NOT NULL,
-    required_field TEXT NOT NULL,
-    field_type     TEXT,
-    prompt         TEXT,
-    status         TEXT NOT NULL DEFAULT 'pending',
-    answer         JSONB,
-    answered_by    TEXT,
-    requested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    answered_at    TIMESTAMPTZ
+    request_id       BIGSERIAL PRIMARY KEY,
+    workflow_id       TEXT NOT NULL,          -- the RUN id
+    node_name        TEXT NOT NULL,
+    agent_slug       TEXT NOT NULL,
+    required_field   TEXT NOT NULL,
+    field_type       TEXT,
+    prompt           TEXT,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    answer           JSONB,
+    answered_by      TEXT,
+    requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    answered_at      TIMESTAMPTZ,
+    -- The numeric proc.bp_agent_workflow this run was started from. Lets a
+    -- run be resolved back to its saved workflow by lookup instead of by
+    -- parsing the run_id string (run_id format is an implementation detail
+    -- of the router, not a contract this table should depend on).
+    agent_workflow_id BIGINT
 );
 
 CREATE INDEX IF NOT EXISTS ix_bp_workflow_input_request_open
     ON proc.bp_workflow_input_request (workflow_id, status);
+"""
+
+# Older deployments of this table predate the agent_workflow_id column.
+_MIGRATE = """
+ALTER TABLE proc.bp_workflow_input_request
+    ADD COLUMN IF NOT EXISTS agent_workflow_id BIGINT;
 """
 
 
@@ -43,11 +54,19 @@ def ensure_schema() -> None:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(DDL)
+        cur.execute(_MIGRATE)
         cur.close()
 
 
-def raise_requests(run_id: str, requests: List[Any]) -> None:
-    """Persist the questions this run needs answered (orchestration.elicitation.InputRequest)."""
+def raise_requests(
+    run_id: str, requests: List[Any], *, agent_workflow_id: Optional[int] = None
+) -> None:
+    """Persist the questions this run needs answered (orchestration.elicitation.InputRequest).
+
+    ``agent_workflow_id`` records which saved workflow this run belongs to, so
+    the run can later be resolved back to it via ``workflow_id_for`` rather
+    than by parsing the run_id string.
+    """
     if not requests:
         return
     with get_conn() as conn:
@@ -55,11 +74,32 @@ def raise_requests(run_id: str, requests: List[Any]) -> None:
         for r in requests:
             cur.execute(
                 """INSERT INTO proc.bp_workflow_input_request
-                       (workflow_id, node_name, agent_slug, required_field, field_type, prompt)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
-                (run_id, r.node_id, r.agent_slug, r.required_field, r.field_type, r.prompt),
+                       (workflow_id, node_name, agent_slug, required_field, field_type,
+                        prompt, agent_workflow_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (run_id, r.node_id, r.agent_slug, r.required_field, r.field_type, r.prompt,
+                 agent_workflow_id),
             )
         cur.close()
+
+
+def workflow_id_for(run_id: str) -> Optional[int]:
+    """The numeric proc.bp_agent_workflow id this run was started from, if known.
+
+    Resolved from persisted state (the agent_workflow_id recorded by
+    ``raise_requests``), never by parsing the run_id string.
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT agent_workflow_id FROM proc.bp_workflow_input_request
+                WHERE workflow_id = %s AND agent_workflow_id IS NOT NULL
+                ORDER BY request_id LIMIT 1""",
+            (run_id,),
+        )
+        r = cur.fetchone()
+        cur.close()
+        return int(r[0]) if r and r[0] is not None else None
 
 
 def open_requests(run_id: str) -> List[Dict[str, Any]]:
