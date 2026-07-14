@@ -82,6 +82,22 @@ def test_an_ungoverned_agent_says_so_rather_than_faking_it():
     assert g["policies"] == []
 
 
+def test_status_wording_claims_linkage_not_application():
+    """governance_for() is a static lookup over bp_prompt/bp_policy — it never
+    goes through PromptEngine/PolicyEngine's selection logic, so it cannot
+    know which ONE row (if several match) is the one that actually ran. The
+    ``status`` field must say so honestly: "linked & active" / "built-in
+    default", never "applied" — that word is a claim this function has not
+    earned (see node_governance.py module docstring)."""
+    governed = governance_for("supplier_ranking")
+    assert governed["status"] == "linked & active"
+    assert "applied" not in governed["status"]
+
+    ungoverned = governance_for("data_extraction")
+    assert ungoverned["status"] == "built-in default"
+    assert "applied" not in ungoverned["status"]
+
+
 def test_a_row_linking_multiple_agents_governs_all_of_them(multi_agent_prompt_row):
     """prompt_linked_agents can list SEVERAL agent tokens in one row (as
     PromptEngine/PolicyEngine already assume when applying governance). A `=`
