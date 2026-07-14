@@ -1579,6 +1579,117 @@ class DataExtractionAgent(BaseAgent):
         )
         return disc_agent.execute(disc_context)
 
+    def _resolve_typed_reference(
+        self, typed: str, workflow_id: Optional[str], agent_name: Optional[str]
+    ) -> List[str]:
+        """Resolve a hand-typed document reference to real object keys.
+
+        Honours what the UI actually offers — "an S3 key or prefix":
+
+          * ends with "/"          -> a folder. List it.
+          * an object that exists  -> that one object. Exactly it, nothing else.
+          * otherwise              -> treat it as a prefix and list it.
+
+        Returns [] when nothing matches, which the caller turns into the honest "matched no
+        documents" failure rather than quietly extracting the wrong thing.
+        """
+        if not typed:
+            return []
+
+        bucket = self.settings.s3_bucket_name
+
+        with self._borrow_s3_client() as s3_client:
+            if not typed.endswith("/"):
+                try:
+                    s3_client.head_object(Bucket=bucket, Key=typed)
+                    # A named document. The human pointed at this exact file, so honour it —
+                    # naming one document IS the instruction to (re-)read it. Only the blind
+                    # sweep below is filtered.
+                    return [typed]
+                except Exception:  # noqa: BLE001 - no such object; fall through to prefix
+                    pass
+
+            try:
+                keys = self._iter_s3_keys(s3_client, typed)
+            except Exception as exc:  # noqa: BLE001
+                self._log_workflow_event(
+                    event="s3_scan_error",
+                    workflow_id=workflow_id,
+                    agent_name=agent_name,
+                    level="warning",
+                    prefix=typed,
+                    error=str(exc),
+                )
+                return []
+
+        # A prefix is a SWEEP, and a sweep must never quietly re-read work that is already
+        # done. `documents/invoice/` alone is 281 objects. Re-extracting them would upsert
+        # every _stg row on its own key — no duplicate rows, but each good row overwritten by
+        # a fresh pass of a model that is not bit-deterministic at temperature 0. That trades
+        # settled, verified content for a coin-flip, and extraction accuracy is the one thing
+        # here that is not allowed to regress.
+        #
+        # So: extract what is new, leave what is done. The user is told both numbers rather
+        # than being silently given fewer documents than they asked for.
+        done = self._already_extracted(keys)
+        fresh = [k for k in keys if k not in done]
+        skipped = len(keys) - len(fresh)
+
+        self._log_workflow_event(
+            event="typed_reference_resolved",
+            workflow_id=workflow_id,
+            agent_name=agent_name,
+            reference=typed,
+            matched=len(keys),
+            already_extracted=skipped,
+            to_extract=len(fresh),
+        )
+        return fresh
+
+    def _already_extracted(self, keys: List[str]) -> set:
+        """Which of ``keys`` has this system already extracted?
+
+        The _raw tables are the ledger: append-only, one row per document read, with
+        ``source_file`` holding the object key it came from. If a key is in there, that
+        document has been through the pipeline and its content is already persisted
+        downstream.
+
+        On any DB trouble this returns an empty set — meaning nothing is treated as already
+        done. That is the safe direction to fail: the worst case is that we re-read a
+        document, which is wasteful. Failing the other way would silently skip documents the
+        user actually needs.
+        """
+        if not keys:
+            return set()
+
+        tables = (
+            "bp_invoice_raw",
+            "bp_purchase_order_raw",
+            "bp_quote_raw",
+            "bp_contract_raw",
+        )
+        seen: set = set()
+        try:
+            conn = self.agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    for table in tables:
+                        cur.execute(
+                            f"SELECT source_file FROM proc.{table} "
+                            "WHERE source_file = ANY(%s)",
+                            (list(keys),),
+                        )
+                        seen.update(r[0] for r in cur.fetchall() if r[0])
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "could not check which documents were already extracted; "
+                "treating all as new", exc_info=True
+            )
+            return set()
+        return seen
+
     def _iter_s3_keys(self, client, prefix: str) -> List[str]:
         keys: List[str] = []
         token: Optional[str] = None
@@ -1627,10 +1738,30 @@ class DataExtractionAgent(BaseAgent):
             # real, existing key would be shredded into single letters and
             # always come back as "matched no documents". Treat a string as ONE
             # key, exactly like s3_object_key below.
-            keys_iter = [s3_object_keys] if isinstance(s3_object_keys, str) else s3_object_keys
-            for key in keys_iter:
-                if key:
+            if isinstance(s3_object_keys, str):
+                # A HAND-TYPED answer, and the box the human typed it into says "or type an
+                # S3 key or prefix". We only ever honoured the key half of that promise: the
+                # string was taken as one exact object and fetched with GetObject, so anyone
+                # who did as they were told and typed a prefix got "matched no documents" —
+                # for documents that were plainly there. The run executed, failed, and told
+                # them nothing useful, which is exactly why Submit looked like it did nothing.
+                #
+                # A trailing slash is unambiguous, so list it. Without one, try the exact key
+                # first and only fall back to listing if no such object exists — that way a
+                # real key is never reinterpreted as a prefix behind the user's back.
+                #
+                # This applies ONLY to the hand-typed string. A LIST from the document picker
+                # stays exact, deliberately: the picker knows precisely which objects it just
+                # uploaded, and deriving a shared prefix from them is what previously swept in
+                # every other document in the folder.
+                typed = s3_object_keys.strip()
+                resolved = self._resolve_typed_reference(typed, workflow_id, agent_name)
+                for key in resolved:
                     key_map.setdefault(key, None)
+            else:
+                for key in s3_object_keys:
+                    if key:
+                        key_map.setdefault(key, None)
         elif s3_object_key:
             # Direct single key provided (e.g., from process_monitor) — process
             # only this file. Fetched exactly (GetObject), never listed as a

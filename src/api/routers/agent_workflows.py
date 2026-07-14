@@ -268,7 +268,43 @@ def _execute(request: Request, run_id: str, wf: Dict[str, Any],
         "run_id": run_id,
         "status": getattr(state, "status", "completed"),
         "node_statuses": {k: getattr(v, "value", v) for k, v in state.node_statuses.items()},
-        "errors": state.errors,
+        "errors": _readable_errors(state.errors, wf["graph"]),
         "nodes": _describe_nodes(wf["graph"]),
         "pending": [],
     }
+
+
+def _readable_errors(errors: Any, graph: Dict[str, Any]) -> List[str]:
+    """Turn the engine's structured failures into sentences a human can act on.
+
+    The engine records a failure as ``{node, agent, error, data}`` and we were handing that
+    straight to the browser. The client renders errors as text — it does
+    ``errors.join('; ')`` and ``errors.map(escH)`` — so every failure arrived as the literal
+    string "[object Object]". The run had genuinely executed and genuinely failed, and the
+    only thing the user could see was that it had done *something* unspeakable. That is why
+    the Submit button looked dead: it worked perfectly and then told them nothing.
+
+    Two things are fixed by returning strings. The user gets the actual reason ("the document
+    reference you supplied matched no documents"), and ``data`` — which carried the agent's
+    whole payload, including its context snapshot, its action id and its internal plan — stops
+    being shipped to the browser at all. It was never renderable and never should have left
+    the process.
+
+    Every message goes through the output-safety gate, because ``error`` is often ``str(exc)``
+    and a psycopg2 exception names the table and the column it choked on.
+    """
+    from services import output_safety as osafe
+
+    labels = {n.get("id"): n.get("agent_slug") for n in (graph.get("nodes") or [])}
+
+    out: List[str] = []
+    for e in errors or []:
+        if not isinstance(e, dict):
+            out.append(osafe.enforce(str(e), where="workflow error"))
+            continue
+        node = e.get("node") or ""
+        agent = e.get("agent") or labels.get(node) or "agent"
+        reason = osafe.enforce(str(e.get("error") or "Unknown error"), where="workflow error")
+        pretty = str(agent).replace("_", " ").title()
+        out.append(f"{pretty} — {reason}")
+    return out
