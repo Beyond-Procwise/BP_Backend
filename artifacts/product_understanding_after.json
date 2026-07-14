@@ -1,0 +1,298 @@
+{
+  "bare": {
+    "coverage": 0.4394,
+    "leak_rate": 0.0,
+    "empty_rate": 0.0,
+    "fabrication_rate": 0.4545,
+    "by_category": {
+      "entity": 0.5,
+      "flow": 0.3333,
+      "gap": 0.0,
+      "gate": 0.75,
+      "screen": 0.0,
+      "why": 0.6667
+    },
+    "per_question": [
+      {
+        "id": "flow_upload_to_visible",
+        "coverage": 0.3333,
+        "leaked": false,
+        "empty": false,
+        "invented": [
+          "Analyzing",
+          "Invoices list",
+          "Processing",
+          "Uploaded successfully"
+        ],
+        "missed": [
+          "read_automatically",
+          "not_visible_until_passes"
+        ],
+        "answer": "When you upload an invoice, here\u2019s exactly what you\u2019ll see and do:\n\n1. You tap the **+ Upload** button on your screen \u2014 it\u2019s usually at the top of the Invoices page or in the main dashboard.\n\n2. You choose your file from your phone, tablet, or computer. As soon as you select it, you\u2019ll see a **progress bar** or a small animation showing it\u2019s being sent.\n\n3. Once the upload finishes, you\u2019ll see a *"
+      },
+      {
+        "id": "flow_upload_where",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [
+          "analyse_or_opportunity",
+          "drop_or_attach"
+        ],
+        "answer": "I couldn't retrieve that. I've raised it with the team."
+      },
+      {
+        "id": "gate_invoice_needs_po",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [
+          "Approve",
+          "Check the filter options",
+          "Check the upload confirmation",
+          "Check your inbox or notifications",
+          "Help",
+          "Look for a red or yellow status label",
+          "Missing invoice date",
+          "Needs Review",
+          "Try uploading again",
+          "Uploaded successfully",
+          "What to do now"
+        ],
+        "missed": [],
+        "answer": "If your invoice looks correct and the numbers are right, but it never shows up in the product, here\u2019s what you should do \u2014 step by step, exactly as you\u2019d see it:\n\n1. **Go to the \"Invoices\" tab** \u2014 This is the main screen where all your invoices appear. Look for a list of documents. If you don\u2019t see your invoice, check the top of the screen for a filter bar.\n\n2. **Check the filter options** \u2014 Tap o"
+      },
+      {
+        "id": "gate_quote_no_po",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [
+          "quote_comes_first"
+        ],
+        "answer": "No \u2014 a quote does not need a matching purchase order to become visible.  \n\nWhen you create a quote in ProcWise, it appears immediately in your document list, just like any other document. You can view, edit, and share it right away.  \n\nA purchase order is only required if you're creating a purchase order from the quote \u2014 for example, when you're ready to confirm the order with a supplier. The quot"
+      },
+      {
+        "id": "why_no_supplier_ranking",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [
+          "No ranking available yet"
+        ],
+        "missed": [],
+        "answer": "If you open a deal and don\u2019t see a supplier ranking, it means the system hasn\u2019t yet evaluated or assigned rankings to suppliers for that specific deal.\n\nThis can happen for a few reasons:\n\n- The deal is still in early stages, and no suppliers have been invited or have responded yet.\n- The suppliers who responded haven\u2019t provided enough information for the system to rank them (e.g., incomplete quot"
+      },
+      {
+        "id": "why_duplicate_invoice_number",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [
+          "later_wins"
+        ],
+        "answer": "If two different people upload two different documents with the same invoice number, the product will show you both documents side by side with a clear alert that says:  \n\n**\"Duplicate invoice number detected \u2014 two different documents have the same invoice number.\"**\n\nYou\u2019ll see a status indicator (like a warning icon) next to the invoice number, and you\u2019ll be able to:\n\n- View both documents in a "
+      },
+      {
+        "id": "why_money_null",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [
+          "never_invented"
+        ],
+        "answer": "If an invoice came through with a blank total, it means the system couldn\u2019t automatically calculate or estimate the total based on the information provided.\n\nYou\u2019ll see the total field empty on the invoice screen, and it might show a warning or alert icon next to it, indicating that the total is missing or invalid.\n\nThis happens because the system can\u2019t reliably guess what the total should be\u2014espe"
+      },
+      {
+        "id": "entity_deal",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [
+          "groups_documents"
+        ],
+        "answer": "In this product, a **deal** is a single, specific business agreement or transaction you're working on \u2014 like selling a service, signing a contract, or closing a sale.\n\nYou\u2019ll see each deal as a separate item in your list, with details like the customer\u2019s name, the amount, the stage it\u2019s in (e.g., \"proposal sent,\" \"waiting for approval\"), and any documents attached (like quotes or contracts).\n\nYou "
+      },
+      {
+        "id": "entity_discrepancy",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "invented": [
+          "Approved",
+          "Pending Discrepancy",
+          "Review Discrepancy",
+          "Review the discrepancy"
+        ],
+        "missed": [
+          "mismatch"
+        ],
+        "answer": "A **discrepancy** is a difference or inconsistency you see between two documents \u2014 like a purchase order and an invoice \u2014 that should match.\n\nFor example, if your purchase order says you ordered 10 units at $5 each, but the invoice shows 12 units at $6 each, that\u2019s a discrepancy.\n\nOn your screen, you\u2019ll see a **discrepancy alert** \u2014 usually highlighted in red or marked with a warning icon \u2014 next t"
+      },
+      {
+        "id": "gap_no_upload_progress",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [
+          "Connection issue",
+          "File too large",
+          "Uploads"
+        ],
+        "missed": [
+          "honest_no"
+        ],
+        "answer": "Yes \u2014 when you upload a document, you\u2019ll see a progress bar right on the upload screen. It shows how much of the file has been sent, and once the upload is complete, you\u2019ll see a checkmark if it succeeded, or a red error icon if it failed.\n\nIf it fails, the screen will show a clear message explaining what went wrong \u2014 like \"File too large\" or \"Connection issue\" \u2014 and you can try again right there."
+      },
+      {
+        "id": "gap_same_filename",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [
+          "they_collide"
+        ],
+        "answer": "No, there\u2019s no problem with you and your colleague both uploading a file called 'quote.pdf'.  \n\nWhen you upload your file, you\u2019ll see it appear in the document list with your name or initials next to it, so you can tell which version is yours. If your colleague uploads the same file name, it will show up separately \u2014 you\u2019ll see both files listed, clearly labeled with who uploaded them.  \n\nYou can "
+      }
+    ]
+  },
+  "kg": {
+    "coverage": 0.8333,
+    "leak_rate": 0.0,
+    "empty_rate": 0.0,
+    "fabrication_rate": 0.1818,
+    "by_category": {
+      "entity": 0.75,
+      "flow": 0.6667,
+      "gap": 1.0,
+      "gate": 1.0,
+      "screen": 1.0,
+      "why": 0.6667
+    },
+    "per_question": [
+      {
+        "id": "flow_upload_to_visible",
+        "coverage": 0.6667,
+        "leaked": false,
+        "empty": false,
+        "invented": [
+          "Analyse screen",
+          "Checks happen",
+          "Important known issues",
+          "It only shows up if it passes",
+          "The system reads your document",
+          "What to do now",
+          "Where to look"
+        ],
+        "missed": [
+          "read_automatically"
+        ],
+        "answer": "When you upload a document, here\u2019s what happens and what you should see:\n\n1. **You upload** \u2014 You click the \"Analyse documents\" button on the Analyse screen, or drag and drop your file, or attach it via the paperclip icon on the home page.  \n   \u2192 You don\u2019t need to do anything else after that.\n\n2. **The system reads your document** \u2014 It automatically pulls out the details (like invoice number, date"
+      },
+      {
+        "id": "flow_upload_where",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [],
+        "answer": "To upload a purchase order, follow these steps:\n\n1. Go to the **home page** of ProcWise.\n2. Click the **\"Find an opportunity\"** tile. This will take you to the **Analyse** screen.\n3. On the Analyse screen, click the **blue \"Analyse documents\" button** at the top, or drag and drop your purchase order file into the dropzone.\n   - Alternatively, you can click the **paperclip icon** in the ask bar on "
+      },
+      {
+        "id": "gate_invoice_needs_po",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [
+          "High confidence in matching",
+          "High confidence in the data"
+        ],
+        "missed": [],
+        "answer": "You\u2019ll see your invoice upload successfully \u2014 the screen will show it as uploaded \u2014 but if it never appears in the product, it means the system couldn\u2019t confirm it was ready to be shown.\n\nEven though the numbers look right and extraction ran, the document must pass two key checks before it appears:\n\n1. **High confidence in the data** \u2014 the system must be very sure about the numbers and details.\n2."
+      },
+      {
+        "id": "gate_quote_no_po",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [],
+        "answer": "No, a quote does not need a purchase order to become visible. Quotes are typically created before a purchase order exists, so it's normal for them to appear without one. Once a quote is uploaded and passes its checks, it will appear in the Quotes screen.\n\nIn contrast, an invoice must reference a purchase order to be visible \u2014 if it doesn\u2019t, it will be held and not appear until the reference is add"
+      },
+      {
+        "id": "why_no_supplier_ranking",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [],
+        "answer": "A deal shows no supplier ranking when there\u2019s only one supplier who has submitted a quote. Supplier ranking requires at least two suppliers to compare against each other.\n\nCheck the **Suppliers** screen in SpendIQ to see how many suppliers have quoted on this deal. If only one has submitted a quote, the ranking won\u2019t appear until a second supplier responds.\n\nYou can also check the **Negotiations**"
+      },
+      {
+        "id": "why_duplicate_invoice_number",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [],
+        "answer": "If two people upload documents with the same invoice number, the product treats them as one \u2014 the second upload replaces the first in what you see. \n\nYou will only see the most recent version of the document with that invoice number. The earlier one is still stored in the system, but it won\u2019t appear in your view.\n\nTo avoid confusion, make sure to use unique file names when uploading \u2014 if two files"
+      },
+      {
+        "id": "why_money_null",
+        "coverage": 0.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [
+          "never_invented",
+          "left_blank_and_flagged"
+        ],
+        "answer": "The system couldn\u2019t read the total on your invoice because the document wasn\u2019t processed successfully. You\u2019ll see the status as **Extraction Failed** \u2014 that means we couldn\u2019t pull the data from the file, even though the upload completed.\n\nThis usually happens if the file is blurry, poorly formatted, or not in a supported format. The system doesn\u2019t guess or estimate totals \u2014 it only shows numbers w"
+      },
+      {
+        "id": "entity_deal",
+        "coverage": 0.5,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [
+          "groups_documents"
+        ],
+        "answer": "A 'deal' in ProcWise is a single procurement opportunity you're managing \u2014 like selecting a vendor for a service or product.  \n\nYou\u2019ll see it as a project in your dashboard, where you can upload documents, track supplier quotes, and review decisions.  \n\nInside a deal, you\u2019ll see a list of suppliers who\u2019ve submitted quotes. The system compares their quotes and shows a ranking based on how competiti"
+      },
+      {
+        "id": "entity_discrepancy",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [],
+        "answer": "A discrepancy appears when there\u2019s a mismatch in your document \u2014 for example, the numbers don\u2019t add up, or the amounts don\u2019t match the purchase order you\u2019re reviewing.\n\nYou\u2019ll see it on the **Action Centre screen**, where it will be clearly labeled as a **DISCREPANCY**. This means the system has found something that doesn\u2019t align \u2014 like a total that doesn\u2019t match the sum of its parts, or a line it"
+      },
+      {
+        "id": "gap_no_upload_progress",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [],
+        "answer": "There is no screen where you can watch your upload\u2019s progress or see whether it succeeded or failed.\n\nWhen you upload a document, it goes through automatic processing behind the scenes. You won\u2019t see a progress bar or a success/failure status in real time.\n\nThe only way to know if your upload worked is to check whether the document appears where it should \u2014 for example, in the **Analyse** screen, "
+      },
+      {
+        "id": "gap_same_filename",
+        "coverage": 1.0,
+        "leaked": false,
+        "empty": false,
+        "invented": [],
+        "missed": [],
+        "answer": "If you and your colleague both upload a file called `quote.pdf`, the second upload will overwrite the first one. The first file will be lost because the system uses the filename as a key, and duplicate filenames overwrite each other.\n\nTo avoid this, give each file a unique name \u2014 for example, `quote_john.pdf` and `quote_sarah.pdf`. That way, both files will be preserved and visible in the system."
+      }
+    ]
+  }
+}

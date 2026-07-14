@@ -59,19 +59,20 @@ def sync(path: Optional[Path] = None) -> dict[str, int]:
             for p in doc.get("processes") or []:
                 s.run(
                     "MERGE (p:Process {id:$id}) "
-                    "SET p.name=$name, p.summary=$summary, p.component=$component",
+                    "SET p.name=$name, p.summary=$summary, p.say=$say, p.component=$component",
                     id=p["id"], name=p.get("name"), summary=p.get("summary"),
-                    component=p.get("component"),
+                    say=p.get("say"), component=p.get("component"),
                 )
                 counts["Process"] += 1
                 prev = None
                 for st in p.get("stages") or []:
                     s.run(
                         "MERGE (x:Stage {id:$id}) "
-                        "SET x.name=$name, x.detail=$detail, x.component=$component "
+                        "SET x.name=$name, x.detail=$detail, x.say=$say, x.component=$component "
                         "WITH x MATCH (p:Process {id:$pid}) MERGE (p)-[:HAS_STAGE]->(x)",
                         id=f"{p['id']}::{st['id']}", name=st.get("name"),
-                        detail=st.get("detail"), component=st.get("component"), pid=p["id"],
+                        detail=st.get("detail"), say=st.get("say"),
+                        component=st.get("component"), pid=p["id"],
                     )
                     counts["Stage"] += 1
                     counts["edges"] += 1
@@ -86,8 +87,8 @@ def sync(path: Optional[Path] = None) -> dict[str, int]:
 
             for a in doc.get("agents") or []:
                 s.run(
-                    "MERGE (n:Agent {id:$id}) SET n.name=$name, n.does=$does",
-                    id=a["id"], name=a.get("name"), does=a.get("does"),
+                    "MERGE (n:Agent {id:$id}) SET n.name=$name, n.does=$does, n.say=$say",
+                    id=a["id"], name=a.get("name"), does=a.get("does"), say=a.get("say"),
                 )
                 counts["Agent"] += 1
                 for t in a.get("writes") or []:
@@ -108,9 +109,10 @@ def sync(path: Optional[Path] = None) -> dict[str, int]:
             for sc in doc.get("screens") or []:
                 s.run(
                     "MERGE (n:Screen {id:$id}) "
-                    "SET n.name=$name, n.shows=$shows, n.known_gap=$gap, n.how_to=$how_to",
+                    "SET n.name=$name, n.shows=$shows, n.known_gap=$gap, n.how_to=$how_to, "
+                    "n.say=$say",
                     id=sc["id"], name=sc.get("name"), shows=sc.get("shows"),
-                    gap=sc.get("known_gap"), how_to=sc.get("how_to"),
+                    gap=sc.get("known_gap"), how_to=sc.get("how_to"), say=sc.get("say"),
                 )
                 counts["Screen"] += 1
                 for ep in sc.get("backed_by") or []:
@@ -132,8 +134,8 @@ def sync(path: Optional[Path] = None) -> dict[str, int]:
 
             for m in doc.get("models") or []:
                 s.run(
-                    "MERGE (n:Model {id:$id}) SET n.name=$name, n.role=$role",
-                    id=m["id"], name=m.get("name"), role=m.get("role"),
+                    "MERGE (n:Model {id:$id}) SET n.name=$name, n.role=$role, n.say=$say",
+                    id=m["id"], name=m.get("name"), role=m.get("role"), say=m.get("say"),
                 )
                 counts["Model"] += 1
 
@@ -141,8 +143,8 @@ def sync(path: Optional[Path] = None) -> dict[str, int]:
             # happy path teaches the model to expect one.
             for g in doc.get("known_gaps") or []:
                 s.run(
-                    "MERGE (n:Gap {id:$id}) SET n.what=$what",
-                    id=g["id"], what=g.get("what"),
+                    "MERGE (n:Gap {id:$id}) SET n.what=$what, n.say=$say",
+                    id=g["id"], what=g.get("what"), say=g.get("say"),
                 )
                 counts["Gap"] += 1
     finally:
@@ -160,6 +162,22 @@ def describe(topic: str, limit: int = 8) -> list[dict[str, Any]]:
     Matches on ANY significant word, ranked by how many of them a node hits. Requiring the
     whole phrase as a substring found nothing for "quote promotion" or "invoices screen" —
     the exact shape of question this exists to answer.
+
+    Each fact comes back in BOTH registers, and the split is the point:
+
+      * ``say``      — the fact as the user experiences it. This is what an answer is built
+                       from. Safe to paraphrase, safe to quote.
+      * ``internal`` — the same fact as an engineer states it, naming tables and routes. It
+                       is here so the agent can REASON. It must never reach a user.
+
+    Returning only ``internal`` (which is all this used to do) is what broke it in both
+    directions: the agent repeated the internals to whoever asked, and once that was blocked
+    it had nothing left to say and went mute. Measured coverage fell to 0.258 WITH the graph
+    versus 0.439 without it — the knowledge was actively making it worse, because the only
+    words it had for the truth were words it was not allowed to use.
+
+    ``say`` falls back to ``internal`` when a fact has no user-facing wording yet, so a
+    half-migrated ontology degrades to the old behaviour rather than to silence.
     """
     words = [w for w in (topic or "").lower().split() if w not in _STOPWORDS and len(w) > 2]
     if not words:
@@ -168,40 +186,54 @@ def describe(topic: str, limit: int = 8) -> list[dict[str, Any]]:
     q = """
     CALL {
         MATCH (p:Process)
-        WITH p, toLower(p.name + ' ' + coalesce(p.summary,'') + ' ' + coalesce(p.id,'')) AS hay
-        RETURN 'Process' AS kind, p.name AS name, p.summary AS detail, hay
+        WITH p, toLower(p.name + ' ' + coalesce(p.summary,'') + ' ' + coalesce(p.say,'') + ' ' + coalesce(p.id,'')) AS hay
+        RETURN 'Process' AS kind, p.name AS name, p.summary AS detail, p.say AS say, hay
       UNION
         MATCH (s:Stage)
-        WITH s, toLower(s.name + ' ' + coalesce(s.detail,'') + ' ' + coalesce(s.id,'')) AS hay
-        RETURN 'Stage' AS kind, s.name AS name, s.detail AS detail, hay
+        WITH s, toLower(s.name + ' ' + coalesce(s.detail,'') + ' ' + coalesce(s.say,'') + ' ' + coalesce(s.id,'')) AS hay
+        RETURN 'Stage' AS kind, s.name AS name, s.detail AS detail, s.say AS say, hay
       UNION
         MATCH (a:Agent)
-        WITH a, toLower(a.name + ' ' + coalesce(a.does,'') + ' ' + coalesce(a.id,'')) AS hay
-        RETURN 'Agent' AS kind, a.name AS name, a.does AS detail, hay
+        WITH a, toLower(a.name + ' ' + coalesce(a.does,'') + ' ' + coalesce(a.say,'') + ' ' + coalesce(a.id,'')) AS hay
+        RETURN 'Agent' AS kind, a.name AS name, a.does AS detail, a.say AS say, hay
       UNION
         MATCH (c:Screen)
-        WITH c, toLower(c.name + ' ' + coalesce(c.shows,'') + ' ' + coalesce(c.known_gap,'') + ' ' + coalesce(c.how_to,'') + ' ' + coalesce(c.id,'')) AS hay,
-             trim(coalesce(c.how_to,'') + ' ' + coalesce(c.shows,'') + ' ' + coalesce(c.known_gap,'')) AS det
-        RETURN 'Screen' AS kind, c.name AS name, det AS detail, hay
+        WITH c, toLower(c.name + ' ' + coalesce(c.shows,'') + ' ' + coalesce(c.known_gap,'') + ' ' + coalesce(c.how_to,'') + ' ' + coalesce(c.say,'') + ' ' + coalesce(c.id,'')) AS hay,
+             trim(coalesce(c.shows,'') + ' ' + coalesce(c.known_gap,'')) AS det,
+             trim(coalesce(c.say,'') + ' ' + coalesce(c.how_to,'')) AS sy
+        RETURN 'Screen' AS kind, c.name AS name, det AS detail, sy AS say, hay
       UNION
         MATCH (g:Gap)
-        WITH g, toLower(g.id + ' ' + coalesce(g.what,'')) AS hay
-        RETURN 'Known gap' AS kind, g.id AS name, g.what AS detail, hay
+        WITH g, toLower(g.id + ' ' + coalesce(g.what,'') + ' ' + coalesce(g.say,'')) AS hay
+        RETURN 'Known gap' AS kind, g.id AS name, g.what AS detail, g.say AS say, hay
     }
-    WITH kind, name, detail, hay,
+    WITH kind, name, detail, say, hay,
          size([w IN $words WHERE hay CONTAINS w]) AS hits
     WHERE hits > 0
-    RETURN kind, name, detail, hits
+    RETURN kind, name, detail, say, hits
     ORDER BY hits DESC, kind
     LIMIT $lim
     """
     drv = _driver()
     try:
         with drv.session() as s:
-            return [
-                {"kind": r["kind"], "name": r["name"], "detail": r["detail"]}
-                for r in s.run(q, words=words, lim=limit)
-            ]
+            out: list[dict[str, Any]] = []
+            for r in s.run(q, words=words, lim=limit):
+                say = (r["say"] or "").strip()
+                internal = (r["detail"] or "").strip()
+                out.append(
+                    {
+                        "kind": r["kind"],
+                        "name": r["name"],
+                        # What the user may be told. The answer is built from this.
+                        "say": say or internal,
+                        # Context to reason with. Never repeat it.
+                        "internal": internal,
+                        # Kept for callers written against the old shape.
+                        "detail": say or internal,
+                    }
+                )
+            return out
     finally:
         drv.close()
 

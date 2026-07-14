@@ -94,7 +94,28 @@ def _platform_tool() -> list[Tool]:
                         "escalate instead."
                     ),
                 }
-            return {"facts": facts}
+            # Two registers, handed over separately and labelled, because the model cannot
+            # be expected to work out for itself which half of a fact it is allowed to
+            # repeat. When it was given only the engineer's wording it did one of two
+            # things, and both were failures: it repeated the internals to whoever asked,
+            # or — once that was blocked — it fell silent and said "I don't know" to
+            # questions it could plainly answer.
+            return {
+                "answer_from_these": [
+                    {"kind": f["kind"], "name": f["name"], "fact": f["say"]}
+                    for f in facts
+                ],
+                "note": (
+                    "Build your answer ONLY from answer_from_these — that is the truth in "
+                    "the words the user lives in. Use it to tell them what they will see "
+                    "and what to do. Never mention how the system works inside."
+                ),
+                # Deliberately kept, so the agent can still REASON about the mechanism —
+                # that is what makes it able to explain WHY. It just may not say it.
+                "background_never_repeat": [
+                    f["internal"] for f in facts if f.get("internal")
+                ],
+            }
         except Exception as exc:  # noqa: BLE001
             logger.warning("platform_kg lookup failed: %s", exc)
             return {"facts": None, "note": "the platform description is unavailable"}

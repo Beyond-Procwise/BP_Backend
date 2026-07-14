@@ -153,9 +153,13 @@ QUESTIONS: List[Question] = [
             "just work the total out, or estimate it?"
         ),
         facts=[
+            # Contractions matter: the model writes "doesn't guess", not "does not guess".
+            # The alias list missed that and scored a correct answer at zero.
             Fact("never_invented", ["never", "not invent", "won't guess", "does not guess",
-                                    "no guess", "not estimate", "never synthesise",
-                                    "never synthesize", "not make up", "not fabricate"]),
+                                    "doesn't guess", "don't guess", "no guess",
+                                    "not estimate", "doesn't estimate", "or estimate",
+                                    "never synthesise", "never synthesize", "not make up",
+                                    "not fabricate"]),
             Fact("left_blank_and_flagged", ["blank", "empty", "null", "left as is",
                                             "flag", "raise", "discrepancy", "review",
                                             "for you to check"]),

@@ -1,8 +1,36 @@
+# The platform's model of itself — in TWO registers.
+#
+# `detail` is the truth as an engineer states it. It names tables, routes, env vars and files.
+# The agent needs it: it is what lets it reason about why a thing happened.
+#
+# `say` is the SAME truth as the user experiences it. Screens, buttons, statuses, what it
+# means for their document.
+#
+# Both registers, because the agent has to do two things that pull apart. It must KNOW the
+# mechanism, and it must never SAY it. Given only `detail` it did one of two things, and
+# both were bad: before the output-safety gate it repeated the internals verbatim (it gave up
+# proc.process_monitor, an env var and a source directory to anyone who asked), and after the
+# gate it went mute — handed a context full of things it may not utter, it could not tell
+# "paraphrase this" from "never say this", and answered "I don't know" to questions it could
+# plainly answer. Measured: coverage fell from 0.439 to 0.258 WITH the knowledge graph.
+#
+# `say` is the missing half. It is not a summary and not a euphemism — it is the same fact,
+# told to the person it happened to.
+#
+# RULE: `say` must never name a table, a route, a file, an env var, a class or a model. It
+# must never mention a screen, status or control that does not exist — an invented "Pending
+# Review" status sends a real person hunting for a button that was never built.
+
 processes:
 - id: document_ingest
   name: Document ingest
   summary: 'A document travels UI -> gateway -> S3 -> Postgres trigger -> BP_Backend watcher -> extraction
     -> _raw -> _stg -> _trgt -> API -> UI. It is only visible in the product once it reaches _trgt.
+
+    '
+  say: 'When you upload a document we read it automatically — you do not have to do anything
+    else. It is then checked, and it only appears in the product once those checks pass. That
+    is why a document can upload successfully and still not be visible yet.
 
     '
   stages:
@@ -12,12 +40,18 @@ processes:
       React bridge window.__SPENDIQ_UPLOAD__.
 
       '
+    say: You add a document by dropping it on the upload area or choosing it from your computer.
     component: beyond_procwise_ui/src/modules/SpendIQ/engine.js
   - id: presign
     name: Presign (and this is where the pipeline REALLY starts)
     detail: 'POST /data-integration/presigned-url returns an S3 PUT url + processId + sessionId, and INSERTs
       proc.process_monitor with status=''Running''. That INSERT fires the DB trigger — so extraction begins
       BEFORE the browser has uploaded the file. The watcher therefore waits for the object to land (UPLOAD_FILE_WAIT_TIMEOUT_S).
+
+      '
+    say: 'We start getting ready to read your document the moment you choose it — before it has
+      finished uploading. If the upload is slow or interrupted, we can end up waiting for a file
+      that never arrives, and the document will not process. If that happens, upload it again.
 
       '
     component: beyond_procwaise_api Data-integration.controller
@@ -28,17 +62,27 @@ processes:
       overwrite each other.
 
       '
+    say: 'Your document is stored under its own file name. Two people uploading files with the
+      SAME name will overwrite each other, so give your file a distinctive name.
+
+      '
   - id: confirm
     name: Confirm upload
     detail: 'POST /data-integration/confirm-upload sets status=''Completed''. It does NOT trigger extraction,
       despite the UI comment saying so — the trigger already fired at presign.
 
       '
+    say: Once the upload finishes it is marked complete. Reading the document has already begun by then.
   - id: extract
     name: Extraction
     detail: 'proc.process_monitor status Running -> Extracting -> Extracted|Extraction_Failed. One pipeline
       only: src/services/extraction/ (L1 regex -> L2 engineered -> L3 judge). AgentNick:unified does the
       reading.
+
+      '
+    say: 'Your document moves through these statuses: Running, then Extracting, then either
+      Extracted or Extraction Failed. Those are the words you will see. If it ends at Extraction
+      Failed, the document could not be read — check it is a clear, supported file and upload it again.
 
       '
     component: src/services/extraction/dispatch.py
@@ -48,11 +92,17 @@ processes:
       every version of a document.
 
       '
+    say: Every document you upload is kept, including every version of it. Nothing you send us is discarded.
   - id: stg
     name: _stg — one row per BUSINESS KEY
     detail: 'bp_*_stg is keyed on the document''s business id (invoice_id / quote_id / po_id). Two documents
       carrying the SAME invoice number collapse to one row here — the later upload updates the earlier.
       Supplier resolution happens on the way in.
+
+      '
+    say: 'Documents are identified by their own number — the invoice number, the quote number, the
+      order number. If two documents carry the SAME number they are treated as the same document,
+      and the one uploaded later replaces the earlier one.
 
       '
   - id: trgt
@@ -61,19 +111,32 @@ processes:
       no matter that extraction succeeded. Promotion is gated (see promotion).
 
       '
+    say: 'A document only becomes visible in the product after it passes its checks. Reading it
+      successfully is not enough on its own — if it does not pass, you will not see it anywhere,
+      even though the upload worked.
+
+      '
   - id: surface
     name: API -> UI
     detail: The Node gateway reads _trgt and serves /spendiq/* to SpendIQ.
+    say: Once a document has passed its checks it shows up on the relevant screens.
 - id: promotion
   name: Promotion (_stg -> _trgt)
   summary: 'The confidence/link gate that decides whether an extracted document becomes visible.
 
     '
+  say: The checks that decide whether a document you uploaded becomes visible in the product.
   stages:
   - id: gate_invoice
     name: Invoice needs its parent PO
     detail: 'An invoice must reference a PO — that reference IS the three-way match. Without one it is
       held (no_parent_reference / parent_not_found) for a human.
+
+      '
+    say: 'An invoice must reference the purchase order it belongs to. That reference is what lets us
+      match the invoice against what was ordered. If the invoice does not name a purchase order, or
+      names one we do not have, it is HELD for someone to look at — it will not appear on its own.
+      This is the most common reason an invoice reads perfectly and still never shows up.
 
       '
   - id: gate_quote
@@ -83,9 +146,19 @@ processes:
       that had not been raised yet, so every uploaded quote was invisible forever.)
 
       '
+    say: 'A quote does NOT need a purchase order. A quote comes first — it is what you ask for
+      before the order exists — so having no order attached is completely normal for a quote, and it
+      becomes visible without one.
+
+      '
   - id: gate_conf
     name: Confidence floor
     detail: PROMOTE_MIN_CONFIDENCE (90) on extraction; PROMOTE_MIN_LINK_SCORE (80) on the link.
+    say: 'A document has to be read with high confidence, and matched to its related documents with
+      high confidence, before it is shown to you. If we are not sure enough, it is held rather than
+      shown to you wrongly.
+
+      '
   component: src/services/linking_engine.py
 - id: money_reading
   name: Reading the money block
@@ -94,11 +167,19 @@ processes:
     numbers add up. Nothing is ever synthesised: an unreadable value stays NULL and raises a discrepancy.
 
     '
+  say: 'We read the money on a document and check it against the document''s own arithmetic — the
+    parts should add up to the total. We NEVER invent, estimate or calculate a figure that is not
+    on the document. If a value cannot be read it is left BLANK and flagged for you to check. A
+    blank total means we could not read it, not that it is zero.
+
+    '
   component: src/services/extraction/context_layer.py
+
 agents:
 - id: data_extraction
   name: DataExtractionAgent
   does: Reads a document into structured fields + line items.
+  say: Reads your uploaded document and pulls out its details and line items automatically.
   reads:
   - process_monitor
   writes:
@@ -108,12 +189,23 @@ agents:
 - id: discrepancy_detection
   name: DiscrepancyDetectionAgent
   does: Raises findings when a document contradicts itself or its PO.
+  say: 'Checks a document for things that do not add up — where it contradicts itself, or does not
+    match the purchase order it refers to. When it finds one it raises a DISCREPANCY: a mismatch
+    flagged for you to review and decide on. You will find them on the Action Centre screen.
+
+    '
   writes:
   - bp_extraction_discrepancy
 - id: supplier_ranking
   name: SupplierRankingAgent
   does: 'Ranks the suppliers competing on ONE deal, on their standing (latest) quote, scored as a ratio
     to the cheapest bid. Needs 2+ bidders. Unmeasured metrics stay NULL, never 0.
+
+    '
+  say: 'Ranks the suppliers competing on ONE deal, using their latest quote, compared against the
+    cheapest bid on that deal. It needs at least TWO suppliers who have quoted — you cannot rank a
+    single bidder against nobody. That is the usual reason a deal shows no ranking: only one
+    supplier has quoted so far.
 
     '
   reads:
@@ -124,17 +216,21 @@ agents:
 - id: opportunity_miner
   name: OpportunityMinerAgent
   does: Finds savings opportunities; supplies supplier_candidates to ranking.
+  say: Looks across your spend for savings opportunities, and suggests which suppliers to compare.
   writes:
   - bp_opportunity
 - id: quote_evaluation
   name: QuoteEvaluationAgent
   does: Scores quotes on a deal.
+  say: Scores the quotes on a deal so you can see how they compare.
   writes:
   - bp_quote_evaluation
+
 screens:
 - id: analyse
   name: Analyse
   shows: KPIs, trends, insights over the extracted corpus.
+  say: Your spend at a glance — the headline numbers, the trends, and what we think is worth your attention.
   backed_by:
   - /spendiq/metrics
   - /spendiq/analyse
@@ -146,6 +242,7 @@ screens:
 - id: quotes
   name: Quotes
   shows: Every quote in _trgt.
+  say: Every quote that has passed its checks.
   backed_by:
   - /spendiq/quotes
   reads_tables:
@@ -153,6 +250,7 @@ screens:
   how_to: Open SpendIQ and choose Quotes from the left-hand nav.
 - id: purchase_orders
   name: Purchase orders
+  say: Every purchase order that has passed its checks.
   backed_by:
   - /spendiq/purchase-orders
   reads_tables:
@@ -161,6 +259,11 @@ screens:
 - id: invoices
   name: Invoices
   shows: Invoices.
+  say: 'There is no dedicated Invoices screen. The navigation shows a count, but there is nowhere to
+    open and browse invoices on their own — this is a known gap in the product, not something you are
+    doing wrong. Invoices you upload still count towards your spend figures.
+
+    '
   backed_by: []
   known_gap: 'There is NO /spendiq/invoices endpoint. The nav shows a count but the view has no dedicated
     data source.
@@ -168,6 +271,10 @@ screens:
     '
 - id: suppliers
   name: Suppliers
+  say: 'Your suppliers. Note that the supplier ranking is NOT shown on this screen — it is calculated,
+    but it is not displayed here.
+
+    '
   backed_by:
   - /spendiq/suppliers
   reads_tables:
@@ -182,24 +289,35 @@ screens:
 - id: action_centre
   name: Action Centre
   shows: Discrepancies + actions raised against documents.
+  say: 'Where mismatches raised against your documents are collected, so you can review them and
+    decide what to do.
+
+    '
   backed_by:
   - /spendiq/discrepancies
   - /spendiq/alerts
   reads_tables:
   - bp_extraction_discrepancy
+  how_to: Open SpendIQ and choose Action Centre from the left-hand nav.
 - id: compliance
   name: Compliance
+  say: How your documents are tracking against the checks that matter.
   backed_by:
   - /spendiq/discrepancies/metrics
   how_to: Open SpendIQ and choose Compliance from the left-hand nav.
 - id: negotiations
   name: Negotiations
+  say: Where negotiations with suppliers are tracked.
   backed_by:
   - /spendiq/negotiations
+  how_to: Open SpendIQ and choose Negotiations from the left-hand nav.
 - id: tprm
   name: Third-party risk
+  say: The risk profile of the third parties you buy from.
   backed_by:
   - /spendiq/tprm/suppliers
+  how_to: Open SpendIQ and choose Third-party risk from the left-hand nav.
+
 models:
 - id: agentnick_unified
   name: BeyondProcwise/AgentNick:unified
@@ -207,16 +325,34 @@ models:
     — unified matched it exactly on the money gold set and ran faster.
 
     '
+  say: 'The product reads your documents and answers your questions itself. (Never name or discuss
+    the model with a user.)
+
+    '
+
 known_gaps:
 - id: s3_key_collision
   what: S3 keys are documents/{type}/{filename} with no uniqueness — same filename overwrites.
+  say: 'If two people upload files with the SAME file name, the second one overwrites the first and
+    the first is lost. Give your files distinctive names.
+
+    '
 - id: doc_identity
   what: 'Two documents with the same invoice number collapse to one _stg row; the later overwrites the
     earlier. _raw keeps both.
 
     '
+  say: 'Two documents carrying the same invoice number are treated as ONE — the later upload replaces
+    the earlier one, so only the most recent is shown. Both are still kept.
+
+    '
 - id: no_ingest_status_ui
   what: 'The UI cannot show a user whether their upload extracted. No invoices endpoint, and the upload
     websocket delivers no progress frames — the ''done'' event is a 45s timeout.
+
+    '
+  say: 'There is NO screen where you can watch your upload progress or confirm whether it succeeded.
+    This is a known gap. If you are unsure whether a document went through, look for it on the screen
+    where it should appear — if it is not there, it did not pass its checks.
 
     '

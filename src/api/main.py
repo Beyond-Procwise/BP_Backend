@@ -6,6 +6,7 @@ from typing import Any, Optional, Protocol, cast
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
 # Ensure GPU utilisation by default on compatible hardware
@@ -481,6 +482,32 @@ async def _register_routes_with_safety_gate():
     osafe.register_routes(
         [getattr(r, "path", "") for r in app.routes if getattr(r, "path", "")]
     )
+
+
+@app.on_event("startup")
+async def _sync_platform_ontology():
+    """Push the platform's model of itself into the graph.
+
+    This had no programmatic caller at all — `platform_kg.sync()` ran only from its own
+    `__main__` block. So the ontology could be edited and nothing would propagate: the agent
+    went on answering from whatever had last been synced by hand, and there was no way to
+    tell from the outside that it was stale. Improving the knowledge is pointless while the
+    pipe to it is manual.
+
+    MERGE-on-id, so this is idempotent and safe on every boot. If the graph is unreachable
+    the app still starts — a missing platform description degrades the agent's answers, it
+    does not stop documents being processed.
+    """
+    try:
+        from services.platform_kg import sync
+
+        counts = await run_in_threadpool(sync)
+        logger.info("platform ontology synced to the knowledge graph: %s", counts)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "could not sync the platform ontology; the assistant will answer from whatever "
+            "was last synced", exc_info=True,
+        )
 
 
 @app.get("/", tags=["General"])
