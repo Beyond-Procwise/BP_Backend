@@ -346,7 +346,31 @@ PS1 — gov.uk), not a fabricated sample.
 
 ---
 
-## 8. Success criteria
+## 8. As built (2026-07-14) — where the implementation departs from this spec
+
+Shipped in `e68c824`. Three deliberate departures:
+
+1. **The package is `src/services/obligations/`, not `src/services/hyperextract/`.** The
+   latter *shadows the installed library* whenever `src/services` is on `sys.path` — which
+   `tests/conftest.py` does. `import hyperextract` then resolves to our package and
+   `hyperextract.types` vanishes. Renaming removed the collision.
+2. **A third table, `proc.bp_contract_obligation_run`,** was added. Without it, a contract we
+   failed to read and a contract with genuinely no obligations both return `[]` from the API,
+   and no caller can tell them apart — the green zero this spec exists to prevent. It records
+   `extracted | no_grounded_obligations | failed`, and `GET /obligations/contract/{id}` returns
+   it alongside the list.
+3. **A custom edge-extraction prompt (`EDGE_PROMPT`) was required.** With the library's default
+   prompt the model wrote quotes the guard had to reject: it stitched several clauses into one
+   quote (`clause_ref: "27.5, 27.6, 27.7"`) or abbreviated with `...`. Those were *true*
+   obligations lost to a bad quote — grounded yield was 5–8 of ~14. Instructing the model to
+   copy one clause, one sentence, verbatim, no ellipsis, lifted it to **14–19 grounded, 1–3
+   dropped**. The fix belonged in the prompt, not in a weaker guard.
+
+Also measured: obligation counts vary run to run (19, then 14, on identical input). Ollama at
+`temperature=0` is not bit-deterministic — a known property of this stack. Do not treat a
+specific count as a regression signal.
+
+## 9. Success criteria
 
 1. `AgentNickChat` drives Hyper-Extract with no OpenAI/Anthropic key and no non-AgentNick model.
 2. Ollama concurrency never exceeds the existing semaphore.
