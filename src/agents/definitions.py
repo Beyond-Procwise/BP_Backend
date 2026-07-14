@@ -45,3 +45,18 @@ def load_agent_definitions(
             f"with an 'agents' array; got {type(agents).__name__}"
         )
     return [entry for entry in agents if isinstance(entry, dict)]
+
+
+def get_elicit(slug: str) -> List[Dict[str, Any]]:
+    """Input groups this agent must have satisfied before it can run.
+
+    Each group is {"any_of": [...], "type": str, "prompt": str} and is satisfied
+    when ANY member key is available. Deliberately separate from `required_inputs`,
+    which under-declares: data_extraction lists its document inputs as *optional*,
+    so a required-inputs rule would ask for nothing and the agent would run against
+    no documents at all.
+    """
+    for agent in load_agent_definitions():
+        if agent.get("slug") == slug:
+            return list(agent.get("elicit") or [])
+    return []

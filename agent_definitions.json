@@ -16,7 +16,10 @@
         "optional": ["s3_prefix", "s3_object_key"]
       },
       "outputs": ["details", "summary", "mismatches"],
-      "version": "2.0.0"
+      "version": "2.0.0",
+      "elicit": [{"any_of": ["s3_prefix", "s3_object_key", "document_ids"],
+                  "type": "document_ids",
+                  "prompt": "Which documents should I extract from?"}]
     },
     {
       "agentId": 2,
@@ -34,7 +37,9 @@
         "optional": ["criteria", "supplier_data", "supplier_candidates"]
       },
       "outputs": ["ranking", "justification"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["query"], "type": "text",
+                  "prompt": "What should I rank suppliers for?"}]
     },
     {
       "agentId": 3,
@@ -52,7 +57,9 @@
         "optional": ["quotes", "ranking"]
       },
       "outputs": ["comparison", "recommendation"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["quotes", "quote_ids", "deal_id"], "type": "text",
+                  "prompt": "Which quotes (or which deal) should I compare?"}]
     },
     {
       "agentId": 4,
@@ -70,7 +77,8 @@
         "optional": ["query", "product_category"]
       },
       "outputs": ["findings", "supplier_candidates", "supplier_directory"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": []
     },
     {
       "agentId": 5,
@@ -88,7 +96,11 @@
         "optional": ["ranking", "findings", "negotiation_context"]
       },
       "outputs": ["drafts"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["supplier", "supplier_id", "recipient"], "type": "text",
+                  "prompt": "Who is this email to?"},
+                 {"any_of": ["intent", "negotiation_context", "drafts"], "type": "text",
+                  "prompt": "What should the email say or achieve?"}]
     },
     {
       "agentId": 6,
@@ -106,7 +118,9 @@
         "optional": ["supplier", "current_offer", "target_price", "rfq_id", "negotiation_context"]
       },
       "outputs": ["negotiation_result", "drafts"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["supplier", "supplier_id", "ranking"], "type": "text",
+                  "prompt": "Which supplier am I negotiating with?"}]
     },
     {
       "agentId": 7,
@@ -124,7 +138,9 @@
         "optional": ["draft_payload", "supplier_input"]
       },
       "outputs": ["interaction_result"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["supplier", "supplier_id", "ranking", "supplier_candidates"],
+                  "type": "text", "prompt": "Which supplier should I contact?"}]
     },
     {
       "agentId": 8,
@@ -142,7 +158,9 @@
         "optional": ["policy_context"]
       },
       "outputs": ["decision", "justification"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["amount", "decision", "finding_id", "deal_id"], "type": "text",
+                  "prompt": "What am I approving? Give the amount, deal or finding."}]
     },
     {
       "agentId": 9,
@@ -160,7 +178,9 @@
         "optional": ["ranking", "supplier_candidates"]
       },
       "outputs": ["quotes", "evaluation"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["quotes", "quote_ids", "deal_id"], "type": "text",
+                  "prompt": "Which quotes should I evaluate?"}]
     },
     {
       "agentId": 10,
@@ -178,7 +198,9 @@
         "optional": []
       },
       "outputs": ["dispatch_results"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["drafts", "message", "recipient"], "type": "text",
+                  "prompt": "What should I send, and to whom?"}]
     },
     {
       "agentId": 11,
@@ -196,7 +218,8 @@
         "optional": ["workflow_id"]
       },
       "outputs": ["responses"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": []
     },
     {
       "agentId": 12,
@@ -214,7 +237,10 @@
         "optional": ["processing_issues"]
       },
       "outputs": ["mismatches"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["details", "doc_pk", "deal_id", "document_ids"],
+                  "type": "text",
+                  "prompt": "Which documents or deal should I check for discrepancies?"}]
     },
     {
       "agentId": 13,
@@ -232,7 +258,9 @@
         "optional": []
       },
       "outputs": ["answer", "sources"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["query", "question"], "type": "text",
+                  "prompt": "What do you want to know?"}]
     },
     {
       "agentId": 14,
@@ -250,7 +278,9 @@
         "optional": ["message", "brief", "session_id", "created_by", "category"]
       },
       "outputs": ["requirement_id", "requirement", "completeness_score"],
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "elicit": [{"any_of": ["requirement", "query", "brief"], "type": "text",
+                  "prompt": "What do you need? Describe the requirement."}]
     }
   ]
 }
