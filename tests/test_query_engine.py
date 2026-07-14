@@ -490,3 +490,36 @@ class DummyContext:
 
     def __exit__(self, exc_type, exc, tb):
         pass
+
+
+def test_fetch_invoice_data_survives_missing_supplier_name_column(monkeypatch):
+    """proc.bp_invoice_trgt has supplier_id but NO supplier_name column.
+
+    ``i.*`` therefore never yields a ``supplier_name`` column; only the
+    ``supplier_lookup`` CTE join contributes ``supplier_name_master``. The old
+    code did ``df.get("supplier_name")`` (returns ``None`` when absent) into
+    ``combine_first`` -- which raises ``AttributeError`` on a bare ``None``.
+    This must not crash, and the resulting supplier_name must come from the
+    master lookup.
+    """
+    import engines.query_engine as qe_module
+
+    engine = QueryEngine(agent_nick=types.SimpleNamespace(get_db_connection=lambda: DummyContext()))
+
+    # Mirrors what the real SQL returns: i.* (no supplier_name) plus the
+    # supplier_lookup join columns.
+    fake_df = pd.DataFrame(
+        {
+            "invoice_id": ["INV-1"],
+            "supplier_id": ["SUP-1"],
+            "supplier_id_lookup": ["SUP-1"],
+            "supplier_name_master": ["Acme Ltd"],
+        }
+    )
+
+    monkeypatch.setattr(qe_module, "read_sql_compat", lambda sql, conn, params=None: fake_df.copy())
+
+    df = engine.fetch_invoice_data()
+
+    assert df.loc[0, "supplier_name"] == "Acme Ltd"
+    assert "supplier_name_master" not in df.columns

@@ -514,9 +514,12 @@ class QueryEngine(BaseEngine):
             df = df.drop(columns=["supplier_id_lookup"])
 
         if "supplier_name_master" in df.columns:
-            df["supplier_name"] = df["supplier_name_master"].combine_first(
-                df.get("supplier_name")
-            )
+            if "supplier_name" in df.columns:
+                df["supplier_name"] = df["supplier_name_master"].combine_first(
+                    df["supplier_name"]
+                )
+            else:
+                df["supplier_name"] = df["supplier_name_master"]
             df = df.drop(columns=["supplier_name_master"])
 
         return df
@@ -579,9 +582,12 @@ class QueryEngine(BaseEngine):
             df = df.drop(columns=["supplier_id_lookup"])
 
         if "supplier_name_master" in df.columns:
-            df["supplier_name"] = df["supplier_name_master"].combine_first(
-                df.get("supplier_name")
-            )
+            if "supplier_name" in df.columns:
+                df["supplier_name"] = df["supplier_name_master"].combine_first(
+                    df["supplier_name"]
+                )
+            else:
+                df["supplier_name"] = df["supplier_name_master"]
             df = df.drop(columns=["supplier_name_master"])
 
         return df
