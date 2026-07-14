@@ -11,8 +11,77 @@ Spec reference: Section 5 of orchestration-rearchitecture-design.md
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import logging
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _json_default(value: Any) -> Any:
+    """Fallback encoder for ``json.dumps`` on payloads a real agent produced.
+
+    A real agent's output (data_extraction in particular) routinely carries
+    numpy scalars, ``Decimal``, and datetime-like values that the stdlib
+    ``json`` module cannot encode natively. Coerce them to a JSON-safe
+    equivalent instead of raising -- raising here used to blow up the whole
+    ``record_node_result`` UPDATE and leave the node_execution row stuck at
+    status='pending' even though the node had actually completed.
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (set, frozenset)):
+        return list(value)
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.hex()
+    # numpy scalars (np.int64, np.float64, np.bool_, ...) and arrays --
+    # duck-typed so numpy need not be imported/required here.
+    if hasattr(value, "dtype"):
+        item = getattr(value, "item", None)
+        if callable(item):
+            try:
+                return item()
+            except Exception:
+                pass
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist):
+            try:
+                return tolist()
+            except Exception:
+                pass
+    return str(value)
+
+
+def _safe_json_dumps(obj: Any) -> Optional[str]:
+    """``json.dumps`` that cannot raise.
+
+    Values ``json`` can't encode natively (numpy scalars, ``Decimal``,
+    datetimes, sets, bytes) are coerced via ``_json_default``. ``allow_nan``
+    is disabled because Python's json module happily emits the non-standard
+    ``NaN``/``Infinity`` tokens, which Postgres then rejects as invalid JSON
+    at the DB layer -- so a NaN would otherwise turn into exactly the same
+    "payload write throws, status update is lost" failure this exists to
+    prevent. If a value truly cannot be represented even after coercion, an
+    honest marker is stored rather than losing the whole row.
+    """
+    if obj is None:
+        return None
+    try:
+        return json.dumps(obj, default=_json_default, allow_nan=False)
+    except Exception:
+        logger.warning(
+            "Payload contains a value that could not be serialised even "
+            "with the fallback encoder; storing a marker instead of the "
+            "real payload for this field.",
+            exc_info=True,
+        )
+        return json.dumps(f"<unserialisable: {type(obj).__name__}>")
 
 
 class StateManager:
@@ -116,7 +185,7 @@ class StateManager:
                 """UPDATE proc.workflow_execution
                    SET shared_data = shared_data || %s::jsonb, updated_at = now()
                    WHERE execution_id = %s""",
-                (json.dumps(new_fields), execution_id),
+                (_safe_json_dumps(new_fields) or "{}", execution_id),
             )
             conn.commit()
 
@@ -176,25 +245,71 @@ class StateManager:
         error: Optional[str] = None,
         duration_ms: Optional[int] = None,
     ) -> None:
+        """Persist a node's real outcome.
+
+        The payload is serialised defensively (``_safe_json_dumps``) BEFORE
+        the DB call, so a value json can't natively encode never raises and
+        never blocks the status/duration write it travels with. Belt-and-
+        braces: if the combined UPDATE still fails for some other reason
+        (e.g. a transient DB error), the node's actual status/duration is
+        written anyway via a payload-free fallback UPDATE carrying an honest
+        marker -- a node that completed must never be left reading
+        'pending'.
+        """
         conn = self._get_connection()
-        with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE proc.node_execution
-                   SET status = %s, output_data = %s, pass_fields = %s,
-                       error = %s, duration_ms = %s, completed_at = now()
-                   WHERE execution_id = %s AND node_name = %s AND round = %s""",
-                (
-                    status,
-                    json.dumps(output_data) if output_data else None,
-                    json.dumps(pass_fields) if pass_fields else None,
-                    error,
-                    duration_ms,
-                    execution_id,
-                    node_name,
-                    round_num,
-                ),
+        output_json = _safe_json_dumps(output_data) if output_data else None
+        pass_fields_json = _safe_json_dumps(pass_fields) if pass_fields else None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE proc.node_execution
+                       SET status = %s, output_data = %s, pass_fields = %s,
+                           error = %s, duration_ms = %s, completed_at = now()
+                       WHERE execution_id = %s AND node_name = %s AND round = %s""",
+                    (
+                        status,
+                        output_json,
+                        pass_fields_json,
+                        error,
+                        duration_ms,
+                        execution_id,
+                        node_name,
+                        round_num,
+                    ),
+                )
+                conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                "record_node_result: full update failed for %s/%s (round %s); "
+                "falling back to a payload-free status write so the real "
+                "outcome is not lost.",
+                node_name,
+                round_num,
+                execution_id,
+                exc_info=True,
             )
-            conn.commit()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE proc.node_execution
+                       SET status = %s, output_data = %s, pass_fields = %s,
+                           error = %s, duration_ms = %s, completed_at = now()
+                       WHERE execution_id = %s AND node_name = %s AND round = %s""",
+                    (
+                        status,
+                        json.dumps("<unserialisable: node output_data>"),
+                        json.dumps("<unserialisable: node pass_fields>"),
+                        error,
+                        duration_ms,
+                        execution_id,
+                        node_name,
+                        round_num,
+                    ),
+                )
+                conn.commit()
 
     def get_ready_nodes(
         self, execution_id: int, current_round: int
@@ -284,7 +399,7 @@ class StateManager:
                     event_type,
                     node_name,
                     agent_type,
-                    json.dumps(payload or {}),
+                    _safe_json_dumps(payload or {}) or "{}",
                     round_num,
                 ),
             )
