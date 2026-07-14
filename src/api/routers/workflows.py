@@ -163,7 +163,10 @@ class DiscrepancyRequest(BaseModel):
 class AgentType(BaseModel):
     agentId: int
     agentType: str
+    slug: str
     description: str
+    capabilities: List[str] = Field(default_factory=list)
+    required_inputs: List[str] = Field(default_factory=list)
     dependencies: List[str]
 
 
