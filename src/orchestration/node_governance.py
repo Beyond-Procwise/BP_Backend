@@ -1,15 +1,23 @@
-"""Which governed prompt and policy actually applied to this agent.
+"""Which governed prompt and policy are LINKED to this agent.
 
 Only 5 of the 14 agents have any governance at all. The other 9 run on their
 built-in defaults, and this says so plainly. A node that shows a governance tick
 it did not earn is worse than a node that shows none.
 
+Important: this is a STATIC LOOKUP over bp_prompt/bp_policy, not a resolution
+through PromptEngine/PolicyEngine's selection logic. If several prompt or
+policy rows match an agent, PromptEngine/PolicyEngine pick ONE at run time
+(e.g. the highest version); this module has no way to know which one that
+would be, so it must not claim any of them "applied". It reports linkage —
+every row named here is real, active, and genuinely linked — and stops there.
+See ``governance_for``'s ``status`` field for the exact wording to surface.
+
 ``*_linked_agents`` is not guaranteed to hold a single agent name — it can list
 several tokens (e.g. "supplier_ranking_agent, negotiation_agent"), exactly as
-PromptEngine and PolicyEngine already assume when they *apply* governance
-(see ``PromptEngine._coerce_linked_agents`` / ``PolicyEngine._coerce_linked_agents``).
+PromptEngine and PolicyEngine already assume when they select governance to
+apply (see ``PromptEngine._coerce_linked_agents`` / ``PolicyEngine._coerce_linked_agents``).
 This module must tokenize the column the same way those engines do, or the
-badge here could disagree with what actually gets applied at run time.
+badge here could disagree with what is genuinely linked at run time.
 """
 
 from __future__ import annotations
@@ -50,6 +58,15 @@ def _rows(sql: str, linked_form: str, bare_form: str) -> List[Dict[str, Any]]:
 
 
 def governance_for(slug: str) -> Dict[str, Any]:
+    """Real, active, linked governance for ``slug`` — never "applied".
+
+    ``status`` is the honest label for display: "linked & active" when at
+    least one prompt or policy row is linked (this function cannot prove any
+    one of them is the row PromptEngine/PolicyEngine would actually select
+    and apply at run time — see the module docstring), or "built-in default"
+    when none are. Do not rename this to imply application without actually
+    routing the lookup through PromptEngine/PolicyEngine's selection logic.
+    """
     linked_form = normalise_agent_name(slug)
     bare_form = _bare_agent_name(slug)
     prompts = _rows(
@@ -62,5 +79,7 @@ def governance_for(slug: str) -> Dict[str, Any]:
             WHERE policy_status = 1""",
         linked_form, bare_form,
     )
+    governed = bool(prompts or policies)
     return {"prompts": prompts, "policies": policies,
-            "governed": bool(prompts or policies)}
+            "governed": governed,
+            "status": "linked & active" if governed else "built-in default"}
