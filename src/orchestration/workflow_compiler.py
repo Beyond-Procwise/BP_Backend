@@ -8,7 +8,7 @@ a WorkflowGraph object.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
 
 from agents.definitions import load_agent_definitions
 from orchestration.workflow_engine import WorkflowGraph, WorkflowNode
@@ -47,19 +47,6 @@ def _has_cycle(node_ids: List[str], edges: List[Dict[str, str]]) -> bool:
     return any(colour[n] == WHITE and visit(n) for n in node_ids)
 
 
-def _reachable(entry: str, edges: List[Dict[str, str]]) -> Set[str]:
-    succ: Dict[str, List[str]] = {}
-    for e in edges:
-        succ.setdefault(e["source"], []).append(e["target"])
-    seen, stack = {entry}, [entry]
-    while stack:
-        for m in succ.get(stack.pop(), []):
-            if m not in seen:
-                seen.add(m)
-                stack.append(m)
-    return seen
-
-
 def validate_saved_graph(graph: Dict[str, Any]) -> None:
     """Raise GraphValidationError if this graph cannot run. Fail here, at save
     time, with a reason — never mysteriously at run time."""
@@ -69,7 +56,12 @@ def validate_saved_graph(graph: Dict[str, Any]) -> None:
     if not nodes:
         raise GraphValidationError("A workflow needs at least one node.")
 
-    ids = [n["id"] for n in nodes]
+    ids: List[str] = []
+    for n in nodes:
+        node_id = n.get("id")
+        if node_id is None:
+            raise GraphValidationError(f"A node is missing its id: {n!r}")
+        ids.append(node_id)
     if len(set(ids)) != len(ids):
         raise GraphValidationError("Two nodes share the same id.")
 
@@ -80,25 +72,37 @@ def validate_saved_graph(graph: Dict[str, Any]) -> None:
 
     id_set = set(ids)
     for e in edges:
-        if e["source"] not in id_set or e["target"] not in id_set:
+        source, target = e.get("source"), e.get("target")
+        if source is None or target is None:
+            raise GraphValidationError(f"An edge is missing a source or target: {e!r}")
+        if source not in id_set or target not in id_set:
             raise GraphValidationError(
-                f"Edge {e['source']} -> {e['target']} points at a node that is not on the canvas."
+                f"Edge {source} -> {target} points at a node that is not on the canvas."
             )
-        if e["source"] == e["target"]:
-            raise GraphValidationError(f"Node {e['source']} is connected to itself (cycle).")
+        if source == target:
+            raise GraphValidationError(f"Node {source} is connected to itself (cycle).")
 
     if _has_cycle(ids, edges):
         raise GraphValidationError("The flow loops back on itself (cycle). A workflow must run forwards.")
 
+    # A finite acyclic graph with exactly one source has every node reachable
+    # from it, so once we get past the cycle check above, requiring exactly
+    # one entry node is sufficient to guarantee full connectivity — a node
+    # with no path from the entry is, by definition, itself an entry node
+    # (nothing feeds into it) and is caught right here.
     entries = _entry_nodes(ids, edges)
-    if len(entries) != 1:
+    if len(entries) == 0:
         raise GraphValidationError(
-            f"A workflow needs exactly one entry node (a node with nothing feeding into it); this one has {len(entries)}."
+            "A workflow needs exactly one entry node (a node with nothing feeding into it); "
+            "this graph has none — every node has something feeding into it, which means "
+            "there is a cycle somewhere."
         )
-
-    unreachable = id_set - _reachable(entries[0], edges)
-    if unreachable:
-        raise GraphValidationError(f"These nodes are not connected to the flow: {sorted(unreachable)}")
+    if len(entries) > 1:
+        raise GraphValidationError(
+            "A workflow needs exactly one entry node (a node with nothing feeding into it); "
+            f"these nodes have nothing feeding into them: {entries}. "
+            "Connect them, or remove the ones you do not want."
+        )
 
 
 def compile_graph(name: str, graph: Dict[str, Any]) -> WorkflowGraph:

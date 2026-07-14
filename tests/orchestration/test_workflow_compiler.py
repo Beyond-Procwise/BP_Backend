@@ -55,10 +55,47 @@ def test_rejects_two_entry_nodes():
 
 
 def test_rejects_an_unreachable_node():
+    """An orphan node has no inbound edge, so it is rejected by the entry-node
+    count check (it counts as a second entry node) — and the message must name it."""
     bad = {"nodes": [{"id": "a", "agent_slug": "rag"}, {"id": "b", "agent_slug": "rag"},
                      {"id": "orphan", "agent_slug": "rag"}],
            "edges": [{"source": "a", "target": "b"}]}
-    with pytest.raises(GraphValidationError, match="unreachable|one entry node"):
+    with pytest.raises(GraphValidationError) as exc_info:
+        validate_saved_graph(bad)
+    assert "orphan" in str(exc_info.value)
+
+
+def test_rejects_duplicate_node_ids():
+    bad = {"nodes": [{"id": "a", "agent_slug": "rag"}, {"id": "a", "agent_slug": "rag"}],
+           "edges": []}
+    with pytest.raises(GraphValidationError, match="same id"):
+        validate_saved_graph(bad)
+
+
+def test_rejects_an_edge_to_a_node_not_on_the_canvas():
+    bad = {"nodes": [{"id": "a", "agent_slug": "rag"}],
+           "edges": [{"source": "a", "target": "ghost"}]}
+    with pytest.raises(GraphValidationError, match="not on the canvas"):
+        validate_saved_graph(bad)
+
+
+def test_rejects_a_self_edge():
+    bad = {"nodes": [{"id": "a", "agent_slug": "rag"}],
+           "edges": [{"source": "a", "target": "a"}]}
+    with pytest.raises(GraphValidationError, match="connected to itself"):
+        validate_saved_graph(bad)
+
+
+def test_rejects_a_node_missing_an_id():
+    bad = {"nodes": [{"agent_slug": "rag"}], "edges": []}
+    with pytest.raises(GraphValidationError, match="missing"):
+        validate_saved_graph(bad)
+
+
+def test_rejects_an_edge_missing_a_target():
+    bad = {"nodes": [{"id": "a", "agent_slug": "rag"}],
+           "edges": [{"source": "a"}]}
+    with pytest.raises(GraphValidationError, match="missing"):
         validate_saved_graph(bad)
 
 
