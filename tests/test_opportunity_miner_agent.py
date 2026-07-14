@@ -1788,3 +1788,110 @@ def test_opportunity_miner_skips_without_supplier(monkeypatch, caplog):
     assert output.agentic_plan
     assert ingest_called["value"] is False
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# P5: proc.cat_product_mapping was never built. _ingest_data's blind
+# `SELECT * FROM proc.cat_product_mapping` used to raise on every single
+# call and get logged as a full traceback via a broad except -- on every
+# workflow run. The absence must be handled explicitly, logged once (not
+# per run), and surfaced via services.capability_status -- while a genuine,
+# unrelated ingestion failure on some OTHER table must still be loud.
+# ---------------------------------------------------------------------------
+
+import psycopg2.errors
+import sqlalchemy.exc
+
+
+def _missing_product_mapping_read_sql(sql, params=None):
+    if "proc.cat_product_mapping" in sql:
+        orig = psycopg2.errors.UndefinedTable(
+            'relation "proc.cat_product_mapping" does not exist'
+        )
+        raise sqlalchemy.exc.ProgrammingError(sql, {}, orig)
+    return pd.DataFrame()
+
+
+def test_ingest_data_missing_product_mapping_does_not_log_traceback(monkeypatch, caplog):
+    nick = DummyNick()
+    agent = OpportunityMinerAgent(nick)
+    monkeypatch.setattr(agent, "_read_sql", _missing_product_mapping_read_sql)
+
+    with caplog.at_level(logging.DEBUG):
+        dfs = agent._ingest_data()
+
+    assert dfs["product_mapping"].empty
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert error_records == [], [r.getMessage() for r in error_records]
+    assert "Traceback" not in caplog.text
+    # Every other table must still have been ingested normally -- the
+    # missing product_mapping table must not take the rest of ingestion
+    # down with it.
+    assert set(dfs.keys()) == set(agent.TABLE_MAP.keys())
+
+
+def test_ingest_data_missing_product_mapping_logs_once_across_calls(monkeypatch, caplog):
+    import importlib
+
+    import services.capability_status as capability_status
+
+    importlib.reload(capability_status)
+
+    nick = DummyNick()
+    agent = OpportunityMinerAgent(nick)
+    monkeypatch.setattr(agent, "_read_sql", _missing_product_mapping_read_sql)
+
+    with caplog.at_level(logging.WARNING):
+        agent._ingest_data()
+        agent._ingest_data()
+        agent._ingest_data()
+
+    missing_table_records = [
+        r for r in caplog.records if "cat_product_mapping" in r.getMessage()
+    ]
+    assert len(missing_table_records) == 1, (
+        "the missing-table condition must be logged once per process, not "
+        "once per workflow run"
+    )
+    importlib.reload(capability_status)
+
+
+def test_ingest_data_missing_product_mapping_marks_capability_degraded(monkeypatch):
+    import importlib
+
+    import services.capability_status as capability_status
+
+    importlib.reload(capability_status)
+
+    nick = DummyNick()
+    agent = OpportunityMinerAgent(nick)
+    monkeypatch.setattr(agent, "_read_sql", _missing_product_mapping_read_sql)
+
+    agent._ingest_data()
+
+    degraded = {d["capability"]: d["reason"] for d in capability_status.get_degraded()}
+    assert "product_category_enrichment" in degraded
+    assert "cat_product_mapping" in degraded["product_category_enrichment"]
+    importlib.reload(capability_status)
+
+
+def test_ingest_data_genuine_failure_on_other_table_still_logged(monkeypatch, caplog):
+    """A real, unexpected ingestion failure on a table that DOES exist must
+    still be logged loudly -- only the known-missing product_mapping table
+    is quieted."""
+    nick = DummyNick()
+    agent = OpportunityMinerAgent(nick)
+
+    def flaky_read_sql(sql, params=None):
+        if "proc.bp_supplier" in sql:
+            raise RuntimeError("connection reset by peer")
+        return pd.DataFrame()
+
+    monkeypatch.setattr(agent, "_read_sql", flaky_read_sql)
+
+    with caplog.at_level(logging.DEBUG):
+        dfs = agent._ingest_data()
+
+    assert dfs["supplier_master"].empty
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert error_records, "a genuinely unexpected ingestion failure must still be logged"

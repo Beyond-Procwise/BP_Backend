@@ -85,3 +85,42 @@ def test_log_once_different_keys_both_log(capability_status, caplog):
         capability_status.log_once("k2", logging.WARNING, "message two")
     assert "message one" in caplog.text
     assert "message two" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# is_missing_relation_error: a single place to recognise "this DB error
+# means the table doesn't exist", regardless of whether the driver is raw
+# psycopg2 or a SQLAlchemy engine wrapping it.
+# ---------------------------------------------------------------------------
+
+import psycopg2.errors
+import sqlalchemy.exc
+
+
+def test_is_missing_relation_error_true_for_direct_psycopg2_undefined_table(
+    capability_status,
+):
+    exc = psycopg2.errors.UndefinedTable('relation "proc.agent" does not exist')
+    assert capability_status.is_missing_relation_error(exc) is True
+
+
+def test_is_missing_relation_error_true_for_sqlalchemy_no_such_table(
+    capability_status,
+):
+    exc = sqlalchemy.exc.NoSuchTableError("proc.cat_product_mapping")
+    assert capability_status.is_missing_relation_error(exc) is True
+
+
+def test_is_missing_relation_error_true_for_sqlalchemy_wrapped_undefined_table(
+    capability_status,
+):
+    """pd.read_sql via a SQLAlchemy engine wraps the psycopg2 error as
+    ProgrammingError.orig — the common shape in this codebase's _read_sql
+    helpers, which prefer get_db_engine() when available."""
+    orig = psycopg2.errors.UndefinedTable('relation "proc.cat_product_mapping" does not exist')
+    exc = sqlalchemy.exc.ProgrammingError("SELECT * FROM proc.cat_product_mapping", {}, orig)
+    assert capability_status.is_missing_relation_error(exc) is True
+
+
+def test_is_missing_relation_error_false_for_unrelated_error(capability_status):
+    assert capability_status.is_missing_relation_error(RuntimeError("connection reset")) is False

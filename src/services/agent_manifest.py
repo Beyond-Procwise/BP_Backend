@@ -180,6 +180,16 @@ class AgentManifestService:
                 ],
                 "required": ["product", "category_level_2"],
                 "synonyms": {"product": ["item", "description"]},
+                # This table has no DDL anywhere in the repo and does not
+                # exist in the live DB (see services.capability_status /
+                # GET /health -> "degraded"). The shape above documents
+                # what product/category enrichment WOULD look like if it
+                # existed; it is kept for reference, but every consumer of
+                # this manifest must be able to tell it apart from the real,
+                # queryable tables above it rather than treating it as a
+                # configured knowledge source.
+                "available": False,
+                "unavailable_reason": "proc.cat_product_mapping does not exist",
             },
         )
         return profiles

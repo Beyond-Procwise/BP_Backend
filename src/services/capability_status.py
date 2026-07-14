@@ -72,3 +72,28 @@ def log_once(key: str, level: int, msg: str, *args) -> None:
             return
         _logged_once.add(key)
     logger.log(level, msg, *args)
+
+
+def is_missing_relation_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` represents "this table/relation does not
+    exist", regardless of whether it was raised directly by psycopg2 or
+    wrapped by a SQLAlchemy engine (this codebase's ``_read_sql`` helpers
+    prefer ``get_db_engine()`` — a SQLAlchemy engine — when available, which
+    wraps the underlying DBAPI error as ``ProgrammingError.orig``).
+    """
+    import psycopg2.errors
+
+    candidates = [exc, getattr(exc, "orig", None)]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, psycopg2.errors.UndefinedTable):
+            return True
+        if getattr(candidate, "pgcode", None) == "42P01":  # undefined_table
+            return True
+
+    try:
+        import sqlalchemy.exc
+    except Exception:  # pragma: no cover - sqlalchemy always available here
+        return False
+    return isinstance(exc, sqlalchemy.exc.NoSuchTableError)

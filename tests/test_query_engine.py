@@ -349,6 +349,85 @@ def test_fetch_procurement_flow_handles_missing_category_mapping(monkeypatch):
         assert df[field].isna().all()
 
 
+# ---------------------------------------------------------------------------
+# P5: proc.cat_product_mapping was never built. Column introspection against
+# a genuinely missing table must not be logged as an ERROR+traceback (that
+# is _table_exists's own, expected "does the table exist?" check working as
+# designed) — and the absence must be surfaced once via
+# services.capability_status rather than silently disappearing.
+# ---------------------------------------------------------------------------
+
+import logging
+
+import sqlalchemy
+
+
+class _NoCursorConn:
+    """Mimics the shape _pandas_reader actually hands back in production:
+    a SQLAlchemy Connection, which has no ``.cursor`` attribute — forcing
+    _get_columns down the ``sqlalchemy.inspect`` introspection path."""
+
+
+def test_get_columns_missing_table_does_not_log_error_traceback(monkeypatch, caplog):
+    class _RaisingInspector:
+        def get_columns(self, table, schema=None):
+            raise sqlalchemy.exc.NoSuchTableError(f"{schema}.{table}")
+
+    monkeypatch.setattr(sqlalchemy, "inspect", lambda conn: _RaisingInspector())
+
+    engine = QueryEngine(agent_nick=types.SimpleNamespace())
+    with caplog.at_level(logging.DEBUG):
+        cols = engine._get_columns(_NoCursorConn(), "proc", "cat_product_mapping")
+
+    assert cols == []
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert error_records == [], [r.getMessage() for r in error_records]
+    assert "Traceback" not in caplog.text
+
+
+def test_get_columns_missing_table_marks_capability_degraded(monkeypatch):
+    import importlib
+
+    import services.capability_status as capability_status
+
+    importlib.reload(capability_status)
+
+    class _RaisingInspector:
+        def get_columns(self, table, schema=None):
+            raise sqlalchemy.exc.NoSuchTableError(f"{schema}.{table}")
+
+    monkeypatch.setattr(sqlalchemy, "inspect", lambda conn: _RaisingInspector())
+
+    engine = QueryEngine(agent_nick=types.SimpleNamespace())
+    engine._get_columns(_NoCursorConn(), "proc", "cat_product_mapping")
+
+    degraded = {d["capability"]: d["reason"] for d in capability_status.get_degraded()}
+    assert "product_category_enrichment" in degraded
+    assert "cat_product_mapping" in degraded["product_category_enrichment"]
+
+    importlib.reload(capability_status)
+
+
+def test_get_columns_genuine_introspection_failure_still_logged(monkeypatch, caplog):
+    """A real, unexpected introspection failure (not "table doesn't exist")
+    must still be logged loudly — only the expected/handled missing-relation
+    case is quieted."""
+
+    class _BrokenInspector:
+        def get_columns(self, table, schema=None):
+            raise RuntimeError("connection reset by peer")
+
+    monkeypatch.setattr(sqlalchemy, "inspect", lambda conn: _BrokenInspector())
+
+    engine = QueryEngine(agent_nick=types.SimpleNamespace())
+    with caplog.at_level(logging.DEBUG):
+        cols = engine._get_columns(_NoCursorConn(), "proc", "bp_supplier")
+
+    assert cols == []
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert error_records, "a genuinely unexpected error must still be logged"
+
+
 def test_assign_procurement_categories_uses_vector_fallback():
     engine = QueryEngine(agent_nick=types.SimpleNamespace())
 

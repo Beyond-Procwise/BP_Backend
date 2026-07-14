@@ -51,3 +51,21 @@ def test_manifest_for_unknown_agent_returns_defaults():
     assert manifest["task"]["agent_type"] == "custom_test_agent"
     assert isinstance(manifest["policies"], list)
     assert "proc.supplier" in manifest["knowledge"]["tables"]
+
+
+def test_cat_product_mapping_profile_is_declared_unavailable():
+    """proc.cat_product_mapping has no DDL anywhere in the repo and does not
+    exist in the live DB. Documenting its intended shape here (for humans/
+    LLMs planning against it) is fine, but presenting it as an available
+    knowledge source -- indistinguishable from the real tables above it --
+    would make a broken feature look configured. It must carry an explicit
+    unavailability flag instead."""
+    nick = _make_nick()
+    manifest_service = AgentManifestService(nick)
+
+    profile = manifest_service.build_manifest("custom_test_agent")["knowledge"]["tables"][
+        "proc.cat_product_mapping"
+    ]
+
+    assert profile["available"] is False
+    assert "does not exist" in profile["unavailable_reason"]

@@ -16,6 +16,8 @@ from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
+import psycopg2.errors
+import sqlalchemy.exc
 from typing import Any, Dict, Iterable, List, Optional
 
 from .base_engine import BaseEngine
@@ -25,6 +27,7 @@ import services.data_flow_manager as data_flow_module
 import services.rag_service as rag_module
 import services.procurement_knowledge_service as procurement_knowledge_module
 import services.supplier_relationship_service as supplier_rel_module
+import services.capability_status as capability_status
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +190,19 @@ class QueryEngine(BaseEngine):
                 finally:  # pragma: no cover - ensure cursor cleanup
                     result.close()
                 return [row[0] for row in rows]
+        except (psycopg2.errors.UndefinedTable, sqlalchemy.exc.NoSuchTableError):
+            # This is the expected, already-documented outcome of this
+            # method (see docstring): the relation genuinely does not
+            # exist. _table_exists relies on an empty list here to answer
+            # "no" quietly — logging a full traceback for a normal "does
+            # this table exist?" check that came back negative was pure
+            # noise, repeated on every call.
+            if schema == "proc" and table == "cat_product_mapping":
+                capability_status.mark_degraded(
+                    "product_category_enrichment",
+                    "proc.cat_product_mapping does not exist",
+                )
+            return []
         except Exception:
             logger.exception("column introspection failed for %s.%s", schema, table)
             return []

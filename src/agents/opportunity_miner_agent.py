@@ -21,6 +21,7 @@ from services.data_flow_manager import DataFlowManager
 from services.opportunity_service import load_opportunity_feedback
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources, normalize_instruction_key
+import services.capability_status as capability_status
 
 logger = logging.getLogger(__name__)
 
@@ -2254,8 +2255,19 @@ class OpportunityMinerAgent(BaseAgent):
         for table, sql_name in self.TABLE_MAP.items():
             try:
                 dfs[table] = self._read_sql(f"SELECT * FROM {sql_name}")
-            except Exception:
-                logger.exception("Failed to ingest table %s (%s)", table, sql_name)
+            except Exception as exc:
+                if sql_name == "proc.cat_product_mapping" and capability_status.is_missing_relation_error(exc):
+                    # proc.cat_product_mapping has never been provisioned in
+                    # this database. That's a declared, known gap (product/
+                    # category enrichment is unavailable) rather than a
+                    # per-run failure worth a traceback -- see
+                    # services.capability_status.
+                    capability_status.mark_degraded(
+                        "product_category_enrichment",
+                        "proc.cat_product_mapping does not exist",
+                    )
+                else:
+                    logger.exception("Failed to ingest table %s (%s)", table, sql_name)
                 dfs[table] = pd.DataFrame()
         return dfs
 
