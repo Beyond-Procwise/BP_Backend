@@ -32,6 +32,9 @@ langchain
 langchain-community
 langchain-openai
 langgraph
+# Contract obligation intelligence: AutoHypergraph reads contract prose into n-ary
+# obligations. Driven by AgentNick via src/services/obligations/agentnick.py.
+hyperextract
 httpx
 nltk
 neo4j
