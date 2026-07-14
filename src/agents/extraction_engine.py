@@ -3969,7 +3969,7 @@ def _core_tokens(name):
 
 
 def _load_suppliers_from_db() -> dict:
-    """Load supplier names from proc.supplier Postgres table with TTL cache."""
+    """Load supplier names from proc.bp_supplier Postgres table with TTL cache."""
     global _SUPPLIER_CACHE, _SUPPLIER_CACHE_TIME
     import time
 
@@ -3991,7 +3991,7 @@ def _load_suppliers_from_db() -> dict:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT supplier_name, trading_name FROM proc.supplier "
+                    "SELECT supplier_name, trading_name FROM proc.bp_supplier "
                     "WHERE supplier_name IS NOT NULL"
                 )
                 rows = cur.fetchall()
@@ -4020,7 +4020,7 @@ def _load_suppliers_from_db() -> dict:
         "core_tokens_map": core_map,
     }
     _SUPPLIER_CACHE_TIME = now
-    logger.info("Loaded %d supplier names from proc.supplier", len(suppliers))
+    logger.info("Loaded %d supplier names from proc.bp_supplier", len(suppliers))
     return _SUPPLIER_CACHE
 
 
