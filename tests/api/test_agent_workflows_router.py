@@ -338,6 +338,70 @@ def test_stale_executing_claim_can_be_reclaimed(client, _cleanup_test_rows):
     client.delete(f"/agent-workflows/{wid}")
 
 
+def test_answering_one_run_cannot_mutate_another_runs_request(client, _cleanup_test_rows):
+    """CRITICAL: proc.bp_workflow_input_request is the human-in-the-loop audit
+    trail. A request_id must be scoped to the run it was raised for --
+    answering run B's endpoint with a request_id that belongs to run A must
+    be rejected outright, and run A's row must be left COMPLETELY untouched:
+    same status, same (absent) answer, same (null) answered_at. Silently
+    rewriting another run's audit trail -- including one that has already
+    completed -- destroys the one guarantee this table exists to provide.
+    """
+    from services.db import get_conn
+
+    created_workflow_ids, created_run_ids = _cleanup_test_rows
+
+    wid_a = client.post("/agent-workflows", json={"name": "hitl-test", "graph": GRAPH}).json()["workflow_id"]
+    created_workflow_ids.append(wid_a)
+    wid_b = client.post("/agent-workflows", json={"name": "hitl-test", "graph": GRAPH}).json()["workflow_id"]
+    created_workflow_ids.append(wid_b)
+
+    run_a = client.post(f"/agent-workflows/{wid_a}/run", json={"payload": {}}).json()
+    created_run_ids.append(run_a["run_id"])
+    run_b = client.post(f"/agent-workflows/{wid_b}/run", json={"payload": {}}).json()
+    created_run_ids.append(run_b["run_id"])
+
+    assert run_a["status"] == "awaiting_input"
+    assert run_b["status"] == "awaiting_input"
+    assert run_a["pending"], "expected run A to have at least one open question"
+
+    request_id_a = run_a["pending"][0]["request_id"]
+
+    def _row(request_id):
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT status, answer, answered_by, answered_at
+                     FROM proc.bp_workflow_input_request WHERE request_id = %s""",
+                (request_id,),
+            )
+            r = cur.fetchone()
+            cur.close()
+            return r
+
+    before = _row(request_id_a)
+    assert before[0] == "pending"
+    assert before[3] is None          # answered_at
+
+    # Answer run B's endpoint using run A's request_id -- a caller mixing up
+    # (or forging) a run_id/request_id pair.
+    r = client.post(
+        f"/agent-workflows/runs/{run_b['run_id']}/input",
+        json={"request_id": request_id_a, "answer": "hijacked"},
+    )
+    assert r.status_code in (400, 404), r.text
+
+    after = _row(request_id_a)
+    assert after == before, "run A's request row must be left COMPLETELY untouched"
+
+    # Run A's own question is still pending, unaffected.
+    got_a = client.get(f"/agent-workflows/runs/{run_a['run_id']}")
+    assert got_a.json()["status"] == "awaiting_input"
+
+    client.delete(f"/agent-workflows/{wid_a}")
+    client.delete(f"/agent-workflows/{wid_b}")
+
+
 def test_get_run_surfaces_status_and_404s_for_unknown_run(client, _cleanup_test_rows):
     """FINDING 1(b): GET /agent-workflows/runs/{run_id} must return the run's
     real persisted status — not just its pending questions, which made an

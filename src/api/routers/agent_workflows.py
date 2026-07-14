@@ -155,8 +155,27 @@ def get_run(run_id: str) -> Dict[str, Any]:
 
 @router.post("/runs/{run_id}/input")
 def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, Any]:
-    """The human answers. If nothing else is outstanding, the run proceeds."""
-    reqrepo.answer(body.request_id, body.answer, body.answered_by)
+    """The human answers. If nothing else is outstanding, the run proceeds.
+
+    request_id is scoped to run_id: a request_id that belongs to a
+    different run (or does not exist at all) is rejected outright rather
+    than silently no-op'd or, worse, applied to the wrong run's row. See
+    workflow_input_request_repo.answer for why the audit trail depends on
+    this.
+    """
+    owner_run_id = reqrepo.request_run_id(body.request_id)
+    if owner_run_id is None:
+        raise HTTPException(status_code=404, detail=f"No such request {body.request_id}")
+    if owner_run_id != run_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Request {body.request_id} does not belong to run {run_id}",
+        )
+
+    # A no-op if this request was already answered (e.g. a replayed final
+    # answer) -- idempotent, not an error, so a client retry still gets a
+    # 200 with the run's current state instead of failing.
+    reqrepo.answer(run_id, body.request_id, body.answer, body.answered_by)
 
     still_open = reqrepo.open_requests(run_id)
     if still_open:

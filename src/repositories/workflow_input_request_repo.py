@@ -252,16 +252,53 @@ def open_requests(run_id: str) -> List[Dict[str, Any]]:
         ]
 
 
-def answer(request_id: int, answer: Any, answered_by: str) -> None:
+def request_run_id(request_id: int) -> Optional[str]:
+    """Which run (``workflow_id``) this request belongs to, or None if the
+    request_id does not exist at all. Lets a caller tell "this request_id
+    was never raised" apart from "it belongs to a DIFFERENT run" apart from
+    "it belongs to THIS run" -- three distinct cases that used to collapse
+    into one silent no-op/blind-update."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT workflow_id FROM proc.bp_workflow_input_request WHERE request_id = %s",
+            (request_id,),
+        )
+        r = cur.fetchone()
+        cur.close()
+        return r[0] if r else None
+
+
+def answer(run_id: str, request_id: int, answer: Any, answered_by: str) -> bool:
+    """Record the human's answer -- scoped to BOTH this request AND this run.
+
+    ``proc.bp_workflow_input_request`` is the HITL audit trail: what a person
+    was asked and what they answered. Without the ``workflow_id`` in the
+    WHERE clause, any caller could answer (and silently rewrite the
+    answered_at/answer/status of) a request belonging to a completely
+    different, possibly already-completed, run just by guessing/reusing a
+    request_id. Scoping the UPDATE makes that structurally impossible.
+
+    Also scoped to ``status = 'pending'``: a request that has already been
+    answered is left untouched (idempotent no-op on replay) rather than
+    silently overwritten -- an already-completed run's trail must be
+    immutable. The caller is responsible for telling "no-op because already
+    answered" apart from "no-op because request_id doesn't belong to this
+    run at all" (see ``request_run_id``) and responding accordingly.
+
+    Returns True iff a row was actually updated.
+    """
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """UPDATE proc.bp_workflow_input_request
                   SET answer = %s::jsonb, answered_by = %s, answered_at = now(), status = 'answered'
-                WHERE request_id = %s""",
-            (json.dumps(answer), answered_by, request_id),
+                WHERE request_id = %s AND workflow_id = %s AND status = 'pending'""",
+            (json.dumps(answer), answered_by, request_id, run_id),
         )
+        updated = cur.rowcount > 0
         cur.close()
+        return updated
 
 
 def answers_for(run_id: str) -> Dict[str, Any]:

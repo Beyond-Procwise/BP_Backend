@@ -103,6 +103,6 @@ def test_input_requests_round_trip(_cleanup_test_rows):
     assert len(open_) == 1
     assert open_[0]["required_field"] == "s3_prefix"
 
-    reqrepo.answer(open_[0]["request_id"], "docs/2026/", answered_by="pytest")
+    reqrepo.answer(run_id, open_[0]["request_id"], "docs/2026/", answered_by="pytest")
     assert reqrepo.open_requests(run_id) == []
     assert reqrepo.answers_for(run_id) == {"s3_prefix": "docs/2026/"}
