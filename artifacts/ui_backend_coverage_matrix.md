@@ -80,6 +80,27 @@ defect.
 
 ---
 
+## ⚠️ The biggest finding, and my first pass missed it
+
+The Dashboard has **five tabs**, and the first audit only checked the default one (Analyse,
+which is genuinely live and correctly guarded). **Three of the other four were entirely
+fabricated, and all of them printed "live backend data" underneath:**
+
+| Tab | What it invented |
+|---|---|
+| **Reporting** | A "Spend by category" table: Cloud & hosting **£412,000**, Office supplies **£286,500**, Logistics & freight **£233,900**, Marketing agencies **£142,700** |
+| **Compliance** | KPIs (95% score, £128k off-contract, 14 maverick buys) **and four open cases against suppliers who do not exist**: Northwind Cloud £48,200, Pixel & Co. £26,900, BlueLine Freight £4,500, Lattice Advisory £1,600 |
+| **Opportunities** | £142k of savings and four levers naming those same phantom suppliers, plus "Acme" |
+
+Roughly **£1M of invented spend rendered as real, against a corpus whose actual total is
+£175K.** None of Northwind Cloud, Pixel & Co., BlueLine Freight, Lattice Advisory or Acme
+appears anywhere in the extracted documents. These tabs had no `SD()` key and no endpoint —
+they were hardcoded arrays, straight to the screen, under a footer asserting the data was live.
+
+**Fixed.** All three now render an honest empty state that says what is missing and points at
+the screen where the real data lives (Compliance and Negotiations in the left-hand nav are both
+genuinely wired). `spendByCategory` is *not* filled in — see below.
+
 ## The three findings that matter
 
 ### 1. MOCK presented as LIVE — Demand, Requirements, Third-party risk
