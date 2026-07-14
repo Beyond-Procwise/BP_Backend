@@ -147,6 +147,23 @@ class Orchestrator:
         try:
             from orchestration.workflow_engine import WorkflowEngine
             from orchestration.workflow_definitions import WORKFLOW_REGISTRY
+            from orchestration.state_manager import StateManager
+
+            # Durable run-trail persistence (proc.workflow_execution /
+            # proc.node_execution): the declarative engine is the LIVE path
+            # behind POST /agent-workflows/{id}/run and previously only ever
+            # wrote a Redis checkpoint, leaving those tables permanently
+            # empty. Same connection-getter fallback as _get_dag_scheduler
+            # below, so this works both against a full agent_nick and a
+            # bare WorkerContext.
+            if callable(getattr(self.agent_nick, 'get_connection', None)):
+                _wf_get_conn = self.agent_nick.get_connection
+            elif callable(getattr(self.agent_nick, 'get_db_connection', None)):
+                _wf_get_conn = self.agent_nick.get_db_connection
+            else:
+                _wf_get_conn = None
+            wf_state_manager = StateManager(get_connection=_wf_get_conn) if _wf_get_conn else None
+
             self._workflow_engine = WorkflowEngine(
                 agent_registry=self.agents,
                 settings=self.settings,
@@ -154,6 +171,7 @@ class Orchestrator:
                 event_bus=self.event_bus,
                 manifest_service=self.manifest_service,
                 agent_wiring=_EngineAgentWiring(self),
+                state_manager=wf_state_manager,
             )
             self._workflow_registry = WORKFLOW_REGISTRY
             logger.info("Declarative workflow engine initialized with %d workflows", len(WORKFLOW_REGISTRY))

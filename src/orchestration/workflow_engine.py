@@ -75,6 +75,11 @@ class WorkflowState:
     policy_context: List[Dict[str, Any]] = field(default_factory=list)
     knowledge_base: Dict[str, Any] = field(default_factory=dict)
     task_profile: Dict[str, Any] = field(default_factory=dict)
+    # proc.workflow_execution.execution_id for this run, once persisted
+    # (see WorkflowEngine._state_manager). Carried across a pause/resume
+    # checkpoint so a resumed run updates the SAME row instead of creating
+    # a duplicate.
+    execution_id: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -90,6 +95,7 @@ class WorkflowState:
             "errors": self.errors,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
+            "execution_id": self.execution_id,
         }
 
     @classmethod
@@ -110,6 +116,7 @@ class WorkflowState:
         state.errors = data.get("errors", [])
         state.started_at = data.get("started_at")
         state.completed_at = data.get("completed_at")
+        state.execution_id = data.get("execution_id")
         return state
 
     def checkpoint(self) -> Dict[str, Any]:
@@ -345,6 +352,7 @@ class WorkflowEngine:
         event_bus: Optional[Any] = None,
         manifest_service: Optional[Any] = None,
         agent_wiring: Optional[Any] = None,
+        state_manager: Optional[Any] = None,
     ) -> None:
         self.agents = agent_registry
         self.settings = settings
@@ -356,6 +364,12 @@ class WorkflowEngine:
         #   .attach(agent, context)  -> give the agent the shared blackboard
         #   .record(context, node_name, result) -> record the node's output
         self._agent_wiring = agent_wiring
+        # Optional durable run-trail persistence (orchestration.state_manager.
+        # StateManager). Writes proc.workflow_execution / proc.node_execution
+        # as the graph runs, alongside (not instead of) the Redis checkpoint
+        # above. Every write is best-effort: a failed audit write is logged
+        # but must never crash the workflow (see _safe_persist).
+        self._state_manager = state_manager
 
     def execute(
         self,
@@ -386,6 +400,18 @@ class WorkflowEngine:
                 shared_data=dict(input_data or {}),
             )
 
+        # Persist the run itself (proc.workflow_execution). Only on a fresh
+        # run — a resumed run already carries its execution_id forward on
+        # the checkpointed state, so this updates the same row rather than
+        # creating a duplicate.
+        if state.execution_id is None:
+            state.execution_id = self._safe_persist(
+                "create_workflow_execution",
+                lambda: self._state_manager.create_workflow_execution(
+                    state.workflow_id, state.workflow_name, state.user_id
+                ),
+            )
+
         # Enrich with manifest if available
         if self._manifest_service:
             try:
@@ -414,6 +440,11 @@ class WorkflowEngine:
             if state.node_statuses.get(node_name) == NodeStatus.COMPLETED:
                 continue
 
+            # One proc.node_execution row per node, created right before it
+            # is decided/run, so even a node the run never gets past shows
+            # up as 'pending' rather than not existing at all.
+            self._persist_node_created(state, node)
+
             # Check if predecessors completed successfully
             predecessors = graph.get_predecessors(node_name)
             if predecessors:
@@ -430,10 +461,15 @@ class WorkflowEngine:
                 if not any_edge_traversable:
                     state.node_statuses[node_name] = NodeStatus.SKIPPED
                     logger.info("Skipping node '%s' - no traversable edges", node_name)
+                    self._persist_node_result(state, node_name, duration_ms=0)
                     continue
 
             # Execute the node
+            node_started = datetime.utcnow()
             state = self._execute_node(graph, node, state)
+            duration_ms = int((datetime.utcnow() - node_started).total_seconds() * 1000)
+
+            self._persist_node_result(state, node_name, duration_ms)
 
             # Checkpoint after each node (#6)
             self._save_checkpoint(state)
@@ -455,6 +491,13 @@ class WorkflowEngine:
         if state.status == "running":
             state.status = "completed"
         state.completed_at = datetime.utcnow().isoformat()
+
+        self._safe_persist(
+            "update_workflow_status",
+            lambda: self._state_manager.update_workflow_status(
+                state.execution_id, state.status, completed_at=datetime.utcnow()
+            ),
+        ) if state.execution_id is not None else None
 
         logger.info(
             "Workflow '%s' [%s] finished with status: %s",
@@ -606,6 +649,65 @@ class WorkflowEngine:
             )
         except Exception:
             logger.debug("Checkpoint save failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Durable run-trail persistence (proc.workflow_execution / node_execution)
+    # ------------------------------------------------------------------
+    def _safe_persist(self, description: str, fn: Callable[[], Any]) -> Any:
+        """Run a StateManager write, never letting it break the workflow.
+
+        A failed audit write is a real problem worth knowing about, so it is
+        logged at WARNING with the traceback — it must simply never be
+        allowed to crash (or silently vanish from) the run it is describing.
+        """
+        if self._state_manager is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            logger.warning(
+                "Workflow run-trail persistence failed (%s)", description, exc_info=True
+            )
+            return None
+
+    def _persist_node_created(self, state: WorkflowState, node: "WorkflowNode") -> None:
+        if state.execution_id is None:
+            return
+        self._safe_persist(
+            "create_node_executions",
+            lambda: self._state_manager.create_node_executions(
+                state.execution_id,
+                [{"node_name": node.name, "agent_type": node.agent_type}],
+                round_num=0,
+            ),
+        )
+
+    def _persist_node_result(
+        self, state: WorkflowState, node_name: str, duration_ms: int
+    ) -> None:
+        if state.execution_id is None:
+            return
+        status_enum = state.node_statuses.get(node_name)
+        status = status_enum.value if status_enum is not None else "failed"
+        output_data = state.node_results.get(node_name)
+        error: Optional[str] = None
+        if status == "failed":
+            for entry in reversed(state.errors):
+                if entry.get("node") == node_name:
+                    error = entry.get("error")
+                    break
+        self._safe_persist(
+            "record_node_result",
+            lambda: self._state_manager.record_node_result(
+                state.execution_id,
+                node_name,
+                0,
+                status,
+                output_data=output_data,
+                error=error,
+                duration_ms=duration_ms,
+            ),
+        )
 
     def resume(
         self,
