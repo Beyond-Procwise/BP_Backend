@@ -18,7 +18,13 @@ def test_data_extraction_asks_for_documents():
     groups = get_elicit("data_extraction")
     assert len(groups) == 1
     g = groups[0]
-    assert set(g["any_of"]) == {"s3_prefix", "s3_object_key", "document_ids"}
+    # s3_object_keys (an explicit LIST of exact S3 keys) must be FIRST:
+    # pending_requests uses any_of[0] as the canonical required_field, and the
+    # document picker (the only UI path that actually knows what it uploaded)
+    # must answer into this field — never a computed common prefix over a
+    # shared upload folder (CRITICAL 1).
+    assert g["any_of"][0] == "s3_object_keys"
+    assert {"s3_prefix", "s3_object_key"} <= set(g["any_of"])
     assert g["type"] == "document_ids"
     assert g["prompt"]
 

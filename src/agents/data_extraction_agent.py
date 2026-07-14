@@ -1360,8 +1360,10 @@ class DataExtractionAgent(BaseAgent):
 
     def run(self, context: AgentContext) -> AgentOutput:
         try:
-            s3_prefix = context.input_data.get("s3_prefix")
-            s3_object_key = context.input_data.get("s3_object_key")
+            raw_input = context.input_data if isinstance(context.input_data, dict) else {}
+            s3_prefix = raw_input.get("s3_prefix")
+            s3_object_key = raw_input.get("s3_object_key")
+            s3_object_keys = raw_input.get("s3_object_keys")
             workflow_id = getattr(context, "workflow_id", None)
             agent_name = getattr(context, "agent_id", None) or self.__class__.__name__
             batch_start = time.perf_counter()
@@ -1371,10 +1373,13 @@ class DataExtractionAgent(BaseAgent):
                 agent_name=agent_name,
                 s3_prefix=s3_prefix,
                 s3_object_key=s3_object_key,
+                s3_object_keys=s3_object_keys,
             )
             batch_status = "success"
             mismatches: List[Dict[str, Any]] = []
-            data = self._process_documents(s3_prefix, s3_object_key, context=context)
+            data = self._process_documents(
+                s3_prefix, s3_object_key, s3_object_keys=s3_object_keys, context=context,
+            )
             docs = data.get("details", [])
             processing_issues = [
                 {
@@ -1535,6 +1540,7 @@ class DataExtractionAgent(BaseAgent):
         self,
         s3_prefix: str | None = None,
         s3_object_key: str | None = None,
+        s3_object_keys: List[str] | None = None,
         *,
         context: AgentContext | None = None,
     ) -> Dict:
@@ -1543,11 +1549,24 @@ class DataExtractionAgent(BaseAgent):
         workflow_id = getattr(context, "workflow_id", None) if context else None
         agent_name = getattr(context, "agent_id", None) if context else None
 
-        if s3_object_key:
-            # Direct key provided (e.g., from process_monitor) — process only this file
+        if s3_object_keys:
+            # CRITICAL 1: an explicit LIST of exact S3 object keys — the document
+            # picker already knows precisely what it just uploaded, so fetch
+            # EXACTLY these. No prefix listing, no globbing, no common-prefix
+            # arithmetic that could sweep in every other document that happens
+            # to share the same (shared, flat) upload folder.
+            for key in s3_object_keys:
+                if key:
+                    key_map.setdefault(key, None)
+        elif s3_object_key:
+            # Direct single key provided (e.g., from process_monitor) — process
+            # only this file. Fetched exactly (GetObject), never listed as a
+            # prefix — a single key must never accidentally match its own
+            # ".bak"/sibling files the way list_objects_v2(Prefix=<full key>)
+            # would.
             key_map.setdefault(s3_object_key, None)
         else:
-            # No specific key — scan S3 prefixes for all documents
+            # No specific key(s) — scan S3 prefixes for all documents
             prefixes = [s3_prefix] if s3_prefix else self.settings.s3_prefixes
             for prefix in prefixes:
                 prefix_keys: List[str] = []

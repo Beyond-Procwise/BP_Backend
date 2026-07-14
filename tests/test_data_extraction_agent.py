@@ -482,6 +482,75 @@ def test_process_documents_paginates_and_passes_context(monkeypatch):
     assert len(result["details"]) == 2
 
 
+def test_process_documents_with_explicit_keys_fetches_exactly_those_no_listing(monkeypatch):
+    """CRITICAL 1, THE regression guard. An explicit LIST of exact S3 object keys
+    (what the document picker submits — it already knows precisely what it
+    uploaded) must be fetched EXACTLY, with NO prefix listing/globbing at all —
+    not even a listing scoped to a computed common prefix, which is how a
+    shared upload folder used to leak every other document ever uploaded into
+    a run the human only picked two files for.
+    """
+    nick = SimpleNamespace(
+        settings=SimpleNamespace(
+            s3_bucket_name="bucket",
+            s3_prefixes=["should/never/be/used/"],
+            data_extraction_max_workers=2,
+            qdrant_collection_name="collection",
+            extraction_model="model",
+            document_extraction_model="parser",
+            force_ocr_vendors=[],
+        ),
+        s3_pool_size=2,
+    )
+    agent = DataExtractionAgent(nick)
+
+    def fail_if_called(client, prefix):
+        raise AssertionError(
+            f"_iter_s3_keys must never be called for an explicit key list (prefix={prefix!r})"
+        )
+
+    monkeypatch.setattr(agent, "_iter_s3_keys", fail_if_called)
+
+    @contextmanager
+    def fake_borrow():
+        yield SimpleNamespace()  # never touched if the exact-keys path is honoured
+
+    monkeypatch.setattr(agent, "_borrow_s3_client", fake_borrow)
+
+    processed: List[str] = []
+    monkeypatch.setattr(
+        agent, "_process_single_document",
+        lambda key, *, context=None: processed.append(key) or {"object_key": key, "status": "success"},
+    )
+
+    class ImmediateExecutor:
+        def __init__(self, max_workers):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            class ImmediateFuture:
+                def result(self_inner):
+                    return fn(*args, **kwargs)
+
+            return ImmediateFuture()
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", ImmediateExecutor)
+    monkeypatch.setattr(concurrent.futures, "as_completed", lambda futures: futures)
+
+    keys = ["documents/workspace/A.pdf", "documents/workspace/B.pdf"]
+    result = agent._process_documents(s3_object_keys=keys)
+
+    assert sorted(processed) == sorted(keys)
+    assert result["status"] == "completed"
+    assert len(result["details"]) == 2
+
+
 def test_vectorize_structured_data_creates_points(monkeypatch):
     captured = {}
 

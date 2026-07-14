@@ -13,11 +13,11 @@
       "dependencies": ["s3_client", "db_client", "qdrant_client", "ollama_client", "embedding_model"],
       "inputs": {
         "required": [],
-        "optional": ["s3_prefix", "s3_object_key"]
+        "optional": ["s3_prefix", "s3_object_key", "s3_object_keys"]
       },
       "outputs": ["details", "summary", "mismatches"],
       "version": "2.0.0",
-      "elicit": [{"any_of": ["s3_prefix", "s3_object_key", "document_ids"],
+      "elicit": [{"any_of": ["s3_object_keys", "s3_prefix", "s3_object_key", "document_ids"],
                   "type": "document_ids",
                   "prompt": "Which documents should I extract from?"}]
     },

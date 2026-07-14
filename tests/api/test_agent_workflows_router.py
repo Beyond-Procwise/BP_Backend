@@ -153,7 +153,7 @@ def test_run_halts_and_asks_for_documents(client, _cleanup_test_rows):
     created_run_ids.append(run["run_id"])
     assert run["status"] == "awaiting_input"
     fields = {q["required_field"] for q in run["pending"]}
-    assert "s3_prefix" in fields          # data_extraction wants documents
+    assert "s3_object_keys" in fields     # data_extraction wants documents (exact keys)
     assert "query" in fields              # supplier_ranking wants a query
 
     client.delete(f"/agent-workflows/{wid}")

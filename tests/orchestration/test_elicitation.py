@@ -17,7 +17,7 @@ def test_data_extraction_with_no_upstream_asks_for_documents():
     assert len(doc) == 1
     assert doc[0].agent_slug == "data_extraction"
     assert doc[0].field_type == "document_ids"
-    assert doc[0].required_field == "s3_prefix"   # first member of the any_of group
+    assert doc[0].required_field == "s3_object_keys"   # first member of the any_of group
 
 
 def test_supplier_ranking_always_asks_for_a_query():
