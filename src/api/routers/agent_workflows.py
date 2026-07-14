@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent-workflows", tags=["Agent Workflows"])
 
+# Schema is ensured ONCE (app startup, see api/main.py's lifespan) rather than
+# on every request — a DDL round-trip (CREATE TABLE/ALTER TABLE ADD COLUMN IF
+# NOT EXISTS) on every one of these 8 handlers was needless work on the hot
+# path; no other router in this codebase does that.
+
 
 class WorkflowBody(BaseModel):
     name: str
@@ -58,13 +63,11 @@ def _describe_nodes(graph: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 @router.get("")
 def list_workflows() -> Dict[str, Any]:
-    repo.ensure_schema()
     return {"workflows": repo.list_active()}
 
 
 @router.post("")
 def create_workflow(body: WorkflowBody) -> Dict[str, Any]:
-    repo.ensure_schema()
     try:
         validate_saved_graph(body.graph)
     except GraphValidationError as exc:
@@ -76,7 +79,6 @@ def create_workflow(body: WorkflowBody) -> Dict[str, Any]:
 
 @router.get("/{workflow_id}")
 def get_workflow(workflow_id: int) -> Dict[str, Any]:
-    repo.ensure_schema()
     wf = repo.get(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="No such workflow")
@@ -85,7 +87,6 @@ def get_workflow(workflow_id: int) -> Dict[str, Any]:
 
 @router.put("/{workflow_id}")
 def update_workflow(workflow_id: int, body: WorkflowBody) -> Dict[str, Any]:
-    repo.ensure_schema()
     try:
         validate_saved_graph(body.graph)
     except GraphValidationError as exc:
@@ -97,16 +98,12 @@ def update_workflow(workflow_id: int, body: WorkflowBody) -> Dict[str, Any]:
 
 @router.delete("/{workflow_id}")
 def delete_workflow(workflow_id: int) -> Dict[str, Any]:
-    repo.ensure_schema()
     repo.soft_delete(workflow_id)
     return {"ok": True}
 
 
 @router.post("/{workflow_id}/run")
 def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str, Any]:
-    repo.ensure_schema()
-    reqrepo.ensure_schema()
-
     wf = repo.get(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="No such workflow")
@@ -116,9 +113,14 @@ def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str,
 
     missing = pending_requests(wf["graph"], body.payload, answers)
     if missing:
-        # The workflow does not guess. It stops and asks. agent_workflow_id is
-        # recorded here so submit_input can resolve this run back to its saved
-        # workflow later without parsing the run_id string.
+        # The workflow does not guess. It stops and asks. The ORIGINAL payload
+        # is persisted here — BEFORE returning awaiting_input — so it survives
+        # a process restart and is not silently dropped by the time the human
+        # answers and the run resumes. agent_workflow_id is recorded too, so
+        # submit_input can resolve this run back to its saved workflow later
+        # without parsing the run_id string.
+        reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=body.payload,
+                            status="awaiting_input")
         reqrepo.raise_requests(run_id, missing, agent_workflow_id=workflow_id)
         return {
             "run_id": run_id, "status": "awaiting_input",
@@ -126,21 +128,22 @@ def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str,
             "nodes": _describe_nodes(wf["graph"]),
         }
 
-    return _execute(request, run_id, wf, {**body.payload, **answers}, body.user_id)
+    # Nothing outstanding — but this run must still be claimed atomically
+    # before it executes, exactly like the resume path in submit_input, so a
+    # replay of this same request can never execute the workflow twice.
+    reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=body.payload,
+                        status="pending")
+    return _claim_and_execute(request, run_id, wf, {**body.payload, **answers}, body.user_id)
 
 
 @router.get("/runs/{run_id}")
 def get_run(run_id: str) -> Dict[str, Any]:
-    reqrepo.ensure_schema()
     return {"run_id": run_id, "pending": reqrepo.open_requests(run_id)}
 
 
 @router.post("/runs/{run_id}/input")
 def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, Any]:
     """The human answers. If nothing else is outstanding, the run proceeds."""
-    reqrepo.ensure_schema()
-    repo.ensure_schema()
-
     reqrepo.answer(body.request_id, body.answer, body.answered_by)
 
     still_open = reqrepo.open_requests(run_id)
@@ -158,7 +161,43 @@ def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, A
     wf = repo.get(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="No such workflow")
-    return _execute(request, run_id, wf, reqrepo.answers_for(run_id), "human")
+
+    # The engine must see what the human supplied here AND what was supplied
+    # up front on the original run call — the answers win on conflict, but
+    # nothing the human already gave up front is ever dropped.
+    original_payload = reqrepo.payload_for(run_id)
+    answers = reqrepo.answers_for(run_id)
+    return _claim_and_execute(request, run_id, wf, {**original_payload, **answers}, "human")
+
+
+def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
+                        input_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    """Atomically claim this run for execution, then execute it exactly once.
+
+    The claim is a single conditional UPDATE (see
+    ``workflow_input_request_repo.claim_for_execution``) so a replayed final
+    answer, or two answers landing concurrently on the last two outstanding
+    questions, cannot both win — only one caller ever executes the workflow.
+    A caller that does not win gets the run's current persisted state back
+    instead of running it again (the agents this can trigger include
+    email_dispatch, negotiation and supplier_interaction — running twice
+    means sending real emails twice).
+    """
+    if not reqrepo.claim_for_execution(run_id):
+        run_row = reqrepo.get_run(run_id)
+        status = run_row["status"] if run_row else "completed"
+        return {
+            "run_id": run_id, "status": status, "pending": [],
+            "nodes": _describe_nodes(wf["graph"]),
+        }
+
+    try:
+        result = _execute(request, run_id, wf, input_data, user_id)
+    except Exception:
+        reqrepo.finish_run(run_id, "failed")
+        raise
+    reqrepo.finish_run(run_id, "failed" if result.get("errors") else "completed")
+    return result
 
 
 def _execute(request: Request, run_id: str, wf: Dict[str, Any],

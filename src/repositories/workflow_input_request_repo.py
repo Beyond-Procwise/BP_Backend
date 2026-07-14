@@ -39,6 +39,23 @@ CREATE TABLE IF NOT EXISTS proc.bp_workflow_input_request (
 
 CREATE INDEX IF NOT EXISTS ix_bp_workflow_input_request_open
     ON proc.bp_workflow_input_request (workflow_id, status);
+
+-- One row per RUN (not per question). This is what makes a resume trustworthy:
+--   * ``payload`` is the run's ORIGINAL POST /{id}/run body, persisted before the
+--     run ever halts, so it survives a process restart between run and resume
+--     and is never silently dropped when the human's answers are merged back in.
+--   * ``status`` is the run's execution state, and the transition into
+--     'executing' is claimed with a single atomic UPDATE (see
+--     ``claim_for_execution``) so a replayed or concurrent final answer cannot
+--     make the workflow execute twice.
+CREATE TABLE IF NOT EXISTS proc.bp_workflow_run (
+    run_id            TEXT PRIMARY KEY,
+    agent_workflow_id BIGINT,
+    payload           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 # Older deployments of this table predate the agent_workflow_id column.
@@ -49,12 +66,97 @@ ALTER TABLE proc.bp_workflow_input_request
 
 
 def ensure_schema() -> None:
-    """Ensure the ``proc.bp_workflow_input_request`` table exists."""
+    """Ensure ``proc.bp_workflow_input_request`` and ``proc.bp_workflow_run`` exist."""
 
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(DDL)
         cur.execute(_MIGRATE)
+        cur.close()
+
+
+def create_run(
+    run_id: str, *, agent_workflow_id: Optional[int], payload: Dict[str, Any],
+    status: str = "pending",
+) -> None:
+    """Persist the run's original payload (and starting status) exactly once.
+
+    Idempotent: if the run row already exists (e.g. this is called again on
+    the same run_id) the existing payload/status are left untouched — the
+    ORIGINAL payload must never be overwritten by a later call.
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO proc.bp_workflow_run (run_id, agent_workflow_id, payload, status)
+                   VALUES (%s, %s, %s::jsonb, %s)
+               ON CONFLICT (run_id) DO NOTHING""",
+            (run_id, agent_workflow_id, json.dumps(payload or {}), status),
+        )
+        cur.close()
+
+
+def get_run(run_id: str) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT run_id, agent_workflow_id, payload, status
+                 FROM proc.bp_workflow_run WHERE run_id = %s""",
+            (run_id,),
+        )
+        r = cur.fetchone()
+        cur.close()
+        if not r:
+            return None
+        payload = r[2]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return {
+            "run_id": r[0], "agent_workflow_id": r[1],
+            "payload": payload or {}, "status": r[3],
+        }
+
+
+def payload_for(run_id: str) -> Dict[str, Any]:
+    """The run's ORIGINAL payload, as supplied on ``POST /{id}/run`` — never the
+    human's answers, which are merged in separately by the caller."""
+    run = get_run(run_id)
+    return run["payload"] if run else {}
+
+
+def claim_for_execution(run_id: str) -> bool:
+    """Atomically claim this run for execution.
+
+    A single conditional UPDATE — not a Python check followed by an UPDATE,
+    which would race — so that when a final answer is replayed, or two
+    answers to the last two outstanding questions land concurrently, only
+    ONE caller ever transitions the run to 'executing' and therefore only
+    one caller ever executes the workflow. Everyone else must treat the run
+    as already in flight (or already finished) and must not execute again.
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE proc.bp_workflow_run
+                  SET status = 'executing', updated_at = now()
+                WHERE run_id = %s AND status NOT IN ('executing', 'completed')
+            RETURNING run_id""",
+            (run_id,),
+        )
+        won = cur.fetchone() is not None
+        cur.close()
+        return won
+
+
+def finish_run(run_id: str, status: str) -> None:
+    """Record the terminal state ('completed' or 'failed') once execution ends."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE proc.bp_workflow_run SET status = %s, updated_at = now()
+                WHERE run_id = %s""",
+            (status, run_id),
+        )
         cur.close()
 
 

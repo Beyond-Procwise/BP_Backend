@@ -159,6 +159,18 @@ async def lifespan(app: FastAPI):
             logger.exception("extraction_v3 schema load failed; continuing without v3 schemas")
             state.extraction_v3_schemas = {}
 
+        # Ensure the agent-workflows schema exists ONCE, at startup — not on
+        # every request (that was a DDL round-trip on the hot path of all 8
+        # handlers in api/routers/agent_workflows.py).
+        try:
+            from repositories import agent_workflow_repo as _agent_workflow_repo
+            from repositories import workflow_input_request_repo as _workflow_input_request_repo
+            _agent_workflow_repo.ensure_schema()
+            _workflow_input_request_repo.ensure_schema()
+            logger.info("Agent-workflows schema ensured")
+        except Exception:
+            logger.exception("Agent-workflows schema init failed (non-critical)")
+
         # Ensure provenance sidecar schema exists.
         try:
             from services.db import get_conn as _prov_db_get_conn

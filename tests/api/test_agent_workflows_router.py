@@ -37,13 +37,22 @@ def _sweep_namespace():
         )
         ids = [r[0] for r in cur.fetchall()]
         if ids:
-            # Request rows are linked back to the numeric workflow via the
-            # agent_workflow_id column (see workflow_input_request_repo) —
-            # not by parsing the run_id string.
+            # Request rows and run rows are linked back to the numeric
+            # workflow via the agent_workflow_id column (see
+            # workflow_input_request_repo) — not by parsing the run_id string.
             cur.execute(
                 "DELETE FROM proc.bp_workflow_input_request WHERE agent_workflow_id = ANY(%s)",
                 (ids,),
             )
+            # bp_workflow_run is created by workflow_input_request_repo.ensure_schema();
+            # tolerate its absence (e.g. against a pre-fix checkout) via to_regclass
+            # instead of a bare DELETE, which would raise UndefinedTable.
+            cur.execute("SELECT to_regclass('proc.bp_workflow_run')")
+            if cur.fetchone()[0] is not None:
+                cur.execute(
+                    "DELETE FROM proc.bp_workflow_run WHERE agent_workflow_id = ANY(%s)",
+                    (ids,),
+                )
             cur.execute(
                 "DELETE FROM proc.bp_agent_workflow WHERE workflow_id = ANY(%s)", (ids,)
             )
@@ -79,11 +88,17 @@ def _cleanup_test_rows():
 
         with get_conn() as conn:
             cur = conn.cursor()
+            cur.execute("SELECT to_regclass('proc.bp_workflow_run')")
+            has_run_table = cur.fetchone()[0] is not None
             for run_id in created_run_ids:
                 cur.execute(
                     "DELETE FROM proc.bp_workflow_input_request WHERE workflow_id = %s",
                     (run_id,),
                 )
+                if has_run_table:
+                    cur.execute(
+                        "DELETE FROM proc.bp_workflow_run WHERE run_id = %s", (run_id,)
+                    )
             for wid in created_workflow_ids:
                 cur.execute(
                     "DELETE FROM proc.bp_agent_workflow WHERE workflow_id = %s", (wid,)
@@ -155,4 +170,114 @@ def test_each_node_reports_whether_it_is_governed(client, _cleanup_test_rows):
     gov = {n["node_id"]: n["governance"]["governed"] for n in run["nodes"]}
     assert gov["n1"] is False    # data_extraction: ungoverned, built-in default
     assert gov["n2"] is True     # supplier_ranking: governed
+    client.delete(f"/agent-workflows/{wid}")
+
+
+class _FakeState:
+    """Stand-in for orchestration.workflow_engine.WorkflowState — just enough
+    surface for agent_workflows._execute to build its response from."""
+    status = "completed"
+    node_statuses: dict = {}
+    errors: list = []
+
+
+def _spy_on_engine(client, monkeypatch):
+    """Replace the real WorkflowEngine.execute with a spy that records the
+    input_data it was handed and returns a fake completed state, instead of
+    performing a real (LLM/GPU/S3-touching) agent run."""
+    from api.main import app
+
+    engine = app.state.orchestrator._workflow_engine
+    calls = []
+
+    def fake_execute(graph, *, input_data=None, user_id="system", workflow_id=None,
+                      resume_state=None):
+        calls.append(dict(input_data or {}))
+        return _FakeState()
+
+    monkeypatch.setattr(engine, "execute", fake_execute)
+    return calls
+
+
+def test_resume_merges_original_payload_with_answers(client, _cleanup_test_rows, monkeypatch):
+    """FINDING 1 (critical): the original run payload must survive a resume.
+
+    A run started with a payload key that is NOT one of the elicited
+    questions must still be visible to the engine after the human answers
+    the questions that WERE elicited — merged together, answers winning on
+    conflict. Spies on the engine's execute() boundary rather than
+    performing a real agent run (LLM/GPU/S3), per the task instructions.
+    """
+    created_workflow_ids, created_run_ids = _cleanup_test_rows
+
+    wid = client.post("/agent-workflows", json={"name": "hitl-test", "graph": GRAPH}).json()["workflow_id"]
+    created_workflow_ids.append(wid)
+
+    calls = _spy_on_engine(client, monkeypatch)
+
+    payload = {"not_elicited_key": "keep-me"}
+    run = client.post(f"/agent-workflows/{wid}/run", json={"payload": payload}).json()
+    created_run_ids.append(run["run_id"])
+    assert run["status"] == "awaiting_input"
+    pending = run["pending"]
+    assert pending, "expected the graph to elicit at least one question"
+
+    for q in pending:
+        r = client.post(
+            f"/agent-workflows/runs/{run['run_id']}/input",
+            json={"request_id": q["request_id"], "answer": f"answer-for-{q['required_field']}"},
+        )
+        assert r.status_code == 200, r.text
+
+    # The engine must have been called exactly once, on resume, with BOTH the
+    # original payload key AND every elicited answer.
+    assert len(calls) == 1
+    input_data = calls[0]
+    assert input_data["not_elicited_key"] == "keep-me"
+    for q in pending:
+        assert input_data[q["required_field"]] == f"answer-for-{q['required_field']}"
+
+    client.delete(f"/agent-workflows/{wid}")
+
+
+def test_final_answer_replay_executes_workflow_only_once(client, _cleanup_test_rows, monkeypatch):
+    """FINDING 2 (critical): a replayed/duplicated final answer must not run
+    the workflow twice — the agents this can trigger include email_dispatch,
+    negotiation and supplier_interaction, so a double-execution means
+    sending real emails twice. Spies on the engine's execute() boundary and
+    counts calls instead of performing a real agent run.
+    """
+    created_workflow_ids, created_run_ids = _cleanup_test_rows
+
+    wid = client.post("/agent-workflows", json={"name": "hitl-test", "graph": GRAPH}).json()["workflow_id"]
+    created_workflow_ids.append(wid)
+
+    calls = _spy_on_engine(client, monkeypatch)
+
+    run = client.post(f"/agent-workflows/{wid}/run", json={"payload": {}}).json()
+    created_run_ids.append(run["run_id"])
+    pending = run["pending"]
+    assert len(pending) >= 1
+
+    # Answer every question but the last one.
+    for q in pending[:-1]:
+        r = client.post(
+            f"/agent-workflows/runs/{run['run_id']}/input",
+            json={"request_id": q["request_id"], "answer": "x"},
+        )
+        assert r.status_code == 200, r.text
+
+    last = pending[-1]
+    body = {"request_id": last["request_id"], "answer": "y"}
+
+    # The FINAL answer, submitted twice — e.g. a client/proxy retry.
+    r1 = client.post(f"/agent-workflows/runs/{run['run_id']}/input", json=body)
+    r2 = client.post(f"/agent-workflows/runs/{run['run_id']}/input", json=body)
+
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    assert len(calls) == 1, f"workflow executed {len(calls)} times, expected exactly 1"
+    assert r1.json()["status"] == "completed"
+    assert r2.json()["status"] == "completed"
+
     client.delete(f"/agent-workflows/{wid}")
