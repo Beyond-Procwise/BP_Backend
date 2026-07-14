@@ -94,6 +94,10 @@ class ToolRunResult:
     calls: List[ToolCall] = field(default_factory=list)
     rounds: int = 0
     error: Optional[str] = None
+    # The answer tried to describe the machine and was sent back to be re-framed.
+    safety_retry: bool = False
+    # …and the second attempt did it too, so the user got the safe reply instead.
+    safety_blocked: bool = False
 
     @property
     def tools_used(self) -> List[str]:
@@ -105,7 +109,12 @@ class ToolRunResult:
             "rounds": self.rounds,
             "error": self.error,
             "tools_used": self.tools_used,
-            # The full trace: what was asked of each tool and what it returned.
+            "safety_retry": self.safety_retry,
+            "safety_blocked": self.safety_blocked,
+            # The full trace: what was asked of each tool and what it returned. This is raw
+            # internal detail — tool arguments, SQL result rows, policy bodies — and it is
+            # only safe to return because the boundary gate in main.py scrubs it on the way
+            # out. Do not surface it to a user path that bypasses that gate.
             "trace": [c.to_dict() for c in self.calls],
         }
 
@@ -160,6 +169,58 @@ def _chat(
     response = requests.post(_OLLAMA_CHAT, json=payload, timeout=timeout)
     response.raise_for_status()
     return response.json().get("message", {}) or {}
+
+
+def _gate(
+    content: str,
+    messages: List[Dict[str, Any]],
+    schemas: List[Dict[str, Any]],
+    model: str,
+    timeout_s: int,
+    result: "ToolRunResult",
+) -> str:
+    """The answer must be about the product, never about the machine.
+
+    The model knows how ProcWise works — that is deliberate, it is what lets it answer "why
+    did my upload fail" instead of filing a ticket. But knowing is not saying. A draft that
+    names a table, a path, an env var or a route, or that merely *narrates the backend*
+    ("extraction is triggered before the upload finishes"), is not shown to anyone.
+
+    It gets exactly one chance to re-frame. It has the facts already; it chose the wrong
+    register. That is a cheap fix and usually produces the answer the user actually wanted.
+    A second failure is not a phrasing problem, so we stop and say plainly that we could not
+    help — which is the honest outcome, and it is logged for review.
+    """
+    from services import output_safety as osafe
+
+    if osafe.is_safe(content):
+        return content
+
+    first = osafe.inspect(content)
+    log.warning(
+        "output_safety: agent draft blocked (kinds=%s); asking it to re-frame",
+        sorted({v.kind for v in first}),
+    )
+    result.safety_retry = True
+
+    messages.append({"role": "user", "content": osafe.RETRY_INSTRUCTION})
+    try:
+        retry = _chat(messages, schemas, model, timeout_s)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("output_safety: re-frame call failed: %s", exc)
+        result.safety_blocked = True
+        return osafe.SAFE_REPLY
+
+    second = retry.get("content") or ""
+    if osafe.is_safe(second):
+        return second
+
+    log.warning(
+        "output_safety: re-framed draft ALSO leaked (kinds=%s); refusing",
+        sorted({v.kind for v in osafe.inspect(second)}),
+    )
+    result.safety_blocked = True
+    return osafe.SAFE_REPLY
 
 
 def run_tools_stream(
@@ -223,10 +284,6 @@ def run_tools_stream(
                 fragment = message.get("content")
                 if fragment:
                     content_parts.append(fragment)
-                    # Only prose reaches the caller, and only when no tool call is in
-                    # flight for this round.
-                    if on_delta and not tool_calls:
-                        on_delta(fragment)
         except Exception as exc:  # noqa: BLE001
             log.warning("tool_runtime stream failed: %s", exc)
             result.error = str(exc)[:300]
@@ -234,7 +291,18 @@ def run_tools_stream(
 
         content = "".join(content_parts)
         if not tool_calls:
-            result.answer = content
+            # Tokens used to go straight out to the browser as they arrived. They no longer
+            # do, and the reason is that a token cannot be un-sent: by the time a scanner
+            # sees `proc.` and `process_monitor` land in two separate fragments, the user has
+            # already read them. So the answer is assembled, checked, re-framed if it was
+            # describing the machine, and only then released.
+            #
+            # The cost is the typing effect on the final answer. The user still watches the
+            # tool stages tick over live, so nothing looks frozen — and an answer that
+            # appears half a second later is a much better trade than one that leaks.
+            result.answer = _gate(content, messages, schemas, model, timeout_s, result)
+            if on_delta and result.answer:
+                on_delta(result.answer)
             return result
 
         messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
@@ -336,7 +404,7 @@ def run_tools(
                     }
                 )
                 continue
-            result.answer = content
+            result.answer = _gate(content, messages, schemas, model, timeout_s, result)
             return result
 
         any_tool_call = True

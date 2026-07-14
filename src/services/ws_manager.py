@@ -71,6 +71,13 @@ class WebSocketManager:
             log.debug("WS broadcast: no clients for session=%s", session_id)
             return
 
+        # The HTTP middleware in api/main.py cannot see a WebSocket frame — a socket is not
+        # a response. This is the same contract, applied at the only other way out of the
+        # process. It matters: these payloads carry a `file_path` per document.
+        from services import output_safety as osafe
+
+        payload = osafe.scrub_payload(payload, where=f"ws {session_id}")
+
         dead: list[WebSocket] = []
         for ws in sockets:
             try:

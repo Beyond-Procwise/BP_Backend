@@ -1,10 +1,12 @@
 import asyncio
+import json
 import sys, os, uvicorn, logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Protocol, cast
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import StreamingResponse
 
 # Ensure GPU utilisation by default on compatible hardware
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -343,6 +345,142 @@ app.include_router(promotion.router)
 app.include_router(summary.router)
 app.include_router(session.router)
 
+
+# ======================================================================================
+# The output-safety boundary.
+#
+# Layer A (services/tool_runtime._gate) gives the agent a chance to re-frame an answer that
+# described the machine instead of the product. This is Layer B, and it does not negotiate:
+# it is the last thing every response passes through before it becomes bytes on a socket.
+#
+# It exists because Layer A can be bypassed. Forty-six call sites raise `HTTPException(...,
+# detail=str(exc))`, and a psycopg2 error message *is* a schema disclosure — it names the
+# table and the column. None of those go anywhere near the agent loop. A guarantee that only
+# holds on the paths someone remembered to route through it is not a guarantee.
+# ======================================================================================
+
+from fastapi.exception_handlers import http_exception_handler  # noqa: E402
+from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+from starlette.responses import JSONResponse, Response  # noqa: E402
+
+from services import output_safety as osafe  # noqa: E402
+
+# Endpoints whose whole job is to describe the machine to an operator. They are not user
+# surfaces, and scrubbing them would leave nothing behind. They must not be reachable by an
+# end user — see the note in the security spec.
+_OPERATOR_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _safe_http_exception(request: Request, exc: StarletteHTTPException):
+    """`detail=str(exc)` is the single commonest leak in this codebase.
+
+    The operator still gets the real thing — in the log, where they would actually read it.
+    The user gets a sentence.
+    """
+    detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    safe = osafe.enforce(detail, where=f"HTTP {exc.status_code} {request.url.path}")
+    if safe != detail:
+        logger.warning(
+            "output_safety: %s %s detail withheld from client: %s",
+            exc.status_code, request.url.path, detail[:300],
+        )
+    return await http_exception_handler(
+        request, StarletteHTTPException(exc.status_code, safe, headers=exc.headers)
+    )
+
+
+@app.exception_handler(Exception)
+async def _safe_unhandled(request: Request, exc: Exception):
+    """An unhandled exception must never become a description of the internals."""
+    logger.exception("unhandled error on %s", request.url.path)
+    return JSONResponse(status_code=500, content={"detail": osafe.SAFE_REPLY})
+
+
+class OutputSafetyMiddleware(BaseHTTPMiddleware):
+    """Every JSON body and every SSE frame, scrubbed on the way out."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        path = request.url.path
+        if any(path.startswith(p) for p in _OPERATOR_PATHS):
+            return response
+        ctype = response.headers.get("content-type", "")
+
+        if ctype.startswith("text/event-stream"):
+            return self._guard_stream(response, path)
+        if not ctype.startswith("application/json"):
+            return response
+
+        raw = b"".join([chunk async for chunk in response.body_iterator])
+        try:
+            body = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return Response(
+                content=raw, status_code=response.status_code,
+                headers=dict(response.headers), media_type=ctype,
+            )
+
+        safe = osafe.scrub_payload(body, where=path)
+        out = json.dumps(safe, default=str).encode()
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        return Response(
+            content=out, status_code=response.status_code,
+            headers=headers, media_type=ctype,
+        )
+
+    @staticmethod
+    def _guard_stream(response, path: str):
+        """SSE frames are already whole events by the time they reach here.
+
+        The agent loop buffers its answer before emitting it (a token cannot be un-sent), so
+        a frame arriving here is a complete thought, not half an identifier. That makes it
+        safe to scan one frame at a time without holding the whole stream.
+        """
+        async def _gen():
+            async for chunk in response.body_iterator:
+                text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+                out = []
+                for line in text.split("\n"):
+                    if line.startswith("data: "):
+                        try:
+                            evt = json.loads(line[6:])
+                        except Exception:  # noqa: BLE001
+                            out.append(
+                                "data: " + json.dumps(
+                                    {"type": "error", "message": osafe.SAFE_REPLY}
+                                )
+                            )
+                            continue
+                        if isinstance(evt, dict):
+                            evt = osafe.scrub_payload(evt, where=f"sse {path}")
+                        out.append("data: " + json.dumps(evt, default=str))
+                    else:
+                        out.append(line)
+                yield "\n".join(out).encode()
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        return StreamingResponse(
+            _gen(), status_code=response.status_code,
+            headers=headers, media_type="text/event-stream",
+        )
+
+
+app.add_middleware(OutputSafetyMiddleware)
+
+
+@app.on_event("startup")
+async def _register_routes_with_safety_gate():
+    """Teach the gate what our real routes are, so it can spot one being quoted back."""
+    osafe.register_routes(
+        [getattr(r, "path", "") for r in app.routes if getattr(r, "path", "")]
+    )
+
+
 @app.get("/", tags=["General"])
 def read_root(): return {"message": "Welcome to the ProcWise Agentic System API"}
 
@@ -364,10 +502,17 @@ def health():
             "schemas_loaded": len(schemas),
             "doc_types": sorted(schemas.keys()) if schemas else [],
         },
-        # Honest surface for features that lost a dependency they can never
-        # have (e.g. a DB table that was never created). Only what is
-        # genuinely degraded appears here — see services.capability_status.
-        "degraded": get_degraded(),
+        # Honest surface for features that lost a dependency they can never have. It stays
+        # honest — the capability is still named, and it still says it is degraded — but the
+        # *reason* no longer ships. It used to read "proc.agent table does not exist; …
+        # falling back to agent_definitions.json", which is a schema disclosure and an
+        # internal filename on an endpoint that needs no auth at all. The reason is logged
+        # by capability_status.mark_degraded the moment it happens, which is where an
+        # operator would look for it anyway.
+        "degraded": [
+            {"capability": d["capability"], "status": "degraded"}
+            for d in get_degraded()
+        ],
     }
 
 if __name__ == "__main__":

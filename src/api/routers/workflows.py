@@ -161,8 +161,17 @@ class DiscrepancyRequest(BaseModel):
 
 
 class AgentType(BaseModel):
+    """What the catalogue tells a client about an agent.
+
+    `agentType` used to be here too, and it carried the Python class name —
+    "QuoteComparisonAgent", "DataExtractionAgent". Nothing consumed it: the UI keys entirely
+    off `slug` (`wfAgentBySlug`), the gateway never reads it, and the internal callers that
+    do want the class name read it from `agent_definitions.json`, not from this response. So
+    it was shipping our class names to the browser for no one. It is gone; `slug` is the
+    contract, as it already was in practice.
+    """
+
     agentId: int
-    agentType: str
     slug: str
     description: str
     capabilities: List[str] = Field(default_factory=list)
