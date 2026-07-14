@@ -352,6 +352,8 @@ def health():
     state = app.state
     initialized = bool(getattr(state, "agent_nick", None))
     schemas = getattr(state, "extraction_v3_schemas", {})
+    from services.capability_status import get_degraded
+
     return {
         "status": "ok" if initialized else "starting",
         "agent_nick": initialized,
@@ -362,6 +364,10 @@ def health():
             "schemas_loaded": len(schemas),
             "doc_types": sorted(schemas.keys()) if schemas else [],
         },
+        # Honest surface for features that lost a dependency they can never
+        # have (e.g. a DB table that was never created). Only what is
+        # genuinely degraded appears here — see services.capability_status.
+        "degraded": get_degraded(),
     }
 
 if __name__ == "__main__":

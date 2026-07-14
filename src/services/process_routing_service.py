@@ -11,10 +11,14 @@ import os
 from urllib.parse import urljoin
 
 import httpx
+import psycopg2
+import psycopg2.errors
 
 import pandas as pd
 import numpy as np
 from dataclasses import asdict, is_dataclass
+
+import services.capability_status as capability_status
 
 logger = logging.getLogger(__name__)
 
@@ -697,9 +701,19 @@ class ProcessRoutingService:
                     slug = self._canonical_key(raw, agent_defs)
                     if slug:
                         map_obj.setdefault(slug, []).append(int(pid))
-                    else:  # pragma: no cover - defensive logging
-                        logger.warning(
-                            "Agent type '%s' not found in definitions", raw
+                    else:
+                        # This fires once per unresolvable governance-linked
+                        # slug (e.g. 'summary_agent', which is a service, not
+                        # one of the registered orchestrator agents) — not
+                        # once per DB row per workflow run. The mismatch is
+                        # real and worth knowing about, but a warning on
+                        # every run for the same stable condition is just
+                        # noise.
+                        capability_status.log_once(
+                            f"process_routing.unresolved_agent_slug.{raw}",
+                            logging.WARNING,
+                            "Agent type '%s' not found in definitions",
+                            raw,
                         )
 
                 with conn.cursor() as cursor:
@@ -726,39 +740,61 @@ class ProcessRoutingService:
                         for key in re.findall(r"[A-Za-z0-9_]+", str(linked or "")):
                             _record(policy_map, key, pid)
 
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        SELECT agent_id, agent_type, agent_name, agent_property, modified_time, created_time
-                        FROM proc.agent
-                        WHERE agent_property IS NOT NULL
-                        """
+                # proc.agent has never existed in this database (the agent
+                # catalogue lives in the bundled agent_definitions.json,
+                # loaded above). This table would only ever hold per-agent
+                # DB overrides (custom LLM/prompts/policies) that nothing
+                # has ever provisioned. Treat its absence as an explicitly
+                # declared missing capability rather than letting a broad
+                # except swallow an UndefinedTable and dump a traceback on
+                # every workflow run.
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            SELECT agent_id, agent_type, agent_name, agent_property, modified_time, created_time
+                            FROM proc.agent
+                            WHERE agent_property IS NOT NULL
+                            """
+                        )
+                        agent_rows = cursor.fetchall()
+                except psycopg2.errors.UndefinedTable:
+                    conn.rollback()
+                    capability_status.mark_degraded(
+                        "agent_linkage_metadata",
+                        "proc.agent table does not exist; per-agent DB-held "
+                        "LLM/prompt/policy overrides are unavailable, "
+                        "falling back to agent_definitions.json defaults",
                     )
-                    for agent_id, agent_type, agent_name, props_payload, modified, created in cursor.fetchall():
-                        parsed = _parse_agent_property(props_payload)
-                        if not parsed:
+                    agent_rows = []
+                else:
+                    capability_status.mark_available("agent_linkage_metadata")
+
+                for agent_id, agent_type, agent_name, props_payload, modified, created in agent_rows:
+                    parsed = _parse_agent_property(props_payload)
+                    if not parsed:
+                        continue
+
+                    normalized = self._normalise_agent_properties(parsed)
+                    slug: Optional[str] = None
+                    canonical_type: Optional[str] = None
+                    for candidate in (agent_type, agent_name):
+                        if not candidate:
                             continue
-
-                        normalized = self._normalise_agent_properties(parsed)
-                        slug: Optional[str] = None
-                        canonical_type: Optional[str] = None
-                        for candidate in (agent_type, agent_name):
-                            if not candidate:
-                                continue
-                            slug = self._canonical_key(str(candidate), agent_defs)
-                            if slug:
-                                canonical_type = agent_defs.get(slug) or str(candidate)
-                                break
-
-                        if agent_id:
-                            property_by_id[str(agent_id)] = dict(normalized)
-                            if canonical_type:
-                                type_by_id[str(agent_id)] = canonical_type
-                            elif agent_type:
-                                type_by_id[str(agent_id)] = str(agent_type)
-
+                        slug = self._canonical_key(str(candidate), agent_defs)
                         if slug:
-                            _record_default(slug, normalized, modified, created)
+                            canonical_type = agent_defs.get(slug) or str(candidate)
+                            break
+
+                    if agent_id:
+                        property_by_id[str(agent_id)] = dict(normalized)
+                        if canonical_type:
+                            type_by_id[str(agent_id)] = canonical_type
+                        elif agent_type:
+                            type_by_id[str(agent_id)] = str(agent_type)
+
+                    if slug:
+                        _record_default(slug, normalized, modified, created)
         except Exception:  # pragma: no cover - defensive
             logger.exception("Failed to load agent linkage metadata")
 
