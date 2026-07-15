@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from src.services.deal_lifecycle import promote_deal, save_reference
 from src.services.reconciliation import reconcile_deal
 
 _NOT_AVAILABLE = "Summary not available"
@@ -141,3 +142,23 @@ def post_deal_reconcile(deal_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"No deal found for deal_id={deal_id}")
     result["generated_at"] = datetime.now(timezone.utc).isoformat()
     return result
+
+
+@router.post("/{deal_id}/promote", summary="Commit a draft analysis into a tracked Pipeline deal")
+def post_promote_deal(deal_id: str) -> dict:
+    try:
+        promote_deal(deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("promote failed for %s", deal_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok", "deal_id": deal_id, "is_tracked": True}
+
+
+@router.post("/{deal_id}/save-reference", summary="Keep an analysis as a saved (untracked) reference")
+def post_save_reference(deal_id: str) -> dict:
+    try:
+        save_reference(deal_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("save-reference failed for %s", deal_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok", "deal_id": deal_id, "is_saved_reference": True}
