@@ -19,13 +19,23 @@ class _Conn:
 
 def test_by_deal_returns_rows(monkeypatch):
     rows = [("OPP-1","price_variance","cat-9","Acme","Widget",8100.0,"identified",0.9,"QA-1042")]
-    monkeypatch.setattr(db, "get_conn", lambda: _Conn(rows))
+    conn = _Conn(rows)
+    monkeypatch.setattr(db, "get_conn", lambda: conn)
     res = mod.get_opportunities_by_deal("ACME2026071501")
     assert res["deal_id"] == "ACME2026071501"
     assert res["opportunities"][0]["financial_impact_gbp"] == 8100.0
     assert res["opportunities"][0]["detector_type"] == "price_variance"
+    sql = conn._c.sql.lower()
+    assert "from proc.bp_opportunity" in sql
+    assert "where deal_id = %s" in sql
+    assert conn._c.params == ("ACME2026071501",)
 
 def test_by_deal_empty_is_not_error(monkeypatch):
-    monkeypatch.setattr(db, "get_conn", lambda: _Conn([]))
+    conn = _Conn([])
+    monkeypatch.setattr(db, "get_conn", lambda: conn)
     res = mod.get_opportunities_by_deal("NOPE")
     assert res["opportunities"] == []
+    sql = conn._c.sql.lower()
+    assert "from proc.bp_opportunity" in sql
+    assert "where deal_id = %s" in sql
+    assert conn._c.params == ("NOPE",)
