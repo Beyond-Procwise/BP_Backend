@@ -54,6 +54,26 @@ def list_opportunities(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]
     return {"opportunities": items, "count": len(items)}
 
 
+@router.get("/by-deal/{deal_id}", summary="Opportunities for one deal (report-scoped)")
+def get_opportunities_by_deal(deal_id: str) -> dict:
+    from src.services.db import get_conn
+    cols = ["opportunity_id", "detector_type", "category_id", "supplier_name",
+            "item_description", "financial_impact_gbp", "stage",
+            "ml_priority_score", "quote_id"]
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"select {', '.join(cols)} from proc.bp_opportunity "
+                "where deal_id = %s order by financial_impact_gbp desc nulls last",
+                (deal_id,))
+            rows = cur.fetchall() or []
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("by-deal opportunities failed for %s", deal_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"deal_id": deal_id, "opportunities": [dict(zip(cols, r)) for r in rows]}
+
+
 @router.post("/link-deals", summary="Link opportunities to their deal via anchoring quote")
 def post_link_deals() -> dict[str, Any]:
     try:
