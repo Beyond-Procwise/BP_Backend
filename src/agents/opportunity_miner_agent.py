@@ -2729,14 +2729,38 @@ class OpportunityMinerAgent(BaseAgent):
         )
 
     def _normalise_currency(self, tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-        """Convert all monetary values to GBP using simple FX mapping."""
+        """Convert all monetary values to GBP.
 
-        fx_rates = {"GBP": 1.0}
-        indices = tables.get("indices", pd.DataFrame())
-        if not indices.empty:
-            for _, row in indices.iterrows():
-                if row.get("currency") and row.get("value"):
-                    fx_rates[row["currency"]] = float(row["value"])
+        Each ``bp_*_trgt`` row already carries its own persisted
+        ``exchange_rate_to_usd`` (native currency -> USD, fixed at
+        extraction time). To reach GBP we chain: native -> USD (that
+        persisted rate) -> GBP (the live USD-quoted rate cached in
+        ``proc.bp_fx_rates`` — see ``repositories.fx_rate_repo`` /
+        GET /fx/rates). GBP rows need no conversion (rate 1.0).
+
+        Previously, currencies with no entry in an always-empty "indices"
+        lookup silently fell back to a 1.0 rate — i.e. USD/NZD amounts were
+        added to GBP totals as if they were GBP (financial_impact_gbp
+        corruption for non-GBP docs). That fallback is gone: any row we
+        cannot honestly convert (missing exchange_rate_to_usd, or no GBP
+        rate available) is EXCLUDED from the ``*_gbp`` columns and logged,
+        never assumed 1:1.
+        """
+
+        gbp_per_usd = None
+        try:
+            from repositories import fx_rate_repo
+
+            gbp_per_usd = fx_rate_repo.get_gbp_per_usd_rate()
+        except Exception:
+            logger.exception("opportunity_miner: failed to obtain GBP/USD rate for currency normalisation")
+            gbp_per_usd = None
+        if gbp_per_usd is None:
+            logger.warning(
+                "opportunity_miner: no live GBP rate available (bp_fx_rates cache empty and "
+                "live fetch failed) — non-GBP amounts will be excluded from *_gbp columns "
+                "this run rather than assumed 1:1"
+            )
 
         def convert(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
             if df.empty:
@@ -2746,12 +2770,35 @@ class OpportunityMinerAgent(BaseAgent):
             )
             if currency_col is None:
                 return df
-            rate_col = df[currency_col].map(lambda c: fx_rates.get(c, 1.0))
-            rate_series = pd.to_numeric(rate_col, errors="coerce").fillna(1.0)
+            currency_series = df[currency_col].astype(str)
+            is_gbp = currency_series == "GBP"
+
+            if "exchange_rate_to_usd" in df.columns:
+                xrate_to_usd = pd.to_numeric(df["exchange_rate_to_usd"], errors="coerce")
+            else:
+                xrate_to_usd = pd.Series(float("nan"), index=df.index)
+
+            if gbp_per_usd is not None:
+                rate_to_gbp = xrate_to_usd * gbp_per_usd
+            else:
+                rate_to_gbp = pd.Series(float("nan"), index=df.index)
+            # GBP rows need no conversion — 1.0 regardless of USD rate availability.
+            rate_to_gbp = rate_to_gbp.where(~is_gbp, 1.0)
+
+            unconvertible = rate_to_gbp.isna() & ~is_gbp
+            if bool(unconvertible.any()):
+                bad_currencies = sorted(set(currency_series[unconvertible].tolist()))
+                logger.warning(
+                    "opportunity_miner: excluding %d row(s) from *_gbp columns — cannot "
+                    "honestly convert currencies %s to GBP (missing exchange_rate_to_usd "
+                    "and/or no live bp_fx_rates GBP rate)",
+                    int(unconvertible.sum()), bad_currencies,
+                )
+
             for col in cols:
                 if col in df.columns:
                     numeric_col = pd.to_numeric(df[col], errors="coerce")
-                    df[f"{col}_gbp"] = numeric_col.fillna(0.0) * rate_series
+                    df[f"{col}_gbp"] = numeric_col.fillna(0.0) * rate_to_gbp
             return df
 
         tables["purchase_orders"] = convert(

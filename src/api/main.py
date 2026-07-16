@@ -59,6 +59,7 @@ from api.routers import supplier_research as supplier_research_router
 from api.routers import governance as governance_router
 from api.routers import obligations as obligations_router
 from api.routers import benchmark as benchmark_router
+from api.routers import fx as fx_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -175,6 +176,14 @@ async def lifespan(app: FastAPI):
             logger.info("Agent-workflows schema ensured")
         except Exception:
             logger.exception("Agent-workflows schema init failed (non-critical)")
+
+        # Ensure the FX-rates cache schema exists (GET /fx/rates).
+        try:
+            from repositories import fx_rate_repo as _fx_rate_repo
+            _fx_rate_repo.ensure_schema()
+            logger.info("FX-rates schema ensured")
+        except Exception:
+            logger.exception("FX-rates schema init failed (non-critical)")
 
         # Ensure provenance sidecar schema exists.
         try:
@@ -387,6 +396,7 @@ app.include_router(summary.router)
 app.include_router(session.router)
 app.include_router(obligations_router.router)
 app.include_router(benchmark_router.router)
+app.include_router(fx_router.router)
 
 
 # ======================================================================================

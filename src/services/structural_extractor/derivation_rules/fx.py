@@ -10,17 +10,44 @@ _CACHE: dict[str, tuple[float, float]] = {}  # ccy -> (rate, timestamp)
 _CACHE_TTL = 3600  # 1h
 
 
-def _fetch_rate_live(ccy: str) -> float | None:
+def _fetch_json(ccy: str) -> dict | None:
     try:
         r = requests.get(f"https://open.er-api.com/v6/latest/{ccy}", timeout=5)
         if r.status_code == 200:
-            data = r.json()
-            rate = data.get("rates", {}).get("USD")
-            if rate is not None:
-                return float(rate)
+            return r.json()
     except Exception:
         log.debug("FX fetch failed for %s", ccy, exc_info=True)
     return None
+
+
+def _fetch_rate_live(ccy: str) -> float | None:
+    data = _fetch_json(ccy)
+    if data:
+        rate = data.get("rates", {}).get("USD")
+        if rate is not None:
+            return float(rate)
+    return None
+
+
+def fetch_usd_quoted_rates() -> dict[str, float] | None:
+    """Fetch the full USD-base rates table (currency -> units per 1 USD).
+
+    Used by GET /fx/rates (dashboard currency selector). Shares the same
+    live source/endpoint as ``_fetch_rate_live`` above (open.er-api.com) via
+    ``_fetch_json`` — this just reads the whole ``rates`` dict from the
+    USD-base response instead of picking out a single currency.
+    """
+    data = _fetch_json("USD")
+    if not data:
+        return None
+    rates = data.get("rates")
+    if not isinstance(rates, dict) or not rates:
+        return None
+    try:
+        return {str(k): float(v) for k, v in rates.items()}
+    except Exception:
+        log.debug("FX rates parse failed", exc_info=True)
+        return None
 
 
 def _get_rate(ccy: str) -> float | None:
