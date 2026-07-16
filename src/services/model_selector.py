@@ -1916,7 +1916,7 @@ class RAGPipeline:
     def _plain_text_to_html(self, text: str) -> str:
         normalised = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
         if not normalised:
-            return '<section class="llm-answer__segment"><p>No answer available.</p></section>'
+            return '<section class="agent-answer__segment"><p>No answer available.</p></section>'
 
         def _insert_inline_breaks(block: str) -> str:
             pattern = re.compile(r"(?<!\n)(?:\s*)(\d+[\.)])\s+(?=[A-Za-z])")
@@ -1930,15 +1930,15 @@ class RAGPipeline:
         normalised = _insert_inline_breaks(normalised)
 
         header = (
-            '<header class="llm-answer__heading">'
+            '<header class="agent-answer__heading">'
             "<h2>Here’s what I found</h2>"
-            "<p class=\"llm-answer__intro\">I pulled the key details into an easy-to-scan summary for you.</p>"
+            "<p class=\"agent-answer__intro\">I pulled the key details into an easy-to-scan summary for you.</p>"
             "</header>"
         )
 
         html_parts: List[str] = [
             header,
-            '<div class="llm-answer__segment llm-answer__segment--body">',
+            '<div class="agent-answer__segment agent-answer__segment--body">',
         ]
         current_list: List[str] = []
         list_type: Optional[str] = None
@@ -1963,7 +1963,7 @@ class RAGPipeline:
                 return
             tag = "ol" if list_type == "ordered" else "ul"
             items = "".join(f"<li>{item}</li>" for item in current_list)
-            html_parts.append(f'<{tag} class="llm-answer__list">{items}</{tag}>')
+            html_parts.append(f'<{tag} class="agent-answer__list">{items}</{tag}>')
             current_list = []
             list_type = None
 
@@ -1972,16 +1972,16 @@ class RAGPipeline:
             if not definition_items:
                 return
             rows = "".join(
-                f'<div class="llm-answer__definition"><dt>{format_inline(term)}</dt>'
+                f'<div class="agent-answer__definition"><dt>{format_inline(term)}</dt>'
                 f"<dd>{format_inline(explanation)}</dd></div>"
                 for term, explanation in definition_items
             )
-            html_parts.append(f'<dl class="llm-answer__definitions">{rows}</dl>')
+            html_parts.append(f'<dl class="agent-answer__definitions">{rows}</dl>')
             definition_items = []
 
         def append_paragraph(content: str) -> None:
             nonlocal first_paragraph_rendered
-            css_class = "llm-answer__lead" if not first_paragraph_rendered else "llm-answer__paragraph"
+            css_class = "agent-answer__lead" if not first_paragraph_rendered else "agent-answer__paragraph"
             first_paragraph_rendered = True
             html_parts.append(f'<p class="{css_class}">{format_inline(content)}</p>')
 
@@ -2044,7 +2044,7 @@ class RAGPipeline:
         flush_definitions()
 
         if len(html_parts) == 2:
-            html_parts.append('<p class="llm-answer__paragraph">No answer available.</p>')
+            html_parts.append('<p class="agent-answer__paragraph">No answer available.</p>')
 
         html_parts.append("</div>")
 
@@ -2058,13 +2058,13 @@ class RAGPipeline:
                 seen.add(lowered)
                 unique_sources.append(doc)
             chips = "".join(
-                f'<span class="llm-answer__source-chip">{escape(doc)}</span>'
+                f'<span class="agent-answer__source-chip">{escape(doc)}</span>'
                 for doc in unique_sources
             )
             html_parts.append(
-                '<footer class="llm-answer__sources">'
+                '<footer class="agent-answer__sources">'
                 "<h3>Sources</h3>"
-                f"<div class=\"llm-answer__source-list\">{chips}</div>"
+                f"<div class=\"agent-answer__source-list\">{chips}</div>"
                 "</footer>"
             )
 
@@ -2102,8 +2102,8 @@ class RAGPipeline:
             body = self._plain_text_to_html(cleaned)
 
         return (
-            '<section class="llm-answer">'
-            '<article class="llm-answer__content">'
+            '<section class="agent-answer">'
+            '<article class="agent-answer__content">'
             f"{body}"
             "</article>"
             "</section>"
