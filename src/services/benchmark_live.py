@@ -1,0 +1,164 @@
+"""Live-data wiring for the deterministic benchmark pricing engine.
+
+Loads a deal's quote lines and the pooled PO/invoice price history from
+bp_sqldb (_trgt tables), normalises the match keys, and runs
+services.benchmark.engine.compute_benchmark over each line.
+
+The ENGINE stays exact-match and pure; all live-data messiness is handled
+HERE, explicitly and disclosed in the response:
+
+- item/uom/currency are normalised (whitespace/case; NULL uom -> "each",
+  NULL currency -> "GBP") before they become match keys.
+- The corpus has no spec scores, SLA scores, location cost indices or price
+  indices, so those adjustments are NEUTRALISED (factor 1.0) by feeding the
+  engine identical values on both sides — never fabricated data. Volume is
+  the only live adjustment (historical quantities are real).
+- No Location Index / Index tables exist in the DB yet, so lookups run
+  against empty tables and the engine records "location_default" /
+  "index_default" in fallbacks_used (Decision 3 behaviour, visible live).
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+from services.benchmark.engine import compute_benchmark
+from services.benchmark.models import BenchmarkPoint, BenchmarkSettings, QuoteLine
+
+logger = logging.getLogger(__name__)
+
+# Neutral midpoint used for BOTH the quote's requested scores and every
+# benchmark point's scores: identical values => spec/SLA factors == 1.0.
+_NEUTRAL_SCORE = 5.0
+
+# Written in product terms (the output-safety gate rewrites anything that
+# reads like backend internals — e.g. slash-separated words resemble routes).
+DISCLOSURES = [
+    "specification, service-level, location and inflation adjustments are neutral (no scoring data captured yet); volume reflects real purchase history",
+    "match keys normalised: whitespace and case folded; missing unit defaults to 'each', missing currency to 'GBP'",
+    "price history pool includes this deal's own purchase-order and invoice lines (no cross-deal item overlap in current data)",
+    "no location or market index reference data captured yet: neutral defaults applied and recorded on every line",
+]
+
+
+def _norm_item(value: Optional[str]) -> str:
+    return " ".join((value or "").split()).lower()
+
+
+def _norm_uom(value: Optional[str]) -> str:
+    return (value or "").strip().lower() or "each"
+
+
+def _norm_currency(value: Optional[str]) -> str:
+    return (value or "").strip().upper() or "GBP"
+
+
+def load_quote_lines(cur, deal_id: str) -> list[dict[str, Any]]:
+    """Quote lines for one deal, with header currency/country/region."""
+    cur.execute(
+        """
+        SELECT q.quote_line_id, q.quote_id, q.item_description, q.quantity,
+               q.unit_price, q.unit_of_measure,
+               COALESCE(q.currency, h.currency) AS currency,
+               h.country, h.region
+        FROM proc.bp_quote_line_items_trgt q
+        LEFT JOIN proc.bp_quote_trgt h ON h.quote_id = q.quote_id
+        WHERE q.deal_id = %s AND q.unit_price IS NOT NULL
+        ORDER BY q.quote_line_id
+        """,
+        (deal_id,),
+    )
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def load_benchmark_pool(cur) -> list[dict[str, Any]]:
+    """All PO + invoice lines with a price — the price-history pool."""
+    cur.execute(
+        """
+        SELECT 'po:' || p.po_line_id AS point_id, p.item_description,
+               p.unit_of_measure, p.currency, p.unit_price, p.quantity
+        FROM proc.bp_po_line_items_trgt p
+        WHERE p.unit_price IS NOT NULL AND p.item_description IS NOT NULL
+        UNION ALL
+        SELECT 'inv:' || i.invoice_line_id, i.item_description,
+               i.unit_of_measure, h.currency, i.unit_price, i.quantity
+        FROM proc.bp_invoice_line_items_trgt i
+        LEFT JOIN proc.bp_invoice_trgt h ON h.invoice_id = i.invoice_id
+        WHERE i.unit_price IS NOT NULL AND i.item_description IS NOT NULL
+        """
+    )
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _to_points(pool_rows: list[dict[str, Any]]) -> list[BenchmarkPoint]:
+    points = []
+    for row in pool_rows:
+        points.append(
+            BenchmarkPoint(
+                benchmark_point_id=row["point_id"],
+                source="internal",
+                item_name=_norm_item(row["item_description"]),
+                uom=_norm_uom(row["unit_of_measure"]),
+                currency=_norm_currency(row["currency"]),
+                include=True,
+                raw_unit_price=float(row["unit_price"]),
+                source_weight=1.0,
+                specification_score=_NEUTRAL_SCORE,
+                location_cost_index=1.0,
+                sla_score=_NEUTRAL_SCORE,
+                historical_quantity=float(row["quantity"] or 0.0),
+                index_value_at_price_date=1.0,
+            )
+        )
+    return points
+
+
+def benchmark_deal(
+    cur,
+    deal_id: str,
+    settings: Optional[BenchmarkSettings] = None,
+) -> dict[str, Any]:
+    """Run the benchmark engine over every priced quote line of a deal."""
+    settings = settings if settings is not None else BenchmarkSettings()
+    quote_rows = load_quote_lines(cur, deal_id)
+    points = _to_points(load_benchmark_pool(cur))
+
+    results = []
+    for row in quote_rows:
+        quote = QuoteLine(
+            deal_id=deal_id,
+            item_name=_norm_item(row["item_description"]),
+            supplier_name="",
+            quote_ref=str(row["quote_id"] or ""),
+            category="",
+            quantity=float(row["quantity"] or 0.0),
+            uom=_norm_uom(row["unit_of_measure"]),
+            currency=_norm_currency(row["currency"]),
+            location=(row.get("region") or row.get("country") or ""),
+            requested_spec_score=_NEUTRAL_SCORE,
+            service_level="",
+            requested_sla_score=_NEUTRAL_SCORE,
+            index_id="",
+            quoted_unit_price=float(row["unit_price"]),
+        )
+        # No lookup tables exist in the DB yet: empty tables make every miss
+        # explicit via fallbacks_used instead of silently pricing with 1.0.
+        result = compute_benchmark(quote, points, {}, {}, settings)
+        payload = result.model_dump()
+        payload["source_item_description"] = row["item_description"]
+        payload["quote_line_id"] = row["quote_line_id"]
+        results.append(payload)
+
+    gated = sum(1 for r in results if r["gated"])
+    return {
+        "deal_id": deal_id,
+        "settings": settings.model_dump(),
+        "pool_size": len(points),
+        "lines": results,
+        "line_count": len(results),
+        "gated_count": gated,
+        "computed_count": len(results) - gated,
+        "disclosures": DISCLOSURES,
+    }
