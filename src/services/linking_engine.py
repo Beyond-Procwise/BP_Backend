@@ -904,18 +904,30 @@ def _quote_chains(conn) -> dict:
 # Human review queue
 # ---------------------------------------------------------------------------
 def review_queue(conn: Any = None, doc_types=("invoice", "quote"),
-                 min_score: Optional[float] = None) -> list[dict]:
+                 min_score: Optional[float] = None, all_held: bool = False,
+                 deal_id: Optional[str] = None) -> list[dict]:
     """List not-yet-promoted staged docs in the REVIEW band — a verified parent
     link with REVIEW_MIN <= F < MIN_LINK_SCORE — with their gap report, for human
-    approval. Read-only (no writes)."""
+    approval. Read-only (no writes).
+
+    ``all_held=True`` widens this to EVERY currently-held _stg document, any
+    hold reason (no_parent_reference, parent_not_found, low_link_score,
+    low_extraction_confidence — plus the review band above). Docs with no
+    parent to score against carry F=None: they were previously invisible here
+    because the review band is an F-score window and a docless hold has no F.
+
+    ``deal_id`` filters to one deal (matched on the stg row's own deal_id
+    column). Applies to both modes.
+    """
     floor = REVIEW_MIN if min_score is None else float(min_score)
     if conn is None:
         with get_conn() as own:
-            return _review_queue(own, doc_types, floor)
-    return _review_queue(conn, doc_types, floor)
+            return _review_queue(own, doc_types, floor, all_held, deal_id)
+    return _review_queue(conn, doc_types, floor, all_held, deal_id)
 
 
-def _review_queue(conn, doc_types, floor) -> list[dict]:
+def _review_queue(conn, doc_types, floor, all_held: bool = False,
+                  deal_id: Optional[str] = None) -> list[dict]:
     cur = conn.cursor()
     out: list[dict] = []
     for doc_type in doc_types:
@@ -925,7 +937,23 @@ def _review_queue(conn, doc_types, floor) -> list[dict]:
                      f"select * from {cfg['stg']} s where s.{pk} is not null "
                      f"and not exists (select 1 from {cfg['trgt']} t where t.{pk} = s.{pk})")
         for row in cand:
+            if deal_id is not None and row.get("deal_id") != deal_id:
+                continue
             po, link, reason = _evaluate(cur, doc_type, row)
+            if all_held:
+                if reason is None:
+                    continue  # promotable (or already flagged-but-eligible), not held
+                item = {
+                    "doc_type": doc_type, "doc_pk": row[pk], "reason": reason,
+                    "F": link["F"] if link else None,
+                    "deal_id": row.get("deal_id"),
+                }
+                if "supplier_id" in row:
+                    item["supplier_id"] = row.get("supplier_id")
+                if "converted_amount_usd" in row:
+                    item["amount_usd"] = _to_float(row.get("converted_amount_usd"))
+                out.append(item)
+                continue
             if link is None or not (floor <= link["F"] < MIN_LINK_SCORE):
                 continue
             # gap report: signals sorted by impact = |w * r * (2s-1)| (PDF Stage 8)
@@ -939,7 +967,10 @@ def _review_queue(conn, doc_types, floor) -> list[dict]:
                 "weak_or_conflicting": [g for g in gaps if g["status"] not in ("OK",)],
                 "gap_report": gaps,
             })
-    out.sort(key=lambda x: x["F"], reverse=True)
+    if all_held:
+        out.sort(key=lambda x: (x["F"] is None, -(x["F"] or 0.0)))
+    else:
+        out.sort(key=lambda x: x["F"], reverse=True)
     return out
 
 

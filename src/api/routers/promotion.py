@@ -57,12 +57,16 @@ def get_quote_chains() -> dict[str, Any]:
 def get_review_queue(
     doc_type: Optional[str] = Query(None, description="invoice | quote (default: both)"),
     min_score: Optional[float] = Query(None, description="F floor (default PROMOTE_REVIEW_MIN=65)"),
+    all: bool = Query(False, description="return EVERY currently-held doc (any hold reason), "
+                                          "not just the F-score review band"),
+    deal_id: Optional[str] = Query(None, description="filter items to one deal_id"),
 ) -> dict[str, Any]:
     doc_types = (doc_type,) if doc_type else ("invoice", "quote")
     if any(d not in ("invoice", "quote") for d in doc_types):
         raise HTTPException(status_code=400, detail="doc_type must be 'invoice' or 'quote'")
     try:
-        items = review_queue(doc_types=doc_types, min_score=min_score)
+        items = review_queue(doc_types=doc_types, min_score=min_score,
+                             all_held=all, deal_id=deal_id)
     except Exception as exc:
         logger.exception("review-queue failed")
         raise HTTPException(status_code=500, detail=str(exc))
