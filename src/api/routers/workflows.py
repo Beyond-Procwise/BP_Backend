@@ -7,6 +7,7 @@ import os
 import time
 import asyncio
 import logging
+import uuid
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,6 +21,7 @@ from services.opportunity_service import record_opportunity_feedback
 from services.email_dispatch_service import EmailDispatchService
 from services.backend_scheduler import BackendScheduler
 from repositories import draft_rfq_emails_repo
+from agents.email_drafting_agent import EmailDraftingAgent
 
 # Ensure GPU-related environment variables are set
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -1107,6 +1109,126 @@ async def extract_documents(
 
     asyncio.create_task(run_flow())
     return {"status": "process started", "process_id": process_id}
+
+
+# ---------------------------------------------------------------------------
+# Email draft persistence endpoint (report panel "Save"/pre-send step)
+# ---------------------------------------------------------------------------
+class EmailPrepareRequest(BaseModel):
+    """Payload for persisting a report-panel email edit ahead of dispatch.
+
+    The report's email panel edits recipients/subject/body but has no
+    ``unique_id``/``rfq_id`` of its own, so ``POST /workflows/email`` 400s
+    (it requires an identifier that resolves to a stored draft). This model
+    backs ``POST /workflows/email/prepare``, which persists the panel's
+    edited content as a draft and hands back an identifier the panel can
+    then pass to ``/workflows/email``.
+    """
+
+    deal_id: Optional[str] = Field(
+        default=None,
+        description="Deal this draft is associated with (used to scope/label the draft).",
+    )
+    to: List[EmailStr] = Field(
+        ..., min_length=1, description="Recipient email address(es)."
+    )
+    subject: str = Field(..., description="Email subject line.")
+    body: str = Field(..., description="Email body (HTML or plain text).")
+
+    @field_validator("subject", "body", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("subject", "body")
+    @classmethod
+    def _non_empty(cls, value: str) -> str:
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
+class EmailPrepareResponse(BaseModel):
+    """Identifier the panel should send to ``POST /workflows/email``."""
+
+    unique_id: str
+    workflow_id: str
+    status: str = "prepared"
+
+
+@router.post(
+    "/email/prepare",
+    response_model=EmailPrepareResponse,
+    summary="Persist an edited report-panel email as a draft (no send)",
+)
+def prepare_email_draft(
+    payload: EmailPrepareRequest,
+    agent_nick=Depends(get_agent_nick),
+) -> EmailPrepareResponse:
+    """Persist ``payload`` into ``proc.draft_rfq_emails`` and return its identifier.
+
+    This handler ONLY persists a draft -- it never calls the dispatch/send
+    path. It reuses :meth:`EmailDraftingAgent._store_draft`, the same
+    id-generation and persistence helper the drafting agent itself uses, so
+    the resulting row lives in the exact table/shape that
+    ``EmailDispatchService.resolve_workflow_id``/``send_draft`` read. The
+    caller (report panel) should follow up with
+    ``POST /workflows/email {"unique_id": <returned unique_id>, ...}`` to
+    actually send.
+    """
+
+    recipients = [str(addr).strip() for addr in payload.to if str(addr).strip()]
+    if not recipients:
+        raise HTTPException(
+            status_code=400, detail="At least one recipient email is required"
+        )
+
+    # ``_store_draft`` requires a truthy supplier_id; this draft isn't tied to
+    # a supplier so derive a stable, harmless scoping value from the deal.
+    supplier_id = (
+        f"report-panel:{payload.deal_id}"
+        if payload.deal_id
+        else f"report-panel:{uuid.uuid4().hex[:12]}"
+    )
+
+    draft: Dict[str, Any] = {
+        "supplier_id": supplier_id,
+        "subject": payload.subject,
+        "body": payload.body,
+        "recipients": recipients,
+        "receiver": recipients[0],
+        "metadata": {
+            "source": "report_email_panel",
+            "deal_id": payload.deal_id,
+        },
+    }
+
+    drafting_agent = EmailDraftingAgent(agent_nick)
+    try:
+        drafting_agent._store_draft(draft)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "Failed to persist report-panel email draft for deal_id=%s",
+            payload.deal_id,
+        )
+        raise HTTPException(status_code=500, detail="Failed to persist email draft")
+
+    # ``_store_draft`` swallows DB errors internally (best-effort logging) and
+    # only stamps these fields on the draft dict once the row is actually
+    # committed -- so their absence is our fail-closed signal, not a warning.
+    unique_id = draft.get("unique_id")
+    workflow_id = draft.get("workflow_id")
+    record_id = draft.get("draft_record_id")
+    if not unique_id or not workflow_id or record_id is None:
+        raise HTTPException(status_code=500, detail="Draft was not persisted")
+
+    return EmailPrepareResponse(unique_id=str(unique_id), workflow_id=str(workflow_id))
 
 
 # ---------------------------------------------------------------------------
