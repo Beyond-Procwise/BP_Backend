@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"rag baseline smoke\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "{\"agentic_plan\": \"1. Review the incoming context and clarify the task objectives.\\n2. Consult relevant knowledge bases, policies, and historical records.\\n3. Synthesise findings into structured outputs and recommended next actions.\", \"context_snapshot\": {\"workflow_id\": \"awf-341-4178bc95\", \"agent_id\": \"rag\", \"user_id\": \"human\", \"manifest\": {\"task\": {\"agent_type\": \"rag baseline smoke\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}}, \"action_id\": \"b782d575-095b-4587-b8a6-fb52c1199236\"}",
+  "metadata": {
+    "workflow_id": "awf-341-4178bc95",
+    "agent_id": "rag",
+    "agent_name": "RAGAgent"
+  }
+}

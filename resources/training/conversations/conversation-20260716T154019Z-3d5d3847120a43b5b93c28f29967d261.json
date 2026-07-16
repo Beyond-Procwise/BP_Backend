@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"Spend Sentinel smoke\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "{\"agentic_plan\": \"1. Review the incoming context and clarify the task objectives.\\n2. Consult relevant knowledge bases, policies, and historical records.\\n3. Synthesise findings into structured outputs and recommended next actions.\", \"context_snapshot\": {\"workflow_id\": \"awf-340-1ab4b833\", \"agent_id\": \"spend-sentinel\", \"user_id\": \"human\", \"manifest\": {\"task\": {\"agent_type\": \"Spend Sentinel smoke\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}}, \"action_id\": \"561505d8-b05b-4446-baa6-78818c35cd6b\"}",
+  "metadata": {
+    "workflow_id": "awf-340-1ab4b833",
+    "agent_id": "spend-sentinel",
+    "agent_name": "RAGAgent"
+  }
+}
