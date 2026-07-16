@@ -1,7 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
+import copy
+import json
 import logging
 import os
+import re
 from pydantic import BaseModel
 
 from orchestration.orchestrator import Orchestrator
@@ -122,23 +125,227 @@ async def reload_policies(agent_nick=Depends(get_agent_nick)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _do_reload_governance(agent_nick) -> Dict[str, Any]:
+    """The one governance hot-reload: prompts + policies + extraction hints."""
+    agent_nick.policy_engine.reload_policies()
+    agent_nick.prompt_engine.refresh()
+    from src.services.extraction_feedback.hint_store import HINT_STORE
+    hints = HINT_STORE.refresh()
+    return {
+        "prompts": len(agent_nick.prompt_engine.all_prompts()),
+        "policies": len(agent_nick.policy_engine.list_policies()),
+        "extraction_vendor_hints": hints,
+    }
+
+
 @router.post("/reload-governance")
 async def reload_governance(agent_nick=Depends(get_agent_nick)):
     """Reload both prompt and policy governance from the bp_ tables."""
     try:
-        agent_nick.policy_engine.reload_policies()
-        agent_nick.prompt_engine.refresh()
-        from src.services.extraction_feedback.hint_store import HINT_STORE
-        hints = HINT_STORE.refresh()
-        return {
-            "status": "success",
-            "prompts": len(agent_nick.prompt_engine.all_prompts()),
-            "policies": len(agent_nick.policy_engine.list_policies()),
-            "extraction_vendor_hints": hints,
-        }
+        return {"status": "success", **_do_reload_governance(agent_nick)}
     except Exception as e:  # pragma: no cover - defensive
         logger.error(f"Failed to reload governance: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Derived agents: a new catalogue identity on an existing backing class ──
+
+_KEBAB_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _kebab(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+class CreateAgentBody(BaseModel):
+    name: str
+    slug: Optional[str] = None
+    description: str = ""
+    backing_slug: str
+    instructions: str
+    capabilities: Optional[List[str]] = None
+
+
+@router.get("/creatable-bases")
+async def creatable_bases():
+    """The honest options list for the UI: only agents that can actually
+    execute (catalogue entries WITH a class_path) may back a derived agent."""
+    from agents.definitions import load_agent_definitions
+    return {
+        "bases": [
+            {
+                "slug": a["slug"],
+                "description": a.get("description", ""),
+                "capabilities": list(a.get("capabilities") or []),
+            }
+            for a in load_agent_definitions()
+            if a.get("class_path")
+        ]
+    }
+
+
+@router.post("")
+async def create_agent(
+    body: CreateAgentBody, request: Request, agent_nick=Depends(get_agent_nick)
+):
+    """Create a DERIVED agent: a new catalogue entry backed by an existing
+    agent class, plus a bp_prompt row carrying its instructions.
+
+    No parallel mechanism: the result is a normal catalogue agent that the
+    compiler validates, the engine resolves from the live registry, and
+    governance links through prompt_linked_agents — all existing paths.
+    """
+    from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
+
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name must not be empty")
+    instructions = body.instructions or ""
+    if not instructions.strip():
+        raise HTTPException(status_code=422, detail="instructions must not be empty")
+
+    slug = (body.slug or _kebab(name)).strip()
+    if not _KEBAB_RE.match(slug):
+        raise HTTPException(
+            status_code=422,
+            detail=f"slug {slug!r} must be kebab-case (lowercase letters, digits, hyphens)",
+        )
+
+    definitions = load_agent_definitions()
+    if any(a.get("slug") == slug for a in definitions):
+        raise HTTPException(
+            status_code=422, detail=f"slug {slug!r} already exists in the agent catalogue"
+        )
+
+    backing = next((a for a in definitions if a.get("slug") == body.backing_slug), None)
+    if backing is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"backing_slug {body.backing_slug!r} is not in the agent catalogue",
+        )
+    if not backing.get("class_path"):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"backing_slug {body.backing_slug!r} has no class_path and cannot execute; "
+                "pick one of GET /agents/creatable-bases"
+            ),
+        )
+
+    # The derived entry IS the backing entry (class_path, inputs, outputs,
+    # elicit, dependencies, ...) under a new identity. Nothing is invented.
+    entry = copy.deepcopy(backing)
+    entry["agentId"] = max(int(a.get("agentId") or 0) for a in definitions) + 1
+    entry["slug"] = slug
+    entry["description"] = (body.description or "").strip() or backing.get("description", "")
+    if body.capabilities is not None:
+        entry["capabilities"] = list(body.capabilities)
+    entry["derived_from"] = body.backing_slug
+    entry["created_by"] = "workspace"
+
+    # Governance token: PromptEngine tokenises linkage text on word characters
+    # (a hyphen splits a token in two), so the kebab slug is stored underscored.
+    gov_slug = slug.replace("-", "_")
+    prompt_name = f"{gov_slug}_instructions"
+
+    # 1) bp_prompt row first (most likely failure point): the instructions,
+    #    verbatim, linked to the NEW slug. Same column set the governance
+    #    loader reads (PromptEngine._DEFAULT_COLUMNS); prompt_id is identity.
+    try:
+        conn = agent_nick.get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO proc.bp_prompt "
+                    "(prompt_name, prompt_type, prompt_linked_agents, prompts_desc, "
+                    " prompts_status, version, created_by, last_modified_by) "
+                    "VALUES (%s, 'agent_instructions', %s, to_jsonb(%s::text), 1, 1, "
+                    "        'workspace', 'workspace') RETURNING prompt_id",
+                    (prompt_name, gov_slug, instructions),
+                )
+                prompt_id = cur.fetchone()[0]
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.exception("create_agent: bp_prompt insert failed")
+        raise HTTPException(status_code=500, detail=f"could not store instructions: {exc}")
+
+    # 2) Append to agent_definitions.json atomically (tmp file + rename).
+    try:
+        with DEFINITIONS_PATH.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            data.setdefault("agents", []).append(entry)
+        else:
+            data.append(entry)
+        tmp = DEFINITIONS_PATH.with_name(DEFINITIONS_PATH.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, DEFINITIONS_PATH)
+    except Exception as exc:
+        # A failed create must leave no trace: deactivate the prompt row.
+        try:
+            conn = agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE proc.bp_prompt SET prompts_status = 0 WHERE prompt_id = %s",
+                        (prompt_id,),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception(
+                "create_agent: could not deactivate prompt %s after catalogue failure",
+                prompt_id,
+            )
+        logger.exception("create_agent: catalogue write failed")
+        raise HTTPException(status_code=500, detail=f"could not update agent catalogue: {exc}")
+
+    # 3) Reload in-process — same registry-build startup does, same governance
+    #    reload POST /agents/reload-governance does — so the new slug runs NOW.
+    reload_report: Dict[str, Any] = {}
+    try:
+        from agents.auto_registry import AutoRegistry
+
+        registry = getattr(agent_nick, "auto_registry", None)
+        if registry is None:
+            registry = AutoRegistry.from_json()
+            registry.set_agent_nick(agent_nick)
+            agent_nick.auto_registry = registry
+        else:
+            registry.refresh_from_json()
+        instance = registry.get_agent(slug)  # stamps instance.governance_slug
+        agent_nick.agents[slug] = instance  # same object the workflow engine resolves from
+
+        # The orchestrator caches the catalogue (lru_cache) and the prompt /
+        # policy catalogues per instance — clear them or a run with the new
+        # slug is rejected against the stale view.
+        from orchestration.orchestrator import Orchestrator
+
+        Orchestrator._load_agent_definitions.cache_clear()
+        orchestrator = getattr(request.app.state, "orchestrator", None)
+        if orchestrator is not None:
+            orchestrator._prompt_cache = None
+            orchestrator._policy_cache = None
+
+        reload_report = _do_reload_governance(agent_nick)
+    except Exception as exc:
+        # The agent exists on disk and in bp_prompt; a restart picks it up.
+        logger.exception("create_agent: in-process reload failed")
+        reload_report = {"error": str(exc)}
+
+    return {
+        "status": "created",
+        "slug": slug,
+        "agent_id": entry["agentId"],
+        "derived_from": body.backing_slug,
+        "prompt_id": prompt_id,
+        "prompt_name": prompt_name,
+        "registered": slug in agent_nick.agents,
+        "governance": reload_report,
+    }
 
 
 class AgentExecutionRequest(BaseModel):

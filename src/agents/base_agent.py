@@ -306,7 +306,18 @@ class BaseAgent:
     # Governance resolver — uniform, agent-scoped access to prompts/policies
     # ------------------------------------------------------------------
     def _governance_slug(self) -> str:
-        """Slug identifying THIS agent for prompt/policy linkage lookups."""
+        """Slug identifying THIS agent for prompt/policy linkage lookups.
+
+        A derived agent (created from the workspace on top of an existing
+        class) carries its own catalogue slug in ``self.governance_slug``
+        (set by AutoRegistry at instantiation); that wins over the class-name
+        derivation so the derived instance resolves ITS OWN bp_prompt /
+        bp_policy rows while instances of the backing class still resolve
+        theirs.
+        """
+        override = getattr(self, "governance_slug", None)
+        if override:
+            return _slugify_agent_name(override)
         return _slugify_agent_name(self.__class__.__name__)
 
     def resolve_prompt(self, prompt_name: str, **fmt: Any) -> Optional[str]:
@@ -330,7 +341,12 @@ class BaseAgent:
 
         template = None
         try:
-            template = _match(engine.prompts_for_agent(self.__class__.__name__))
+            # Instance governance slug first (derived agents resolve their own
+            # rows), then the class name — the historical lookup — so nothing
+            # that resolved before stops resolving.
+            template = _match(engine.prompts_for_agent(self._governance_slug()))
+            if template is None:
+                template = _match(engine.prompts_for_agent(self.__class__.__name__))
         except Exception:  # pragma: no cover - defensive
             logger.debug("resolve_prompt: agent-scoped lookup failed", exc_info=True)
         if template is None:

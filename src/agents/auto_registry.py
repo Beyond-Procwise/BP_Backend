@@ -46,6 +46,11 @@ class AgentContract:
     required_inputs: List[str] = field(default_factory=list)
     output_fields: List[str] = field(default_factory=list)
     description: str = ""
+    # Set only for DERIVED agents (catalogue entries carrying "derived_from"):
+    # the instance is stamped with this slug so BaseAgent._governance_slug()
+    # resolves the derived agent's own bp_prompt/bp_policy rows instead of the
+    # backing class's. None for ordinary agents — their behaviour is unchanged.
+    governance_slug: Optional[str] = None
 
 
 class AutoRegistry:
@@ -122,12 +127,23 @@ class AutoRegistry:
                 required_inputs=list(entry.get("required_inputs", entry.get("inputs", {}).get("required", []))),
                 output_fields=list(entry.get("output_fields", entry.get("outputs", []))),
                 description=entry.get("description", ""),
+                governance_slug=slug if entry.get("derived_from") else None,
             )
             contracts[slug] = contract
             logger.debug("Registered agent contract: %s", slug)
 
         logger.info("AutoRegistry loaded %d agent definitions from %s", len(contracts), json_path)
         return cls(contracts)
+
+    def refresh_from_json(self, path: Optional[str] = None) -> None:
+        """Reload contracts from disk IN PLACE, keeping cached instances.
+
+        In place because the orchestrator, the reasoning engine and agent_nick
+        all hold references to THIS object — swapping in a new AutoRegistry
+        would leave them reading the stale catalogue.
+        """
+        fresh = AutoRegistry.from_json(path)
+        self._contracts = fresh._contracts
 
     # ------------------------------------------------------------------
     # Dependency injection
@@ -249,6 +265,11 @@ class AutoRegistry:
             raise RuntimeError(
                 f"Failed to instantiate {class_name} for agent '{agent_id}': {exc}"
             ) from exc
+
+        if contract.governance_slug:
+            # Derived agent: this instance resolves governance under its own
+            # catalogue slug, not under the backing class's name.
+            instance.governance_slug = contract.governance_slug
 
         self._instances[agent_id] = instance
         logger.info("Instantiated agent '%s' from %s", agent_id, contract.class_path)
