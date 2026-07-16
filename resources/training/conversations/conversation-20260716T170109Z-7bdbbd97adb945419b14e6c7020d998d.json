@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"UAT Negotiation Round\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "Missing supplier responses after wait.",
+  "metadata": {
+    "workflow_id": "awf-343-0c20a8f5",
+    "agent_id": "negotiation",
+    "agent_name": "NegotiationAgent"
+  }
+}
