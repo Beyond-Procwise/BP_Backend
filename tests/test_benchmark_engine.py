@@ -138,6 +138,7 @@ def test_zero_total_weight_simple_method_documents_partial_audit_record():
     # weighted candidate is None -> selected is None -> gate stays closed.
     gated_result = compute_benchmark(_quote(), points, LOC, IDX)
     assert gated_result.gated is True
+    assert gated_result.confidence == "Insufficient"
 
 
 # ---------------------------------------------------------------- factors

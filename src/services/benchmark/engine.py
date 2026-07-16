@@ -159,7 +159,12 @@ def compute_benchmark(
         logger.warning(
             "benchmark gated for %s: total source weight is 0", quote.deal_id
         )
-        return BenchmarkResult(**echo, **evidence, confidence=confidence, gated=True)
+        # Evidence exists but carries zero weight, so a weighted benchmark
+        # cannot be trusted — label it Insufficient rather than emit a
+        # contradictory gated-but-HIGH record.
+        return BenchmarkResult(
+            **echo, **evidence, confidence="Insufficient", gated=True
+        )
 
     # Step 2 — weighted profiles (same weights as the price average).
     # Decision 2: location profile uses the STATIC location_cost_index stored

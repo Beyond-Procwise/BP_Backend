@@ -69,6 +69,14 @@ computed field is `None`, `gated=True`, and no exception is raised. The
 match evidence (`matched_point_ids`, counts, `total_weight`) and
 `confidence` are still reported so a reviewer can see *why* it gated.
 
+**Second fail-closed gate (zero total weight):** when `method="weighted"` and
+`sum(source_weight)` across the matched set is `0`, no reliable weighted
+benchmark exists, so the engine also fails closed (`gated=True`) even if
+`n >= min_data_points`. Its `confidence` is reported as `"Insufficient"`
+(not the n-based value) so the record never reads as gated-but-HIGH.
+Consumers must always check `gated` before rendering any result — do not
+infer reliability from `confidence` alone.
+
 **Error handling:** each adjustment factor mirrors the prototype's
 `IFERROR(..., 1)` — any arithmetic failure (divide-by-zero `ref_quantity`,
 `avg_loc_index`, `avg_hist_index`, etc.) yields a neutral `1.0` rather than
