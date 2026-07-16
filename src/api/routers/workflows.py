@@ -60,8 +60,15 @@ class AskRequest(BaseModel):
     doc_type: Optional[str] = None
     product_type: Optional[str] = None
     file_path: Optional[str] = Field(default=None, description="Optional local file path", json_schema_extra={"example": None})
+    context: Optional[str] = Field(
+        default=None,
+        max_length=2000,
+        description="Optional caller-supplied screen context (e.g. a summary of what the "
+        "user is currently viewing). Folded into the same redacted ad-hoc context slot as "
+        "uploaded-file notes.",
+    )
 
-    @field_validator("doc_type", "product_type", "file_path", "session_id", mode="before")
+    @field_validator("doc_type", "product_type", "file_path", "session_id", "context", mode="before")
     @classmethod
     def _empty_to_none(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -853,6 +860,7 @@ async def ask_question(
         files=file_data or None,
         doc_type=req.doc_type,
         product_type=req.product_type,
+        screen_context=req.context,
     )
     return result
 
@@ -902,6 +910,7 @@ async def ask_question_stream(
                 model_name=req.model_name,
                 doc_type=req.doc_type,
                 product_type=req.product_type,
+                screen_context=req.context,
                 on_event=_on_event,
             )
             events.put(

@@ -2393,6 +2393,7 @@ class RAGPipeline:
         files: Optional[List[tuple[bytes, str]]] = None,
         doc_type: Optional[str] = None,
         product_type: Optional[str] = None,
+        screen_context: Optional[str] = None,
         on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict:
         """Answer a question against the retrieved corpus.
@@ -2402,6 +2403,12 @@ class RAGPipeline:
         grounding, generating) and ``delta`` for each piece of answer prose. The
         blocking behaviour is unchanged when it is not supplied, so the existing
         POST /workflows/ask contract is untouched.
+
+        ``screen_context`` is an optional caller-supplied summary of what the
+        user is currently looking at (e.g. a dashboard screen). It is folded
+        into the same redacted ad-hoc context slot as uploaded-file notes, so
+        it gets the identical treatment: condensed, redacted, and merged
+        alongside any uploaded-file context rather than a new prompt slot.
         """
 
         def _emit(kind: str, **payload: Any) -> None:
@@ -2616,6 +2623,10 @@ class RAGPipeline:
                 metadata["product_type"] = product_type
             if text:
                 self.rag.upsert_texts([text], metadata)
+        if isinstance(screen_context, str) and screen_context.strip():
+            screen_summary = self._condense_snippet(screen_context, max_sentences=4, max_chars=500)
+            if screen_summary:
+                ad_hoc_notes.append(f"Screen context: {screen_summary}")
         ad_hoc_context = "\n".join(ad_hoc_notes)
 
         policy_mode = False
