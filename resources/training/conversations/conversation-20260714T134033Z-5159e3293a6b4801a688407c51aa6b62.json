@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"c3-live-verify\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}",
+  "response": "{\"agentic_plan\": \"1. Collect source documents from S3 prefixes or targeted object keys, tagging scanned versus digital content.\\n2. Extract header fields, line items, and structured tables using schema-driven parsing with OCR fallbacks.\\n3. Validate results, detect discrepancies, and summarise extraction quality for downstream workflows.\", \"context_snapshot\": {\"workflow_id\": \"awf-210-f0befe02\", \"agent_id\": \"data_extraction\", \"user_id\": \"human\", \"manifest\": {\"task\": {\"agent_type\": \"c3-live-verify\", \"description\": \"\", \"dependencies\": [], \"workflow\": null}, \"policies\": []}}, \"action_id\": \"0c1e3080-5922-40b7-b098-e99d87feebf7\"}",
+  "metadata": {
+    "workflow_id": "awf-210-f0befe02",
+    "agent_id": "data_extraction",
+    "agent_name": "DataExtractionAgent"
+  }
+}

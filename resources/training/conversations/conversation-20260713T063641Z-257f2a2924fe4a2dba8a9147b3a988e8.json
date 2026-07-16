@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"supplier_ranking\", \"description\": \"\", \"dependencies\": [], \"workflow\": \"supplier_ranking\"}, \"policies\": []}",
+  "response": "{\"agentic_plan\": \"1. Aggregate supplier performance, spend, and policy context relevant to the query.\\n2. Normalise metrics, apply weightings, and compute composite supplier scores.\\n3. Return ranked suppliers with rationale and hand-offs for downstream decisions.\", \"context_snapshot\": {\"workflow_id\": \"c4186929-a148-4148-b40e-074c8d287c99\", \"agent_id\": \"supplier_ranking\", \"user_id\": \"AgentNick\", \"manifest\": {\"task\": {\"agent_type\": \"supplier_ranking\", \"description\": \"\", \"dependencies\": [], \"workflow\": \"supplier_ranking\"}, \"policies\": []}}, \"action_id\": \"d2575046-b142-43b5-87ce-2538dcb52e4d\"}",
+  "metadata": {
+    "workflow_id": "c4186929-a148-4148-b40e-074c8d287c99",
+    "agent_id": "supplier_ranking",
+    "agent_name": "SupplierRankingAgent"
+  }
+}

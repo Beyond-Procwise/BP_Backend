@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"ApprovalsAgent\", \"description\": \"Determines approval decisions based on policy thresholds and business rules.\", \"dependencies\": [\"policy_engine\"], \"workflow\": \"approvals\"}, \"policies\": []}",
+  "response": "{\"decision\": \"escalate\", \"approved\": false, \"amount\": 25000.0, \"currency\": null, \"threshold\": 10000.0, \"decision_reason\": \"Amount 25000.0 is above the approval threshold 10000.\", \"grounding\": {\"amount\": \"25000.0\", \"currency\": null, \"threshold\": \"10000\", \"comparison\": \"25000.0 <= 10000\", \"threshold_source\": \"governed_policy\", \"policy_id\": 10, \"policy_name\": \"ApprovalThresholdPolicy\", \"policy_currency\": \"GBP\"}, \"approval_id\": 3, \"agentic_plan\": \"1. Read the requested amount and its currency from the approval request.\\n2. Resolve the spend-authority threshold from the governed approval policy.\\n3. Compare amount against threshold; escalate to a human when the threshold is unavailable or the amount exceeds it.\\n4. Persist the decision with the facts it was computed from, so it can be traced.\", \"context_snapshot\": {\"workflow_id\": \"2fceddb7-6525-48ed-9110-b6cda6f26ad3\", \"agent_id\": \"approvals\", \"user_id\": \"AgentNick\", \"manifest\": {\"task\": {\"agent_type\": \"ApprovalsAgent\", \"description\": \"Determines approval decisions based on policy thresholds and business rules.\", \"dependencies\": [\"policy_engine\"], \"workflow\": \"approvals\"}, \"policies\": []}}, \"action_id\": \"bf8cd4f1-5518-4126-ba35-d5f5b4a55eaf\"}",
+  "metadata": {
+    "workflow_id": "2fceddb7-6525-48ed-9110-b6cda6f26ad3",
+    "agent_id": "approvals",
+    "agent_name": "ApprovalsAgent"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "context": "Manifest:\n{\"task\": {\"agent_type\": \"approvals\", \"description\": \"\", \"dependencies\": [], \"workflow\": \"approvals\"}, \"policies\": []}",
+  "response": "{\"agentic_plan\": \"1. Review the approval request, supplier context, and monetary amount.\\n2. Check threshold and policy data from the approvals store and supporting embeddings.\\n3. Return the approval decision with rationale and any routing recommendations.\", \"context_snapshot\": {\"workflow_id\": \"5fb23346-c70d-409f-a90a-aafc34283b0a\", \"agent_id\": \"approvals\", \"user_id\": \"AgentNick\", \"manifest\": {\"task\": {\"agent_type\": \"approvals\", \"description\": \"\", \"dependencies\": [], \"workflow\": \"approvals\"}, \"policies\": []}}, \"action_id\": \"e8328b52-10cc-4016-b6e4-04f5f0337a32\"}",
+  "metadata": {
+    "workflow_id": "5fb23346-c70d-409f-a90a-aafc34283b0a",
+    "agent_id": "approvals",
+    "agent_name": "ApprovalsAgent"
+  }
+}
