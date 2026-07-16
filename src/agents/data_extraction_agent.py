@@ -89,6 +89,23 @@ configure_gpu()
 DEFAULT_STAGING_SCHEMA = "proc_stage"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Sanctioned persistence targets for the workspace agent: the _stg tier ONLY.
+# The workspace agent must NEVER write *_trgt (or any final tier) directly —
+# promotion _stg -> _trgt is owned by the linking engine (confidence +
+# link-score gated, HITL-reviewable) via the backend scheduler. Contracts have
+# no stg/trgt tier, so bp_contracts is their sanctioned destination.
+WORKSPACE_STG_HEADER_TABLES = {
+    "Invoice": ("proc", "bp_invoice_stg", "invoice_id"),
+    "Purchase_Order": ("proc", "bp_purchase_order_stg", "po_id"),
+    "Quote": ("proc", "bp_quote_stg", "quote_id"),
+    "Contract": ("proc", "bp_contracts", "contract_id"),
+}
+WORKSPACE_STG_LINE_TABLES = {
+    "Invoice": ("proc", "bp_invoice_line_items_stg", "invoice_id", "line_no"),
+    "Purchase_Order": ("proc", "bp_po_line_items_stg", "po_id", "line_number"),
+    "Quote": ("proc", "bp_quote_line_items_stg", "quote_id", "line_number"),
+}
+
 REFERENCE_PATH = Path(__file__).resolve().parents[1] / "docs" / "procurement_table_reference.md"
 LEARNING_LOG_PATH = (
     Path(__file__).resolve().parents[1]
@@ -1977,13 +1994,13 @@ class DataExtractionAgent(BaseAgent):
                         pk_value = header.get(
                             next((k for k in header if k.endswith("_id") and header[k]), None), sec_unique_id
                         ) or sec_unique_id
-                        self._persist_to_postgres(header, line_items, sec_doc_type, pk_value)
+                        persisted = self._persist_to_postgres(header, line_items, sec_doc_type, pk_value)
                         self._vectorize_structured_data(header, line_items, sec_doc_type, pk_value, "")
                         section_results.append({
                             "section": sec_idx + 1,
                             "doc_type": sec_doc_type,
                             "id": str(pk_value),
-                            "status": "success",
+                            "status": "success" if persisted else "persist_failed",
                         })
                 except Exception as exc:
                     logger.exception("Section %d extraction failed for %s", sec_idx + 1, object_key)
@@ -1993,18 +2010,27 @@ class DataExtractionAgent(BaseAgent):
                         "error": str(exc),
                     })
 
+            section_failures = [
+                r for r in section_results if r.get("status") != "success"
+            ]
+            multi_status = "needs_review" if section_failures else "success"
             self._log_workflow_event(
                 event="document_complete",
                 workflow_id=workflow_id,
                 agent_name=agent_name,
                 object_key=object_key,
-                status="success",
+                status=multi_status,
                 doc_type="multi_section",
                 duration_seconds=time.perf_counter() - start_time,
+                errors=[
+                    f"section {r.get('section')}: {r.get('error', r.get('status'))}"
+                    for r in section_failures
+                ] or None,
             )
             return {
                 "object_key": object_key,
-                "status": "success",
+                "status": multi_status,
+                "needs_review": bool(section_failures),
                 "doc_type": "multi_section",
                 "sections": len(section_results),
                 "section_results": section_results,
@@ -2281,7 +2307,17 @@ class DataExtractionAgent(BaseAgent):
                 item["last_modified_date"] = now
                 item["last_modified_by"] = user_id
 
-            self._persist_to_postgres(header, line_items, doc_type, pk_value)
+            persist_ok = self._persist_to_postgres(header, line_items, doc_type, pk_value)
+            if not persist_ok:
+                # A document that never reached the _stg tier must surface as an
+                # error on the document — never complete green (the old silent
+                # no-op against nonexistent proc.bp_* tables hid this for months).
+                validation_payload["errors"].append(
+                    f"staging_persist_failed: {doc_type} {pk_value} was not written to the _stg tier"
+                )
+                validation_payload["requires_review"] = True
+                needs_review = True
+                header["needs_review"] = True
             self._vectorize_structured_data(header, line_items, doc_type, pk_value, product_type)
 
             # --- Auto-learn vendor profile ---
@@ -2482,6 +2518,7 @@ class DataExtractionAgent(BaseAgent):
         doc_type = normalize_category(category)
         total_rows = 0
         total_mapped = 0
+        persist_errors: List[str] = []
 
         for sheet_name, df in sheets.items():
             if df.empty:
@@ -2524,13 +2561,17 @@ class DataExtractionAgent(BaseAgent):
                     object_key, sheet_name, len(df), len(column_mapping), len(df.columns),
                 )
 
-                # Persist rows via staging pattern
-                schema_name, table_name = header_table.split(".", 1)
-                row_count = self._persist_tabular_rows(
+                # Persist rows via staging pattern — into the sanctioned _stg
+                # tier (column_mapping above still uses the bp_ schema synonyms;
+                # the _stg tables carry the same canonical column names). The
+                # workspace agent never writes a final table directly.
+                schema_name, table_name, _pk = WORKSPACE_STG_HEADER_TABLES[sheet_doc_type]
+                row_count, sheet_errors = self._persist_tabular_rows(
                     df, column_mapping, schema_name, table_name
                 )
                 total_rows += row_count
                 total_mapped += len(column_mapping)
+                persist_errors.extend(sheet_errors)
             else:
                 # --- Unknown category: push to Neo4j KG ---
                 logger.info(
@@ -2554,13 +2595,17 @@ class DataExtractionAgent(BaseAgent):
         except Exception:
             logger.warning("Failed to vectorize tabular file %s", object_key, exc_info=True)
 
-        return {
+        result = {
             "object_key": object_key,
-            "status": "completed",
+            "status": "needs_review" if persist_errors else "completed",
             "doc_type": doc_type or category or "unknown",
             "total_rows": str(total_rows),
             "mapped_columns": str(total_mapped),
         }
+        if persist_errors:
+            result["needs_review"] = True
+            result["errors"] = persist_errors
+        return result
 
     def _persist_tabular_rows(
         self,
@@ -2568,12 +2613,41 @@ class DataExtractionAgent(BaseAgent):
         column_mapping: Dict[str, str],
         schema_name: str,
         table_name: str,
-    ) -> int:
-        """Persist DataFrame rows to the target table via staging pattern."""
+    ) -> Tuple[int, List[str]]:
+        """Persist DataFrame rows to the _stg tier via staging pattern.
+
+        Returns (rows_persisted, errors). A missing target table or a failed
+        chunk is a loud, surfaced error — never a silent success."""
         from utils.procurement_schema import PROCUREMENT_SCHEMAS, BP_PROCUREMENT_SCHEMAS
+
+        errors: List[str] = []
+        # Guard: the persist target must exist, and payloads are limited to its
+        # real columns (the column_mapping is built from the bp_ schema synonyms).
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema=%s AND table_name=%s",
+                        (schema_name, table_name),
+                    )
+                    target_cols = {r[0] for r in cur.fetchall()}
+        except Exception as exc:
+            msg = f"Could not inspect persist target {schema_name}.{table_name}: {exc}"
+            logger.error(msg)
+            return 0, [msg]
+        if not target_cols:
+            msg = (
+                f"Persist target {schema_name}.{table_name} does not exist — "
+                f"{len(df)} tabular rows were NOT persisted"
+            )
+            logger.error(msg)
+            return 0, [msg]
 
         schema = BP_PROCUREMENT_SCHEMAS.get(f"{schema_name}.{table_name}") or PROCUREMENT_SCHEMAS.get(f"{schema_name}.{table_name}")
         pk_col = schema.required[0] if schema and schema.required else None
+        if pk_col and pk_col not in target_cols:
+            pk_col = None
         row_count = 0
         chunk_size = 10_000
 
@@ -2586,6 +2660,8 @@ class DataExtractionAgent(BaseAgent):
                         for _, row in chunk.iterrows():
                             payload: Dict[str, Any] = {}
                             for csv_col, schema_col in column_mapping.items():
+                                if schema_col not in target_cols:
+                                    continue
                                 val = row.get(csv_col)
                                 if pd.isna(val):
                                     continue
@@ -2613,12 +2689,15 @@ class DataExtractionAgent(BaseAgent):
                                 update_cols=update_cols,
                             )
                             row_count += 1
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Failed to persist chunk starting at row %d for %s.%s",
                     start, schema_name, table_name,
                 )
-        return row_count
+                errors.append(
+                    f"chunk at row {start} failed for {schema_name}.{table_name}: {exc}"
+                )
+        return row_count, errors
 
     def _tabular_to_text(self, sheets: Dict[str, pd.DataFrame]) -> str:
         """Convert tabular data to text representation for vectorization."""
@@ -6944,7 +7023,9 @@ class DataExtractionAgent(BaseAgent):
         for col in safe_payload.keys():
             target_type = col_types.get(col, "text")
             if target_type in ("integer", "bigint", "smallint"):
-                select_parts.append(f'NULLIF("{col}", \'\')::integer')
+                # Values arrive as text and may carry a decimal point ("1.0");
+                # ::numeric first so integral floats cast cleanly.
+                select_parts.append(f'NULLIF("{col}", \'\')::numeric::{target_type}')
             elif target_type.startswith("numeric"):
                 select_parts.append(f'NULLIF("{col}", \'\')::{target_type}')
             elif target_type == "boolean":
@@ -7111,7 +7192,10 @@ class DataExtractionAgent(BaseAgent):
         except Exception:
             logger.warning("Failed to persist ETL error record", exc_info=True)
 
-    def _persist_to_postgres(self, header: Dict[str, str], line_items: List[Dict], doc_type: str, pk_value: str) -> None:
+    def _persist_to_postgres(self, header: Dict[str, str], line_items: List[Dict], doc_type: str, pk_value: str) -> bool:
+        """Persist a document to the sanctioned _stg tier. Returns True only when
+        header (and any line items) actually landed; callers must surface a False
+        as needs_review/errors on the document — never as a silent success."""
         pk_map = {
             "Invoice": "invoice_id",
             "Purchase_Order": "po_id",
@@ -7132,10 +7216,23 @@ class DataExtractionAgent(BaseAgent):
                 # Persist the header first; if it fails we do not attempt line items
                 if not self._persist_header_to_postgres(header, doc_type, conn):
                     conn.rollback()
-                    return
-                self._persist_line_items_to_postgres(pk_value, line_items, doc_type, header, conn)
+                    logger.error(
+                        "Staging persist FAILED for %s %s — document did not reach the _stg tier",
+                        doc_type, pk_value,
+                    )
+                    return False
+                if not self._persist_line_items_to_postgres(pk_value, line_items, doc_type, header, conn):
+                    conn.rollback()
+                    logger.error(
+                        "Staging persist FAILED for %s %s line items — transaction rolled back, "
+                        "document did not reach the _stg tier",
+                        doc_type, pk_value,
+                    )
+                    return False
+            return True
         except Exception as exc:
             logger.error("Failed to persist %s data: %s", doc_type, exc)
+            return False
 
     def _has_unique_constraint(self, cur, schema: str, table: str, columns: List[str]) -> bool:
         if not columns:
@@ -7162,13 +7259,9 @@ class DataExtractionAgent(BaseAgent):
         return False
 
     def _persist_header_to_postgres(self, header: Dict[str, str], doc_type: str, conn=None) -> bool:
-        table_map = {
-            "Invoice": ("proc", "bp_invoice", "invoice_id"),
-            "Purchase_Order": ("proc", "bp_purchase_order", "po_id"),
-            "Quote": ("proc", "bp_quote", "quote_id"),
-            "Contract": ("proc", "bp_contracts", "contract_id"),
-        }
-        target = table_map.get(doc_type)
+        # _stg tier ONLY — promotion to _trgt is owned by the linking engine
+        # (HITL gate); this agent must never write a final table directly.
+        target = WORKSPACE_STG_HEADER_TABLES.get(doc_type)
         if not target:
             return False
         schema, table, pk_col = target
@@ -7184,6 +7277,15 @@ class DataExtractionAgent(BaseAgent):
                     (schema, table),
                 )
                 columns = {r[0]: r[1] for r in cur.fetchall()}
+                if not columns:
+                    # A missing persist target must be a loud failure, never a
+                    # silent success (this exact silence hid a months-long no-op
+                    # against the nonexistent proc.bp_invoice tables).
+                    logger.error(
+                        "Persist target %s.%s does not exist — %s header for %s was NOT persisted",
+                        schema, table, doc_type, header.get(pk_col),
+                    )
+                    return False
                 payload: "OrderedDict[str, Any]" = OrderedDict()
                 numeric_types = {"integer", "bigint", "smallint", "numeric", "decimal", "double precision", "real"}
                 for k, v in header.items():
@@ -7211,7 +7313,17 @@ class DataExtractionAgent(BaseAgent):
                         if sanitized is None:
                             continue
                     payload[k] = sanitized
+                # The _stg tier stores confidence_score on a 0-100 scale (the
+                # linking-engine promotion gate reads it that way); the
+                # ValidationGate emits 0-1.
+                conf = payload.get("confidence_score")
+                if isinstance(conf, (int, float)) and 0 <= conf <= 1:
+                    payload["confidence_score"] = round(conf * 100, 2)
                 if not payload:
+                    logger.error(
+                        "No %s header fields mapped onto %s.%s for %s — nothing persisted",
+                        doc_type, schema, table, header.get(pk_col),
+                    )
                     return False
                 conflict_cols: List[str] = []
                 if self._has_unique_constraint(cur, schema, table, [pk_col]):
@@ -7237,12 +7349,9 @@ class DataExtractionAgent(BaseAgent):
             if close_conn:
                 conn.close()
 
-    def _persist_line_items_to_postgres(self, pk_value: str, line_items: List[Dict], doc_type: str, header: Dict[str, str], conn=None) -> None:
-        table_map = {
-            "Invoice": ("proc", "bp_invoice_line_items", "invoice_id", "line_no"),
-            "Purchase_Order": ("proc", "bp_po_line_items", "po_id", "line_number"),
-            "Quote": ("proc", "bp_quote_line_items", "quote_id", "line_number"),
-        }
+    def _persist_line_items_to_postgres(self, pk_value: str, line_items: List[Dict], doc_type: str, header: Dict[str, str], conn=None) -> bool:
+        # _stg tier ONLY — see WORKSPACE_STG_LINE_TABLES.
+        table_map = WORKSPACE_STG_LINE_TABLES
         field_map = {
             "Invoice": {
                 "item_id": "item_id",
@@ -7284,7 +7393,7 @@ class DataExtractionAgent(BaseAgent):
         target = table_map.get(doc_type)
         field_map = field_map.get(doc_type, {})
         if not target or not line_items:
-            return
+            return True
         schema, table, fk_col, line_no_col = target
         close_conn = False
         if conn is None:
@@ -7298,6 +7407,12 @@ class DataExtractionAgent(BaseAgent):
                     (schema, table),
                 )
                 columns = [r[0] for r in cur.fetchall()]
+                if not columns:
+                    logger.error(
+                        "Persist target %s.%s does not exist — %d %s line items for %s were NOT persisted",
+                        schema, table, len(line_items), doc_type, pk_value,
+                    )
+                    return False
                 numeric_fields = {
                     "quantity", "unit_price", "tax_percent", "tax_amount", "line_total", "line_amount",
                     "total_with_tax", "total_amount_incl_tax", "total_amount",
@@ -7365,10 +7480,12 @@ class DataExtractionAgent(BaseAgent):
                     )
             if close_conn:
                 conn.commit()
+            return True
         except Exception as exc:
             logger.error("Failed to persist line items for %s: %s", doc_type, exc)
             if close_conn:
                 conn.rollback()
+            return False
         finally:
             if close_conn:
                 conn.close()
