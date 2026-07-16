@@ -22,8 +22,12 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 # Mirrors the prototype's IFERROR(..., 1): any arithmetic failure -> 1.0.
-# TypeError covers None profiles; a negative base with fractional exponent
-# returns complex, which excel_round rejects with TypeError as well.
+# TypeError covers None profiles (arithmetic against a missing weighted
+# average) and complex values: a negative base with a fractional exponent
+# (quantity/ref_quantity < 0) returns complex, and _clamp's min()/max()
+# raise TypeError comparing complex to float. If a complex value ever
+# reached excel_round directly it would raise decimal.InvalidOperation
+# (an ArithmeticError) instead, which is why that class is included too.
 _FACTOR_ERRORS = (ArithmeticError, ValueError, TypeError)
 
 

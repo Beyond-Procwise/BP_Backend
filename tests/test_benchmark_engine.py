@@ -107,6 +107,39 @@ def test_median_method_uses_true_pooled_median_never_zero():
     assert result.method_used == "median"
 
 
+def test_zero_total_weight_simple_method_documents_partial_audit_record():
+    # All source_weight=0.0 is out-of-range for real data (prototype uses
+    # 0.5-1.5) but must not raise: _weighted_avg returns None for every
+    # weighted profile, so the weighted candidate is None too. With
+    # method="simple" the simple/median candidates still compute (they
+    # don't depend on weight), so the engine produces a real, non-gated
+    # result with all five factors neutral and the None-driven profiles
+    # left None — a partial-but-honest audit record (Excel IFERROR parity).
+    points = [
+        _point("W1", 10.0, weight=0.0),
+        _point("W2", 20.0, weight=0.0),
+        _point("W3", 30.0, weight=0.0),
+    ]
+    settings = BenchmarkSettings(method="simple")
+    result = compute_benchmark(_quote(), points, LOC, IDX, settings)
+    assert result.gated is False
+    assert result.total_weight == 0.0
+    assert result.ref_quantity is None
+    assert result.avg_spec_score is None
+    for factor in (
+        result.volume_adjustment, result.spec_adjustment,
+        result.location_adjustment, result.sla_adjustment,
+        result.inflation_adjustment,
+    ):
+        assert factor == 1.0
+    assert result.final_benchmark == result.simple_benchmark
+
+    # Same zero-weight points but the default (weighted) method: the
+    # weighted candidate is None -> selected is None -> gate stays closed.
+    gated_result = compute_benchmark(_quote(), points, LOC, IDX)
+    assert gated_result.gated is True
+
+
 # ---------------------------------------------------------------- factors
 def test_volume_clamps_at_min_factor():
     # qty >> ref_quantity drives the factor below 0.85 -> clamped.
@@ -143,6 +176,27 @@ def test_zero_hist_index_yields_neutral_inflation_factor():
     points = [_point(f"Z{i}", 10.0, index_value_at_price_date=0.0) for i in range(3)]
     result = compute_benchmark(_quote(), points, LOC, IDX)
     assert result.inflation_adjustment == 1.0
+
+
+def test_negative_quantity_complex_power_yields_neutral_volume_factor():
+    # base = quantity/ref_quantity = -10/10 = -1; (-1) ** (-0.06) is a
+    # negative base raised to a fractional exponent, which Python returns
+    # as complex rather than raising. _clamp's min()/max() then raise
+    # TypeError comparing complex to float, caught by _FACTOR_ERRORS ->
+    # neutral 1.0 (prototype IFERROR parity). Must not raise.
+    result = compute_benchmark(_quote(quantity=-10.0), POINTS, LOC, IDX)
+    assert result.volume_adjustment == 1.0
+    assert result.final_benchmark is not None
+
+
+def test_negative_ref_quantity_complex_power_yields_neutral_volume_factor():
+    # Same complex-base path driven from the other side: ref_quantity
+    # negative (historical_quantity=-5.0), quantity positive (default
+    # 10.0) -> base = 10/-5 = -2, still negative -> complex -> neutral 1.0.
+    points = [_point(f"N{i}", 10.0, historical_quantity=-5.0) for i in range(3)]
+    result = compute_benchmark(_quote(), points, LOC, IDX)
+    assert result.volume_adjustment == 1.0
+    assert result.final_benchmark is not None
 
 
 # --------------------------------------------------------------- fallbacks
@@ -188,6 +242,18 @@ def test_variance_pct_is_fraction_of_final_benchmark():
     assert result.unit_variance_pct == excel_round(
         result.unit_variance_gbp / result.final_benchmark, 4
     )
+
+
+def test_zero_final_benchmark_guards_variance_pct_to_none():
+    # raw_unit_price=0.0 on every matched point drives simple/weighted
+    # benchmark to 0.0 and every adjustment factor stays neutral (1.0), so
+    # final_benchmark is exactly 0 -> unit_variance_pct must guard the
+    # divide-by-zero and be None, not raise or produce inf/nan.
+    points = [_point(f"Z{i}", 0.0) for i in range(3)]
+    result = compute_benchmark(_quote(), points, LOC, IDX)
+    assert result.final_benchmark == 0.0
+    assert result.unit_variance_pct is None
+    assert result.unit_variance_gbp == 25.0  # 25.0 (quote) - 0.0 (benchmark)
 
 
 # ------------------------------------------------------------- confidence
