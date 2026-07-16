@@ -1,0 +1,177 @@
+[
+  {
+    "opportunity_id": "1",
+    "opportunity_ref_id": "oppfinderpolicy_009_inflation_pass_through_inflation_pass_through_d6ebc4ff_s_i0001_i_t_m_001",
+    "detector_type": "Inflation Pass-Through",
+    "policy_id": "oppfinderpolicy_009_inflation_pass-through",
+    "supplier_id": "SI0001",
+    "supplier_name": "Supplier One",
+    "category_id": "CatA",
+    "item_id": "Logistics Support - Catalog",
+    "item_description": "Logistics Support",
+    "financial_impact_gbp": 10.0,
+    "realised_savings_gbp": null,
+    "stage": "identified",
+    "deal_id": null,
+    "ml_priority_score": 1.0,
+    "weightage": 0.6666666666666666,
+    "calculation_details": {
+      "po_price": 10.0,
+      "increase_pct": 0.1,
+      "flow_coverage": 1.0,
+      "invoice_price": 11.0,
+      "item_reference": "ITM-001",
+      "catalog_product": "Logistics Support - Catalog",
+      "item_description": "Logistics Support",
+      "catalog_categories": {
+        "category_level_1": "Logistics",
+        "category_level_2": "Support"
+      },
+      "market_allowance_pct": 0.02,
+      "risk_score_normalised": 0.0
+    },
+    "source_records": [
+      "PO000001",
+      "IN000001"
+    ],
+    "detected_on": "2026-07-14T12:48:21.547969+00:00",
+    "stage_updated_at": "2026-07-14T12:36:00.260847+00:00",
+    "created_at": "2026-07-14T12:36:00.260847+00:00",
+    "updated_at": "2026-07-14T12:48:21.652780+00:00",
+    "quote_id": null,
+    "po_id": null
+  },
+  {
+    "opportunity_id": "2",
+    "opportunity_ref_id": "oppfinderpolicy_009_inflation_pass_through_inflation_pass_through_95e58bbe_s_i0002_i_t_m_001",
+    "detector_type": "Inflation Pass-Through",
+    "policy_id": "oppfinderpolicy_009_inflation_pass-through",
+    "supplier_id": "SI0002",
+    "supplier_name": "Supplier Two",
+    "category_id": "CatA",
+    "item_id": "Logistics Support - Catalog",
+    "item_description": "Logistics Support",
+    "financial_impact_gbp": 5.0,
+    "realised_savings_gbp": null,
+    "stage": "identified",
+    "deal_id": null,
+    "ml_priority_score": 0.0,
+    "weightage": 0.3333333333333333,
+    "calculation_details": {
+      "po_price": 12.0,
+      "increase_pct": 0.08333333333333333,
+      "flow_coverage": 1.0,
+      "invoice_price": 13.0,
+      "item_reference": "ITM-001",
+      "catalog_product": "Logistics Support - Catalog",
+      "item_description": "Logistics Support",
+      "catalog_categories": {
+        "category_level_1": "Logistics",
+        "category_level_2": "Support"
+      },
+      "market_allowance_pct": 0.02,
+      "risk_score_normalised": 0.0
+    },
+    "source_records": [
+      "PO000002",
+      "IN000002"
+    ],
+    "detected_on": "2026-07-14T12:48:21.550719+00:00",
+    "stage_updated_at": "2026-07-14T12:36:02.663929+00:00",
+    "created_at": "2026-07-14T12:36:02.663929+00:00",
+    "updated_at": "2026-07-14T12:48:21.652780+00:00",
+    "quote_id": null,
+    "po_id": null
+  },
+  {
+    "opportunity_id": "4",
+    "opportunity_ref_id": "volume_discount_opportunity_volume_discount_opportunity_916cc502_s_i0002_i_t_m_002",
+    "detector_type": "VolumeDiscountOpportunity",
+    "policy_id": "VolumeDiscountOpportunity",
+    "supplier_id": "SI0002",
+    "supplier_name": "Supplier Two",
+    "category_id": "Professional Services",
+    "item_id": "Adhoc Consulting Services",
+    "item_description": "Adhoc Consulting",
+    "financial_impact_gbp": 15.0,
+    "realised_savings_gbp": null,
+    "stage": "identified",
+    "deal_id": null,
+    "ml_priority_score": 1.0,
+    "weightage": 0.3768844221105528,
+    "calculation_details": {
+      "thresholds": {
+        "minimum_spend_threshold": 50.0,
+        "minimum_quantity_threshold": 5.0
+      },
+      "total_spend": 150.0,
+      "average_price": 50.0,
+      "discount_rate": 0.1,
+      "flow_coverage": 1.0,
+      "item_reference": "ITM-002",
+      "total_quantity": 3.0,
+      "catalog_product": "Adhoc Consulting Services",
+      "item_description": "Adhoc Consulting",
+      "estimated_savings": 15.0,
+      "catalog_categories": {
+        "category_level_1": "Professional Services",
+        "category_level_2": "Consulting"
+      },
+      "risk_score_normalised": 0.0
+    },
+    "source_records": [
+      "PO000003"
+    ],
+    "detected_on": "2026-07-14T12:48:19.231039+00:00",
+    "stage_updated_at": "2026-07-14T12:36:02.663929+00:00",
+    "created_at": "2026-07-14T12:36:02.663929+00:00",
+    "updated_at": "2026-07-14T12:48:19.339960+00:00",
+    "quote_id": null,
+    "po_id": null
+  },
+  {
+    "opportunity_id": "5",
+    "opportunity_ref_id": "supplier_consolidation_opportunity_supplier_consolidation_opportunity_02260bad_s_i0002_na",
+    "detector_type": "SupplierConsolidationOpportunity",
+    "policy_id": "SupplierConsolidationOpportunity",
+    "supplier_id": "SI0002",
+    "supplier_name": "Supplier Two",
+    "category_id": "CatA",
+    "item_id": "Logistics Support - Catalog",
+    "item_description": "Logistics Support",
+    "financial_impact_gbp": 4.8,
+    "realised_savings_gbp": null,
+    "stage": "identified",
+    "deal_id": null,
+    "ml_priority_score": 0.0,
+    "weightage": 0.1206030150753769,
+    "calculation_details": {
+      "category": "CatA",
+      "savings_rate": 0.08,
+      "flow_coverage": 1.0,
+      "category_spend": 160.0,
+      "item_reference": "ITM-001",
+      "supplier_count": 2,
+      "catalog_product": "Logistics Support - Catalog",
+      "current_supplier": "SI0002",
+      "item_description": "Logistics Support",
+      "estimated_savings": 4.8,
+      "reallocated_spend": 60.0,
+      "catalog_categories": {
+        "category_level_1": "Logistics",
+        "category_level_2": "Support"
+      },
+      "preferred_supplier": "SI0001",
+      "risk_score_normalised": 0.0
+    },
+    "source_records": [
+      "PO000002"
+    ],
+    "detected_on": "2026-07-14T12:48:19.237594+00:00",
+    "stage_updated_at": "2026-07-14T12:36:02.663929+00:00",
+    "created_at": "2026-07-14T12:36:02.663929+00:00",
+    "updated_at": "2026-07-14T12:48:19.339960+00:00",
+    "quote_id": null,
+    "po_id": null
+  }
+]
