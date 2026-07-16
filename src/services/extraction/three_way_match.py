@@ -24,6 +24,7 @@ import re
 from typing import Any, Optional
 
 from src.services.extraction.persistence import Discrepancy, get_conn
+from src.services.linking_engine import _norm_po, _PO_NORM_SQL
 
 log = logging.getLogger(__name__)
 
@@ -85,17 +86,34 @@ def _match_po_line(desc: Any, po_lines: list[dict]) -> Optional[dict]:
 
 
 def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
-    """The referenced PO and its lines, from _trgt if promoted else _stg."""
+    """The referenced PO and its lines, from _trgt if promoted else _stg.
+
+    Cited PO numbers arrive in inconsistent formats -- an invoice may say
+    'PO502004' while the PO table stores the bare '502004'. Resolve on the
+    same canonical PO number the linking engine already uses for
+    quote/invoice -> PO joins (_norm_po / _PO_NORM_SQL from linking_engine),
+    tolerant of a PO-prefix and separator differences on either side. Falls
+    back to an exact match on the raw citation for safety."""
+    canonical = _norm_po(po_id)
+    cond = _PO_NORM_SQL.format(col="po_id")
     with get_conn() as conn:
         cur = conn.cursor()
         header = None
         for table in ("proc.bp_purchase_order_trgt", "proc.bp_purchase_order_stg"):
+            row = None
             try:
-                cur.execute(
-                    f"SELECT po_id, total_amount, currency FROM {table} WHERE po_id = %s",
-                    (po_id,),
-                )
-                row = cur.fetchone()
+                if canonical:
+                    cur.execute(
+                        f"SELECT po_id, total_amount, currency FROM {table} WHERE {cond} = %s",
+                        (canonical,),
+                    )
+                    row = cur.fetchone()
+                if row is None:
+                    cur.execute(
+                        f"SELECT po_id, total_amount, currency FROM {table} WHERE po_id = %s",
+                        (po_id,),
+                    )
+                    row = cur.fetchone()
             except Exception:  # noqa: BLE001 - table may not exist in some envs
                 conn.rollback()
                 continue
@@ -105,10 +123,12 @@ def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
         if header is None:
             return None, []
 
+        # Look up lines under the PO's own stored id -- which is what the canonical
+        # match above resolved to, and what the line-items table is keyed by.
         cur.execute(
             "SELECT line_number, item_description, quantity, unit_price, line_total "
             "FROM proc.bp_po_line_items_stg WHERE po_id = %s ORDER BY line_number",
-            (po_id,),
+            (header["po_id"],),
         )
         lines = [
             {"line_number": r[0], "item_description": r[1], "quantity": r[2],
