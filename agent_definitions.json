@@ -645,6 +645,101 @@
       ],
       "derived_from": "rag",
       "created_by": "workspace"
+    },
+    {
+      "agentId": 16,
+      "agentType": "SupplierRankingAgent",
+      "slug": "r1r3-verify-agent",
+      "class_path": "agents.supplier_ranking_agent.SupplierRankingAgent",
+      "description": "Temporary agent created to verify the create-agent modal wiring.",
+      "role": "processor",
+      "capabilities": [
+        "supplier_ranking"
+      ],
+      "required_inputs": [
+        "query"
+      ],
+      "output_fields": [
+        "ranking",
+        "justification"
+      ],
+      "dependencies": [
+        "prompt_engine",
+        "policy_engine",
+        "query_engine"
+      ],
+      "inputs": {
+        "required": [
+          "query"
+        ],
+        "optional": [
+          "criteria",
+          "supplier_data",
+          "supplier_candidates"
+        ]
+      },
+      "outputs": [
+        "ranking",
+        "justification"
+      ],
+      "version": "1.0.0",
+      "elicit": [
+        {
+          "any_of": [
+            "query"
+          ],
+          "type": "text",
+          "prompt": "What should I rank suppliers for?"
+        }
+      ],
+      "derived_from": "supplier_ranking",
+      "created_by": "workspace"
+    },
+    {
+      "agentId": 17,
+      "agentType": "RAGAgent",
+      "slug": "savings-scout",
+      "class_path": "agents.rag_agent.RAGAgent",
+      "description": "Reviews spend data and highlights concrete saving opportunities with cautious, evidence-based reasoning.",
+      "role": "processor",
+      "capabilities": [
+        "rag_query"
+      ],
+      "required_inputs": [
+        "query"
+      ],
+      "output_fields": [
+        "answer",
+        "sources"
+      ],
+      "dependencies": [
+        "qdrant_client",
+        "embedding_model",
+        "ollama_client"
+      ],
+      "inputs": {
+        "required": [
+          "query"
+        ],
+        "optional": []
+      },
+      "outputs": [
+        "answer",
+        "sources"
+      ],
+      "version": "1.0.0",
+      "elicit": [
+        {
+          "any_of": [
+            "query",
+            "question"
+          ],
+          "type": "text",
+          "prompt": "What do you want to know?"
+        }
+      ],
+      "derived_from": "rag",
+      "created_by": "workspace"
     }
   ]
 }
