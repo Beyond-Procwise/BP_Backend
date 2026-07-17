@@ -260,12 +260,32 @@ def fetch_facts(agent_nick, query: str) -> Optional[Dict[str, Any]]:
 
 
 def render_facts(facts: Dict[str, Any]) -> str:
-    """The facts as compact text for the prompt. Values are printed exactly as stored."""
+    """The facts as compact text for the prompt. Values are printed exactly as stored.
+
+    The knowledge_graph rows are the exception: each carries BOTH a user-safe ``say`` register
+    and an ``internal`` one that names tables, routes and agent classes. This text goes into
+    the ANSWER-generation prompt, and a model handed the internal register parrots it — it
+    answered a "what is a deal" question with proc.bp_deal_document_map and SupplierRankingAgent
+    in the reply, which the output-safety gate then blocked, collapsing the whole answer to a
+    canned failure. So graph facts are rendered from ``say`` ONLY here. The internal register
+    still exists for the tool-calling REASONING path (describe()), which is where it belongs;
+    it must never reach the text the model writes.
+    """
     lines: List[str] = []
     for key, rows in facts.items():
         if key == "intent" or not rows:
             continue
         lines.append(f"{key.replace('_', ' ')}:")
+        if key == "knowledge_graph":
+            for row in rows:
+                # ``say`` only, and NOT the node ``name`` — for an Agent the name IS the class
+                # (SupplierRankingAgent), which the output-safety gate flags as a code
+                # identifier and blocks. The say text is written to stand on its own, so it
+                # needs no label.
+                say = str(row.get("say") or "").strip()
+                if say:
+                    lines.append(f"  - {say}")
+            continue
         for row in rows:
             parts = [
                 f"{k}={v}" for k, v in row.items() if v is not None and str(v).strip() != ""
