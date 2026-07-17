@@ -59,12 +59,17 @@ QUESTIONS: List[Question] = [
         facts=[
             Fact("read_automatically", ["read automatically", "automatically read",
                                         "processed automatically", "we read it",
-                                        "extract", "reads the document", "picked up"]),
+                                        "extract", "reads the document", "reads your document",
+                                        "read your document", "document automatically",
+                                        "picked up"]),
             Fact("checked_before_visible", ["check", "checked", "review", "confidence",
                                             "quality", "verified", "validated"]),
             Fact("not_visible_until_passes", ["not visible until", "only appears once",
                                               "won't appear", "invisible", "does not appear",
                                               "hidden until", "until it passes",
+                                              # "does NOT mean the document is visible yet" —
+                                              # "visible yet" only occurs in the not-yet state.
+                                              "visible yet", "not yet visible",
                                               "held", "on hold"]),
         ],
         source="platform_ontology.yaml processes.document_ingest (+ promotion)",
@@ -174,8 +179,9 @@ QUESTIONS: List[Question] = [
         question="What is a 'deal' in this product, in plain terms?",
         facts=[
             Fact("groups_documents", ["group", "groups", "collection", "brings together",
-                                      "ties together", "links", "related documents",
-                                      "set of documents"]),
+                                      "ties together", "tied together", "tie together",
+                                      "links", "related documents", "documents related",
+                                      "set of documents", "all the documents"]),
             Fact("across_doc_types", ["quote", "purchase order", "invoice", "po"]),
         ],
         source="live bp_sqldb: deal DEALV2-5206556 spans quote/PO/invoice for one supplier",
