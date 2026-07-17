@@ -41,14 +41,45 @@ _INTENTS: List[tuple[str, re.Pattern]] = [
 
 _MAX_ROWS = 10
 
+# The noun a count question is ABOUT — "how many suppliers", "number of invoices". The count
+# lives in that entity's totals; `spend` only carries amounts. So when a count question names
+# an entity but `spend` would win on a stray "total"/"amount", the subject is authoritative.
+_COUNT_SUBJECT = re.compile(r"\b(?:how many|number of|count of)\s+(?:distinct\s+|open\s+|total\s+)*(\w+)", re.I)
+_SUBJECT_TO_INTENT: Dict[str, str] = {
+    "supplier": "suppliers", "suppliers": "suppliers", "vendor": "suppliers", "vendors": "suppliers",
+    "invoice": "invoices", "invoices": "invoices",
+    "quote": "quotes", "quotes": "quotes",
+    "po": "purchase_orders", "pos": "purchase_orders", "purchase": "purchase_orders",
+    "order": "purchase_orders", "orders": "purchase_orders",
+    "deal": "deals", "deals": "deals",
+    "finding": "findings", "findings": "findings", "issue": "findings", "issues": "findings",
+    "discrepancy": "findings", "discrepancies": "findings",
+}
+
+
+def _count_subject_intent(query: str) -> Optional[str]:
+    m = _COUNT_SUBJECT.search(query or "")
+    if not m:
+        return None
+    return _SUBJECT_TO_INTENT.get(m.group(1).lower())
+
 
 def detect_intent(query: str) -> Optional[str]:
     if not isinstance(query, str) or not query.strip():
         return None
-    for name, pattern in _INTENTS:
-        if pattern.search(query):
-            return name
-    return None
+    winner = next((name for name, pattern in _INTENTS if pattern.search(query)), None)
+    if winner is None:
+        return None
+    # Fix the one observed mis-route: a count-of-an-entity question ("how many suppliers ...
+    # in total") whose stray money word ("total"/"amount"/"invoiced") pulls it into `spend`,
+    # which returns amounts, not the count the user asked for. The subject wins over `spend`
+    # ONLY — a genuinely different topic (findings/deals/policies) that ranks higher is left
+    # alone, so this cannot hijack "how many invoices have discrepancies" (a findings question).
+    if winner == "spend":
+        subject = _count_subject_intent(query)
+        if subject and subject != "spend":
+            return subject
+    return winner
 
 
 def _rows(cur, sql: str, limit: int = _MAX_ROWS) -> List[Dict[str, Any]]:
