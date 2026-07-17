@@ -331,8 +331,6 @@ class BackendScheduler:
             one_shot=True,
         )
 
-    MODEL_SYNC_JOB_NAME = "model-sync-dispatch"
-
     KG_SYNC_JOB_NAME = "kg-sync-dispatch"
 
     TRGT_PROMOTION_JOB_NAME = "trgt-promotion"
@@ -342,7 +340,11 @@ class BackendScheduler:
 
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
-        self._register_model_sync_job()
+        # Vendor-baking retired 2026-07-17: the model-sync job rebuilt AgentNick:latest with
+        # customer supplier names injected into the system prompt. It targeted :latest (the live
+        # pipeline runs :unified), so it never reached the live model, and the governed
+        # per-request hint path (bp_prompt -> HINT_STORE -> context_layer) already carries
+        # learned vendor knowledge, human-approved. See services/README or git 6622bae history.
         self._register_kg_sync_job()
         self._register_summary_precompute_job()
         self._register_trgt_promotion_job()
@@ -558,26 +560,6 @@ class BackendScheduler:
             logger.info("summary precompute completed: %s", counts)
         except Exception:
             logger.exception("summary precompute job failed")
-
-    def _register_model_sync_job(self) -> None:
-        """Register periodic model sync job (every 6 hours)."""
-        if self.MODEL_SYNC_JOB_NAME in self._jobs:
-            return
-        self.register_job(
-            self.MODEL_SYNC_JOB_NAME,
-            self._run_model_sync,
-            interval=timedelta(hours=6),
-            initial_delay=timedelta(minutes=30),
-        )
-
-    def _run_model_sync(self) -> None:
-        """Execute model sync — rebuild AgentNick with learned patterns."""
-        try:
-            from services.model_sync_service import ModelSyncService
-            sync = ModelSyncService(self.agent_nick)
-            sync.sync_model()
-        except Exception:
-            logger.exception("Model sync job failed")
 
     def _training_scheduler_enabled(self) -> bool:
         settings = getattr(self.agent_nick, "settings", None)
