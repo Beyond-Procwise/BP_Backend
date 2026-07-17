@@ -130,7 +130,7 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
                 SELECT COUNT(DISTINCT i.supplier_id)::int AS suppliers_we_have_invoices_from,
                        (SELECT COUNT(*)::int FROM proc.bp_supplier) AS suppliers_on_record
                   FROM proc.bp_invoice_trgt i"""),
-            "suppliers_we_buy_from": _rows(cur, """
+            "suppliers_by_invoice_count": _rows(cur, """
                 SELECT s.supplier_name,
                        COUNT(i.invoice_id)::int          AS invoices,
                        SUM(i.invoice_amount)::numeric    AS invoiced_amount,
@@ -139,6 +139,21 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
                   JOIN proc.bp_supplier s ON s.supplier_id = i.supplier_id
                  GROUP BY s.supplier_name
                  ORDER BY invoices DESC, invoiced_amount DESC NULLS LAST
+                 LIMIT %s"""),
+            # A supplier question routes here even when it asks "largest by AMOUNT" (the count
+            # subject wins the intent — see detect_intent). Without an amount-ordered fact the
+            # model read "largest by amount" off the count-ordered list above and named the
+            # most-frequent supplier instead of the highest-spend one. This gives it the
+            # amount ranking explicitly. Mixed-currency, so the currency is carried on each row
+            # and the ordering is by raw amount (same convention as the `spend` intent).
+            "suppliers_by_invoiced_amount": _rows(cur, """
+                SELECT s.supplier_name,
+                       SUM(i.invoice_amount)::numeric    AS invoiced_amount,
+                       MAX(i.currency)                   AS currency
+                  FROM proc.bp_invoice_trgt i
+                  JOIN proc.bp_supplier s ON s.supplier_id = i.supplier_id
+                 GROUP BY s.supplier_name
+                 ORDER BY invoiced_amount DESC NULLS LAST
                  LIMIT %s"""),
         }
 
