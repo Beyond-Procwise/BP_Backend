@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from typing import Dict, Any, List, Optional
 import copy
 import json
@@ -344,6 +345,137 @@ async def create_agent(
         "prompt_id": prompt_id,
         "prompt_name": prompt_name,
         "registered": slug in agent_nick.agents,
+        "governance": reload_report,
+    }
+
+
+@router.delete("/{slug}")
+async def delete_agent(
+    slug: str, request: Request, agent_nick=Depends(get_agent_nick)
+):
+    """Delete a DERIVED agent: the exact reverse of POST /agents.
+
+    Removes the catalogue entry, its bp_prompt instructions row(s), the live
+    registry instance/contract, and clears the same caches create warms. The
+    14 built-in agents (no "derived_from" marker) are permanent and 403 here.
+    A derived agent still referenced by a saved workflow 409s instead of
+    cascade-deleting the workflow — workflows are never silently destroyed.
+    """
+    from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
+
+    definitions = load_agent_definitions()
+    entry = next((a for a in definitions if a.get("slug") == slug), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"agent {slug!r} not found in catalogue")
+
+    if not entry.get("derived_from"):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"agent {slug!r} is a built-in agent and cannot be deleted"
+            ),
+        )
+
+    # Dependency check: never cascade-delete a saved workflow. A workflow's
+    # graph nodes carry {"id", "agent_slug", ...} (see agent_workflows.py's
+    # _describe_nodes) -- any node whose agent_slug matches blocks the delete.
+    from repositories import agent_workflow_repo as wf_repo
+
+    dependents: List[Dict[str, Any]] = []
+    for wf in wf_repo.list_active():
+        nodes = (wf.get("graph") or {}).get("nodes") or []
+        if any(n.get("agent_slug") == slug for n in nodes):
+            dependents.append({"id": wf["workflow_id"], "name": wf["name"]})
+    if dependents:
+        # A plain `raise HTTPException(409, detail={...})` would come back to the
+        # client as a STRINGIFIED dict: main.py's global _safe_http_exception
+        # handler does `str(exc.detail)` on every non-string HTTPException detail
+        # (its job is to stop raw exception text leaking, and it cannot tell a
+        # deliberate structured payload from an accidental one). Returning a
+        # JSONResponse directly raises no exception, so it skips that handler
+        # and only passes through OutputSafetyMiddleware, which scrubs string
+        # leaves but preserves dict/list structure -- dependent_workflows stays
+        # a real array the UI can read.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": (
+                    f"agent {slug!r} is used by {len(dependents)} saved "
+                    "workflow(s); delete them first"
+                ),
+                "dependent_workflows": dependents,
+            },
+        )
+
+    # Same governance token create used to write the instructions row.
+    gov_slug = slug.replace("-", "_")
+
+    # 1) bp_prompt rows linked to this slug (mirrors create's step 1 insert).
+    prompts_deleted = 0
+    try:
+        conn = agent_nick.get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM proc.bp_prompt WHERE prompt_linked_agents = %s",
+                    (gov_slug,),
+                )
+                prompts_deleted = cur.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.exception("delete_agent: bp_prompt delete failed")
+        raise HTTPException(status_code=500, detail=f"could not remove instructions: {exc}")
+
+    # 2) Remove from agent_definitions.json atomically (tmp file + rename),
+    #    same shape create's step 2 writes (indent=2 + trailing newline).
+    try:
+        with DEFINITIONS_PATH.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            remaining = [a for a in data.get("agents", []) if a.get("slug") != slug]
+            data["agents"] = remaining
+        else:
+            data = [a for a in data if a.get("slug") != slug]
+        tmp = DEFINITIONS_PATH.with_name(DEFINITIONS_PATH.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, DEFINITIONS_PATH)
+    except Exception as exc:
+        logger.exception("delete_agent: catalogue write failed")
+        raise HTTPException(status_code=500, detail=f"could not update agent catalogue: {exc}")
+
+    # 3) Reload in-process — mirrors create's step 3 in reverse, so the slug
+    #    stops resolving/executing NOW rather than only after a restart.
+    reload_report: Dict[str, Any] = {}
+    try:
+        from agents.auto_registry import AutoRegistry  # noqa: F401  (parity with create's import)
+
+        registry = getattr(agent_nick, "auto_registry", None)
+        if registry is not None:
+            registry.refresh_from_json()
+            registry.remove(slug)
+        agent_nick.agents.pop(slug, None)
+
+        from orchestration.orchestrator import Orchestrator
+
+        Orchestrator._load_agent_definitions.cache_clear()
+        orchestrator = getattr(request.app.state, "orchestrator", None)
+        if orchestrator is not None:
+            orchestrator._prompt_cache = None
+            orchestrator._policy_cache = None
+
+        reload_report = _do_reload_governance(agent_nick)
+    except Exception as exc:
+        # The agent is already gone from disk and bp_prompt; a restart
+        # guarantees the in-process view catches up.
+        logger.exception("delete_agent: in-process reload failed")
+        reload_report = {"error": str(exc)}
+
+    return {
+        "status": "deleted",
+        "slug": slug,
+        "prompts_deleted": prompts_deleted,
         "governance": reload_report,
     }
 

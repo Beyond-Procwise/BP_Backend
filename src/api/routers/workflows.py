@@ -186,6 +186,12 @@ class AgentType(BaseModel):
     capabilities: List[str] = Field(default_factory=list)
     required_inputs: List[str] = Field(default_factory=list)
     dependencies: List[str]
+    # Additive: set only for DERIVED agents (catalogue entries created via
+    # POST /agents), carrying the backing_slug they were derived from. None
+    # for the 14 built-in agents. The workspace UI uses its presence to
+    # decide which agent cards get a delete control -- built-ins can't be
+    # deleted via DELETE /agents/{slug} and shouldn't invite the attempt.
+    derived_from: Optional[str] = None
 
 
 class OpportunityRejectionRequest(BaseModel):

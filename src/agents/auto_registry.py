@@ -145,6 +145,21 @@ class AutoRegistry:
         fresh = AutoRegistry.from_json(path)
         self._contracts = fresh._contracts
 
+    def remove(self, agent_id: str) -> None:
+        """Drop *agent_id* from both the contract map and the instance cache.
+
+        The mirror image of :meth:`get_agent` / :meth:`refresh_from_json`:
+        ``refresh_from_json`` replaces ``_contracts`` wholesale but, by
+        design (see its docstring), keeps cached ``_instances`` around. A
+        deleted derived agent's contract disappears on refresh, but its live
+        instance would otherwise keep sitting in ``_instances`` and keep
+        answering calls even after its catalogue entry and prompt row are
+        gone. Called by ``DELETE /agents/{slug}`` after the catalogue write.
+        A no-op if *agent_id* was never registered/instantiated.
+        """
+        self._contracts.pop(agent_id, None)
+        self._instances.pop(agent_id, None)
+
     # ------------------------------------------------------------------
     # Dependency injection
     # ------------------------------------------------------------------
