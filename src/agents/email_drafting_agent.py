@@ -1432,6 +1432,25 @@ class EmailDraftingAgent(BaseAgent):
 
         return agent_nick
 
+    # ------------------------------------------------------------------
+    # System prompts, single-sourced from bp_prompt (governed, hot-reloadable)
+    # via BaseAgent.resolve_prompt. Each falls back to the module constant
+    # verbatim, so a DB miss / outage produces byte-identical behaviour — the
+    # email/negotiation path must never break because a governance row is absent.
+    # Editing these prompts is now done in bp_prompt, not in this file.
+    # ------------------------------------------------------------------
+    def _sys_compose_response(self) -> str:
+        return self.resolve_prompt("email_compose_response") or SYSTEM_COMPOSE
+
+    def _sys_compose_rfq(self) -> str:
+        return self.resolve_prompt("email_compose_rfq") or SYSTEM_PROMPT_COMPOSE
+
+    def _sys_polish(self) -> str:
+        return self.resolve_prompt("email_polish") or SYSTEM_POLISH
+
+    def _sys_negotiation_playbook(self) -> str:
+        return self.resolve_prompt("negotiation_playbook_system") or NEGOTIATION_PLAYBOOK_SYSTEM
+
     def from_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         decision_data = dict(decision or {})
         supplier_id = decision_data.get("supplier_id")
@@ -1512,7 +1531,7 @@ class EmailDraftingAgent(BaseAgent):
             try:
                 response_text = _chat(
                     model_name,
-                    SYSTEM_COMPOSE,
+                    self._sys_compose_response(),
                     user_prompt,
                     agent=self,
                     options={"temperature": 0.35, "top_p": 0.9},
@@ -1729,7 +1748,7 @@ class EmailDraftingAgent(BaseAgent):
 
         model_name = getattr(self.agent_nick.settings, "email_compose_model", self.compose_model)
         try:
-            response_text = _chat(model_name, SYSTEM_PROMPT_COMPOSE, user_prompt, agent=self)
+            response_text = _chat(model_name, self._sys_compose_rfq(), user_prompt, agent=self)
         except Exception:  # pragma: no cover - defensive fallback
             logger.exception("Failed to compose email from prompt")
             response_text = ""
@@ -1763,7 +1782,7 @@ class EmailDraftingAgent(BaseAgent):
             )
             try:
                 polished_text = _chat(
-                    self.polish_model, SYSTEM_POLISH, polish_prompt, agent=self
+                    self.polish_model, self._sys_polish(), polish_prompt, agent=self
                 )
             except Exception:  # pragma: no cover - defensive fallback
                 logger.exception("Failed to polish composed email")
@@ -2011,7 +2030,7 @@ class EmailDraftingAgent(BaseAgent):
         try:
             polished = _chat(
                 self.polish_model,
-                SYSTEM_POLISH,
+                self._sys_polish(),
                 polish_prompt,
                 agent=self,
             )
@@ -2211,7 +2230,7 @@ class EmailDraftingAgent(BaseAgent):
             response = self.call_ollama(
                 model=model_name,
                 messages=[
-                    {"role": "system", "content": NEGOTIATION_PLAYBOOK_SYSTEM},
+                    {"role": "system", "content": self._sys_negotiation_playbook()},
                     {"role": "user", "content": user_prompt},
                 ],
                 options={
