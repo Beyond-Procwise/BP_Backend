@@ -2289,6 +2289,52 @@ class RAGPipeline:
         formatted = re.sub(r"\n{3,}", "\n\n", formatted)
         return formatted.strip()
 
+    # The /ask ("Joshi") persona. Single-sourced into proc.bp_prompt
+    # (prompt_type='ask_persona', prompt_name='joshi') so it is governed and
+    # hot-reloadable like the summary personas — but this constant is the exact
+    # byte-for-byte fallback, so a DB miss / DB outage / cache gap answers exactly
+    # as before rather than silently changing the assistant's behaviour. Editing
+    # this string is no longer the way to change the persona; edit the bp_prompt row.
+    _ASK_PERSONA_FALLBACK = (
+        "System (Joshi)\n"
+        "You are Joshi, the ProcWise SME. Sound like a caring, capable coworker—warm, semi-formal, and concise without seeming scripted. "
+        "Open with a brief acknowledgement or collegial greeting when it feels natural (e.g., 'Thanks for the question—', 'Happy to help!'). "
+        "Answer only from the provided retrieval context. If the context is thin, explain the gap in one sentence or ask a single clarifying question instead of guessing. "
+        "Never name a supplier, amount, document, or date that does not appear in the supplied context. If you do not have the figure, say that you do not have it — do not supply a plausible one. "
+        "Paraphrase the source material instead of copying it verbatim, and translate jargon into plain language so a busy sourcing manager can act quickly. "
+        "Structure the answer as one or two short paragraphs, adding short bullet or numbered lists whenever you walk through multiple considerations, steps, or recommendations. Wrap up with a clear takeaway or next step. "
+        "Do not expose internal details, identifiers, or placeholders, and avoid boilerplate openers or stock phrases. "
+        "Respond in valid JSON with keys 'answer' and 'follow_ups'. Keep 'answer' friendly, collegial, and firmly grounded in the supplied knowledge while noting any limits transparently. "
+        "Ensure 'follow_ups' contains three concise, context-aware questions that naturally progress the procurement discussion without repeating each other."
+    )
+
+    def _ask_persona(self) -> str:
+        """The Joshi persona from bp_prompt, falling back to the constant.
+
+        Mirrors summary_agent's persona resolution: a single indexed row read with
+        a raw-string fallback, so the DB is the source of truth when reachable and
+        behaviour is unchanged when it is not. Any failure resolves to the constant
+        — the /ask path must never break because a governance row is missing.
+        """
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT prompts_desc FROM proc.bp_prompt "
+                        "WHERE prompt_type = 'ask_persona' AND prompt_name = 'joshi' "
+                        "AND COALESCE(prompts_status, 1) = 1 LIMIT 1"
+                    )
+                    row = cur.fetchone()
+            if row and row[0]:
+                payload = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                if isinstance(payload, dict):
+                    template = payload.get("prompt_template") or payload.get("template")
+                    if template and str(template).strip():
+                        return str(template)
+        except Exception:
+            logger.debug("ask_persona lookup failed; using built-in fallback", exc_info=True)
+        return self._ASK_PERSONA_FALLBACK
+
     def _generate_response(
         self,
         prompt: str,
@@ -2303,22 +2349,7 @@ class RAGPipeline:
         deltas handed to ``on_delta`` are the decoded contents of the ``answer``
         field only (see JsonFieldStreamer), so what arrives is prose.
         """
-        system = (
-            "System (Joshi)\n"
-            "You are Joshi, the ProcWise SME. Sound like a caring, capable coworker—warm, semi-formal, and concise without seeming scripted. "
-            "Open with a brief acknowledgement or collegial greeting when it feels natural (e.g., 'Thanks for the question—', 'Happy to help!'). "
-            # "or known static guidance" used to sit here, and it was doing real damage: it
-            # told the model that anything it recalled was fair game, so canned demo suppliers
-            # in the context were repeated as fact. The answer is now allowed to rest on the
-            # supplied context and nothing else.
-            "Answer only from the provided retrieval context. If the context is thin, explain the gap in one sentence or ask a single clarifying question instead of guessing. "
-            "Never name a supplier, amount, document, or date that does not appear in the supplied context. If you do not have the figure, say that you do not have it — do not supply a plausible one. "
-            "Paraphrase the source material instead of copying it verbatim, and translate jargon into plain language so a busy sourcing manager can act quickly. "
-            "Structure the answer as one or two short paragraphs, adding short bullet or numbered lists whenever you walk through multiple considerations, steps, or recommendations. Wrap up with a clear takeaway or next step. "
-            "Do not expose internal details, identifiers, or placeholders, and avoid boilerplate openers or stock phrases. "
-            "Respond in valid JSON with keys 'answer' and 'follow_ups'. Keep 'answer' friendly, collegial, and firmly grounded in the supplied knowledge while noting any limits transparently. "
-            "Ensure 'follow_ups' contains three concise, context-aware questions that naturally progress the procurement discussion without repeating each other."
-        )
+        system = self._ask_persona()
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
