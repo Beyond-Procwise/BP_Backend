@@ -318,6 +318,38 @@ screens:
   - /spendiq/tprm/suppliers
   how_to: Open SpendIQ and choose Third-party risk from the left-hand nav.
 
+# The domain entities a buyer names in a question — "what is a deal", "what is a discrepancy".
+# The processes/agents above describe what HAPPENS; a buyer also asks what a THING is. Without
+# a node that defines the thing, the graph could describe ranking-on-a-deal without ever saying
+# what a deal is, and an answer to "what is a deal" was assembled from whatever tangentially
+# mentioned the word. `say` is the plain-language definition; `detail` is where it lives.
+concepts:
+- id: deal
+  name: Deal
+  detail: 'A deal groups the documents for one supplier and one purchase — the quote, the purchase
+    order and the invoice(s) — under a single deal_id (proc.bp_deal_document_map / bp_deal_overview).
+    Assigned by a DB stored procedure, quote-anchored. e.g. DEALV2-5206556 ties a quote, PO and
+    invoice for PeopleFirst HR Solutions Ltd.
+
+    '
+  say: 'A deal is how the product ties together the documents that belong to the same piece of
+    business — the quote you asked for, the purchase order you raised, and the invoices that follow —
+    for one supplier, in one place. Rather than loose documents, you see them grouped as the deal
+    they belong to, which is what lets the product compare quotes and rank suppliers on that deal.
+
+    '
+- id: discrepancy
+  name: Discrepancy
+  detail: 'A finding in proc.bp_extraction_discrepancy where a document contradicts itself or its PO
+    (line_total_mismatch, amount_over_po, po_not_found, ...). Raised for a human; shown on Action Centre.
+
+    '
+  say: 'A discrepancy is a mismatch the product has flagged on one of your documents — where the
+    document does not add up, or does not match the purchase order it refers to. It is raised for you
+    to review and decide on; you will find these on the Action Centre screen.
+
+    '
+
 models:
 - id: agentnick_unified
   name: BeyondProcwise/AgentNick:unified

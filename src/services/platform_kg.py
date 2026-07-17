@@ -66,7 +66,8 @@ def load_ontology(path: Optional[Path] = None) -> dict[str, Any]:
 def sync(path: Optional[Path] = None) -> dict[str, int]:
     """Push the platform ontology into Neo4j. Returns node/edge counts written."""
     doc = load_ontology(path)
-    counts = {"Process": 0, "Stage": 0, "Agent": 0, "Screen": 0, "Model": 0, "Gap": 0, "edges": 0}
+    counts = {"Process": 0, "Stage": 0, "Agent": 0, "Screen": 0, "Model": 0, "Gap": 0,
+              "Concept": 0, "edges": 0}
     drv = _driver()
     try:
         with drv.session() as s:
@@ -146,6 +147,15 @@ def sync(path: Optional[Path] = None) -> dict[str, int]:
                     )
                     counts["edges"] += 1
 
+            # Domain entities a buyer names — "what is a deal". Defined here so the graph can
+            # answer the question directly instead of from whatever tangentially mentions it.
+            for c in doc.get("concepts") or []:
+                s.run(
+                    "MERGE (n:Concept {id:$id}) SET n.name=$name, n.detail=$detail, n.say=$say",
+                    id=c["id"], name=c.get("name"), detail=c.get("detail"), say=c.get("say"),
+                )
+                counts["Concept"] += 1
+
             for m in doc.get("models") or []:
                 s.run(
                     "MERGE (n:Model {id:$id}) SET n.name=$name, n.role=$role, n.say=$say",
@@ -220,6 +230,10 @@ def describe(topic: str, limit: int = 8) -> list[dict[str, Any]]:
         MATCH (g:Gap)
         WITH g, toLower(g.id + ' ' + coalesce(g.what,'') + ' ' + coalesce(g.say,'')) AS hay
         RETURN 'Known gap' AS kind, g.id AS name, g.what AS detail, g.say AS say, hay
+      UNION
+        MATCH (n:Concept)
+        WITH n, toLower(n.name + ' ' + coalesce(n.detail,'') + ' ' + coalesce(n.say,'') + ' ' + coalesce(n.id,'')) AS hay
+        RETURN 'Concept' AS kind, n.name AS name, n.detail AS detail, n.say AS say, hay
     }
     WITH kind, name, detail, say, hay,
          size([w IN $words WHERE hay CONTAINS w]) AS hits
