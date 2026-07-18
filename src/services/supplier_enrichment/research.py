@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from urllib.parse import urlparse
 
 import requests
@@ -85,9 +86,18 @@ def _chat(messages: list[dict]) -> dict:
     return r.json().get("message", {})
 
 
-def _run_loop(supplier_name: str) -> tuple[str, set[str]]:
-    """Drive AgentNick's tool-use loop. Returns (final_content, urls_seen)."""
-    seen: set[str] = set()
+def _run_loop(supplier_name: str) -> tuple[str, dict[str, str]]:
+    """Drive AgentNick's tool-use loop. Returns (final_content, evidence).
+
+    `evidence` maps each URL to the exact text the model was shown for it, which is what the
+    grounding guard checks claims against. Previously only the URLs were kept and the text was
+    handed to the model and discarded, so nothing downstream could tell a page that was read
+    from one that 403'd — both looked like "visited".
+
+    Deliberately stores the SAME slice the model saw, not the full fetch: grounding against
+    text the model never read would accept a lucky guess as though it had been sourced.
+    """
+    evidence: dict[str, str] = {}
     messages = [
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": f"Research this supplier and return the JSON: {supplier_name}"},
@@ -97,7 +107,7 @@ def _run_loop(supplier_name: str) -> tuple[str, set[str]]:
         messages.append(msg)
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
-            return msg.get("content") or "", seen
+            return msg.get("content") or "", evidence
         for tc in tool_calls:
             fn = tc.get("function", {})
             name = fn.get("name")
@@ -110,21 +120,28 @@ def _run_loop(supplier_name: str) -> tuple[str, set[str]]:
             if name == "web_search":
                 results = web_search(str(args.get("query", "")))
                 for r in results:
-                    seen.add(r["url"])
+                    # Title+snippet IS text the model read, so it can legitimately ground a
+                    # fact. Appended rather than assigned: the same URL can surface in more
+                    # than one search, and a later fetch of it must not lose the snippet.
+                    snippet = f"{r.get('title') or ''} {r.get('snippet') or ''}".strip()
+                    evidence[r["url"]] = (evidence.get(r["url"], "") + " " + snippet).strip()
                 content = json.dumps(results)
             elif name == "fetch_url":
                 url = str(args.get("url", ""))
-                seen.add(url)
                 content = fetch_url(url)[:4000]
+                # A failed fetch returns "" and is recorded as such: the URL is known to have
+                # been visited AND known to have yielded nothing, which is what lets the guard
+                # refuse to ground on it instead of trusting the hostname.
+                evidence[url] = (evidence.get(url, "") + " " + content).strip()
             else:
                 content = "unknown tool"
             messages.append({"role": "tool", "name": name, "content": content})
     # rounds exhausted — ask once more for the final JSON
     messages.append({"role": "user", "content": "Now output ONLY the final JSON object."})
     try:
-        return _chat(messages).get("content") or "", seen
+        return _chat(messages).get("content") or "", evidence
     except Exception:  # noqa: BLE001
-        return "", seen
+        return "", evidence
 
 
 def _parse_result(content: str) -> tuple[str | None, dict]:
@@ -148,22 +165,133 @@ def _parse_result(content: str) -> tuple[str | None, dict]:
     return (matched if isinstance(matched, str) else None), (fields if isinstance(fields, dict) else {})
 
 
-def _ground(fields: dict, seen_urls: set[str]) -> dict:
-    """Keep only fields whose citation host was actually visited. Drop the rest."""
-    seen_hosts = {_host(u) for u in seen_urls if u}
+_SENTINELS = ("", "unknown", "n/a", "na", "none", "not found", "not available", "null")
+
+# Prose fields. A summary is a paraphrase by construction, so it can be neither confirmed by
+# a verbatim search (which always fails) nor by token overlap (which is the hole that lets a
+# fabricated clause through — see the grounding-guard digit-hole note). It is therefore never
+# claimed to be verified. It has no bp_supplier column, so it reaches a human or nothing.
+_PROSE_FIELDS = {"business_summary"}
+
+
+def _norm_text(value: object) -> str:
+    """Casefold, strip accents, and reduce every run of non-alphanumerics to one space.
+
+    Space-padded so a plain `in` test lands on word boundaries: "us" must not match
+    "industrial". This is FORMAT tolerance only — it makes "  Private   Limited Company  "
+    match "private limited company" in the page. It deliberately does no alias or synonym
+    expansion; see _value_supported.
+    """
+    if value is None:
+        return ""
+    s = unicodedata.normalize("NFKD", str(value))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^0-9A-Za-z]+", " ", s).casefold().strip()
+    return f" {s} " if s else ""
+
+
+def _norm_url(url: object) -> str:
+    """Canonical key matching a citation to the page we actually showed the model.
+
+    Folds the variants a model produces when echoing a URL back (scheme, host case, www,
+    trailing slash, fragment) and NOTHING else. The query string is kept on purpose: on a
+    company registry `?id=1` and `?id=2` are different companies, so dropping it would
+    re-open host-level trust through the back door.
+    """
+    if not url:
+        return ""
+    try:
+        p = urlparse(str(url).strip())
+    except Exception:  # noqa: BLE001 - a malformed citation grounds nothing
+        return ""
+    if not p.netloc:
+        return ""
+    host = p.netloc.casefold()
+    if host.startswith("www."):
+        host = host[4:]
+    key = f"{host}{(p.path or '').rstrip('/').casefold()}"
+    return f"{key}?{p.query}" if p.query else key
+
+
+def _value_supported(value: object, text: str) -> bool:
+    """Does the claimed value actually appear in the text the model was shown?
+
+    Substring-after-normalisation, not fuzzy similarity: "Brazil" must not be judged close
+    enough to "United Kingdom". A value the page does not contain — including a correct
+    alias the page happens not to use, like "UK" for "United Kingdom" — is dropped rather
+    than guessed. Dropping costs a trip through human review, which loses nothing; guessing
+    writes a wrong fact into a supplier record.
+    """
+    v = _norm_text(value)
+    # A one-character value substring-matches nearly any page, so a match would carry no
+    # information. Two is enough for real values ("US", "GB", "3M").
+    if len(v.replace(" ", "")) < 2:
+        return False
+    return v in _norm_text(text)
+
+
+def _value_host(value: object) -> str:
+    """Host of a URL-valued field, tolerating a bare domain ("acme.example")."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "https://" + raw
+    return _norm_url(raw).split("/")[0].split("?")[0]
+
+
+def _ground(fields: dict, evidence: dict[str, str]) -> dict:
+    """Keep only fields the cited page ACTUALLY SUPPORTS. Drop the rest.
+
+    `evidence` maps every URL the model was shown to the exact text it was shown for that
+    URL (search title+snippet, or fetched page body). Two things follow that the previous
+    host-only check could not express:
+
+      - A fetch that failed returns "" and is present-but-empty, so it grounds nothing. This
+        is the case that mattered: a 403'd registry page was grounding three fields whose
+        values came from the model's priors.
+      - Grounding is per-URL, not per-host, so an invented path on a real host proves
+        nothing.
+    """
+    by_url = {_norm_url(u): (t or "") for u, t in (evidence or {}).items()}
     kept: dict = {}
     for name, f in fields.items():
         if name not in _RESEARCH_FIELDS or name in _SENSITIVE or not isinstance(f, dict):
             continue
         value = f.get("value")
         src = f.get("source_url") or ""
-        # sentinel check is case-insensitive: the model emits "Unknown"/"UNKNOWN"
-        # as often as "unknown", and those were being kept as if they were facts.
-        if value is None or str(value).strip().lower() in ("", "unknown", "n/a", "na", "none", "not found"):
+        # Case-insensitive: the model emits "Unknown"/"UNKNOWN" as often as "unknown", and
+        # those were being kept as if they were facts.
+        if value is None or str(value).strip().lower() in _SENTINELS:
             continue
-        if _host(src) and _host(src) in seen_hosts:
+
+        key = _norm_url(src)
+        if not key or key not in by_url:
+            continue                      # uncited, or citing a page we never showed it
+        text = by_url[key]
+        if not text.strip():
+            continue                      # visited, but yielded nothing to read
+
+        if name in _PROSE_FIELDS:
+            # Carried for the reviewer, explicitly NOT claimed as verified, and stripped of
+            # the model's self-reported confidence so it can never be averaged into the
+            # record's overall score as though it had been checked.
+            kept[name] = {"value": value, "source_url": src, "confidence": 0.0,
+                          "verified": False}
+            continue
+
+        if name == "website_url":
+            # A URL is not page prose. It is supported either because the cited page IS on
+            # that domain (you learned the company's site by standing on it), or because the
+            # cited page names the domain in its text (a directory listing it).
+            vhost = _value_host(value)
+            page_host = key.split("/")[0].split("?")[0]
+            ok = bool(vhost) and (vhost == page_host or _value_supported(vhost, text))
+        else:
+            ok = _value_supported(value, text)
+        if ok:
             kept[name] = {"value": value, "source_url": src,
-                          "confidence": float(f.get("confidence") or 0.0)}
+                          "confidence": float(f.get("confidence") or 0.0), "verified": True}
     return kept
 
 
@@ -196,6 +324,19 @@ def _apply(cur, supplier_id: str, fields: dict) -> dict:
         f = fields.get(col)
         if not f or float(f.get("confidence") or 0.0) < _APPLY_CONF:
             continue
+        # Only content-verified facts are ever written. Today the unverified entries are
+        # prose, which has no column here — this makes that a rule rather than a coincidence
+        # of _APPLY_COLUMNS, so adding a column later cannot open the gate.
+        #
+        # `is False` rather than falsy on purpose: rows stored before content verification
+        # existed carry no `verified` key at all, and those were reviewed under the old
+        # contract. Treating a missing key as a failure would silently make every pending
+        # legacy enrichment unapprovable. Only an explicit False — checked and not supported
+        # — blocks. _ground now always sets the key, so new records are fully governed.
+        if f.get("verified") is False:
+            log.info("skipping %s for %s: not content-verified against its cited page",
+                     col, supplier_id)
+            continue
         cur_val = current.get(col)
         if cur_val is None or str(cur_val).strip() == "":
             val = str(f["value"])[:500]
@@ -225,10 +366,14 @@ def research_and_enrich(supplier_id: str, conn) -> dict:
         return {"error": "supplier not found", "supplier_id": supplier_id}
     supplier_name = row[0]
 
-    content, seen = _run_loop(supplier_name)
+    content, evidence = _run_loop(supplier_name)
     matched_name, raw_fields = _parse_result(content)
-    fields = _ground(raw_fields, seen)
-    confs = [f["confidence"] for f in fields.values()]
+    fields = _ground(raw_fields, evidence)
+    seen = set(evidence)
+    # Only content-verified fields carry a confidence into the overall score. Unverified
+    # prose is fixed at 0.0 by _ground, so including it would drag the average down as
+    # though it were a weak fact rather than an unchecked one — average over the verified.
+    confs = [f["confidence"] for f in fields.values() if f.get("verified")]
     overall = round(sum(confs) / len(confs), 3) if confs else 0.0
 
     # Entity-match gate: only auto-apply if the found company name matches the

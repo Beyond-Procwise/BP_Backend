@@ -35,13 +35,20 @@ def test_parse_result_extracts_matched_name_and_fields():
 
 
 def test_ground_drops_uncited_sensitive_and_unknown():
+    # _ground now takes url -> the text the model was shown for that url, not a bare URL set:
+    # a page that was visited but yielded nothing must not ground anything. See
+    # test_supplier_research_grounding.py for the content-verification behaviour itself.
+    evidence = {
+        "https://acme.com/about": "Acme Ltd is based in London. Visit acme.com for more.",
+        "https://acme.com": "Acme Ltd home page.",
+    }
     fields = {
         "website_url": {"value": "https://acme.com", "source_url": "https://acme.com/about", "confidence": 0.9},
-        "city": {"value": "London", "source_url": "https://evil.example/x", "confidence": 0.9},  # host not visited
+        "city": {"value": "London", "source_url": "https://evil.example/x", "confidence": 0.9},  # page never seen
         "vat_number": {"value": "GB123", "source_url": "https://acme.com", "confidence": 0.9},   # sensitive
         "country": {"value": "unknown", "source_url": "https://acme.com", "confidence": 0.9},     # unknown
     }
-    kept = R._ground(fields, {"https://acme.com/about", "https://acme.com"})
+    kept = R._ground(fields, evidence)
     assert set(kept) == {"website_url"}
 
 
@@ -62,7 +69,12 @@ def test_apply_fills_empty_only_when_entity_matches(monkeypatch):
               '"website_url": {"value":"https://acme.example","source_url":"https://acme.example/about","confidence":0.9},'
               '"country": {"value":"US","source_url":"https://acme.example/about","confidence":0.9},'
               '"vat_number": {"value":"GB999","source_url":"https://acme.example/about","confidence":0.9}}}')
-    monkeypatch.setattr(R, "_run_loop", lambda name: (canned, {"https://acme.example/about"}))
+    # _run_loop returns url -> the text the model was shown. The page has to actually
+    # contain the claimed values now, which is the point of the content check.
+    monkeypatch.setattr(R, "_run_loop", lambda name: (canned, {
+        "https://acme.example/about":
+            "Acme Widgets Ltd, US. Official site: acme.example",
+    }))
 
     with get_conn() as c:
         res = R.research_and_enrich(f"{IDP}1", c)
@@ -82,7 +94,10 @@ def test_entity_mismatch_stays_pending(monkeypatch):
     canned = ('{"matched_name":"Umbrella Facilities Management Ltd","fields": {'
               '"website_url": {"value":"https://umbrella.example","source_url":"https://umbrella.example","confidence":0.95},'
               '"country": {"value":"United Kingdom","source_url":"https://umbrella.example","confidence":0.95}}}')
-    monkeypatch.setattr(R, "_run_loop", lambda name: (canned, {"https://umbrella.example"}))
+    monkeypatch.setattr(R, "_run_loop", lambda name: (canned, {
+        "https://umbrella.example":
+            "Umbrella Facilities Management Ltd, United Kingdom. umbrella.example",
+    }))
     with get_conn() as c:
         res = R.research_and_enrich(f"{IDP}3", c)
     assert res["entity_confirmed"] is False and res["applied"] == {}  # cited but wrong entity → pending
@@ -94,7 +109,9 @@ def test_entity_mismatch_stays_pending(monkeypatch):
 def test_uncited_fields_not_applied(monkeypatch):
     _seed(f"{IDP}2", "Beta Traders Ltd")  # all empty
     canned = '{"matched_name":"Beta Traders Ltd","fields": {"website_url": {"value":"https://beta.example","source_url":"https://hallucinated.example","confidence":0.95}}}'
-    monkeypatch.setattr(R, "_run_loop", lambda name: (canned, {"https://realsource.example"}))  # cite ≠ visited
+    monkeypatch.setattr(R, "_run_loop", lambda name: (canned, {
+        "https://realsource.example": "Beta Traders Ltd. Official site: beta.example",
+    }))  # cited page ≠ the page actually read
     with get_conn() as c:
         res = R.research_and_enrich(f"{IDP}2", c)
     assert res["fields"] == {} and res["applied"] == {}  # dropped as ungrounded
