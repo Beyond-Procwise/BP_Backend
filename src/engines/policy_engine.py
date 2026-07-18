@@ -188,7 +188,19 @@ class PolicyEngine:
                                policy_details, policy_linked_agents
                         FROM proc.bp_policy
                         WHERE COALESCE(policy_status, 1) = 1
-                        ORDER BY policy_name, version DESC, policy_id DESC
+                        -- policy_id, NOT policy_name. Callers treat the first policy of a
+                        -- type as the primary one, so a name-leading sort silently
+                        -- reordered DISTINCT policies: for supplier_ranking it promoted
+                        -- CategoricalScoringPolicy over WeightAllocationPolicy and the
+                        -- ranking weights stopped being found. Ordering by id keeps
+                        -- definition order, which is what "primary" has always meant here.
+                        --
+                        -- The name/version tiebreak this replaces existed to make DUPLICATE
+                        -- (type, name) rows resolve deterministically. That is now enforced
+                        -- in the database instead: ux_bp_policy_active_type_name makes a
+                        -- second active row impossible, so ordering no longer has to
+                        -- compensate for one.
+                        ORDER BY policy_id
                         """
                     )
                     rows = cursor.fetchall()

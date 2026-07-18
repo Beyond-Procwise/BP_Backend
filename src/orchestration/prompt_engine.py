@@ -127,7 +127,16 @@ class PromptEngine:
                                last_modified_date, last_modified_by, version
                         FROM proc.bp_prompt
                         WHERE COALESCE(prompts_status, 1) = 1
-                        ORDER BY prompt_name, version DESC, prompt_id DESC
+                        -- prompt_id, NOT prompt_name: a name-leading sort reorders DISTINCT
+                        -- prompts, and callers that take the first prompt of a type treat
+                        -- that as the primary one (this exact mistake in policy_engine
+                        -- promoted the wrong supplier_ranking policy). Definition order is
+                        -- the stable, meaningful order.
+                        --
+                        -- The version tiebreak this replaces existed to disambiguate
+                        -- DUPLICATE (type, name) rows; ux_bp_prompt_active_type_name now
+                        -- makes those impossible, so ordering need not compensate.
+                        ORDER BY prompt_id
                         """
                     )
                     rows = cursor.fetchall()
