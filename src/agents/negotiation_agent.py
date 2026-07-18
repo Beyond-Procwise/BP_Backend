@@ -9782,6 +9782,13 @@ class NegotiationAgent(BaseAgent):
             )
             return
 
+        # proc.negotiation_sessions is created by _ensure_sessions_schema, which nothing ever
+        # called — the method was dead code while its sibling _ensure_state_schema was wired
+        # up. So the table never existed, the identifier-column probe below found no columns,
+        # and every round logged "No identifier column found" and returned without persisting.
+        # Negotiation rounds were silently not being recorded at all.
+        self._ensure_sessions_schema()
+
         try:
             with self.agent_nick.get_db_connection() as conn:
                 with conn.cursor() as cur:

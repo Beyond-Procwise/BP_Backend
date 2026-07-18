@@ -188,6 +188,7 @@ class PolicyEngine:
                                policy_details, policy_linked_agents
                         FROM proc.bp_policy
                         WHERE COALESCE(policy_status, 1) = 1
+                        ORDER BY policy_name, version DESC, policy_id DESC
                         """
                     )
                     rows = cursor.fetchall()

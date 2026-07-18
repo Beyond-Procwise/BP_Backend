@@ -46,6 +46,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # reader there is a SQL layer and a table, which is exactly what we are hiding.
 SAFE_REPLY = "I couldn't retrieve that. I've raised it with the team."
 
+# What a NON-prose field gets instead. SAFE_REPLY is a sentence addressed to a reader, and
+# putting it in a structured field produces nonsense a consumer may then store: a workflow
+# response came back with user_id="I couldn't retrieve that. I've raised it with the team."
+# because the run's user_id was the model name and tripped the model_name rule. Withholding
+# the value is right; replacing an identifier with prose is not.
+SAFE_FIELD = "[withheld]"
+
 # Handed back to the model when its draft was mechanism-level. It already has the facts — it
 # framed them wrong — so this is a re-frame, not a refusal.
 RETRY_INSTRUCTION = (
@@ -353,5 +360,12 @@ def _scrub_value(key: str, value: Any, where: str) -> Any:
         return scrub_payload(value, where=where)
     if isinstance(value, str):
         is_prose = key.lower() in PROSE_FIELDS
-        return enforce(value, prose=is_prose, where=f"{where}.{key}" if where else key)
+        at = f"{where}.{key}" if where else key
+        safe = enforce(value, prose=is_prose, where=at)
+        # A blocked prose field becomes a sentence, because a reader is going to read it.
+        # A blocked structured field must NOT: it is an id, a name, a status, and the
+        # consumer may persist or compare it. Withhold it as a marker instead.
+        if safe is SAFE_REPLY and not is_prose:
+            return SAFE_FIELD
+        return safe
     return value

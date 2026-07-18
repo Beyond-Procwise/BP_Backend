@@ -157,7 +157,9 @@ def _ground(fields: dict, seen_urls: set[str]) -> dict:
             continue
         value = f.get("value")
         src = f.get("source_url") or ""
-        if value in (None, "", "unknown", "n/a", "N/A"):
+        # sentinel check is case-insensitive: the model emits "Unknown"/"UNKNOWN"
+        # as often as "unknown", and those were being kept as if they were facts.
+        if value is None or str(value).strip().lower() in ("", "unknown", "n/a", "na", "none", "not found"):
             continue
         if _host(src) and _host(src) in seen_hosts:
             kept[name] = {"value": value, "source_url": src,
@@ -165,8 +167,22 @@ def _ground(fields: dict, seen_urls: set[str]) -> dict:
     return kept
 
 
+def _col_limits(cur) -> dict:
+    """Real varchar length caps for the apply columns (e.g. legal_structure is
+    varchar(10)). Without this a long value raises StringDataRightTruncation,
+    which aborts the transaction and loses the whole enrichment record."""
+    cur.execute(
+        "SELECT column_name, character_maximum_length FROM information_schema.columns "
+        "WHERE table_schema = 'proc' AND table_name = 'bp_supplier' "
+        "AND column_name = ANY(%s)",
+        (_APPLY_COLUMNS,),
+    )
+    return {name: lim for name, lim in cur.fetchall() if lim}
+
+
 def _apply(cur, supplier_id: str, fields: dict) -> dict:
     """Fill only EMPTY, non-sensitive columns. Returns applied {col:{value,source_url}}."""
+    limits = _col_limits(cur)
     cur.execute(
         "SELECT " + ", ".join(_APPLY_COLUMNS) + " FROM proc.bp_supplier WHERE supplier_id = %s",
         (supplier_id,),
@@ -182,10 +198,18 @@ def _apply(cur, supplier_id: str, fields: dict) -> dict:
             continue
         cur_val = current.get(col)
         if cur_val is None or str(cur_val).strip() == "":
+            val = str(f["value"])[:500]
+            lim = limits.get(col)
+            if lim and len(val) > lim:
+                # Don't silently store a mangled prefix ("Limited Liability
+                # Company (LLC)" -> "Limited Li"); leave it for human review.
+                log.info("skipping %s for %s: %d chars exceeds column limit %d",
+                         col, supplier_id, len(val), lim)
+                continue
             cur.execute(
                 f"UPDATE proc.bp_supplier SET {col} = %s, last_modified_by = 'agentnick_web', "
                 "last_modified_date = now() WHERE supplier_id = %s",
-                (str(f["value"])[:500], supplier_id),
+                (val, supplier_id),
             )
             applied[col] = {"value": f["value"], "source_url": f.get("source_url")}
         # else: differs from an existing value → leave pending for human review

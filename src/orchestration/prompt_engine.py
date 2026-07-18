@@ -127,6 +127,7 @@ class PromptEngine:
                                last_modified_date, last_modified_by, version
                         FROM proc.bp_prompt
                         WHERE COALESCE(prompts_status, 1) = 1
+                        ORDER BY prompt_name, version DESC, prompt_id DESC
                         """
                     )
                     rows = cursor.fetchall()

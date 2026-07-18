@@ -108,7 +108,8 @@ def _norm(s: str) -> str:
 
 
 def _prose_unfetched(prose: str, catalog: dict, fetched_policies: set,
-                     fetched_prompts: set) -> dict:
+                     fetched_prompts: set, seen_policies: set | None = None,
+                     seen_prompts: set | None = None) -> dict:
     """Governance names that appear in the prose but were never fetched.
 
     Catches the "honest CITED, fabricated prose" case the citation cross-check
@@ -121,11 +122,15 @@ def _prose_unfetched(prose: str, catalog: dict, fetched_policies: set,
     for slug in catalog.get("policies", []):
         if str(slug).lower() in fetched_policies:
             continue
+        if str(slug).lower() in (seen_policies or set()):
+            continue
         n = _norm(slug)
         if len(n.split()) >= 2 and n in norm_prose:
             hits["policies"].append(slug)
     for name in catalog.get("prompts", []):
         if str(name).lower() in fetched_prompts:
+            continue
+        if str(name).lower() in (seen_prompts or set()):
             continue
         n = _norm(name)
         if len(n.split()) >= 2 and n in norm_prose:
@@ -145,21 +150,51 @@ def _dedupe(values: list) -> list:
 
 
 def _finalize(content: str, used: dict, fetched_policies: set, fetched_prompts: set,
-              catalog: dict, rounds: int) -> dict:
+              catalog: dict, rounds: int, listed_policies: set | None = None,
+              listed_prompts: set | None = None) -> dict:
     """Ground the answer: cross-check declared citations AND scan the prose,
     both against what was actually fetched."""
     answer, cited = _split_citations(content)
-    prose_hits = _prose_unfetched(answer, catalog, fetched_policies, fetched_prompts)
+    prose_hits = _prose_unfetched(answer, catalog, fetched_policies, fetched_prompts,
+                                  listed_policies, listed_prompts)
+    # "Unsupported" means the name came from nowhere: neither fetched in full via
+    # get_policy/get_prompt nor seen in a list_governance catalog listing.
+    ok_policies = fetched_policies | (listed_policies or set())
+    ok_prompts = fetched_prompts | (listed_prompts or set())
     unsupported = {
-        "policies": _dedupe([c for c in cited["policies"] if c.lower() not in fetched_policies]
+        "policies": _dedupe([c for c in cited["policies"] if c.lower() not in ok_policies]
                             + prose_hits["policies"]),
-        "prompts": _dedupe([c for c in cited["prompts"] if c.lower() not in fetched_prompts]
+        "prompts": _dedupe([c for c in cited["prompts"] if c.lower() not in ok_prompts]
                            + prose_hits["prompts"]),
     }
     if unsupported["policies"] or unsupported["prompts"]:
         log.warning("governed_reasoning ungrounded citations dropped: %s", unsupported)
     return {"answer": answer, "governance_used": used,
             "unsupported": unsupported, "rounds": rounds}
+
+
+def _audit(result: dict, task: str, agent: str | None) -> dict:
+    """Log the governed-reasoning run to proc.bp_agent_actions. Best-effort:
+    record_action never raises, so a logging problem cannot break the answer."""
+    try:
+        from src.services.agent_actions import record_action
+
+        gov = result.get("governance_used") or {}
+        unsupported = result.get("unsupported") or {}
+        grounded = not (unsupported.get("policies") or unsupported.get("prompts"))
+        record_action(
+            phase="governance",
+            action_type="governed_reasoning",
+            agent=agent or "agentnick",
+            status="success" if grounded else "ungrounded_citations",
+            summary=f"governed reasoning: {str(task)[:180]}",
+            details={"task": str(task)[:500], "agent": agent,
+                     "governance_used": gov, "unsupported": unsupported,
+                     "rounds": result.get("rounds")},
+        )
+    except Exception:  # noqa: BLE001 - auditing must never break the caller
+        log.debug("governed_reasoning audit failed", exc_info=True)
+    return result
 
 
 def _chat(messages: list[dict]) -> dict:
@@ -188,6 +223,8 @@ def govern(task: str, agent: str | None = None) -> dict:
     used: dict = {"prompts": [], "policies": []}
     fetched_policies: set[str] = set()   # slugs actually returned by get_policy
     fetched_prompts: set[str] = set()    # names actually returned by get_prompt
+    listed_policies: set[str] = set()    # slugs seen via list_governance (name-only)
+    listed_prompts: set[str] = set()     # names seen via list_governance (name-only)
     any_tool_call = False                # did the model call any tool at all?
     nudged = False                       # corrective retry fired at most once
     messages = [
@@ -211,7 +248,9 @@ def govern(task: str, agent: str | None = None) -> dict:
                 nudged = True
                 messages.append({"role": "user", "content": _NUDGE})
                 continue
-            return _finalize(msg.get("content") or "", used, fetched_policies, fetched_prompts, catalog, rounds)
+            return _audit(_finalize(msg.get("content") or "", used, fetched_policies,
+                                    fetched_prompts, catalog, rounds,
+                                    listed_policies, listed_prompts), task, agent)
         any_tool_call = True
         for tc in tool_calls:
             fn = tc.get("function", {})
@@ -224,6 +263,15 @@ def govern(task: str, agent: str | None = None) -> dict:
                     args = {}
             if name == "list_governance":
                 res = GT.list_governance(args.get("agent"))
+                # Names the model legitimately learned from the catalog listing. It
+                # may name them without having fetched their details, so the prose
+                # scan must not flag them as fabricated.
+                for p in (res.get("policies") or []):
+                    if p.get("slug"):
+                        listed_policies.add(str(p["slug"]).lower())
+                for p in (res.get("prompts") or []):
+                    if p.get("prompt_name"):
+                        listed_prompts.add(str(p["prompt_name"]).lower())
             elif name == "get_policy":
                 res = GT.get_policy(str(args.get("query", "")))
                 if res:
@@ -255,4 +303,5 @@ def govern(task: str, agent: str | None = None) -> dict:
         final = _chat(messages).get("content") or ""
     except Exception:  # noqa: BLE001
         final = ""
-    return _finalize(final, used, fetched_policies, fetched_prompts, catalog, rounds)
+    return _audit(_finalize(final, used, fetched_policies, fetched_prompts, catalog,
+                            rounds, listed_policies, listed_prompts), task, agent)

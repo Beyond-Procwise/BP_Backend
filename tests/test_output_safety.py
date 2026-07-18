@@ -251,6 +251,33 @@ def test_scrub_payload_catches_identifiers_in_non_prose_fields_too():
     assert "proc.bp_invoice_trgt" not in str(out)
 
 
+def test_blocked_structured_field_is_withheld_not_replaced_with_prose():
+    """A blocked identifier must not become a sentence.
+
+    Live regression: POST /workflows/opportunities returned
+    user_id="I couldn't retrieve that. I've raised it with the team." The run's user_id was
+    the model name (settings.script_user), which correctly trips the model_name rule — but
+    substituting the conversational reply turned an identifier into prose that a consumer
+    could compare against or persist.
+    """
+    out = osafe.scrub_payload({"user_id": "AgentNick"})
+    assert out["user_id"] == osafe.SAFE_FIELD
+    assert out["user_id"] != osafe.SAFE_REPLY
+    assert "AgentNick" not in str(out)
+
+
+def test_prose_fields_still_get_the_sentence():
+    """The structured-field change must not weaken the prose contract."""
+    out = osafe.scrub_payload({"answer": "have a look in proc.bp_invoice_trgt"})
+    assert out["answer"] == osafe.SAFE_REPLY
+
+
+def test_clean_structured_fields_are_untouched():
+    """Withholding applies only to values that actually violate."""
+    body = {"user_id": "system", "status": "completed", "workflow_id": "abc-123"}
+    assert osafe.scrub_payload(body) == body
+
+
 def test_error_detail_degrades_to_plain_english():
     body = {"detail": 'relation "proc.cat_product_mapping" does not exist'}
     out = osafe.scrub_payload(body)

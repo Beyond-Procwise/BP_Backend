@@ -321,6 +321,118 @@ _SINGLE_GARBAGE_WORDS = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# Table-header / form-label lexicon
+# ---------------------------------------------------------------------------
+# Words that belong to a document's STRUCTURE (column headers, form labels,
+# term/date labels) rather than to any company's identity. A supplier name is
+# rejected when it is made up ENTIRELY of these — that is what makes the rule
+# generalise instead of being a blocklist of observed strings: any permutation
+# or subset of a table header row ("Qty Unit Price", "Item No Rate Amount",
+# "Delivery Deadline", "Terms and Conditions") collapses to the same signal,
+# while a real company name always contributes at least one distinctive word.
+#
+# Deliberately EXCLUDES corporate-entity words (Ltd, Inc, Group, Solutions,
+# Services, Holdings, Company, ...) — those legitimately make up most of a real
+# name and are handled by _BIZ_SUFFIX_RE / _CORP_SUFFIX_WORDS.
+_LABEL_TOKENS = frozenset({
+    # column headers
+    "description", "descriptions", "desc", "item", "items", "line", "lines",
+    "qty", "quantity", "quantities", "unit", "units", "price", "prices",
+    "rate", "rates", "amount", "amounts", "amt", "cost", "costs", "value",
+    "total", "totals", "subtotal", "sub", "grand", "net", "gross", "sum",
+    "count", "no", "num", "number", "ref", "reference", "sku", "code",
+    "currency", "detail", "details", "summary", "particulars", "product",
+    "products", "service", "services_desc", "category", "type", "status",
+    # tax / money labels
+    "tax", "taxes", "vat", "gst", "discount", "discounts", "charge",
+    "charges", "fee", "fees", "payment", "payments", "pay", "paid",
+    "balance", "due", "outstanding", "advance", "deposit",
+    # date / term labels
+    "date", "dates", "day", "days", "week", "weeks", "month", "months",
+    "year", "years", "period", "start", "end", "deadline", "term", "terms",
+    "condition", "conditions", "valid", "validity", "expiry", "issued",
+    # logistics labels
+    "delivery", "deliver", "delivered", "dispatch", "shipping", "shipment",
+    "freight", "carriage", "handling", "packing",
+    # misc form furniture
+    "notes", "note", "remarks", "remark", "signature", "sign", "signed",
+    "page", "pages", "per", "each", "and", "the", "for", "of", "to", "from",
+    "incl", "excl", "including", "excluding", "hrs", "hours", "hour",
+})
+
+# Entity words after which a bare number is never part of the name — a real
+# company does not put a figure AFTER its legal suffix ("Lester Group 807"),
+# so the number is a neighbouring table cell that got concatenated on.
+_ENTITY_TAIL_WORDS = frozenset({
+    "group", "ltd", "limited", "llc", "inc", "corp", "corporation", "co",
+    "company", "plc", "llp", "gmbh", "solutions", "services", "holdings",
+    "enterprises", "enterprise", "studios", "agency", "partners", "trading",
+})
+
+_TOKEN_SPLIT_RE = re.compile(r"[\s/|]+")
+
+
+def _label_tokens(name: str) -> list[str]:
+    """Normalised word tokens, punctuation stripped, empties dropped."""
+    out = []
+    for raw in _TOKEN_SPLIT_RE.split(name.lower()):
+        tok = raw.strip(".,:;()[]{}\"'-&")
+        if tok:
+            out.append(tok)
+    return out
+
+
+def _is_header_fragment(name: str) -> bool:
+    """True when the string is a table-header / form-label fragment.
+
+    Two conditions, both anchored on the label lexicon:
+      A. EVERY word is a structural label word  → the whole string is furniture
+         ("Description Qty Unit Price", "days Tax", "Delivery Deadline",
+          "CONDITIONS", "Terms and Conditions").
+      B. THREE OR MORE CONSECUTIVE words are label words → a real name that a
+         header row got concatenated onto ("Acme Description Qty Unit Price").
+         Three-in-a-row is required so an ordinary name that happens to reuse
+         one or two of these words ("Total Fitness", "Express Delivery Ltd",
+         "City of Newport") is untouched.
+    """
+    toks = _label_tokens(name)
+    if not toks:
+        return False
+
+    # A — entirely structural.
+    if all(t in _LABEL_TOKENS for t in toks):
+        return True
+
+    # B — a run of >= 3 label words embedded in a longer string.
+    run = 0
+    for t in toks:
+        run = run + 1 if t in _LABEL_TOKENS else 0
+        if run >= 3:
+            return True
+    return False
+
+
+def _is_table_cell_artifact(name: str) -> bool:
+    """True when the string carries the fingerprint of merged table cells.
+
+    C. A bare number trailing an entity suffix ("Lester Group 807") — the
+       figure is a neighbouring cell, never part of the legal name.
+    D. Two or more very short mixed letter+digit tokens ("... C1 6s") — cell
+       codes / OCR row markers. Two are required so genuine names built on one
+       such token ("3M", "O2", "B&Q") are unaffected.
+    """
+    toks = _label_tokens(name)
+    if len(toks) >= 2 and toks[-1].isdigit() and toks[-2] in _ENTITY_TAIL_WORDS:
+        return True
+
+    short_mixed = sum(
+        1 for t in toks
+        if len(t) <= 3 and any(c.isdigit() for c in t) and any(c.isalpha() for c in t)
+    )
+    return short_mixed >= 2
+
+
 def _is_address_contaminated(name: str) -> bool:
     """Return True if the candidate contains street/address keywords with digits
     or other address-indicating patterns.
@@ -417,7 +529,12 @@ def _is_address_contaminated(name: str) -> bool:
 
 
 def _is_garbage_name(name: str) -> bool:
-    """Return True if `name` is obviously not a real supplier name.
+    """Return True if `name` is obviously not a real supplier name."""
+    return _garbage_reason(name) is not None
+
+
+def _garbage_reason(name: str) -> str | None:
+    """Return a short reason code if `name` is not a real supplier name, else None.
 
     Rejects:
     - Too short (< 3 chars)
@@ -436,61 +553,98 @@ def _is_garbage_name(name: str) -> bool:
 
     # Length guard
     if len(lo) < _MIN_NAME_LEN:
-        return True
+        return "too_short"
 
     # All digits / punctuation
     if re.match(r'^[\d\W_]+$', lo):
-        return True
+        return "no_letters"
 
     # Email address
     if _EMAIL_RE.search(stripped):
-        return True
+        return "email"
 
     # Noise markers (legacy list)
     if any(m in lo for m in _NOISE_LOWER):
-        return True
+        return "noise_token"
 
     # Address contamination (street keyword with number OR long address)
     if _is_address_contaminated(stripped):
-        return True
+        return "address"
 
     # Footer / closing phrases
     if any(lo.startswith(fp) or fp in lo for fp in _FOOTER_PHRASES_LOWER):
-        return True
+        return "footer_phrase"
 
     # City+state pattern ("Oklahoma City, OK")
     if _CITY_STATE_RE.match(stripped):
-        return True
+        return "city_state"
 
     # Date-like string
     if _DATE_RE.match(stripped):
-        return True
+        return "date"
 
     # Money-like string
     if _MONEY_RE.match(stripped):
-        return True
+        return "money"
 
     # Label / header phrases (e.g. "Client Information", "Order Details")
-    if lo in _LABEL_PHRASES_LOWER or any(lo == phrase for phrase in _LABEL_PHRASES_LOWER):
-        return True
+    if lo in _LABEL_PHRASES_LOWER:
+        return "label_phrase"
 
     # Document-reference strings (e.g. "INV-B-23476 PO", "PO-12345")
     if _DOC_REF_RE.match(stripped):
-        return True
+        return "doc_reference"
 
     # Single word that is a generic attention/label word
     words = stripped.split()
     if len(words) == 1 and lo in _SINGLE_GARBAGE_WORDS:
-        return True
+        return "generic_word"
 
     # Very short single word (≤3 chars) with no corporate suffix
     _CORP_SUFFIXES = ("inc", "ltd", "llc", "corp", "gmbh", "sa", "co.", "co,",
                       "limited", "industries", "group", "holdings", "studios",
                       "services", "systems", "solutions", "enterprises")
     if len(lo) <= 3 and not any(lo.endswith(s) for s in _CORP_SUFFIXES):
-        return True
+        return "too_short_no_suffix"
 
-    return False
+    # Table-header / form-label fragment ("Description Qty Unit Price")
+    if _is_header_fragment(stripped):
+        return "header_fragment"
+
+    # Merged-table-cell artefact ("Lester Group 807", "... C1 6s")
+    if _is_table_cell_artifact(stripped):
+        return "table_cell_artifact"
+
+    return None
+def _record_rejection(conn, name: str, reason: str, *, doc_type=None, doc_pk=None,
+                      trace_id=None) -> None:
+    """Log a rejected supplier-name candidate. Best-effort, never raises.
+
+    Nothing is silently dropped: the literal extracted value is preserved so a
+    false positive is visible and can be overturned by a human. Rolls back to a
+    savepoint on failure so a missing table cannot poison the caller's txn.
+    """
+    if conn is None:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SAVEPOINT sp_supplier_reject")
+            try:
+                cur.execute(
+                    "INSERT INTO proc.bp_supplier_name_reject "
+                    "(extracted_name, reason, doc_type, doc_pk, trace_id) "
+                    "VALUES (%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (LOWER(extracted_name)) DO UPDATE SET "
+                    "  seen_count = proc.bp_supplier_name_reject.seen_count + 1, "
+                    "  last_seen = now()",
+                    (name, reason, doc_type, doc_pk, trace_id),
+                )
+                cur.execute("RELEASE SAVEPOINT sp_supplier_reject")
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT sp_supplier_reject")
+                raise
+    except Exception:  # noqa: BLE001 — audit log must never break extraction
+        log.debug("supplier_resolver: reject-log write failed for %r", name, exc_info=True)
 
 
 def _slug(name: str) -> str:
@@ -524,13 +678,20 @@ def resolve_or_create_supplier(name: str, conn, *, doc_type: str | None = None,
         return None
 
     name = name.strip()
-    if not name or _is_garbage_name(name):
-        log.debug("supplier_resolver: garbage name rejected: %r", name)
+    if not name:
+        return None
+    reason = _garbage_reason(name)
+    if reason:
+        log.debug("supplier_resolver: rejected %r (%s)", name, reason)
+        _record_rejection(conn, name, reason, doc_type=doc_type, doc_pk=doc_pk,
+                          trace_id=trace_id)
         return None
 
     # ML classifier gate — drops contaminated strings that pass rule-based filter
     if not _classifier_accepts(name):
         log.debug("supplier_resolver: classifier rejected name: %r", name)
+        _record_rejection(conn, name, "classifier", doc_type=doc_type, doc_pk=doc_pk,
+                          trace_id=trace_id)
         return None
 
     # --- Already canonical? ---

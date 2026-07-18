@@ -177,6 +177,19 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Agent-workflows schema init failed (non-critical)")
 
+        # Ensure the supplier-response schema exists. supplier_response_repo has the DDL and
+        # calls init_schema() itself, but only from paths reached AFTER the negotiation agent
+        # has already queried the table: wait_for_response -> lookup_workflow_for_unique hits
+        # proc.supplier_response first and died with UndefinedTable. The exception was caught
+        # and logged, so the agent then sat in its "awaiting supplier responses" loop for a
+        # reply it could never observe — POST /workflows/negotiate simply never returned.
+        try:
+            from repositories import supplier_response_repo as _supplier_response_repo
+            _supplier_response_repo.init_schema()
+            logger.info("Supplier-response schema ensured")
+        except Exception:
+            logger.exception("Supplier-response schema init failed (non-critical)")
+
         # Ensure the FX-rates cache schema exists (GET /fx/rates).
         try:
             from repositories import fx_rate_repo as _fx_rate_repo
