@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -50,11 +51,13 @@ MAX_DOC_TEXT_CHARS = 16000
 # the widest PO schema (~23 fields) with substantial thinking.
 MAX_RESPONSE_TOKENS = 4096
 
-# FX rates to USD — approximate mid-market as of 2026-05.
-# Swap with a daily FX feed (Bloomberg / ECB / openexchangerates) when
-# accounting needs daily precision. For procurement reporting these are
-# good to ~2% which is acceptable.
-_FX_TO_USD: dict[str, float] = {
+# FX rates to USD — LAST-RESORT fallback only. These are a frozen 2026-05 snapshot;
+# GBP has since drifted from 1.27 to ~1.34 (5.5%), well past the "~2%" this table was
+# once assumed good for. Because the dashboard converts aggregates with the LIVE table
+# (proc.bp_fx_rates, served by GET /fx/rates), a row stamped at 1.27 and displayed at
+# the live rate did not round-trip: sterling billed as £190.4K came back as ~£179.9K.
+# `_fx_to_usd()` below now prefers the same live table the UI uses, so both sides agree.
+_FX_TO_USD_FALLBACK: dict[str, float] = {
     "USD": 1.00,
     "GBP": 1.27,
     "EUR": 1.08,
@@ -67,6 +70,49 @@ _FX_TO_USD: dict[str, float] = {
     "CHF": 1.15,
     "NZD": 0.61,
 }
+
+# Live rates are cached in-process: extraction converts one row at a time and would
+# otherwise hit the DB per document. Short TTL so a long batch still picks up a refresh.
+_FX_CACHE_TTL_SECONDS = 900.0
+_fx_cache: dict[str, float] = {}
+_fx_cache_at: float = 0.0
+
+
+def _fx_to_usd(ccy: str) -> float | None:
+    """USD per 1 unit of ``ccy``, preferring the live table the dashboard uses.
+
+    ``proc.bp_fx_rates`` is USD-quoted (rate = units of ccy per 1 USD), so the
+    rate *to* USD is its reciprocal. Falls back to the frozen table above when the
+    feed is unavailable, and returns ``None`` for a currency neither source knows —
+    the caller then leaves ``converted_amount_usd`` NULL rather than guessing.
+    """
+    global _fx_cache, _fx_cache_at
+
+    now = time.monotonic()
+    if not _fx_cache or (now - _fx_cache_at) > _FX_CACHE_TTL_SECONDS:
+        try:
+            from repositories.fx_rate_repo import get_or_refresh_rates
+
+            batch = get_or_refresh_rates()
+            rates = (batch or {}).get("rates") or {}
+            # Guard the reciprocal: a zero/negative quote would otherwise divide by zero
+            # or silently flip the sign of a converted total.
+            usable = {
+                str(k).upper(): 1.0 / float(v)
+                for k, v in rates.items()
+                if isinstance(v, (int, float)) and float(v) > 0
+            }
+            if usable:
+                _fx_cache = usable
+                _fx_cache_at = now
+        except Exception:
+            # Feed down or DB unreachable — fall through to the frozen table. Extraction
+            # must never fail because an FX lookup did.
+            log.warning("context_layer: live FX unavailable, using fallback table", exc_info=True)
+
+    if ccy in _fx_cache:
+        return _fx_cache[ccy]
+    return _FX_TO_USD_FALLBACK.get(ccy)
 
 
 # (column_name, type, prompt-description) per doc_type. Types:
@@ -1057,10 +1103,10 @@ def _validate_and_bind(
             # ISO list instead of grounding it.
             if name == "currency":
                 code = sval.upper()
-                if code in _FX_TO_USD:
-                    out[name] = code
-                else:
-                    out[name] = None
+                # Known to the live feed OR the fallback table. Previously this validated
+                # against the 11-entry frozen table alone, so a SEK/NOK/PLN/ZAR invoice had
+                # its perfectly valid currency nulled out.
+                out[name] = code if _fx_to_usd(code) is not None else None
                 continue
             # supplier_name: when Qwen normalises the supplier (e.g. doc
             # says "AQUARIUS" but Qwen returns "Aquarius Marketing Ltd"
@@ -1542,7 +1588,7 @@ def _compute_derived(row: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(ccy_raw, str):
         return row
     ccy = ccy_raw.upper().strip()
-    rate = _FX_TO_USD.get(ccy)
+    rate = _fx_to_usd(ccy)
     if rate is None:
         return row
     row["exchange_rate_to_usd"] = rate
