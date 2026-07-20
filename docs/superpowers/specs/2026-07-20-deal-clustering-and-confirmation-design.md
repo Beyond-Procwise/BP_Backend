@@ -191,6 +191,47 @@ Measured pair scores on tier 2+3 alone:
 The consultancy row is why several signals are needed: on price alone it looks related;
 description and volume outvote the coincidence.
 
+### Award exclusivity — the discriminator that separates rivalry from repeat buying
+
+Product, volume and price correlation is **not sufficient** to establish rivalry. Tested
+across the rest of the product, it produced two confident groupings that are wrong:
+
+| Score | Quote A | Quote B |
+|---|---|---|
+| 0.744 | 128234 `SUP-DuncanLlc` | 136586 `SUP-PerryLtd` |
+| 0.703 | 102494 `SUP-DixonReynoldsAndSolomon` | 104683 `SUP-GomezGoodAndCross` |
+
+The line items look exactly like competing bids — same buyer (`Assurity Ltd`), same
+products, identical quantities, prices a few percent apart:
+
+```
+128234  Staedtler Ballpoint Pen Black Ink, 10 per Pack  qty 100  £13.85
+136586  Staedtler Ballpoint Pen                         qty 100  £12.49
+128234  Faber-Castell A4 Ruled Notebook, White Cover    qty 100  £11.69
+136586  Faber-Castell A4 Ruled                          qty 100  £10.10
+```
+
+They are not bids. **Each supplier has its own PO and its own invoice** — four suppliers,
+four POs, four invoice chains. These are repeat commodity purchases of the same catalogue
+items from different suppliers at different times, which are legitimately separate deals.
+
+The structural difference is decisive:
+
+| | Suppliers | POs |
+|---|---|---|
+| Rivalry (freight event) | 3 — Swift, Condor, Meridian Freight | **1** — only the winner |
+| Repeat buying (Duncan/Perry/Dixon/Gomez) | 4 | **4** — one each |
+
+**A competition has one award.** Two correlated quotes that *each* anchor their own PO
+with their own invoices are not rivals — they are separate transactions, however alike
+their contents. This is a structural fact about the documents, not a similarity measure,
+so it acts as a **veto on rivalry** rather than as another graded signal: correlation
+proposes the group, award structure can rule it out.
+
+Stated precisely, two bids are **not** rivals when each anchors a distinct PO whose
+invoices settle separately. A supplier winning one event and losing another is unaffected
+— the test is pairwise over the specific quotes, not over the supplier's whole history.
+
 ### Validation: measured against the real batch
 
 The approach was run read-only over the 28 quotes before being specified, with ground
@@ -232,6 +273,31 @@ a second batch could place a real event below it or a false pair above it. The m
 0.130 is narrow. Treat 0.70 as a starting value to be re-measured as batches accumulate,
 which is precisely why nothing auto-applies and why the band below it routes to a human
 rather than to a decision.
+
+### Consistency across the rest of the product
+
+Measured over every other deal, not only the analysis batch.
+
+**Line-item coverage is universal** — 100% of quotes (avg 4.1 lines), POs (4.1) and
+invoices (2.4) outside the analysis batch carry line items. Correlation has data to work
+with product-wide, not just on this corpus.
+
+**The analysis batch is the only competitive data that exists.** Every other deal is a
+single supplier: 1 quote, 1 PO, 1–3 invoices. So the rivalry path has exactly one
+worked example to calibrate against, and the 0.70 threshold cannot yet be validated on a
+second competitive batch — there isn't one. This is a data limitation, not a design
+choice, and it is the single biggest risk to this feature.
+
+**The other deals are the negative control, and they caught the award-exclusivity gap
+above.** With that veto applied, correlation-plus-structure produces no false merges
+across the 91 scored cross-deal pairs.
+
+**42 documents carry no `deal_id` at all** — 3 quotes, 20 POs, 19 invoices, roughly half
+the POs and invoices in the system. They predate or fell outside batch assignment and
+have no `bp_deal` row. Clustering as specified operates per upload batch and would never
+see them. Bringing them in is deliberately **out of scope here** — they need their own
+pass, and grouping them shares this design's machinery but not its entry point. Recorded
+so it is a known gap rather than a silent one.
 
 ### Confidence from signal agreement
 
@@ -498,6 +564,14 @@ MeridFr  MFS-Q-3391   V1 945.00  V2 928.00  V3 915.00
   wrong pairing does not resurface on the next clustering run.
 - **Noise-row filter** — commentary lines (`OPPORTUNITY — …`, `Validity`, `WATCH …`) are
   excluded from scoring; a fixture asserts they never drive a match.
+- **Award exclusivity vetoes rivalry (product-wide negative control)** — quotes 128234
+  (Duncan) and 136586 (Perry) correlate at 0.744, and 102494 (Dixon) / 104683 (Gomez) at
+  0.703, yet each anchors its own PO and invoice. All four must remain separate deals.
+  This is the regression guard against merging repeat commodity buying into a fake
+  competition, and it runs over the real non-analysis corpus, not fixtures.
+- **Rivalry still forms where there is one award** — the freight event's 3 bidders share
+  a single PO (Swift) and must still group. Asserts the veto is pairwise-structural and
+  does not suppress genuine competition.
 - **Version collapse** — 28 quotes → 12 base references, `(V3 (BAFO))` recognised as the
   current round. Same supplier ⇒ rounds; different supplier ⇒ rivals, never merged.
 - **Swift/null-supplier** — PO-2024-0091 groups via product similarity despite
