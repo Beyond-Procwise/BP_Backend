@@ -113,27 +113,54 @@ supplier, different price, same products, same quantities" is the defining signa
 so a second profile is required, in which supplier and price divergence are **expected
 rather than penalised**.
 
-### Requirement similarity (new)
+### Precedence: declared linkage outranks inferred linkage
 
-A rivalry comparator scoring only what a shared requirement implies — the products and
-the quantities — with unit price excluded:
+Correlation is only ever used to fill a gap a human has not already closed. In order:
+
+1. **Human-declared connection.** If the uploader explicitly said these documents belong
+   together — amend-mode targeting an existing deal, an explicit grouping at upload, or a
+   previously *confirmed* proposal — that grouping is authoritative. Clustering must not
+   re-group, split or second-guess it. Inference never overrides a human statement.
+2. **Linked identifiers.** Explicit references carried in the documents: `po_id`
+   (invoice→PO, 7/7 populated here) and `quote_number` on PO lines. When present these
+   are decisive and no similarity scoring is needed.
+3. **Inferred correlation.** Only for what remains. On this batch that is nearly
+   everything — 0/28 quotes carry a `po_id`, 0/32 PO lines carry a `quote_number`.
+
+### Correlation signals (new)
+
+Where inference is required, correlate on **product description, pricing, volumes and
+linked identifiers together**. No single signal decides.
 
 ```python
-parts.append((0.67, jaccard(tokens(desc_a), tokens(desc_b))))   # product description
-parts.append((0.33, 1.0 if abs(qa - qb) < 1e-9 else 0.0))       # quantity
-# unit_price deliberately EXCLUDED: divergence is the competition, not a mismatch
+parts.append((0.40, jaccard(tokens(desc_a), tokens(desc_b))))   # product description
+parts.append((0.30, 1.0 if abs(qa - qb) < 1e-9 else 0.0))       # volume / quantity
+parts.append((0.30, price_proximity(pa, pb)))                   # pricing
 ```
 
-Measured on this batch's freight event (`London (Heathrow) → Edinburgh - FTL`, quantity
-40 across all three bidders):
+**Pricing is compared by proximity, not equality.** Exact equality is the signature of
+*continuity* (a supplier's own quote → PO). Rivals sit in a tight band around the market
+rate, so a price ratio ≤1.25 scores 1.0, decaying to 0.0 by 3.0×. Measured on this batch:
 
-| Pair | Existing `_line_pair_score` | Rivalry score |
+| Requirement | Bidders | Price range | Spread |
+|---|---|---|---|
+| Freight — Edinburgh lane | 9 | £872.34 – £945.00 | **1.08×** |
+| IT — endpoint management | 5 | £272,000 – £291,000 | **1.07×** |
+| Consultancy — Business Analyst | 8 | £680 – £780 | **1.15×** |
+
+Within a requirement, 1.07–1.15×. Across requirements, £872 vs £272,000 — **312×**.
+
+Resulting pair scores:
+
+| Pair | Existing `_line_pair_score` | Correlation score |
 |---|---|---|
-| Condor ↔ Meridian Freight (competing) | 0.75 | **1.00** |
-| Condor ↔ Swift (competing, null supplier, description drift) | 0.667 | **0.888** |
-| Condor ↔ IT services (unrelated) | — | **0.00** |
+| Condor ↔ Meridian Freight (rival) | 0.75 | **1.000** |
+| Condor ↔ Swift (rival, null supplier, description drift) | 0.667 | **0.933** |
+| Freight ↔ consultancy (prices coincidentally within 1.37×) | — | **0.280** |
+| Freight ↔ IT services | — | **0.000** |
 
-Cross-category separation is absolute, so the freight/IT/consultancy boundaries hold.
+The consultancy row is the reason all four signals are needed: on price alone it would
+look related; description and volume outvote the coincidence.
 
 Continuity keeps using the existing `quote_po` / `invoice_po` profiles unchanged — that
 maths is correct for what it does and is not touched.
@@ -142,11 +169,15 @@ maths is correct for what it does and is not touched.
 
 Applied per upload batch:
 
+0. **Honour declared linkage first.** Documents the uploader explicitly connected, or
+   that belong to an already-confirmed deal, are set aside as fixed. They are reported in
+   the proposal as declared (not inferred) and are never re-clustered. Everything below
+   operates only on the remainder.
 1. **Collapse quote versions.** Normalise `quote_id` by stripping a trailing
    `(V<n>...)` suffix. Members of one base reference are rounds of one bid; the highest
    version is the current offer. Two quotes from the *same* supplier are versions;
    two from *different* suppliers are rivals. 28 quotes → 12 bids.
-2. **Cluster bids into requirement groups** using the rivalry comparator above. Each
+2. **Cluster bids into requirement groups** using the correlation comparator above. Each
    cluster is one sourcing event, holding **N rival suppliers' bids** — this is the step
    that makes a deal multi-supplier. A cluster of one is a single-bid event, not an error.
 3. **Attach each PO to the requirement group it was awarded from**, scoring the PO
@@ -233,7 +264,8 @@ authoritative and clustering does not run.
 
 | Unit | Responsibility | Depends on |
 |---|---|---|
-| `requirement_similarity.py` | **Rivalry** scoring: same-requirement, different-supplier. New `quote_rival` profile + line comparator with price excluded. | `linking_engine._tokens`, `_to_float` |
+| `requirement_similarity.py` | Correlation scoring over description + pricing (proximity) + volume + linked ids. New `quote_rival` profile. | `linking_engine._tokens`, `_to_float` |
+| `declared_linkage.py` | Identify human-declared connections that clustering must not touch | `process_monitor`, confirmed proposals |
 | `deal_clustering.py` | Batch → proposed clusters. Pure; no writes. | rivalry + `linking_engine.score_link` |
 | `version_collapse.py` | `quote_id` → base reference + round | none |
 | `proposal_store.py` | Persist/read/confirm proposals | the two tables above |
@@ -249,10 +281,13 @@ a database, and so a bad clustering run can never corrupt assigned deals.
 ## Data flow
 
 ```
-upload batch (unlinked docs)
+upload batch
+   -> declared linkage set aside   human-stated connections are FIXED, never re-grouped
+   -> linked identifiers           po_id / quote_number: decisive where present
    -> version collapse          28 quotes -> 12 bids   (same supplier = rounds)
    -> requirement clustering    12 bids -> 4 events    (RIVALRY: different suppliers,
-                                                        same products + quantities)
+                                                        correlated on description +
+                                                        pricing + volume)
    -> PO attachment             award joins its event  (CONTINUITY: quote_po profile)
    -> invoice attachment        via po_id              (deterministic, 7/7)
    -> bp_deal_proposal[_member]          <-- nothing else written
@@ -295,9 +330,16 @@ MeridFr  MFS-Q-3391   V1 945.00  V2 928.00  V3 915.00
   the supplier count per event, not just the document count: a deal that ends up with one
   supplier where three bid is the exact failure this design exists to prevent.
 - **Rivalry beats the old scorer** — regression-guard the measured figures: competing
-  Condor↔Meridian Freight scores 1.0 under rivalry vs 0.75 under `_line_pair_score`,
+  Condor↔Meridian Freight scores 1.0 under correlation vs 0.75 under `_line_pair_score`,
   and `cmp_supplier` on rival suppliers is asserted to be `(0.0, 'CONFLICT')` so the
   reason the old profile cannot be reused stays documented in a test.
+- **Declared linkage is never overridden** — a document the user explicitly attached to a
+  deal stays there even when correlation would score it into a different cluster. This is
+  the test that protects the precedence rule; it must fail loudly if inference ever wins.
+- **Price proximity, not equality** — rival bids at 1.08× group; the same description at
+  312× (freight vs IT) does not. Guards against re-introducing exact-match price scoring.
+- **No single signal decides** — freight↔consultancy, whose prices sit within 1.37×,
+  must stay unclustered at ~0.28 because description and volume disagree.
 - **Version collapse** — 28 quotes → 12 base references, `(V3 (BAFO))` recognised as the
   current round. Same supplier ⇒ rounds; different supplier ⇒ rivals, never merged.
 - **Swift/null-supplier** — PO-2024-0091 groups via product similarity despite
