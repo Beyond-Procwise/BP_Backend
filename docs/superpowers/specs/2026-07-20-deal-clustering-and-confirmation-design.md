@@ -90,39 +90,83 @@ maths. Version collapse is a prerequisite for correct clustering, not a nicety.
 
 ## Approach
 
-Add a clustering pass that **proposes** groupings, and a UI to **confirm** them. Reuse
-the existing scorer; add no new matching maths.
+Add a clustering pass that **proposes** groupings, and a UI to **confirm** them.
 
-`linking_engine._line_pair_score` (`linking_engine.py:162-178`) already scores exactly
-the product/calculation signals required:
+### Two relations, not one
+
+The existing engine models exactly one relation and it is **not** the one that groups a
+sourcing event.
+
+| Relation | Example | Supplier | Unit price | Modelled today |
+|---|---|---|---|---|
+| **Continuity** | Condor quote → Condor PO → Condor invoice | same | same | Yes (`quote_po`, `invoice_po`) |
+| **Rivalry** | Condor bid ↔ Meridian Freight bid ↔ Swift bid | **different** | **different** | **No** |
+
+`PROFILES` (`linking_engine.py:263-266`) contains only `invoice_po` and `quote_po`. There
+is no quote↔quote profile. Worse, applying the existing one to rival bids actively
+rejects them — `cmp_supplier` returns `(0.0, 'CONFLICT')` for two different suppliers on
+the **highest-weighted signal in the model** (`supplier_id`, weight 5, tier 1), and
+`amount` (weight 3) conflicts too because rival bids differ in total by design.
+
+The engine is a *same-commercial-thread* detector. For a competitive event, "different
+supplier, different price, same products, same quantities" is the defining signature —
+so a second profile is required, in which supplier and price divergence are **expected
+rather than penalised**.
+
+### Requirement similarity (new)
+
+A rivalry comparator scoring only what a shared requirement implies — the products and
+the quantities — with unit price excluded:
 
 ```python
-parts.append((0.5,  jaccard(tokens(desc_a), tokens(desc_b))))   # product description
-parts.append((0.25, 1.0 if abs(qa - qb) < 1e-9 else 0.0))       # quantity
-parts.append((0.25, 1.0 if abs(pa - pb) < 1e-6 else 0.0))       # unit price
+parts.append((0.67, jaccard(tokens(desc_a), tokens(desc_b))))   # product description
+parts.append((0.33, 1.0 if abs(qa - qb) < 1e-9 else 0.0))       # quantity
+# unit_price deliberately EXCLUDED: divergence is the competition, not a mismatch
 ```
+
+Measured on this batch's freight event (`London (Heathrow) → Edinburgh - FTL`, quantity
+40 across all three bidders):
+
+| Pair | Existing `_line_pair_score` | Rivalry score |
+|---|---|---|
+| Condor ↔ Meridian Freight (competing) | 0.75 | **1.00** |
+| Condor ↔ Swift (competing, null supplier, description drift) | 0.667 | **0.888** |
+| Condor ↔ IT services (unrelated) | — | **0.00** |
+
+Cross-category separation is absolute, so the freight/IT/consultancy boundaries hold.
+
+Continuity keeps using the existing `quote_po` / `invoice_po` profiles unchanged — that
+maths is correct for what it does and is not touched.
 
 ### Grouping algorithm
 
-Applied per upload batch, most reliable signal first:
+Applied per upload batch:
 
 1. **Collapse quote versions.** Normalise `quote_id` by stripping a trailing
    `(V<n>...)` suffix. Members of one base reference are rounds of one bid; the highest
-   version is the current offer.
-2. **Attach invoices to POs** via the existing `po_id` (7/7 populated — deterministic,
+   version is the current offer. Two quotes from the *same* supplier are versions;
+   two from *different* suppliers are rivals. 28 quotes → 12 bids.
+2. **Cluster bids into requirement groups** using the rivalry comparator above. Each
+   cluster is one sourcing event, holding **N rival suppliers' bids** — this is the step
+   that makes a deal multi-supplier. A cluster of one is a single-bid event, not an error.
+3. **Attach each PO to the requirement group it was awarded from**, scoring the PO
+   against the group's bids with the existing `quote_po` profile (correct here: the
+   awarded PO shares supplier *and* price with the winning bid — Condor V3 vs its PO
+   scores 1.0 on the existing comparator).
+4. **Attach invoices to POs** via the existing `po_id` (7/7 populated — deterministic,
    no scoring needed).
-3. **Cluster the remainder by line-item similarity.** Score every collapsed-quote ↔ PO
-   pair with `score_link(..., "quote_po")`; group above the existing `_BAND_REVIEW`
-   threshold (65). Quotes that match each other but no PO form a **quote-only sourcing
-   event** — a valid deal with no award yet.
-4. **Leave genuine orphans orphaned.** PO-2024-0163 (Caldwell) has no quotes in the
+5. **Leave genuine orphans orphaned.** PO-2024-0163 (Caldwell) has no quotes in the
    batch. It must surface as awaiting-quote, never be forced into a neighbouring group.
 
-Supplier identity narrows candidates but must not gate grouping: normalised supplier-key
-matching resolves only **3 of 5** POs on this batch. Swift (PO-2024-0091) fails because
-`SDP-Q-44120` has a **null `supplier_id`** (3 of 28 quotes and 3 of 7 invoices are
-missing it). Product-level matching is what recovers that group — which is precisely why
-line-item similarity, not supplier, is the primary clustering signal.
+The ordering matters: requirement clustering runs **before** PO attachment, so a sourcing
+event exists in its own right and does not depend on an award having happened. A
+quote-only event (no PO yet) is a first-class deal.
+
+Supplier identity must not gate grouping. Normalised supplier-key matching resolves only
+**3 of 5** POs on this batch; Swift (PO-2024-0091) fails because `SDP-Q-44120` has a
+**null `supplier_id`** (3 of 28 quotes and 3 of 7 invoices are missing it). Note
+`cmp_supplier(None, x)` returns `(0.5, 'MISSING')` — neutral, so a null supplier neither
+helps nor blocks. Product-level matching is what recovers that group.
 
 ### Proposals are never auto-applied
 
@@ -189,7 +233,8 @@ authoritative and clustering does not run.
 
 | Unit | Responsibility | Depends on |
 |---|---|---|
-| `deal_clustering.py` | Batch → proposed clusters. Pure; no writes. | `linking_engine.score_link` |
+| `requirement_similarity.py` | **Rivalry** scoring: same-requirement, different-supplier. New `quote_rival` profile + line comparator with price excluded. | `linking_engine._tokens`, `_to_float` |
+| `deal_clustering.py` | Batch → proposed clusters. Pure; no writes. | rivalry + `linking_engine.score_link` |
 | `version_collapse.py` | `quote_id` → base reference + round | none |
 | `proposal_store.py` | Persist/read/confirm proposals | the two tables above |
 | `POST /deals/proposals/generate` | Cluster a batch, store proposals | clustering + store |
@@ -205,12 +250,24 @@ a database, and so a bad clustering run can never corrupt assigned deals.
 
 ```
 upload batch (unlinked docs)
-   -> version collapse        (28 quotes -> 12 base references)
-   -> invoice→PO via po_id    (deterministic)
-   -> line-item clustering    (score_link, band >= 65)
-   -> bp_deal_proposal[_member]        <-- nothing else written
+   -> version collapse          28 quotes -> 12 bids   (same supplier = rounds)
+   -> requirement clustering    12 bids -> 4 events    (RIVALRY: different suppliers,
+                                                        same products + quantities)
+   -> PO attachment             award joins its event  (CONTINUITY: quote_po profile)
+   -> invoice attachment        via po_id              (deterministic, 7/7)
+   -> bp_deal_proposal[_member]          <-- nothing else written
    -> [ USER REVIEWS AND CONFIRMS ]
    -> mint deal_id -> _stg/_trgt/lines + bp_deal_document_map + bp_deal(is_tracked=false)
+```
+
+Worked example — the freight event:
+
+```
+Swift    SDP-Q-44120  V1 905.00  V2 884.00  V3 872.34  (null supplier_id)
+Condor   CL-2024-0771 V1 930.00  V2 910.00  V3 898.00
+MeridFr  MFS-Q-3391   V1 945.00  V2 928.00  V3 915.00
+   9 quote documents -> 3 bids -> 1 sourcing event
+   + PO-2024-0091 (Swift, awarded) + its invoices
 ```
 
 ## Error handling
@@ -233,10 +290,18 @@ upload batch (unlinked docs)
 
 - **Fixtures from this real batch** — the 4 sourcing events above are the golden case;
   clustering must reproduce them from the 40 documents.
+- **Multi-supplier rivalry (the primary case)** — the freight event must group Swift,
+  Condor and Meridian Freight into **one** deal with **three** rival bidders. Asserting
+  the supplier count per event, not just the document count: a deal that ends up with one
+  supplier where three bid is the exact failure this design exists to prevent.
+- **Rivalry beats the old scorer** — regression-guard the measured figures: competing
+  Condor↔Meridian Freight scores 1.0 under rivalry vs 0.75 under `_line_pair_score`,
+  and `cmp_supplier` on rival suppliers is asserted to be `(0.0, 'CONFLICT')` so the
+  reason the old profile cannot be reused stays documented in a test.
 - **Version collapse** — 28 quotes → 12 base references, `(V3 (BAFO))` recognised as the
-  current round.
+  current round. Same supplier ⇒ rounds; different supplier ⇒ rivals, never merged.
 - **Swift/null-supplier** — PO-2024-0091 groups via product similarity despite
-  `SDP-Q-44120` having no supplier_id.
+  `SDP-Q-44120` having no supplier_id (rivalry score 0.888 against Condor).
 - **Caldwell orphan** — PO-2024-0163 stays orphaned; asserting it is *not* absorbed.
 - **Cross-category negative** — no freight quote ever joins the IT services group.
 - **Idempotence** — regenerating proposals for an unchanged batch is stable.
