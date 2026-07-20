@@ -232,6 +232,63 @@ Stated precisely, two bids are **not** rivals when each anchors a distinct PO wh
 invoices settle separately. A supplier winning one event and losing another is unaffected
 — the test is pairwise over the specific quotes, not over the supplier's whole history.
 
+### Universal rules
+
+These hold for every quote in the product, awarded or not. Verified over all 45 quotes,
+not only the analysis batch.
+
+**R1 — Versions link regardless of award.** A supplier's proposal rounds group by base
+reference whether or not that supplier won. Measured: 10 multi-version bids linked, **8
+of them not awarded** (Condor 3 rounds, ClearPath 3, Apex 3, Meridian Freight 3, Swift 3
+with a null supplier, NexusFlow 2, PrimeOps 2, Vantage 2). Award plays no part in version
+linking and must never gate it.
+
+**R2 — Losing bids still join their sourcing event.** With award exclusivity applied, all
+four events still form with three bidders each, and 12 of 18 non-awarded bids are linked.
+A loser is a full member of the deal — that is the whole point of capturing a competition.
+
+**R3 — Same supplier is never rivalry.** Two quotes from one supplier are versions,
+duplicates or unrelated purchases; they can never be competing bids. This is definitional
+and must be enforced *before* correlation, not left to the score. Measured failure without
+it: `WSG100024` and `WSG100025`, both `SUP-DellWorkspaceSolutionsLtd`, same date,
+identical total £111,975.00, were grouped as "2 bidders". Version collapse on a `(V<n>)`
+suffix alone does not catch sequentially-numbered quotes from one supplier.
+
+**R4 — No connection found routes to a human.** Any bid that ends in a group of one goes
+to review carrying the reason and its best rejected match — never silently dropped, never
+force-fitted. Measured: 13 unconnected bids, each with a distinct reason:
+
+```
+128234    best_match 0.744 (136586)   -> correlated but award-vetoed
+10253     best_match 0.680 (104680)   -> no correlated bid above threshold
+DHA-2025-102  best_match 0.312        -> no correlated bid above threshold
+```
+
+The award-vetoed cases are the important ones: the veto **suppresses an automatic
+grouping, it does not decide the documents are unrelated**. That judgement goes to a
+person, which is what stops the veto becoming a silent splitter.
+
+### Award detection must not rely on supplier-name matching
+
+The veto is only as good as its notion of "awarded", and string-matching a PO's
+`supplier_name` to a quote's `supplier_id` is not good enough. Measured failure:
+
+```
+quote  SUP-GomezGoodAndCross              -> "gomezgoodandcross"
+PO     Gomez, Good and Cross Trading Ltd  -> "gomezgoodandcrosstradingltd"   MISMATCH
+```
+
+Gomez therefore read as un-awarded, the veto did not fire, and Dixon+Gomez merged — the
+precise false merge the veto exists to prevent. The same weakness already loses Swift,
+whose `supplier_id` is null.
+
+**Award is established by continuity scoring, not by name comparison.** A PO is the award
+for the bid whose lines match it under the existing `quote_po` profile — same supplier
+*and* same price, which is what that profile is built to detect and where an exact
+unit-price match is correct. Supplier name may corroborate; it may never be the test.
+Where no award can be established with confidence, the pair goes to review under R4
+rather than being silently merged or silently split.
+
 ### Validation: measured against the real batch
 
 The approach was run read-only over the 28 quotes before being specified, with ground
@@ -572,6 +629,19 @@ MeridFr  MFS-Q-3391   V1 945.00  V2 928.00  V3 915.00
 - **Rivalry still forms where there is one award** — the freight event's 3 bidders share
   a single PO (Swift) and must still group. Asserts the veto is pairwise-structural and
   does not suppress genuine competition.
+- **R1 versions link unawarded** — Condor's 3 rounds, ClearPath's 3, Apex's 3 all group
+  despite none being awarded. Fails if award is ever allowed to gate version linking.
+- **R2 losers are full members** — each of the 4 events keeps 3 bidders after the veto;
+  12 of 18 non-awarded bids linked. A veto change that orphans losers fails here.
+- **R3 same supplier never rivals** — `WSG100024` / `WSG100025` (both Dell Workspace,
+  identical £111,975.00 total) must NOT form a 2-bidder group. Guards the definitional
+  rule that version collapse by `(V<n>)` suffix alone does not cover.
+- **R4 unconnected routes to human** — 13 bids end unconnected and each must carry a
+  reason and its best rejected match. A bid dropped silently, or force-fitted into a
+  group, fails.
+- **Award detection is continuity-scored, not name-matched** — `SUP-GomezGoodAndCross`
+  vs PO `Gomez, Good and Cross Trading Ltd` must still resolve as awarded. Pins the
+  measured failure so string comparison cannot be reintroduced as the test.
 - **Version collapse** — 28 quotes → 12 base references, `(V3 (BAFO))` recognised as the
   current round. Same supplier ⇒ rounds; different supplier ⇒ rivals, never merged.
 - **Swift/null-supplier** — PO-2024-0091 groups via product similarity despite
