@@ -129,18 +129,46 @@ Correlation is only ever used to fill a gap a human has not already closed. In o
 
 ### Correlation signals (new)
 
-Where inference is required, correlate on **product description, pricing, volumes and
-linked identifiers together**. No single signal decides.
+**No signal is a gate.** Each contributes evidence; confidence accumulates across them.
+An earlier draft of this spec hard-capped price ratio at 3.0× and split a deal above it —
+that was wrong, because it lets one imperfect measurement veto every other agreeing
+signal. Signals accumulate; only the *total* decides, and it decides a routing band, not
+a truth.
 
-```python
-parts.append((0.40, jaccard(tokens(desc_a), tokens(desc_b))))   # product description
-parts.append((0.30, 1.0 if abs(qa - qb) < 1e-9 else 0.0))       # volume / quantity
-parts.append((0.30, price_proximity(pa, pb)))                   # pricing
-```
+| Tier | Signal | Why it links rivals | Availability on this batch |
+|---|---|---|---|
+| 1 | `po_id`, `quote_number` | Explicit reference — decisive | **0/28**, 0/32 |
+| 1 | Human-declared grouping | A person said so | none (folders are by doc type) |
+| 2 | Product description overlap | Same requirement | 28/28 |
+| 2 | Volume / quantity | Same requirement | 28/28 |
+| 2 | PO line-set anchor | A quote whose lines match a PO's lines is a bid **for that requirement, whoever sent it** — links rivals *through* the award | 5 POs |
+| 3 | Price proximity | Rivals cluster at the market rate | 28/28 |
+| 4 | `buyer_id` | Same buying entity | 28/28 (all `Assurity Ltd`) |
+| 4 | Currency | Same commercial basis | 28/28 (all GBP) |
+| 4 | Country / region | Same delivery scope | partial |
+| 4 | Bidding-round synchrony | Rivals answer one deadline | strong on 2 of 4 events |
+| 4 | Validity-date window | Same tender timetable | 28/28 |
+
+Tier 4 signals are **corroboration, never discrimination**. `buyer_id` is `Assurity Ltd`
+and currency is GBP across all 28 quotes here, so they cannot separate the four events —
+they can only raise or lower confidence in a grouping proposed on tier 2/3 evidence, and
+a mismatch on them is meaningful even though a match is not.
+
+Bidding-round synchrony illustrates why nothing may be a gate. Measured span between
+rivals' submissions in the same round:
+
+| Event | V1 | V2 | V3 |
+|---|---|---|---|
+| Freight | 1 day | 2 days | 1 day |
+| IT-MSA | 1 day | 1 day | — |
+| Consultancy | **39 days** | 5 days | 1 day |
+| Platform | **28 days** | 1 day | — |
+
+Excellent on two events, useless on two. As a gate it would destroy half the batch; as a
+contributing signal it is genuinely informative where it holds.
 
 **Pricing is compared by proximity, not equality.** Exact equality is the signature of
-*continuity* (a supplier's own quote → PO). Rivals sit in a tight band around the market
-rate, so a price ratio ≤1.25 scores 1.0, decaying to 0.0 by 3.0×. Measured on this batch:
+*continuity* (a supplier's own quote → PO). Rivals sit in a band around the market rate:
 
 | Requirement | Bidders | Price range | Spread |
 |---|---|---|---|
@@ -148,9 +176,10 @@ rate, so a price ratio ≤1.25 scores 1.0, decaying to 0.0 by 3.0×. Measured on
 | IT — endpoint management | 5 | £272,000 – £291,000 | **1.07×** |
 | Consultancy — Business Analyst | 8 | £680 – £780 | **1.15×** |
 
-Within a requirement, 1.07–1.15×. Across requirements, £872 vs £272,000 — **312×**.
+Within a requirement 1.07–1.15×; across requirements £872 vs £272,000 — **312×**. Ratio
+maps to a graded score with **no cutoff**; a wide spread merely contributes little.
 
-Resulting pair scores:
+Measured pair scores on tier 2+3 alone:
 
 | Pair | Existing `_line_pair_score` | Correlation score |
 |---|---|---|
@@ -159,8 +188,33 @@ Resulting pair scores:
 | Freight ↔ consultancy (prices coincidentally within 1.37×) | — | **0.280** |
 | Freight ↔ IT services | — | **0.000** |
 
-The consultancy row is the reason all four signals are needed: on price alone it would
-look related; description and volume outvote the coincidence.
+The consultancy row is why several signals are needed: on price alone it looks related;
+description and volume outvote the coincidence.
+
+### Confidence from signal agreement
+
+Accumulation reuses the machinery `linking_engine.score_link` already implements — per
+signal `weight`/`tier`/`cap`, cluster subtotals, and a log-odds combination
+(`linking_engine.py:344-370`) — with a new `quote_rival` profile supplying the signal set
+above. Nothing new is invented for the maths; only the signal set and their treatment of
+supplier/price divergence change.
+
+Confidence routes a proposal to the existing bands (`_BAND_AUTO` 92, `_BAND_WARN` 80,
+`_BAND_REVIEW` 65, `_BAND_WEAK` 45):
+
+| Band | Meaning | Behaviour |
+|---|---|---|
+| ≥ 92 | Many signals agree | Proposed, pre-selected for confirm |
+| 80–92 | Solid, some signals absent | Proposed |
+| 65–80 | Requirement matches, corroboration thin | Proposed, flagged for attention |
+| 45–65 | Weak | Held as a suggestion, not pre-grouped |
+| < 45 | No case | Left ungrouped |
+
+Every proposal stores **which signals passed, which failed and which were unavailable**
+in `match_evidence`, so the confirmation screen can say *why* — "same products, same
+volumes, prices within 8%, same buyer; no shared PO reference" — rather than showing a
+bare number. Nothing auto-applies at any band; confidence orders and explains the
+proposals a human confirms.
 
 Continuity keeps using the existing `quote_po` / `invoice_po` profiles unchanged — that
 maths is correct for what it does and is not touched.
@@ -264,7 +318,7 @@ authoritative and clustering does not run.
 
 | Unit | Responsibility | Depends on |
 |---|---|---|
-| `requirement_similarity.py` | Correlation scoring over description + pricing (proximity) + volume + linked ids. New `quote_rival` profile. | `linking_engine._tokens`, `_to_float` |
+| `requirement_similarity.py` | `quote_rival` profile: the tier 1-4 signal set, graded not gated, accumulated by the existing log-odds combiner into a confidence + per-signal evidence. | `linking_engine.score_link` internals |
 | `declared_linkage.py` | Identify human-declared connections that clustering must not touch | `process_monitor`, confirmed proposals |
 | `deal_clustering.py` | Batch → proposed clusters. Pure; no writes. | rivalry + `linking_engine.score_link` |
 | `version_collapse.py` | `quote_id` → base reference + round | none |
@@ -340,6 +394,14 @@ MeridFr  MFS-Q-3391   V1 945.00  V2 928.00  V3 915.00
   312× (freight vs IT) does not. Guards against re-introducing exact-match price scoring.
 - **No single signal decides** — freight↔consultancy, whose prices sit within 1.37×,
   must stay unclustered at ~0.28 because description and volume disagree.
+- **No signal is a gate** — the consultancy event, whose V1 bids span 39 days, must still
+  group. A test that fails if any single signal can veto a grouping the others support;
+  this is the regression guard against re-introducing the price ceiling in any form.
+- **Corroboration cannot discriminate** — `buyer_id` and currency are uniform across all
+  28 quotes, so a grouping must never be justified by them alone; they may only adjust
+  confidence in a grouping already supported by tier 2/3 evidence.
+- **Evidence is legible** — every proposal names which signals passed, failed and were
+  unavailable. A proposal carrying a bare score with no signal breakdown fails the test.
 - **Version collapse** — 28 quotes → 12 base references, `(V3 (BAFO))` recognised as the
   current round. Same supplier ⇒ rounds; different supplier ⇒ rivals, never merged.
 - **Swift/null-supplier** — PO-2024-0091 groups via product similarity despite
