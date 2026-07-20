@@ -191,6 +191,48 @@ Measured pair scores on tier 2+3 alone:
 The consultancy row is why several signals are needed: on price alone it looks related;
 description and volume outvote the coincidence.
 
+### Validation: measured against the real batch
+
+The approach was run read-only over the 28 quotes before being specified, with ground
+truth taken from the corpus' `_WINNER` filename annotations and the 4 POs.
+
+**Linkage strategy is load-bearing and was the one real failure found.** Single-linkage
+clustering merged IT-MSA and Platform into one six-supplier blob: a single borderline pair
+(Fortis↔NexusFlow, 0.626) was enough to chain two distinct events together. Both are
+3-year annual IT contracts sharing tokens like *seats*, *licence*, *support*, *annual*.
+
+**Complete linkage** — merge two groups only when *every* cross-pair clears the threshold
+— fixes it. A single borderline pair can no longer drag two events together.
+
+| Cluster | Outcome | Confidence |
+|---|---|---|
+| IT-MSA (Synapse, PrimeOps, Fortis) | exact | 99.7 |
+| Freight (Swift, Condor, Meridian Freight) | exact | 93.8 |
+| Consultancy (Meridian Consulting, Apex, Vantage) | exact | 84.8 |
+| Platform (Orbis, ClearPath, NexusFlow) | exact | 75.6 |
+
+4/4 events recovered, 12/12 bids correctly placed, zero cross-cluster leakage. Stable at
+thresholds 0.65 and 0.70; **0.70** is specified as the midpoint of the separation gap.
+
+Separation margin on this batch:
+
+| | Score |
+|---|---|
+| Weakest **within**-cluster pair (ClearPath↔Orbis) | 0.756 |
+| Strongest **cross**-cluster pair (Fortis↔NexusFlow) | 0.626 |
+| **Margin** | **0.130** |
+
+Notable: the Freight event recovers exactly **despite `SDP-Q-44120` having a null
+supplier_id**, confirming that product/price/volume correlation carries a bid whose
+supplier extraction failed.
+
+**Honest limits of this validation.** One batch, four events, twelve bids. The 0.70
+threshold sits in a gap measured *on this same batch*, so it is calibrated, not proven —
+a second batch could place a real event below it or a false pair above it. The margin of
+0.130 is narrow. Treat 0.70 as a starting value to be re-measured as batches accumulate,
+which is precisely why nothing auto-applies and why the band below it routes to a human
+rather than to a decision.
+
 ### Confidence from signal agreement
 
 Accumulation reuses the machinery `linking_engine.score_link` already implements — per
@@ -202,19 +244,59 @@ supplier/price divergence change.
 Confidence routes a proposal to the existing bands (`_BAND_AUTO` 92, `_BAND_WARN` 80,
 `_BAND_REVIEW` 65, `_BAND_WEAK` 45):
 
-| Band | Meaning | Behaviour |
-|---|---|---|
-| ≥ 92 | Many signals agree | Proposed, pre-selected for confirm |
-| 80–92 | Solid, some signals absent | Proposed |
-| 65–80 | Requirement matches, corroboration thin | Proposed, flagged for attention |
-| 45–65 | Weak | Held as a suggestion, not pre-grouped |
-| < 45 | No case | Left ungrouped |
+| Band | Meaning | Behaviour | On this batch |
+|---|---|---|---|
+| ≥ 92 | Many signals agree | Proposed, pre-selected | IT-MSA 99.7, Freight 93.8 |
+| 80–92 | Solid, some signals absent | Proposed | Consultancy 84.8 |
+| 65–80 | **Requirement matches, corroboration thin** | **Human review required** | **Platform 75.6** |
+| 45–65 | Weak | Suggestion only, not pre-grouped | — |
+| < 45 | No case | Left ungrouped | — |
 
 Every proposal stores **which signals passed, which failed and which were unavailable**
 in `match_evidence`, so the confirmation screen can say *why* — "same products, same
 volumes, prices within 8%, same buyer; no shared PO reference" — rather than showing a
 bare number. Nothing auto-applies at any band; confidence orders and explains the
 proposals a human confirms.
+
+### Human-in-the-loop
+
+Review is **targeted, not blanket**. Every proposal is confirmable by a human, but only
+those below 80 actively demand attention — on this batch, 1 of 4 groups. A design that
+asked for review of all four would be ignored within a week; one that asked for none
+would silently mis-group.
+
+**What triggers review**
+
+| Trigger | Rationale | This batch |
+|---|---|---|
+| Confidence < 80 | Correlation holds but corroboration is thin | Platform (75.6) |
+| Any pair within 0.05 of the threshold | Sat near the decision boundary | ClearPath↔Orbis |
+| A member with a null/unresolved supplier | Identity unverified | `SDP-Q-44120` |
+| Line items missing on either side | Scored on partial evidence (`MISSING`) | — |
+| A PO with no anchoring bid | Award with no visible competition | PO-2024-0163 Caldwell |
+| Cross-cluster pair within 0.05 below threshold | A near-merge that was rejected | Fortis↔NexusFlow (0.626) |
+
+**What the reviewer is shown** — the proposed group, its members, the per-signal evidence
+for each pair (which passed, failed, were unavailable), the specific reason review was
+triggered, and the nearest rejected alternative. For Platform that means surfacing that
+Fortis↔NexusFlow scored 0.626 and was *not* merged, so the reviewer can see the call that
+was made rather than only the outcome.
+
+**What the reviewer can do** — confirm as proposed; move a document to another proposed
+deal; split a proposal; merge two proposals; or leave it unresolved. Unresolved is a
+first-class outcome: documents stay ungrouped rather than being forced into a deal.
+
+**The decision is recorded and is authoritative.** A confirmed grouping becomes declared
+linkage (precedence tier 1) and is never re-clustered — including a *rejection*, so the
+same wrong pairing is not re-proposed on the next run. Every decision writes to
+`bp_agent_actions` for audit, carrying the confidence and the evidence that was shown, so
+a later reader can see what the human was looking at when they decided.
+
+**Feeding calibration.** Confirmations and corrections are the only honest source of
+threshold calibration. Recording where a human overrode the algorithm — a merge it missed
+or a split it should have made — is what moves 0.70 off a single-batch guess. This is
+observation only; no automatic retuning, since a threshold that drifts on its own would
+silently change how deals form.
 
 Continuity keeps using the existing `quote_po` / `invoice_po` profiles unchanged — that
 maths is correct for what it does and is not touched.
@@ -231,7 +313,10 @@ Applied per upload batch:
    `(V<n>...)` suffix. Members of one base reference are rounds of one bid; the highest
    version is the current offer. Two quotes from the *same* supplier are versions;
    two from *different* suppliers are rivals. 28 quotes → 12 bids.
-2. **Cluster bids into requirement groups** using the correlation comparator above. Each
+2. **Cluster bids into requirement groups** by **complete linkage** at threshold 0.70 —
+   two groups merge only when *every* cross-pair clears the bar. Single linkage was
+   measured and rejected: it chained IT-MSA and Platform into one six-supplier blob on a
+   single 0.626 pair. Each
    cluster is one sourcing event, holding **N rival suppliers' bids** — this is the step
    that makes a deal multi-supplier. A cluster of one is a single-bid event, not an error.
 3. **Attach each PO to the requirement group it was awarded from**, scoring the PO
@@ -402,6 +487,17 @@ MeridFr  MFS-Q-3391   V1 945.00  V2 928.00  V3 915.00
   confidence in a grouping already supported by tier 2/3 evidence.
 - **Evidence is legible** — every proposal names which signals passed, failed and were
   unavailable. A proposal carrying a bare score with no signal breakdown fails the test.
+- **Complete linkage, not single linkage** — the measured regression: with single linkage
+  IT-MSA and Platform merge into one six-supplier group on the Fortis↔NexusFlow pair at
+  0.626. The test asserts 4 distinct clusters and pins the confidences (99.7 / 93.8 /
+  84.8 / 75.6), so a linkage-strategy change cannot silently reintroduce chaining.
+- **HITL routing** — Platform (75.6) must route to human review and the other three must
+  not. Asserts review is targeted rather than blanket; a change making all four require
+  review fails, as does one that lets 75.6 through unreviewed.
+- **A confirmed grouping is never re-proposed** — including a rejected one, so the same
+  wrong pairing does not resurface on the next clustering run.
+- **Noise-row filter** — commentary lines (`OPPORTUNITY — …`, `Validity`, `WATCH …`) are
+  excluded from scoring; a fixture asserts they never drive a match.
 - **Version collapse** — 28 quotes → 12 base references, `(V3 (BAFO))` recognised as the
   current round. Same supplier ⇒ rounds; different supplier ⇒ rivals, never merged.
 - **Swift/null-supplier** — PO-2024-0091 groups via product similarity despite
