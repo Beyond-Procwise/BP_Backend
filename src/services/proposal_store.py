@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import json
 
+from src.services.deal_assignment_service import (
+    mint_document_id, _persist_deal, _upsert_document_map)
+from src.services.agent_actions import record_action, PHASE_CONSOLIDATION
+
 
 def _rows(cur, sql, params=()):
     cur.execute(sql, params)
@@ -68,3 +72,58 @@ def update_members(cur, proposal_id: int, remove=None) -> None:
             "delete from proc.bp_deal_proposal_member "
             "where proposal_id=%s and doc_type=%s and doc_pk=%s",
             (proposal_id, doc_type, str(doc_pk)))
+
+
+class StaleProposalError(Exception):
+    """Raised when a proposal's members changed since it was generated (re-extraction).
+    Confirm writes nothing and the batch must be re-clustered."""
+
+
+def mint_proposal_deal_id(batch_deal_id: str, proposal_id: int, primary_supplier=None) -> str:
+    """deal_id minted AT CONFIRM (never at proposal time). DEALV3- namespace keeps it
+    distinct from the DEALV2-<po> look-back scheme and from the batch label."""
+    return f"DEALV3-{proposal_id}"
+
+
+def confirm_proposal(cur, proposal_id: int, confirmed_by: str, expected_member_pks=None) -> dict:
+    """Mint the deal, assign every member document, insert the draft bp_deal row, and
+    mark the proposal confirmed. Atomic within the caller's transaction."""
+    hdr = _rows(cur, "select proposal_id, batch_deal_id, proposed_name, status "
+                     "from proc.bp_deal_proposal where proposal_id=%s", (proposal_id,))
+    if not hdr:
+        return {"status": "not_found", "proposal_id": proposal_id}
+    batch_deal_id = hdr[0].get("batch_deal_id")
+    proposed_name = hdr[0].get("proposed_name")
+
+    members = _rows(cur,
+        "select doc_type, doc_pk, base_reference, role from proc.bp_deal_proposal_member "
+        "where proposal_id=%s", (proposal_id,))
+    if expected_member_pks is not None:
+        if sorted(str(m["doc_pk"]) for m in members) != sorted(str(p) for p in expected_member_pks):
+            raise StaleProposalError(f"proposal {proposal_id} members changed since generation")
+
+    deal_id = mint_proposal_deal_id(batch_deal_id, proposal_id)
+    for m in members:
+        dt, dpk = m["doc_type"], str(m["doc_pk"])
+        doc_id = mint_document_id(deal_id, dt, dpk)
+        _persist_deal(cur, dt, dpk, deal_id=deal_id, deal_name=proposed_name,
+                      document_id=doc_id, deal_date=None)
+        _upsert_document_map(cur, deal_id, proposed_name, dt, dpk, doc_id, None)
+
+    # Draft header — promotion to tracked remains the separate existing gate.
+    cur.execute("insert into proc.bp_deal (deal_id, is_tracked) values (%s, false) "
+                "on conflict (deal_id) do nothing", (deal_id,))
+    cur.execute(
+        "update proc.bp_deal_proposal set status='confirmed', deal_id=%s, "
+        "confirmed_at=now(), confirmed_by=%s where proposal_id=%s",
+        (deal_id, confirmed_by, proposal_id))
+
+    record_action(
+        phase=PHASE_CONSOLIDATION, action_type="deal_proposal_confirmed",
+        doc_type="deal", doc_pk=deal_id, agent=confirmed_by, status="ok",
+        summary=f"confirmed proposal {proposal_id} -> {deal_id} ({len(members)} docs)",
+        details={"proposal_id": proposal_id, "batch_deal_id": batch_deal_id,
+                 "members": [(m["doc_type"], str(m["doc_pk"])) for m in members]},
+        conn=cur.connection)
+    return {"status": "confirmed", "proposal_id": proposal_id, "deal_id": deal_id,
+            "members": len(members)}
