@@ -7,9 +7,10 @@ promotion of staged rows (`_stg`) into the final target tables (`_trgt`).
 
 Domain: a *deal* is a sourcing event holding multiple competing quotes, one or
 more purchase orders (the anchor), and invoices. Relationships are
-invoice→PO and quote→PO via ``po_id``. ``deal_id`` is assigned by a separate
-SQL trigger — this engine never writes it; it only ensures linkage accuracy so
-the trigger's grouping is sound.
+invoice→PO and quote→PO via ``po_id``. ``deal_id`` is NOT assigned by a SQL
+trigger (none exists); it is owned by the deal-assignment passes and the
+confirm step of deal clustering. This engine never writes it; it only scores
+linkage so that grouping is sound.
 
 The scorer is fully deterministic and auditable: every signal exposes its match
 score, field quality, reliability, signed contribution, and status.
@@ -268,6 +269,22 @@ PROFILES = {
 }
 
 
+# --- Extension seam: register extra profiles/signal kinds without editing the monolith.
+_EXTRA_SIGNALS: dict[str, Any] = {}
+
+
+def register_signal(kind: str, fn) -> None:
+    """Register a comparator fn(src, tgt, src_lines, tgt_lines) -> (score, status)
+    for a signal ``kind`` used by an externally-registered profile (e.g. quote_rival)."""
+    _EXTRA_SIGNALS[kind] = fn
+
+
+def register_profile(name: str, profile: dict) -> None:
+    """Register a scoring profile so score_link(name=...) can use it. The continuity
+    profiles (invoice_po / quote_po) are defined inline above and never touched here."""
+    PROFILES[name] = profile
+
+
 def _signal_match(kind: str, src: dict, tgt: dict, src_lines, tgt_lines, date_field: str,
                   set_amount_usd: Optional[float] = None) -> tuple[float, str]:
     if kind == "po_ref":
@@ -292,6 +309,8 @@ def _signal_match(kind: str, src: dict, tgt: dict, src_lines, tgt_lines, date_fi
     if kind == "location":
         return cmp_location(src.get("country"), src.get("region"),
                             tgt.get("ship_to_country"), tgt.get("delivery_region"))
+    if kind in _EXTRA_SIGNALS:
+        return _EXTRA_SIGNALS[kind](src, tgt, src_lines, tgt_lines)
     raise ValueError(f"unknown signal kind {kind}")
 
 
