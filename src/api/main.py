@@ -48,7 +48,7 @@ from agents.email_dispatch_agent import EmailDispatchAgent
 from agents.negotiation_agent import NegotiationAgent
 from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
-from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, promotion, summary, negotiate, opportunities,session
+from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, deal_proposals, promotion, summary, negotiate, opportunities,session
 from api.routers import ws as ws_router_mod
 from api.routers import agent_workflows as agent_workflows_router
 from api.routers import decisions as decisions_router
@@ -402,6 +402,7 @@ app.include_router(supplier_review_router.router)
 app.include_router(supplier_research_router.router)
 app.include_router(governance_router.router)
 app.include_router(deal_summary.router)
+app.include_router(deal_proposals.router)
 app.include_router(negotiate.router)
 app.include_router(opportunities.router)
 app.include_router(promotion.router)
@@ -410,6 +411,7 @@ app.include_router(session.router)
 app.include_router(obligations_router.router)
 app.include_router(benchmark_router.router)
 app.include_router(fx_router.router)
+import src.services.requirement_similarity  # noqa: F401 — registers the quote_rival profile at startup
 
 
 # ======================================================================================
