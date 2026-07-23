@@ -253,7 +253,7 @@ def test_pipeline_answer_returns_documents(monkeypatch):
 
     monkeypatch.setattr("services.model_selector.RAGService", DummyRAG)
 
-    def _fake_generate_response(self, prompt, model):
+    def _fake_generate_response(self, prompt, model, **kwargs):
         return {
             "answer": "Supplier summary includes s.",
             "follow_ups": [
@@ -317,6 +317,11 @@ def test_pipeline_returns_fallback_when_no_retrieval(monkeypatch):
         def upsert_texts(self, texts, metadata=None):
             pass
 
+        primary_collection = "c"
+        uploaded_collection = "uploaded_documents"
+        static_policy_collection = "static_policy"
+        learning_collection = "learning"
+
     monkeypatch.setattr("services.model_selector.RAGService", DummyRAG)
 
     class DummyStaticAgent:
@@ -344,6 +349,9 @@ def test_pipeline_returns_fallback_when_no_retrieval(monkeypatch):
             s3_bucket_name="b",
             reranker_model="x",
             static_qa_confidence_threshold=0.5,
+            # Without this the static path is skipped outright and the test
+            # falls through to a live model call.
+            enable_static_qa=True,
         ),
         embedding_model=DummyEmbed(),
         qdrant_client=SimpleNamespace(),
@@ -353,7 +361,7 @@ def test_pipeline_returns_fallback_when_no_retrieval(monkeypatch):
     monkeypatch.setattr(
         RAGPipeline,
         "_generate_response",
-        lambda self, prompt, model: {"answer": "", "follow_ups": []},
+        lambda self, prompt, model, **kwargs: {"answer": "", "follow_ups": []},
     )
 
     pipeline = RAGPipeline(nick, cross_encoder_cls=DummyCrossEncoder, use_nltk=False)
@@ -400,6 +408,11 @@ def test_pipeline_static_answer_is_conversational(monkeypatch):
         def upsert_payloads(self, *args, **kwargs):
             return None
 
+        primary_collection = "c"
+        uploaded_collection = "uploaded_documents"
+        static_policy_collection = "static_policy"
+        learning_collection = "learning"
+
     def _get_object(**kwargs):
         return {"Body": SimpleNamespace(read=lambda: b"[]")}
 
@@ -419,6 +432,9 @@ def test_pipeline_static_answer_is_conversational(monkeypatch):
             reranker_model="x",
             s3_bucket_name="bucket",
             static_qa_confidence_threshold=0.5,
+            # Without this the static path is skipped outright and the test
+            # falls through to a live model call.
+            enable_static_qa=True,
         ),
         embedding_model=DummyEmbed(),
         qdrant_client=SimpleNamespace(),
@@ -435,18 +451,19 @@ def test_pipeline_static_answer_is_conversational(monkeypatch):
     answer_html = result["answer"]
 
     assert answer_html.startswith("<section")
-    assert (
-        "How does this compare with the same period last year?"
-        in answer_html
-    )
-    assert "Sure" not in answer_html
     assert "14% higher" in answer_html
-    # Closings may have apostrophes HTML-encoded in the output
-    import html
-    assert any(
-        closing in answer_html or html.escape(closing) in answer_html
-        for closing in RAGPipeline._STATIC_CLOSINGS
-    )
+    assert "Sure" not in answer_html
+
+    # The curated answer arrives as written. It used to be wrapped: the question
+    # was read back to the user ('For your question "...", here's the quick
+    # take.'), "due to" was rewritten to "thanks to", and one of three sign-offs
+    # was appended, chosen by hashing the question. This asserted all three.
+    assert "How does this compare with the same period last year?" not in answer_html
+    assert "quick take" not in answer_html
+    assert "due to improved contract controls" in answer_html
+    assert "Let me know if you" not in answer_html
+    assert "We can dig into related metrics" not in answer_html
+
     assert result["follow_ups"] == [
         "Show me the savings trend over the past 6 months.",
         "How much is still in the savings pipeline?",
@@ -487,6 +504,11 @@ def test_feedback_acknowledgment_skips_question_preamble(monkeypatch):
         def upsert_payloads(self, *args, **kwargs):
             return None
 
+        primary_collection = "c"
+        uploaded_collection = "uploaded_documents"
+        static_policy_collection = "static_policy"
+        learning_collection = "learning"
+
     def _get_object(**kwargs):
         return {"Body": SimpleNamespace(read=lambda: b"[]")}
 
@@ -506,6 +528,9 @@ def test_feedback_acknowledgment_skips_question_preamble(monkeypatch):
             reranker_model="x",
             s3_bucket_name="bucket",
             static_qa_confidence_threshold=0.5,
+            # Without this the static path is skipped outright and the test
+            # falls through to a live model call.
+            enable_static_qa=True,
         ),
         embedding_model=DummyEmbed(),
         qdrant_client=SimpleNamespace(),
@@ -569,7 +594,7 @@ def test_pipeline_uploaded_context_mode(monkeypatch):
     monkeypatch.setattr(
         RAGPipeline,
         "_generate_response",
-        lambda self, prompt, model: {"answer": "Uploaded insight", "follow_ups": []},
+        lambda self, prompt, model, **kwargs: {"answer": "Uploaded insight", "follow_ups": []},
     )
 
     nick = SimpleNamespace(
@@ -655,7 +680,7 @@ def test_pipeline_uploaded_context_scoped_to_session(monkeypatch):
     monkeypatch.setattr(
         RAGPipeline,
         "_generate_response",
-        lambda self, prompt, model: {"answer": "Insight", "follow_ups": []},
+        lambda self, prompt, model, **kwargs: {"answer": "Insight", "follow_ups": []},
     )
 
     nick = SimpleNamespace(
@@ -736,6 +761,9 @@ def test_pipeline_prefers_explicit_session_id(monkeypatch):
             s3_bucket_name="b",
             reranker_model="x",
             static_qa_confidence_threshold=0.5,
+            # Without this the static path is skipped outright and the test
+            # falls through to a live model call.
+            enable_static_qa=True,
         ),
         embedding_model=DummyEmbed(),
         qdrant_client=SimpleNamespace(),

@@ -83,6 +83,9 @@ class NLTKProcessor:
     # downstream, so no prefix match is allowed to remove one.
     _CARRIES_A_FACT = re.compile(r"\d")
 
+    # A line that opens with a bullet or an ordinal is a list item, and is kept whole.
+    _LIST_MARKER = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
+
     _TOXICITY_PATTERNS = (
         re.compile(r"\b(?:idiot|stupid|dumb)\b", re.IGNORECASE),
     )
@@ -205,6 +208,18 @@ class NLTKProcessor:
         keywords: Optional[List[str]] = None,
         key_phrases: Optional[List[str]] = None,
     ) -> str:
+        """Clean the model's answer without rewriting how it reads.
+
+        ``sentiment``, ``keywords`` and ``key_phrases`` are accepted so existing
+        callers keep working, but nothing is generated from them any more. They
+        used to select a canned opening sentence ("I understand this situation
+        with ... may feel frustrating"), which was pasted in front of the real
+        answer on any question VADER scored as negative — and the focus term it
+        interpolated was frequently the whole answer, so the reply opened with a
+        sentence that restated itself. Tone is the model's job; this method's
+        job is filler removal and whitespace.
+        """
+
         clean = (text or "").strip()
         if not clean:
             return ""
@@ -212,63 +227,53 @@ class NLTKProcessor:
         if not self.available:
             return self._basic_cleanup(clean)
 
-        sentences = sent_tokenize(clean) if clean else []  # type: ignore[operator]
-        filtered: List[str] = []
-        for sentence in sentences or [clean]:
-            stripped = sentence.strip()
-            lowered = stripped.lower()
-            is_filler = any(
-                lowered.startswith(prefix) for prefix in self._FILLER_PREFIXES
-            )
-            # A sentence with a number in it is carrying information. Never discard
-            # it as padding, whatever it happens to open with.
-            if is_filler and not self._CARRIES_A_FACT.search(stripped):
+        # Line by line, not sentence by sentence over the whole reply. The model
+        # writes paragraphs and lists because we ask it to; joining every sentence
+        # with a space threw that away and handed the renderer one long line, which
+        # then had to guess where the list items had been.
+        rendered: List[str] = []
+        kept_anything = False
+        for line in clean.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                rendered.append("")
                 continue
-            filtered.append(stripped)
 
-        if not filtered:
-            filtered = [clean]
+            # A bullet or numbered item is one unit. Sentence-splitting it, then
+            # capitalising and full-stopping the pieces, turns a list into prose.
+            is_list_item = bool(self._LIST_MARKER.match(stripped))
+            parts = [stripped] if is_list_item else sent_tokenize(stripped)  # type: ignore[operator]
 
-        focus_term = self._derive_focus_term(keywords, key_phrases, sentences)
-        tone_sentence = None
-        compound = (sentiment or {}).get("compound") if sentiment else None
-        if compound is not None and compound < -0.2:
-            if focus_term:
-                tone_sentence = (
-                    f"I understand this situation with {focus_term} may feel frustrating; "
-                    "let me walk through the relevant guidance."
+            kept: List[str] = []
+            for part in parts or [stripped]:
+                sentence = part.strip()
+                if not sentence:
+                    continue
+                lowered = sentence.lower()
+                is_filler = any(
+                    lowered.startswith(prefix) for prefix in self._FILLER_PREFIXES
                 )
-            else:
-                tone_sentence = (
-                    "I understand this situation may feel frustrating; let me walk through "
-                    "the relevant guidance."
-                )
-        elif compound is not None and compound > 0.4:
-            if focus_term:
-                tone_sentence = (
-                    f"Great news—the guidance on {focus_term} aligns with what you're aiming to do."
-                )
-            else:
-                tone_sentence = (
-                    "Great news—this aligns well with the current guidance."
-                )
+                # A sentence with a number in it is carrying information. Never discard
+                # it as padding, whatever it happens to open with.
+                if is_filler and not self._CARRIES_A_FACT.search(sentence):
+                    continue
+                sentence = self._replace_sensitive_terms(sentence)
+                if not is_list_item:
+                    # A line ending in a colon is introducing the list under it.
+                    # Closing it with a full stop produces "Key reminders:.".
+                    if sentence[-1] not in ".!?:":
+                        sentence = f"{sentence}."
+                    sentence = sentence[0].upper() + sentence[1:]
+                kept.append(sentence)
 
-        normalised: List[str] = []
-        for idx, sentence in enumerate(filtered):
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            sentence = self._replace_sensitive_terms(sentence)
-            if sentence[-1] not in ".!?":
-                sentence = f"{sentence}."
-            sentence = sentence[0].upper() + sentence[1:]
-            if idx == 0 and tone_sentence:
-                normalised.append(tone_sentence)
-            normalised.append(sentence)
+            if kept:
+                rendered.append(" ".join(kept))
+                kept_anything = True
 
-        result = " ".join(normalised) if normalised else clean
-        result = re.sub(r"\s+", " ", result)
-        return self._clean_placeholders(result.strip())
+        if not kept_anything:
+            return self._clean_placeholders(clean)
+
+        return self._clean_placeholders("\n".join(rendered))
 
     def _lemmatize_token(self, token: str, pos_tag_value: str) -> str:
         if not self._lemmatizer:
@@ -321,44 +326,6 @@ class NLTKProcessor:
 
         return sentence
 
-    def _derive_focus_term(
-        self,
-        keywords: Optional[List[str]],
-        key_phrases: Optional[List[str]],
-        sentences: List[str],
-    ) -> Optional[str]:
-        for source in (key_phrases or []):
-            candidate = self._humanise_focus_term(source)
-            if candidate:
-                return candidate
-        for source in (keywords or []):
-            candidate = self._humanise_focus_term(source)
-            if candidate:
-                return candidate
-        for sentence in sentences:
-            words = re.findall(r"[A-Za-z][A-Za-z0-9&'\- ]+", sentence)
-            for word in words:
-                candidate = self._humanise_focus_term(word)
-                if candidate:
-                    return candidate
-        return None
-
-    def _humanise_focus_term(self, value: str) -> Optional[str]:
-        cleaned = re.sub(r"\s+", " ", (value or "")).strip()
-        if not cleaned:
-            return None
-        cleaned = cleaned.strip(string.punctuation)
-        if not cleaned:
-            return None
-        lowered = cleaned.lower()
-        if lowered in {"the", "and", "or", "guidance"}:
-            return None
-        if any(lowered.startswith(prefix) for prefix in self._FILLER_PREFIXES):
-            return None
-        if "thanks for flagging" in lowered:
-            return None
-        return cleaned
-
     def _clean_placeholders(self, text: str) -> str:
         cleaned = re.sub(
             r"\[(?:redacted sensitive reference|doc\s*\d+|document\s*\d+|source\s*\d+)\]",
@@ -366,11 +333,17 @@ class NLTKProcessor:
             text,
             flags=re.IGNORECASE,
         )
-        cleaned = re.sub(r"\s+", " ", cleaned)
+        # Runs of spaces collapse; line breaks do not. They are the paragraph and
+        # list structure of the answer, and the renderer downstream reads them.
+        cleaned = re.sub(r"[ \t]+", " ", cleaned)
+        cleaned = re.sub(r" ?\n ?", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
 
     def _basic_cleanup(self, text: str) -> str:
-        cleaned = re.sub(r"\s+", " ", text)
+        cleaned = re.sub(r"[ \t]+", " ", text)
+        cleaned = re.sub(r" ?\n ?", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         for prefix in self._FILLER_PREFIXES:
             if cleaned.lower().startswith(prefix):
                 cleaned = cleaned[len(prefix):].lstrip(",. ")

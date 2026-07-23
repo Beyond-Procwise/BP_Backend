@@ -1947,10 +1947,21 @@ class RAGAgent(BaseAgent):
         overview = payload.get("overview", "")
         overview_text = self._ensure_sentence(self._clean_policy_clause(overview)) if overview else ""
 
-        detail = overview_text or "I pulled the relevant guardrails straight from our policy library and procurement records."
-        summary_line = f"Here’s what {policy_name} says about {focus_text}: {detail}"
-
-        lines: List[str] = [self._ensure_sentence(summary_line)]
+        # No overview means we have nothing to open with, so we open with the
+        # sections. The old filler ("I pulled the relevant guardrails straight
+        # from our policy library and procurement records") described our own
+        # process rather than the policy, and it appeared precisely when we had
+        # the least to say.
+        if overview_text:
+            lines: List[str] = [
+                self._ensure_sentence(
+                    f"Here’s what {policy_name} says about {focus_text}: {overview_text}"
+                )
+            ]
+        else:
+            # Not run through _ensure_sentence: it would close the colon with a
+            # full stop, and this line is introducing the sections below it.
+            lines = [f"From {policy_name}:"]
 
         def _append_section(title: str, items: Sequence[str]) -> None:
             bullets = [self._ensure_sentence(text) for text in self._unique_ordered(items)]
@@ -1969,12 +1980,17 @@ class RAGAgent(BaseAgent):
         for key in ("examples", "exceptions"):
             notes_pool.extend(self._policy_section_bullets(payload, key, depth_mode))
 
-        _append_section("✅ **Allowed Conditions / Requirements**", allowed)
-        _append_section("❌ **Prohibited / Restricted Conditions**", restricted)
-        _append_section("📎 **Important Notes / Compliance Obligations**", notes_pool)
+        # Plain headings. The emoji-and-bold banners were the same four labels on
+        # every policy answer regardless of the question, which is what a template
+        # looks like — and a ✅/❌ pair reads as a verdict on the user's request
+        # when it is only a section divider.
+        _append_section("What's allowed", allowed)
+        _append_section("What's not allowed", restricted)
+        _append_section("Other conditions", notes_pool)
 
-        next_steps = "Need help submitting an expense claim or checking approvals? Just ask and I’ll walk you through it."
-        _append_section("➡️ **Next Steps**", [next_steps])
+        # The old "Next Steps" section offered help with expense claims on every
+        # policy answer — travel, IT, subcontracting, anything. An offer that
+        # ignores what was asked is worse than no offer.
 
         return "\n".join(lines)
 

@@ -724,12 +724,6 @@ class RAGPipeline:
             "activated_at": activated_at,
         }
 
-    _STATIC_CLOSINGS: Tuple[str, ...] = (
-        "Let me know if you'd like supporting detail or next steps.",
-        "Happy to pull the supporting policy or spend breakdown if that's useful.",
-        "We can dig into related metrics whenever you need it.",
-    )
-
     def _format_static_answer(
         self,
         answer: str,
@@ -737,77 +731,25 @@ class RAGPipeline:
         question: Optional[str] = None,
         topic: Optional[str] = None,
     ) -> str:
+        """Return the curated answer as written.
+
+        This used to wrap every static-QA answer in a manufactured intro ('For
+        your question "...", here's the quick take.'), bullet every sentence
+        after the first, run a thesaurus pass over the wording, and append one
+        of three sign-offs picked by hashing the question. None of that came
+        from the knowledge base: the intro repeated the question back, the
+        sign-off was chosen at random as far as the reader could tell, and the
+        thesaurus pass silently edited curated policy text — "due to" became
+        "thanks to" inside sentences about non-claimable VAT.
+
+        ``question`` and ``topic`` are still accepted because callers pass them,
+        and because they were the inputs the boilerplate was built from.
+        """
+
         cleaned = answer.strip()
         if not cleaned:
             return ""
-
-        intro = self._craft_static_intro(question, topic)
-        sentences = self._split_sentences(cleaned)
-        softened = [self._soften_sentence(sentence) for sentence in sentences if sentence]
-        if not softened:
-            softened = [cleaned]
-
-        primary = softened[0]
-        remainder = [item for item in softened[1:] if item]
-
-        if remainder:
-            bullet_lines = "\n".join(f"- {item}" for item in remainder)
-            narrative = f"{primary}\n{bullet_lines}"
-        else:
-            narrative = primary
-
-        closing = self._pick_static_closing(question, topic)
-
-        return f"{intro} {narrative}\n{closing}"
-
-    def _craft_static_intro(
-        self, question: Optional[str], topic: Optional[str]
-    ) -> str:
-        if question:
-            subject = question.strip()
-            if len(subject) > 120:
-                subject = subject[:117].rstrip() + "..."
-            return f'For your question "{subject}", here\'s the quick take.'
-        if topic:
-            subject = topic.strip()
-            if subject:
-                return f"Here's the quick take on {subject}."
-        return "Here's what the procurement playbook highlights."
-
-    def _split_sentences(self, text: str) -> List[str]:
-        raw = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9£])", text.strip())
-        return [segment.strip() for segment in raw if segment and segment.strip()]
-
-    def _soften_sentence(self, sentence: str) -> str:
-        text = sentence.strip()
-        if not text:
-            return ""
-        replacements = (
-            (r"\bApproximately\b", "About"),
-            (r"\bapproximately\b", "about"),
-            (r"\bmainly\b", "largely"),
-            (r"\bdue to\b", "thanks to"),
-            (r"\bNon-claimable\b", "Non-claimable"),
-            (r"\bnon-claimable\b", "non-claimable"),
-        )
-        for pattern, replacement in replacements:
-            text = re.sub(pattern, replacement, text)
-        if not text.endswith(('.', '!', '?')):
-            text = f"{text}."
-        else:
-            text = text.rstrip(" ")
-        return text
-
-    def _pick_static_closing(
-        self, question: Optional[str], topic: Optional[str]
-    ) -> str:
-        options = self._STATIC_CLOSINGS
-        key = (question or topic or "").strip().lower()
-        if not key:
-            return options[0]
-        digest = hashlib.sha1(key.encode("utf-8")).digest()
-        index = digest[0] % len(options)
-        return options[index]
+        return self._apply_structured_formatting(cleaned)
 
     def _try_static_answer(
         self, query: str, user_id: str, *, session_id: Optional[str] = None
@@ -1208,91 +1150,6 @@ class RAGPipeline:
             candidate = ""
         return self._condense_snippet(candidate)
 
-    def _friendly_opening(
-        self,
-        query: str,
-        acknowledgements: List[str],
-        focus_items: Optional[List[Dict[str, Any]]] = None,
-    ) -> str:
-        banned_tokens = (
-            "thanks for flagging",
-            "here's what i can confirm",
-        )
-        focus_phrase = self._extract_focus_phrase(query)
-        if not focus_phrase and focus_items:
-            for item in focus_items:
-                candidate = item.get("document") or item.get("source_label")
-                if isinstance(candidate, str) and candidate.strip():
-                    focus_phrase = candidate
-                    break
-
-        focus_phrase = self._redact_identifiers(focus_phrase)
-        topic_descriptor = self._topic_descriptor(focus_phrase)
-
-        options: List[str] = []
-        for ack in acknowledgements:
-            if not ack:
-                continue
-            lowered = ack.lower()
-            if any(token in lowered for token in banned_tokens):
-                continue
-            options.append(ack.strip())
-
-        if topic_descriptor:
-            personalised: List[str] = []
-            for template in options:
-                if "{topic}" in template:
-                    personalised.append(
-                        template.replace("{topic}", topic_descriptor)
-                    )
-                else:
-                    base = template.rstrip(". ")
-                    personalised.append(
-                        f"{base} Let's focus on {topic_descriptor}."
-                    )
-            options = personalised
-        else:
-            fallback_topic = "this topic"
-            options = [
-                template.replace("{topic}", fallback_topic)
-                if "{topic}" in template
-                else template
-                for template in options
-            ]
-
-        if not options:
-            return ""
-
-        digest = hashlib.sha256((query or "").encode("utf-8")).hexdigest()
-        index = int(digest[:8], 16) % len(options)
-        return options[index]
-
-    def _conversation_context_line(
-        self, query: str, focus_items: Optional[List[Dict[str, Any]]] = None
-    ) -> str:
-        redacted_query = self._redact_identifiers(query)
-        if not redacted_query:
-            return ""
-
-        focus_phrase = self._extract_focus_phrase(query)
-        if not focus_phrase and focus_items:
-            for item in focus_items:
-                candidate = (
-                    item.get("document")
-                    or item.get("source_label")
-                    or item.get("collection")
-                )
-                if isinstance(candidate, str) and candidate.strip():
-                    focus_phrase = candidate
-                    break
-
-        focus_phrase = self._redact_identifiers(focus_phrase)
-        if focus_phrase:
-            descriptor = self._topic_descriptor(focus_phrase)
-            if descriptor:
-                return f"You asked about {descriptor}, so here's what I found"
-        return f"You asked: {redacted_query}. Here's what stood out"
-
     def _select_focus_items(
         self, items: List[Dict[str, Any]], limit: int = 4
     ) -> List[Dict[str, Any]]:
@@ -1466,56 +1323,6 @@ class RAGPipeline:
         else:
             body = f"{connector}, {snippet}"
         return self._to_sentence(body)
-
-    def _craft_summary_intro(
-        self,
-        query: str,
-        template: str,
-        focus_items: List[Dict[str, Any]],
-    ) -> str:
-        topic = self._extract_focus_phrase(query)
-        if not topic:
-            for item in focus_items:
-                candidate = (
-                    item.get("document")
-                    or item.get("source_label")
-                    or item.get("collection")
-                )
-                if isinstance(candidate, str) and candidate.strip():
-                    topic = candidate
-                    break
-
-        topic = self._redact_identifiers(topic)
-        descriptor = self._topic_descriptor(topic) if topic else "this topic"
-        base = (template or "Here’s what stands out about {topic}:").strip()
-        redacted_query = self._redact_identifiers(query)
-        if "{query}" in base:
-            base = base.replace("{query}", redacted_query or "your question")
-
-        if "{topic}" in base:
-            line = base.replace("{topic}", descriptor)
-        elif descriptor:
-            cleaned_base = base.rstrip(" :")
-            if cleaned_base.lower().endswith("about"):
-                line = f"{cleaned_base} {descriptor}"
-            else:
-                line = f"{cleaned_base} about {descriptor}"
-        else:
-            line = base
-
-        source_hint = ""
-        for item in focus_items:
-            candidate = item.get("source_label") or item.get("collection")
-            if isinstance(candidate, str) and candidate.strip():
-                source_hint = self._redact_identifiers(candidate)
-                break
-
-        if source_hint:
-            lowered_line = line.lower()
-            if source_hint.lower() not in lowered_line:
-                line = f"{line.rstrip('.')} drawing from {source_hint}"
-
-        return line.rstrip(" :")
 
     def _analyse_session_history(
         self, history: List[Dict[str, Any]]
@@ -1863,8 +1670,12 @@ class RAGPipeline:
             lines.append("Knowledge snippets:\n" + context)
 
         lines.append("Draft summary derived from retrieval:\n" + draft_answer)
+        # No greeting, no lead-in. Asking for one guaranteed that every answer in
+        # the product opened the same way, which is the definition of scripted —
+        # and it made the reader work through a sentence of nothing before the
+        # answer started.
         lines.append(
-            "Transform the draft into a natural response (ideally one or two concise paragraphs). Start with a brief acknowledgement or collegial lead-in, deliver the direct answer, weave in the most relevant knowledge details, introduce short bullet or numbered lists when clarifying multiple points, point out any gaps or next steps, and keep the tone warm, conversational, and unscripted—sound like a trusted teammate rather than a script."
+            "Transform the draft into a natural response (ideally one or two concise paragraphs). Open on the answer itself — no greeting, no thanks, no restating what was asked. Weave in the most relevant knowledge details, introduce short bullet or numbered lists when clarifying multiple points, point out any gaps or next steps, and keep the tone warm, conversational, and unscripted—sound like a trusted teammate rather than a script."
         )
         return "\n\n".join(lines)
 
@@ -1919,27 +1730,55 @@ class RAGPipeline:
             return '<section class="agent-answer__segment"><p>No answer available.</p></section>'
 
         def _insert_inline_breaks(block: str) -> str:
-            pattern = re.compile(r"(?<!\n)(?:\s*)(\d+[\.)])\s+(?=[A-Za-z])")
+            """Put a run-on "1. x 2. y 3. z" back onto separate lines.
 
-            def repl(match: re.Match) -> str:
-                marker = match.group(1)
-                return "\n" + marker + " "
+            This only fires on a genuine enumeration: markers that count 1, 2,
+            3... from the start. Anything else is left alone, because most digits
+            followed by a full stop are not list markers. The old pattern matched
+            any of them, so "The invoice totalled £1,200. Delivery was late" was
+            cut after "£1," and rendered as a numbered item reading "200.
+            Delivery was late", and "clause 14. Payment terms" lost its clause
+            number the same way.
+            """
 
-            return pattern.sub(repl, block)
+            pattern = re.compile(r"(?<![\d,.])(\d{1,2})([.)])\s+(?=[A-Za-z])")
+            matches = list(pattern.finditer(block))
+            if len(matches) < 2:
+                return block
+
+            # Walk the run of markers and keep only the leading 1, 2, 3, ...
+            # prefix. A stray "14." later in the prose ends the run rather than
+            # joining it.
+            expected = 1
+            enumerated: List[re.Match] = []
+            for match in matches:
+                if int(match.group(1)) != expected:
+                    break
+                enumerated.append(match)
+                expected += 1
+
+            if len(enumerated) < 2:
+                return block
+
+            pieces: List[str] = []
+            last = 0
+            for match in enumerated:
+                pieces.append(block[last : match.start()])
+                pieces.append(f"\n{match.group(1)}{match.group(2)} ")
+                last = match.end()
+            pieces.append(block[last:])
+            return "".join(pieces)
 
         normalised = _insert_inline_breaks(normalised)
 
-        header = (
-            '<header class="agent-answer__heading">'
-            "<h2>Here’s what I found</h2>"
-            "<p class=\"agent-answer__intro\">I pulled the key details into an easy-to-scan summary for you.</p>"
-            "</header>"
-        )
-
+        # Remember where the body starts rather than hard-coding a count: the
+        # "nothing was rendered" check below compares against this, and a
+        # hard-coded 2 silently became wrong the moment the fixed heading that
+        # made up the difference was removed.
         html_parts: List[str] = [
-            header,
             '<div class="agent-answer__segment agent-answer__segment--body">',
         ]
+        body_start = len(html_parts)
         current_list: List[str] = []
         list_type: Optional[str] = None
         definition_items: List[Tuple[str, str]] = []
@@ -2043,7 +1882,7 @@ class RAGPipeline:
         flush_list()
         flush_definitions()
 
-        if len(html_parts) == 2:
+        if len(html_parts) == body_start:
             html_parts.append('<p class="agent-answer__paragraph">No answer available.</p>')
 
         html_parts.append("</div>")
@@ -2115,40 +1954,17 @@ class RAGPipeline:
         enumerated_items: List[Dict[str, Any]],
         ad_hoc_context: str,
     ) -> str:
-        guidelines = self._citation_guidelines
-        acknowledgements = [
-            str(item).strip()
-            for item in guidelines.get("acknowledgements", [])
-            if str(item).strip()
-        ]
-        summary_intro_template = str(
-            guidelines.get(
-                "summary_intro",
-                "Here's a quick summary based on the latest procurement guidance.",
-            )
-        ).strip()
-
+        # This draft is not shown to the user — it is handed to the model as the
+        # substance to write from. What it carries, the answer carries: when it
+        # opened with "Most definitely, I'll help you get the answer" and closed
+        # with an offer to escalate, the model copied the shape, and every reply
+        # in the product acquired the same packaging. So the draft is facts only.
+        # The stock acknowledgement, the question restatement, the lead-in
+        # sentence and the sign-off are all gone; the guidelines entries that fed
+        # them are left in place for any other caller.
         focus_items = self._select_focus_items(enumerated_items)
 
         paragraphs: List[str] = []
-        opening_line = self._friendly_opening(query, acknowledgements, focus_items)
-        context_line = self._conversation_context_line(query, focus_items)
-        intro_sentences: List[str] = []
-        if opening_line:
-            intro_sentences.append(self._to_sentence(opening_line))
-        if context_line:
-            intro_sentences.append(self._to_sentence(context_line))
-        if intro_sentences:
-            paragraphs.append(" ".join(intro_sentences))
-
-        if (focus_items or ad_hoc_context) and summary_intro_template:
-            intro_line = self._craft_summary_intro(
-                query,
-                summary_intro_template,
-                focus_items,
-            )
-            if intro_line:
-                paragraphs.append(self._to_sentence(intro_line))
         if focus_items:
             statements: List[str] = []
             for idx, item in enumerate(focus_items):
@@ -2167,12 +1983,6 @@ class RAGPipeline:
             )
             if uploads_sentence:
                 paragraphs.append(uploads_sentence)
-
-        actions_lead = guidelines.get("actions_lead")
-        if actions_lead:
-            final_sentence = self._to_sentence(actions_lead)
-            if final_sentence:
-                paragraphs.append(final_sentence)
 
         return "\n\n".join(paragraphs)
 
@@ -2234,7 +2044,17 @@ class RAGPipeline:
         return self._apply_structured_formatting(cleaned)
 
     def _apply_structured_formatting(self, text: str) -> str:
-        """Normalise whitespace and add paragraph/list spacing for readability."""
+        """Normalise whitespace, and leave the author's paragraphing alone.
+
+        This used to re-paragraph every answer: the first three sentences became
+        a lead, each sentence after that became its own paragraph, and a break
+        was forced in front of any sentence starting If/Next/This/That/They/We/
+        You. Applied to a two-sentence reply it did nothing; applied to a real
+        answer it chopped a flowing explanation into a column of one-line
+        stubs, which is most of what made the assistant read like a form
+        letter. Whoever wrote the text — the model or a curated answer — decided
+        where the paragraphs go.
+        """
 
         if not isinstance(text, str):
             return ""
@@ -2243,51 +2063,10 @@ class RAGPipeline:
         if not normalised:
             return ""
 
+        normalised = re.sub(r"[ \t]+", " ", normalised)
+        normalised = re.sub(r" ?\n ?", "\n", normalised)
         normalised = re.sub(r"\n{3,}", "\n\n", normalised)
-
-        sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])", normalised)
-        paragraphs: List[str] = []
-
-        intro_count = 3 if len(sentences) > 3 else len(sentences)
-        if len(sentences) > intro_count:
-            lead = " ".join(sentences[:intro_count]).strip()
-            if lead:
-                paragraphs.append(lead)
-            remainder_sentences = sentences[intro_count:]
-        else:
-            remainder_sentences = []
-            lead = " ".join(sentences).strip()
-            if lead:
-                paragraphs.append(lead)
-
-        if remainder_sentences:
-            remainder = " ".join(remainder_sentences).strip()
-            if remainder:
-                remainder = re.sub(r"(:)\s*([1-9]\d*[\.)])", r"\1\n\n\2", remainder)
-                remainder = re.sub(
-                    r"(?<!\n)([1-9]\d*[\.)])\s+",
-                    lambda match: f"\n\n{match.group(1)} ",
-                    remainder,
-                )
-                remainder = re.sub(
-                    r"(?<!\n)([-*•])\s+",
-                    lambda match: f"\n\n{match.group(1)} ",
-                    remainder,
-                )
-                remainder = re.sub(r"\n{3,}", "\n\n", remainder)
-                for block in remainder.split("\n\n"):
-                    stripped = block.strip()
-                    if stripped:
-                        paragraphs.append(stripped)
-
-        formatted = "\n\n".join(paragraphs)
-        formatted = re.sub(
-            r"(\d+[\.)][^\n]*\.)\s+(?=(?:If|Next|This|That|They|We|You)\b)",
-            r"\1\n\n",
-            formatted,
-        )
-        formatted = re.sub(r"\n{3,}", "\n\n", formatted)
-        return formatted.strip()
+        return normalised.strip()
 
     # The /ask ("Joshi") persona. Single-sourced into proc.bp_prompt
     # (prompt_type='ask_persona', prompt_name='joshi') so it is governed and
@@ -2298,7 +2077,7 @@ class RAGPipeline:
     _ASK_PERSONA_FALLBACK = (
         "System (Joshi)\n"
         "You are Joshi, the ProcWise SME. Sound like a caring, capable coworker—warm, semi-formal, and concise without seeming scripted. "
-        "Open with a brief acknowledgement or collegial greeting when it feels natural (e.g., 'Thanks for the question—', 'Happy to help!'). "
+        "Lead with the answer. Do not open with a greeting, a thank-you, or a restatement of the question. "
         "Answer only from the provided retrieval context. If the context is thin, explain the gap in one sentence or ask a single clarifying question instead of guessing. "
         "Never name a supplier, amount, document, or date that does not appear in the supplied context. If you do not have the figure, say that you do not have it — do not supply a plausible one. "
         "Never add amounts denominated in different currencies. £190,400.61 and $97,519.00 do not sum to 287,919.61 of anything. "

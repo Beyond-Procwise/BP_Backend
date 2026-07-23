@@ -29,23 +29,23 @@ def test_postprocess_answer_structures_numbered_list():
         "submission."
     )
 
-    expected = (
-        "Thanks for the question—happy to help clarify what we mean by 'expense policy.'. Simply put, an expense policy "
-        "is a formal set of guidelines that defines how employees, contractors, and approved representatives can claim "
-        "business-related expenses. It ensures consistency, accountability, and compliance across the organization.\n\n"
-        "According to the current policy, the Expense Policy is owned by the Chief Procurement Officer and approved by the "
-        "Executive Finance Committee, with an effective date of July 14, 2025, and a review cycle set annually or as needed. "
-        "The policy applies to all Group Employees, Contractors, and Approved Representatives. Key elements include:\n\n"
-        "1. Eligible Expenses: Only business-related costs incurred during work activities are reimbursable.\n\n"
-        "2. Documentation Requirements: All claims must be supported by valid receipts and clear justification.\n\n"
-        "3. Prohibited Expenses: Certain personal or non-work-related costs (e.g., entertainment, fines, or luxury items) are "
-        "explicitly excluded—details on these are outlined in the 'Business Expenses That Cannot Be Claimed' section.\n\n"
-        "4. Approval & Oversight: Spending limits and delegation of authority are governed by separate policies, ensuring "
-        "proper financial controls.\n\n"
-        "If you're looking to understand what’s not allowed or need help with a specific claim, I can pull up the full list of "
-        "exclusions or assist with a sample submission."
-    )
-
+    # The run-on enumeration still has to reach the reader as a list — but it is
+    # the renderer that turns it into one, not a re-paragraphing pass over the
+    # plain text. That pass used to also cut a new paragraph every three
+    # sentences and in front of any sentence starting If/Next/This/We/You, which
+    # chopped flowing prose into stubs; this test used to assert that shape
+    # verbatim, boilerplate opener and all.
     result = pipeline._postprocess_answer(raw)
 
-    assert result == expected
+    # Prose is left as the model wrote it.
+    assert "Simply put, an expense policy is a formal set of guidelines" in result
+    assert "organization. According to the current policy" in result
+
+    html = pipeline._normalise_answer_html(result)
+
+    assert "<ol" in html
+    assert html.count("<li>") == 4
+    assert "Eligible Expenses" in html
+    assert "Approval &amp; Oversight" in html
+    # July 14, 2025 must not be mistaken for list marker "14." mid-sentence.
+    assert "July 14, 2025" in html
