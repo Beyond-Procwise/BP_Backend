@@ -58,6 +58,24 @@ def _fetch_batch(cur, batch_deal_id: str) -> dict:
             "po_lines": po_lines, "invoices": invoices}
 
 
+def _drop_rejected_pairings(cur, batch_deal_id: str, proposals: list[dict]) -> list[dict]:
+    """A rejected pairing must never resurface (spec §Human-in-the-loop: "A confirmed
+    grouping is never re-proposed — including a rejected one"). Compares on the set of
+    quote doc_pks (the bids that define the pairing), not the full member set (which
+    also carries po/invoice)."""
+    rejected_sets = set(proposal_store.rejected_member_sets(cur, batch_deal_id))
+    if not rejected_sets:
+        return proposals
+    kept = []
+    for prop in proposals:
+        quote_pks = frozenset(str(m["doc_pk"]) for m in prop.get("members", [])
+                              if m.get("doc_type") == "quote")
+        if quote_pks and quote_pks in rejected_sets:
+            continue
+        kept.append(prop)
+    return kept
+
+
 def _generate(batch_deal_id: str, session_id: Optional[str]) -> dict:
     """Cluster a batch and persist proposals. Atomic: commit or rollback."""
     with get_conn() as conn:
@@ -67,6 +85,10 @@ def _generate(batch_deal_id: str, session_id: Optional[str]) -> dict:
             kwargs = _fetch_batch(cur, batch_deal_id)
             declared = declared_groups(cur, batch_deal_id)
             result = deal_clustering.cluster_batch(declared=declared, **kwargs)
+            result["proposals"] = _drop_rejected_pairings(cur, batch_deal_id, result["proposals"])
+            # Regenerate REPLACES the prior un-actioned ('proposed') set instead of
+            # stacking duplicates; confirmed/rejected/superseded rows are preserved.
+            proposal_store.delete_proposed(cur, batch_deal_id)
             ids = proposal_store.store_proposals(cur, batch_deal_id, session_id, result)
             conn.commit()
             return {"batch_deal_id": batch_deal_id, "proposal_ids": ids,

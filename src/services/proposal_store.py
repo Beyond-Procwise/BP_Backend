@@ -16,15 +16,46 @@ def _rows(cur, sql, params=()):
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def delete_proposed(cur, batch_deal_id: str) -> None:
+    """Delete this batch's un-actioned ('proposed') proposals before a regenerate, so
+    re-running generate REPLACES the prior proposed set instead of stacking duplicates.
+    confirmed / rejected / superseded rows are never touched. Members cascade via the
+    FK's ON DELETE CASCADE."""
+    cur.execute(
+        "delete from proc.bp_deal_proposal where batch_deal_id=%s and status='proposed'",
+        (batch_deal_id,))
+
+
+def rejected_member_sets(cur, batch_deal_id: str) -> list[frozenset]:
+    """The quote doc_pk sets of this batch's rejected proposals -- a rejected pairing
+    must never be re-proposed (spec: "A confirmed grouping is never re-proposed --
+    including a rejected one")."""
+    rows = _rows(cur,
+        "select m.proposal_id, m.doc_pk from proc.bp_deal_proposal_member m "
+        "join proc.bp_deal_proposal p on p.proposal_id = m.proposal_id "
+        "where p.batch_deal_id = %s and p.status = 'rejected' and m.doc_type = 'quote'",
+        (batch_deal_id,))
+    by_proposal: dict = {}
+    for r in rows:
+        by_proposal.setdefault(r["proposal_id"], set()).add(str(r["doc_pk"]))
+    return [frozenset(s) for s in by_proposal.values() if s]
+
+
 def store_proposals(cur, batch_deal_id: str, session_id, cluster_result: dict) -> list[int]:
-    """Insert every proposal + its members. Atomic within the caller's transaction."""
+    """Insert every proposal + its members. Atomic within the caller's transaction.
+    Declared proposals (already-confirmed groups cluster_batch echoes back) are SKIPPED
+    -- they already exist as confirmed deals; re-persisting them as fresh 'proposed'
+    rows would duplicate them."""
     ids: list[int] = []
     for prop in cluster_result.get("proposals", []):
+        if prop.get("declared"):
+            continue
         cur.execute(
             "insert into proc.bp_deal_proposal "
-            "(batch_deal_id, session_id, proposed_name, confidence, status) "
-            "values (%s,%s,%s,%s,'proposed') returning proposal_id",
-            (batch_deal_id, session_id, prop["proposed_name"], prop["confidence"]))
+            "(batch_deal_id, session_id, proposed_name, confidence, status, flags) "
+            "values (%s,%s,%s,%s,'proposed',%s) returning proposal_id",
+            (batch_deal_id, session_id, prop["proposed_name"], prop["confidence"],
+             json.dumps(prop.get("flags") or [])))
         pid = cur.fetchone()[0]
         ids.append(pid)
         for m in prop["members"]:
@@ -45,7 +76,7 @@ def list_proposals(cur, batch_deal_id: str) -> list[dict]:
     """Proposals + nested members + evidence, for the review screen."""
     props = _rows(cur,
         "select proposal_id, batch_deal_id, proposed_name, confidence, status, deal_id, "
-        "created_at, confirmed_at, confirmed_by from proc.bp_deal_proposal "
+        "flags, created_at, confirmed_at, confirmed_by from proc.bp_deal_proposal "
         "where batch_deal_id = %s order by confidence desc nulls last, proposal_id",
         (batch_deal_id,))
     for p in props:
@@ -92,6 +123,12 @@ def confirm_proposal(cur, proposal_id: int, confirmed_by: str, expected_member_p
                      "from proc.bp_deal_proposal where proposal_id=%s", (proposal_id,))
     if not hdr:
         return {"status": "not_found", "proposal_id": proposal_id}
+    current_status = hdr[0].get("status")
+    if current_status != "proposed":
+        # Already confirmed / rejected / superseded -- refuse silently rather than
+        # double-confirm or confirm a rejected/superseded proposal. Writes nothing.
+        return {"status": "not_proposed", "current_status": current_status,
+                "proposal_id": proposal_id}
     batch_deal_id = hdr[0].get("batch_deal_id")
     proposed_name = hdr[0].get("proposed_name")
 
