@@ -17,8 +17,11 @@ negotiation round (V1/V2/V3 (BAFO)) is counted separately:
                                (2 rounds), Vantage (2 rounds) = 7 rows.
   Platform/SaaS (06)           Orbis (winner, 2 rounds), ClearPath (2 rounds),
                                NexusFlow (2 rounds) = 6 rows. Widest price spread
-                               (~1.27x) and mild description drift -- lowest-
-                               confidence of the four real events.
+                               (~1.48x, NexusFlow deliberately priced well above
+                               the other two) and mild description drift --
+                               lowest-confidence of the four real events (its
+                               min pairwise correlation trips the <0.80 human
+                               review gate; the other three events stay ~0.85-0.94).
 
   9 + 6 + 7 + 6 = 28 quote rows; 3 + 3 + 3 + 3 = 12 bids.
 
@@ -125,8 +128,12 @@ _VANTAGE_Q, _VANTAGE_L = _rounds(
     ["2024-05-10", "2024-05-24"])
 
 # --- Platform/SaaS event: Orbis (winner), ClearPath, NexusFlow.
-#     3-year annual subscription value £165,000-210,000, spread ~1.27x -- the
-#     widest of the four events. V1 span 28 days (2024-05-01 -> 2024-05-29).
+#     3-year annual subscription value £165,000-245,000, spread ~1.48x -- the
+#     widest of the four events. NexusFlow's final-round price is deliberately
+#     pushed well above the other two so ClearPath<->NexusFlow (the event's
+#     weakest pair) drops its rivalry correlation below the 0.80 human-review
+#     gate while the whole trio still clusters (min pairwise >= 0.72). V1 span
+#     28 days (2024-05-01 -> 2024-05-29).
 _ORBIS_Q, _ORBIS_L = _rounds(
     "ORB-Q-2290", "SUP-OrbisPlatform", _BUYER, _PLATFORM_DESC, 1,
     [190000.00, 175000.00],
@@ -137,7 +144,7 @@ _CLEARPATH_Q, _CLEARPATH_L = _rounds(
     ["2024-05-15", "2024-05-29"])
 _NEXUSFLOW_Q, _NEXUSFLOW_L = _rounds(
     "NXF-Q-4471", "SUP-NexusFlowPlatform", _BUYER, _PLATFORM_DESC_NEXUSFLOW, 1,
-    [200000.00, 178000.00],
+    [245000.00, 225000.00],
     ["2024-05-29", "2024-06-12"])
 
 _QUOTES: list[dict] = [
