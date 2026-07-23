@@ -1994,145 +1994,58 @@ class RAGAgent(BaseAgent):
 
         return "\n".join(lines)
 
+    # Sections whose bullets read wrong without a word saying what they are.
+    _POLICY_SECTION_LABELS = {
+        "examples": "Example: ",
+        "exceptions": "Exception: ",
+    }
+
     def _policy_section_bullets(
         self, payload: Dict[str, Any], key: str, depth_mode: str
     ) -> List[str]:
-        sentences = list(payload.get(key, []))
-        target = 5 if depth_mode == "expanded" else 3
-        target = min(target, 6)
+        """Render this section's clauses. Invent nothing, infer nothing.
+
+        The clauses in ``payload`` are verbatim sentences taken from the
+        retrieved policy documents by ``_extract_policy_payload``, so showing
+        them is the entire job. This function previously did three other things
+        instead, and all three put words in the policy's mouth:
+
+        * It keyword-matched each clause and emitted a canned sentence *in place
+          of* it. "All expenses must be submitted within 30 days of the
+          transaction date" came out as "Submit only eligible, well-documented
+          expenses so they are accepted" — the deadline, the only actionable
+          fact in the clause, was dropped. A clause merely containing the word
+          "policy" produced advice to check an intranet this product has never
+          heard of.
+
+        * It split restriction clauses on "include" and prefixed each fragment
+          with "Do not claim". On "Alcohol cannot be claimed, although team
+          meals include soft drinks" that yielded "Do not claim soft drinks" —
+          forbidding what the policy permits — and discarded the alcohol rule.
+          It also derived requirements from restrictions and spending ceilings
+          from any amount it found in a restriction.
+
+        * It padded every section up to a quota from a table of hardcoded
+          sentences, so a policy silent on spending limits still told the reader
+          to "Check the policy for specific monetary caps", and a policy with no
+          exceptions still told them to escalate to Finance.
+
+        A section the policy does not cover now renders as nothing, and the
+        caller omits the heading. Saying less is the correct outcome when the
+        source says less — a fabricated bullet is indistinguishable from a real
+        one on screen, and this is the text people act on.
+        """
+
+        limit = 5 if depth_mode == "expanded" else 3
+        label = self._POLICY_SECTION_LABELS.get(key, "")
 
         bullets: List[str] = []
-        for sentence in sentences:
-            bullets.extend(self._expand_policy_sentence(sentence, key))
+        for sentence in payload.get(key) or []:
+            clause = self._ensure_sentence(self._clean_policy_clause(sentence))
+            if clause:
+                bullets.append(f"{label}{clause}")
 
-        if key == "requirements" and len(bullets) < target:
-            derived = self._derive_requirement_from_restriction(payload.get("restrictions", []))
-            for item in derived:
-                if item not in bullets:
-                    bullets.append(item)
-                    if len(bullets) >= target:
-                        break
-
-        if key == "spending_limits" and len(bullets) < target:
-            for restriction in payload.get("restrictions", []):
-                amounts = re.findall(r"[£$€]\s*[\d,.]+", restriction)
-                if not amounts:
-                    continue
-                bullet = self._ensure_sentence(
-                    f"Treat {amounts[0]} as the ceiling unless Finance approves more."
-                )
-                if bullet not in bullets:
-                    bullets.append(bullet)
-                if len(bullets) >= target:
-                    break
-
-        if key == "approval_process" and len(bullets) < target:
-            for requirement in payload.get("requirements", []):
-                clause = requirement.lower()
-                if "approve" in clause or "sign" in clause:
-                    bullet = self._ensure_sentence(self._clean_policy_clause(requirement))
-                    if bullet not in bullets:
-                        bullets.append(bullet)
-                if len(bullets) >= target:
-                    break
-
-        fallback_map = {
-            "requirements": "Follow this policy before and after each purchase to stay compliant.",
-            "restrictions": "Treat anything not explicitly allowed in the policy as prohibited.",
-            "spending_limits": "Check the policy for specific monetary caps before spending.",
-            "approval_process": "Capture written approval in advance for any exception.",
-            "examples": "Model your claim on the compliant scenarios described in the policy.",
-            "exceptions": "Escalate unusual circumstances to Finance for documented exceptions.",
-            "operational_notes": "Keep documentation tidy—attach receipts, coding, and approvals in the workflow.",
-        }
-
-        bullets = [self._ensure_sentence(item) for item in self._unique_ordered(bullets)]
-
-        while len(bullets) < target:
-            fallback = fallback_map.get(key)
-            if not fallback or fallback in bullets:
-                break
-            bullets.append(self._ensure_sentence(fallback))
-
-        return bullets[:target]
-
-    def _expand_policy_sentence(self, sentence: str, section: str) -> List[str]:
-        clause = self._clean_policy_clause(sentence)
-        lowered = clause.lower()
-        bullets: List[str] = []
-
-        if section == "requirements":
-            if any(keyword in lowered for keyword in ["pre-approv", "approval"]):
-                bullets.append("Obtain pre-approval before committing the spend this policy covers.")
-            if any(keyword in lowered for keyword in ["submit", "claim", "provide", "retain"]):
-                bullets.append("Submit only eligible, well-documented expenses so they are accepted.")
-            if "policy" in lowered or "intranet" in lowered:
-                bullets.append("Check the official policy on the intranet before you spend or submit claims.")
-            if not bullets:
-                bullets.append(clause)
-        elif section == "restrictions":
-            if "include" in lowered:
-                parts = re.split(r"include[s]?", clause, flags=re.IGNORECASE)
-                if len(parts) > 1:
-                    items = re.split(r",| and | or ", parts[1])
-                    for item in items:
-                        cleaned_item = item.strip(" .")
-                        if cleaned_item:
-                            cleaned_item = re.sub(r"^the ", "", cleaned_item, flags=re.IGNORECASE)
-                            bullets.append(f"Do not claim {cleaned_item}.")
-            if any(keyword in lowered for keyword in ["declined", "breach", "disciplinary"]):
-                bullets.append("Expect non-claimable expenses to be declined, logged, and escalated if repeated.")
-            if not bullets:
-                bullets.append(clause)
-        elif section == "spending_limits":
-            amounts = re.findall(r"[£$€]\s*[\d,.]+", clause)
-            if amounts:
-                for amount in amounts:
-                    bullets.append(f"Stay within the {amount} limit unless you have written approval.")
-            if "per person" in lowered:
-                bullets.append("Keep client entertainment within the per-person threshold stated in the policy.")
-            if not amounts and ("limit" in lowered or "threshold" in lowered):
-                bullets.append(clause)
-        elif section == "approval_process":
-            if any(keyword in lowered for keyword in ["approval", "approve", "manager", "finance"]):
-                bullets.append("Capture manager or Finance approval before using the card for unusual spend.")
-            if "pre-approv" in lowered:
-                bullets.append("Record pre-approval details with the expense submission.")
-            if not bullets:
-                bullets.append(clause)
-        elif section == "examples":
-            bullets.append(f"Example: {clause}")
-        elif section == "exceptions":
-            if "unless" in lowered:
-                exception_text = clause.split("unless", 1)[1].strip()
-                bullets.append(
-                    f"Exception: Allowed when {exception_text}"
-                    if exception_text
-                    else f"Exception: {clause}"
-                )
-            else:
-                bullets.append(f"Exception: {clause}")
-        elif section == "operational_notes":
-            bullets.append(self._ensure_sentence(clause))
-
-        return bullets
-
-    def _derive_requirement_from_restriction(
-        self, restrictions: Sequence[str]
-    ) -> List[str]:
-        suggestions: List[str] = []
-        for sentence in restrictions:
-            clause = self._clean_policy_clause(sentence)
-            lowered = clause.lower()
-            if any(keyword in lowered for keyword in ["pre-approv", "unless"]):
-                suggestions.append(
-                    "Secure pre-approval before submitting anything that normally sits on the restricted list."
-                )
-            if any(keyword in lowered for keyword in ["declined", "disciplinary", "breach"]):
-                suggestions.append(
-                    "Validate each expense against the policy so it isn't declined or escalated."
-                )
-        return [self._ensure_sentence(item) for item in self._unique_ordered(suggestions)]
+        return self._unique_ordered(bullets)[:limit]
 
     def _clean_policy_clause(self, sentence: str) -> str:
         text = sentence.strip()
