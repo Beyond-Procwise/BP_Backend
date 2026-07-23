@@ -134,3 +134,110 @@ def test_award_veto_does_not_fire_for_single_award_competition():
     awards = {"SDP-Q-44120": "PO-2024-0091", "CL-2024-0771": None, "MFS-Q-3391": None}
     assert dc.award_veto({"quote_id": "CL-2024-0771"}, {"quote_id": "MFS-Q-3391"}, awards) is False
     assert dc.award_veto({"quote_id": "SDP-Q-44120"}, {"quote_id": "CL-2024-0771"}, awards) is False
+
+
+# --- Task 8: cluster_batch orchestrator (end-to-end) ------------------------
+def _proposal_with(res, prefix):
+    # PO/invoice members carry base_reference=None (present key, null value), so
+    # None must be coalesced to "" before .startswith -- .get(k, default) only
+    # substitutes default when the KEY is absent, not when its value is null.
+    return next(p for p in res["proposals"]
+               if any((m.get("base_reference") or "").startswith(prefix) for m in p["members"]))
+
+
+def test_cluster_batch_reproduces_four_events_freight_has_three_bidders():
+    res = dc.cluster_batch(
+        quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+        purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+        invoices=gb.invoices())
+    multi = [p for p in res["proposals"]
+             if len([m for m in p["members"] if m["doc_type"] == "quote"]) >= 2]
+    assert len(multi) == 4
+    freight = _proposal_with(res, "MFS-Q-3391")
+    freight_suppliers = {m["doc_pk"] for m in freight["members"] if m["doc_type"] == "quote"}
+    assert len(freight_suppliers) == 3          # Swift + Condor + Meridian Freight
+
+
+def test_every_member_carries_evidence():
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    for p in res["proposals"]:
+        competing = [m for m in p["members"] if m["role"] == "competing_quote"]
+        assert all(m["match_evidence"] and "signals" in m["match_evidence"] for m in competing)
+
+
+def test_platform_routes_to_review_others_do_not():
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    platform = _proposal_with(res, "CPS-Q-3380")
+    assert platform["review_required"] and platform["confidence"] < 80
+    # exactly one of the four multi-bid proposals demands review
+    assert sum(p["review_required"] for p in res["proposals"]
+               if len([m for m in p["members"] if m["doc_type"] == "quote"]) >= 2) == 1
+
+
+def test_freight_null_supplier_is_flagged_not_review_required():
+    # Swift (Freight) has supplier_id=None, but Freight's confidence is well above the
+    # review band -- the null supplier must surface as a flag, not force review.
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    freight = _proposal_with(res, "MFS-Q-3391")
+    assert freight["review_required"] is False
+    assert any("unresolved supplier" in f and "SDP-Q-44120" in f for f in freight["flags"])
+
+
+def test_each_event_winner_po_and_invoices_attach():
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    multi = [p for p in res["proposals"]
+             if len([m for m in p["members"] if m["doc_type"] == "quote"]) >= 2]
+    assert len(multi) == 4
+
+    expected_po = {
+        "SDP-Q-44120": "PO-2024-0091",   # Freight (Swift's base ref anchors the group)
+        "SYN-Q-8820": "PO-2024-0128",    # IT-MSA
+        "ORB-Q-2290": "PO-2024-0145",    # Platform
+        "MCG-Q-1204": "PO-2024-0114",    # Consultancy
+    }
+    for base_ref, po_id in expected_po.items():
+        p = _proposal_with(res, base_ref)
+        po_members = [m for m in p["members"] if m["doc_type"] == "po"]
+        assert po_members and po_members[0]["doc_pk"] == po_id
+
+    freight = _proposal_with(res, "SDP-Q-44120")
+    assert any(m["doc_type"] == "invoice" and m["doc_pk"].startswith("INV-2024-0091")
+               for m in freight["members"])
+
+    for p in res["proposals"]:
+        assert "PO-2024-0163" not in [m["doc_pk"] for m in p["members"]]
+
+
+def test_caldwell_po_stays_orphaned_not_absorbed():
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices())
+    assert any(u["doc_pk"] == "PO-2024-0163" for u in res["ungrouped"])
+    for p in res["proposals"]:
+        assert "PO-2024-0163" not in [m["doc_pk"] for m in p["members"]]
+
+
+def test_declared_group_is_never_reclustered():
+    declared = [frozenset({("quote", "MFS-Q-3391 (V3 (BAFO))"), ("quote", "CL-2024-0771 (V3 (BAFO))")})]
+    res = dc.cluster_batch(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+                           purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(),
+                           invoices=gb.invoices(), declared=declared)
+    decl = [p for p in res["proposals"] if p["declared"]]
+    assert decl and {m["doc_pk"] for m in decl[0]["members"]} >= {"MFS-Q-3391 (V3 (BAFO))", "CL-2024-0771 (V3 (BAFO))"}
+
+
+def test_idempotent_and_nondestructive():
+    kw = dict(quotes=gb.quotes(), quote_lines=gb.quote_lines(),
+              purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(), invoices=gb.invoices())
+    a = dc.cluster_batch(**kw)
+    b = dc.cluster_batch(**kw)
+    def sig(r): return sorted(tuple(sorted(m["doc_pk"] for m in p["members"])) for p in r["proposals"])
+    assert sig(a) == sig(b)   # stable; pure function writes nothing

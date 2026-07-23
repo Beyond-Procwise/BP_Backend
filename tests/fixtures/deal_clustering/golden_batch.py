@@ -165,30 +165,38 @@ _QUOTE_LINES: dict[str, list[dict]] = {
 #     any cluster). Amounts follow each winner's final (BAFO/last-round) price.
 _PURCHASE_ORDERS = [
     {"po_id": "PO-2024-0091", "supplier_name": "Swift Distribution Partners Ltd",
-     "supplier_id": None, "converted_amount_usd": 1107.87, "order_date": "2024-06-10",
+     "supplier_id": None, "currency": "GBP", "converted_amount_usd": 1107.87, "order_date": "2024-06-10",
      "expected_delivery_date": "2024-07-01"},
     {"po_id": "PO-2024-0128", "supplier_name": "Synapse IT Services Ltd",
-     "supplier_id": "SUP-SynapseIT", "converted_amount_usd": 345440.00, "order_date": "2024-06-12",
+     "supplier_id": "SUP-SynapseIT", "currency": "GBP", "converted_amount_usd": 345440.00, "order_date": "2024-06-12",
      "expected_delivery_date": "2024-07-15"},
     {"po_id": "PO-2024-0145", "supplier_name": "Orbis Platform Solutions Ltd",
-     "supplier_id": "SUP-OrbisPlatform", "converted_amount_usd": 222250.00, "order_date": "2024-06-14",
+     "supplier_id": "SUP-OrbisPlatform", "currency": "GBP", "converted_amount_usd": 222250.00, "order_date": "2024-06-14",
      "expected_delivery_date": "2024-08-01"},
     {"po_id": "PO-2024-0114", "supplier_name": "Meridian Consulting Ltd",
-     "supplier_id": "SUP-MeridianConsulting", "converted_amount_usd": 51816.00, "order_date": "2024-06-11",
+     "supplier_id": "SUP-MeridianConsulting", "currency": "GBP", "converted_amount_usd": 51816.00, "order_date": "2024-06-11",
      "expected_delivery_date": "2024-07-20"},
     {"po_id": "PO-2024-0163", "supplier_name": "Caldwell Building Contractors Ltd",
-     "supplier_id": "SUP-Caldwell", "converted_amount_usd": 415000.00, "order_date": "2024-06-20",
+     "supplier_id": "SUP-Caldwell", "currency": "GBP", "converted_amount_usd": 415000.00, "order_date": "2024-06-20",
      "expected_delivery_date": "2024-09-01"},  # orphan: no quotes in batch
 ]
 
 # --- PO line items, keyed by po_id. Each mirrors the winner's final quote line
 #     (same description/quantity/unit_price) so later award-detection has real
 #     line data to correlate against; Caldwell (orphan) is unrelated building work.
+#     Each WINNER'S line also carries quote_number — the tier-1 linked identifier
+#     (base reference of the winning bid) that makes award detection decisive
+#     without relying on continuity scoring alone. Caldwell has none (it is the
+#     orphan: no quotes reference it in this batch).
 _PO_LINES = {
-    "PO-2024-0091": [{"item_description": _FREIGHT_DESC, "quantity": 1, "unit_price": 872.34}],
-    "PO-2024-0128": [{"item_description": _ITMSA_DESC, "quantity": 1, "unit_price": 272000.00}],
-    "PO-2024-0145": [{"item_description": _PLATFORM_DESC, "quantity": 1, "unit_price": 175000.00}],
-    "PO-2024-0114": [{"item_description": _CONSULT_DESC, "quantity": 60, "unit_price": 680.00}],
+    "PO-2024-0091": [{"item_description": _FREIGHT_DESC, "quantity": 1, "unit_price": 872.34,
+                       "quote_number": "SDP-Q-44120"}],
+    "PO-2024-0128": [{"item_description": _ITMSA_DESC, "quantity": 1, "unit_price": 272000.00,
+                       "quote_number": "SYN-Q-8820"}],
+    "PO-2024-0145": [{"item_description": _PLATFORM_DESC, "quantity": 1, "unit_price": 175000.00,
+                       "quote_number": "ORB-Q-2290"}],
+    "PO-2024-0114": [{"item_description": _CONSULT_DESC, "quantity": 60, "unit_price": 680.00,
+                       "quote_number": "MCG-Q-1204"}],
     "PO-2024-0163": [{"item_description": "Structural remedial building works - Phase 1",
                        "quantity": 1, "unit_price": 415000.00}],
 }
