@@ -30,6 +30,40 @@ QUOTE_ANCHOR_MIN_SCORE = float(os.getenv("QUOTE_ANCHOR_MIN_SCORE",
                                          os.getenv("PROMOTE_MIN_LINK_SCORE", "80")))
 
 
+def is_established_deal(cur, deal_id: Optional[str]) -> bool:
+    """True when deal_id is a REAL deal (a bp_deal row or a confirmed proposal's deal),
+    not merely an un-confirmed upload batch label. Batch labels enter clustering, not
+    the authoritative look-forward stamp (spec §Upload path change)."""
+    if not deal_id:
+        return False
+    cur.execute("select deal_id from proc.bp_deal where deal_id=%s limit 1", (deal_id,))
+    if cur.fetchall():
+        return True
+    cur.execute("select deal_id from proc.bp_deal_proposal "
+                "where deal_id=%s and status='confirmed' limit 1", (deal_id,))
+    return bool(cur.fetchall())
+
+
+def pending_batch_docs(cur) -> set:
+    """(doc_type, doc_pk) whose only deal association is an UN-established batch label —
+    left for the proposal pipeline so they are never auto-grouped by look-back."""
+    pending: set = set()
+    monitors = _rows(cur, "select id, deal_id, category, document_type from proc.process_monitor "
+                          "where deal_id is not null and deal_id <> ''")
+    established: dict = {}
+    for m in monitors:
+        did = m["deal_id"]
+        if did not in established:
+            established[did] = is_established_deal(cur, did)
+        if established[did]:
+            continue
+        for dt in _candidate_doc_types(m.get("category"), m.get("document_type")):
+            pk, raw, _stg, _trgt, _ls, _lt = _DOC[dt]
+            for r in _rows(cur, f"select {pk} from {raw} where process_monitor_id=%s", (m["id"],)):
+                pending.add((dt, str(r[pk])))
+    return pending
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers (no DB)
 # ---------------------------------------------------------------------------
@@ -315,6 +349,11 @@ def _look_forward(cur) -> int:
             if (dt, doc_pk) in claimed:
                 continue   # a lower-id upload already owns this doc this run
             claimed.add((dt, doc_pk))
+            # Un-established batch labels are NOT authoritative deals: leave those
+            # documents unlinked so they enter the clustering/proposal pipeline
+            # (spec §Upload path change). Amend-mode (a real deal_id) still stamps.
+            if not is_established_deal(cur, m["deal_id"]):
+                continue
             # Already linked to this exact deal? -> nothing to do (idempotent).
             cur_d = _rows(cur, f"select deal_id from {trgt} where {pk}=%s", (doc_pk,))
             if cur_d and (cur_d[0].get("deal_id") or "") == (m["deal_id"] or ""):
@@ -406,6 +445,7 @@ def _look_back(cur) -> int:
     clobbered. Returns the number of documents newly linked."""
     inv_trgt = _DOC["invoice"][3]
     linked = 0
+    pending = pending_batch_docs(cur)
     for po in _rows(cur, f"select * from {_PO['trgt']}"):
         npo = _norm_po(po.get("po_id"))
         if not npo:
@@ -423,6 +463,8 @@ def _look_back(cur) -> int:
                    ("quote", quote.get("quote_id"), quote.get("deal_id"))]
         for inv in _rows(cur, f"select invoice_id, deal_id from {inv_trgt} where {_PO_NORM_COND}=%s", (npo,)):
             members.append(("invoice", inv["invoice_id"], inv.get("deal_id")))
+        members = [(dt, dpk, cur_deal) for (dt, dpk, cur_deal) in members
+                   if (dt, str(dpk)) not in pending]
         for dt, dpk, cur_deal in members:
             if (cur_deal or "").strip():
                 continue   # already linked -> never clobber an authoritative deal
@@ -472,6 +514,7 @@ def _propagate_deal_along_po(cur) -> int:
     untouched (flagged by _flag_conflict_po_chains). Idempotent.
     """
     updated = 0
+    pending = pending_batch_docs(cur)
     for members in _po_chain_groups(cur).values():
         deal_ids = _po_chain_deal_ids(members)
         if len(deal_ids) != 1:
@@ -479,7 +522,7 @@ def _propagate_deal_along_po(cur) -> int:
         deal_id = next(iter(deal_ids))
         deal_name = next((n for (_t, _pk, d, n) in members if d == deal_id), None)
         for (dt, dpk, existing, _n) in members:
-            if existing:
+            if existing or (dt, str(dpk)) in pending:
                 continue
             document_id = mint_document_id(deal_id, dt, str(dpk))
             deal_date = _deal_date_for_doc(cur, dt, dpk)

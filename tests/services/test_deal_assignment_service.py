@@ -98,7 +98,10 @@ def test_look_forward_links_monitor_deal_to_matching_invoice(monkeypatch):
                 "category": "Invoice", "document_type": "pdf"}]
     inv = [{"invoice_id": "103404", "source_file": "x/THRIVE INV103404 for PO502001.pdf"}]
     cur = _ScriptCursor(
-        script=[("from proc.process_monitor", monitor),
+        # Amend-mode: TEST00120260610104 is an established deal (bp_deal row), so
+        # the monitor's deal is authoritative and must still be stamped.
+        script=[("from proc.bp_deal where deal_id", [{"deal_id": "TEST00120260610104"}]),
+                ("from proc.process_monitor", monitor),
                 ("from proc.bp_invoice_raw", inv),
                 ("from proc.bp_invoice_trgt", inv)],
         columns={"bp_invoice_stg": cols, "bp_invoice_trgt": cols})
@@ -145,7 +148,9 @@ def test_look_forward_matches_by_process_monitor_id_over_filename():
             "process_monitor_id": 555}]
     cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
     cur = _ScriptCursor(
-        script=[("from proc.process_monitor", monitor),
+        # Amend-mode: DEALX is an established deal (bp_deal row).
+        script=[("from proc.bp_deal where deal_id", [{"deal_id": "DEALX"}]),
+                ("from proc.process_monitor", monitor),
                 ("from proc.bp_invoice_raw", inv)],
         columns={"bp_invoice_stg": cols, "bp_invoice_trgt": cols})
     n = das._look_forward(cur)
@@ -153,6 +158,30 @@ def test_look_forward_matches_by_process_monitor_id_over_filename():
     assert any("update proc.bp_invoice_trgt" in e[0].lower()
                and e[1] and "INVX" in str(e[1]) and "DEALX" in str(e[1])
                for e in cur.executed)
+
+
+def test_look_forward_does_not_stamp_unestablished_batch_label():
+    # The monitor's deal_id is a freshly-typed upload-batch label -- not yet a
+    # bp_deal row, not a confirmed proposal. The matching doc must be left
+    # UNLINKED (no deal_id stamp) so it flows into the clustering/proposal
+    # pipeline instead of being auto-grouped under the batch label.
+    monitor = [{"id": 900, "file_path": "documents/Invoice/BATCH INV1.pdf",
+                "deal_id": "ANALYSISSET_19072620260719339", "deal_name": "New upload batch",
+                "category": "Invoice", "document_type": "pdf"}]
+    inv = [{"invoice_id": "INV1", "source_file": "x/BATCH INV1.pdf"}]
+    cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
+    cur = _ScriptCursor(
+        # No "from proc.bp_deal where deal_id" / confirmed-proposal rows scripted
+        # -> is_established_deal(cur, "ANALYSISSET_...") is False (the default).
+        script=[("from proc.process_monitor", monitor),
+                ("from proc.bp_invoice_raw", inv),
+                ("from proc.bp_invoice_trgt", inv)],
+        columns={"bp_invoice_stg": cols, "bp_invoice_trgt": cols})
+    n = das._look_forward(cur)
+    assert n == 0  # nothing stamped -- doc left unlinked for clustering
+    assert not any("update proc.bp_invoice_trgt" in e[0].lower() and e[1]
+                   and "ANALYSISSET_19072620260719339" in str(e[1])
+                   for e in cur.executed)
 
 
 _QA_COLS = ["po_id", "quote_id", "invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
@@ -195,7 +224,11 @@ def test_look_forward_does_not_cross_claim_pmid_raw_by_basename():
     inv = [{"invoice_id": "INV1", "source_file": "x/SAME.pdf", "process_monitor_id": 100}]
     cols = ["invoice_id", "deal_id", "deal_name", "document_id", "deal_date"]
     cur = _ScriptCursor(
-        script=[("from proc.process_monitor", monitors),
+        # Amend-mode: DEAL_RIGHT is an established deal (bp_deal row). DEAL_WRONG
+        # never reaches the established check (it doesn't claim any doc), so it
+        # doesn't need a bp_deal row.
+        script=[("from proc.bp_deal where deal_id", [{"deal_id": "DEAL_RIGHT"}]),
+                ("from proc.process_monitor", monitors),
                 ("from proc.bp_invoice_raw", inv)],
         columns={"bp_invoice_stg": cols, "bp_invoice_trgt": cols})
     das._look_forward(cur)
