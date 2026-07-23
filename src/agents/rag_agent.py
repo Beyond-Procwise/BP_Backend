@@ -1793,6 +1793,100 @@ class RAGAgent(BaseAgent):
             result_words.append("Policy")
         return " ".join(result_words)
 
+    # Policy sentences are sorted by the FIRST rule that matches, so the order
+    # here is the priority order and the two things it settles are deliberate.
+    #
+    # Polarity comes before topic: a sentence saying what must NOT happen is a
+    # restriction, whatever else it mentions. Previously each rule was tested
+    # independently, so "Staff must not approve their own expense claims" was
+    # filed as a requirement (on "must") and printed under "What's allowed".
+    #
+    # Approval comes before spending limits, because a sentence about who signs
+    # off on spend above a threshold is about the sign-off, not the threshold.
+    #
+    # The patterns are deliberately narrower than the ones they replace. Bare
+    # "review", "submit", "process", "document", "record" and "include" matched
+    # most sentences in any policy, which is why the same sentence used to
+    # appear under three headings at once.
+    _POLICY_SECTION_RULES = (
+        (
+            "restrictions",
+            re.compile(
+                r"\b(?:must not|may not|cannot|can not|can't|shall not|should not|will not"
+                r"|not (?:be )?(?:allowed|permitted|claimable|reimbursable|accepted|eligible)"
+                r"|non-?claimable|prohibited|forbidden|ineligible"
+                r"|(?:will be|are|is) declined"
+                r"|never (?:be )?(?:claimed|reimbursed|approved))\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "requirements",
+            re.compile(
+                r"\b(?:must|shall|required to|obliged to|need to|needs to|ensure)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "approval_process",
+            re.compile(
+                r"\b(?:approval|approves?|approved|approving|authoris\w*|authoriz\w*"
+                r"|sign-?off|signed off|delegated authority|escalat\w*)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "spending_limits",
+            re.compile(
+                r"[£$€]\s*[\d,.]+"
+                r"|\b(?:limit|limited to|cap|capped|ceiling|threshold|maximum"
+                r"|per person|per night|per day|per month|per mile)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "exceptions",
+            re.compile(
+                r"\b(?:unless|except (?:where|when|for|in)|exception|exemption|waiver)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "examples",
+            re.compile(r"\b(?:for example|for instance|such as)\b|e\.g\.", re.IGNORECASE),
+        ),
+        (
+            "operational_notes",
+            re.compile(
+                r"\b(?:receipts?|documentation|evidence|audit\w*|reconcil\w*|workflow"
+                r"|purchase orders?|po number|invoices?|coding|attach\w*)\b",
+                re.IGNORECASE,
+            ),
+        ),
+    )
+
+    def _categorise_policy_sentence(self, sentence: str) -> Optional[str]:
+        """Return the one section this policy sentence belongs to, or None.
+
+        One sentence, one heading. The previous logic tested every rule against
+        every sentence and recorded a hit in each section that matched, so "All
+        expenses must be submitted with a valid receipt and approved by a line
+        manager" was printed three times — once as a requirement, once as an
+        approval step, once as an operational note.
+
+        Returning None is a real answer: a sentence that matches no rule is
+        left out rather than swept into a catch-all bucket, because a heading
+        is a claim about what the sentence underneath it means.
+        """
+
+        text = (sentence or "").strip()
+        if not text:
+            return None
+        for section, pattern in self._POLICY_SECTION_RULES:
+            if pattern.search(text):
+                return section
+        return None
+
     def _extract_policy_payload(
         self,
         *,
@@ -1820,35 +1914,10 @@ class RAGAgent(BaseAgent):
         def _ingest_text(block: str, *, dynamic: bool) -> None:
             if not block:
                 return
-            sentences = self._split_sentences(block)
-            for sentence in sentences:
-                lowered = sentence.lower()
-                if re.search(r"\b(must|shall|need to|ensure|submit|retain|provide|keep|require)\b", lowered):
-                    _record("requirements", sentence, dynamic=dynamic)
-                if re.search(
-                    r"\b(non-claimable|not allowed|cannot|can't|prohibit|forbidden|declined|never)\b",
-                    lowered,
-                ) or "non-claimable" in lowered:
-                    _record("restrictions", sentence, dynamic=dynamic)
-                if re.search(r"[£$€]\s*[\d,.]+", sentence) or re.search(
-                    r"\b(limit|cap|threshold|per person|per day|per month|ceiling)\b",
-                    lowered,
-                ):
-                    _record("spending_limits", sentence, dynamic=dynamic)
-                if re.search(
-                    r"approval|approve|authoris|manager|finance|sign-off|review",
-                    lowered,
-                ):
-                    _record("approval_process", sentence, dynamic=dynamic)
-                if re.search(r"for example|such as|e.g.|include", lowered):
-                    _record("examples", sentence, dynamic=dynamic)
-                if re.search(r"unless|exception|exemption|waiver|if you need an exception", lowered):
-                    _record("exceptions", sentence, dynamic=dynamic)
-                if re.search(
-                    r"workflow|process|document|retain|attach|audit|reconcile|submit|evidence|record",
-                    lowered,
-                ) or re.search(r"\b(po|purchase order|invoice|coding)\b", lowered):
-                    _record("operational_notes", sentence, dynamic=dynamic)
+            for sentence in self._split_sentences(block):
+                section = self._categorise_policy_sentence(sentence)
+                if section:
+                    _record(section, sentence, dynamic=dynamic)
 
         def _ingest_payload(payload: Dict[str, Any], *, dynamic: bool) -> None:
             summary = payload.get("summary")
@@ -1926,13 +1995,11 @@ class RAGAgent(BaseAgent):
             "operational_notes": self._unique_ordered(categories.get("operational_notes", [])),
         }
 
-        if depth_mode == "expanded":
-            for key in ["requirements", "restrictions", "spending_limits", "approval_process", "operational_notes"]:
-                values = payload.get(key, [])
-                if not values and payload.get("overview"):
-                    values.append(payload["overview"])
-                payload[key] = values
-
+        # No backfill. Expanded mode used to copy the overview into every empty
+        # section, so one sentence describing the policy in general appeared
+        # verbatim under "What's allowed", "What's not allowed" and "Other
+        # conditions" at once — asserting it as a prohibition it never was.
+        # A section the policy does not cover stays empty and is not rendered.
         return payload
 
     def _render_policy_response(
