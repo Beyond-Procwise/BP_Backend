@@ -214,15 +214,33 @@ _INVOICES = [
 
 # Negative control (repeat commodity buying, product-wide): four correlated pairs that must
 # NOT merge because each anchors its own PO+invoice. Includes the Gomez name-mismatch.
+#
+# Each quote carries its own po_id + quote_date, and each PO carries a matching
+# currency/converted_amount_usd/order_date, so continuity scoring (quote_po
+# profile) can actually resolve the award -- these are single-supplier,
+# non-batch corpus deals that normally reference their PO, unlike the 0/28-po_id
+# analysis batch above.
+#
+# Date direction: linking_engine.cmp_temporal (shared by invoice_po AND quote_po)
+# scores "OK" when the SOURCE row's date is on/after the TARGET's order_date --
+# i.e. it expects the PO to anchor first and the linked doc to follow, exactly
+# as it does for invoice_po. So quote_date is set AFTER the PO's order_date
+# (a confirming/call-off quote against an already-raised PO), not before --
+# measured empirically (see task-7-report.md): the opposite ordering scores the
+# temporal signal as CONFLICT and drags Gomez's F to ~28, well under the 60 gate.
 _NC_QUOTES = [
     {"quote_id": "128234", "supplier_id": "SUP-DuncanLlc", "buyer_id": "Assurity Ltd",
-     "currency": "GBP", "total_amount": 1385.0, "converted_amount_usd": 1758.95},
+     "currency": "GBP", "total_amount": 1385.0, "converted_amount_usd": 1758.95,
+     "po_id": "PO-128234", "quote_date": "2024-06-10"},
     {"quote_id": "136586", "supplier_id": "SUP-PerryLtd", "buyer_id": "Assurity Ltd",
-     "currency": "GBP", "total_amount": 1249.0, "converted_amount_usd": 1586.23},
+     "currency": "GBP", "total_amount": 1249.0, "converted_amount_usd": 1586.23,
+     "po_id": "PO-136586", "quote_date": "2024-06-10"},
     {"quote_id": "102494", "supplier_id": "SUP-DixonReynoldsAndSolomon", "buyer_id": "Assurity Ltd",
-     "currency": "GBP", "total_amount": 638.0, "converted_amount_usd": 810.26},
+     "currency": "GBP", "total_amount": 638.0, "converted_amount_usd": 810.26,
+     "po_id": "PO-102494", "quote_date": "2024-06-10"},
     {"quote_id": "104683", "supplier_id": "SUP-GomezGoodAndCross", "buyer_id": "Assurity Ltd",
-     "currency": "GBP", "total_amount": 655.0, "converted_amount_usd": 831.85},
+     "currency": "GBP", "total_amount": 655.0, "converted_amount_usd": 831.85,
+     "po_id": "PO-104683", "quote_date": "2024-06-10"},
 ]
 _NC_QUOTE_LINES = {
     "128234": [{"item_description": "Staedtler Ballpoint Pen Black Ink, 10 per Pack", "quantity": 100, "unit_price": 13.85},
@@ -233,10 +251,14 @@ _NC_QUOTE_LINES = {
     "104683": [{"item_description": "Copier paper A4 80 gsm ream", "quantity": 50, "unit_price": 13.10}],
 }
 _NC_POS = [
-    {"po_id": "PO-128234", "supplier_name": "Duncan LLC", "supplier_id": "SUP-DuncanLlc"},
-    {"po_id": "PO-136586", "supplier_name": "Perry Ltd", "supplier_id": "SUP-PerryLtd"},
-    {"po_id": "PO-102494", "supplier_name": "Dixon Reynolds and Solomon", "supplier_id": "SUP-DixonReynoldsAndSolomon"},
-    {"po_id": "PO-104683", "supplier_name": "Gomez, Good and Cross Trading Ltd", "supplier_id": None},
+    {"po_id": "PO-128234", "supplier_name": "Duncan LLC", "supplier_id": "SUP-DuncanLlc",
+     "currency": "GBP", "converted_amount_usd": 1758.95, "order_date": "2024-06-01"},
+    {"po_id": "PO-136586", "supplier_name": "Perry Ltd", "supplier_id": "SUP-PerryLtd",
+     "currency": "GBP", "converted_amount_usd": 1586.23, "order_date": "2024-06-01"},
+    {"po_id": "PO-102494", "supplier_name": "Dixon Reynolds and Solomon", "supplier_id": "SUP-DixonReynoldsAndSolomon",
+     "currency": "GBP", "converted_amount_usd": 810.26, "order_date": "2024-06-01"},
+    {"po_id": "PO-104683", "supplier_name": "Gomez, Good and Cross Trading Ltd", "supplier_id": None,
+     "currency": "GBP", "converted_amount_usd": 831.85, "order_date": "2024-06-01"},
 ]
 _NC_PO_LINES = {p["po_id"]: _NC_QUOTE_LINES[p["po_id"].split("-", 1)[1]] for p in _NC_POS}
 _NC_INVOICES = [{"invoice_id": f"INV-{p['po_id']}", "po_id": p["po_id"],

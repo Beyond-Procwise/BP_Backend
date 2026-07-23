@@ -5,9 +5,11 @@ I/O, so it is fully testable on fixtures and a bad run can never corrupt assigne
 from __future__ import annotations
 
 from itertools import combinations
+from typing import Optional
 
 from src.services.requirement_similarity import rivalry_score
 from src.services.version_collapse import collapse_versions  # noqa: F401 (re-exported for callers)
+from src.services.linking_engine import score_link
 
 THRESHOLD = 0.70   # complete-linkage bar; a tunable starting value (spec §Validation)
 
@@ -59,3 +61,25 @@ def cluster_confidence(cluster: list[dict], matrix: dict) -> float:
     pairs = [_corr(matrix, a["quote_id"], b["quote_id"])
              for a, b in combinations(cluster, 2)]
     return round(min(pairs) * 100.0, 1)
+
+
+def awarded_po(bid: dict, pos: list[dict], po_lines: dict, bid_lines: list,
+               min_score: float = 80.0, scorer=score_link) -> Optional[str]:
+    """The PO this bid won, by CONTINUITY scoring (quote_po: same supplier AND price —
+    exact unit-price match is correct for an award). NOT supplier-name string matching,
+    which loses SUP-GomezGoodAndCross vs 'Gomez, Good and Cross Trading Ltd' and any null
+    supplier. Returns the best PO's id at/above min_score, else None."""
+    best_id, best_f = None, 0.0
+    for po in pos:
+        link = scorer(bid, po, "quote_po", bid_lines, po_lines.get(po["po_id"], []))
+        if link["F"] >= min_score and link["F"] > best_f:
+            best_id, best_f = po["po_id"], link["F"]
+    return best_id
+
+
+def award_veto(bid_a: dict, bid_b: dict, awards: dict) -> bool:
+    """True when two correlated bids each anchor a DISTINCT PO — repeat buying, not
+    rivalry. A competition has exactly one award; separate POs+invoices per bid is a
+    structural fact that vetoes rivalry (pairwise, over these specific quotes)."""
+    pa, pb = awards.get(bid_a["quote_id"]), awards.get(bid_b["quote_id"])
+    return pa is not None and pb is not None and pa != pb

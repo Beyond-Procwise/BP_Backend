@@ -110,3 +110,27 @@ def test_single_borderline_pair_does_not_chain_two_events():
 
     single = [c for c in _single_linkage(bids, threshold) if len(c) >= 2]
     assert any(len(c) >= 5 for c in single)      # single linkage DOES chain -> proves the guard
+
+
+def test_award_detection_survives_supplier_name_mismatch():
+    # quote SUP-GomezGoodAndCross vs PO "Gomez, Good and Cross Trading Ltd" (supplier_id NULL).
+    # Continuity scoring on lines+price must still resolve the award; name-match would fail.
+    q = next(q for q in gb.negative_control_quotes() if q["quote_id"] == "104683")
+    pos = gb.negative_control_pos()
+    po_lines = gb.negative_control_po_lines()
+    q_lines = gb.negative_control_quote_lines()["104683"]
+    po_id = dc.awarded_po(q, pos, po_lines, q_lines, min_score=60.0)
+    assert po_id == "PO-104683"
+
+
+def test_award_veto_separates_repeat_buying():
+    # Duncan(128234) and Perry(136586) correlate ~0.744 but each has its own PO+invoice.
+    awards = {"128234": "PO-128234", "136586": "PO-136586"}
+    assert dc.award_veto({"quote_id": "128234"}, {"quote_id": "136586"}, awards) is True
+
+
+def test_award_veto_does_not_fire_for_single_award_competition():
+    # Freight: 3 bidders share ONE PO (Swift). Not a veto.
+    awards = {"SDP-Q-44120": "PO-2024-0091", "CL-2024-0771": None, "MFS-Q-3391": None}
+    assert dc.award_veto({"quote_id": "CL-2024-0771"}, {"quote_id": "MFS-Q-3391"}, awards) is False
+    assert dc.award_veto({"quote_id": "SDP-Q-44120"}, {"quote_id": "CL-2024-0771"}, awards) is False
