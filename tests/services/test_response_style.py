@@ -66,14 +66,22 @@ def test_the_model_is_not_told_to_open_with_an_acknowledgement(pipeline):
 
 
 def test_the_persona_does_not_order_a_stock_greeting(pipeline):
-    """The persona said "avoid boilerplate openers" and then supplied two."""
+    """The persona said "avoid boilerplate openers" and then supplied two.
+
+    "Happy to help!" now appears in the persona as an example of what NOT to
+    write, so a bare `not in` check reads a prohibition as an instruction. What
+    matters is the polarity: every occurrence must sit on a line that forbids it.
+    """
     persona = RAGPipeline._ASK_PERSONA_FALLBACK
-    assert "Happy to help!" not in persona
+    for line in persona.splitlines():
+        if "Happy to help!" in line:
+            assert line.lstrip().startswith("- No filler pleasantries"), line
     assert "Thanks for the question" not in persona
     assert "brief acknowledgement or collegial greeting" not in persona
     # The parts that keep the answer honest must survive untouched.
     assert "Never add amounts denominated in different currencies." in persona
-    assert "avoid boilerplate openers or stock phrases" in persona
+    # Canned openers are still forbidden — by the governed style block now.
+    assert "No fixed templates, canned openers" in persona
 
 
 # --------------------------------------------------------------------------

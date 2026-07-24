@@ -228,8 +228,9 @@ NEGOTIATION_PLAYBOOK_USER = """Draft a strategic negotiation email based on the 
 ## OUTPUT REQUIREMENTS
 
 - Professional email 200-250 words
-- Use **bold** for section headers
-- Use bullet points (•) for lists
+- Write it as an email: plain paragraphs, no section headers, no Markdown, no emoji
+- Bullet points only where the content is genuinely a list (e.g. the proposed terms)
+- Bold sparingly — a key figure or date, never a label or a whole line
 - Include specific figures and dates
 - NO internal reference numbers (RFQ IDs, UIDs, workflow IDs)
 - Clear, actionable next steps

@@ -13,7 +13,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Set
 
-from html import escape
+from html import escape, unescape
 import ollama
 
 try:  # pragma: no cover - optional PDF utility
@@ -29,6 +29,7 @@ from agents.rag_agent import RAGAgent
 from services.redis_client import get_redis_client
 from . import corpus_facts
 from .json_field_stream import JsonFieldStreamer
+from .response_style import enforce_response_style
 from .rag_service import RAGService
 from .nltk_pipeline import NLTKProcessor
 from utils.gpu import configure_gpu, load_cross_encoder
@@ -876,13 +877,13 @@ class RAGPipeline:
     def _load_citation_guidelines(self) -> Dict[str, Any]:
         """Load structured response preferences authored by layered training."""
 
+        # No acknowledgements, summary_intro or actions_lead. They supplied the
+        # canned opener ("Here's what I found in the policy documentation."), the
+        # section lead-in and the sign-off offer to escalate. The generators that
+        # emitted them are gone — only `fallback` and `default_follow_ups` are read
+        # now — so keeping the strings loaded left a set of openers one call away
+        # from reappearing.
         defaults: Dict[str, Any] = {
-            "acknowledgements": [
-                "Here's what I found in the policy documentation.",
-                "Here's a concise summary from the knowledge base.",
-            ],
-            "summary_intro": "These points capture the essentials you should know.",
-            "actions_lead": "Let me know if you want me to escalate, refresh the data, or prep outreach notes.",
             "fallback": "I do not have that information as per my knowledge.",
             "default_follow_ups": [
                 "Would you like me to surface the related purchase order or contract details?",
@@ -1652,13 +1653,12 @@ class RAGPipeline:
             if key_phrases:
                 lines.append(f"Relevant phrases: {'; '.join(key_phrases[:5])}")
 
-        if descriptor == "negative":
-            tone_line = "Tone guidance: be empathetic and solutions-oriented."
-        elif descriptor == "positive":
-            tone_line = "Tone guidance: keep the response upbeat while staying factual."
-        else:
-            tone_line = "Tone guidance: respond in a calm, professional manner."
-        lines.append(tone_line)
+        # No tone line. Tone used to be picked per request from the VADER sentiment
+        # of the question — "be empathetic and solutions-oriented" when the wording
+        # scored negative, "keep the response upbeat" when positive — so the voice
+        # shifted with how a question happened to be phrased rather than following
+        # any policy. Tone and style are governed in one place, the ask_persona row
+        # in bp_prompt, which is sent as the system message on every call.
 
         if ad_hoc_context:
             lines.append(
@@ -1670,12 +1670,13 @@ class RAGPipeline:
             lines.append("Knowledge snippets:\n" + context)
 
         lines.append("Draft summary derived from retrieval:\n" + draft_answer)
-        # No greeting, no lead-in. Asking for one guaranteed that every answer in
-        # the product opened the same way, which is the definition of scripted —
-        # and it made the reader work through a sentence of nothing before the
-        # answer started.
+        # The task, not the style. This line used to restate how to write —
+        # "one or two concise paragraphs", "introduce short bullet or numbered
+        # lists", "warm, conversational" — which competed with the governed
+        # persona: two instructions, drifting apart, and the model choosing
+        # between them. Style belongs to the ask_persona row in bp_prompt alone.
         lines.append(
-            "Transform the draft into a natural response (ideally one or two concise paragraphs). Open on the answer itself — no greeting, no thanks, no restating what was asked. Weave in the most relevant knowledge details, introduce short bullet or numbered lists when clarifying multiple points, point out any gaps or next steps, and keep the tone warm, conversational, and unscripted—sound like a trusted teammate rather than a script."
+            "Answer the question from the material above, following the response-style rules in your instructions."
         )
         return "\n\n".join(lines)
 
@@ -1704,6 +1705,12 @@ class RAGPipeline:
         else:
             cleaned = self._postprocess_answer(candidate)
         cleaned = self._remove_placeholders(cleaned)
+        # Style is authored in bp_prompt (ask_persona/joshi) and asked for on every
+        # request, but asking is not enforcing — nothing here used to check what came
+        # back. This strips the markers the governed style forbids (headers, rules,
+        # blockquotes, whole-line bold, decorative emoji) and touches nothing else:
+        # every word, digit and figure is preserved byte for byte.
+        cleaned = enforce_response_style(cleaned)
         return cleaned or fallback_clean
 
     def _merge_followups(
@@ -1764,7 +1771,15 @@ class RAGPipeline:
             last = 0
             for match in enumerated:
                 pieces.append(block[last : match.start()])
-                pieces.append(f"\n{match.group(1)}{match.group(2)} ")
+                # Only break a marker onto its own line when it is not already
+                # there. Prefixing "\n" unconditionally put a BLANK line between
+                # items that were correctly separated already, and a blank line
+                # closes the list — so every item became its own <ol> and the
+                # browser restarted the numbering at 1 for each one.
+                preceding = block[: match.start()]
+                at_line_start = preceding == "" or preceding.endswith("\n")
+                prefix = "" if at_line_start else "\n"
+                pieces.append(f"{prefix}{match.group(1)}{match.group(2)} ")
                 last = match.end()
             pieces.append(block[last:])
             return "".join(pieces)
@@ -2012,6 +2027,24 @@ class RAGPipeline:
                 deduped.append(cleaned)
         return deduped[:3]
 
+    @staticmethod
+    def _history_answer_as_text(answer: str) -> str:
+        """Prior answers are stored rendered; the model must see prose.
+
+        History holds the HTML that was sent to the screen, and this text is
+        replayed into the prompt as "what you said last time". Handing the model
+        its own markup teaches it to produce markup — and older rows still carry
+        the retired boilerplate (``<section class="llm-answer">`` … "Here's what
+        I found" … "I pulled the key details into an easy-to-scan summary"), so
+        the style that was deleted from the code was still being shown to the
+        model as an example of itself. Tags out, text kept.
+        """
+
+        if not answer or "<" not in answer:
+            return answer
+        without_tags = re.sub(r"<[^>]+>", " ", answer)
+        return re.sub(r"\s+", " ", unescape(without_tags)).strip()
+
     def _format_history_context(self, history: List[Dict[str, Any]], limit: int = 3) -> str:
         if not history:
             return ""
@@ -2019,7 +2052,7 @@ class RAGPipeline:
         formatted = []
         for item in trimmed:
             question = str(item.get("query", "")).strip()
-            answer = str(item.get("answer", "")).strip()
+            answer = self._history_answer_as_text(str(item.get("answer", "")).strip())
             if not question and not answer:
                 continue
             formatted.append(f"Question: {question}\nAnswer: {answer}")
@@ -2076,8 +2109,7 @@ class RAGPipeline:
     # this string is no longer the way to change the persona; edit the bp_prompt row.
     _ASK_PERSONA_FALLBACK = (
         "System (Joshi)\n"
-        "You are Joshi, the ProcWise SME. Sound like a caring, capable coworker—warm, semi-formal, and concise without seeming scripted. "
-        "Lead with the answer. Do not open with a greeting, a thank-you, or a restatement of the question. "
+        "You are Joshi, the ProcWise SME. "
         "Answer only from the provided retrieval context. If the context is thin, explain the gap in one sentence or ask a single clarifying question instead of guessing. "
         "Never name a supplier, amount, document, or date that does not appear in the supplied context. If you do not have the figure, say that you do not have it — do not supply a plausible one. "
         "Never add amounts denominated in different currencies. £190,400.61 and $97,519.00 do not sum to 287,919.61 of anything. "
@@ -2085,9 +2117,21 @@ class RAGPipeline:
         "Only state a combined total if the context supplies an explicitly converted figure, and then name the basis it used. "
         "This applies to every derived number: a figure you calculated is not a figure you were given, so do not present arithmetic of your own as though it came from the data. "
         "Paraphrase the source material instead of copying it verbatim, and translate jargon into plain language so a busy sourcing manager can act quickly. "
-        "Structure the answer as one or two short paragraphs, adding short bullet or numbered lists whenever you walk through multiple considerations, steps, or recommendations. Wrap up with a clear takeaway or next step. "
-        "Do not expose internal details, identifiers, or placeholders, and avoid boilerplate openers or stock phrases. "
-        "Respond in valid JSON with keys 'answer' and 'follow_ups'. Keep 'answer' friendly, collegial, and firmly grounded in the supplied knowledge while noting any limits transparently. "
+        "Do not expose internal details, identifiers, or placeholders. "
+        "\n\n"
+        "## Response style\n"
+        "Answer like a knowledgeable colleague in chat: natural, direct prose. "
+        "Lead with the direct answer in the first sentence.\n"
+        "- No fixed templates, canned openers, or section labels like \"Here's what I found\" or \"Executive summary\".\n"
+        "- No filler pleasantries (\"Happy to help!\") and no meta-commentary about what you're about to do.\n"
+        "- Do NOT structure short answers with Markdown headers (##, ###), horizontal rules (---), or blockquotes (>). Write in plain paragraphs.\n"
+        "- No emojis in headers or as decoration.\n"
+        "- Bold sparingly — only one or two genuinely key figures, never whole phrases or every label.\n"
+        "- Use lists only when the data is genuinely a list. Keep formatting minimal.\n"
+        "- Reserve headers for long, multi-section reports the user explicitly asked for. A summary or a question gets prose, not a document outline.\n"
+        "- Match length to the question: a count question gets a one-line answer plus a short breakdown if useful.\n"
+        "\n"
+        "Respond in valid JSON with keys 'answer' and 'follow_ups'. Keep 'answer' firmly grounded in the supplied knowledge while noting any limits transparently. "
         "Ensure 'follow_ups' contains three concise, context-aware questions that naturally progress the procurement discussion without repeating each other."
     )
 
@@ -2123,6 +2167,7 @@ class RAGPipeline:
         prompt: str,
         model: str,
         on_delta: Optional[Callable[[str], None]] = None,
+        on_answer_complete: Optional[Callable[[str], None]] = None,
     ) -> Dict:
         """Calls :func:`ollama.chat` once to get answer and follow-ups.
 
@@ -2131,6 +2176,13 @@ class RAGPipeline:
         emitting it verbatim would put `{"answer": "Th` on the user's screen. The
         deltas handed to ``on_delta`` are the decoded contents of the ``answer``
         field only (see JsonFieldStreamer), so what arrives is prose.
+
+        ``on_answer_complete`` fires once, with the finished answer, the moment
+        that field's closing quote arrives. The model still has the three
+        follow-up questions to write at that point — measured live, ~8.5s of a
+        ~30s ask — and a client that waits for the whole object spins over an
+        answer it could already have shown. It does not fire on a truncated
+        stream: no closing quote means no complete answer.
         """
         system = self._ask_persona()
         messages = [
@@ -2151,23 +2203,33 @@ class RAGPipeline:
         else:
             base_options["temperature"] = min(0.7, temperature + 0.1)
         base_options.setdefault("top_p", 0.9)
+        # `keep_alive` is a top-level request field. Left inside `options` — where
+        # ollama_options() supplies it — Ollama ignores it and the model expires on
+        # the daemon default (5m), so the first ask after any lull pays a ~6.5s
+        # reload of a 20GB model. Same class of mistake as num_gpu_layers: accepted,
+        # ignored, silently slow.
+        keep_alive = base_options.pop("keep_alive", None)
         chat_kwargs = {
             "model": model,
             "messages": messages,
             "options": base_options,
             "format": "json",
         }
+        if keep_alive is not None:
+            chat_kwargs["keep_alive"] = keep_alive
 
         # Stream whenever the caller wants deltas, regardless of the global setting:
         # an SSE request cannot be served by a blocking call.
         stream_enabled = bool(
-            on_delta or getattr(settings, "stream_llm_responses", False)
+            on_delta or on_answer_complete or getattr(settings, "stream_llm_responses", False)
         )
         if stream_enabled:
             try:
                 stream = ollama.chat(**{**chat_kwargs, "stream": True})
                 content_chunks: List[str] = []
-                field_stream = JsonFieldStreamer("answer") if on_delta else None
+                wants_field = bool(on_delta or on_answer_complete)
+                field_stream = JsonFieldStreamer("answer") if wants_field else None
+                answer_so_far: List[str] = []
                 for event in stream:
                     fragment = (event or {}).get("message", {}).get("content")
                     if not fragment:
@@ -2176,7 +2238,21 @@ class RAGPipeline:
                     if field_stream is not None and not field_stream.complete:
                         text = field_stream.feed(fragment)
                         if text:
-                            on_delta(text)
+                            answer_so_far.append(text)
+                            if on_delta is not None:
+                                on_delta(text)
+                        # Announce as soon as the closing quote lands, inside the
+                        # same fragment that carried it — waiting for the next
+                        # one would hand back the time this exists to save.
+                        if field_stream.complete and on_answer_complete is not None:
+                            try:
+                                on_answer_complete("".join(answer_so_far))
+                            except Exception:
+                                logger.debug(
+                                    "ask on_answer_complete consumer raised",
+                                    exc_info=True,
+                                )
+                            on_answer_complete = None
                 content = "".join(content_chunks)
                 if content:
                     return json.loads(content)
@@ -2642,6 +2718,14 @@ class RAGPipeline:
             prompt,
             llm_to_use,
             on_delta=(lambda text: _emit("delta", text=text)) if on_event else None,
+            # The prose is finished well before the reply is: the follow-up
+            # questions are still being written. Tell the client so it can settle
+            # the answer instead of spinning until `done`.
+            on_answer_complete=(
+                (lambda text: _emit("stage", stage="answer_complete"))
+                if on_event
+                else None
+            ),
         )
         answer = self._finalise_llm_answer(
             llm_payload.get("answer"), raw_nltk_features, draft_answer
