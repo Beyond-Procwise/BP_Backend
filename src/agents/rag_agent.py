@@ -1887,6 +1887,23 @@ class RAGAgent(BaseAgent):
                 return section
         return None
 
+    def _first_unfiled_sentence(self, block: str) -> str:
+        """The first sentence of ``block`` that no heading claims.
+
+        A sentence carrying a rule is already rendered under "What's allowed",
+        "What's not allowed" or "Other conditions", so repeating it in the
+        opening line shows it twice. What is left over — what the policy covers,
+        who it applies to, when it took effect — is what an overview is for, and
+        nothing else displays it. A source that is nothing but rules yields no
+        overview, and the renderer opens on the sections instead.
+        """
+        if not block:
+            return ""
+        for sentence in self._split_sentences(block) or [block]:
+            if not self._categorise_policy_sentence(sentence):
+                return sentence
+        return ""
+
     def _extract_policy_payload(
         self,
         *,
@@ -1976,12 +1993,11 @@ class RAGAgent(BaseAgent):
             ):
                 categories["requirements"].extend(answer_sentences)
 
-        overview = ""
-        if doc_overview_candidates:
-            overview = doc_overview_candidates[0]
-        elif focus_answer:
-            sentences = self._split_sentences(focus_answer)
-            overview = sentences[0] if sentences else focus_answer
+        # The overview opens the answer; the sections carry the rules. Taking the
+        # whole summary blob here printed every rule twice, because that same
+        # blob is split and filed under headings by _ingest_text above.
+        overview_source = doc_overview_candidates[0] if doc_overview_candidates else focus_answer
+        overview = self._first_unfiled_sentence(overview_source)
 
         payload = {
             "policy_name": policy_name,
