@@ -9,7 +9,7 @@ from itertools import combinations
 from typing import Optional
 
 from src.services.requirement_similarity import rivalry_score
-from src.services.version_collapse import collapse_versions  # noqa: F401 (re-exported for callers)
+from src.services.version_collapse import base_reference, collapse_versions  # noqa: F401 (collapse_versions re-exported for callers)
 from src.services.linking_engine import score_link
 
 THRESHOLD = 0.70   # complete-linkage bar; a tunable starting value (spec §Validation)
@@ -105,16 +105,30 @@ def _norm_ref(v) -> Optional[str]:
 
 
 def _explicit_award(bid: dict, pos: list[dict], po_lines: dict) -> Optional[str]:
-    """The PO whose line items cite this bid's base_reference as their
-    ``quote_number`` — a tier-1 LINKED identifier, decisive where present and
-    checked before any score-based inference (spec: declared linkage outranks
-    inference). Returns the po_id, else None."""
-    target = _norm_ref(bid.get("base_reference"))
+    """The PO that cites this bid as the quote it was raised against — a tier-1
+    LINKED identifier, decisive where present and checked before any score-based
+    inference (spec: declared linkage outranks inference). Returns the po_id.
+
+    Two carriers, HEADER FIRST. A PO states its award once in the header
+    ("Reference: Against BAFO quote SDP-Q-44120") — that is the grain the
+    documents actually use, and it is what ``quote_reference`` holds. The
+    per-line ``quote_number`` is the legacy carrier, kept for data that has it
+    (it is 0/316 filled on the current corpus, which is why award detection
+    never fired before this column existed).
+
+    Both sides are version-collapsed: PO-2024-0145 cites "ORB-Q-6612 (V3)" while
+    the collapsed bid is "ORB-Q-6612", and _norm_ref alone would compare
+    orbq6612v3 against orbq6612 and miss.
+    """
+    target = _norm_ref(base_reference(bid.get("base_reference") or ""))
     if target is None:
         return None
     for po in pos:
+        if _norm_ref(base_reference(po.get("quote_reference") or "")) == target:
+            return po["po_id"]
+    for po in pos:
         for line in po_lines.get(po["po_id"], []) or []:
-            if _norm_ref(line.get("quote_number")) == target:
+            if _norm_ref(base_reference(line.get("quote_number") or "")) == target:
                 return po["po_id"]
     return None
 

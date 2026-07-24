@@ -118,6 +118,46 @@ fields:
       ner_type_check: "none"
     invariants: []
 
+  - name: quote_reference
+    type: string
+    required: false
+    db_column: quote_reference
+    canonical_labels:
+      - "Quote Reference"
+      - "Quote Ref"
+      - "Quote Number"
+      - "Quotation Reference"
+      - "Your Quote"
+      - "Against Quote"
+    confidence_threshold: 0.65
+    patterns:
+      # A PO names the bid it was raised against ONCE, in its header:
+      #   "Reference  Against BAFO quote SDP-Q-44120 · RFQ PROC-2024-RFQ-FRT-005"
+      # We anchor on the award phrase itself rather than the "Reference" label,
+      # because the label is generic (it also introduces bare RFQ refs, which are
+      # NOT quote ids) and docling drops its colon when it flattens the header
+      # table. Works packages say "tender" where goods/services say "quote".
+      - name: against_award_reference
+        anchor: '(?i)\bagainst\s+(?:the\s+)?(?:bafo\s+|winning\s+|final\s+|accepted\s+)?(?:quote|quotation|tender|proposal|bid)\s*(?:no\.?|number|ref(?:erence)?)?\s*[:\-]?\s*'
+        value: '([A-Z][A-Z0-9]*(?:[\-\/\.][A-Z0-9]+)+(?:\s*\(\s*V\d+[^)]*\))?)'
+        max_span_after_anchor_chars: 45
+        prior_confidence: 0.90
+      # Explicitly labelled forms: "Your quote ref: X", "Quotation No. X".
+      # The no/number/ref keyword is REQUIRED here so this never fires on prose
+      # that merely contains the word "quote".
+      - name: anchored_quote_reference
+        anchor: '(?i)\b(?:your\s+)?(?:quote|quotation)\s*(?:no\.?|number|ref(?:erence)?|#)\s*[:\-]?\s*'
+        value: '([A-Z][A-Z0-9]*(?:[\-\/\.][A-Z0-9]+)+(?:\s*\(\s*V\d+[^)]*\))?)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.82
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
   - name: requested_by
     type: string
     required: false
