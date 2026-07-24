@@ -56,3 +56,4 @@ docling==2.93.0
 paddlepaddle-gpu==3.1.0
 paddleocr==3.5.0
 ddgs
+pyjwt[crypto]

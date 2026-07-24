@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     db_password: str = Field(..., env="DB_PASSWORD")
     db_port: int = Field(..., env="DB_PORT")
 
+    # Ask-endpoint authentication. `enforce` is the default: an unauthenticated
+    # /workflows/ask should never be something a deployment falls into quietly.
+    # `off` is available for local work and logs a warning on every startup.
+    ask_auth_mode: str = Field(default="enforce", env="ASK_AUTH_MODE")
+    cognito_region: str = Field(default="", env="COGNITO_REGION")
+    cognito_user_pool_id: str = Field(default="", env="COGNITO_USER_POOL_ID")
+    cognito_app_client_id: str = Field(default="", env="COGNITO_APP_CLIENT_ID")
+
     s3_bucket_name: str = Field(..., env="S3_BUCKET_NAME")
     s3_prefixes: List[str] = Field(..., env="S3_PREFIXES")
     s3_max_pool_connections: int = Field(

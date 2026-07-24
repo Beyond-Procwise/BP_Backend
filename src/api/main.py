@@ -538,6 +538,14 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
         )
 
 
+# Ask-endpoint authentication. Configured once at import so the mode is decided
+# before the first request, and surfaced on /health — an unauthenticated ask
+# endpoint must be visible, not something you discover by testing it.
+from api import auth as _ask_auth  # noqa: E402
+from config.settings import settings as _settings  # noqa: E402
+
+_ASK_AUTH_MODE = _ask_auth.configure(_settings)
+
 app.add_middleware(OutputSafetyMiddleware)
 
 
@@ -568,6 +576,10 @@ def health():
             "schemas_loaded": len(schemas),
             "doc_types": sorted(schemas.keys()) if schemas else [],
         },
+        # Whether the ask endpoints require a token. Reported because "off" is a
+        # deployment state someone must be able to see without probing the API.
+        # No pool ids or issuer here — this endpoint needs no auth itself.
+        "ask_auth": _ask_auth.auth_mode(),
         # Honest surface for features that lost a dependency they can never have. It stays
         # honest — the capability is still named, and it still says it is degraded — but the
         # *reason* no longer ships. It used to read "proc.agent table does not exist; …

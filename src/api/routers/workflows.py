@@ -16,6 +16,7 @@ from starlette.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator, ConfigDict
 
 from orchestration.orchestrator import Orchestrator
+from api.auth import require_user
 from services.model_selector import RAGPipeline
 from services.opportunity_service import record_opportunity_feedback
 from services.email_dispatch_service import EmailDispatchService
@@ -824,11 +825,13 @@ async def build_email_dispatch_request(request: Request) -> EmailDispatchRequest
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 @router.post("/ask")
 async def ask_question(
     req: AskRequest,
     request: Request,
     pipeline: RAGPipeline = Depends(get_rag_pipeline),
+    principal: object = Depends(require_user),
 ):
     def _clean(value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -876,6 +879,7 @@ async def ask_question_stream(
     req: AskRequest,
     request: Request,
     pipeline: RAGPipeline = Depends(get_rag_pipeline),
+    principal: object = Depends(require_user),
 ):
     """Stream an answer as Server-Sent Events.
 
