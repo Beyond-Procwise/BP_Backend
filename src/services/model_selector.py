@@ -971,7 +971,15 @@ class RAGPipeline:
             text,
             flags=re.IGNORECASE,
         )
-        cleaned = re.sub(r"\s+", " ", cleaned)
+        # Horizontal whitespace only. `\s+` counts a newline as whitespace like
+        # any other, so this collapsed the answer's paragraph breaks and list
+        # markers into spaces on the way out — the model laid out a lead line and
+        # three bullets, and the renderer received one long line and read it as a
+        # single "term: value" pair. Runs of spaces still collapse; line structure
+        # is the model's and survives.
+        cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
+        cleaned = re.sub(r" ?\n ?", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
 
     def _condense_snippet(
@@ -2120,18 +2128,27 @@ class RAGPipeline:
         "Do not expose internal details, identifiers, or placeholders. "
         "\n\n"
         "## Response style\n"
-        "Answer like a knowledgeable colleague in chat: natural, direct prose. "
-        "Lead with the direct answer in the first sentence.\n"
+        "Answer like a knowledgeable colleague in chat: natural, direct prose, lightly structured so it can be skimmed. "
+        "Lead with the direct answer in the first sentence, then give the supporting detail.\n"
+        "- Put the lead sentence in its own short paragraph, then a blank line before what follows.\n"
+        "- When the answer covers several items, figures or steps, set them out as a list — one per line, each starting \"- \" — rather than running them into a sentence. Three suppliers with three amounts is a list, not a paragraph.\n"
+        "- Keep paragraphs to two or three sentences, separated by a blank line.\n"
+        "- Bold the one or two figures that actually matter. Never bold a label, a heading, or a whole line.\n"
         "- No fixed templates, canned openers, or section labels like \"Here's what I found\" or \"Executive summary\".\n"
         "- No filler pleasantries (\"Happy to help!\") and no meta-commentary about what you're about to do.\n"
-        "- Do NOT structure short answers with Markdown headers (##, ###), horizontal rules (---), or blockquotes (>). Write in plain paragraphs.\n"
-        "- No emojis in headers or as decoration.\n"
-        "- Bold sparingly — only one or two genuinely key figures, never whole phrases or every label.\n"
-        "- Use lists only when the data is genuinely a list. Keep formatting minimal.\n"
-        "- Reserve headers for long, multi-section reports the user explicitly asked for. A summary or a question gets prose, not a document outline.\n"
-        "- Match length to the question: a count question gets a one-line answer plus a short breakdown if useful.\n"
+        "- No Markdown headers (##, ###), horizontal rules (---) or blockquotes (>). The structure comes from short paragraphs and lists, not from a document outline.\n"
+        "- No emojis.\n"
+        "- Match length to the question: a count question gets a one-line answer plus a short breakdown if useful. Do not pad.\n"
         "\n"
-        "Respond in valid JSON with keys 'answer' and 'follow_ups'. Keep 'answer' firmly grounded in the supplied knowledge while noting any limits transparently. "
+        "Respond in valid JSON with keys 'answer' and 'follow_ups'. "
+        # Without this the reply is always one unbroken line. The request is sent
+        # with format=json, and a literal newline is illegal inside a JSON string,
+        # so the model takes the safe route and writes no line breaks at all — no
+        # amount of style instruction changes that, because the constraint is the
+        # encoding, not the writing. Escaped \\n is valid JSON and decodes to a real
+        # newline, which is what the renderer needs to see a paragraph or a list.
+        "The 'answer' value is a JSON string: write paragraph breaks and list items as escaped newlines (\\n) inside it, exactly as you would lay the answer out on screen. A list item is \"\\n- \". Do not return the answer as one unbroken line. "
+        "Keep 'answer' firmly grounded in the supplied knowledge while noting any limits transparently. "
         "Ensure 'follow_ups' contains three concise, context-aware questions that naturally progress the procurement discussion without repeating each other."
     )
 
