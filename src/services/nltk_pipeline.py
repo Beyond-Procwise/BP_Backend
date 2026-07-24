@@ -86,6 +86,18 @@ class NLTKProcessor:
     # A line that opens with a bullet or an ordinal is a list item, and is kept whole.
     _LIST_MARKER = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
 
+    # A Markdown table row is a unit too. Sentence-splitting it, capitalising the
+    # pieces and closing them with a full stop turned "| Supplier | Spend |" into
+    # "| Supplier | Spend |." — which no longer looks like a table row, so the
+    # renderer printed the pipes on screen instead of drawing a table.
+    #
+    # Any line carrying a pipe is treated this way, not just the fenced form. The
+    # model also writes tables bare ("Supplier|Spend" over "---|---"), and the
+    # full stop landed on the separator — "---|---." — which is what stopped the
+    # renderer recognising the block. A prose line that happens to contain a pipe
+    # simply keeps its own punctuation, which costs nothing.
+    _TABLE_ROW = re.compile(r"^[^|]*\|")   # anchored: the call site uses .match()
+
     _TOXICITY_PATTERNS = (
         re.compile(r"\b(?:idiot|stupid|dumb)\b", re.IGNORECASE),
     )
@@ -241,7 +253,7 @@ class NLTKProcessor:
 
             # A bullet or numbered item is one unit. Sentence-splitting it, then
             # capitalising and full-stopping the pieces, turns a list into prose.
-            is_list_item = bool(self._LIST_MARKER.match(stripped))
+            is_list_item = bool(self._LIST_MARKER.match(stripped) or self._TABLE_ROW.match(stripped))
             parts = [stripped] if is_list_item else sent_tokenize(stripped)  # type: ignore[operator]
 
             kept: List[str] = []

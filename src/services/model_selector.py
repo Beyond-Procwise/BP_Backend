@@ -1811,6 +1811,50 @@ class RAGPipeline:
         bullet_pattern = re.compile(r"^(?:[-*\u2022])\s+")
         ordered_pattern = re.compile(r"^\s*\d+[\.)]\s+")
         definition_pattern = re.compile(r"^\s*([^:]{1,80})\s*:\s*(.+)$")
+        # A table is identified by its separator row, not by the pipes alone. The
+        # model writes both the fenced form ("| A | B |") and the bare one
+        # ("A|B"), which is equally valid Markdown — requiring outer pipes meant
+        # the bare form rendered as literal text. Requiring a separator on the
+        # NEXT line is what keeps "spend is high | see the caveat" out of a table.
+        table_rule_pattern = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$")
+
+        def _split_row(line: str) -> List[str]:
+            return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+        def _table_line_indices(all_lines: List[str]) -> Set[int]:
+            """Indices belonging to a table block: a header, its separator, and
+            the contiguous piped rows beneath."""
+
+            marked: Set[int] = set()
+            for i, line in enumerate(all_lines[:-1]):
+                if "|" not in line or i in marked:
+                    continue
+                if not table_rule_pattern.match(all_lines[i + 1]):
+                    continue
+                marked.update({i, i + 1})
+                for j in range(i + 2, len(all_lines)):
+                    if "|" not in all_lines[j] or not all_lines[j].strip():
+                        break
+                    marked.add(j)
+            return marked
+
+        def flush_table() -> None:
+            nonlocal table_rows
+            if not table_rows:
+                return
+            header, body = table_rows[0], table_rows[1:]
+            head = "".join(f"<th>{format_inline(c)}</th>" for c in header)
+            rows = "".join(
+                "<tr>" + "".join(f"<td>{format_inline(c)}</td>" for c in row) + "</tr>"
+                for row in body
+            )
+            html_parts.append(
+                f'<table class="agent-answer__table"><thead><tr>{head}</tr></thead>'
+                f"<tbody>{rows}</tbody></table>"
+            )
+            table_rows = []
+
+        table_rows: List[List[str]] = []
 
         def format_inline(value: str) -> str:
             escaped = escape(value)
@@ -1847,11 +1891,15 @@ class RAGPipeline:
             first_paragraph_rendered = True
             html_parts.append(f'<p class="{css_class}">{format_inline(content)}</p>')
 
-        for raw_line in normalised.split("\n"):
+        source_lines = normalised.split("\n")
+        table_lines = _table_line_indices(source_lines)
+
+        for line_index, raw_line in enumerate(source_lines):
             line = raw_line.strip()
             if not line:
                 flush_list()
                 flush_definitions()
+                flush_table()
                 continue
 
             source_idx = line.lower().find("sources:")
@@ -1866,6 +1914,15 @@ class RAGPipeline:
                 if not before:
                     continue
                 line = before
+
+            if line_index in table_lines:
+                # The separator carries no data — it only marks the header above it.
+                if not table_rule_pattern.match(line):
+                    flush_list()
+                    flush_definitions()
+                    table_rows.append(_split_row(line))
+                continue
+            flush_table()
 
             if bullet_pattern.match(line):
                 flush_definitions()
@@ -1904,6 +1961,7 @@ class RAGPipeline:
 
         flush_list()
         flush_definitions()
+        flush_table()
 
         if len(html_parts) == body_start:
             html_parts.append('<p class="agent-answer__paragraph">No answer available.</p>')
@@ -2035,6 +2093,166 @@ class RAGPipeline:
                 deduped.append(cleaned)
         return deduped[:3]
 
+    # Words that name something retrievable. A question containing one of these
+    # is about data — it needs a search, however it asks for the result to look.
+    _CONTENT_TERMS = re.compile(
+        r"(?i)\b(invoice|invoices|supplier|suppliers|purchase\s*order|po|quote|quotes|"
+        r"contract|contracts|policy|policies|spend|spending|saving|savings|deal|deals|"
+        r"opportunit\w+|compliance|discrepanc\w+|approval|approvals|price|pricing|"
+        r"category|categories|vendor|vendors|payment|payments|tax|currency|budget|"
+        r"quarter|month|year|expiring|renewal|overdue|risk)\b"
+    )
+
+    # "put that into a table", "as a table", "in bullets", "make it shorter".
+    _DIRECTIVE = re.compile(
+        r"(?i)^\s*(?:(?:can|could|would|will)\s+you\s+|please\s+|now\s+)*"
+        r"(?:put|show|display|render|format|present|turn|convert|rewrite|redo|"
+        r"summari[sz]e|shorten|expand|list|give)\b"
+    )
+    _BACKREFERENCE = re.compile(r"(?i)\b(that|those|these|this|it|them|the above|the same)\b")
+    _SHORTENERS = re.compile(r"(?i)\b(shorter|shorten|briefer|concise|summari[sz]e|just the|only the|top \d+)\b")
+
+    def _is_presentation_directive(self, query: str, has_history: bool = True) -> bool:
+        """True when the turn asks to re-present the last answer, not to fetch more.
+
+        The question that broke this was "put that into a table": no retrievable
+        term in it, so the literal phrase was embedded and the nearest chunk in
+        the corpus — an invoice line item — came back as the answer. The test is
+        therefore whether the turn names its own subject. "show me the top
+        suppliers in a table" does and must still search; "put that into a table"
+        does not and must be answered from what is already on screen.
+
+        Without a previous turn there is nothing to re-present, so it falls
+        through to an ordinary search rather than answering from nothing.
+        """
+
+        text = (query or "").strip()
+        if not text or not has_history:
+            return False
+        if self._CONTENT_TERMS.search(text):
+            return False
+        if len(text.split()) > 14:
+            return False
+        if self._BACKREFERENCE.search(text) and (
+            self._DIRECTIVE.match(text) or self._requested_format(text) or self._SHORTENERS.search(text)
+        ):
+            return True
+        # "in bullets please", "as a table" — a bare format request with no subject.
+        return bool(self._requested_format(text) or self._SHORTENERS.search(text)) and bool(
+            self._DIRECTIVE.match(text) or len(text.split()) <= 5
+        )
+
+    @staticmethod
+    def _requested_format(query: str) -> Optional[str]:
+        """The shape asked for, if any. Applies to new questions too."""
+
+        text = (query or "").lower()
+        if re.search(r"\b(table|tabular|grid|columns?|spreadsheet)\b", text):
+            return "table"
+        if re.search(r"\b(bullets?|bullet[- ]points?|list|listed)\b", text):
+            return "list"
+        return None
+
+    def _directive_instruction(self, query: str, previous_answer: str) -> str:
+        """Prompt for a re-presentation turn: reshape THIS text, invent nothing.
+
+        The material is the previous answer, so the model has no source for any
+        figure it did not already give. Saying so plainly is the whole safeguard
+        — a re-format that quietly gains a row is a fabrication.
+        """
+
+        shape = self._requested_format(query)
+        shape_line = {
+            "table": (
+                "Lay it out as a Markdown table: a header row, a |---|---| separator row, "
+                "then one row per item. Keep the columns to what the data supports."
+            ),
+            "list": "Lay it out as a short list, one item per line, each starting \"- \".",
+        }.get(shape, "Re-present it as asked.")
+
+        return (
+            "The user is asking you to re-present the answer you have just given, not to "
+            "look anything up.\n\n"
+            "Your previous answer:\n"
+            f"{previous_answer}\n\n"
+            f"Their request: {query}\n\n"
+            f"{shape_line} Use ONLY the facts in your previous answer — every figure, name "
+            "and label must already appear above. Do not add rows, columns, totals or "
+            "commentary that were not there, and do not recalculate anything.\n\n"
+            # Without this it refuses. Told only what it must not invent, the model
+            # reasoned that a totals sentence sitting alongside a three-supplier list
+            # could not be tabulated cleanly and declined the whole request — which
+            # is not what anyone means by "put that in a table". Reshape what fits;
+            # keep the rest as a line underneath.
+            "Reshape the part of the answer that fits the requested shape. Anything that "
+            "does not belong in it — a total, a currency caveat, a note — stays as a short "
+            "line underneath, in its original words. Only say the request cannot be met if "
+            "the previous answer contains no such data at all.\n\n"
+            # Restated last: the shape is the whole point of the turn, and the
+            # governed persona's own guidance ("prefer a list") sits in the system
+            # message arguing the other way.
+            f"Required output shape: {shape_line}"
+        )
+
+    # System message for a re-presentation turn. The grounding and currency rules
+    # are kept verbatim in spirit — this turn handles real figures — but the style
+    # guidance is dropped, because here the shape is the user's to choose.
+    _DIRECTIVE_SYSTEM = (
+        "You are Joshi, the ProcWise SME. This turn is a re-presentation: the user is "
+        "looking at an answer you already gave and is asking for it in a different shape. "
+        "Follow the requested shape exactly — if they ask for a table, return a table. "
+        "Use only the facts in the text you are given. Never introduce a figure, name or "
+        "row that is not already there, never recalculate, and never add amounts in "
+        "different currencies together. "
+        "Respond in valid JSON with keys 'answer' and 'follow_ups'. The 'answer' value is a "
+        "JSON string: write its line breaks as escaped newlines (\n), so a table's rows and "
+        "a list's items each land on their own line. Do not return it as one unbroken line. "
+        "'follow_ups' holds three short, context-aware questions."
+    )
+
+    def _answer_presentation_directive(
+        self,
+        *,
+        query: str,
+        previous_answer: str,
+        user_id: str,
+        history: List[Dict[str, Any]],
+        llm_to_use: str,
+        emit: Callable[..., None],
+    ) -> Dict[str, Any]:
+        """Reshape the previous answer. No retrieval, no new facts.
+
+        The material handed to the model is the previous answer and nothing else,
+        so there is no source from which a new figure could arrive. The streaming
+        stages still fire, minus `retrieving` — nothing is being retrieved, and
+        claiming otherwise would be theatre.
+        """
+
+        emit("stage", stage="reformatting")
+        emit("stage", stage="generating", model=llm_to_use)
+
+        payload = self._generate_response(
+            self._directive_instruction(query, previous_answer),
+            llm_to_use,
+            on_delta=(lambda text: emit("delta", text=text)),
+            on_answer_complete=(lambda text: emit("stage", stage="answer_complete")),
+            temperature=0.0,
+            system=self._DIRECTIVE_SYSTEM,
+        )
+        answer = self._finalise_llm_answer(payload.get("answer"), None, previous_answer)
+        html_answer = self._normalise_answer_html(answer)
+
+        history.append({"query": self._redact_identifiers(query), "answer": html_answer})
+        self.history_manager.save_history(user_id, history)
+
+        return {
+            "answer": html_answer,
+            "follow_ups": self._merge_followups([], payload.get("follow_ups")),
+            # Nothing was retrieved, so nothing is cited. Echoing the previous
+            # turn's sources would imply this answer went and checked them.
+            "retrieved_documents": [],
+        }
+
     @staticmethod
     def _history_answer_as_text(answer: str) -> str:
         """Prior answers are stored rendered; the model must see prose.
@@ -2132,6 +2350,7 @@ class RAGPipeline:
         "Lead with the direct answer in the first sentence, then give the supporting detail.\n"
         "- Put the lead sentence in its own short paragraph, then a blank line before what follows.\n"
         "- When the answer covers several items, figures or steps, set them out as a list — one per line, each starting \"- \" — rather than running them into a sentence. Three suppliers with three amounts is a list, not a paragraph.\n"
+        "- Use a Markdown table when the user asks for one, or when each item carries the same two or three attributes and a grid genuinely reads better: a header row, a |---|---| separator row, then one row per item. Otherwise prefer a list.\n"
         "- Keep paragraphs to two or three sentences, separated by a blank line.\n"
         "- Bold the one or two figures that actually matter. Never bold a label, a heading, or a whole line.\n"
         "- No fixed templates, canned openers, or section labels like \"Here's what I found\" or \"Executive summary\".\n"
@@ -2185,6 +2404,8 @@ class RAGPipeline:
         model: str,
         on_delta: Optional[Callable[[str], None]] = None,
         on_answer_complete: Optional[Callable[[str], None]] = None,
+        temperature: Optional[float] = None,
+        system: Optional[str] = None,
     ) -> Dict:
         """Calls :func:`ollama.chat` once to get answer and follow-ups.
 
@@ -2201,7 +2422,11 @@ class RAGPipeline:
         answer it could already have shown. It does not fire on a truncated
         stream: no closing quote means no complete answer.
         """
-        system = self._ask_persona()
+        # The ask persona is the default, but a re-presentation turn needs its own
+        # rules: the persona tells the model to prefer a list and to keep formatting
+        # minimal, and a system message outranks the user turn — so a request for a
+        # table came back as prose on two runs in three.
+        system = system or self._ask_persona()
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -2210,15 +2435,21 @@ class RAGPipeline:
             base_options = dict(self.agent_nick.ollama_options() or {})
         except Exception:
             base_options = {}
-        temperature = base_options.get("temperature", 0.0)
-        try:
-            temperature = float(temperature)
-        except (TypeError, ValueError):
-            temperature = 0.0
-        if temperature <= 0.0:
-            base_options["temperature"] = 0.35
+        if temperature is not None:
+            # An explicit value wins. Re-presenting an answer the user is already
+            # looking at is not a creative task: at the sampled default the same
+            # request produced a table on one run and prose on the next.
+            base_options["temperature"] = float(temperature)
         else:
-            base_options["temperature"] = min(0.7, temperature + 0.1)
+            sampled = base_options.get("temperature", 0.0)
+            try:
+                sampled = float(sampled)
+            except (TypeError, ValueError):
+                sampled = 0.0
+            if sampled <= 0.0:
+                base_options["temperature"] = 0.35
+            else:
+                base_options["temperature"] = min(0.7, sampled + 0.1)
         base_options.setdefault("top_p", 0.9)
         # `keep_alive` is a top-level request field. Left inside `options` — where
         # ollama_options() supplies it — Ollama ignores it and the model expires on
@@ -2334,10 +2565,28 @@ class RAGPipeline:
             doc_type,
             product_type,
         )
-        _emit("stage", stage="retrieving")
-
         history = self.history_manager.get_history(user_id)
         history_fingerprint = self._build_history_fingerprint(history)
+
+        # "put that into a table" is not a search. It asks to re-present the answer
+        # already on screen, and it carries nothing to retrieve on — so the literal
+        # phrase was embedded and the nearest chunk in the corpus came back, which
+        # is how a question about supplier spend was answered with an invoice line
+        # item. Answer it from the previous turn instead, and skip retrieval
+        # entirely: there is no new data in play.
+        if history and self._is_presentation_directive(query, has_history=bool(history)):
+            previous = self._history_answer_as_text(str(history[-1].get("answer", "")).strip())
+            if previous:
+                return self._answer_presentation_directive(
+                    query=query,
+                    previous_answer=previous,
+                    user_id=user_id,
+                    history=history,
+                    llm_to_use=model_name or llm_to_use,
+                    emit=_emit,
+                )
+
+        _emit("stage", stage="retrieving")
 
         candidate_keys: List[str] = []
         cleaned_session = (

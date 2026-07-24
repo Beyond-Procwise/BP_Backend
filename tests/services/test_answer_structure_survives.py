@@ -73,3 +73,57 @@ def test_the_trailing_colon_lead_line_stays_a_paragraph():
 
     assert "Top suppliers:" in html
     assert html.count("<li>") == 2
+
+
+# --------------------------------------------------------------------------
+# Tables
+# --------------------------------------------------------------------------
+
+_TABLE = (
+    "Top suppliers by spend:\n"
+    "\n"
+    "| Supplier | Spend |\n"
+    "|---|---|\n"
+    "| Orbis Platform Solutions Ltd | £1,116,000.00 |\n"
+    "| Meridian Consulting Group Ltd | £461,454.00 |"
+)
+
+
+def test_a_markdown_table_renders_as_a_table():
+    html = _pipeline()._plain_text_to_html(_TABLE)
+
+    assert html.count("<table") == 1
+    assert html.count("<th>") == 2
+    assert html.count("<td>") == 4
+    assert "|" not in html          # no pipes left on screen
+    assert "£1,116,000.00" in html
+
+
+def test_the_separator_row_is_not_rendered_as_data():
+    html = _pipeline()._plain_text_to_html(_TABLE)
+
+    assert "---" not in html
+    assert html.count("<tr>") == 3   # header + two data rows
+
+
+def test_prose_containing_a_pipe_is_not_a_table():
+    html = _pipeline()._plain_text_to_html("Spend is high | note the caveat below")
+
+    assert "<table" not in html
+
+
+def test_nltk_does_not_punctuate_table_rows():
+    """A full stop after the closing pipe stops the row looking like a row.
+
+    postprocess capitalises and full-stops each line it treats as prose, which
+    turned "| Supplier | Spend |" into "| Supplier | Spend |." — the renderer
+    then saw no table and printed the pipes.
+    """
+
+    from services.nltk_pipeline import NLTKProcessor
+
+    out = NLTKProcessor().postprocess(_TABLE, sentiment=None, keywords=None, key_phrases=None)
+
+    for line in out.split("\n"):
+        if line.strip().startswith("|"):
+            assert line.rstrip().endswith("|"), repr(line)
