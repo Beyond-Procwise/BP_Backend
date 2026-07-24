@@ -34,7 +34,9 @@ _INTENTS: List[tuple[str, re.Pattern]] = [
     ("findings", re.compile(r"\b(finding|discrepanc|exception|issue|problem|flag|over[- ]?bill|mismatch|risk)\w*\b", re.I)),
     ("spend", re.compile(r"\b(spend|spent|cost|total|invoiced|value|amount|money)\w*\b", re.I)),
     ("quotes", re.compile(r"\bquot\w*\b", re.I)),
-    ("purchase_orders", re.compile(r"\b(purchase order|po|pos)\b", re.I)),
+    # The plural is spelled out rather than suffixed with \w*: `po\w*` would swallow
+    # "policy", "possible" and "portal", so the optional s is opt-in per alternative.
+    ("purchase_orders", re.compile(r"\b(purchase orders?|pos?)\b", re.I)),
     ("invoices", re.compile(r"\binvoic\w*\b", re.I)),
     ("suppliers", re.compile(r"\b(supplier|vendor|who do we buy|buy from)\w*\b", re.I)),
 ]
@@ -57,11 +59,29 @@ _SUBJECT_TO_INTENT: Dict[str, str] = {
 }
 
 
+# The words that actually mean expenditure. The `spend` pattern also matches the generic
+# measure words — total, value, amount, cost — and those belong to no entity in particular:
+# a purchase order has a total, so does a quote, so does an invoice. A measure word alone
+# is not evidence the question is about spend.
+_EXPENDITURE = re.compile(r"\b(spend|spent|invoiced|money)\w*\b", re.I)
+
+# The intents ranked below `spend`. A question naming one of these reached `spend` only
+# because `spend` is scanned first, so these are the ones a stray measure word can steal.
+_BELOW_SPEND = _INTENTS[next(i for i, (name, _) in enumerate(_INTENTS) if name == "spend") + 1:]
+
+
 def _count_subject_intent(query: str) -> Optional[str]:
     m = _COUNT_SUBJECT.search(query or "")
     if not m:
         return None
     return _SUBJECT_TO_INTENT.get(m.group(1).lower())
+
+
+def _subject_below_spend(query: str) -> Optional[str]:
+    """The entity this question is about, when only a measure word put it on `spend`."""
+    if _EXPENDITURE.search(query):
+        return None
+    return next((name for name, pattern in _BELOW_SPEND if pattern.search(query)), None)
 
 
 def detect_intent(query: str) -> Optional[str]:
@@ -79,6 +99,14 @@ def detect_intent(query: str) -> Optional[str]:
         subject = _count_subject_intent(query)
         if subject and subject != "spend":
             return subject
+        # Same failure, other phrasings: "the total value of our purchase orders" is not a
+        # count question, so the rescue above never saw it, and it was answered out of
+        # proc.bp_invoice_trgt — invoice figures presented as a purchase-order total. The
+        # count subject is checked first because it stays authoritative: "how many suppliers
+        # do we have invoices from" names invoices, but the count of suppliers is the answer.
+        below = _subject_below_spend(query)
+        if below:
+            return below
     return winner
 
 

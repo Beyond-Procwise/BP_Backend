@@ -223,11 +223,12 @@ def _fetch_for(nick, q: DataQuestion) -> Dict[str, Any]:
 
     We pin the intent rather than trust `detect_intent(question)` because this eval measures
     one thing — does the model faithfully convey the facts it is handed — and pinning keeps
-    the gold and the grounded context on the same, correct fact set. `detect_intent`'s routing
-    is a real concern (it mis-routes "how many suppliers do we have invoices from" to the
-    invoices intent, because "invoices" is scanned first), but that is a SEPARATE failure and
-    conflating it here would let a routing bug masquerade as a fidelity score. `run()` records
-    the routing mismatch separately so it is visible without polluting this metric.
+    the gold and the grounded context on the same, correct fact set. Routing is a SEPARATE
+    failure, and conflating it here would let a routing bug masquerade as a fidelity score.
+    `run()` records the routing mismatch separately so it is visible without polluting this
+    metric. Every question in this set routes correctly as of the measure-word fix in
+    corpus_facts.detect_intent; the check stays because pinning would otherwise hide the day
+    that stops being true.
     """
     from services import corpus_facts
 
