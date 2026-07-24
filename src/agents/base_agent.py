@@ -1635,10 +1635,30 @@ class AgentNick:
         with self.get_db_connection_cm() as conn:  # closes on exit
             yield conn
 
+    # Any value at or above the model's layer count means "all of them"; llama.cpp
+    # clamps the excess. AgentNick's Modelfile pins `num_gpu 25`, so the request
+    # has to name a number that beats it — see ollama_options below.
+    _ALL_GPU_LAYERS = 999
+
     def ollama_options(self) -> Dict[str, Any]:
-        """Return default options for Ollama requests respecting GPU availability."""
+        """Return default options for Ollama requests respecting GPU availability.
+
+        The GPU option is ``num_gpu``. This asked for ``num_gpu_layers``, which is
+        llama.cpp's spelling — Ollama accepts the request, ignores the key, and
+        falls back to the model's Modelfile. AgentNick pins ``num_gpu 25`` there,
+        so roughly half of every answer was being generated on the CPU while 82GB
+        of VRAM sat idle. Measured on the live box, same prompt, AgentNick:unified:
+
+            num_gpu_layers: -1   ->   19.78 tok/s   (48% CPU / 52% GPU)
+            num_gpu: -1          ->   19.71 tok/s   (-1 means "you decide", which
+                                                     lands back on the Modelfile)
+            num_gpu: 999         ->  189.19 tok/s   (100% GPU)
+
+        Hence an explicit count rather than the -1 that reads as "all layers"
+        everywhere else.
+        """
         if self.device == "cuda":
-            return {"num_gpu_layers": -1, "keep_alive": "10m"}
+            return {"num_gpu": self._ALL_GPU_LAYERS, "keep_alive": "10m"}
         return {"keep_alive": "10m"}
 
     def _build_agent_model_registry(self) -> Dict[str, str]:
