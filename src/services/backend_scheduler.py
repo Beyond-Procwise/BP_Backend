@@ -357,7 +357,6 @@ class BackendScheduler:
 
     DEAL_ASSIGNMENT_JOB_NAME = "deal-assignment"
     EXTRACTION_FEEDBACK_JOB_NAME = "extraction-feedback"
-    STYLE_STAGING_SWEEP_JOB_NAME = "style-staging-sweep"
     PRICE_OUTLIER_JOB_NAME = "price-outlier-scan"
 
     def _register_default_jobs(self) -> None:
@@ -372,43 +371,7 @@ class BackendScheduler:
         self._register_trgt_promotion_job()
         self._register_deal_assignment_job()
         self._register_extraction_feedback_job()
-        self._register_style_staging_sweep_job()
         self._register_price_outlier_job()
-
-    def _register_style_staging_sweep_job(self) -> None:
-        """Register the style-staging TTL sweep.
-
-        Emails pasted for style compilation sit in proc.bp_style_ingest_staging until the
-        compiler consumes them. Someone who pastes five emails and then navigates away
-        leaves them there, so this deletes anything past its purge_after. Hourly is well
-        inside the 24-hour default TTL, and each run writes an audit row whether or not it
-        found anything — a sweep that logged only on a hit would be indistinguishable from
-        one that had silently stopped running.
-
-        Interval via STYLE_STAGING_SWEEP_INTERVAL_MINUTES (default 60).
-        """
-        import os
-        if self.STYLE_STAGING_SWEEP_JOB_NAME in self._jobs:
-            return
-        try:
-            minutes = int(os.environ.get("STYLE_STAGING_SWEEP_INTERVAL_MINUTES", "60"))
-        except ValueError:
-            minutes = 60
-        self.register_job(
-            self.STYLE_STAGING_SWEEP_JOB_NAME,
-            self._run_style_staging_sweep,
-            interval=timedelta(minutes=max(1, minutes)),
-            initial_delay=timedelta(minutes=5),
-        )
-
-    def _run_style_staging_sweep(self) -> None:
-        """Purge expired style-ingest staging rows."""
-        try:
-            from services.style.compiler import sweep_expired_staging
-
-            sweep_expired_staging()
-        except Exception:  # pragma: no cover - defensive logging
-            logger.exception("Style staging sweep failed")
 
     def _register_trgt_promotion_job(self) -> None:
         """Register the periodic _stg -> _trgt promotion job.

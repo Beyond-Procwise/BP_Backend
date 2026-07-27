@@ -11,12 +11,15 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter
+from pathlib import Path
 
-sys.path.insert(0, "src")
 # Running as `python scripts/run_price_outlier_scan.py` sets sys.path[0] to the
 # scripts/ directory itself, not the repo root, so `scripts.testdata` would
-# otherwise fail to import; add the root explicitly (run from the repo root).
-sys.path.insert(0, ".")
+# otherwise fail to import. Derive the root from this file's own location
+# (not the caller's cwd) so the script works from any invocation directory.
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 from scripts.testdata.db import connect  # noqa: E402
 from services.price_outlier import find_outliers, persist_findings  # noqa: E402
