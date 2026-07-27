@@ -274,3 +274,82 @@ def test_quote_line_with_no_quantity_is_skipped_not_priced_at_zero():
         line["source_item_description"] == "Consulting" for line in result["lines"])
     assert result["skipped_no_quantity_count"] == 1
     assert any("skipped" in d for d in result["disclosures"])
+
+
+def test_pool_row_without_quantity_gets_half_weight():
+    """A price point with no recorded quantity is weaker evidence -- we
+    cannot tell whether it reflects a one-off buy or a bulk rate -- so it
+    still informs the benchmark but does not carry full authority. 0.5 is the
+    floor of the prototype's own 0.5-1.5 source_weight range, so this reuses
+    the existing weighting mechanism rather than inventing a new one."""
+    rows = [{"point_id": "inv:1", "item_description": "Consulting",
+             "unit_of_measure": "hour", "currency": "GBP",
+             "unit_price": 150.0, "quantity": None, "doc_id": "INV1"}]
+    point = _to_points(rows)[0]
+    assert point.source_weight == 0.5
+    assert point.historical_quantity is None
+
+
+def test_pool_row_with_quantity_keeps_full_weight():
+    rows = [{"point_id": "po:1", "item_description": "Widget",
+             "unit_of_measure": "each", "currency": "GBP",
+             "unit_price": 90.0, "quantity": 5, "doc_id": "PO1"}]
+    point = _to_points(rows)[0]
+    assert point.source_weight == 1.0
+    assert point.historical_quantity == 5.0
+
+
+def test_volume_less_pool_point_is_still_referenced_not_dropped():
+    """Halving a no-quantity point's weight must not remove it from the match
+    set -- it is still a real observation, just a weaker one. This is the
+    'still referenced' guarantee: if this point vanished from
+    matched_point_ids, the benchmark would be silently discarding data rather
+    than merely discounting it."""
+    deal_id = "DEAL-1"
+    quote_rows = [
+        ("QL1", "Q1", "Widget", 10, 100.0, "each", "GBP", "UK", "London"),
+    ]
+    scoped_pool_rows = [
+        ("po:1", "Widget", "each", "GBP", 90.0, 5, "PO1"),
+        ("po:2", "Widget", "each", "GBP", 95.0, 5, "PO2"),
+        ("inv:1", "Widget", "each", "GBP", 120.0, None, "INV1"),  # no quantity
+    ]
+    cur = DispatchingFakeCursor(quote_rows, len(scoped_pool_rows), scoped_pool_rows)
+    result = benchmark_deal(cur, deal_id, BenchmarkSettings())
+
+    matched_ids = result["lines"][0]["matched_point_ids"]
+    assert "inv:1" in matched_ids
+    assert set(matched_ids) == {"po:1", "po:2", "inv:1"}
+
+
+def test_half_weight_moves_the_weighted_benchmark_by_the_predicted_amount():
+    """Hand-computed check so a future weighting regression can't hide behind
+    a passing-but-untested arithmetic path.
+
+    Pool: two full-weight points at 90.0 (quantity known -> weight 1.0 each)
+    and one half-weight point at 120.0 (no quantity -> weight 0.5, per the
+    change under test).
+
+        weighted_benchmark = (90*1.0 + 90*1.0 + 120*0.5) / (1.0 + 1.0 + 0.5)
+                            = (90 + 90 + 60) / 2.5
+                            = 240 / 2.5
+                            = 96.0
+
+    Had the no-quantity point kept full weight (the old, hardcoded-1.0
+    behaviour), the result would instead be (90+90+120)/3 = 100.0 -- a
+    different number, so this test would catch a silent revert of the
+    weighting change.
+    """
+    deal_id = "DEAL-1"
+    quote_rows = [
+        ("QL1", "Q1", "Widget", 10, 100.0, "each", "GBP", "UK", "London"),
+    ]
+    scoped_pool_rows = [
+        ("po:1", "Widget", "each", "GBP", 90.0, 5, "PO1"),
+        ("po:2", "Widget", "each", "GBP", 90.0, 5, "PO2"),
+        ("inv:1", "Widget", "each", "GBP", 120.0, None, "INV1"),
+    ]
+    cur = DispatchingFakeCursor(quote_rows, len(scoped_pool_rows), scoped_pool_rows)
+    result = benchmark_deal(cur, deal_id, BenchmarkSettings(method="weighted"))
+
+    assert result["lines"][0]["weighted_benchmark"] == 96.0

@@ -190,6 +190,15 @@ def _count_suspect(
 def _to_points(pool_rows: list[dict[str, Any]]) -> list[BenchmarkPoint]:
     points = []
     for row in pool_rows:
+        # A price with no recorded quantity is weaker evidence: we cannot tell
+        # whether it reflects a one-off buy or a bulk rate, so it should still
+        # inform the benchmark but not carry the same authority as a point we
+        # can actually contextualise. It stays in the pool (dropping it would
+        # throw away a real, if less-legible, data point) but is halved to
+        # 0.5 -- the floor of the prototype's own 0.5-1.5 source_weight range,
+        # so this reuses the existing weighting mechanism rather than
+        # inventing a new one. Points with a known quantity keep full weight.
+        has_quantity = row["quantity"] is not None
         points.append(
             BenchmarkPoint(
                 benchmark_point_id=row["point_id"],
@@ -199,12 +208,12 @@ def _to_points(pool_rows: list[dict[str, Any]]) -> list[BenchmarkPoint]:
                 currency=_norm_currency(row["currency"]),
                 include=True,
                 raw_unit_price=float(row["unit_price"]),
-                source_weight=1.0,
+                source_weight=1.0 if has_quantity else 0.5,
                 specification_score=_NEUTRAL_SCORE,
                 location_cost_index=1.0,
                 sla_score=_NEUTRAL_SCORE,
                 historical_quantity=(
-                    float(row["quantity"]) if row["quantity"] is not None else None
+                    float(row["quantity"]) if has_quantity else None
                 ),
                 index_value_at_price_date=1.0,
             )
