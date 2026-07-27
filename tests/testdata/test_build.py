@@ -57,3 +57,38 @@ def test_profile_defaults_to_test_and_accepts_demo():
 def test_an_unknown_profile_is_rejected_at_the_command_line():
     with pytest.raises(SystemExit):
         parse_args(["--profile", "production"])
+
+
+def test_force_defaults_off():
+    assert parse_args([]).force is False
+    assert parse_args(["--force"]).force is True
+
+
+def test_a_target_holding_ingested_documents_is_refused(monkeypatch, capsys):
+    from scripts.testdata import build, guards
+
+    monkeypatch.setattr(
+        build, "assert_no_ingested_documents",
+        lambda db: (_ for _ in ()).throw(
+            guards.IngestedDataError("bp_testdb holds documents ... --force")
+        ),
+    )
+    assert build.main(["--target", "bp_testdb"]) == 3
+    assert "--force" in capsys.readouterr().err
+
+
+def test_force_bypasses_the_ingested_document_guard(monkeypatch):
+    """--force must not consult the guard at all, not merely ignore its answer."""
+    from scripts.testdata import build
+
+    def must_not_run(db):
+        raise AssertionError("guard consulted despite --force")
+
+    monkeypatch.setattr(build, "assert_no_ingested_documents", must_not_run)
+    monkeypatch.setattr(build, "snapshot_counts", lambda dbs: {})
+    monkeypatch.setattr(
+        build, "clone_schema",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop here")),
+    )
+    with pytest.raises(RuntimeError, match="stop here"):
+        build.main(["--target", "bp_testdb", "--force"])

@@ -2,7 +2,8 @@
 
     .venv/bin/python -m scripts.testdata.build --target bp_testdb --seed 42
 
-Exit codes: 0 success, 1 blocking verification failure, 2 refused target.
+Exit codes: 0 success, 1 blocking verification failure, 2 refused target,
+3 target holds ingested documents (pass --force to overwrite).
 """
 from __future__ import annotations
 
@@ -19,7 +20,13 @@ from scripts.testdata.loader import load_tables
 from scripts.testdata.db import copy_rows, connect
 from scripts.testdata.defects import plant, write_answer_key
 from scripts.testdata.documents import build_chains
-from scripts.testdata.guards import UnsafeTargetError, assert_safe_target, snapshot_counts
+from scripts.testdata.guards import (
+    IngestedDataError,
+    UnsafeTargetError,
+    assert_no_ingested_documents,
+    assert_safe_target,
+    snapshot_counts,
+)
 from scripts.testdata.org import build_business_units, build_cost_centres
 from scripts.testdata.reference import copy_reference, load_fx_rates, load_taxonomy
 from scripts.testdata.schema import clone_schema
@@ -42,6 +49,14 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--drop-first", action="store_true")
     parser.add_argument("--skip-verify", action="store_true")
+    parser.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Overwrite a target that holds ingested documents. Without this a "
+            "build refuses rather than silently discarding demo documents the "
+            "product extracted for real."
+        ),
+    )
     parser.add_argument(
         "--profile", default="test", choices=sorted(profiles.PROFILES),
         help=(
@@ -154,6 +169,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except UnsafeTargetError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    if not args.force:
+        try:
+            assert_no_ingested_documents(args.target)
+        except IngestedDataError as exc:
+            print(str(exc), file=sys.stderr)
+            return 3
 
     profile = profiles.get(args.profile)
     print(f"profile: {profile.name} -- {profile.purpose}")

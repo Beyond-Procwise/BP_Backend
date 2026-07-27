@@ -45,3 +45,33 @@ def test_changed_live_counts_raise_and_name_the_table():
 def test_disappearing_table_raises():
     with pytest.raises(UnsafeTargetError, match="proc.gone"):
         assert_live_unchanged({"bp_sqldb.proc.gone": 5}, {})
+
+
+def test_ingested_data_error_is_distinct_from_an_unsafe_target():
+    from scripts.testdata.guards import IngestedDataError, UnsafeTargetError
+
+    assert not issubclass(IngestedDataError, UnsafeTargetError)
+    assert issubclass(IngestedDataError, RuntimeError)
+
+
+def test_assert_no_ingested_documents_passes_on_a_purely_seeded_database(monkeypatch):
+    from scripts.testdata import guards
+
+    monkeypatch.setattr(guards, "count_ingested_documents", lambda db: {})
+    assert guards.assert_no_ingested_documents("bp_testdb") is None
+
+
+def test_assert_no_ingested_documents_names_the_tables_and_counts(monkeypatch):
+    from scripts.testdata import guards
+
+    monkeypatch.setattr(
+        guards, "count_ingested_documents",
+        lambda db: {"bp_invoice_trgt": 3, "bp_quote_trgt": 1},
+    )
+    with pytest.raises(guards.IngestedDataError) as excinfo:
+        guards.assert_no_ingested_documents("bp_testdb")
+
+    message = str(excinfo.value)
+    assert "bp_invoice_trgt: 3" in message
+    assert "bp_quote_trgt: 1" in message
+    assert "--force" in message

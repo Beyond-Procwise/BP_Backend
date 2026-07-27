@@ -74,3 +74,82 @@ def assert_live_unchanged(
         raise UnsafeTargetError(
             "live database row counts changed during the build:\n" + "\n".join(differences)
         )
+
+
+class IngestedDataError(RuntimeError):
+    """Raised when a destructive build would discard documents the seeder did
+    not write."""
+
+
+# Every row the seeder writes carries this in its created_by / source_file.
+# Anything else in these tables arrived through the product's own ingestion --
+# a demo document dropped in S3 and extracted for real -- and a rebuild would
+# silently throw it away.
+SEED_MARKER = "testdata"
+SEED_SOURCE_PREFIX = "s3://bp-testdata/"
+
+_INGESTION_PROBES: tuple[tuple[str, str], ...] = (
+    ("bp_invoice_trgt", "created_by"),
+    ("bp_quote_trgt", "created_by"),
+    ("bp_purchase_order_trgt", "created_by"),
+)
+_RAW_PROBES: tuple[str, ...] = (
+    "bp_invoice_raw", "bp_quote_raw", "bp_purchase_order_raw",
+)
+
+
+def count_ingested_documents(dbname: str) -> dict[str, int]:
+    """Documents in `dbname` that the seeder did not write, per table.
+
+    A missing table counts as zero: a database that has never been built cannot
+    hold ingested documents.
+    """
+    from scripts.testdata.db import connect
+
+    counts: dict[str, int] = {}
+    conn = connect(dbname)
+    try:
+        for table, column in _INGESTION_PROBES:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f'select count(*) from proc."{table}" '
+                        f'where "{column}" is distinct from %s',
+                        (SEED_MARKER,),
+                    )
+                    found = cur.fetchone()[0]
+            except Exception:
+                conn.rollback()
+                continue
+            if found:
+                counts[table] = found
+
+        for table in _RAW_PROBES:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f'select count(*) from proc."{table}" '
+                        f"where source_file is null or source_file not like %s",
+                        (SEED_SOURCE_PREFIX + "%",),
+                    )
+                    found = cur.fetchone()[0]
+            except Exception:
+                conn.rollback()
+                continue
+            if found:
+                counts[table] = counts.get(table, 0) + found
+    finally:
+        conn.close()
+    return counts
+
+
+def assert_no_ingested_documents(dbname: str) -> None:
+    """Raise if `dbname` holds documents the seeder did not write."""
+    counts = count_ingested_documents(dbname)
+    if not counts:
+        return
+    lines = "\n".join(f"  proc.{table}: {n}" for table, n in sorted(counts.items()))
+    raise IngestedDataError(
+        f"{dbname} holds documents the seeder did not write:\n{lines}\n"
+        "Rebuilding would discard them. Pass --force to overwrite anyway."
+    )
