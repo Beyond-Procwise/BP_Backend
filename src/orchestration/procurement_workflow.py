@@ -8,7 +8,7 @@ by the tests in ``tests/test_procurement_workflow.py``.
 
 The design mimics the real stack:
 
-* ``EmailDraftingAgent`` generates per-supplier drafts and persists them with a
+* ``SimulatedRFQDrafter`` renders per-supplier drafts in memory and records them with a
   ``workflow_id``/``unique_id`` tuple.  The drafts are stored with
   ``sent_status=False`` and the body contains a hidden tracking marker so that
   replies can be reconciled to the correct thread.
@@ -449,8 +449,20 @@ class WorkflowContextManager:
         }
 
 
-class EmailDraftingAgent:
-    """Generate procurement RFQ drafts while anchoring unique identifiers."""
+class SimulatedRFQDrafter:
+    """Renders RFQ drafts from fixed templates, in memory, for this simulation only.
+
+    Renamed from ``EmailDraftingAgent`` for invariant 10. There is exactly one class of
+    that name in this codebase — ``agents.email_drafting_agent.EmailDraftingAgent`` — and
+    it is the only thing that produces a real email draft. Two classes sharing the name,
+    one of them inside the live orchestration module, is how the wrong one eventually gets
+    wired up.
+
+    This one cannot: it holds a ``MockDatabaseConnection``, reaches no database, has no
+    route to a mail provider, and its output never leaves the process. It exists to
+    exercise the workflow's shape — dispatch, response matching, negotiation rounds — not
+    to write anything anyone will read.
+    """
 
     def __init__(
         self,
@@ -708,7 +720,7 @@ class WorkflowOrchestrator:
         self.context_manager = WorkflowContextManager()
         self.template_renderer = NegotiationEmailTemplateRenderer.from_default()
         self.threads: Dict[str, EmailThread] = {}
-        self.drafting_agent = EmailDraftingAgent(
+        self.drafting_agent = SimulatedRFQDrafter(
             db,
             self.context_manager,
             template_renderer=self.template_renderer,
@@ -842,7 +854,7 @@ async def validate_implementation() -> None:
 __all__ = [
     "DraftEmail",
     "DispatchRecord",
-    "EmailDraftingAgent",
+    "SimulatedRFQDrafter",
     "EmailThread",
     "NegotiationAgent",
     "NegotiationSession",

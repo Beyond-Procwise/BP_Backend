@@ -1128,6 +1128,13 @@ class EmailDraftingAgent(BaseAgent):
         return max(1, min(cpu_default, supplier_count))
 
     def __init__(self, agent_nick=None):
+        # Style state, per run. Initialised here so every path — including the
+        # from_prompt/from_decision entry points that bypass run() — has a defined
+        # value rather than relying on attribute lookup order.
+        self._style_for_current_draft = None
+        self._style_resolved = False
+        self._style_context = {}
+        self._style_sender = None
         agent_nick = self._prepare_agent_nick(agent_nick)
         super().__init__(agent_nick)
         self._draft_table_checked = False
@@ -1440,20 +1447,101 @@ class EmailDraftingAgent(BaseAgent):
     # email/negotiation path must never break because a governance row is absent.
     # Editing these prompts is now done in bp_prompt, not in this file.
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Writing style (invariant 10: this agent is the single drafting path).
+    #
+    # The style engine appends a governed voice specification to the prompts
+    # below. It is inert unless a profile has been compiled AND approved for
+    # this sender: with no profile the resolver would fall back to a platform
+    # baseline, and applying that would rewrite the voice of every RFQ in an
+    # organisation that never asked for style learning. So `style_for_draft`
+    # returns None at that level and these prompts pass through untouched.
+    # ------------------------------------------------------------------
+    def _reset_style(self, context: Any = None, data: Optional[Mapping[str, Any]] = None) -> None:
+        """Clear the per-run style cache and record who is writing.
+
+        Called at the top of every entry point. The agent is long-lived and loops over
+        suppliers, so a style left over from a previous run would put one sender's voice
+        on another sender's email — the kind of fault that produces a plausible, wrong
+        email nobody notices.
+        """
+
+        self._style_for_current_draft = None
+        self._style_resolved = False
+        payload = dict(data or {})
+        try:
+            if context is not None and hasattr(context, "input_data"):
+                payload = {**dict(getattr(context, "input_data") or {}), **payload}
+        except Exception:  # pragma: no cover - defensive
+            pass
+        self._style_context = payload
+        settings = getattr(getattr(self, "agent_nick", None), "settings", None)
+        self._style_sender = (
+            payload.get("sender")
+            or getattr(settings, "ses_default_sender", None)
+        )
+
+    def _active_style(self, interaction_type: Optional[str] = None,
+                      task_text: Optional[str] = None):
+        """The approved style for the current sender, or None."""
+
+        # A separate flag rather than testing the value: None is a legitimate RESULT
+        # (no approved profile), and conflating it with "not looked up yet" would re-run
+        # the resolver for every supplier in a drafting loop.
+        if getattr(self, "_style_resolved", False):
+            return self._style_for_current_draft
+        try:
+            from services.style.integration import resolve_user_ref, style_for_draft
+
+            user_ref = resolve_user_ref(
+                getattr(self, "_style_context", None),
+                getattr(self, "_style_sender", None),
+            )
+            style = style_for_draft(
+                user_ref=user_ref,
+                interaction_type=interaction_type,
+                task_text=task_text,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("style lookup failed; drafting unchanged", exc_info=True)
+            style = None
+        self._style_for_current_draft = style
+        self._style_resolved = True
+        return style
+
+    def _with_style(self, prompt: str) -> str:
+        try:
+            from services.style.integration import augment_system_prompt
+
+            return augment_system_prompt(prompt, self._active_style())
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("style augmentation failed; using the base prompt", exc_info=True)
+            return prompt
+
     def _sys_compose_response(self) -> str:
-        return self.resolve_prompt("email_compose_response") or SYSTEM_COMPOSE
+        return self._with_style(
+            self.resolve_prompt("email_compose_response") or SYSTEM_COMPOSE
+        )
 
     def _sys_compose_rfq(self) -> str:
-        return self.resolve_prompt("email_compose_rfq") or SYSTEM_PROMPT_COMPOSE
+        return self._with_style(
+            self.resolve_prompt("email_compose_rfq") or SYSTEM_PROMPT_COMPOSE
+        )
 
     def _sys_polish(self) -> str:
+        # Deliberately NOT styled. Polishing rewrites an already-composed email, and
+        # applying the voice twice compounds it — the compose step has already made it
+        # sound like the sender.
         return self.resolve_prompt("email_polish") or SYSTEM_POLISH
 
     def _sys_negotiation_playbook(self) -> str:
-        return self.resolve_prompt("negotiation_playbook_system") or NEGOTIATION_PLAYBOOK_SYSTEM
+        return self._with_style(
+            self.resolve_prompt("negotiation_playbook_system") or NEGOTIATION_PLAYBOOK_SYSTEM
+        )
 
     def from_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         decision_data = dict(decision or {})
+        self._reset_style(None, decision_data)
         supplier_id = decision_data.get("supplier_id")
         supplier_name = decision_data.get("supplier_name") or supplier_id
         to_list = self._normalise_recipients(
@@ -1709,6 +1797,7 @@ class EmailDraftingAgent(BaseAgent):
         self, prompt: str, *, context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         context = dict(context or {})
+        self._reset_style(None, context)
         prompt_text = str(prompt or "").strip()
         recipients_input = context.get("recipients")
         to_source = context.get("to")
@@ -3683,6 +3772,10 @@ class EmailDraftingAgent(BaseAgent):
         logger.info("EmailDraftingAgent starting")
         self._ensure_prompt_template(context)
         data = dict(context.input_data)
+        # Resolve the writing style once per run, and reset it here. The agent is
+        # long-lived and drafts for many suppliers in a loop, so a value cached from a
+        # previous run would put one sender's voice on another's email.
+        self._reset_style(context, data)
         prev = data.get("previous_agent_output")
         if isinstance(prev, str):
             try:
@@ -4644,6 +4737,22 @@ class EmailDraftingAgent(BaseAgent):
                 if mailbox_hint:
                     headers.setdefault("X-ProcWise-Mailbox", mailbox_hint)
 
+                # Style provenance. Written only where an approved profile actually
+                # governed this draft — a row citing a profile it never used would be
+                # worse than one citing nothing, because it would look explicable.
+                style_columns = {
+                    "style_user_ref": None, "style_intent": None, "style_mode": None,
+                    "style_profile_id": None, "style_profile_version": None,
+                    "style_fallback_level": None, "style_exemplar_ids": None,
+                    "style_exemplar_set_hash": None,
+                }
+                applied_style = getattr(self, "_style_for_current_draft", None)
+                if applied_style is not None:
+                    try:
+                        style_columns.update(applied_style.as_draft_columns())
+                    except Exception:  # pragma: no cover - defensive
+                        logger.debug("could not build style provenance", exc_info=True)
+
                 logger.info(
                     "EmailDraftingAgent: embedded headers workflow=%s, supplier=%s, unique_id=%s, round=%s",
                     workflow_id,
@@ -4698,8 +4807,12 @@ class EmailDraftingAgent(BaseAgent):
                         INSERT INTO proc.draft_rfq_emails
                         (rfq_id, unique_id, supplier_id, supplier_name, subject, body, created_on, sent,
                          recipient_email, contact_level, thread_index, sender, payload,
-                         workflow_id, run_id, mailbox)
-                        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         workflow_id, run_id, mailbox,
+                         style_user_ref, style_intent, style_mode, style_profile_id,
+                         style_profile_version, style_fallback_level, style_exemplar_ids,
+                         style_exemplar_set_hash)
+                        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (workflow_id, unique_id) DO UPDATE SET
                             rfq_id = EXCLUDED.rfq_id,
                             unique_id = EXCLUDED.unique_id,
@@ -4715,7 +4828,15 @@ class EmailDraftingAgent(BaseAgent):
                             payload = EXCLUDED.payload,
                             workflow_id = EXCLUDED.workflow_id,
                             run_id = EXCLUDED.run_id,
-                            mailbox = EXCLUDED.mailbox
+                            mailbox = EXCLUDED.mailbox,
+                            style_user_ref = EXCLUDED.style_user_ref,
+                            style_intent = EXCLUDED.style_intent,
+                            style_mode = EXCLUDED.style_mode,
+                            style_profile_id = EXCLUDED.style_profile_id,
+                            style_profile_version = EXCLUDED.style_profile_version,
+                            style_fallback_level = EXCLUDED.style_fallback_level,
+                            style_exemplar_ids = EXCLUDED.style_exemplar_ids,
+                            style_exemplar_set_hash = EXCLUDED.style_exemplar_set_hash
                         RETURNING id
                         """,
                         (
@@ -4734,6 +4855,14 @@ class EmailDraftingAgent(BaseAgent):
                             workflow_id,
                             run_id,
                             mailbox_hint,
+                            style_columns["style_user_ref"],
+                            style_columns["style_intent"],
+                            style_columns["style_mode"],
+                            style_columns["style_profile_id"],
+                            style_columns["style_profile_version"],
+                            style_columns["style_fallback_level"],
+                            style_columns["style_exemplar_ids"],
+                            style_columns["style_exemplar_set_hash"],
                         ),
                     )
                     row = cur.fetchone()
