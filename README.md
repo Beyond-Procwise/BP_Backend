@@ -57,6 +57,40 @@ A Docker Compose stack ships with managed services for:
 3. Explore APIs and sample queries inside the `docs/` directory, including
    `docs/QUICK_REFERENCE.md`.
 
+### Running the tests
+
+Recent Debian/Ubuntu images mark the system Python as externally managed
+(PEP 668), so `pip install` into it is refused. Use a virtualenv:
+
+```bash
+python3 -m venv --system-site-packages venv
+./venv/bin/pip install -r requirements.txt
+./venv/bin/python -m pytest tests/ --import-mode=importlib
+```
+
+`--system-site-packages` is worth the flag: torch, transformers and the rest of
+the ML stack are large and usually already present, so inheriting them turns a
+multi-gigabyte install into a small one.
+
+`--import-mode=importlib` is not optional. Several test files share a basename
+across directories (`tests/test_backend_scheduler.py` and
+`tests/services/test_backend_scheduler.py`, among others), and the default
+import mode cannot tell them apart — collection fails on the duplicates rather
+than skipping them.
+
+Five files under `tests/extraction_v2/` still import modules removed in
+`114e5ca` (the legacy extraction stack) and cannot collect at all. They are
+orphaned tests, not failures:
+
+```bash
+./venv/bin/python -m pytest tests/ --import-mode=importlib \
+  --ignore=tests/extraction_v2/test_field_recovery.py \
+  --ignore=tests/extraction_v2/test_line_recovery.py \
+  --ignore=tests/extraction_v2/test_pdf_table_recovery.py \
+  --ignore=tests/extraction_v2/test_recovery_integration.py \
+  --ignore=tests/extraction_v2/test_template_service.py
+```
+
 ## Production Notes
 
 * All configuration uses environment variables to remain compatible with the
