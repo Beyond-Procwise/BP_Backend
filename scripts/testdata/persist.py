@@ -77,6 +77,11 @@ def _stamp(doc: Document) -> list:
 
     Stamped from the document's own date rather than wall-clock time: the build
     must reproduce byte-for-byte from a seed, and now() would break that.
+
+    created_date/last_modified_date and created_by/last_modified_by are each
+    intentionally identical pairs (generated rows have no separate edit
+    event) — that redundancy is by design, not a copy-paste bug, and a swap
+    within either pair is deliberately unobservable from these values alone.
     """
     when = datetime.combine(doc.doc_date, datetime.min.time())
     return [when, MARKER, MARKER, when]
