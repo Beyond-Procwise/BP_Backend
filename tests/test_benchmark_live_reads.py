@@ -36,3 +36,20 @@ def test_header_currency_survives_into_the_point():
              "unit_of_measure": "each", "currency": "USD",
              "unit_price": 10.0, "quantity": 2, "doc_id": "PO1"}]
     assert _to_points(rows)[0].currency == "USD"
+
+
+def test_pool_query_excludes_the_deal_under_analysis():
+    cur = FakeCursor([], [("point_id",), ("item_description",),
+                          ("unit_of_measure",), ("currency",), ("unit_price",),
+                          ("quantity",), ("doc_id",)])
+    load_benchmark_pool(cur, exclude_deal_id="DEAL-1")
+    sql = " ".join(cur.sql.split()).lower()
+    assert "p.deal_id is distinct from" in sql
+    assert "i.deal_id is distinct from" in sql
+
+
+def test_excluded_own_document_count_is_reported():
+    """Read the two pool sizes and report the difference, so a line that gates
+    because its own documents were removed can be explained."""
+    from services.benchmark_live import _pool_delta
+    assert _pool_delta(120, 100) == 20

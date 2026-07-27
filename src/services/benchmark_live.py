@@ -36,7 +36,7 @@ _NEUTRAL_SCORE = 5.0
 DISCLOSURES = [
     "specification, service-level, location and inflation adjustments are neutral (no scoring data captured yet); volume reflects real purchase history",
     "match keys normalised: whitespace and case folded; missing unit defaults to 'each', missing currency to 'GBP'",
-    "price history pool includes this deal's own purchase-order and invoice lines (no cross-deal item overlap in current data)",
+    "price history excludes this deal's own purchase orders and invoices, so a supplier is never compared against its own price",
     "no location or market index reference data captured yet: neutral defaults applied and recorded on every line",
 ]
 
@@ -103,6 +103,11 @@ def load_benchmark_pool(cur, exclude_deal_id: Optional[str] = None) -> list[dict
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def _pool_delta(full: int, scoped: int) -> int:
+    """How many points the deal's own documents contributed."""
+    return max(0, full - scoped)
+
+
 def _to_points(pool_rows: list[dict[str, Any]]) -> list[BenchmarkPoint]:
     points = []
     for row in pool_rows:
@@ -136,7 +141,12 @@ def benchmark_deal(
     """Run the benchmark engine over every priced quote line of a deal."""
     settings = settings if settings is not None else BenchmarkSettings()
     quote_rows = load_quote_lines(cur, deal_id)
-    points = _to_points(load_benchmark_pool(cur))
+    # Load twice: once unscoped so the exclusion count is independently
+    # verifiable, once scoped for the calculation the engine actually uses.
+    full_pool = load_benchmark_pool(cur)
+    scoped_pool = load_benchmark_pool(cur, exclude_deal_id=deal_id)
+    own_excluded = _pool_delta(len(full_pool), len(scoped_pool))
+    points = _to_points(scoped_pool)
 
     results = []
     for row in quote_rows:
@@ -173,5 +183,6 @@ def benchmark_deal(
         "line_count": len(results),
         "gated_count": gated,
         "computed_count": len(results) - gated,
+        "own_documents_excluded": own_excluded,
         "disclosures": DISCLOSURES,
     }
