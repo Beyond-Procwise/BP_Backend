@@ -19,13 +19,10 @@ HERE, explicitly and disclosed in the response:
 """
 from __future__ import annotations
 
-import logging
 from typing import Any, Optional
 
 from services.benchmark.engine import compute_benchmark
 from services.benchmark.models import BenchmarkPoint, BenchmarkSettings, QuoteLine
-
-logger = logging.getLogger(__name__)
 
 # Neutral midpoint used for BOTH the quote's requested scores and every
 # benchmark point's scores: identical values => spec/SLA factors == 1.0.
@@ -39,6 +36,7 @@ DISCLOSURES = [
     "price history excludes this deal's own purchase orders and invoices, so a supplier is never compared against its own price",
     "no location or market index reference data captured yet: neutral defaults applied and recorded on every line",
     "some comparison prices come from documents with an unresolved data-quality finding; each line reports how many",
+    "a quote line with no recorded quantity is skipped rather than priced at zero; the response reports how many were skipped",
 ]
 
 
@@ -104,25 +102,83 @@ def load_benchmark_pool(cur, exclude_deal_id: Optional[str] = None) -> list[dict
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def count_benchmark_pool(cur, exclude_deal_id: Optional[str] = None) -> int:
+    """Same predicates as load_benchmark_pool, but a single integer.
+
+    benchmark_deal previously called load_benchmark_pool a second time,
+    unscoped, purely to size the pool for the "own documents excluded"
+    disclosure -- materialising ~76,000 extra dicts per request on a public
+    read path just to derive one number. The header join is dropped here: it
+    only ever affected which currency a row reported, never whether the row
+    exists, so it cannot change the count.
+    """
+    cur.execute(
+        """
+        SELECT count(*) FROM (
+            SELECT 1
+            FROM proc.bp_po_line_items_trgt p
+            WHERE p.unit_price IS NOT NULL AND p.item_description IS NOT NULL
+              AND (%(deal)s::text IS NULL OR p.deal_id IS DISTINCT FROM %(deal)s)
+            UNION ALL
+            SELECT 1
+            FROM proc.bp_invoice_line_items_trgt i
+            WHERE i.unit_price IS NOT NULL AND i.item_description IS NOT NULL
+              AND (%(deal)s::text IS NULL OR i.deal_id IS DISTINCT FROM %(deal)s)
+        ) pool
+        """,
+        {"deal": exclude_deal_id},
+    )
+    return cur.fetchone()[0]
+
+
 def _pool_delta(full: int, scoped: int) -> int:
     """How many points the deal's own documents contributed."""
     return max(0, full - scoped)
 
 
-def load_flagged_documents(cur) -> set[str]:
-    """Document ids carrying at least one open finding.
+# po_id and invoice_id are NOT disjoint namespaces (live bp_sqldb has a PO and
+# an invoice both numbered "123456/22"), so a bare doc_pk cannot key a flagged
+# set -- it would conflate an open finding on one document type with an
+# unrelated document of the OTHER type that happens to share the id, over-
+# reporting suspect_points. Qualifying with the same "po:"/"inv:" prefix the
+# pool's point_id already carries (see detector.py, which has the same fix)
+# keeps the two namespaces apart. This is the type of doc a discrepancy row
+# can name; a "quote" row has no prefix here because quote lines are never in
+# the pool.
+_DOC_TYPE_POOL_PREFIX: dict[str, str] = {
+    "purchase_order": "po",
+    "invoice": "inv",
+}
 
-    Their prices stay in the pool: when unit price, quantity and line total
-    disagree we do not know which is wrong, and dropping the row would be a
-    guess presented as a correction. The count is disclosed instead.
+
+def load_flagged_documents(cur) -> set[str]:
+    """(type-qualified) document ids carrying at least one OPEN finding.
+
+    This counts ANY open row on proc.bp_extraction_discrepancy for the
+    document -- not only the unit-price/quantity/line-total mismatch that
+    originally motivated this check. Once services.price_outlier starts
+    writing its own findings into the same table, those count here too: this
+    is a general "does this document have an open data-quality question"
+    signal, not one specific to a single issue type.
+
+    Their prices stay in the pool regardless: when unit price, quantity and
+    line total disagree we do not know which is wrong, and dropping the row
+    would be a guess presented as a correction. The count is disclosed
+    instead.
     """
     cur.execute(
         """
-        SELECT DISTINCT doc_pk_candidate FROM proc.bp_extraction_discrepancy
+        SELECT DISTINCT doc_type, doc_pk_candidate
+          FROM proc.bp_extraction_discrepancy
          WHERE status = 'open' AND doc_pk_candidate IS NOT NULL
         """
     )
-    return {row[0] for row in cur.fetchall()}
+    flagged = set()
+    for doc_type, doc_pk in cur.fetchall():
+        prefix = _DOC_TYPE_POOL_PREFIX.get(doc_type)
+        if prefix is not None:
+            flagged.add(f"{prefix}:{doc_pk}")
+    return flagged
 
 
 def _count_suspect(
@@ -164,24 +220,37 @@ def benchmark_deal(
     """Run the benchmark engine over every priced quote line of a deal."""
     settings = settings if settings is not None else BenchmarkSettings()
     quote_rows = load_quote_lines(cur, deal_id)
-    # Load twice: once unscoped so the exclusion count is independently
-    # verifiable, once scoped for the calculation the engine actually uses.
-    full_pool = load_benchmark_pool(cur)
+    # The scoped pool is what the engine actually uses; the unscoped SIZE
+    # (not the unscoped rows) is all that's needed to derive the exclusion
+    # count, so it's a count(*) rather than a second full load (finding 3).
     scoped_pool = load_benchmark_pool(cur, exclude_deal_id=deal_id)
-    own_excluded = _pool_delta(len(full_pool), len(scoped_pool))
+    full_count = count_benchmark_pool(cur)
+    own_excluded = _pool_delta(full_count, len(scoped_pool))
     points = _to_points(scoped_pool)
-    doc_by_point = {row["point_id"]: row["doc_id"] for row in scoped_pool}
+    doc_by_point = {
+        row["point_id"]: f"{row['point_id'].split(':', 1)[0]}:{row['doc_id']}"
+        for row in scoped_pool
+    }
     flagged = load_flagged_documents(cur)
 
     results = []
+    skipped_no_quantity = 0
     for row in quote_rows:
+        if row["quantity"] is None:
+            # A quote line with no recorded quantity has no meaningful total
+            # or gap to compute. Defaulting it to 0 (as this used to) makes
+            # quoted_total/benchmark_total collapse to just the adders and
+            # emits total_cost_gap == 0.0 -- a confident "no gap" fabricated
+            # from absent data. Skip the line instead and disclose the count.
+            skipped_no_quantity += 1
+            continue
         quote = QuoteLine(
             deal_id=deal_id,
             item_name=_norm_item(row["item_description"]),
             supplier_name="",
             quote_ref=str(row["quote_id"] or ""),
             category="",
-            quantity=float(row["quantity"] or 0.0),
+            quantity=float(row["quantity"]),
             uom=_norm_uom(row["unit_of_measure"]),
             currency=_norm_currency(row["currency"]),
             location=(row.get("region") or row.get("country") or ""),
@@ -210,6 +279,7 @@ def benchmark_deal(
         "line_count": len(results),
         "gated_count": gated,
         "computed_count": len(results) - gated,
-        "own_documents_excluded": own_excluded,
+        "skipped_no_quantity_count": skipped_no_quantity,
+        "own_points_excluded": own_excluded,
         "disclosures": DISCLOSURES,
     }

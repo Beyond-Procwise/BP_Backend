@@ -1,5 +1,6 @@
 from services.price_outlier.detector import (
-    Finding, build_peer_index, describe, find_outliers, peers_for,
+    Finding, _resolved_currency, build_peer_index, describe, find_outliers,
+    peers_for,
 )
 from services.price_outlier.rule import OutlierSettings, assess
 
@@ -45,7 +46,7 @@ def test_peers_from_a_different_document_type_sharing_the_same_raw_id_survive():
 
 def test_note_names_the_comparison_in_plain_english():
     verdict = assess(11.69, [1.17] * 18, OutlierSettings())
-    note = describe(3, "A4 Ruled Notebook", 11.69, verdict)
+    note = describe(3, "A4 Ruled Notebook", 11.69, verdict, uom="each", currency="GBP")
     assert "line 3" in note
     assert "A4 Ruled Notebook" in note
     assert "11.69" in note
@@ -60,12 +61,39 @@ def test_note_reads_as_english_when_the_price_is_below_the_usual():
     '/', which the downstream output-safety gate rewrites as a URL-like
     route) is not a sentence a reviewer can act on."""
     verdict = assess(0.02, [2.0] * 7, OutlierSettings())
-    note = describe(3, "Coffee Filters", 0.02, verdict)
+    note = describe(3, "Coffee Filters", 0.02, verdict, uom="each", currency="GBP")
     assert "BELOW" in note
     assert "ABOVE" not in note
     assert "/" not in note
     assert "÷" not in note
     assert "100.0" in note
+
+
+def test_note_includes_the_real_unit_and_currency_not_a_hardcoded_each():
+    """A three-currency corpus with an hourly rate must not read as
+    '2.00 each' -- that silently drops both the real unit and the currency
+    the price is actually being compared in. This string is the entire
+    human-facing product of the feature."""
+    verdict = assess(150.0, [50.0] * 6, OutlierSettings())
+    note = describe(7, "Consulting", 150.0, verdict, uom="hour", currency="EUR")
+    assert "EUR" in note
+    assert "hour" in note
+    assert "each" not in note
+
+
+def test_line_currency_wins_over_header_currency():
+    """Matches load_benchmark_pool/load_quote_lines' COALESCE(line, header):
+    when a line carries its own currency, it must win over the document
+    header's, even when the two disagree."""
+    line = {"doc_pk": "PO1", "currency": "USD"}
+    assert _resolved_currency(line, {"PO1": "GBP"}) == "USD"
+
+
+def test_missing_line_currency_falls_back_to_the_header():
+    """Invoice lines (and any quote/PO line left blank) have no currency of
+    their own; the header is the only source then."""
+    line = {"doc_pk": "PO1", "currency": None}
+    assert _resolved_currency(line, {"PO1": "GBP"}) == "GBP"
 
 
 class _FakeCursor:
@@ -81,7 +109,7 @@ class _FakeCursor:
     _POOL_COLS = ["point_id", "item_description", "unit_of_measure", "currency",
                   "unit_price", "quantity", "doc_id"]
     _LINE_COLS = ["doc_pk", "line_number", "item_description",
-                  "unit_of_measure", "unit_price"]
+                  "unit_of_measure", "unit_price", "currency"]
 
     def __init__(self, pool_rows, po_lines=(), invoice_lines=(),
                  po_currency=(), invoice_currency=()):
@@ -147,9 +175,11 @@ def test_find_outliers_end_to_end_over_a_fake_cursor():
     cur = _FakeCursor(
         pool_rows=pool_rows,
         # Tuples in SELECT order (doc_pk, line_number, item_description,
-        # unit_of_measure, unit_price), as a real cursor.fetchall() returns.
-        po_lines=[("PO1", 1, "Widget", "each", 1000.0)],
-        invoice_lines=[("INV1", 1, "Gadget", "each", 55.0)],
+        # unit_of_measure, unit_price, currency), as a real cursor.fetchall()
+        # returns. Neither line here carries its own currency (None), so both
+        # fall back to the header.
+        po_lines=[("PO1", 1, "Widget", "each", 1000.0, None)],
+        invoice_lines=[("INV1", 1, "Gadget", "each", 55.0, None)],
         # NULL header currency on PO1 -- proves the default ("GBP") the
         # header substitution falls back to, not a coincidental match.
         po_currency=[("PO1", None)],
@@ -166,8 +196,33 @@ def test_find_outliers_end_to_end_over_a_fake_cursor():
     assert finding.verdict.severity == "critical"
     assert finding.verdict.peer_count == 5
     assert "ABOVE" in finding.note
+    assert "GBP" in finding.note
+    assert "each" in finding.note
 
     # The two source tables name their line-number column differently; both
     # queries must actually have been built and executed.
     assert "line_no as line_number" in cur.invoice_lines_sql
     assert "line_no as line_number" not in cur.po_lines_sql
+
+
+def test_find_outliers_prefers_the_line_s_own_currency_over_its_header():
+    """End-to-end version of test_line_currency_wins_over_header_currency:
+    a PO line carrying its own currency (USD) must be compared against USD
+    peers, even though its document header says GBP -- if the header won,
+    this line would find zero peers in its (wrong) currency and merely gate
+    on too few peers instead of flagging."""
+    pool_rows = [
+        _pool_tuple("Widget", "each", "USD", 10.0, doc=f"POX{i}", kind="po")
+        for i in range(1, 6)
+    ]
+    cur = _FakeCursor(
+        pool_rows=pool_rows,
+        po_lines=[("PO1", 1, "Widget", "each", 1000.0, "USD")],
+        po_currency=[("PO1", "GBP")],  # header disagrees with the line
+    )
+
+    findings = find_outliers(cur, OutlierSettings())
+
+    assert len(findings) == 1
+    assert findings[0].verdict.peer_count == 5
+    assert "USD" in findings[0].note

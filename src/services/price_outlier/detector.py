@@ -21,14 +21,17 @@ logger = logging.getLogger(__name__)
 Key = tuple[str, str, str]
 
 # Which tables are scanned, and how each names its columns. Invoice lines use
-# line_no where the others use line_number.
+# line_no where the others use line_number. Quote and PO line items each carry
+# their own `currency` column; the invoice line-items table does not (its
+# currency is only ever recorded on the invoice header) -- has_line_currency
+# says which tables can ever have a line value to prefer over the header.
 _SOURCES: tuple[dict[str, str], ...] = (
     {"doc_type": "quote", "table": "proc.bp_quote_line_items_trgt",
-     "doc_pk": "quote_id", "line_no": "line_number"},
+     "doc_pk": "quote_id", "line_no": "line_number", "has_line_currency": True},
     {"doc_type": "purchase_order", "table": "proc.bp_po_line_items_trgt",
-     "doc_pk": "po_id", "line_no": "line_number"},
+     "doc_pk": "po_id", "line_no": "line_number", "has_line_currency": True},
     {"doc_type": "invoice", "table": "proc.bp_invoice_line_items_trgt",
-     "doc_pk": "invoice_id", "line_no": "line_no"},
+     "doc_pk": "invoice_id", "line_no": "line_no", "has_line_currency": False},
 )
 
 # po_id and invoice_id are NOT disjoint namespaces (live bp_sqldb has a PO and
@@ -95,8 +98,15 @@ def peers_for(
     return [price for doc, price in index.get(key, ()) if doc != own_doc]
 
 
-def describe(line_number: int, item: str, price: float, verdict: Verdict) -> str:
+def describe(
+    line_number: int, item: str, price: float, verdict: Verdict,
+    uom: str, currency: str,
+) -> str:
     """The sentence a reviewer reads. Names the comparison, not the statistics.
+
+    The unit and currency are the ones the match key actually compared on --
+    hardcoding "each" made an hourly rate in a three-currency corpus read as
+    "2.00 each", silently dropping both the real unit and the currency.
 
     A bare "÷" is not a word a reviewer reads as English, and a "/" is rewritten
     by the output-safety gate downstream because it resembles a URL route -- so
@@ -106,9 +116,9 @@ def describe(line_number: int, item: str, price: float, verdict: Verdict) -> str
     factor = verdict.ratio if above else 1.0 / verdict.ratio
     direction = "ABOVE" if above else "BELOW"
     return (
-        f"line {line_number}: '{item}' at {price:,.2f} each is "
-        f"{factor:,.1f}× {direction} the usual {verdict.median:,.2f} across "
-        f"{verdict.peer_count} comparable purchases — "
+        f"line {line_number}: '{item}' at {currency} {price:,.2f} per {uom} is "
+        f"{factor:,.1f}× {direction} the usual {currency} {verdict.median:,.2f} "
+        f"across {verdict.peer_count} comparable purchases — "
         f"check the unit price and quantity"
     )
 
@@ -120,10 +130,15 @@ def _load_pool(cur) -> list[dict[str, Any]]:
 
 
 def _load_lines(cur, source: dict[str, str]) -> list[dict[str, Any]]:
+    # The invoice line-items table has no currency column of its own (see
+    # _SOURCES), so its rows always report NULL here and fall back to the
+    # header in _resolved_currency below.
+    currency_expr = "currency" if source["has_line_currency"] else "NULL"
     cur.execute(
         f"""
         SELECT {source['doc_pk']} AS doc_pk, {source['line_no']} AS line_number,
-               item_description, unit_of_measure, unit_price
+               item_description, unit_of_measure, unit_price,
+               {currency_expr} AS currency
           FROM {source['table']}
          WHERE unit_price IS NOT NULL AND item_description IS NOT NULL
            AND {source['doc_pk']} IS NOT NULL
@@ -134,7 +149,9 @@ def _load_lines(cur, source: dict[str, str]) -> list[dict[str, Any]]:
 
 
 def _line_currency(cur, source: dict[str, str]) -> dict[str, str]:
-    """Header currency per document, since line currency is unreliable."""
+    """Header currency per document -- the fallback used when a line carries
+    no currency of its own (every invoice line, and any quote/PO line whose
+    own currency was left blank)."""
     header = {
         "quote": ("proc.bp_quote_trgt", "quote_id"),
         "purchase_order": ("proc.bp_purchase_order_trgt", "po_id"),
@@ -142,6 +159,16 @@ def _line_currency(cur, source: dict[str, str]) -> dict[str, str]:
     }[source["doc_type"]]
     cur.execute(f"SELECT {header[1]}, currency FROM {header[0]}")
     return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def _resolved_currency(
+    line: dict[str, Any], currency_by_doc: dict[str, str]
+) -> Optional[str]:
+    """COALESCE the line's own currency, then its document header's -- the
+    same rule benchmark_live.load_benchmark_pool and load_quote_lines apply,
+    so a flag and a benchmark can never disagree about what currency a price
+    is in."""
+    return line.get("currency") or currency_by_doc.get(line["doc_pk"])
 
 
 def find_outliers(cur, settings: Optional[OutlierSettings] = None) -> list[Finding]:
@@ -157,7 +184,7 @@ def find_outliers(cur, settings: Optional[OutlierSettings] = None) -> list[Findi
             key = (
                 _norm_item(line["item_description"]),
                 _norm_uom(line["unit_of_measure"]),
-                _norm_currency(currency_by_doc.get(line["doc_pk"])),
+                _norm_currency(_resolved_currency(line, currency_by_doc)),
             )
             # None for a quote line: quotes are never in the pool, so there is
             # no qualified id that could ever collide -- nothing is excluded.
@@ -180,7 +207,8 @@ def find_outliers(cur, settings: Optional[OutlierSettings] = None) -> list[Findi
                     verdict=verdict,
                     note=describe(
                         int(line["line_number"] or 0), line["item_description"],
-                        float(line["unit_price"]), verdict),
+                        float(line["unit_price"]), verdict,
+                        uom=key[1], currency=key[2]),
                 )
             )
 

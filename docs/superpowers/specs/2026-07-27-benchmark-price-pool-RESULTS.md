@@ -86,8 +86,9 @@ quotes. That means the winning supplier's quote was partly being compared
 against its own resulting purchase order and invoice — the one comparison
 that tells you nothing, because of course a supplier's own paperwork looks
 like its own paperwork. Fixed: a deal's own documents are now excluded from
-its own comparison pool, and the number of documents removed is reported
-back so it's visible.
+its own comparison pool, and the number of comparison price LINES removed is
+reported back (as `own_points_excluded`) so it's visible — not a count of
+documents, since one document can contribute several priced lines.
 
 **4. Suspect prices are now disclosed, not silently dropped.**
 For 22% of live quote lines, unit price times quantity doesn't equal the
@@ -97,8 +98,10 @@ numbers (price, quantity, total) is the wrong one, so guessing which to
 throw out would just be a hidden assumption dressed up as a fix. These
 rows stay in the price pool, but every result now reports how many of its
 comparison prices come from a document that already has an open
-data-quality question mark against it. 163 live documents carry one such
-flag today.
+data-quality question mark against it — ANY open finding on that document,
+not specifically this price/quantity/total mismatch (and, now that the new
+price-outlier check below writes into the same table, its findings count
+here too). 163 live documents carry at least one open finding today.
 
 ## New: price outliers become review checkpoints
 
@@ -231,17 +234,17 @@ does not work once there's a realistic volume of documents to process.
 
 ## Also worth recording
 
-- **One-off costs** (delivery, implementation, support, risk charges) are
-  now added once per order, not multiplied by the quantity ordered. The
-  source spreadsheet's own formula and its own written description of that
-  formula contradicted each other; the formula (the thing actually
-  producing the numbers) won. This only changes two displayed total
-  figures — it cancels out of the cost-gap calculation, so the bottom-line
-  comparison is unaffected. The spreadsheet's incorrect written description
-  still needs to be corrected by hand in Excel — it was deliberately not
-  changed programmatically, because doing so would destroy the cached
-  calculated values that the test suite's reference numbers are pulled
-  from.
+- **One-off costs** (delivery, implementation, support, risk charges) were
+  confirmed to already be added once per order, not multiplied by the
+  quantity ordered — this is pre-existing engine behaviour, not something
+  changed as part of this work. It's recorded here because the source
+  spreadsheet's own formula and its own written description of that formula
+  contradict each other, and the engine correctly follows the formula (the
+  thing actually producing the numbers), not the description. The
+  spreadsheet's incorrect written description still needs to be corrected by
+  hand in Excel — that correction is out of scope here, because doing it
+  programmatically would destroy the cached calculated values that the test
+  suite's reference numbers are pulled from.
 - Two tasks originally planned as part of this work (loading the raw and
   staging tiers of data, and a broader persistence layer) were instead
   delivered by a parallel, separate piece of work happening on the same
