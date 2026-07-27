@@ -169,6 +169,7 @@ def run_all(
     *,
     live_before: Mapping[str, int],
     arithmetic_exempt: set[str] | None = None,
+    seeded_tables: Sequence[str] | None = None,
 ) -> list[CheckResult]:
     """Run every implemented check. Unimplemented ones report as not-yet-run.
 
@@ -190,7 +191,7 @@ def run_all(
             results.append(
                 CheckResult(ref=check.ref, passed=True, detail=NOT_YET_IMPLEMENTED)
             )
-    results.append(check_live_unchanged(live_before))
+    results.append(check_live_untouched(live_before, seeded_tables=seeded_tables or ()))
     return sorted(results, key=lambda result: result.ref)
 
 
@@ -328,3 +329,86 @@ def check_benchmark_computes(target_db: str) -> CheckResult:
             f"gated={result.gated} (largest currency-accurate group={len(group)})"
         ),
     )
+
+
+# The seeder stamps everything it writes. Finding any of these in a live
+# database is proof it wrote there -- unlike a row-count comparison, this holds
+# even while the production service is busy doing its own work.
+_MARKER_PROBES: tuple[tuple[str, str], ...] = (
+    ("bp_invoice_trgt", "created_by = 'testdata'"),
+    ("bp_quote_trgt", "created_by = 'testdata'"),
+    ("bp_purchase_order_trgt", "created_by = 'testdata'"),
+    ("bp_supplier", "created_by = 'testdata'"),
+    ("bp_invoice_raw", "source_file like 's3://bp-testdata/%'"),
+    ("bp_quote_raw", "source_file like 's3://bp-testdata/%'"),
+    ("bp_purchase_order_raw", "source_file like 's3://bp-testdata/%'"),
+)
+
+
+def find_seeded_rows_in_live(dbnames: Sequence[str] = ("bp_sqldb", "uicanvas")) -> dict[str, int]:
+    """Rows in a live database bearing the seeder's marker. Should always be empty."""
+    found: dict[str, int] = {}
+    for dbname in dbnames:
+        conn = connect(dbname)
+        try:
+            for table, predicate in _MARKER_PROBES:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(f"select count(*) from proc.\"{table}\" where {predicate}")
+                        count = cur.fetchone()[0]
+                except Exception:
+                    conn.rollback()
+                    continue
+                if count:
+                    found[f"{dbname}.proc.{table}"] = count
+        finally:
+            conn.close()
+    return found
+
+
+def check_live_untouched(
+    live_before: Mapping[str, int], seeded_tables: Sequence[str] = (),
+) -> CheckResult:
+    """V14: the build wrote nothing to a live database.
+
+    Two questions, only one of which a row-count comparison can answer.
+
+    Did anything the seeder writes appear in live? That is the guarantee, and a
+    marker scan answers it directly.
+
+    Did any live row count move? That catches a seeder writing through an
+    unmarked path, but it also catches the production service going about its
+    business -- and something is nearly always running. So drift is only a
+    failure in a table the seeder actually writes; elsewhere it is reported as
+    concurrent activity rather than treated as a breach.
+    """
+    seeded = set(seeded_tables)
+    stowaways = find_seeded_rows_in_live()
+
+    after = snapshot_counts(["bp_sqldb", "uicanvas"])
+    moved = [
+        key for key in sorted(set(live_before) | set(after))
+        if live_before.get(key) != after.get(key)
+    ]
+    moved_seeded = [key for key in moved if key.rsplit(".", 1)[-1] in seeded]
+    moved_other = [key for key in moved if key not in moved_seeded]
+
+    if stowaways:
+        detail = "seeder rows found in a live database: " + ", ".join(
+            f"{k} ({n})" for k, n in sorted(stowaways.items())
+        )
+        return CheckResult(ref="V14", passed=False, detail=detail)
+
+    if moved_seeded:
+        return CheckResult(
+            ref="V14", passed=False,
+            detail="live tables the seeder writes changed: " + ", ".join(moved_seeded),
+        )
+
+    detail = "no seeder rows in live; no seeded table changed"
+    if moved_other:
+        detail += (
+            f"; {len(moved_other)} unrelated live table(s) moved during the run "
+            f"(concurrent service activity, e.g. {moved_other[0]})"
+        )
+    return CheckResult(ref="V14", passed=True, detail=detail)

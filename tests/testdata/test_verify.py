@@ -119,3 +119,62 @@ def test_rollup_check_fails_when_a_cost_centre_points_nowhere(scratch_uicanvas_s
             cur.execute("delete from proc.cost_centre where cost_centre_level_id = 'CC-ORPHAN'")
         conn.commit()
         conn.close()
+
+
+# --- V14: isolation under concurrent live activity ---------------------------
+
+def test_v14_fails_when_seeder_rows_turn_up_in_live(monkeypatch):
+    from scripts.testdata import verify
+
+    monkeypatch.setattr(
+        verify, "find_seeded_rows_in_live",
+        lambda *a, **k: {"bp_sqldb.proc.bp_invoice_trgt": 12},
+    )
+    monkeypatch.setattr(verify, "snapshot_counts", lambda dbs: {})
+    result = verify.check_live_untouched({})
+    assert not result.passed
+    assert "bp_invoice_trgt (12)" in result.detail
+
+
+def test_v14_fails_when_a_table_the_seeder_writes_moves(monkeypatch):
+    from scripts.testdata import verify
+
+    monkeypatch.setattr(verify, "find_seeded_rows_in_live", lambda *a, **k: {})
+    monkeypatch.setattr(
+        verify, "snapshot_counts",
+        lambda dbs: {"bp_sqldb.proc.bp_invoice_trgt": 51},
+    )
+    result = verify.check_live_untouched(
+        {"bp_sqldb.proc.bp_invoice_trgt": 50}, seeded_tables=["bp_invoice_trgt"],
+    )
+    assert not result.passed
+    assert "bp_invoice_trgt" in result.detail
+
+
+def test_v14_tolerates_the_production_service_doing_its_own_work(monkeypatch):
+    """The audit log grows while the build runs. That is not a breach, and a
+    check that calls it one cannot ever pass on a live cluster."""
+    from scripts.testdata import verify
+
+    monkeypatch.setattr(verify, "find_seeded_rows_in_live", lambda *a, **k: {})
+    monkeypatch.setattr(
+        verify, "snapshot_counts",
+        lambda dbs: {"bp_sqldb.proc.bp_agent_actions": 54637},
+    )
+    result = verify.check_live_untouched(
+        {"bp_sqldb.proc.bp_agent_actions": 54152}, seeded_tables=["bp_invoice_trgt"],
+    )
+    assert result.passed, result.detail
+    assert "concurrent service activity" in result.detail
+    assert "bp_agent_actions" in result.detail
+
+
+def test_v14_passes_cleanly_when_nothing_moved(monkeypatch):
+    from scripts.testdata import verify
+
+    monkeypatch.setattr(verify, "find_seeded_rows_in_live", lambda *a, **k: {})
+    monkeypatch.setattr(verify, "snapshot_counts", lambda dbs: {"a": 1})
+    result = verify.check_live_untouched({"a": 1})
+    assert result.passed
+    assert "no seeder rows in live" in result.detail
+    assert "concurrent" not in result.detail

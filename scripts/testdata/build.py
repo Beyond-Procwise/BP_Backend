@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Sequence
 
 from scripts.testdata import (
-    persist, persist_org, persist_suppliers, persist_tiers, profiles, verify,
+    coverage, persist, persist_org, persist_suppliers, persist_tiers, profiles,
+    verify,
 )
 from scripts.testdata.catalogue import build_catalogue
 from scripts.testdata.loader import load_tables
@@ -294,6 +295,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.target, args.uicanvas_target,
         live_before=live_before,
         arithmetic_exempt=arithmetic_exempt,
+        # Drift in a table the seeder writes is a breach; drift anywhere else is
+        # the production service going about its business while we build.
+        seeded_tables=[
+            table for stage in coverage.STAGES for table in stage.tables
+        ],
     )
     for item in results:
         if item.detail == verify.NOT_YET_IMPLEMENTED:
