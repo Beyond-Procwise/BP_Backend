@@ -56,17 +56,32 @@ def test_excluded_own_document_count_is_reported():
     assert _pool_delta(120, 100) == 20
 
 
+def test_flagged_documents_query_reads_open_findings_only():
+    cur = FakeCursor([("PO1",), ("INV2",)], [("doc_pk_candidate",)])
+    from services.benchmark_live import load_flagged_documents
+    assert load_flagged_documents(cur) == {"PO1", "INV2"}
+    sql = " ".join(cur.sql.split()).lower()
+    assert "bp_extraction_discrepancy" in sql
+    assert "status = 'open'" in sql
+
+
+def test_suspect_points_counts_matched_points_from_flagged_documents():
+    from services.benchmark_live import _count_suspect
+    doc_by_point = {"po:1": "PO1", "po:2": "PO2", "inv:3": "INV3"}
+    assert _count_suspect(["po:1", "inv:3"], doc_by_point, {"PO1"}) == 1
+    assert _count_suspect(["po:2"], doc_by_point, {"PO1"}) == 0
+
+
 class DispatchingFakeCursor:
     """Answers benchmark_deal's queries by inspecting SQL text (and, for the
     pool query, the bound params) rather than by call order.
 
-    benchmark_deal issues three queries today (quote lines, unscoped pool,
-    scoped pool) and a fourth is coming in the next task (suspect_points).
-    A fixed-position fake ("1st call is quote lines, 2nd is unscoped, ...")
-    would silently start answering the wrong query the moment a call is
-    inserted or reordered. Dispatching on content is resilient to that: an
-    unrecognised query just gets an empty result instead of derailing every
-    other query's answer.
+    benchmark_deal issues four queries (quote lines, unscoped pool, scoped
+    pool, open-findings documents). A fixed-position fake ("1st call is quote
+    lines, 2nd is unscoped, ...") would silently start answering the wrong
+    query the moment a call is inserted or reordered. Dispatching on content
+    is resilient to that: an unrecognised query just gets an empty result
+    instead of derailing every other query's answer.
 
     The pool query's SQL text is IDENTICAL for the scoped and unscoped call
     (only the `%(deal)s` parameter differs), so content alone cannot tell
@@ -80,10 +95,11 @@ class DispatchingFakeCursor:
     POOL_COLS = ["point_id", "item_description", "unit_of_measure", "currency",
                  "unit_price", "quantity", "doc_id"]
 
-    def __init__(self, quote_rows, full_pool_rows, scoped_pool_rows):
+    def __init__(self, quote_rows, full_pool_rows, scoped_pool_rows, flagged_rows=()):
         self._quote_rows = quote_rows
         self._full_pool_rows = full_pool_rows
         self._scoped_pool_rows = scoped_pool_rows
+        self._flagged_rows = flagged_rows
         self.scoped_deal_seen = "__not_called__"
         self.description = []
         self._pending: list = []
@@ -101,9 +117,12 @@ class DispatchingFakeCursor:
             else:
                 self.scoped_deal_seen = deal
                 self._pending = self._scoped_pool_rows
+        elif "bp_extraction_discrepancy" in low:
+            self.description = [("doc_pk_candidate",)]
+            self._pending = self._flagged_rows
         else:
-            # Not a query this fake knows about yet (e.g. the next task's
-            # suspect_points query) — answer empty rather than crash.
+            # Not a query this fake knows about yet — answer empty rather
+            # than crash, so an unrelated future query can't derail this one.
             self.description = []
             self._pending = []
 
@@ -141,3 +160,29 @@ def test_benchmark_deal_feeds_the_scoped_pool_to_the_engine():
     matched_ids = result["lines"][0]["matched_point_ids"]
     assert "po:OWN" not in matched_ids
     assert set(matched_ids) == {"po:1", "po:2", "inv:1"}
+
+
+def test_benchmark_deal_reports_suspect_points_per_line():
+    """A line's matched pool ids that trace back to a flagged document (PO1
+    carries an open discrepancy finding) are counted and disclosed alongside
+    the benchmark, without being dropped from the comparison itself."""
+    deal_id = "DEAL-1"
+    quote_rows = [
+        ("QL1", "Q1", "Widget", 10, 100.0, "each", "GBP", "UK", "London"),
+    ]
+    scoped_pool_rows = [
+        ("po:1", "Widget", "each", "GBP", 90.0, 5, "PO1"),
+        ("po:2", "Widget", "each", "GBP", 95.0, 5, "PO2"),
+        ("inv:1", "Widget", "each", "GBP", 92.0, 5, "INV1"),
+    ]
+    cur = DispatchingFakeCursor(
+        quote_rows, scoped_pool_rows, scoped_pool_rows,
+        flagged_rows=[("PO1",)],
+    )
+    result = benchmark_deal(cur, deal_id, BenchmarkSettings())
+
+    matched_ids = result["lines"][0]["matched_point_ids"]
+    assert set(matched_ids) == {"po:1", "po:2", "inv:1"}
+    # Only po:1 maps back to PO1, the flagged document -> exactly one suspect point.
+    assert result["lines"][0]["suspect_points"] == 1
+    assert any("data-quality finding" in d for d in result["disclosures"])

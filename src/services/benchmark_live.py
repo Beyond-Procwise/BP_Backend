@@ -38,6 +38,7 @@ DISCLOSURES = [
     "match keys normalised: whitespace and case folded; missing unit defaults to 'each', missing currency to 'GBP'",
     "price history excludes this deal's own purchase orders and invoices, so a supplier is never compared against its own price",
     "no location or market index reference data captured yet: neutral defaults applied and recorded on every line",
+    "some comparison prices come from documents with an unresolved data-quality finding; each line reports how many",
 ]
 
 
@@ -108,6 +109,28 @@ def _pool_delta(full: int, scoped: int) -> int:
     return max(0, full - scoped)
 
 
+def load_flagged_documents(cur) -> set[str]:
+    """Document ids carrying at least one open finding.
+
+    Their prices stay in the pool: when unit price, quantity and line total
+    disagree we do not know which is wrong, and dropping the row would be a
+    guess presented as a correction. The count is disclosed instead.
+    """
+    cur.execute(
+        """
+        SELECT DISTINCT doc_pk_candidate FROM proc.bp_extraction_discrepancy
+         WHERE status = 'open' AND doc_pk_candidate IS NOT NULL
+        """
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
+def _count_suspect(
+    point_ids: list[str], doc_by_point: dict[str, str], flagged: set[str]
+) -> int:
+    return sum(1 for pid in point_ids if doc_by_point.get(pid) in flagged)
+
+
 def _to_points(pool_rows: list[dict[str, Any]]) -> list[BenchmarkPoint]:
     points = []
     for row in pool_rows:
@@ -147,6 +170,8 @@ def benchmark_deal(
     scoped_pool = load_benchmark_pool(cur, exclude_deal_id=deal_id)
     own_excluded = _pool_delta(len(full_pool), len(scoped_pool))
     points = _to_points(scoped_pool)
+    doc_by_point = {row["point_id"]: row["doc_id"] for row in scoped_pool}
+    flagged = load_flagged_documents(cur)
 
     results = []
     for row in quote_rows:
@@ -172,6 +197,8 @@ def benchmark_deal(
         payload = result.model_dump()
         payload["source_item_description"] = row["item_description"]
         payload["quote_line_id"] = row["quote_line_id"]
+        payload["suspect_points"] = _count_suspect(
+            result.matched_point_ids, doc_by_point, flagged)
         results.append(payload)
 
     gated = sum(1 for r in results if r["gated"])
