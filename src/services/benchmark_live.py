@@ -72,21 +72,32 @@ def load_quote_lines(cur, deal_id: str) -> list[dict[str, Any]]:
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def load_benchmark_pool(cur) -> list[dict[str, Any]]:
-    """All PO + invoice lines with a price — the price-history pool."""
+def load_benchmark_pool(cur, exclude_deal_id: Optional[str] = None) -> list[dict[str, Any]]:
+    """All PO + invoice lines with a price — the price-history pool.
+
+    Currency is taken from the document header when the line does not carry it.
+    Every live PO line has a NULL currency while 57% of PO headers are not
+    sterling, so reading the line alone silently relabels dollars as pounds.
+    """
     cur.execute(
         """
         SELECT 'po:' || p.po_line_id AS point_id, p.item_description,
-               p.unit_of_measure, p.currency, p.unit_price, p.quantity
+               p.unit_of_measure, COALESCE(p.currency, h.currency) AS currency,
+               p.unit_price, p.quantity, p.po_id AS doc_id
         FROM proc.bp_po_line_items_trgt p
+        LEFT JOIN proc.bp_purchase_order_trgt h ON h.po_id = p.po_id
         WHERE p.unit_price IS NOT NULL AND p.item_description IS NOT NULL
+          AND (%(deal)s::text IS NULL OR p.deal_id IS DISTINCT FROM %(deal)s)
         UNION ALL
         SELECT 'inv:' || i.invoice_line_id, i.item_description,
-               i.unit_of_measure, h.currency, i.unit_price, i.quantity
+               i.unit_of_measure, h.currency, i.unit_price, i.quantity,
+               i.invoice_id AS doc_id
         FROM proc.bp_invoice_line_items_trgt i
         LEFT JOIN proc.bp_invoice_trgt h ON h.invoice_id = i.invoice_id
         WHERE i.unit_price IS NOT NULL AND i.item_description IS NOT NULL
-        """
+          AND (%(deal)s::text IS NULL OR i.deal_id IS DISTINCT FROM %(deal)s)
+        """,
+        {"deal": exclude_deal_id},
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
