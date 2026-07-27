@@ -53,14 +53,18 @@ def build_catalogue(
     for leaf, count in zip(leaves, per_leaf):
         for _ in range(max(count, 1) if count == 0 else count):
             counter += 1
+            item_id = f"ITM{counter:06d}"
             qualifier = rng.choice(_QUALIFIERS)
             noun = rng.choice(_NOUNS)
             magnitude = rng.choice([1, 1, 1, 10, 10, 100, 1000])
             base = Decimal(str(round(rng.uniform(0.8, 9.9) * magnitude, 2)))
             items.append(
                 CatalogueItem(
-                    item_id=f"ITM{counter:06d}",
-                    description=f"{qualifier} {leaf.l5} {noun}",
+                    item_id=item_id,
+                    # The part code is what makes the description unique. Without
+                    # it, 10 qualifiers x 10 nouns gives only 100 shapes per leaf
+                    # for ~20 items, and colliding items pool as one product.
+                    description=f"{qualifier} {leaf.l5} {noun} {item_id}",
                     leaf=leaf,
                     unit_of_measure=rng.choice(UNITS),
                     base_price=base,

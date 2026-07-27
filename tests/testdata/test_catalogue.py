@@ -76,3 +76,17 @@ def test_price_drifts_upward_over_three_years():
     early = price_on(item, date(2023, 1, 1), seed=42)
     late = price_on(item, date(2026, 1, 1), seed=42)
     assert late > early
+
+
+def test_descriptions_are_unique_across_the_catalogue():
+    """Two items sharing description+uom+currency would pool as one product in
+    the benchmark engine, averaging unrelated prices together."""
+    items = build_catalogue(42, _leaves(), _supplier_ids())
+    keys = [(i.description, i.unit_of_measure, i.currency) for i in items]
+    assert len(set(keys)) == len(keys)
+
+
+def test_description_still_names_its_leaf():
+    items = build_catalogue(42, _leaves(), _supplier_ids())
+    for item in items[:100]:
+        assert item.leaf.l5 in item.description
