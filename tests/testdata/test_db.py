@@ -2,6 +2,7 @@ import pytest
 
 from scripts.testdata.db import copy_rows, create_database
 from scripts.testdata.guards import UnsafeTargetError
+from tests.testdata import SCRATCH_DB
 
 
 @pytest.mark.parametrize("name", ["bp_sqldb", "uicanvas"])
@@ -20,7 +21,7 @@ def test_drop_first_also_refuses_live_targets(name):
 def test_copy_rows_inserts_and_returns_count():
     from scripts.testdata.db import connect
 
-    conn = connect("bp_testdb")
+    conn = connect(SCRATCH_DB)
     try:
         with conn.cursor() as cur:
             cur.execute("create schema if not exists scratch")
@@ -48,7 +49,7 @@ def test_copy_rows_round_trips_jsonb_verbatim():
     """psycopg2 hands back jsonb as a Python dict; str(dict) is not JSON."""
     from scripts.testdata.db import connect
 
-    conn = connect("bp_testdb")
+    conn = connect(SCRATCH_DB)
     try:
         with conn.cursor() as cur:
             cur.execute("create schema if not exists scratch")
@@ -87,7 +88,7 @@ def test_copy_rows_round_trips_an_integer_array():
     """psycopg2 hands back int[] as a Python list; str(list) is not an array literal."""
     from scripts.testdata.db import connect
 
-    conn = connect("bp_testdb")
+    conn = connect(SCRATCH_DB)
     try:
         with conn.cursor() as cur:
             cur.execute("create schema if not exists scratch")
@@ -117,7 +118,7 @@ def test_copy_rows_round_trips_an_integer_array():
 def test_copy_rows_writes_null_for_none():
     from scripts.testdata.db import connect
 
-    conn = connect("bp_testdb")
+    conn = connect(SCRATCH_DB)
     try:
         with conn.cursor() as cur:
             cur.execute("create schema if not exists scratch")

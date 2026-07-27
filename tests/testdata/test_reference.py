@@ -1,6 +1,7 @@
 import pytest
 
 from scripts.testdata.guards import UnsafeTargetError
+from tests.testdata import SCRATCH_DB
 from scripts.testdata.reference import (
     REFERENCE_TABLES,
     copy_reference,
@@ -46,14 +47,14 @@ def test_taxonomy_has_six_families_and_five_populated_levels():
 
 
 @pytest.mark.integration
-def test_copy_reference_reproduces_fx_row_count():
+def test_copy_reference_reproduces_fx_row_count(scratch_schema):
     from scripts.testdata.db import connect
 
-    written = copy_reference("bp_sqldb", "bp_testdb")
+    written = copy_reference("bp_sqldb", SCRATCH_DB)
     assert written["bp_fx_rates"] > 0
 
     source = connect("bp_sqldb")
-    target = connect("bp_testdb")
+    target = connect(SCRATCH_DB)
     try:
         with source.cursor() as cur:
             cur.execute("select count(*) from proc.bp_fx_rates")

@@ -2,6 +2,7 @@ import pytest
 
 from scripts.testdata.guards import UnsafeTargetError
 from scripts.testdata.schema import SCHEMA_PAIRS, clone_schema
+from tests.testdata import SCRATCH_DB
 
 
 def test_schema_pairs_map_live_to_test_databases():
@@ -21,11 +22,11 @@ def test_clone_refuses_to_write_into_a_live_database(target):
 def test_clone_reproduces_tables_and_views_but_no_rows():
     from scripts.testdata.db import connect
 
-    report = clone_schema("bp_sqldb", "bp_testdb", drop_first=True)
+    report = clone_schema("bp_sqldb", SCRATCH_DB, drop_first=True)
     assert report.tables >= 100
     assert report.views >= 5
 
-    conn = connect("bp_testdb")
+    conn = connect(SCRATCH_DB)
     try:
         with conn.cursor() as cur:
             cur.execute(
