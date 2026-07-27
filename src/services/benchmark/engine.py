@@ -57,6 +57,24 @@ def _weighted_avg(
     )
 
 
+def _weighted_avg_optional(
+    values: Sequence[Optional[float]], weights: Sequence[float], digits: int
+) -> Optional[float]:
+    """Weighted average over the values that exist, ignoring the rest.
+
+    A missing value drops its weight too, so the remaining points keep their
+    relative influence. Identical to _weighted_avg when nothing is missing,
+    which is why every golden fixture is unaffected.
+    """
+    pairs = [(v, w) for v, w in zip(values, weights) if v is not None]
+    if not pairs:
+        return None
+    total = sum(w for _, w in pairs)
+    if total == 0:
+        return None
+    return excel_round(sum(v * w for v, w in pairs) / total, digits)
+
+
 def _factor(calc: Callable[[], float]) -> float:
     """Wrap one adjustment-factor computation: arithmetic error -> 1.0."""
     try:
@@ -169,7 +187,9 @@ def compute_benchmark(
     # Step 2 — weighted profiles (same weights as the price average).
     # Decision 2: location profile uses the STATIC location_cost_index stored
     # on each row, not a live lookup of the row's location text.
-    ref_quantity = _weighted_avg([p.historical_quantity for p in matched], weights, 2)
+    ref_quantity = _weighted_avg_optional(
+        [p.historical_quantity for p in matched], weights, 2
+    )
     avg_spec_score = _weighted_avg([p.specification_score for p in matched], weights, 2)
     avg_loc_index = _weighted_avg([p.location_cost_index for p in matched], weights, 4)
     avg_sla_score = _weighted_avg([p.sla_score for p in matched], weights, 2)

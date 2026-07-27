@@ -100,7 +100,9 @@ class BenchmarkPoint(BaseModel):
     specification_score: float
     location_cost_index: float  # static value stored on the row (Decision 2)
     sla_score: float
-    historical_quantity: float
+    # None means "no quantity recorded" (services lines legitimately have none).
+    # Excluded from the reference-quantity average rather than counted as zero.
+    historical_quantity: Optional[float] = None
     index_value_at_price_date: float
 
     @field_validator("include", mode="before")

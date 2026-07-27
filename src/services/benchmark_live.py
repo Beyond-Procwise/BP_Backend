@@ -119,7 +119,9 @@ def _to_points(pool_rows: list[dict[str, Any]]) -> list[BenchmarkPoint]:
                 specification_score=_NEUTRAL_SCORE,
                 location_cost_index=1.0,
                 sla_score=_NEUTRAL_SCORE,
-                historical_quantity=float(row["quantity"] or 0.0),
+                historical_quantity=(
+                    float(row["quantity"]) if row["quantity"] is not None else None
+                ),
                 index_value_at_price_date=1.0,
             )
         )

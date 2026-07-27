@@ -288,3 +288,31 @@ def test_same_inputs_identical_outputs():
     a = compute_benchmark(_quote(), POINTS, LOC, IDX)
     b = compute_benchmark(_quote(), POINTS, LOC, IDX)
     assert a == b
+
+
+# ------------------------------------------------- missing historical qty
+def test_missing_historical_quantity_is_excluded_not_zeroed():
+    """A services line with no quantity must not pull the reference quantity
+    toward zero — that would fake a volume premium out of missing data."""
+    from services.benchmark.engine import compute_benchmark
+    from services.benchmark.models import BenchmarkPoint, QuoteLine
+
+    def point(pid, qty):
+        return BenchmarkPoint(
+            benchmark_point_id=pid, source="internal", item_name="widget",
+            uom="each", currency="GBP", include=True, raw_unit_price=100.0,
+            source_weight=1.0, specification_score=5.0, location_cost_index=1.0,
+            sla_score=5.0, historical_quantity=qty,
+            index_value_at_price_date=1.0,
+        )
+
+    quote = QuoteLine(
+        deal_id="D", item_name="widget", quantity=100, uom="each",
+        currency="GBP", location="UK", requested_spec_score=5,
+        requested_sla_score=5, index_id="", quoted_unit_price=100.0,
+    )
+    known = [point("a", 100.0), point("b", 100.0), point("c", 100.0)]
+    with_gap = known + [point("d", None)]
+
+    assert compute_benchmark(quote, known, {}, {}).ref_quantity == 100.0
+    assert compute_benchmark(quote, with_gap, {}, {}).ref_quantity == 100.0
