@@ -4,6 +4,7 @@
 **Status:** approved, not yet implemented
 **Parent spec:** `docs/superpowers/specs/2026-07-24-full-scope-test-dataset-design.md`
 **Predecessor:** `docs/superpowers/plans/2026-07-24-test-dataset-seeder.md` (Plan 1, shipped)
+**Coverage evidence:** `docs/testdata/BP_Schema_Coverage.xlsx` (generated from live)
 
 ## 1. Purpose
 
@@ -13,7 +14,8 @@ suppliers and the ID crosswalk reach a database.
 
 That makes the parent spec's first acceptance criterion false — the build does not
 "populate both test databases" — and leaves six blocking verification checks with
-nothing to inspect. This design closes that gap.
+nothing to inspect. This design closes that gap across the whole schema, not a
+chosen subset.
 
 ## 2. The governing principle
 
@@ -30,155 +32,192 @@ assembles a deal correctly and C2 proves it does not wrongly merge unrelated
 documents. If the seeder stamps `deal_id`, both cases reduce to checking that the
 labels we wrote match the labels we read back.
 
-## 3. Scope
+## 3. Scope: every table, classified
 
-### 3.1 In scope
+`scripts/testdata/coverage.py` assigns all 293 live tables to exactly one bucket
+by explicit rule. The classification is under test, and an integration test fails
+if a table appears in live with no classification — so a new production table
+becomes a decision, never a silent omission.
 
-| Data | Destination | Rows |
+| Bucket | Tables | Treatment |
 |---|---|---|
-| Quotes | `bp_testdb.proc.bp_quote_trgt` | ~21,020 |
-| Purchase orders | `bp_testdb.proc.bp_purchase_order_trgt` | ~5,037 |
-| Invoices | `bp_testdb.proc.bp_invoice_trgt` | ~12,398 |
-| Quote lines | `bp_testdb.proc.bp_quote_line_items_trgt` | ~115,000 |
-| PO lines | `bp_testdb.proc.bp_po_line_items_trgt` | ~28,000 |
-| Invoice lines | `bp_testdb.proc.bp_invoice_line_items_trgt` | ~50,000 |
-| Requirements | `bp_testdb.proc.bp_requirement` | 6,000 |
-| Business units | `uicanvas_test.proc.business_unit` | 400 |
-| Cost centres | `uicanvas_test.proc.cost_centre` | 500 |
+| **SEED** | 68 | Business data the seeder synthesises |
+| **REFERENCE** | 30 | Configuration copied verbatim from live |
+| **OUTPUT** | 113 | Left empty — the product derives it (§2) |
+| **BACKUP** | 82 | Left empty — dated or duplicated copies |
 
-Line-item counts are approximate because defect planting adds duplicate invoices,
-near-duplicates and credit notes after generation.
+98 of 293 tables are filled. The 195 left empty are empty *by argument*, and the
+workbook records the argument per table.
 
-**Requirements need content the generator does not yet produce.** A `Chain`
-carries only a `requirement_id`; `bp_requirement` also wants `title`, `category`,
-`description`, `quantity`, `unit`, `target_budget`, `currency`,
-`needed_by_date`, `priority` and `status`. These are derived from the chain's own
-facts — its awarded quote's category leaf, its cost centre's currency, its
-earliest quote date — so the requirement stays consistent with the documents
-beneath it rather than being invented independently.
+### 3.1 SEED — what gets written
 
-Verification checks implemented: **V04** (line totals sum to document totals) and
-**V07** (organisation roll-up balances, per currency — see §5).
+**Documents, all three tiers.** `bp_sqldb` carries `raw → _stg → _trgt` for
+quotes, purchase orders and invoices, plus the matching line-item tables — 18
+tables. Writing only `_trgt` would leave the promotion path untested and the
+`_raw` lookup in each outcome trigger permanently empty. `uicanvas` holds its own
+document tables (`bp_invoice`, `bp_invoice_trgt`, `invoice`, `purchase_order`,
+`po_line_items` and others) which the SpendIQ screens read.
 
-### 3.2 Explicitly out of scope
+> This reverses an earlier decision to write `_trgt` only. Full-schema coverage
+> was chosen after the coverage workbook showed what a target-only load omits.
 
-- **The catalogue** (`uicanvas_test.proc.item`). Deferred with V06.
-- **FX conversion.** `exchange_rate_to_usd` and `converted_amount_usd` are left
-  NULL on all three `_trgt` tables. Deferred with V05.
-- **Derived data.** `deal_id`, `bp_supplier_ranking`, `bp_quote_evaluation`,
-  `bp_decision`, `bp_action`, `bp_summary`, `bp_analysis_summary`,
-  `bp_opportunity`, `bp_detection_finding`. Per §2 these belong to the product.
-- **The raw and staging tiers.** Documents are written directly to `_trgt`. The
-  32 test cases in areas B–E read `_trgt`; extraction accuracy (area A) is proven
-  by the golden document set against real files, not these generated ones.
+**Organisation.** `business_unit` (16 columns, empty in live) and `cost_centre`
+(26 columns, 500 placeholder rows in live).
 
-### 3.3 Deferred checks
+**Supplier master and its reference data.** `bp_supplier` and `supplier` are
+already loaded. This design adds the supplier tables that are *inputs the product
+reads* rather than conclusions it writes: `bp_tprm_supplier`,
+`supplier_risk_scores`, `esg_data`, `contact` and `bp_contact`.
 
-V05 (FX re-derivation) and V06 (category path resolution) continue to report
-`SKIP`, alongside V08–V13. They must not report `PASS`: a partial run must never
-read as a complete one.
+`bp_supplier_ranking`, `bp_supplier_review`, `bp_supplier_enrichment`,
+`bp_supplier_alias` and `bp_supplier_name_reject` stay empty: each is a conclusion
+the product reaches. `supplier_risk_signals` likewise — signals are detected, and
+scores are supplied.
+
+**Catalogue.** `item` (15 columns), carrying the 5,000 generated items with their
+`category_id` resolved against the real taxonomy. This is what lets V06 resolve a
+line to an L1–L5 path.
+
+**Contracts.** `bp_contracts`, `contract`, `contracts`, `bp_contract_raw` and the
+`raw_*` landing tables. The corpus has no contracts today, so obligation
+extraction has never been exercised against data.
+
+**Cross-reference maps.** `sup_mapping`, `po_mapping`, `po_supplier_mapping`,
+`old_new_supplier_mapping`, `contract_id`, `inv_mapping_inv_itms_new` and
+`item_mapping_inv_itms_new` join the two databases' differing identifier
+conventions.
+
+### 3.2 REFERENCE — copied verbatim
+
+The 7 tables Plan 1 already copies, plus `bp_style_profile`, `bp_style_intent`,
+`bp_style_exemplar`, `bp_style_ingest_staging` and `bp_mailbox_binding` (response
+style and mailbox configuration steer product behaviour, so the test databases
+must carry production's values), `bp_products`, `bp_category_product_mapping`,
+`cat_product_mapping`, `policy`, `static_policy`, `prompt`, `pricing`,
+`pricing_matrix_ranking_policy`, `quote_weighting`, `quote_values` and
+`vendor_profile`.
+
+### 3.3 Still out of scope
+
+- **FX conversion of document totals.** Line prices are now converted into the
+  cost-centre currency, but `exchange_rate_to_usd` and `converted_amount_usd` on
+  the `_trgt` headers remain NULL. V05 continues to report `SKIP`.
+- **Derived data**, per §2.
 
 ## 4. Load design
 
 ### 4.1 Declarative column mappings
 
-A new `scripts/testdata/persist.py` holds one table specification per target:
-the destination table, its column list, and how each column is derived from the
-domain object.
+A new `scripts/testdata/persist.py` holds one table specification per target: the
+destination table, its column list, and how each column is derived from the domain
+object.
 
-The mapping is the whole difficulty. Nine tables carry 20 to 41 columns each, and
-the same concept is named differently across them. A line's net value is
-`line_total` on `bp_quote_line_items_trgt` and `bp_po_line_items_trgt` but
-`line_amount` on `bp_invoice_line_items_trgt`; the gross value is `total_amount`
-on the first two and `total_amount_incl_tax` on the third. Document headers
-diverge further — a quote's value is `total_amount`, an invoice's is
-`invoice_amount`, and `bp_purchase_order_trgt` carries `supplier_name` alongside
-`supplier_id` where the other two carry only the identifier.
+The mapping is the whole difficulty. The 68 seed tables carry roughly 1,270
+columns between them, and the same concept is named differently across them. A
+line's net value is `line_total` on `bp_quote_line_items_trgt` and
+`bp_po_line_items_trgt` but `line_amount` on `bp_invoice_line_items_trgt`; the
+gross value is `total_amount` on the first two and `total_amount_incl_tax` on the
+third. Document headers diverge further — a quote's value is `total_amount`, an
+invoice's is `invoice_amount`, and `bp_purchase_order_trgt` carries
+`supplier_name` alongside `supplier_id` where the other two carry only the
+identifier.
 
 Expressing this as data rather than as branching code keeps it reviewable, and
 lets a test assert that every mapping names only columns that actually exist on
 the target table.
 
-The database will not catch a mapping mistake for us. Of the nine target tables,
-seven have **no NOT NULL constraint at all**; `bp_requirement` requires only
-`requirement_id` and `status`, `business_unit` only `business_unit_id`, and
-`cost_centre` only `cost_centre_level_id`. A load that silently wrote NULL into
-`invoice_amount` for all 12,398 invoices would be accepted without complaint.
+**The database will not catch a mapping mistake.** Of the document tables, none
+has a NOT NULL constraint; `bp_requirement` requires only `requirement_id` and
+`status`, `business_unit` only `business_unit_id`, `cost_centre` only
+`cost_centre_level_id`. A load that silently wrote NULL into `invoice_amount` for
+all 12,398 invoices would be accepted without complaint.
 
-Each table specification therefore declares its own **required set** — the
-columns that must be non-NULL for the data to mean anything — and a test asserts
-every loaded row satisfies it. That set is a deliberate choice recorded in the
-spec for each table, not an inference from the schema.
+Each table specification therefore declares its own **required set** — the columns
+that must be non-NULL for the data to mean anything — and a test asserts every
+loaded row satisfies it. That set is a deliberate choice recorded per table, not
+an inference from the schema.
 
 ### 4.2 Load order
 
-Reference data → business units → cost centres → requirements → quotes →
-purchase orders → invoices → line items.
+Reference data → organisation → suppliers and supplier reference data →
+catalogue → contracts → requirements → quotes → purchase orders → invoices →
+line items → cross-reference maps.
 
-Each table is truncated and then bulk-loaded through the existing `COPY FROM
-STDIN` path in `db.copy_rows`, so re-running the build is idempotent.
+Each table is truncated then bulk-loaded through `db.copy_rows`, so re-running the
+build is idempotent.
 
-### 4.3 Triggers
+### 4.3 Three tiers
 
-`bp_invoice_trgt`, `bp_purchase_order_trgt` and `bp_quote_trgt` each carry an
-outcome trigger that looks up a matching row in the corresponding `bp_*_raw`
-table and records a `session_document_outcome`. Because the raw tier is out of
-scope, the lookup finds nothing and the trigger returns early. This is correct,
-not accidental: there was no ingestion session, so there is no outcome to record.
+`raw` holds the document as extracted, `_stg` the cleaned form, `_trgt` the
+promoted record. The seeder writes all three with consistent content: there is no
+extraction step here, so `raw` is not a degraded version — it is the same
+document, carrying `source_file` and `doc_pk_candidate` so the outcome triggers
+on the `_trgt` tables resolve rather than silently no-op.
+
+### 4.4 Requirements need content the generator does not produce
+
+A `Chain` carries only a `requirement_id`; `bp_requirement` also wants `title`,
+`category`, `description`, `quantity`, `unit`, `target_budget`, `currency`,
+`needed_by_date`, `priority` and `status`. These are derived from the chain's own
+facts — its awarded quote's category leaf, its cost centre's currency, its
+earliest quote date — so the requirement stays consistent with the documents
+beneath it rather than being invented independently.
 
 ## 5. Roll-up and currency
 
 Each entity trades in one currency (UK GBP, US USD, DE and IE EUR, IN INR,
-AE AED), and every cost centre inherits its entity's currency. So the roll-up
+AE AED), and every cost centre inherits its entity's currency, so the roll-up
 cost centre → business unit → entity is single-currency and must balance to the
 penny.
 
-The **group** total spans five currencies. Adding them requires FX, which is out
-of scope, so V07 verifies the roll-up per currency up to entity level and stops
-there. The cross-currency group total is deferred with V05 and named as such in
-the check's own detail string, not silently omitted.
+The **group** total spans five currencies. Adding them requires converting the
+document headers, which §3.3 defers, so V07 verifies the roll-up per currency up
+to entity level and stops there. The cross-currency group total is deferred with
+V05 and named in the check's own detail string, not silently omitted.
 
 ## 6. deal_id
 
 Documents are loaded with `deal_id`, `deal_name` and `deal_date` NULL. The build
 then invokes the product's own `src/services/deal_assignment_service.py` over the
-seeded documents.
+seeded documents. The correct grouping is known to the seeder — one chain is one
+deal — and is written to the answer key as expected truth, so C1 and C2 can
+compare the product's output against it.
 
-The correct grouping is known to the seeder — one chain is one deal — and is
-written to the answer key as expected truth, so C1 and C2 can compare the
-product's output against it.
-
-**Open risk.** It is not yet established that `deal_assignment_service` can run in
+**Open risk.** It is not established that `deal_assignment_service` can run in
 batch against an arbitrary target database rather than assuming `bp_sqldb` and a
 running scheduler. The implementation plan must verify this before depending on
-it. If it cannot, the fallback is to leave `deal_id` NULL, record V08 (screen
-queries return non-empty) as blocked with the reason named, and resolve it in
-Plan 3. The fallback must not be to stamp the identifiers.
+it. If it cannot, the fallback is to leave `deal_id` NULL, record V08 as blocked
+with the reason named, and resolve it in Plan 3. The fallback must not be to stamp
+the identifiers.
 
 ## 7. Testing
 
 - **Unit, no database:** every mapping produces its declared column count; row
-  builders emit correct types; the roll-up arithmetic balances on a fixture.
-- **Integration, scratch database only:** every mapped column exists on its
-  target table; every loaded row satisfies that table's declared required set
-  (the schema will not enforce this — see §4.1); row counts match; V04 and V07
-  pass; re-running the load is idempotent.
+  builders emit correct types; the roll-up arithmetic balances on a fixture; the
+  table classification is exhaustive.
+- **Integration, scratch database only:** every mapped column exists on its target
+  table; every loaded row satisfies that table's declared required set (the schema
+  will not enforce this — §4.1); row counts match; V04 and V07 pass; re-running
+  the load is idempotent; no live table is left unclassified.
 
-Integration tests target `bp_testdb_it` / `uicanvas_test_it`. They must never
-open a connection to `bp_testdb` or `uicanvas_test`; `test_scratch_isolation.py`
-enforces this, after an earlier `drop_first=True` clone in the test suite silently
-destroyed a completed build.
+Integration tests target `bp_testdb_it` / `uicanvas_test_it` and must never open a
+connection to `bp_testdb` or `uicanvas_test`. `test_scratch_isolation.py` enforces
+this, after a `drop_first=True` clone in the suite silently destroyed a completed
+build.
 
 ## 8. Acceptance criteria
 
 1. `python -m scripts.testdata.build --target bp_testdb --seed 42` loads every
-   table in §3.1 and reports its row counts.
-2. V04 passes: on every document not carrying a planted arithmetic defect, the
+   SEED and REFERENCE table and reports its row count.
+2. No table classified SEED or REFERENCE is left at zero rows unless its live
+   source is also empty.
+3. V04 passes: on every document not carrying a planted arithmetic defect, the
    line totals sum to the document total.
-3. V07 passes per currency: cost centre → business unit → entity balances to the
+4. V07 passes per currency: cost centre → business unit → entity balances to the
    penny.
-4. V05 and V06 still report `SKIP`, never `PASS`.
-5. Re-running the build produces identical row counts and content.
-6. `bp_sqldb` and `uicanvas` remain provably unchanged (V14).
-7. `deal_id` is either populated by the product's own service, or NULL with the
+5. V05 still reports `SKIP`, never `PASS`.
+6. Re-running the build produces identical row counts and content.
+7. `bp_sqldb` and `uicanvas` remain provably unchanged (V14).
+8. `deal_id` is either populated by the product's own service, or NULL with the
    reason recorded. It is never stamped by the seeder.
+9. The coverage workbook regenerates and shows no table in the UNCLEAR bucket.
