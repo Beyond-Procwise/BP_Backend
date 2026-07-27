@@ -86,3 +86,15 @@ lookup must happen in the data layer that builds its inputs, never inside the en
 
 - `docs/issues/2026-07-27-deal-assignment-does-not-scale.md`
 - `docs/superpowers/specs/2026-07-27-benchmark-price-pool-RESULTS.md`
+
+## Added evidence (2026-07-27, from the weak-link work)
+
+Measured on live `bp_sqldb`: of **147 priced quote lines across all 15 deals, only 2
+match any price-history point at all** — and that is with the evidence threshold
+relaxed all the way to 1 observation. At the normal threshold of 3, every one of the
+147 gates.
+
+So on live data the exact-string match rule is not merely imprecise; it almost never
+succeeds. The price pool and the quote lines are effectively two disconnected sets.
+This is the strongest single argument for entity resolution, and it makes the
+"measure before building" step above cheap to run: the population is 147 lines.
