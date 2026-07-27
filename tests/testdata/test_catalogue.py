@@ -92,3 +92,20 @@ def test_description_still_names_its_leaf():
     items = build_catalogue(42, _leaves(), _supplier_ids())
     for item in items[:100]:
         assert item.leaf.l5 in item.description
+
+
+def test_descriptions_carry_no_part_code():
+    """A part code stapled to the end reads as synthetic on a demo screen."""
+    for item in build_catalogue(42, _leaves(), _supplier_ids())[:200]:
+        assert item.item_id not in item.description
+        assert "ITM" not in item.description
+
+
+def test_units_suit_what_is_being_bought():
+    """A subscription is not sold by the tonne."""
+    services = {"Service Package", "Subscription", "Retainer", "Installation"}
+    goods_units = {"each", "box", "pack", "case", "metre", "tonne"}
+    for item in build_catalogue(42, _leaves(), _supplier_ids()):
+        noun = item.description.rsplit(" ", 1)[-1]
+        if any(item.description.endswith(s) for s in services):
+            assert item.unit_of_measure not in goods_units, item.description

@@ -33,6 +33,20 @@ SUPPLIER_TYPES = ("Service Provider", "Wholesaler", "Manufacturer", "Retailer", 
 LEGAL_STRUCTURES = ("PLC", "Ltd", "LLP", "Inc", "GmbH", "LLC")
 INCOTERMS = ("DAP", "DDP", "FOB", "CIF", "EXW")
 INSURANCE_TYPES = ("General Liability", "Product Liability", "Professional Indemnity", "Cyber")
+CONTACT_ROLES = (
+    "Account Manager", "Key Account Manager", "Client Director",
+    "Commercial Manager", "Sales Manager", "Customer Success Manager",
+    "Business Development Manager",
+)
+
+_CONTACT_FIRST_NAMES = (
+    "Alex", "Priya", "Sam", "Nadia", "Tom", "Elena", "Marcus", "Hannah",
+    "Rahul", "Sofia", "Daniel", "Aisha", "Chloe", "Omar", "Grace", "Lukas",
+)
+_CONTACT_LAST_NAMES = (
+    "Reed", "Osei", "Kaur", "Blake", "Moretti", "Whitfield", "Nowak", "Ibrahim",
+    "Lindgren", "Barnes", "Ferreira", "Hughes", "Delacroix", "Yilmaz",
+)
 
 # (country, weight, currency)
 COUNTRIES: tuple[tuple[str, int, str], ...] = (
@@ -143,6 +157,11 @@ def build_suppliers(seed: int, leaves: Sequence[TaxonomyLeaf]) -> list[Supplier]
             disambiguator += 1
         used_names.add(name)
 
+        contact_first = rng.choice(_CONTACT_FIRST_NAMES)
+        contact_last = rng.choice(_CONTACT_LAST_NAMES)
+        contact_name = f"{contact_first} {contact_last}"
+        contact_role = rng.choice(CONTACT_ROLES)
+
         country, currency = _country_for(rng)
         leaf = leaf_slots[index]
         tier = tier_slots[index]
@@ -197,9 +216,14 @@ def build_suppliers(seed: int, leaves: Sequence[TaxonomyLeaf]) -> list[Supplier]
             "edi_enabled": rng.random() < 0.28,
             "api_enabled": rng.random() < 0.19,
             "ariba_integrated": rng.random() < 0.11,
-            "contact_name_1": f"{rng.choice(('Alex', 'Priya', 'Sam', 'Nadia', 'Tom'))} {rng.choice(('Reed', 'Osei', 'Kaur', 'Blake', 'Moretti'))}",
-            "contact_role_1": "Account Manager",
-            "contact_email_1": f"sales@{stem.lower()}{suffix.lower()}.example",
+            "contact_name_1": contact_name,
+            "contact_role_1": contact_role,
+            # Addressed to the person, not a shared sales alias: every supplier
+            # showing the same mailbox reads as generated at a glance.
+            "contact_email_1": (
+                f"{contact_first.lower()}.{contact_last.lower()}"
+                f"@{stem.lower()}{suffix.lower()}.example"
+            ),
             "contact_phone_1": f"+44 20 {rng.randrange(1000, 9999)} {rng.randrange(1000, 9999)}",
             "contact_name_2": None,
             "contact_role_2": None,

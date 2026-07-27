@@ -93,3 +93,30 @@ def test_crosswalk_maps_every_supplier_once():
 def test_crosswalk_ddl_uses_bp_prefix_and_index_convention():
     assert "proc.bp_supplier_id_crosswalk" in CROSSWALK_DDL
     assert "ix_bp_supplier_id_crosswalk_uicanvas_supplier_id" in CROSSWALK_DDL
+
+
+def test_contacts_are_addressed_to_a_person_not_a_shared_alias():
+    """Every supplier showing sales@ reads as generated at a glance."""
+    suppliers = build_suppliers(42, _leaves())
+    emails = [s.columns["contact_email_1"] for s in suppliers]
+    assert not [e for e in emails if e.startswith("sales@")]
+
+    for supplier in suppliers[:200]:
+        first, last = supplier.columns["contact_name_1"].split(" ", 1)
+        local = supplier.columns["contact_email_1"].split("@")[0]
+        assert local == f"{first.lower()}.{last.lower()}"
+
+
+def test_contact_roles_vary_across_the_supplier_base():
+    suppliers = build_suppliers(42, _leaves())
+    roles = {s.columns["contact_role_1"] for s in suppliers}
+    assert len(roles) >= 5
+
+
+def test_supplier_domains_stay_on_the_reserved_example_tld():
+    """RFC 2606 reserves .example. A demo must not name a real company's domain
+    or send anything to a real mailbox."""
+    suppliers = build_suppliers(42, _leaves())
+    for supplier in suppliers[:200]:
+        assert supplier.columns["website_url"].endswith(".example")
+        assert supplier.columns["contact_email_1"].endswith(".example")

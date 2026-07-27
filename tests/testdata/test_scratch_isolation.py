@@ -20,6 +20,7 @@ ALLOWED = {
     "test_build.py",       # asserts parse_args defaults
     "test_guards.py",      # asserts the guard permits these names
     "test_schema.py",      # asserts SCHEMA_PAIRS maps live -> dataset databases
+    "test_snapshot.py",    # asserts snapshot.PAIRS and filenames; opens nothing
 }
 
 _TESTS = pathlib.Path(__file__).parent
