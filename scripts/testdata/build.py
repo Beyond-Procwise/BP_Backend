@@ -18,7 +18,7 @@ from scripts.testdata.defects import plant, write_answer_key
 from scripts.testdata.documents import build_chains
 from scripts.testdata.guards import UnsafeTargetError, assert_safe_target, snapshot_counts
 from scripts.testdata.org import build_business_units, build_cost_centres
-from scripts.testdata.reference import copy_reference, load_taxonomy
+from scripts.testdata.reference import copy_reference, load_fx_rates, load_taxonomy
 from scripts.testdata.schema import clone_schema
 from scripts.testdata.suppliers import (
     CROSSWALK_DDL,
@@ -117,7 +117,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     units = build_business_units(args.seed)
     centres = build_cost_centres(args.seed, units, leaves)
     items = build_catalogue(args.seed, leaves, [s.bp_supplier_id for s in suppliers])
-    chains = build_chains(args.seed, suppliers, items, centres, count=6000)
+    fx = load_fx_rates("bp_sqldb")
+    print(f"  FX snapshot: {len(fx)} currencies")
+    chains = build_chains(args.seed, suppliers, items, centres, fx=fx, count=6000)
     print(
         f"  {len(suppliers)} suppliers, {len(units)} business units, "
         f"{len(centres)} cost centres, {len(items)} catalogue items, "

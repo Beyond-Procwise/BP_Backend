@@ -5,6 +5,7 @@ from tests.testdata import SCRATCH_DB
 from scripts.testdata.reference import (
     REFERENCE_TABLES,
     copy_reference,
+    load_fx_rates,
     load_taxonomy,
 )
 
@@ -44,6 +45,15 @@ def test_taxonomy_has_six_families_and_five_populated_levels():
 
     for leaf in leaves:
         assert leaf.l1 and leaf.l2 and leaf.l3 and leaf.l4 and leaf.l5
+
+
+@pytest.mark.integration
+def test_fx_snapshot_is_one_moment_and_includes_the_majors():
+    rates = load_fx_rates("bp_sqldb")
+    for code in ("USD", "GBP", "EUR", "INR", "AED"):
+        assert code in rates, code
+        assert rates[code] > 0
+    assert rates["USD"] == pytest.approx(1.0)
 
 
 @pytest.mark.integration

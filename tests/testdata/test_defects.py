@@ -13,6 +13,8 @@ from scripts.testdata.org import build_business_units, build_cost_centres
 from scripts.testdata.reference import TaxonomyLeaf
 from scripts.testdata.suppliers import build_suppliers
 
+FX = {"USD": 1.0, "GBP": 0.79, "EUR": 0.92, "INR": 83.2, "AED": 3.6725}
+
 
 def _build(chain_count: int):
     leaves = [
@@ -28,7 +30,7 @@ def _build(chain_count: int):
     items = build_catalogue(42, leaves, [s.bp_supplier_id for s in suppliers])
     units = build_business_units(42)
     centres = build_cost_centres(42, units, leaves)
-    chains = build_chains(42, suppliers, items, centres, count=chain_count)
+    chains = build_chains(42, suppliers, items, centres, fx=FX, count=chain_count)
     return chains, centres
 
 

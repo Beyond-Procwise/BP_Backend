@@ -83,6 +83,28 @@ def _columns(conn, schema: str, table: str) -> list[str]:
         return [row[0] for row in cur.fetchall()]
 
 
+def load_fx_rates(source_db: str) -> dict[str, float]:
+    """Currency code -> USD-based rate, from the newest snapshot only.
+
+    bp_fx_rates accumulates snapshots; mixing two of them would make the same
+    currency convert two ways in one build. The build log records which
+    snapshot was used, because a different snapshot means a different checksum.
+    """
+    conn = connect(source_db)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select currency, rate from proc.bp_fx_rates
+                 where fetched_at = (select max(fetched_at) from proc.bp_fx_rates)
+                   and base_currency = 'USD'
+                """
+            )
+            return {code: float(rate) for code, rate in cur.fetchall()}
+    finally:
+        conn.close()
+
+
 def copy_reference(source_db: str, target_db: str) -> dict[str, int]:
     """Copy every reference table for source_db into target_db. Returns row counts."""
     assert_safe_target(target_db)

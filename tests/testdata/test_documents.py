@@ -4,10 +4,60 @@ from decimal import Decimal
 import pytest
 
 from scripts.testdata.catalogue import build_catalogue
-from scripts.testdata.documents import build_chains
+from scripts.testdata.documents import build_chains, convert
 from scripts.testdata.org import ENTITIES, build_business_units, build_cost_centres
 from scripts.testdata.reference import TaxonomyLeaf
 from scripts.testdata.suppliers import build_suppliers
+
+# Distinct from the FX table used by _fixture below: these rates are chosen so
+# the expected values in the arithmetic assertions are easy to hand-verify.
+CONVERT_FX = {"USD": 1.0, "GBP": 0.8, "EUR": 0.92}
+
+
+def test_convert_goes_through_the_usd_base():
+    # 100 GBP -> USD is 100 / 0.8 = 125; -> EUR is 125 * 0.92 = 115.00
+    assert convert(Decimal("100.00"), "EUR", CONVERT_FX) == Decimal("115.00")
+
+
+def test_convert_is_identity_for_sterling():
+    assert convert(Decimal("100.00"), "GBP", CONVERT_FX) == Decimal("100.00")
+
+
+def test_convert_rounds_half_up_to_the_penny():
+    assert convert(Decimal("10.00"), "EUR", CONVERT_FX) == Decimal("11.50")
+
+
+def test_unknown_currency_is_an_error_not_a_silent_passthrough():
+    with pytest.raises(KeyError):
+        convert(Decimal("100.00"), "ZZZ", CONVERT_FX)
+
+
+FX = {"USD": 1.0, "GBP": 0.79, "EUR": 0.92, "INR": 83.2, "AED": 3.6725}
+
+
+def _fixture(chain_count: int = 200):
+    leaves = [
+        TaxonomyLeaf(
+            l1="IT & Technology", l2=f"G{i}", l3=f"C{i}", l4=f"S{i}", l5=f"Leaf{i}",
+            unspsc_code=str(40000000 + i), esg_impact="Low", category_status="Active",
+            spend_classification="Direct", category_risk_rating="Minimal",
+            audit_frequency="Annually", policy_coverage="Full",
+        )
+        for i in range(60)
+    ]
+    suppliers = build_suppliers(42, leaves)
+    items = build_catalogue(42, leaves, [s.bp_supplier_id for s in suppliers])
+    units = build_business_units(42)
+    centres = build_cost_centres(42, units, leaves)
+    return build_chains(42, suppliers, items, centres, fx=FX, count=chain_count)
+
+
+def test_line_prices_are_denominated_in_the_line_currency():
+    chains = _fixture(50)
+    for chain in chains:
+        for quote in chain.quotes:
+            for line in quote.lines:
+                assert line.currency == quote.currency
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +82,7 @@ def _world():
 @pytest.fixture(scope="module")
 def chains(_world):
     suppliers, items, centres = _world
-    return build_chains(42, suppliers, items, centres, count=200)
+    return build_chains(42, suppliers, items, centres, fx=FX, count=200)
 
 
 def test_builds_the_requested_number_of_chains(chains):
@@ -98,7 +148,7 @@ def test_invoice_dates_never_precede_their_purchase_order(chains):
 def test_document_ids_are_globally_unique(_world):
     suppliers, items, centres = _world
     seen: set[str] = set()
-    for chain in build_chains(42, suppliers, items, centres, count=400):
+    for chain in build_chains(42, suppliers, items, centres, fx=FX, count=400):
         for document in [*chain.quotes, *chain.invoices]:
             assert document.doc_id not in seen
             seen.add(document.doc_id)
@@ -109,8 +159,8 @@ def test_document_ids_are_globally_unique(_world):
 
 def test_chains_are_deterministic(_world):
     suppliers, items, centres = _world
-    first = build_chains(42, suppliers, items, centres, count=100)
-    second = build_chains(42, suppliers, items, centres, count=100)
+    first = build_chains(42, suppliers, items, centres, fx=FX, count=100)
+    second = build_chains(42, suppliers, items, centres, fx=FX, count=100)
     assert [c.requirement_id for c in first] == [c.requirement_id for c in second]
     assert [c.awarded_supplier_id for c in first] == [
         c.awarded_supplier_id for c in second

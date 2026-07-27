@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from scripts.testdata.catalogue import CatalogueItem, price_on
 from scripts.testdata.org import ENTITIES, CostCentre
@@ -72,14 +72,28 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def convert(amount: Decimal, to_currency: str, fx: Mapping[str, float]) -> Decimal:
+    """Sterling amount -> to_currency, via the USD base the FX table uses.
+
+    Raises KeyError on an unknown currency: a missing rate must fail loudly
+    rather than silently label a sterling figure as something else, which is
+    the bug this function exists to fix.
+    """
+    if to_currency == "GBP":
+        return _money(amount)
+    usd = Decimal(str(amount)) / Decimal(str(fx["GBP"]))
+    return _money(usd * Decimal(str(fx[to_currency])))
+
+
 def _build_lines(
-    rng, items: Sequence[CatalogueItem], when: date, seed: int, currency: str
+    rng, items: Sequence[CatalogueItem], when: date, seed: int, currency: str,
+    fx: Mapping[str, float],
 ) -> tuple[LineItem, ...]:
     count = rng.randint(2, 9)
     lines: list[LineItem] = []
     for number in range(1, count + 1):
         item = items[rng.randrange(len(items))]
-        unit_price = price_on(item, when, seed=seed)
+        unit_price = convert(price_on(item, when, seed=seed), currency, fx)
         quantity = Decimal(str(rng.choice([1, 1, 2, 3, 4, 5, 8, 10, 12, 25, 40])))
         line_total = _money(quantity * unit_price)
         lines.append(
@@ -131,6 +145,7 @@ def build_chains(
     catalogue_items: Sequence[CatalogueItem],
     cost_centres: Sequence[CostCentre],
     *,
+    fx: Mapping[str, float],
     count: int = 6000,
 ) -> list[Chain]:
     """Build `count` requirement-to-invoice chains."""
@@ -149,7 +164,7 @@ def build_chains(
         quotes: list[Document] = []
         for position, supplier in enumerate(quoting, start=1):
             quote_date = requirement_date + timedelta(days=rng.randint(3, 21))
-            lines = _build_lines(rng, catalogue_items, quote_date, seed, centre.currency)
+            lines = _build_lines(rng, catalogue_items, quote_date, seed, centre.currency, fx)
             quotes.append(
                 _assemble(
                     doc_id=f"QUO{index:06d}-{position}",
