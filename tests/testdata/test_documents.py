@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from scripts.testdata.catalogue import build_catalogue
+from scripts.testdata.catalogue import build_catalogue, price_on
 from scripts.testdata.documents import build_chains, convert
 from scripts.testdata.org import ENTITIES, build_business_units, build_cost_centres
 from scripts.testdata.reference import TaxonomyLeaf
@@ -24,7 +24,13 @@ def test_convert_is_identity_for_sterling():
 
 
 def test_convert_rounds_half_up_to_the_penny():
-    assert convert(Decimal("10.00"), "EUR", CONVERT_FX) == Decimal("11.50")
+    # GBP:1.0 makes the USD leg an identity, so 10.00 * 1.1005 lands the raw
+    # result exactly on a rounding boundary: 11.005. ROUND_HALF_UP gives 11.01;
+    # banker's rounding (ROUND_HALF_EVEN, e.g. plain round()) gives 11.00. The
+    # original fixture (10.00 @ 0.8 -> 0.92 = 11.50 exactly) never touched a
+    # boundary, so it could not have told the two rounding modes apart.
+    fx = {"GBP": 1.0, "EUR": 1.1005}
+    assert convert(Decimal("10.00"), "EUR", fx) == Decimal("11.01")
 
 
 def test_unknown_currency_is_an_error_not_a_silent_passthrough():
@@ -58,6 +64,54 @@ def test_line_prices_are_denominated_in_the_line_currency():
         for quote in chain.quotes:
             for line in quote.lines:
                 assert line.currency == quote.currency
+
+
+def _fixture_with_items(chain_count: int = 200):
+    """Same construction as _fixture, but also returns the catalogue so a test
+    can look up the raw sterling price behind a specific line's item_id."""
+    leaves = [
+        TaxonomyLeaf(
+            l1="IT & Technology", l2=f"G{i}", l3=f"C{i}", l4=f"S{i}", l5=f"Leaf{i}",
+            unspsc_code=str(40000000 + i), esg_impact="Low", category_status="Active",
+            spend_classification="Direct", category_risk_rating="Minimal",
+            audit_frequency="Annually", policy_coverage="Full",
+        )
+        for i in range(60)
+    ]
+    suppliers = build_suppliers(42, leaves)
+    items = build_catalogue(42, leaves, [s.bp_supplier_id for s in suppliers])
+    units = build_business_units(42)
+    centres = build_cost_centres(42, units, leaves)
+    chains = build_chains(42, suppliers, items, centres, fx=FX, count=chain_count)
+    return chains, items
+
+
+def test_line_unit_price_is_actually_converted_not_just_labelled():
+    """Regression test for the bug this task fixes.
+
+    line.currency == quote.currency (above) was already true before the fix --
+    the bug was never the label, it was the magnitude staying sterling under a
+    foreign label. This asserts the persisted unit_price equals convert() of
+    the raw sterling price_on() figure, AND that it differs from the raw
+    sterling figure -- the second assertion is the one that catches the bug.
+    """
+    chains, items = _fixture_with_items(200)
+    items_by_id = {item.item_id: item for item in items}
+
+    checked = 0
+    for chain in chains:
+        for quote in chain.quotes:
+            if quote.currency == "GBP":
+                continue
+            for line in quote.lines:
+                item = items_by_id[line.item_id]
+                raw_sterling = price_on(item, quote.doc_date, seed=42)
+                expected = convert(raw_sterling, line.currency, FX)
+                assert line.unit_price == expected
+                assert line.unit_price != raw_sterling
+                checked += 1
+
+    assert checked > 0, "fixture produced no non-sterling lines to check"
 
 
 @pytest.fixture(scope="module")
