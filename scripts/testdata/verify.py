@@ -253,83 +253,69 @@ def check_benchmark_computes(target_db: str) -> CheckResult:
     gate and reach HIGH confidence -- otherwise every benchmark request still
     gates, exactly as it did before the pool existed.
 
+    Built on the PRODUCTION loader (services.benchmark_live.load_benchmark_pool
+    / _to_points) rather than a hand-rolled query. An earlier version of this
+    check queried bp_po_line_items_trgt directly and hard-coded currency to
+    "GBP" on every point -- which let it pool dollars with pounds and report a
+    HIGH confidence that meant nothing, on a check whose entire job is to
+    prove the pool is currency-sound. A verification check that reimplements
+    the loader can also silently drift from it and end up verifying code that
+    no longer resembles what actually runs; going through the real loader
+    means this check exercises the real path, including currency coalesced
+    from the document header (never hard-coded) and PO+invoice lines pooled
+    together, exactly as production does.
+
     src/ is only added to sys.path inside this function, not at module scope,
     so importing this file never requires the benchmark engine to be
     importable for callers (e.g. the seeder) that don't have src/ on path.
     """
     import sys
+    from collections import defaultdict
+    from statistics import median
 
     if "src" not in sys.path:
         sys.path.insert(0, "src")
     from services.benchmark.engine import compute_benchmark
-    from services.benchmark.models import BenchmarkPoint, QuoteLine
+    from services.benchmark.models import QuoteLine
+    from services.benchmark_live import _to_points, load_benchmark_pool
 
     conn = connect(target_db)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                select item_description, unit_of_measure, count(*) n
-                  from proc.bp_po_line_items_trgt
-                 where unit_price is not null
-                 group by 1, 2
-                 order by n desc
-                 limit 1
-                """
-            )
-            row = cur.fetchone()
-            if not row:
-                return CheckResult(
-                    ref="V15", passed=False,
-                    detail="no purchase-order lines to benchmark",
-                )
-            item, uom, n = row
-            cur.execute(
-                """
-                select po_line_id, unit_price, quantity
-                  from proc.bp_po_line_items_trgt
-                 where item_description = %s and unit_of_measure = %s
-                   and unit_price is not null
-                """,
-                (item, uom),
-            )
-            price_rows = cur.fetchall()
+            pool_rows = load_benchmark_pool(cur)
     finally:
         conn.close()
 
-    item_name = item.strip().lower()
-    unit = (uom or "each").strip().lower()
-    points = [
-        BenchmarkPoint(
-            benchmark_point_id=str(pid),
-            source="internal",
-            item_name=item_name,
-            uom=unit,
-            currency="GBP",
-            include=True,
-            raw_unit_price=float(price),
-            source_weight=1.0,
-            specification_score=5.0,
-            location_cost_index=1.0,
-            sla_score=5.0,
-            # Never coerce a missing quantity to 0.0 -- that misrepresents an
-            # absent observation as a zero-quantity one.
-            historical_quantity=float(qty) if qty is not None else None,
-            index_value_at_price_date=1.0,
+    if not pool_rows:
+        return CheckResult(
+            ref="V15", passed=False, detail="no price-history pool to benchmark",
         )
-        for pid, price, qty in price_rows
-    ]
+
+    points = _to_points(pool_rows)
+
+    # Busiest real match key -- exact (item, uom, currency), the same triple
+    # the engine matches on. No currency is assumed; whatever the loader
+    # coalesced from the line or its document header is what groups here.
+    groups: dict[tuple[str, str, str], list] = defaultdict(list)
+    for point in points:
+        groups[(point.item_name, point.uom, point.currency)].append(point)
+    key, group = max(groups.items(), key=lambda kv: len(kv[1]))
+    item_name, uom, currency = key
+
+    quantities = [p.historical_quantity for p in group if p.historical_quantity is not None]
+    quote_quantity = median(quantities) if quantities else 1.0
+
     quote = QuoteLine(
         deal_id="verify",
         item_name=item_name,
-        quantity=10,
-        uom=unit,
-        currency="GBP",
+        quantity=quote_quantity,
+        uom=uom,
+        currency=currency,
         location="United Kingdom",
         requested_spec_score=5.0,
         requested_sla_score=5.0,
         index_id="",
-        quoted_unit_price=float(price_rows[0][1]),
+        quoted_unit_price=group[0].raw_unit_price,
     )
     result = compute_benchmark(quote, points, {}, {})
     passed = not result.gated and result.confidence == "HIGH"
@@ -337,7 +323,8 @@ def check_benchmark_computes(target_db: str) -> CheckResult:
         ref="V15",
         passed=passed,
         detail=(
-            f"'{item[:40]}' / {uom}: n_total={result.n_total} "
-            f"confidence={result.confidence} gated={result.gated}"
+            f"'{item_name[:40]}' / {uom} / {currency}: "
+            f"n_total={result.n_total} confidence={result.confidence} "
+            f"gated={result.gated} (largest currency-accurate group={len(group)})"
         ),
     )
