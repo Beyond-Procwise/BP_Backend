@@ -16,7 +16,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from scripts.testdata.coverage import BACKUP, OUTPUT as BUCKET_OUTPUT, SEED, classify
+from scripts.testdata.coverage import (
+    BACKUP, OUTPUT as BUCKET_OUTPUT, SEED, STAGES, classify, stage_of,
+)
 from scripts.testdata.db import connect
 from scripts.testdata.reference import REFERENCE_TABLES
 from scripts.testdata.suppliers import SUPPLIER_COLUMNS
@@ -155,7 +157,7 @@ def build() -> Path:
 
     _write_header(
         coverage,
-        ["Database", "Table", "Columns", "Live rows", "Test-DB rows", "Plan", "Why", "Status", "What fills it"],
+        ["Database", "Table", "Columns", "Live rows", "Test-DB rows", "Plan", "Stage", "Why", "Status", "What fills it"],
     )
     _write_header(
         schema,
@@ -198,6 +200,7 @@ def build() -> Path:
                     live_counts.get(table, -1),
                     target_counts.get(table, -1),
                     BUCKET_MEANING.get(verdict.bucket, verdict.bucket),
+                    (lambda st: f"{st.ref} {st.name}" if st else "")(stage_of(table)),
                     verdict.reason,
                     status,
                     note,
@@ -234,7 +237,7 @@ def build() -> Path:
             for t in tables
         ]
 
-    _autosize(coverage, {1: 14, 2: 38, 3: 9, 4: 12, 5: 13, 6: 44, 7: 40, 8: 32, 9: 44})
+    _autosize(coverage, {1: 14, 2: 38, 3: 9, 4: 12, 5: 13, 6: 44, 7: 34, 8: 40, 9: 32, 10: 44})
     _autosize(schema, {1: 14, 2: 38, 3: 5, 4: 34, 5: 24, 6: 9, 7: 30, 8: 44, 9: 32})
 
     # --- Summary -----------------------------------------------------------
@@ -292,6 +295,15 @@ def build() -> Path:
          ("uicanvas", "item"), ("uicanvas", "bp_products")],
         focus,
     )
+
+    stages = book.create_sheet("Delivery Stages")
+    _write_header(stages, ["Stage", "Name", "Tables", "Goal"])
+    for stage in STAGES:
+        stages.append([stage.ref, stage.name, len(stage.tables), stage.goal])
+        for table in stage.tables:
+            stages.append(["", "", "", f"    {table}"])
+        stages.append([])
+    _autosize(stages, {1: 8, 2: 40, 3: 8, 4: 96})
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     book.save(OUTPUT_PATH)

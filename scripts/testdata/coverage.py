@@ -28,6 +28,13 @@ REFERENCE = "REFERENCE"
 SEED = "SEED"
 UNCLEAR = "UNCLEAR"
 
+# Real tables whose names collide with a backup pattern. Checked first: these
+# join the two databases' identifier conventions and are current, not historical.
+_NEVER_BACKUP = frozenset({
+    "sup_mapping_inv_new", "po_mapping_inv_new",
+    "inv_mapping_inv_itms_new", "item_mapping_inv_itms_new",
+})
+
 # Dated or duplicated copies. Ordered most-specific first.
 _BACKUP_PATTERNS = (
     r"_bkp(_|$)", r"_bkup(_|$)", r"_backup(_|$)", r"_bkp$", r"_old(_|$)", r"_old$",
@@ -141,6 +148,9 @@ def classify(table: str) -> Classification:
     seeded table is still a dated copy."""
     name = table.lower()
 
+    if name in _NEVER_BACKUP:
+        return Classification(SEED, "business data the seeder synthesises")
+
     for pattern in _BACKUP_PATTERNS:
         if re.search(pattern, name):
             return Classification(BACKUP, "historical or dated copy")
@@ -158,6 +168,83 @@ def classify(table: str) -> Classification:
         return Classification(SEED, "business data the seeder synthesises")
 
     return Classification(UNCLEAR, "no confident classification")
+
+
+@dataclass(frozen=True)
+class Stage:
+    ref: str
+    name: str
+    goal: str
+    tables: tuple[str, ...]
+
+
+# Delivery order. Each stage stands alone: it loads, verifies and can be reviewed
+# before the next begins. Later stages depend on earlier ones for foreign keys --
+# documents reference cost centres, so the organisation lands first.
+STAGES: tuple[Stage, ...] = (
+    Stage(
+        "S1", "Organisation and catalogue",
+        "Cost centres, business units and the priced catalogue. Unblocks the "
+        "roll-up check (V07) and gives every document line something to resolve to.",
+        ("business_unit", "cost_centre", "item"),
+    ),
+    Stage(
+        "S2", "Supplier master and reference data",
+        "The supplier master moves into the staged loader (Plan 1 already writes "
+        "bp_supplier and supplier; uicanvas.bp_supplier is still empty), joined by "
+        "the supplier inputs the product reads: risk, ESG, third-party risk "
+        "management and contacts. Rankings and reviews stay out -- the product "
+        "concludes those.",
+        ("bp_supplier", "supplier", "bp_tprm_supplier", "supplier_risk_scores",
+         "esg_data", "contact", "bp_contact"),
+    ),
+    Stage(
+        "S3", "Core documents in bp_sqldb",
+        "Quotes, purchase orders and invoices across all three tiers, with their "
+        "line items and the requirements above them. The bulk of the dataset.",
+        ("bp_requirement",
+         "bp_quote_raw", "bp_quote_stg", "bp_quote_trgt",
+         "bp_quote_line_items_raw", "bp_quote_line_items_stg", "bp_quote_line_items_trgt",
+         "bp_purchase_order_raw", "bp_purchase_order_stg", "bp_purchase_order_trgt",
+         "bp_po_line_items_raw", "bp_po_line_items_stg", "bp_po_line_items_trgt",
+         "bp_invoice_raw", "bp_invoice_stg", "bp_invoice_trgt",
+         "bp_invoice_line_items_raw", "bp_invoice_line_items_stg",
+         "bp_invoice_line_items_trgt",
+         "raw_invoice", "raw_purchase_order", "raw_quotes"),
+    ),
+    Stage(
+        "S4", "uicanvas documents and identifier maps",
+        "The document tables the SpendIQ screens read, plus the maps joining the "
+        "two databases' differing identifier conventions.",
+        ("bp_invoice", "bp_invoice_trgt", "bp_invoice_line_items",
+         "bp_invoice_line_items_trgt", "bp_purchase_order", "bp_purchase_order_trgt",
+         "bp_po_line_items", "bp_po_line_items_trgt", "bp_quote", "bp_quote_trgt",
+         "bp_quote_bp", "bp_quote_line_items", "bp_quote_line_items_trgt",
+         "invoice", "invoice_line_items", "purchase_order", "po_line_items",
+         "po_items", "quote_uc", "quote_supplier",
+         "sup_mapping", "sup_mapping_inv_new", "po_mapping", "po_mapping_inv_new",
+         "po_supplier_mapping", "old_new_supplier_mapping",
+         "inv_mapping_inv_itms_new", "item_mapping_inv_itms_new"),
+    ),
+    Stage(
+        "S5", "Contracts, verification and deal assignment",
+        "Contracts -- which the live corpus has none of, so obligation extraction "
+        "has never run against data -- then the V04 and V07 checks, and handing "
+        "grouping to the product's own service.",
+        ("bp_contracts", "bp_contract_raw", "raw_contracts",
+         "contract", "contracts", "contract_id"),
+    ),
+)
+
+STAGE_BY_REF: dict[str, Stage] = {stage.ref: stage for stage in STAGES}
+
+
+def stage_of(table: str) -> Stage | None:
+    """Which delivery stage loads this table, if any."""
+    for stage in STAGES:
+        if table in stage.tables:
+            return stage
+    return None
 
 
 def buckets(tables: list[str]) -> dict[str, list[str]]:

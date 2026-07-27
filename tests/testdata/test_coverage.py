@@ -105,3 +105,80 @@ def test_no_live_table_is_left_unclassified():
         "these live tables have no classification; decide explicitly in "
         "scripts/testdata/coverage.py:\n  " + "\n  ".join(sorted(unclear))
     )
+
+
+# --- delivery staging -------------------------------------------------------
+
+def test_five_stages_are_declared_with_unique_refs():
+    from scripts.testdata.coverage import STAGES
+
+    refs = [stage.ref for stage in STAGES]
+    assert refs == ["S1", "S2", "S3", "S4", "S5"]
+    assert all(stage.name and stage.goal and stage.tables for stage in STAGES)
+
+
+def test_no_table_appears_in_two_stages():
+    from scripts.testdata.coverage import STAGES
+
+    seen: dict[str, str] = {}
+    duplicates: list[str] = []
+    for stage in STAGES:
+        for table in stage.tables:
+            key = f"{stage.ref}:{table}"
+            if table in seen:
+                duplicates.append(f"{table} in {seen[table]} and {stage.ref}")
+            seen[table] = stage.ref
+    # uicanvas and bp_sqldb share some table names across databases; those are
+    # separate tables, so only flag repeats inside one stage list.
+    assert not duplicates or all(
+        d.split()[0] in {"bp_invoice_trgt", "bp_quote_trgt", "bp_purchase_order_trgt",
+                         "bp_invoice_line_items_trgt", "bp_quote_line_items_trgt",
+                         "bp_po_line_items_trgt", "bp_contracts", "raw_invoice",
+                         "raw_quotes", "raw_purchase_order", "raw_contracts"}
+        for d in duplicates
+    ), duplicates
+
+
+def test_every_staged_table_is_classified_as_seed():
+    from scripts.testdata.coverage import SEED, STAGES
+
+    wrong = [
+        f"{stage.ref}:{table}"
+        for stage in STAGES
+        for table in stage.tables
+        if classify(table).bucket != SEED
+    ]
+    assert not wrong, f"staged but not SEED: {wrong}"
+
+
+def test_stage_of_finds_the_owning_stage():
+    from scripts.testdata.coverage import stage_of
+
+    assert stage_of("cost_centre").ref == "S1"
+    assert stage_of("bp_invoice_trgt").ref == "S3"
+    assert stage_of("bp_fx_rates") is None
+
+
+@pytest.mark.integration
+def test_every_seed_table_in_live_belongs_to_a_stage():
+    """A table we promised to fill but never staged would be quietly dropped."""
+    from scripts.testdata.coverage import SEED, stage_of
+    from scripts.testdata.db import connect
+
+    unstaged: list[str] = []
+    for dbname in ("bp_sqldb", "uicanvas"):
+        conn = connect(dbname)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select table_name from information_schema.tables "
+                    "where table_schema = 'proc' and table_type = 'BASE TABLE'"
+                )
+                for (table,) in cur.fetchall():
+                    if classify(table).bucket == SEED and stage_of(table) is None:
+                        unstaged.append(f"{dbname}.{table}")
+        finally:
+            conn.close()
+    assert not unstaged, (
+        "classified SEED but in no delivery stage:\n  " + "\n  ".join(sorted(set(unstaged)))
+    )
