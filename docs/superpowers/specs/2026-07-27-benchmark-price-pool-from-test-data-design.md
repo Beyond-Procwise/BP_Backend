@@ -245,13 +245,37 @@ Two intentional divergences, both already covered by tests:
   and returns 0 for four of the five sample deals. Ours is a true median across
   the pooled set. Selecting the median method will therefore not reproduce the
   workbook.
-- **One-off costs.** The workbook's formula adds delivery, implementation,
-  support and risk once per order; the description written in that same column
-  says to multiply them by quantity. The two contradict each other. We follow
-  the formula, which is also what the cached values reflect. **This remains an
-  open question for the business** — on a 220-unit line it is the difference
-  between one delivery charge and 220. Recorded here rather than silently
-  settled; the code does not change until someone decides.
+- **One-off costs — SETTLED 2026-07-27: add once, do not multiply by quantity.**
+  The workbook's formula adds delivery, implementation, support and risk once
+  per order; the description written in that same column says to multiply them
+  by quantity. The two contradict each other, and the formula wins.
+
+  The choice changes less than it appears. The charges are added to the
+  quoted total *and* the benchmark total, so they cancel: a 220-unit line at
+  £120 against a £102 benchmark returns a total cost gap of £3,978 with no
+  charges, with £1,750 added once, and with £1,750 multiplied by quantity. Unit
+  variance is likewise unchanged. Only the two displayed absolute totals move.
+
+  On the merits, adding once is right for three reasons. The field names all
+  denote one-off charges — multiplying a £500 negotiated rebate by 220 units to
+  reach £110,000 is not what anyone means by a rebate. The formula is the
+  operative logic Excel has been computing all along, so it produced the numbers
+  the author has been reviewing; the description is an annotation beside it.
+  And a charge that genuinely scales with quantity is not a separate charge at
+  all — it is part of the unit price, and belongs inside the figure being
+  benchmarked.
+
+  The question is dormant in production regardless: nothing populates these five
+  fields. `benchmark_live.py` builds every quote line without them so all five
+  default to zero, and no line-item table has a delivery, implementation,
+  support, risk or discount column to populate them from.
+
+  **Consequences.** The engine does not change. The workbook's column
+  description is corrected so the two stop contradicting each other. When these
+  charges are eventually extracted from real documents, the rule is that
+  extraction normalises to a one-off amount: a document saying "delivery £250
+  per order" contributes £250 once, and one saying "£3 per unit delivery"
+  belongs in the unit price, never as a separate charge.
 
 ### 5.2 Purchase-order currency is dropped (defect)
 
@@ -487,6 +511,7 @@ key gives us a rare chance to measure precision and recall against known truth
 rather than guess at them. Worth doing as part of the first run; a detector
 whose hit rate is unknown is not finished.
 
-**The one-off cost question in §5.1 is unresolved.** Until it is settled, total
-cost gap on multi-unit lines carries whichever interpretation the workbook's
-formula encodes. It is stated, not hidden, and no code changes on a guess.
+**The one-off cost question is settled** (§5.1): charges are added once, the
+engine is unchanged, and the workbook's contradictory column description is
+corrected. No risk remains beyond making sure that correction actually happens —
+it is a task in the plan, not a note.
