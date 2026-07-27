@@ -316,3 +316,72 @@ def test_missing_historical_quantity_is_excluded_not_zeroed():
 
     assert compute_benchmark(quote, known, {}, {}).ref_quantity == 100.0
     assert compute_benchmark(quote, with_gap, {}, {}).ref_quantity == 100.0
+
+
+def test_missing_quantity_drops_its_weight_not_just_its_value():
+    """Weight preservation, made visible with non-uniform weights: a
+    None-quantity point must remove its weight from the denominator too,
+    not just be skipped from the numerator as if it carried zero weight.
+
+    Points: qty=100 @ weight 1.0, qty=200 @ weight 3.0, qty=None @ weight 5.0.
+    Correct (weight dropped): (100*1 + 200*3) / (1+3) = 175.0.
+    Wrong (weight kept, e.g. treated as a zero contribution over all 9
+    weight): (100*1 + 200*3 + 0*5) / 9 = 77.78 — a different, wrong number.
+    """
+    from services.benchmark.engine import compute_benchmark
+    from services.benchmark.models import BenchmarkPoint, QuoteLine
+
+    def point(pid, qty, weight):
+        return BenchmarkPoint(
+            benchmark_point_id=pid, source="internal", item_name="widget",
+            uom="each", currency="GBP", include=True, raw_unit_price=100.0,
+            source_weight=weight, specification_score=5.0,
+            location_cost_index=1.0, sla_score=5.0, historical_quantity=qty,
+            index_value_at_price_date=1.0,
+        )
+
+    quote = QuoteLine(
+        deal_id="D", item_name="widget", quantity=100, uom="each",
+        currency="GBP", location="UK", requested_spec_score=5,
+        requested_sla_score=5, index_id="", quoted_unit_price=100.0,
+    )
+    points = [
+        point("a", 100.0, 1.0),
+        point("b", 200.0, 3.0),
+        point("c", None, 5.0),
+    ]
+    assert compute_benchmark(quote, points, {}, {}).ref_quantity == 175.0
+
+
+def test_all_missing_quantity_falls_back_to_neutral_volume_not_zero_or_crash():
+    """When every matched point's quantity is unknown, ref_quantity has
+    nothing to average and must be None — not a fabricated 0.0. The volume
+    factor then divides quantity by None; that must fail SAFE to the
+    existing neutral-factor contract (1.0), not raise out of
+    compute_benchmark and not silently become some other number. The line
+    still benchmarks on price alone: gated stays False and a
+    final_benchmark is produced."""
+    from services.benchmark.engine import compute_benchmark
+    from services.benchmark.models import BenchmarkPoint, QuoteLine
+
+    def point(pid):
+        return BenchmarkPoint(
+            benchmark_point_id=pid, source="internal", item_name="widget",
+            uom="each", currency="GBP", include=True, raw_unit_price=100.0,
+            source_weight=1.0, specification_score=5.0, location_cost_index=1.0,
+            sla_score=5.0, historical_quantity=None,
+            index_value_at_price_date=1.0,
+        )
+
+    quote = QuoteLine(
+        deal_id="D", item_name="widget", quantity=100, uom="each",
+        currency="GBP", location="UK", requested_spec_score=5,
+        requested_sla_score=5, index_id="", quoted_unit_price=100.0,
+    )
+    points = [point("a"), point("b"), point("c")]
+    result = compute_benchmark(quote, points, {}, {})
+
+    assert result.ref_quantity is None
+    assert result.volume_adjustment == 1.0
+    assert result.gated is False
+    assert result.final_benchmark is not None
