@@ -163,7 +163,11 @@ def check_live_unchanged(live_before: Mapping[str, int]) -> CheckResult:
 
 
 def run_all(
-    target_db: str, uicanvas_target_db: str, *, live_before: Mapping[str, int]
+    target_db: str,
+    uicanvas_target_db: str,
+    *,
+    live_before: Mapping[str, int],
+    arithmetic_exempt: set[str] | None = None,
 ) -> list[CheckResult]:
     """Run every implemented check. Unimplemented ones report as not-yet-run.
 
@@ -176,6 +180,7 @@ def run_all(
         check_no_orphans(target_db),
         check_crosswalk(target_db, uicanvas_target_db),
         check_rollup(uicanvas_target_db),
+        check_line_totals(target_db, exempt=arithmetic_exempt or set()),
     ]
     implemented = {result.ref for result in results} | {"V14"}
     for check in CHECKS:
@@ -185,3 +190,56 @@ def run_all(
             )
     results.append(check_live_unchanged(live_before))
     return sorted(results, key=lambda result: result.ref)
+
+
+# Defects that deliberately break document arithmetic. V04 must exempt their
+# subjects, or the check would fail on data that is wrong on purpose.
+ARITHMETIC_DEFECT_REFS: tuple[str, ...] = ("D03", "D04", "D06", "D20")
+
+
+def check_line_totals(target_db: str, exempt: set[str] | None = None) -> CheckResult:
+    """V04: line totals sum to the document total on every clean document.
+
+    `exempt` carries the documents the answer key says were deliberately broken.
+    Passing it is what separates "the loader is correct" from "no defect was
+    planted"; without it the check would fail on data that is wrong by design.
+    """
+    exempt = exempt or set()
+    conn = connect(target_db)
+    mismatched: list[str] = []
+    try:
+        for header, lines, key, total, line_total in (
+            ("bp_quote_trgt", "bp_quote_line_items_trgt", "quote_id",
+             "total_amount", "line_total"),
+            ("bp_purchase_order_trgt", "bp_po_line_items_trgt", "po_id",
+             "total_amount", "line_total"),
+            ("bp_invoice_trgt", "bp_invoice_line_items_trgt", "invoice_id",
+             "invoice_amount", "line_amount"),
+        ):
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    select h."{key}"
+                    from proc."{header}" h
+                    join (
+                        select "{key}" as k, sum("{line_total}") as summed
+                        from proc."{lines}" group by 1
+                    ) l on l.k = h."{key}"
+                    where abs(h."{total}" - l.summed) > 0.01
+                    """
+                )
+                mismatched.extend(
+                    row[0] for row in cur.fetchall() if row[0] not in exempt
+                )
+    finally:
+        conn.close()
+
+    return CheckResult(
+        ref="V04",
+        passed=not mismatched,
+        detail=(
+            f"{len(mismatched)} documents whose lines do not sum to their total"
+            + (f" (first: {mismatched[0]})" if mismatched else "")
+            + f"; {len(exempt)} exempted as planted arithmetic defects"
+        ),
+    )

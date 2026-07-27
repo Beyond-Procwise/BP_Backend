@@ -1,3 +1,4 @@
+import pytest
 from datetime import date
 from decimal import Decimal
 
@@ -157,3 +158,146 @@ def test_invoice_line_row_content_matches_its_document():
     assert row[idx.index("unit_price")] == line.unit_price
     assert row[idx.index("line_amount")] == line.line_total
     assert row[idx.index("po_id")] == inv.parent_doc_id
+
+
+# --- required sets and load order -------------------------------------------
+
+def test_required_names_are_a_subset_of_columns():
+    from scripts.testdata.persist import COLUMNS, REQUIRED
+
+    for table, required in REQUIRED.items():
+        unknown = [c for c in required if c not in COLUMNS[table]]
+        assert not unknown, f"{table}: {unknown}"
+
+
+def test_every_mapped_table_declares_a_required_set():
+    from scripts.testdata.persist import COLUMNS, REQUIRED
+
+    assert set(REQUIRED) == set(COLUMNS)
+
+
+def test_load_order_covers_every_table_headers_before_lines():
+    from scripts.testdata.persist import COLUMNS, LOAD_ORDER
+
+    assert set(LOAD_ORDER) == set(COLUMNS)
+    assert LOAD_ORDER.index("bp_quote_trgt") < LOAD_ORDER.index("bp_quote_line_items_trgt")
+    assert LOAD_ORDER.index("bp_purchase_order_trgt") < LOAD_ORDER.index("bp_po_line_items_trgt")
+    assert LOAD_ORDER.index("bp_invoice_trgt") < LOAD_ORDER.index("bp_invoice_line_items_trgt")
+
+
+def test_generated_document_rows_satisfy_their_required_sets():
+    from scripts.testdata.loader import _check_required
+    from scripts.testdata.persist import COLUMNS, REQUIRED, rows_for
+
+    rows = rows_for(_chains(60))
+    for table, table_rows in rows.items():
+        assert table_rows, table
+        _check_required(table, COLUMNS[table], REQUIRED[table], table_rows)
+
+
+# --- requirements -----------------------------------------------------------
+
+def test_requirement_columns_match_the_live_schema_width():
+    from scripts.testdata.persist import REQUIREMENT_COLUMNS, REQUIREMENT_REQUIRED
+
+    assert len(REQUIREMENT_COLUMNS) == 21
+    unknown = [c for c in REQUIREMENT_REQUIRED if c not in REQUIREMENT_COLUMNS]
+    assert not unknown
+
+
+def test_one_requirement_per_chain_satisfying_its_required_set():
+    from scripts.testdata.loader import _check_required
+    from scripts.testdata.persist import (
+        REQUIREMENT_COLUMNS, REQUIREMENT_REQUIRED, requirement_rows,
+    )
+
+    chains = _chains(60)
+    rows = requirement_rows(chains)
+    assert len(rows) == len(chains)
+    for row in rows:
+        assert len(row) == len(REQUIREMENT_COLUMNS)
+    _check_required("bp_requirement", REQUIREMENT_COLUMNS, REQUIREMENT_REQUIRED, rows)
+
+
+def test_requirement_agrees_with_the_documents_beneath_it():
+    from scripts.testdata.persist import REQUIREMENT_COLUMNS, requirement_rows
+
+    chains = _chains(60)
+    by_id = {c.requirement_id: c for c in chains}
+    columns = REQUIREMENT_COLUMNS
+    for row in requirement_rows(chains):
+        chain = by_id[row[columns.index("requirement_id")]]
+        awarded = min(chain.quotes, key=lambda q: q.net_total)
+        assert row[columns.index("target_budget")] == awarded.net_total
+        assert row[columns.index("currency")] == awarded.currency
+        assert row[columns.index("category")] == awarded.lines[0].leaf_path
+
+
+def test_requirement_is_raised_before_its_first_quote():
+    from datetime import datetime
+
+    from scripts.testdata.persist import REQUIREMENT_COLUMNS, requirement_rows
+
+    chains = _chains(60)
+    by_id = {c.requirement_id: c for c in chains}
+    columns = REQUIREMENT_COLUMNS
+    for row in requirement_rows(chains):
+        chain = by_id[row[columns.index("requirement_id")]]
+        earliest = min(q.doc_date for q in chain.quotes)
+        raised = row[columns.index("created_at")]
+        assert isinstance(raised, datetime)
+        assert raised.date() < earliest
+
+
+def test_requirement_status_reflects_whether_a_po_was_raised():
+    from scripts.testdata.persist import REQUIREMENT_COLUMNS, requirement_rows
+
+    chains = _chains(120)
+    by_id = {c.requirement_id: c for c in chains}
+    columns = REQUIREMENT_COLUMNS
+    statuses = set()
+    for row in requirement_rows(chains):
+        chain = by_id[row[columns.index("requirement_id")]]
+        status = row[columns.index("status")]
+        statuses.add(status)
+        assert status == (
+            "handed_off" if chain.purchase_order is not None else "complete"
+        )
+    assert statuses == {"handed_off", "complete"}
+
+
+def test_requirement_status_uses_only_values_the_schema_accepts():
+    from scripts.testdata.persist import (
+        REQUIREMENT_COLUMNS, REQUIREMENT_STATUSES, requirement_rows,
+    )
+
+    position = REQUIREMENT_COLUMNS.index("status")
+    used = {row[position] for row in requirement_rows(_chains(120))}
+    assert used <= set(REQUIREMENT_STATUSES)
+    assert used == {"handed_off", "complete"}
+
+
+@pytest.mark.integration
+def test_declared_requirement_statuses_match_the_live_check_constraint():
+    """The CHECK constraint is the authority; this fails if live changes it."""
+    import re
+
+    from scripts.testdata.db import connect
+    from scripts.testdata.persist import REQUIREMENT_STATUSES
+
+    conn = connect("bp_sqldb")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select pg_get_constraintdef(con.oid) from pg_constraint con "
+                "join pg_class rel on rel.oid = con.conrelid "
+                "join pg_namespace n on n.oid = rel.relnamespace "
+                "where n.nspname = 'proc' and rel.relname = 'bp_requirement' "
+                "and con.conname = 'bp_requirement_status_check'"
+            )
+            definition = cur.fetchone()[0]
+    finally:
+        conn.close()
+
+    allowed = set(re.findall(r"'([a-z_]+)'::character varying", definition))
+    assert set(REQUIREMENT_STATUSES) == allowed, definition

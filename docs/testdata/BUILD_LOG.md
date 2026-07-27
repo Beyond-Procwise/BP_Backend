@@ -239,3 +239,63 @@ them would make the agent that produces it untestable.
 `_write_suppliers` still writes `bp_supplier` and `supplier` through its own path
 rather than the staged loader, because it carries bespoke identifier-swap logic
 and is already covered by V01 and V03. It does not get the required-set check.
+
+---
+
+# Stage S3 (part 1) — Documents and Requirements in bp_sqldb
+
+**Date:** 2026-07-27
+
+## Result
+
+| Table | Rows |
+|---|---|
+| `bp_requirement` | 6,000 |
+| `bp_quote_trgt` | 21,020 |
+| `bp_quote_line_items_trgt` | 115,610 |
+| `bp_purchase_order_trgt` | 5,037 |
+| `bp_po_line_items_trgt` | 22,537 |
+| `bp_invoice_trgt` | 12,398 |
+| `bp_invoice_line_items_trgt` | 55,421 |
+| **Total** | **238,023** |
+
+Exit code 0. 247 tests pass. 28 tables now hold data; 277,383 rows across both
+test databases.
+
+**V04 now passes** — it was `SKIP`: `0 documents whose lines do not sum to their
+total; 417 exempted as planted arithmetic defects`. The exemption set is built
+from the answer key (D03, D04, D06, D20), so the check distinguishes a correct
+loader from one that simply found no defects.
+
+## A CHECK constraint caught what the required-set check could not
+
+`bp_requirement.status` carries `CHECK (status IN ('draft','gathering',
+'complete','handed_off','abandoned'))`. The first mapping invented `awarded` and
+`open`, which are reasonable English and wrong. The load failed outright.
+
+The required-set check cannot catch this — the value was present, just not in the
+schema's vocabulary. A test now reads the constraint definition from live and
+asserts the declared statuses match it, so the mapping fails loudly if the
+constraint changes rather than at the next full build.
+
+Requirements map to `handed_off` when a purchase order was raised and `complete`
+otherwise.
+
+## Isolation
+
+The build's own V14 passed: live row counts were identical immediately before and
+after the run.
+
+A wider comparison against the baseline captured at the start of S1 showed one
+difference — `bp_sqldb.proc.bp_prompt` 12 → 13. That row is `prompt_id 100,
+'style_draft_system'`, inserted by a concurrent session's response-style work, not
+by this build. It is recorded here rather than explained away: the isolation
+guarantee covers what the build does, and a cross-session comparison is a
+different question from the one V14 answers.
+
+## Still outstanding in S3
+
+The `raw` and `stg` tiers (12 tables) and `raw_invoice` / `raw_purchase_order` /
+`raw_quotes` are mapped by no module yet. Until they land, the outcome triggers on
+the three `_trgt` tables find no matching `raw` row and return early, so
+`session_document_outcome` stays empty.

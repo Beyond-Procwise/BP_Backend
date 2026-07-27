@@ -10,7 +10,8 @@ bp_purchase_order_trgt; only the line table uses the `po` abbreviation.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Sequence
 
 from scripts.testdata.documents import Chain, Document, LineItem
@@ -170,3 +171,102 @@ def rows_for(chains: Sequence[Chain]) -> dict[str, list[list]]:
                     _invoice_line_rows(invoice, line))
 
     return out
+
+
+# The document tables carry no NOT NULL constraint at all, so a mapping that
+# wrote NULL into every invoice amount would be accepted in silence. These are
+# the columns that must carry a value for a row to mean anything.
+REQUIRED: dict[str, tuple[str, ...]] = {
+    "bp_quote_trgt": (
+        "quote_id", "supplier_id", "quote_date", "currency", "total_amount",
+    ),
+    "bp_quote_line_items_trgt": (
+        "quote_line_id", "quote_id", "line_number", "item_id", "line_total",
+        "currency",
+    ),
+    "bp_purchase_order_trgt": (
+        "po_id", "supplier_id", "order_date", "currency", "total_amount",
+    ),
+    "bp_po_line_items_trgt": (
+        "po_line_id", "po_id", "line_number", "item_id", "line_total", "currency",
+    ),
+    "bp_invoice_trgt": (
+        "invoice_id", "supplier_id", "invoice_date", "currency", "invoice_amount",
+    ),
+    "bp_invoice_line_items_trgt": (
+        "invoice_line_id", "invoice_id", "line_no", "item_id", "line_amount",
+    ),
+}
+
+# Headers before their lines: the line tables reference the document above them.
+LOAD_ORDER: tuple[str, ...] = (
+    "bp_quote_trgt", "bp_quote_line_items_trgt",
+    "bp_purchase_order_trgt", "bp_po_line_items_trgt",
+    "bp_invoice_trgt", "bp_invoice_line_items_trgt",
+)
+
+
+# --- requirements -----------------------------------------------------------
+# A Chain carries only a requirement_id. bp_requirement wants a title, category,
+# budget and dates, so they are derived from the chain's own facts -- its awarded
+# quote's category leaf, its cost centre's currency, its earliest quote date --
+# rather than invented independently, which would leave the requirement
+# describing something its own documents do not.
+
+REQUIREMENT_COLUMNS: tuple[str, ...] = (
+    "requirement_id", "session_id", "status", "created_by", "title", "category",
+    "description", "quantity", "unit", "target_budget", "currency",
+    "needed_by_date", "delivery_location", "priority", "specifications",
+    "constraints", "completeness_score", "missing_fields", "seed_context",
+    "created_at", "updated_at",
+)
+
+REQUIREMENT_REQUIRED: tuple[str, ...] = (
+    "requirement_id", "status", "title", "category", "currency", "target_budget",
+)
+
+_PRIORITIES = ("Low", "Medium", "High")
+
+# bp_requirement.status carries a CHECK constraint. These are the only values
+# the schema accepts, and the mapping must use its vocabulary rather than one
+# invented to describe the chain.
+REQUIREMENT_STATUSES: tuple[str, ...] = (
+    "draft", "gathering", "complete", "handed_off", "abandoned",
+)
+
+
+def requirement_rows(chains: Sequence[Chain]) -> list[list]:
+    """One row per chain, consistent with the documents beneath it."""
+    rows: list[list] = []
+    for chain in chains:
+        awarded = min(chain.quotes, key=lambda q: q.net_total)
+        first_quote = min(chain.quotes, key=lambda q: q.doc_date)
+        leaf_path = awarded.lines[0].leaf_path if awarded.lines else "Uncategorised"
+        category = leaf_path.split(" > ")[0]
+        quantity = sum(
+            (line.quantity for line in awarded.lines if line.quantity is not None),
+            Decimal("0"),
+        )
+        # Raised before the first quote arrived, and wanted after the award.
+        raised = first_quote.doc_date - timedelta(days=7)
+        when = datetime.combine(raised, datetime.min.time())
+
+        rows.append([
+            chain.requirement_id, None,
+            # Handed off once a purchase order was raised against it; otherwise
+            # the requirement finished gathering but never converted.
+            "handed_off" if chain.purchase_order is not None else "complete",
+            MARKER,
+            f"{category} requirement {chain.requirement_id}",
+            leaf_path,
+            f"Sourcing for {leaf_path} across {len(awarded.lines)} line items.",
+            quantity or None,
+            awarded.lines[0].unit_of_measure if awarded.lines else None,
+            awarded.net_total, awarded.currency,
+            awarded.doc_date + timedelta(days=30),
+            None,
+            _PRIORITIES[len(chain.quotes) % len(_PRIORITIES)],
+            None, None, None, None, None,
+            when, when,
+        ])
+    return rows

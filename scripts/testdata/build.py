@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from scripts.testdata import persist_org, persist_suppliers, verify
+from scripts.testdata import persist, persist_org, persist_suppliers, verify
 from scripts.testdata.catalogue import build_catalogue
 from scripts.testdata.loader import load_tables
 from scripts.testdata.db import copy_rows, connect
@@ -164,12 +164,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         for table, count in written.items():
             print(f"  proc.{table}: {count} rows")
 
+    print("loading documents")
+    document_rows = persist.rows_for(result.chains)
+    document_rows["bp_requirement"] = persist.requirement_rows(result.chains)
+    written = load_tables(
+        args.target,
+        {**persist.COLUMNS, "bp_requirement": persist.REQUIREMENT_COLUMNS},
+        {**persist.REQUIRED, "bp_requirement": persist.REQUIREMENT_REQUIRED},
+        document_rows,
+        order=("bp_requirement", *persist.LOAD_ORDER),
+    )
+    for table, count in written.items():
+        print(f"  proc.{table}: {count} rows")
+
     if args.skip_verify:
         print("verification skipped")
         return 0
 
+    # Documents carrying a planted arithmetic defect are wrong on purpose, so
+    # V04 must not count them against the loader.
+    arithmetic_exempt = {
+        item.subject_id
+        for item in result.planted
+        if item.ref in verify.ARITHMETIC_DEFECT_REFS
+    }
+
     print("verifying")
-    results = verify.run_all(args.target, args.uicanvas_target, live_before=live_before)
+    results = verify.run_all(
+        args.target, args.uicanvas_target,
+        live_before=live_before,
+        arithmetic_exempt=arithmetic_exempt,
+    )
     for item in results:
         if item.detail == verify.NOT_YET_IMPLEMENTED:
             status = "SKIP"
