@@ -21,6 +21,7 @@ import logging
 import math
 import os
 import re
+import weakref
 from typing import Any, Optional
 
 from src.services.db import get_conn
@@ -453,13 +454,49 @@ def _rows(cur, sql, params=()) -> list[dict]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+# Column lists per connection, keyed by "schema.table". The schema cannot
+# change mid-run, so this is safe to cache for the life of a connection --
+# but it MUST be keyed by connection, not by table name alone. This service
+# talks to more than one database (live bp_sqldb, and test databases like
+# bp_testdb / uicanvas_test); a plain module-level dict keyed on table name
+# would happily hand one database's column list to a query running against
+# a different database, which is a correctness bug, not just a missed cache
+# hit. Keying by connection also means the cache dies with the connection,
+# so a schema migration can never leave a stale entry alive past the
+# connection that observed the old schema.
+#
+# WeakKeyDictionary so a closed/GC'd connection's entry is dropped rather
+# than pinned forever. psycopg2 connections cannot take arbitrary attribute
+# assignment (they're a C type and raise AttributeError), which is why this
+# cache lives at module scope instead of on the connection object itself.
+_TABLE_COLUMNS_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
 def _table_columns(cur, schema_table: str) -> list[str]:
+    # Some callers (tests, fake cursors) hand us an object with no
+    # `.connection`, or one that can't be weak-referenced. Degrade to
+    # querying every time rather than raising -- correctness over speed.
+    conn = getattr(cur, "connection", None)
+    per_conn = None
+    if conn is not None:
+        try:
+            per_conn = _TABLE_COLUMNS_CACHE.setdefault(conn, {})
+        except TypeError:
+            per_conn = None  # not weak-referenceable -> fall back to uncached
+
+    if per_conn is not None and schema_table in per_conn:
+        return list(per_conn[schema_table])  # copy: callers must not mutate the cache
+
     schema, table = schema_table.split(".", 1)
     cur.execute(
         "select column_name from information_schema.columns "
         "where table_schema=%s and table_name=%s order by ordinal_position",
         (schema, table))
-    return [r[0] for r in cur.fetchall()]
+    cols = [r[0] for r in cur.fetchall()]
+
+    if per_conn is not None:
+        per_conn[schema_table] = list(cols)
+    return cols
 
 
 # SQL fragment that normalizes a po_id column the same way as _norm_po()
