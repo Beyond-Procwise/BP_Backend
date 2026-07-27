@@ -839,8 +839,21 @@ git commit -m "feat(testdata): bulk-load documents and line items into the targe
 - Test: `tests/testdata/test_build.py`
 
 **Interfaces:**
-- Consumes: `src.services.deal_assignment_service.assign_deals(conn=None, limit=None) -> dict`
-- Produces: `build.assign_deals_on(target_db: str) -> dict` — the raw service result, or `{"error": str}` if it fails
+- Consumes: `src.services.deal_assignment_service._run(cur) -> dict` — the linking passes themselves. NOT the public `assign_deals()` wrapper: see the implementation note below for why calling it would write to the live database.
+- Produces: `build.assign_deals_on(target_db: str) -> dict` — the raw pass result, or `{"error": str}` if it fails
+
+**Isolation hazard (the reason this task reaches past the public function):**
+`assign_deals()` ends by calling `sync_deal_summaries()`, which opens its own
+connection from the environment DSN — live `bp_sqldb` — regardless of the
+connection passed in. Running it against the test database would generate AI
+summaries over LIVE deals and write them to live `proc.bp_summary`, which fails
+check V14 and burns LLM time on the wrong data. Call `_run` directly.
+
+The linking passes also read the `_raw` and `_stg` tiers and `proc.process_monitor`,
+all of which the seeder leaves empty — it fills only `_trgt`. If a pass finds no
+candidates because it looked in an empty tier, record which tier and which pass,
+and report it. Do not backfill `_raw`/`_stg` to force a pass: that is a separate
+task with its own design questions.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -877,15 +890,29 @@ Add to `scripts/testdata/build.py`:
 def _assign_deals_impl(target_db: str) -> dict:
     """Indirection so the failure path is testable without a linking engine.
 
+    Calls the linking passes directly rather than assign_deals(). assign_deals
+    finishes by calling sync_deal_summaries(), which opens its OWN connection
+    from the environment DSN — pointing at LIVE bp_sqldb no matter which
+    connection we hand in. That would generate summaries against live deals and
+    write them to live proc.bp_summary, breaking the isolation guarantee and
+    failing check V14. The seeder wants deal grouping, not AI summaries.
+
     Imported lazily: the seeder must stay runnable when the application's
     dependencies are not importable, and the import is only needed here.
     """
     from scripts.testdata.db import connect as _connect
-    from src.services.deal_assignment_service import assign_deals
+    from src.services.deal_assignment_service import _run
 
     conn = _connect(target_db)
     try:
-        return assign_deals(conn=conn)
+        conn.autocommit = False
+        try:
+            result = _run(conn.cursor())
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return result
     finally:
         conn.close()
 
