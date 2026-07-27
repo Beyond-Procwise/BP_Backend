@@ -35,6 +35,7 @@ class LineItem:
     line_number: int
     item_id: str
     description: str
+    unit_of_measure: str
     quantity: Optional[Decimal]
     unit_price: Optional[Decimal]
     line_total: Decimal
@@ -101,6 +102,7 @@ def _build_lines(
                 line_number=number,
                 item_id=item.item_id,
                 description=item.description,
+                unit_of_measure=item.unit_of_measure,
                 quantity=quantity,
                 unit_price=unit_price,
                 line_total=line_total,
