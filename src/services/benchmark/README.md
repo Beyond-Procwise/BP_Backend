@@ -134,3 +134,32 @@ are carried through to the result verbatim for governance visibility and are
 then re-verify the parity suite). The suite validates the full D001
 intermediate trace, final outputs for D002–D005, the gate, both lookup
 fallbacks, and median correctness.
+
+## Decision: one-off costs are added once (2026-07-27)
+
+Delivery, implementation, support and risk are added once per order, and the
+discount is subtracted once. They are NOT multiplied by quantity.
+
+The workbook contradicts itself here: the formula in column AT adds them once,
+while the description written beside it says to multiply by quantity. The
+formula wins, for three reasons. The field names all denote one-off charges —
+multiplying a negotiated £500 rebate by 220 units to reach £110,000 is not what
+a rebate means. The formula is what Excel has actually been computing, so it
+produced the numbers the author reviewed. And a charge that genuinely scales
+with quantity is part of the unit price, not a separate charge.
+
+It also changes less than it appears: the same amount is added to the quoted
+total AND the benchmark total, so it cancels in the total cost gap. A 220-unit
+line at £120 against a £102 benchmark returns a £3,978 gap with no charges,
+with £1,750 added once, and with £1,750 multiplied by quantity. Only the two
+displayed absolute totals move.
+
+When these charges are eventually extracted from documents, extraction
+normalises to a one-off amount: "delivery £250 per order" contributes £250
+once, and "£3 per unit delivery" belongs in the unit price.
+
+**The workbook's column description still needs correcting, by hand, in Excel.**
+Do NOT edit the workbook with openpyxl: it does not evaluate formulas and drops
+cached values on save, which would destroy the very numbers
+`scripts/export_benchmark_fixtures.py` reads with `data_only=True` to build the
+golden parity fixtures.
