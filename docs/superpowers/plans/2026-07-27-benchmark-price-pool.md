@@ -489,7 +489,25 @@ def test_totals_survive_the_mapping():
 
 Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.testdata.persist'`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Give `LineItem` a unit of measure**
+
+`persist.py` needs it and `LineItem` does not carry it — only the catalogue item
+does. Unit of measure is one of the three keys the benchmark engine matches on,
+so a wrong or invented one silently splits an item's price pool in two.
+
+In `scripts/testdata/documents.py`, add to `LineItem` after `description`:
+
+```python
+    unit_of_measure: str
+```
+
+and in `_build_lines`, inside the `LineItem(...)` call after `description=item.description,`:
+
+```python
+                unit_of_measure=item.unit_of_measure,
+```
+
+- [ ] **Step 4: Write the implementation**
 
 Create `scripts/testdata/persist.py`:
 
@@ -590,7 +608,7 @@ def _quote_rows(doc: Document, po_id: str | None) -> list:
 def _quote_line_rows(doc: Document, line: LineItem) -> list:
     return [
         f"{doc.doc_id}-{line.line_number}", doc.doc_id, line.line_number,
-        line.item_id, line.description, line.quantity, "each",
+        line.item_id, line.description, line.quantity, line.unit_of_measure,
         line.unit_price, line.line_total, line.currency, *_stamp(doc),
     ]
 
@@ -607,7 +625,7 @@ def _po_rows(doc: Document, quote_ref: str | None) -> list:
 def _po_line_rows(doc: Document, line: LineItem, quote_ref: str | None) -> list:
     return [
         f"{doc.doc_id}-{line.line_number}", doc.doc_id, line.line_number,
-        line.item_id, line.description, line.quantity, "each",
+        line.item_id, line.description, line.quantity, line.unit_of_measure,
         line.unit_price, line.line_total, line.currency, quote_ref,
         *_stamp(doc),
     ]
@@ -625,7 +643,7 @@ def _invoice_rows(doc: Document) -> list:
 def _invoice_line_rows(doc: Document, line: LineItem) -> list:
     return [
         f"{doc.doc_id}-{line.line_number}", doc.doc_id, line.line_number,
-        line.item_id, line.description, line.quantity, "each",
+        line.item_id, line.description, line.quantity, line.unit_of_measure,
         line.unit_price, line.line_total, doc.parent_doc_id,
         ENTITY_COUNTRY.get(doc.org_id), ENTITY_REGION.get(doc.org_id),
         *_stamp(doc),
@@ -662,24 +680,6 @@ def rows_for(chains: Sequence[Chain]) -> dict[str, list[list]]:
 
     return out
 ```
-
-Note: `LineItem` has no unit-of-measure field — the catalogue holds it, the line does not. Writing the literal `"each"` would be inventing data. Before continuing, add `unit_of_measure: str` to `LineItem` in `documents.py`, populate it in `_build_lines` from `item.unit_of_measure`, and replace the three `"each"` literals above with `line.unit_of_measure`. Unit of measure is a match key for the benchmark engine, so a wrong one silently splits an item's pool.
-
-- [ ] **Step 4: Add the unit-of-measure field**
-
-In `scripts/testdata/documents.py`, add to `LineItem` after `description`:
-
-```python
-    unit_of_measure: str
-```
-
-and in `_build_lines`, inside the `LineItem(...)` call after `description=item.description,`:
-
-```python
-                unit_of_measure=item.unit_of_measure,
-```
-
-Then replace `"each"` with `line.unit_of_measure` in all three places in `persist.py`.
 
 - [ ] **Step 5: Run the tests**
 
@@ -2036,26 +2036,42 @@ git commit -m "feat(price-outlier): raise extreme prices as open findings in the
 
 Create `tests/test_price_outlier_job.py`:
 
-```python
-import os
+Do NOT construct a `BackendScheduler` in these tests. Its `__init__` requires an
+`agent_nick` argument and then calls `start()` and `_ensure_email_watcher_service()`,
+so building one spawns a real background thread and an email watcher. Test the
+gate as a pure function instead.
 
-from src.services.backend_scheduler import BackendScheduler
+```python
+from src.services.backend_scheduler import (
+    BackendScheduler, price_outlier_enabled, price_outlier_interval_minutes,
+)
 
 
 def test_job_is_off_by_default_until_the_first_run_is_reviewed(monkeypatch):
     """190,000 seeded lines could bury the queue. The job stays off until a
     human has looked at a dry run."""
     monkeypatch.delenv("PRICE_OUTLIER_ENABLED", raising=False)
-    scheduler = BackendScheduler()
-    scheduler._register_price_outlier_job()
-    assert BackendScheduler.PRICE_OUTLIER_JOB_NAME not in scheduler._jobs
+    assert price_outlier_enabled() is False
 
 
-def test_job_registers_when_explicitly_enabled(monkeypatch):
-    monkeypatch.setenv("PRICE_OUTLIER_ENABLED", "1")
-    scheduler = BackendScheduler()
-    scheduler._register_price_outlier_job()
-    assert BackendScheduler.PRICE_OUTLIER_JOB_NAME in scheduler._jobs
+def test_job_turns_on_only_when_explicitly_enabled(monkeypatch):
+    for value, expected in (("1", True), ("true", True), ("True", True),
+                            ("0", False), ("", False), ("yes", False)):
+        monkeypatch.setenv("PRICE_OUTLIER_ENABLED", value)
+        assert price_outlier_enabled() is expected, value
+
+
+def test_interval_defaults_to_an_hour_and_survives_rubbish(monkeypatch):
+    monkeypatch.delenv("PRICE_OUTLIER_INTERVAL_MINUTES", raising=False)
+    assert price_outlier_interval_minutes() == 60
+    monkeypatch.setenv("PRICE_OUTLIER_INTERVAL_MINUTES", "not-a-number")
+    assert price_outlier_interval_minutes() == 60
+    monkeypatch.setenv("PRICE_OUTLIER_INTERVAL_MINUTES", "0")
+    assert price_outlier_interval_minutes() == 1
+
+
+def test_the_job_has_a_name():
+    assert BackendScheduler.PRICE_OUTLIER_JOB_NAME == "price-outlier-scan"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2064,7 +2080,7 @@ def test_job_registers_when_explicitly_enabled(monkeypatch):
 PYTHONPATH=. .venv/bin/python -m pytest tests/test_price_outlier_job.py -v
 ```
 
-Expected: FAIL — `AttributeError: PRICE_OUTLIER_JOB_NAME`.
+Expected: FAIL — `ImportError: cannot import name 'price_outlier_enabled'`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -2077,28 +2093,44 @@ In `src/services/backend_scheduler.py`, add beside the other job-name constants:
 and add the registration and runner next to `_register_deal_assignment_job`:
 
 ```python
-    def _register_price_outlier_job(self) -> None:
-        """Scan for extreme prices and raise them for review.
+and add these two module-level helpers near the top of the file, so the gate is
+testable without constructing a scheduler:
 
-        OFF by default, unlike the other jobs. The seeded corpus is ~190,000
-        lines against ~1,000 existing findings, so a loose threshold could bury
-        the Action Centre. Enable only after reviewing a dry run:
-        PRICE_OUTLIER_ENABLED=1, interval PRICE_OUTLIER_INTERVAL_MINUTES.
-        """
-        import os
-        if os.environ.get("PRICE_OUTLIER_ENABLED", "0").strip() not in ("1", "true", "True"):
+```python
+def price_outlier_enabled() -> bool:
+    """OFF by default, unlike the other jobs.
+
+    The seeded corpus is ~190,000 lines against ~1,000 findings already open,
+    so a loose threshold could bury the Action Centre. Enable only after
+    reviewing a dry run.
+    """
+    import os
+    return os.environ.get("PRICE_OUTLIER_ENABLED", "0").strip() in ("1", "true", "True")
+
+
+def price_outlier_interval_minutes() -> int:
+    import os
+    try:
+        minutes = int(os.environ.get("PRICE_OUTLIER_INTERVAL_MINUTES", "60"))
+    except ValueError:
+        return 60
+    return max(1, minutes)
+```
+
+and the registration method itself:
+
+```python
+    def _register_price_outlier_job(self) -> None:
+        """Scan for extreme prices and raise them for review."""
+        if not price_outlier_enabled():
             logger.info("price outlier job disabled by PRICE_OUTLIER_ENABLED")
             return
         if self.PRICE_OUTLIER_JOB_NAME in self._jobs:
             return
-        try:
-            minutes = int(os.environ.get("PRICE_OUTLIER_INTERVAL_MINUTES", "60"))
-        except ValueError:
-            minutes = 60
         self.register_job(
             self.PRICE_OUTLIER_JOB_NAME,
             self._run_price_outlier_scan,
-            interval=timedelta(minutes=max(1, minutes)),
+            interval=timedelta(minutes=price_outlier_interval_minutes()),
             initial_delay=timedelta(minutes=10),
         )
 
