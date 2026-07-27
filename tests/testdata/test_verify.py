@@ -1,3 +1,5 @@
+import pytest
+
 from scripts.testdata.verify import (
     CHECKS,
     CheckResult,
@@ -40,3 +42,68 @@ def test_blocking_failures_reports_blocking_checks():
 def test_blocking_failures_passes_a_clean_run():
     results = [CheckResult(ref=check.ref, passed=True, detail="ok") for check in CHECKS]
     assert blocking_failures(results) == []
+
+
+def test_v07_is_declared_blocking():
+    from scripts.testdata.verify import CHECK_BY_REF
+
+    assert CHECK_BY_REF["V07"].blocking is True
+
+
+@pytest.mark.integration
+def test_rollup_check_passes_on_a_loaded_scratch_database(scratch_uicanvas_schema):
+    from scripts.testdata.catalogue import build_catalogue
+    from scripts.testdata.loader import load_tables
+    from scripts.testdata.org import build_business_units, build_cost_centres
+    from scripts.testdata.persist_org import COLUMNS, REQUIRED, rows_for_org
+    from scripts.testdata.reference import TaxonomyLeaf
+    from scripts.testdata.verify import check_rollup
+    from tests.testdata import SCRATCH_UICANVAS_DB
+
+    leaves = [
+        TaxonomyLeaf(
+            l1="IT & Technology", l2="Software", l3="ERP", l4=f"Sub{i}", l5=f"Leaf{i}",
+            l1_id="C-2000", l2_id="C-3000", l3_id="C-4000",
+            l4_id=f"C-45{i:02d}", l5_id=f"C-51{i:02d}",
+            unspsc_code=str(10000000 + i), esg_impact="Low", category_status="Active",
+            spend_classification="Direct", category_risk_rating="Minimal",
+            audit_frequency="Annually", policy_coverage="Full",
+        )
+        for i in range(246)
+    ]
+    units = build_business_units(42)
+    centres = build_cost_centres(42, units, leaves)
+    items = build_catalogue(42, leaves, [f"SUP-S{i}" for i in range(500)])
+    load_tables(
+        SCRATCH_UICANVAS_DB, COLUMNS, REQUIRED, rows_for_org(units, centres, items),
+        order=("business_unit", "cost_centre", "item"),
+    )
+
+    result = check_rollup(SCRATCH_UICANVAS_DB)
+    assert result.ref == "V07"
+    assert result.passed, result.detail
+    assert "entity" in result.detail.lower()
+
+
+@pytest.mark.integration
+def test_rollup_check_fails_when_a_cost_centre_points_nowhere(scratch_uicanvas_schema):
+    from scripts.testdata.db import connect
+    from scripts.testdata.verify import check_rollup
+    from tests.testdata import SCRATCH_UICANVAS_DB
+
+    conn = connect(SCRATCH_UICANVAS_DB)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "insert into proc.cost_centre (cost_centre_level_id, business_unit_id) "
+                "values ('CC-ORPHAN', 'BU-DOES-NOT-EXIST')"
+            )
+        conn.commit()
+        result = check_rollup(SCRATCH_UICANVAS_DB)
+        assert not result.passed
+        assert "1 unresolved" in result.detail
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("delete from proc.cost_centre where cost_centre_level_id = 'CC-ORPHAN'")
+        conn.commit()
+        conn.close()

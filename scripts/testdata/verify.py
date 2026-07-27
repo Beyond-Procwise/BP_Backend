@@ -118,6 +118,42 @@ def check_crosswalk(target_db: str, uicanvas_target_db: str) -> CheckResult:
         ui_conn.close()
 
 
+def check_rollup(uicanvas_target_db: str) -> CheckResult:
+    """V07: every cost centre resolves to a business unit that exists.
+
+    The schema carries no entity column on either table -- there is no
+    organisation table at all -- so the entity and group levels of the roll-up
+    cannot be verified here. That is stated in the detail rather than passed
+    over: a check that quietly narrows its own scope is worse than one that fails.
+    """
+    conn = connect(uicanvas_target_db)
+    try:
+        centres = _scalar(conn, "select count(*) from proc.cost_centre")
+        units = _scalar(conn, "select count(*) from proc.business_unit")
+        orphans = _scalar(
+            conn,
+            """
+            select count(*) from proc.cost_centre c
+            where c.business_unit_id is null
+               or not exists (
+                   select 1 from proc.business_unit b
+                   where b.business_unit_id = c.business_unit_id
+               )
+            """,
+        )
+        return CheckResult(
+            ref="V07",
+            passed=orphans == 0 and centres > 0 and units > 0,
+            detail=(
+                f"{centres} cost centres over {units} business units, "
+                f"{orphans} unresolved; entity and group levels not verifiable "
+                f"(no entity column in the schema)"
+            ),
+        )
+    finally:
+        conn.close()
+
+
 def check_live_unchanged(live_before: Mapping[str, int]) -> CheckResult:
     try:
         assert_live_unchanged(live_before, snapshot_counts(["bp_sqldb", "uicanvas"]))
@@ -139,6 +175,7 @@ def run_all(
         check_row_counts(target_db),
         check_no_orphans(target_db),
         check_crosswalk(target_db, uicanvas_target_db),
+        check_rollup(uicanvas_target_db),
     ]
     implemented = {result.ref for result in results} | {"V14"}
     for check in CHECKS:
