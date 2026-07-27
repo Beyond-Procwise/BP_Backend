@@ -113,23 +113,28 @@ def plant(
     position_of = {chain.requirement_id: index for index, chain in enumerate(chains)}
 
     # --- D05: invoices with no purchase order --------------------------------
-    no_po = [
-        chain for chain in chains
-        if chain.purchase_order is None and chain.invoices
+    # The declared count is a number of invoices, not of chains, and a chain
+    # carries one to three. Cap on the instances actually recorded.
+    no_po_invoices = [
+        invoice
+        for chain in chains
+        if chain.purchase_order is None
+        for invoice in chain.invoices
     ]
-    for chain in no_po[: _target_count(SPEC_BY_REF["D05"], len(no_po))]:
-        for invoice in chain.invoices:
-            planted.append(
-                PlantedDefect(
-                    ref="D05", kind="true_positive", subject_id=invoice.doc_id,
-                    subject_type="invoice",
-                    detail={
-                        "supplier_id": invoice.supplier_id,
-                        "org_id": invoice.org_id,
-                        "net_total": float(invoice.net_total),
-                    },
-                )
+    for invoice in no_po_invoices[
+        : _target_count(SPEC_BY_REF["D05"], len(no_po_invoices))
+    ]:
+        planted.append(
+            PlantedDefect(
+                ref="D05", kind="true_positive", subject_id=invoice.doc_id,
+                subject_type="invoice",
+                detail={
+                    "supplier_id": invoice.supplier_id,
+                    "org_id": invoice.org_id,
+                    "net_total": float(invoice.net_total),
+                },
             )
+        )
 
     with_po = [chain for chain in chains if chain.purchase_order is not None and chain.invoices]
 

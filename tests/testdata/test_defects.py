@@ -171,6 +171,29 @@ def test_award_variance_records_the_foregone_saving(planted_full):
         assert item.detail["awarded_net_total"] > item.detail["lowest_net_total"]
 
 
+@pytest.fixture(scope="module")
+def planted_at_scale():
+    """Big enough that the largest defect targets are actually reached.
+
+    D05 draws from the ~16% of chains that stop before a PO, so a small fixture
+    exhausts the pool long before the declared target and hides an overshoot.
+    """
+    chains, centres = _build(3000)
+    return plant(42, chains, centres)
+
+
+def test_no_defect_type_overshoots_its_declared_target(planted_at_scale):
+    counts: dict[str, int] = {}
+    for item in planted_at_scale.planted:
+        counts[item.ref] = counts.get(item.ref, 0) + 1
+    overshot = {
+        spec.ref: (counts[spec.ref], spec.count)
+        for spec in DEFECT_SPECS
+        if counts.get(spec.ref, 0) > spec.count
+    }
+    assert not overshot, f"planted more than declared (planted, target): {overshot}"
+
+
 def test_answer_key_is_written_and_reloadable(planted, tmp_path):
     json_path = tmp_path / "answer-key.json"
     md_path = tmp_path / "answer-key.md"

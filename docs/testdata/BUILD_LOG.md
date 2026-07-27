@@ -1,0 +1,125 @@
+# Test Dataset Build Log
+
+**Date:** 2026-07-27
+**Seed:** 42
+**Targets:** bp_testdb, uicanvas_test (same cluster as live, separate databases)
+**Command:** `.venv/bin/python -m scripts.testdata.build --target bp_testdb --uicanvas-target uicanvas_test --seed 42 --drop-first`
+
+## Result
+
+| | |
+|---|---|
+| Exit code | 0 |
+| Suppliers | 5,000 (both ID conventions, 5,000 crosswalk rows) |
+| Business units | 400 under a 6/40/120/240 tree |
+| Cost centres | 500 |
+| Catalogue items | 5,000 across 246 L5 leaves |
+| Documents generated | 44,455 (6,000 requirements, 21,020 quotes, 5,037 POs, 12,398 invoices) |
+| Line items generated | 193,568 |
+| Defect instances planted | 7,070 (5,610 true positive, 1,460 negative control) |
+| Defect types with zero instances | none — all 30 planted |
+| Defect types off their declared target | none — all 30 exact |
+| Blocking checks passed | 3/3 implemented, 9 not yet implemented |
+| Scored checks | V10 not yet implemented, V12 not yet implemented |
+
+### Verification output
+
+```
+V01 PASS  proc.bp_supplier has 5000 rows (expected 5000)
+V02 PASS  0 orphan invoice line items
+V03 PASS  crosswalk 5000, bp_supplier 5000, uicanvas supplier 5000
+V04 SKIP  not yet implemented
+V05 SKIP  not yet implemented
+V06 SKIP  not yet implemented
+V07 SKIP  not yet implemented
+V08 SKIP  not yet implemented
+V09 SKIP  not yet implemented
+V10 SKIP  not yet implemented
+V11 SKIP  not yet implemented
+V12 SKIP  not yet implemented
+V13 SKIP  not yet implemented
+V14 PASS  live row counts unchanged
+```
+
+Checks with no implementation print `SKIP`, not `PASS`. A partial run must not
+read as a complete one.
+
+### Structure cloned
+
+| | bp_testdb | uicanvas_test |
+|---|---|---|
+| Tables | 118 | cloned from live |
+| Views | 5 | cloned from live |
+| Functions | 10 | cloned from live |
+| Triggers | 8 | cloned from live |
+
+### Reference data copied verbatim
+
+`bp_fx_rates` 830, `bp_policy` 10, `bp_prompt` 12, `bp_admin_config` 2,
+`bp_vendor_extraction_profiles` 29, `bp_complaince_metric_prty_lkup` 9,
+`procurement_patterns` 33, `bp_category` 246 (the real 5-level taxonomy),
+`category` 932.
+
+## Isolation
+
+```
+Live row counts before: 308 tables, 405,032 rows
+Live row counts after:  308 tables, 405,032 rows
+Result: UNCHANGED
+```
+
+Proven twice: by check V14 inside the run, and by an independent snapshot
+comparison afterwards against `live_before.json`.
+
+## Determinism
+
+Two builds with seed 42, in **separate processes**, produced checksum
+`bb000e8d13778a552cb06b866c10c7d1305d56dc94b13cc17b2b6b6303995228`.
+
+## Known gaps
+
+These are real and deliberate, not oversights:
+
+1. **Only suppliers and the crosswalk are persisted.** The 44,455 documents,
+   193,568 line items, 400 business units and 500 cost centres are generated,
+   defect-planted and checksummed in memory, then discarded. Plan 1 specifies no
+   persistence for them — `deals.py` and `downstream.py` appear in the file
+   structure with no task attached, and the plan folds them into Plan 3. Until
+   they land, the test databases hold structure, reference data and suppliers
+   only.
+2. **V04–V13 have no implementation.** They inspect data that Plans 2 and 3
+   produce. They report `SKIP` and do not block.
+3. **Population defects are recorded, not manufactured.** D10–D21, D24–D26 and
+   D28–D30 name the subjects that constitute the expected set, but the
+   underlying patterns (price spread, single-source concentration, expired
+   certificates) are not yet forced into the data. Plan 3 has to make them
+   genuinely hold before a detector can find them. The plan calls this out as a
+   known rough edge and it remains one.
+
+## Deviations from the plan
+
+Four, all fixing defects found while executing it:
+
+1. **`defects.plant()` looked positions up with `chains.index()`.** Every
+   planting block replaces the chain it touches with a new frozen copy, so from
+   the second block onward the object being searched for was no longer in the
+   list and `list.index()` raised `ValueError`. Now keyed by `requirement_id`,
+   which also removes an O(n²) scan.
+2. **D04 would have planted nothing.** D22 nulls the quantity on line 1 of the
+   leading chains; D04 only looked at line 1 and skipped on `None`. D04 now runs
+   before D22 and targets the first line that still carries a quantity.
+3. **The COPY loader rejected `jsonb` and array columns.** psycopg2 decodes
+   `jsonb` to a Python dict, whose `str()` is Python repr rather than JSON, and
+   `int[]` to a list, whose `str()` is not an array literal. json now reads back
+   as raw server text — which is what "verbatim" should mean — and arrays render
+   as properly quoted Postgres literals.
+4. **`build.py` never wrote `uicanvas.proc.supplier`.** The crosswalk would have
+   named 5,000 suppliers on a side holding none, failing blocking check V03. The
+   table is column-identical to `bp_supplier`, so the same rows are written with
+   the identifier swapped.
+5. **D05 overshot its declared target by 2×.** It capped on chains but recorded
+   one instance per invoice, and a chain carries one to three — 1,290 planted
+   against a target of 620 on the first build. It now caps on the instances it
+   records. A regression test asserts no defect type exceeds its declared count,
+   sized large enough to actually reach the cap; the 1,200-chain fixture
+   exhausts the no-PO pool first and hides the fault.
