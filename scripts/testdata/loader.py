@@ -42,6 +42,7 @@ def load_tables(
     *,
     check: Callable[[str, Sequence[Sequence]], None] | None = None,
     order: Sequence[str] | None = None,
+    analyze: bool = True,
 ) -> dict[str, int]:
     """Truncate and bulk-load each table. Returns rows written per table.
 
@@ -81,6 +82,19 @@ def load_tables(
                 conn, "proc", table, list(columns[table]), rows[table]
             )
         conn.commit()
+
+        # A freshly COPYed table has no planner statistics, so anything that
+        # reads it afterwards -- deal assignment issues per-deal UPDATEs across
+        # these tables -- plans against a default estimate and sequential-scans
+        # six-figure row counts. Analysing here costs seconds and saves hours.
+        if analyze:
+            conn.autocommit = True
+            try:
+                for table in tables:
+                    with conn.cursor() as cur:
+                        cur.execute(f'analyze proc."{table}"')
+            finally:
+                conn.autocommit = False
     finally:
         conn.close()
     return written

@@ -197,3 +197,30 @@ def test_load_refuses_rows_missing_a_required_value(scratch_uicanvas_schema):
     blank = [[None] * len(COLUMNS["item"])]
     with pytest.raises(MissingRequiredValue):
         load_tables(SCRATCH_UICANVAS_DB, COLUMNS, REQUIRED, {"item": blank})
+
+
+@pytest.mark.integration
+def test_loading_leaves_planner_statistics_behind(scratch_uicanvas_schema, built):
+    """Without ANALYZE, anything reading these tables plans against a default
+    estimate and sequential-scans them."""
+    from scripts.testdata.db import connect
+    from scripts.testdata.loader import load_tables
+    from tests.testdata import SCRATCH_UICANVAS_DB
+
+    rows, _ = built
+    load_tables(SCRATCH_UICANVAS_DB, COLUMNS, REQUIRED, rows,
+                order=("business_unit", "cost_centre", "item"))
+
+    conn = connect(SCRATCH_UICANVAS_DB)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select relname, reltuples from pg_class "
+                "where relname in ('business_unit','cost_centre','item')"
+            )
+            estimates = dict(cur.fetchall())
+    finally:
+        conn.close()
+
+    assert estimates["item"] > 0, estimates
+    assert estimates["business_unit"] > 0, estimates
