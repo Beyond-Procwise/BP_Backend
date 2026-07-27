@@ -69,9 +69,14 @@ def load_tables(
     written: dict[str, int] = {}
     conn = connect(target_db)
     try:
+        # One statement for the whole group. The line tables carry foreign keys
+        # onto their headers, and Postgres refuses to truncate a referenced
+        # table on its own -- so emptying them one at a time cannot work.
+        group = ", ".join(f'proc."{table}"' for table in tables)
+        with conn.cursor() as cur:
+            cur.execute(f"truncate {group}")
+
         for table in tables:
-            with conn.cursor() as cur:
-                cur.execute(f'truncate proc."{table}"')
             written[table] = copy_rows(
                 conn, "proc", table, list(columns[table]), rows[table]
             )

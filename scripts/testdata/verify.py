@@ -36,6 +36,7 @@ CHECKS: tuple[Check, ...] = (
     Check("V12", "Golden set extraction matches expected", False),
     Check("V13", "Same seed reproduces identical checksums", True),
     Check("V14", "Live databases unchanged", True),
+    Check("V15", "Benchmark computes on the busiest item", True),
 )
 
 CHECK_BY_REF: dict[str, Check] = {check.ref: check for check in CHECKS}
@@ -181,6 +182,7 @@ def run_all(
         check_crosswalk(target_db, uicanvas_target_db),
         check_rollup(uicanvas_target_db),
         check_line_totals(target_db, exempt=arithmetic_exempt or set()),
+        check_benchmark_computes(target_db),
     ]
     implemented = {result.ref for result in results} | {"V14"}
     for check in CHECKS:
@@ -241,5 +243,101 @@ def check_line_totals(target_db: str, exempt: set[str] | None = None) -> CheckRe
             f"{len(mismatched)} documents whose lines do not sum to their total"
             + (f" (first: {mismatched[0]})" if mismatched else "")
             + f"; {len(exempt)} exempted as planted arithmetic defects"
+        ),
+    )
+
+
+def check_benchmark_computes(target_db: str) -> CheckResult:
+    """V15: the whole point of the pool. The engine only proves out if a real
+    item in the seeded data has enough matching history to clear the evidence
+    gate and reach HIGH confidence -- otherwise every benchmark request still
+    gates, exactly as it did before the pool existed.
+
+    src/ is only added to sys.path inside this function, not at module scope,
+    so importing this file never requires the benchmark engine to be
+    importable for callers (e.g. the seeder) that don't have src/ on path.
+    """
+    import sys
+
+    if "src" not in sys.path:
+        sys.path.insert(0, "src")
+    from services.benchmark.engine import compute_benchmark
+    from services.benchmark.models import BenchmarkPoint, QuoteLine
+
+    conn = connect(target_db)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select item_description, unit_of_measure, count(*) n
+                  from proc.bp_po_line_items_trgt
+                 where unit_price is not null
+                 group by 1, 2
+                 order by n desc
+                 limit 1
+                """
+            )
+            row = cur.fetchone()
+            if not row:
+                return CheckResult(
+                    ref="V15", passed=False,
+                    detail="no purchase-order lines to benchmark",
+                )
+            item, uom, n = row
+            cur.execute(
+                """
+                select po_line_id, unit_price, quantity
+                  from proc.bp_po_line_items_trgt
+                 where item_description = %s and unit_of_measure = %s
+                   and unit_price is not null
+                """,
+                (item, uom),
+            )
+            price_rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    item_name = item.strip().lower()
+    unit = (uom or "each").strip().lower()
+    points = [
+        BenchmarkPoint(
+            benchmark_point_id=str(pid),
+            source="internal",
+            item_name=item_name,
+            uom=unit,
+            currency="GBP",
+            include=True,
+            raw_unit_price=float(price),
+            source_weight=1.0,
+            specification_score=5.0,
+            location_cost_index=1.0,
+            sla_score=5.0,
+            # Never coerce a missing quantity to 0.0 -- that misrepresents an
+            # absent observation as a zero-quantity one.
+            historical_quantity=float(qty) if qty is not None else None,
+            index_value_at_price_date=1.0,
+        )
+        for pid, price, qty in price_rows
+    ]
+    quote = QuoteLine(
+        deal_id="verify",
+        item_name=item_name,
+        quantity=10,
+        uom=unit,
+        currency="GBP",
+        location="United Kingdom",
+        requested_spec_score=5.0,
+        requested_sla_score=5.0,
+        index_id="",
+        quoted_unit_price=float(price_rows[0][1]),
+    )
+    result = compute_benchmark(quote, points, {}, {})
+    passed = not result.gated and result.confidence == "HIGH"
+    return CheckResult(
+        ref="V15",
+        passed=passed,
+        detail=(
+            f"'{item[:40]}' / {uom}: n_total={result.n_total} "
+            f"confidence={result.confidence} gated={result.gated}"
         ),
     )

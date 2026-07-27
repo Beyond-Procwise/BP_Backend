@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from scripts.testdata import persist, persist_org, persist_suppliers, verify
+from scripts.testdata import (
+    persist, persist_org, persist_suppliers, persist_tiers, verify,
+)
 from scripts.testdata.catalogue import build_catalogue
 from scripts.testdata.loader import load_tables
 from scripts.testdata.db import copy_rows, connect
@@ -92,6 +94,49 @@ def _write_suppliers(target_db: str, uicanvas_target_db: str, suppliers) -> None
         ui_conn.close()
 
 
+def _assign_deals_impl(target_db: str) -> dict:
+    """Indirection so the failure path is testable without a linking engine.
+
+    Calls the linking passes directly rather than assign_deals(). assign_deals
+    finishes by calling sync_deal_summaries(), which opens its OWN connection
+    from the environment DSN — pointing at LIVE bp_sqldb no matter which
+    connection we hand in. That would generate summaries against live deals and
+    write them to live proc.bp_summary, breaking the isolation guarantee and
+    failing check V14. The seeder wants deal grouping, not AI summaries.
+
+    Imported lazily: the seeder must stay runnable when the application's
+    dependencies are not importable, and the import is only needed here.
+    """
+    from scripts.testdata.db import connect as _connect
+    from src.services.deal_assignment_service import _run
+
+    conn = _connect(target_db)
+    try:
+        conn.autocommit = False
+        try:
+            result = _run(conn.cursor())
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return result
+    finally:
+        conn.close()
+
+
+def assign_deals_on(target_db: str) -> dict:
+    """Group the seeded documents into deals using the production service.
+
+    The seeder never stamps deal_id itself. If the service cannot group
+    synthetic chains that is a finding about the grouping service, reported
+    here and in the build log rather than papered over.
+    """
+    try:
+        return _assign_deals_impl(target_db)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -164,6 +209,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         for table, count in written.items():
             print(f"  proc.{table}: {count} rows")
 
+    print("loading raw and staging tiers")
+    tier_rows = persist_tiers.rows_for_tiers(result.chains)
+    written = load_tables(
+        args.target,
+        persist_tiers.COLUMNS,
+        persist_tiers.REQUIRED,
+        tier_rows,
+        order=persist_tiers.LOAD_ORDER,
+    )
+    print(f"  {sum(written.values())} rows across {len(written)} tables")
+
     print("loading documents")
     document_rows = persist.rows_for(result.chains)
     document_rows["bp_requirement"] = persist.requirement_rows(result.chains)
@@ -176,6 +232,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     for table, count in written.items():
         print(f"  proc.{table}: {count} rows")
+
+    print("assigning deals")
+    deal_result = assign_deals_on(args.target)
+    if "error" in deal_result:
+        print(f"  DEAL ASSIGNMENT FAILED: {deal_result['error']}", file=sys.stderr)
+        print("  documents are loaded; by-deal benchmark queries will return nothing")
+    else:
+        print(f"  {deal_result}")
 
     if args.skip_verify:
         print("verification skipped")

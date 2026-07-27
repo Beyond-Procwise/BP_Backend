@@ -1,5 +1,6 @@
 import pytest
 
+from scripts.testdata import verify
 from scripts.testdata.verify import (
     CHECKS,
     CheckResult,
@@ -7,14 +8,25 @@ from scripts.testdata.verify import (
 )
 
 
+def test_new_checks_are_registered_and_no_longer_skip():
+    refs = {c.ref for c in verify.CHECKS}
+    assert {"V01", "V04", "V05"} <= refs
+    assert "V15" in refs, "the benchmark check needs its own ref"
+
+
+def test_benchmark_check_is_blocking():
+    assert verify.CHECK_BY_REF["V15"].blocking
+
+
 def test_fourteen_checks_with_twelve_blocking():
-    assert len(CHECKS) == 14
-    assert sum(1 for check in CHECKS if check.blocking) == 12
+    # V15 (benchmark computes) landed after this suite's original 14/12 count.
+    assert len(CHECKS) == 15
+    assert sum(1 for check in CHECKS if check.blocking) == 13
 
 
 def test_check_refs_are_sequential_and_unique():
     refs = [check.ref for check in CHECKS]
-    assert refs == [f"V{i:02d}" for i in range(1, 15)]
+    assert refs == [f"V{i:02d}" for i in range(1, 16)]
 
 
 def test_scored_checks_are_the_two_answer_key_scores():

@@ -33,3 +33,17 @@ def test_main_refuses_live_uicanvas_targets(target, capsys):
 def test_drop_first_does_not_bypass_the_guard(capsys):
     assert main(["--target", "bp_sqldb", "--drop-first"]) == 2
     assert "refuses" in capsys.readouterr().err
+
+
+def test_deal_assignment_failure_does_not_abort_the_build(monkeypatch):
+    """A grouping failure is a product finding to report, not a reason to throw
+    away a good 190,000-row build."""
+    from scripts.testdata import build
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("linking engine exploded")
+
+    monkeypatch.setattr(build, "_assign_deals_impl", boom)
+    result = build.assign_deals_on("bp_testdb")
+    assert "error" in result
+    assert "linking engine exploded" in result["error"]
