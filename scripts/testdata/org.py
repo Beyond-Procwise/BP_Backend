@@ -196,7 +196,7 @@ def build_cost_centres(
                     actual_spend_ytd=actual,
                     forecast_spend_annual=forecast,
                     cost_centre_type=rng.choice(CC_TYPES),
-                    linked_category_level_5_id=leaf.unspsc_code or leaf.l5 or "UNKNOWN",
+                    linked_category_level_5_id=leaf.l5_id or "UNKNOWN",
                     is_active=rng.random() > 0.05,
                 )
             )

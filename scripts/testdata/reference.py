@@ -39,6 +39,14 @@ class TaxonomyLeaf:
     l3: str | None
     l4: str | None
     l5: str | None
+    # The real per-level identifiers. cost_centre.linked_category_level_5_id and
+    # item.category_id both want l5_id -- note it is NOT unique: 121 distinct
+    # values across 246 leaves, because it identifies a node within its branch.
+    l1_id: str | None
+    l2_id: str | None
+    l3_id: str | None
+    l4_id: str | None
+    l5_id: str | None
     unspsc_code: str | None
     esg_impact: str | None
     category_status: str | None
@@ -61,7 +69,10 @@ def load_taxonomy(dbname: str = "uicanvas") -> list[TaxonomyLeaf]:
             cur.execute(
                 """
                 select category_level_1, category_level_2, category_level_3,
-                       category_level_4, category_level_5, unspsc_code, esg_impact,
+                       category_level_4, category_level_5,
+                       category_level_1_id, category_level_2_id, category_level_3_id,
+                       category_level_4_id, category_level_5_id,
+                       unspsc_code, esg_impact,
                        category_status, spend_classification, category_risk_rating,
                        audit_frequency, policy_coverage
                 from proc.bp_category

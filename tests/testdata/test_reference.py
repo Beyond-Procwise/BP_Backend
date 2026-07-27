@@ -75,3 +75,14 @@ def test_copy_reference_reproduces_fx_row_count(scratch_schema):
     finally:
         source.close()
         target.close()
+
+
+@pytest.mark.integration
+def test_taxonomy_leaves_carry_their_level_identifiers():
+    leaves = load_taxonomy("uicanvas")
+    for leaf in leaves:
+        assert leaf.l5_id, leaf.l5
+        assert leaf.l1_id
+    # Not unique: the same level-5 id appears under different branches.
+    ids = {leaf.l5_id for leaf in leaves}
+    assert 0 < len(ids) < len(leaves)

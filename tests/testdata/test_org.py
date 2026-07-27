@@ -11,6 +11,8 @@ def _leaves(count: int) -> list[TaxonomyLeaf]:
     return [
         TaxonomyLeaf(
             l1="IT & Technology", l2="Software", l3="ERP", l4=f"Sub{i}", l5=f"Leaf{i}",
+            l1_id="C-2000", l2_id="C-3000", l3_id="C-4000",
+            l4_id=f"C-45{i:02d}", l5_id=f"C-51{i:02d}",
             unspsc_code=str(10000000 + i), esg_impact="Low", category_status="Active",
             spend_classification="Direct", category_risk_rating="Minimal",
             audit_frequency="Annually", policy_coverage="Full",
@@ -95,3 +97,13 @@ def test_cost_centre_ids_are_unique():
     units = build_business_units(42)
     centres = build_cost_centres(42, units, _leaves(50))
     assert len({centre.cc_id for centre in centres}) == 500
+
+
+def test_cost_centre_links_the_real_category_level_5_id():
+    """Plan 1 put the UNSPSC code in this column. It wants the L5 id."""
+    units = build_business_units(42)
+    leaves = _leaves(50)
+    centres = build_cost_centres(42, units, leaves)
+    valid = {leaf.l5_id for leaf in leaves}
+    for centre in centres:
+        assert centre.linked_category_level_5_id in valid

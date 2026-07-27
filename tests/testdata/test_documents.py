@@ -45,6 +45,8 @@ def _fixture(chain_count: int = 200):
     leaves = [
         TaxonomyLeaf(
             l1="IT & Technology", l2=f"G{i}", l3=f"C{i}", l4=f"S{i}", l5=f"Leaf{i}",
+            l1_id="C-2000", l2_id="C-3000", l3_id="C-4000",
+            l4_id=f"C-45{i:02d}", l5_id=f"C-51{i:02d}",
             unspsc_code=str(40000000 + i), esg_impact="Low", category_status="Active",
             spend_classification="Direct", category_risk_rating="Minimal",
             audit_frequency="Annually", policy_coverage="Full",
@@ -72,6 +74,8 @@ def _fixture_with_items(chain_count: int = 200):
     leaves = [
         TaxonomyLeaf(
             l1="IT & Technology", l2=f"G{i}", l3=f"C{i}", l4=f"S{i}", l5=f"Leaf{i}",
+            l1_id="C-2000", l2_id="C-3000", l3_id="C-4000",
+            l4_id=f"C-45{i:02d}", l5_id=f"C-51{i:02d}",
             unspsc_code=str(40000000 + i), esg_impact="Low", category_status="Active",
             spend_classification="Direct", category_risk_rating="Minimal",
             audit_frequency="Annually", policy_coverage="Full",
@@ -120,6 +124,8 @@ def _world():
     leaves = [
         TaxonomyLeaf(
             l1="IT & Technology", l2=f"G{i}", l3=f"C{i}", l4=f"S{i}", l5=f"Leaf{i}",
+            l1_id="C-2000", l2_id="C-3000", l3_id="C-4000",
+            l4_id=f"C-45{i:02d}", l5_id=f"C-51{i:02d}",
             unspsc_code=str(40000000 + i), esg_impact="Low", category_status="Active",
             spend_classification="Direct", category_risk_rating="Minimal",
             audit_frequency="Annually", policy_coverage="Full",
