@@ -188,3 +188,54 @@ A second session committed `scripts/testdata/persist.py` — the document mappin
 for stage S3's six `_trgt` tables — while this plan was being written. S1 adapted
 to it rather than replacing it: `persist_org.py` is a sibling in the same idiom,
 and `loader.py` is shared by both.
+
+---
+
+# Stage S2 — Supplier Master and Reference Data
+
+**Date:** 2026-07-27
+
+## Result
+
+| Table | Rows | Was |
+|---|---|---|
+| `uicanvas_test.proc.bp_supplier` | 5,000 (51 columns) | 0 |
+| `uicanvas_test.proc.esg_data` | 5,000 (15 columns) | 0 — empty in live too |
+| `uicanvas_test.proc.contact` | 5,000 (14 columns) | 0 — empty in live too |
+| `uicanvas_test.proc.bp_contact` | 5,000 (14 columns) | 0 — empty in live too |
+| `bp_testdb.proc.bp_tprm_supplier` | 120 (10 columns) | 0 |
+
+Exit code 0. Blocking checks V01, V02, V03, V07, V14 PASS. 238 tests pass.
+Live unchanged at 313 tables / 405,805 rows.
+
+## Decisions
+
+**Third-party risk covers the Strategic tier only** — 120 of 5,000 suppliers.
+A TPRM register is maintained for suppliers that warrant the effort; filling all
+5,000 would misrepresent how it is used.
+
+**ESG figures derive from the supplier's own master record.** A supplier holding
+ISO 14001 scores 62–94 and reports 45–95% renewable energy; one without scores
+28–70 and 5–55%. Drawing them independently would have produced suppliers that
+are simultaneously certified and worst-in-class. `carbon_emission_tco2` is the
+sum of its three scopes, and a test asserts it.
+
+**Contacts come from the master record**, not invented separately, so
+`contact.contact_email` equals the supplier's `contact_email_1`.
+
+**`supplier_risk_scores` was reclassified from SEED to OUTPUT.** It carries
+`score`, `model_version`, `feature_summary` and `computed_at` — that is a model's
+conclusion, not reference data about the supplier. Seeding it would have left the
+scoring model untestable. This is the correction the classification tests exist
+to force.
+
+## Still excluded, and why
+
+`bp_supplier_ranking`, `bp_supplier_review`, `bp_supplier_enrichment`,
+`bp_supplier_alias`, `bp_supplier_name_reject`, `supplier_risk_signals` and
+`supplier_risk_scores` are all conclusions the product reaches. Seeding any of
+them would make the agent that produces it untestable.
+
+`_write_suppliers` still writes `bp_supplier` and `supplier` through its own path
+rather than the staged loader, because it carries bespoke identifier-swap logic
+and is already covered by V01 and V03. It does not get the required-set check.

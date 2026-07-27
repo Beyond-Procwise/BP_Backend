@@ -31,6 +31,7 @@ def test_dated_and_duplicated_copies_are_backups(table):
         "bp_supplier_ranking", "bp_quote_evaluation", "bp_decision", "bp_summary",
         "bp_opportunity", "bp_detection_finding", "bp_deal", "bp_deal_document_map",
         "bp_extraction_telemetry", "process_monitor", "workflow_events",
+        "supplier_risk_scores",
         "negotiation_sessions", "bp_approval", "action",
     ],
 )
@@ -55,7 +56,7 @@ def test_configuration_is_copied_verbatim(table):
     [
         "bp_supplier", "supplier", "business_unit", "cost_centre", "item",
         "bp_requirement", "bp_invoice_trgt", "bp_quote_line_items_stg",
-        "bp_purchase_order_raw", "esg_data", "supplier_risk_scores",
+        "bp_purchase_order_raw", "esg_data",
         "bp_tprm_supplier", "contact", "sup_mapping",
     ],
 )

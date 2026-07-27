@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from scripts.testdata import persist_org, verify
+from scripts.testdata import persist_org, persist_suppliers, verify
 from scripts.testdata.catalogue import build_catalogue
 from scripts.testdata.loader import load_tables
 from scripts.testdata.db import copy_rows, connect
@@ -147,6 +147,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     for table, count in loaded.items():
         print(f"  proc.{table}: {count} rows")
+
+    print("loading supplier reference data")
+    supplier_rows = persist_suppliers.rows_for_suppliers(suppliers)
+    target = persist_suppliers.TARGET_TABLE
+    for db_name, keys in (
+        (args.uicanvas_target, ("bp_supplier_uicanvas", "esg_data", "contact", "bp_contact")),
+        (args.target, ("bp_tprm_supplier",)),
+    ):
+        written = load_tables(
+            db_name,
+            {target[key]: persist_suppliers.COLUMNS[key] for key in keys},
+            {target[key]: persist_suppliers.REQUIRED[key] for key in keys},
+            {target[key]: supplier_rows[key] for key in keys},
+        )
+        for table, count in written.items():
+            print(f"  proc.{table}: {count} rows")
 
     if args.skip_verify:
         print("verification skipped")

@@ -84,6 +84,9 @@ _OUTPUT_EXACT = frozenset({
     "bp_approval", "bp_approvals", "approvals_uc", "bp_demand",
     "bp_contract_obligation", "bp_contract_obligation_party",
     "bp_contract_obligation_run", "supplier_risk_signals",
+    # score + model_version + feature_summary + computed_at: a model's
+    # conclusion, not reference data about the supplier.
+    "supplier_risk_scores",
     # uicanvas.action is the agent action log, not a to-do list to seed
     "action",
 })
@@ -110,7 +113,7 @@ _SEED_EXACT = frozenset({
     "business_unit", "cost_centre",
     # supplier master and the reference data hanging off it
     "bp_supplier", "supplier", "bp_supplier_id_crosswalk", "bp_tprm_supplier",
-    "supplier_risk_scores", "esg_data", "contact", "bp_contact",
+    "esg_data", "contact", "bp_contact",
     # catalogue
     "item", "bp_requirement",
     # documents: bp_sqldb three-tier
@@ -195,7 +198,7 @@ STAGES: tuple[Stage, ...] = (
         "the supplier inputs the product reads: risk, ESG, third-party risk "
         "management and contacts. Rankings and reviews stay out -- the product "
         "concludes those.",
-        ("bp_supplier", "supplier", "bp_tprm_supplier", "supplier_risk_scores",
+        ("bp_supplier", "supplier", "bp_tprm_supplier",
          "esg_data", "contact", "bp_contact"),
     ),
     Stage(
