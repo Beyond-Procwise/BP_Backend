@@ -19,3 +19,6 @@ documents/
 artifacts/extraction_analysis/
 artifacts/log_monitor/*.md
 src/docs/model_tuning/phi4_humanization_plan.md
+
+# Test-dataset snapshots: multi-hundred-MB pg_dump files, reproducible from a build
+backups/testdata/
