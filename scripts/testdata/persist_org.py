@@ -17,7 +17,13 @@ from datetime import datetime
 from typing import Sequence
 
 from scripts.testdata.catalogue import CatalogueItem
+from scripts.testdata.loader import MissingRequiredValue, _check_required
 from scripts.testdata.org import BU_FUNCTIONS, BusinessUnit, CostCentre
+
+__all__ = [
+    "COLUMNS", "REQUIRED", "TABLES", "MissingRequiredValue",
+    "check_required", "rows_for_org",
+]
 
 MARKER = "testdata"
 
@@ -77,20 +83,9 @@ REQUIRED: dict[str, tuple[str, ...]] = {
 TABLES: tuple[str, ...] = tuple(COLUMNS)
 
 
-class MissingRequiredValue(RuntimeError):
-    """A column declared required came out empty."""
-
-
 def check_required(table: str, rows: Sequence[Sequence]) -> None:
     """Raise unless every row carries a value in each of the table's required columns."""
-    columns = COLUMNS[table]
-    positions = [(columns.index(name), name) for name in REQUIRED[table]]
-    for number, row in enumerate(rows, start=1):
-        for position, name in positions:
-            if row[position] is None or row[position] == "":
-                raise MissingRequiredValue(
-                    f"{table}.{name} is required but empty (row {number})"
-                )
+    _check_required(table, COLUMNS[table], REQUIRED[table], rows)
 
 
 def _business_unit_row(unit: BusinessUnit) -> list:

@@ -11,8 +11,9 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from scripts.testdata import verify
+from scripts.testdata import persist_org, verify
 from scripts.testdata.catalogue import build_catalogue
+from scripts.testdata.loader import load_tables
 from scripts.testdata.db import copy_rows, connect
 from scripts.testdata.defects import plant, write_answer_key
 from scripts.testdata.documents import build_chains
@@ -133,6 +134,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print("writing suppliers and crosswalk")
     _write_suppliers(args.target, args.uicanvas_target, suppliers)
+
+    print("loading organisation and catalogue")
+    org_rows = persist_org.rows_for_org(units, centres, items)
+    loaded = load_tables(
+        args.uicanvas_target,
+        persist_org.COLUMNS,
+        persist_org.REQUIRED,
+        org_rows,
+        # Cost centres reference business units, so the units must land first.
+        order=("business_unit", "cost_centre", "item"),
+    )
+    for table, count in loaded.items():
+        print(f"  proc.{table}: {count} rows")
 
     if args.skip_verify:
         print("verification skipped")

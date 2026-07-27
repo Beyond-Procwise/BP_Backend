@@ -137,3 +137,63 @@ def test_mapping_is_deterministic():
     first = rows_for_org(units, centres, items)
     second = rows_for_org(units, centres, items)
     assert first == second
+
+
+# --- loading ---------------------------------------------------------------
+
+@pytest.mark.integration
+def test_load_tables_writes_every_row(scratch_uicanvas_schema, built):
+    from scripts.testdata.db import connect
+    from scripts.testdata.loader import load_tables
+    from tests.testdata import SCRATCH_UICANVAS_DB
+
+    rows, _ = built
+    written = load_tables(SCRATCH_UICANVAS_DB, COLUMNS, REQUIRED, rows)
+    assert written == {"business_unit": 400, "cost_centre": 500, "item": 5000}
+
+    conn = connect(SCRATCH_UICANVAS_DB)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select count(*) from proc.business_unit")
+            assert cur.fetchone()[0] == 400
+            cur.execute("select count(*) from proc.item where category_id is null")
+            assert cur.fetchone()[0] == 0
+            cur.execute(
+                "select count(*) from proc.cost_centre c where not exists ("
+                " select 1 from proc.business_unit b"
+                " where b.business_unit_id = c.business_unit_id)"
+            )
+            assert cur.fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.integration
+def test_loading_twice_leaves_the_same_row_counts(scratch_uicanvas_schema, built):
+    from scripts.testdata.loader import load_tables
+    from tests.testdata import SCRATCH_UICANVAS_DB
+
+    rows, _ = built
+    first = load_tables(SCRATCH_UICANVAS_DB, COLUMNS, REQUIRED, rows)
+    second = load_tables(SCRATCH_UICANVAS_DB, COLUMNS, REQUIRED, rows)
+    assert first == second
+
+
+@pytest.mark.integration
+def test_load_refuses_a_live_target(built):
+    from scripts.testdata.guards import UnsafeTargetError
+    from scripts.testdata.loader import load_tables
+
+    rows, _ = built
+    with pytest.raises(UnsafeTargetError):
+        load_tables("uicanvas", COLUMNS, REQUIRED, rows)
+
+
+@pytest.mark.integration
+def test_load_refuses_rows_missing_a_required_value(scratch_uicanvas_schema):
+    from scripts.testdata.loader import load_tables
+    from tests.testdata import SCRATCH_UICANVAS_DB
+
+    blank = [[None] * len(COLUMNS["item"])]
+    with pytest.raises(MissingRequiredValue):
+        load_tables(SCRATCH_UICANVAS_DB, COLUMNS, REQUIRED, {"item": blank})

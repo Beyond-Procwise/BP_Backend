@@ -18,3 +18,13 @@ def scratch_schema():
 
     clone_schema("bp_sqldb", SCRATCH_DB, drop_first=True)
     return SCRATCH_DB
+
+
+@pytest.fixture(scope="session")
+def scratch_uicanvas_schema():
+    """Clone uicanvas's structure into the scratch database, once per session."""
+    from scripts.testdata.schema import clone_schema
+    from tests.testdata import SCRATCH_UICANVAS_DB
+
+    clone_schema("uicanvas", SCRATCH_UICANVAS_DB, drop_first=True)
+    return SCRATCH_UICANVAS_DB
