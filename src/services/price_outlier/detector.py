@@ -186,3 +186,62 @@ def find_outliers(cur, settings: Optional[OutlierSettings] = None) -> list[Findi
 
     logger.info("price outlier scan produced %d findings", len(findings))
     return findings
+
+
+ISSUE_TYPE = "price_outlier"
+
+# The Action Centre reads this table and filters on status alone, with no
+# issue-type allowlist, so an open row is the whole integration.
+_INSERT = """
+    INSERT INTO proc.bp_extraction_discrepancy
+        (doc_type, source_file, doc_pk_candidate, raw_value, issue_type,
+         expected_value, computed_value, severity, status, blocks_promotion,
+         field_name, notes)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+_EXISTING = f"""
+    SELECT doc_type, doc_pk_candidate, field_name
+      FROM proc.bp_extraction_discrepancy
+     WHERE issue_type = '{ISSUE_TYPE}' AND status = 'open'
+"""
+
+
+def persist_findings(cur, findings: Sequence[Finding]) -> int:
+    """Write findings as open discrepancies. Returns rows written.
+
+    computed_value is deliberately left NULL. That column carries two different
+    conventions across the codebase — sometimes an expected value, sometimes a
+    signed delta — and the gateway reads `expected_value ?? computed_value` as
+    the expected figure. Populating only expected_value removes the ambiguity.
+    """
+    cur.execute(_EXISTING)
+    already = {tuple(row) for row in cur.fetchall()}
+
+    written = 0
+    for finding in findings:
+        key = (finding.doc_type, finding.doc_pk, finding.field_name)
+        if key in already:
+            continue
+        cur.execute(
+            _INSERT,
+            (
+                finding.doc_type,
+                f"agent:{ISSUE_TYPE}",
+                finding.doc_pk,
+                f"{finding.price:.2f}",
+                ISSUE_TYPE,
+                f"{finding.verdict.median:.2f}",
+                None,
+                finding.verdict.severity,
+                "open",
+                False,
+                finding.field_name,
+                finding.note,
+            ),
+        )
+        already.add(key)
+        written += 1
+
+    logger.info("price outlier findings written: %d", written)
+    return written
