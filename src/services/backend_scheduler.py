@@ -14,6 +14,26 @@ from utils.gpu import configure_gpu
 logger = logging.getLogger(__name__)
 
 
+def price_outlier_enabled() -> bool:
+    """OFF by default, unlike the other jobs.
+
+    The seeded corpus is ~190,000 lines against ~1,000 findings already open,
+    so a loose threshold could bury the Action Centre. Enable only after
+    reviewing a dry run.
+    """
+    import os
+    return os.environ.get("PRICE_OUTLIER_ENABLED", "0").strip() in ("1", "true", "True")
+
+
+def price_outlier_interval_minutes() -> int:
+    import os
+    try:
+        minutes = int(os.environ.get("PRICE_OUTLIER_INTERVAL_MINUTES", "60"))
+    except ValueError:
+        return 60
+    return max(1, minutes)
+
+
 class _ScheduledJob:
     def __init__(
         self,
@@ -337,6 +357,8 @@ class BackendScheduler:
 
     DEAL_ASSIGNMENT_JOB_NAME = "deal-assignment"
     EXTRACTION_FEEDBACK_JOB_NAME = "extraction-feedback"
+    STYLE_STAGING_SWEEP_JOB_NAME = "style-staging-sweep"
+    PRICE_OUTLIER_JOB_NAME = "price-outlier-scan"
 
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
@@ -350,6 +372,43 @@ class BackendScheduler:
         self._register_trgt_promotion_job()
         self._register_deal_assignment_job()
         self._register_extraction_feedback_job()
+        self._register_style_staging_sweep_job()
+        self._register_price_outlier_job()
+
+    def _register_style_staging_sweep_job(self) -> None:
+        """Register the style-staging TTL sweep.
+
+        Emails pasted for style compilation sit in proc.bp_style_ingest_staging until the
+        compiler consumes them. Someone who pastes five emails and then navigates away
+        leaves them there, so this deletes anything past its purge_after. Hourly is well
+        inside the 24-hour default TTL, and each run writes an audit row whether or not it
+        found anything — a sweep that logged only on a hit would be indistinguishable from
+        one that had silently stopped running.
+
+        Interval via STYLE_STAGING_SWEEP_INTERVAL_MINUTES (default 60).
+        """
+        import os
+        if self.STYLE_STAGING_SWEEP_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("STYLE_STAGING_SWEEP_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.STYLE_STAGING_SWEEP_JOB_NAME,
+            self._run_style_staging_sweep,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_style_staging_sweep(self) -> None:
+        """Purge expired style-ingest staging rows."""
+        try:
+            from services.style.compiler import sweep_expired_staging
+
+            sweep_expired_staging()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Style staging sweep failed")
 
     def _register_trgt_promotion_job(self) -> None:
         """Register the periodic _stg -> _trgt promotion job.
@@ -454,6 +513,35 @@ class BackendScheduler:
             interval=timedelta(minutes=max(1, minutes)),
             initial_delay=timedelta(minutes=5),
         )
+
+    def _register_price_outlier_job(self) -> None:
+        """Scan for extreme prices and raise them for review."""
+        if not price_outlier_enabled():
+            logger.info("price outlier job disabled by PRICE_OUTLIER_ENABLED")
+            return
+        if self.PRICE_OUTLIER_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.PRICE_OUTLIER_JOB_NAME,
+            self._run_price_outlier_scan,
+            interval=timedelta(minutes=price_outlier_interval_minutes()),
+            initial_delay=timedelta(minutes=10),
+        )
+
+    def _run_price_outlier_scan(self) -> None:
+        try:
+            from src.services.db import get_conn
+            from src.services.price_outlier import find_outliers, persist_findings
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    findings = find_outliers(cur)
+                    written = persist_findings(cur, findings)
+                conn.commit()
+            logger.info(
+                "price outlier scan: %d findings, %d new", len(findings), written)
+        except Exception:
+            logger.exception("price outlier scan failed")
 
     # Counts in the assign_deals() result that mean _trgt deals actually changed.
     _DEAL_CHANGE_KEYS = ("forward_linked", "backward_linked", "propagated",
