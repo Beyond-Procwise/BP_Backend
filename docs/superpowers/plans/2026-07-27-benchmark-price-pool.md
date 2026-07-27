@@ -2090,9 +2090,6 @@ In `src/services/backend_scheduler.py`, add beside the other job-name constants:
     PRICE_OUTLIER_JOB_NAME = "price-outlier-scan"
 ```
 
-and add the registration and runner next to `_register_deal_assignment_job`:
-
-```python
 and add these two module-level helpers near the top of the file, so the gate is
 testable without constructing a scheduler:
 
