@@ -213,10 +213,20 @@ computes where it previously gated.
 
 ### 4.6 What does not change
 
-No file under `src/services/benchmark/` is touched — the engine's arithmetic is
-verified against the workbook (§5.1) and stays exactly as it is. The four
-corrections in §5 are all in `benchmark_live.py`, which is data plumbing, not
-calculation. The neutralised adjustments stay neutralised and stay disclosed.
+The engine's arithmetic is verified against the workbook (§5.1) and does not
+change. Three of the four corrections in §5 are in `benchmark_live.py`, which is
+data plumbing rather than calculation. The neutralised adjustments stay
+neutralised and stay disclosed.
+
+**One exception, stated plainly:** §5.3 does require an engine change.
+`historical_quantity` is currently a required float, so "no quantity recorded"
+cannot be expressed and has to be faked as zero somewhere. It becomes
+`Optional[float]`, and the reference-quantity average skips the missing ones
+along with their weights. No other calculation reads that field. Parity is
+unaffected because the workbook has no missing quantities — every golden fixture
+value stays identical, and the whole 58-test suite must still pass unchanged.
+Making the model able to say "unknown" is the fix; anything done purely in the
+plumbing would be substituting a number for a fact we do not have.
 
 Pool size was measured rather than assumed: constructing 120,000
 `BenchmarkPoint` objects takes 0.41 s, and one `compute_benchmark` call over the
@@ -305,10 +315,12 @@ reference quantity, which tilts the volume adjustment and makes quotes look
 dearer than they are. The distortion is bounded by the 0.85–1.15 clamp but it is
 real and it is silent.
 
-Fix: exclude rows with no quantity from the reference-quantity average rather
-than counting them as zero. The row still contributes its price to the
-benchmark; only the volume profile ignores it. The count of such rows is added
-to the response so the omission is visible.
+Fix: make `historical_quantity` optional on `BenchmarkPoint` and have the
+reference-quantity average skip missing values and their weights, rather than
+counting them as zero. The row still contributes its price to the benchmark;
+only the volume profile ignores it. The count of such rows is added to the
+response so the omission is visible. This is the single change to the engine
+package, and it leaves every golden-fixture value untouched — see §4.6.
 
 ### 5.4 A deal is benchmarked against its own documents
 
@@ -478,8 +490,10 @@ ratio test. Persistence tests: the row carries the header id and populates
     `price_outlier` findings that appear in `GET /spendiq/discrepancies` with a
     resolved `deal_id`, and each one names its comparison in plain English.
 11. Running the detector twice raises no duplicate findings.
-12. The whole benchmark suite still passes unchanged — the arithmetic is not
-    touched by any of this.
+12. The whole 58-test benchmark suite still passes unchanged, including every
+    golden-fixture value — the arithmetic is not touched by any of this.
+13. The workbook's contradictory column description is corrected, and the
+    add-once rule is written into `src/services/benchmark/README.md`.
 
 ## 9. Risks
 
