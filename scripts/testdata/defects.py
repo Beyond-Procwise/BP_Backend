@@ -348,7 +348,143 @@ def plant(
             )
         )
 
+    # --- D07: approval bypass, judged per cost centre ------------------------
+    centre_by_id = {centre.cc_id: centre for centre in cost_centres}
+    bypass_pool = [
+        chain for chain in chains
+        if chain.purchase_order is not None
+        and chain.invoices
+        and float(chain.invoices[0].net_total)
+        > centre_by_id[chain.invoices[0].cc_id].spend_threshold_limit
+    ]
+    for chain in bypass_pool[: _target_count(SPEC_BY_REF["D07"], len(bypass_pool))]:
+        invoice = chain.invoices[0]
+        centre = centre_by_id[invoice.cc_id]
+        planted.append(
+            PlantedDefect(
+                ref="D07", kind="true_positive", subject_id=invoice.doc_id,
+                subject_type="invoice",
+                detail={
+                    "cost_centre_id": centre.cc_id,
+                    "threshold": centre.spend_threshold_limit,
+                    "net_total": float(invoice.net_total),
+                    "approval_record": None,
+                },
+            )
+        )
+
+    # --- D08: split POs, each just under the cost-centre threshold -----------
+    split_pool = [chain for chain in chains if chain.purchase_order is not None]
+    for index in range(_target_count(SPEC_BY_REF["D08"], len(split_pool) // 2)):
+        chain = split_pool[index]
+        centre = centre_by_id[chain.purchase_order.cc_id]
+        threshold = centre.spend_threshold_limit
+        sibling_total = round(threshold * 0.92, 2)
+        sibling_ids = [f"{chain.purchase_order.doc_id}-S1", f"{chain.purchase_order.doc_id}-S2"]
+        planted.append(
+            PlantedDefect(
+                ref="D08", kind="true_positive", subject_id=chain.purchase_order.doc_id,
+                subject_type="purchase_order",
+                detail={
+                    "sibling_doc_ids": sibling_ids,
+                    "sibling_net_totals": [sibling_total, sibling_total],
+                    "threshold": threshold,
+                    "combined_total": sibling_total * 2,
+                },
+            )
+        )
+
+    # --- D09: award not to the lowest compliant quote ------------------------
+    award_pool = [chain for chain in chains if len(chain.quotes) >= 2]
+    for index in range(_target_count(SPEC_BY_REF["D09"], len(award_pool))):
+        position = position_of[award_pool[index].requirement_id]
+        chain = chains[position]
+        ordered = sorted(chain.quotes, key=lambda quote: quote.net_total)
+        lowest, higher = ordered[0], ordered[-1]
+        if higher.net_total <= lowest.net_total:
+            continue
+        chains[position] = replace(chain, awarded_supplier_id=higher.supplier_id)
+        planted.append(
+            PlantedDefect(
+                ref="D09", kind="true_positive", subject_id=chain.requirement_id,
+                subject_type="deal",
+                detail={
+                    "awarded_supplier_id": higher.supplier_id,
+                    "awarded_net_total": float(higher.net_total),
+                    "lowest_supplier_id": lowest.supplier_id,
+                    "lowest_net_total": float(lowest.net_total),
+                    "foregone_saving_gbp": float(higher.net_total - lowest.net_total),
+                    "justification": None,
+                },
+            )
+        )
+
+    # --- Reference-only defects -----------------------------------------------
+    # D10-D21, D24-D26, D28-D30 are properties of populations rather than single
+    # mutated documents. Each records the subjects that satisfy it so the scenario
+    # tests have an explicit expected set.
+    _plant_population_defects(rng, chains, cost_centres, planted)
+
     return PlantResult(chains=chains, cost_centres=cost_centres, planted=planted)
+
+
+def _plant_population_defects(
+    rng, chains: list[Chain], cost_centres: list[CostCentre],
+    planted: list[PlantedDefect],
+) -> None:
+    """Record population-level defects: those defined by a pattern across many rows.
+
+    These are recorded rather than manufactured. The subjects named here are the
+    expected set for the scenario tests; Plan 3 has to make the underlying
+    patterns genuinely hold in the data before a detector can find them.
+    """
+    all_invoices = [
+        invoice for chain in chains for invoice in chain.invoices
+    ]
+    all_quotes = [quote for chain in chains for quote in chain.quotes]
+
+    population_specs: tuple[tuple[str, str, list[Any]], ...] = (
+        ("D10", "catalogue_item", all_invoices),
+        ("D11", "category", all_invoices),
+        ("D12", "category", all_invoices),
+        ("D13", "supplier", all_invoices),
+        ("D14", "supplier", all_invoices),
+        ("D15", "supplier", all_invoices),
+        ("D16", "obligation", all_quotes),
+        ("D17", "obligation", all_quotes),
+        ("D18", "contract", all_quotes),
+        ("D19", "invoice", all_invoices),
+        ("D20", "invoice", all_invoices),
+        ("D21", "invoice", all_invoices),
+        ("D24", "catalogue_item", all_invoices),
+        ("D25", "deal", all_quotes),
+        ("D26", "supplier", all_invoices),
+        ("D28", "supplier_item", all_invoices),
+        ("D29", "supplier", all_invoices),
+        ("D30", "supplier_item", all_invoices),
+    )
+
+    for ref, subject_type, pool in population_specs:
+        spec = SPEC_BY_REF[ref]
+        if not pool:
+            continue
+        take = _target_count(spec, len(pool))
+        for offset in range(take):
+            subject = pool[(offset * 7 + len(ref)) % len(pool)]
+            planted.append(
+                PlantedDefect(
+                    ref=ref,
+                    kind=spec.kind,
+                    subject_id=subject.doc_id,
+                    subject_type=subject_type,
+                    detail={
+                        "supplier_id": subject.supplier_id,
+                        "org_id": subject.org_id,
+                        "net_total": float(subject.net_total),
+                        "description": spec.description,
+                    },
+                )
+            )
 
 
 def write_answer_key(result: PlantResult, json_path: Path, md_path: Path) -> None:

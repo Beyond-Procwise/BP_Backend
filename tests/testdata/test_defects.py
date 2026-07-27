@@ -130,6 +130,47 @@ def test_planting_is_deterministic():
     ]
 
 
+def test_every_declared_defect_type_is_actually_planted(planted_full):
+    planted_refs = {item.ref for item in planted_full.planted}
+    missing = sorted({spec.ref for spec in DEFECT_SPECS} - planted_refs)
+    assert not missing, f"declared but never planted: {missing}"
+
+
+def test_negative_controls_are_all_represented(planted_full):
+    negative_refs = {
+        spec.ref for spec in DEFECT_SPECS if spec.kind == "negative_control"
+    }
+    planted_negative = {
+        item.ref for item in planted_full.planted if item.kind == "negative_control"
+    }
+    assert planted_negative == negative_refs
+
+
+def test_quantity_mismatch_invoice_exceeds_po_quantity(planted_full):
+    items = [p for p in planted_full.planted if p.ref == "D04"]
+    assert items
+    for item in items:
+        assert item.detail["invoice_quantity"] > item.detail["po_quantity"]
+
+
+def test_split_pos_are_grouped_and_each_sits_below_threshold(planted_full):
+    items = [p for p in planted_full.planted if p.ref == "D08"]
+    assert items
+    for item in items:
+        sibling_ids = item.detail["sibling_doc_ids"]
+        assert len(sibling_ids) >= 2
+        for value in item.detail["sibling_net_totals"]:
+            assert value < item.detail["threshold"]
+
+
+def test_award_variance_records_the_foregone_saving(planted_full):
+    items = [p for p in planted_full.planted if p.ref == "D09"]
+    assert items
+    for item in items:
+        assert item.detail["foregone_saving_gbp"] > 0
+        assert item.detail["awarded_net_total"] > item.detail["lowest_net_total"]
+
+
 def test_answer_key_is_written_and_reloadable(planted, tmp_path):
     json_path = tmp_path / "answer-key.json"
     md_path = tmp_path / "answer-key.md"
