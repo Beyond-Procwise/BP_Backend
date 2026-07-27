@@ -16,12 +16,21 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from scripts.testdata.coverage import BACKUP, OUTPUT as BUCKET_OUTPUT, SEED, classify
 from scripts.testdata.db import connect
 from scripts.testdata.reference import REFERENCE_TABLES
 from scripts.testdata.suppliers import SUPPLIER_COLUMNS
 
+BUCKET_MEANING = {
+    SEED: "Fill — business data the seeder synthesises",
+    "REFERENCE": "Fill — configuration copied verbatim from live",
+    BUCKET_OUTPUT: "Leave empty — the product derives this",
+    BACKUP: "Leave empty — historical or dated copy",
+    "UNCLEAR": "Undecided — must be classified",
+}
+
 ROOT = Path(__file__).resolve().parents[2]
-OUTPUT = ROOT / "docs" / "testdata" / "BP_Schema_Coverage.xlsx"
+OUTPUT_PATH = ROOT / "docs" / "testdata" / "BP_Schema_Coverage.xlsx"
 
 PAIRS = (("bp_sqldb", "bp_testdb"), ("uicanvas", "uicanvas_test"))
 
@@ -146,11 +155,11 @@ def build() -> Path:
 
     _write_header(
         coverage,
-        ["Database", "Table", "Columns", "Live rows", "Test-DB rows", "Status", "What fills it"],
+        ["Database", "Table", "Columns", "Live rows", "Test-DB rows", "Plan", "Why", "Status", "What fills it"],
     )
     _write_header(
         schema,
-        ["Database", "Table", "#", "Column", "Data type", "Nullable", "Default", "Status"],
+        ["Database", "Table", "#", "Column", "Data type", "Nullable", "Default", "Plan", "Status"],
     )
 
     totals: list[tuple] = []
@@ -180,6 +189,7 @@ def build() -> Path:
             if status != STATUS_NONE:
                 covered += 1
             cols = columns.get(table, [])
+            verdict = classify(table)
             coverage.append(
                 [
                     source_db,
@@ -187,6 +197,8 @@ def build() -> Path:
                     len(cols),
                     live_counts.get(table, -1),
                     target_counts.get(table, -1),
+                    BUCKET_MEANING.get(verdict.bucket, verdict.bucket),
+                    verdict.reason,
                     status,
                     note,
                 ]
@@ -201,6 +213,7 @@ def build() -> Path:
                         _type_label(data_type, length),
                         "yes" if nullable == "YES" else "NO",
                         (default or "")[:60],
+                        BUCKET_MEANING.get(classify(table).bucket, ""),
                         status,
                     ]
                 )
@@ -221,8 +234,8 @@ def build() -> Path:
             for t in tables
         ]
 
-    _autosize(coverage, {1: 14, 2: 38, 3: 9, 4: 12, 5: 13, 6: 34, 7: 46})
-    _autosize(schema, {1: 14, 2: 38, 3: 5, 4: 34, 5: 24, 6: 9, 7: 30, 8: 34})
+    _autosize(coverage, {1: 14, 2: 38, 3: 9, 4: 12, 5: 13, 6: 44, 7: 40, 8: 32, 9: 44})
+    _autosize(schema, {1: 14, 2: 38, 3: 5, 4: 34, 5: 24, 6: 9, 7: 30, 8: 44, 9: 32})
 
     # --- Summary -----------------------------------------------------------
     _write_header(
@@ -280,9 +293,9 @@ def build() -> Path:
         focus,
     )
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    book.save(OUTPUT)
-    return OUTPUT
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    book.save(OUTPUT_PATH)
+    return OUTPUT_PATH
 
 
 def _focus_tab(book: Workbook, title: str, wanted: list[tuple[str, str]], focus: dict) -> None:
