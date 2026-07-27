@@ -1,8 +1,12 @@
-# Benchmark price pool from test data
+# Benchmark price pool, data corrections, and price-outlier review
 
 **Date:** 2026-07-27
 **Status:** design, awaiting approval
 **Depends on:** `2026-07-24-full-scope-test-dataset-design.md` (Plan 1 complete at `1db0767`)
+
+Three strands, in dependency order: give the benchmark engine a real price pool
+(§1–4), correct four defects in how it reads the database (§5), and flag extreme
+prices for human review in the Action Centre (§6).
 
 ## 1. Why
 
@@ -59,8 +63,14 @@ prerequisite for every acceptance criterion below.
 
 **In scope:** persist quote, purchase-order and invoice headers and their line
 items into the target tables; assign deal identifiers using the real service;
-correct two data defects that would otherwise corrupt the pool; extend
-verification to cover the new data.
+correct two generator defects that would otherwise corrupt the pool; extend
+verification to cover the new data; correct four defects in how the benchmark
+reads the database (§5); and flag extreme prices into the Action Centre (§6).
+
+The last two strands touch `src/`, not just the seeder. They earn their place
+here because both were found while establishing whether the pool would produce
+trustworthy numbers, and shipping the pool without them would mean seeding
+190,000 rows into a reader with a known currency defect.
 
 **Out of scope, deliberately:** the four adjustment factors the engine supports
 but the corpus cannot feed — specification score, service-level score, location
@@ -162,7 +172,7 @@ writing deal identifiers directly. The design document for the test dataset
 takes the same position in its §13 note: a red result from a correctly built
 test is a finding, not a defect in the test.
 
-### 4.4 Two data corrections
+### 4.4 Two generator corrections
 
 Both are defects in already-committed generator code that would corrupt the
 pool. Both are small.
@@ -203,9 +213,10 @@ computes where it previously gated.
 
 ### 4.6 What does not change
 
-No file under `src/services/benchmark/` is touched. `benchmark_live.py` already
-reads precisely these tables; pointing it at `bp_testdb` is a connection
-setting. The neutralised adjustments stay neutralised and stay disclosed.
+No file under `src/services/benchmark/` is touched — the engine's arithmetic is
+verified against the workbook (§5.1) and stays exactly as it is. The four
+corrections in §5 are all in `benchmark_live.py`, which is data plumbing, not
+calculation. The neutralised adjustments stay neutralised and stay disclosed.
 
 Pool size was measured rather than assumed: constructing 120,000
 `BenchmarkPoint` objects takes 0.41 s, and one `compute_benchmark` call over the
@@ -214,17 +225,210 @@ plus the row fetch. No optimisation is warranted, and none is proposed —
 narrowing the pool query would risk changing which points match, and the engine's
 accuracy is not negotiable for a saving this size.
 
-## 5. Testing
+## 5. Corrections to how the engine reads the database
 
-Unit tests over a small chain fixture, no database: `write_chains` produces one
-row per document and one per line; column lists match the live schema; totals
-survive the mapping; the marker fields are set. Database writes follow the
-integration-marked pattern already used in `tests/testdata/test_db.py`.
+### 5.1 The arithmetic is not in question
 
-Regression tests for the two corrections: descriptions are unique across the
-full 5,000-item catalogue, and a converted line re-derives from its FX rate.
+Verified formula-by-formula against `Benchmark Calculations.xlsx`, reading the
+formula strings out of the cells rather than only comparing outputs. The five
+adjustment factors, their clamps (and the deliberate absence of clamps on
+location and inflation), the per-column rounding digits — `2,2,4,2,2` on the
+weighted profiles, including the odd 4 on location — the confidence bands and
+all eleven configuration values match. The golden fixtures are independent
+evidence: `scripts/export_benchmark_fixtures.py:62` loads the workbook with
+`data_only=True`, so the expected values are Excel's own cached results, not our
+engine's output.
 
-## 6. Acceptance criteria
+Two intentional divergences, both already covered by tests:
+
+- **Median.** The workbook's median formula reads the internal data sheet only
+  and returns 0 for four of the five sample deals. Ours is a true median across
+  the pooled set. Selecting the median method will therefore not reproduce the
+  workbook.
+- **One-off costs.** The workbook's formula adds delivery, implementation,
+  support and risk once per order; the description written in that same column
+  says to multiply them by quantity. The two contradict each other. We follow
+  the formula, which is also what the cached values reflect. **This remains an
+  open question for the business** — on a 220-unit line it is the difference
+  between one delivery charge and 220. Recorded here rather than silently
+  settled; the code does not change until someone decides.
+
+### 5.2 Purchase-order currency is dropped (defect)
+
+`load_benchmark_pool` selects `p.currency` from `bp_po_line_items_trgt` with no
+join to the purchase-order header. That column is NULL on every row in the live
+database, so `_norm_currency` defaults all of it to sterling. Of the 136
+purchase-order lines currently in the pool, **77 are not sterling** — 73 US
+dollar and 4 New Zealand dollar. The invoice half of the same query already
+joins its header correctly; the purchase-order half does not.
+
+No wrong answer is being produced today, because no dollar purchase order shares
+an item description with any quote, so nothing actually pools together. It is
+latent, not benign: any corpus with overlap triggers it.
+
+Fix: join `proc.bp_purchase_order_trgt` and coalesce line currency to header
+currency, mirroring the invoice branch. Note that this defect would be *masked*
+rather than fixed by the test data, because §4.1 writes line-level currency on
+every generated row — which is a reason to fix it in the query and to add a
+regression test that pins the header fallback.
+
+### 5.3 Missing quantities are counted as zero
+
+`benchmark_live.py:111` coerces a NULL quantity to `0.0`. Twelve of 136
+purchase-order pool rows and four of 108 invoice rows have no quantity — for
+services lines, legitimately so. Counting them as zero drags down the weighted
+reference quantity, which tilts the volume adjustment and makes quotes look
+dearer than they are. The distortion is bounded by the 0.85–1.15 clamp but it is
+real and it is silent.
+
+Fix: exclude rows with no quantity from the reference-quantity average rather
+than counting them as zero. The row still contributes its price to the
+benchmark; only the volume profile ignores it. The count of such rows is added
+to the response so the omission is visible.
+
+### 5.4 A deal is benchmarked against its own documents
+
+The pool query has no deal filter, so a deal's own purchase order and invoices
+sit in the comparison set used to judge its quotes. The winning supplier is
+therefore partly benchmarked against its own price — precisely the supplier most
+worth scrutinising. This is disclosed today but not corrected, and the test data
+makes it much worse: every generated purchase order copies the awarded quote's
+lines verbatim, and every invoice copies the purchase order's.
+
+Fix: exclude documents belonging to the deal under analysis from its own pool,
+and report the excluded count. Where that drops a line below the evidence
+threshold, the line gates — which is the correct outcome, not a regression.
+
+### 5.5 Suspect prices stay in the pool, and are disclosed
+
+For 22% of live quote lines, unit price times quantity does not equal the line
+total. Most are legitimate line discounts of 5–11%. Some are extraction errors:
+one line records a notebook at £11.69 each for a quantity of 100 against a
+printed total of £116.90 — the unit price is ten times too high, and the
+benchmark engine trusts it.
+
+These are **not** silently dropped from the pool. We do not know which of the
+three numbers is wrong, so excluding the row is a guess dressed as a
+correction. Instead the response reports how many pool points carry an open
+finding against them, and §6 raises the extreme cases for a human to judge.
+
+The existing `line_total_mismatch` check already detects the within-row
+inconsistency (160 findings live), so §6 does not duplicate it — §6 is the
+cross-document check that no existing detector performs.
+
+## 6. Price outliers as review checkpoints
+
+**Requirement:** where a line's price is extreme against comparable purchases,
+raise it as a checkpoint so someone can confirm whether the line is accurate,
+and surface it in the Action Centre.
+
+### 6.1 Route to the Action Centre
+
+No new table, endpoint or screen. The Action Centre reads
+`proc.bp_extraction_discrepancy`: the gateway's `getDiscrepancies` filters on
+`status` alone, with no issue-type allowlist, orders critical findings first,
+and resolves the owning deal by joining `proc.bp_deal_documents`. Writing a row
+with `status='open'` is the whole integration. The compliance exception chart
+and the deal-detail Checks list pick the new type up on the same basis.
+
+### 6.2 `src/services/price_outlier.py` — new module
+
+Detection is separated from the benchmark API on purpose: a GET request must not
+write findings. The detector runs as a scheduled job alongside the existing
+`trgt-promotion` and `deal-assignment` jobs, following the same
+env-flag-plus-interval pattern in `backend_scheduler`, and is also callable on
+demand.
+
+For each priced line in the quote, purchase-order and invoice target tables, the
+peer set is the pooled purchase-order and invoice history for the same
+normalised item, unit and currency, excluding the line's own document. This is
+deliberately the same match rule the benchmark engine uses, so a flag and a
+benchmark never disagree about what counts as comparable.
+
+**The test, and why this one.** Compare against the peer **median** and the
+median absolute deviation, not the mean and standard deviation: the mean is
+dragged by the very outliers being hunted, so a single ten-times-wrong price
+raises the bar enough to hide itself. A line is flagged when it is both
+
+- statistically extreme — at least 5 robust deviations from the peer median
+  (`|price − median| / (1.4826 × MAD)`), and
+- commercially material — at least 3× the peer median, or at most a third of it.
+
+Both conditions must hold. The first alone flags trivia when peers are nearly
+identical, where a 2% difference is arithmetically enormous; the second alone
+flags genuine price variety. Where more than half the peers share an identical
+price the deviation measure collapses to zero, so the ratio test stands alone in
+that case.
+
+At least 5 peers are required. The benchmark engine's own floor is 3, but a
+median over three points is too thin to call a fourth one extreme.
+
+Severity follows magnitude: 10× or more (or a tenth or less) is `critical`,
+anything else `warning`. `blocks_promotion` is false — this is review signal, not
+a gate, consistent with every other finding of this kind.
+
+### 6.3 The row
+
+| Column | Value |
+|---|---|
+| `doc_type` | `quote`, `purchase_order`, `invoice` |
+| `doc_pk_candidate` | the header id, so the deal join resolves |
+| `field_name` | `line_items[N].unit_price` |
+| `issue_type` | `price_outlier` |
+| `raw_value` | the line's unit price |
+| `expected_value` | the peer median |
+| `computed_value` | left NULL — see below |
+| `severity` | `critical` or `warning` |
+| `status` | `open` |
+| `blocks_promotion` | false |
+
+`computed_value` is deliberately empty. That column carries two different
+conventions across the codebase — in some rows an expected value, in others a
+signed delta — and the gateway reads `expected_value ?? computed_value` as the
+expected figure and derives the delta itself. Populating only `expected_value`
+leaves no room for the ambiguity to bite.
+
+`notes` carries the plain-English reason, because that is what a reviewer
+actually reads: *"line 3: 'A4 Ruled Notebook' at £11.69 each is 10.0× the usual
+£1.17 across 18 comparable purchases since May 2023 — check the unit price and
+quantity."*
+
+Re-running the detector must not stack duplicates: a line already carrying an
+open `price_outlier` finding is skipped. A resolved finding whose price later
+changes can be raised again.
+
+### 6.4 What this is not
+
+It does not alter any price, exclude anything from the benchmark pool, or block
+promotion. It raises a question for a human. The one thing it changes about the
+benchmark response is the disclosure in §5.5: the count of pool points carrying
+an open finding.
+
+## 7. Testing
+
+**Seeder.** Unit tests over a small chain fixture, no database: `write_chains`
+produces one row per document and one per line; column lists match the live
+schema; totals survive the mapping; the marker fields are set. Database writes
+follow the integration-marked pattern already used in `tests/testdata/test_db.py`.
+Regression tests for the two generator corrections: descriptions are unique
+across the full 5,000-item catalogue, and a converted line re-derives from its
+FX rate.
+
+**Live-read corrections.** Each of §5.2–5.5 gets a test that fails before the
+fix: a purchase-order line whose currency lives only on the header reaches the
+pool in that currency; a NULL quantity leaves the reference quantity unchanged
+rather than pulling it toward zero; a deal's own documents do not appear among
+its matched point ids; the response reports the suspect-point count.
+
+**Outlier detector.** Pure-function tests on the decision rule, no database: a
+ten-times price among tight peers flags as critical; a 3× price among tight
+peers flags as warning; a 2% deviation among identical peers does not flag
+despite being statistically enormous; genuine price spread does not flag; fewer
+than five peers never flags; identical peers (zero deviation) fall back to the
+ratio test. Persistence tests: the row carries the header id and populates
+`expected_value` not `computed_value`; a second run raises no duplicate.
+
+## 8. Acceptance criteria
 
 1. `python -m scripts.testdata.build --target bp_testdb --seed 42 --drop-first`
    exits 0 and `bp_testdb` holds the suppliers, reference data, documents and
@@ -241,8 +445,19 @@ full 5,000-item catalogue, and a converted line re-derives from its FX rate.
 6. Two builds at seed 42 in separate processes reproduce one checksum, and
    `BUILD_LOG.md` records the new value.
 7. `bp_sqldb` and `uicanvas` are provably unchanged (V14).
+8. A purchase-order line whose currency is set only on its header enters the
+   pool in that currency, proven against live data where 77 of 136 pool lines
+   are not sterling.
+9. The benchmark response reports, per line, how many matched points were
+   excluded as the deal's own documents and how many carry an open finding.
+10. The outlier detector, run against the seeded database, raises
+    `price_outlier` findings that appear in `GET /spendiq/discrepancies` with a
+    resolved `deal_id`, and each one names its comparison in plain English.
+11. Running the detector twice raises no duplicate findings.
+12. The whole benchmark suite still passes unchanged — the arithmetic is not
+    touched by any of this.
 
-## 7. Risks
+## 9. Risks
 
 **`assign_deals` at volume.** Covered in §4.3. The fallback is explicit and does
 not involve fabricating deal identifiers.
@@ -256,3 +471,22 @@ reproducible, not that they match the old ones.
 mutates chains after generation. Making descriptions unique should not affect
 it, but the existing defect regression tests must still pass, and the per-type
 instance counts must still hit their declared targets.
+
+**Flooding the Action Centre.** The seeded corpus is roughly 190,000 lines
+against 1,065 open findings today. If the outlier thresholds are loose, a single
+detector run could bury every other finding in the queue. Two mitigations: the
+detector reports how many findings it would raise before it writes any, and the
+first run against the seeded database is reviewed for volume and precision
+before the scheduled job is enabled. If the count is implausible, the thresholds
+are wrong and get tightened — a detector nobody can keep up with is a detector
+nobody reads.
+
+**Outlier findings on planted defects.** Several of the 30 planted defect types
+manipulate prices deliberately. The detector should find those, and the answer
+key gives us a rare chance to measure precision and recall against known truth
+rather than guess at them. Worth doing as part of the first run; a detector
+whose hit rate is unknown is not finished.
+
+**The one-off cost question in §5.1 is unresolved.** Until it is settled, total
+cost gap on multi-unit lines carries whichever interpretation the workbook's
+formula encodes. It is stated, not hidden, and no code changes on a guess.
