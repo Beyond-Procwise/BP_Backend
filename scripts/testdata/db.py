@@ -11,11 +11,19 @@ from typing import Any, Iterable, Sequence
 
 import psycopg2
 import psycopg2.extensions
+import psycopg2.extras
 
 from config.settings import Settings
 from scripts.testdata.guards import assert_safe_target
 
 _COPY_BUFFER_ROWS = 5000
+
+# Read json and jsonb back as the raw text the server sent. The default adapter
+# decodes them to Python dicts, and str(dict) is Python repr -- single quotes,
+# True/False -- which COPY then rejects as invalid JSON. Passing the text
+# through untouched is also what "copy reference data verbatim" should mean.
+psycopg2.extras.register_default_json(globally=True, loads=lambda text: text)
+psycopg2.extras.register_default_jsonb(globally=True, loads=lambda text: text)
 
 
 def connect(dbname: str, *, autocommit: bool = False) -> psycopg2.extensions.connection:
@@ -63,6 +71,41 @@ def create_database(dbname: str, *, drop_first: bool = False) -> None:
         conn.close()
 
 
+def _array_literal(values: Sequence[Any]) -> str:
+    """Render a Python sequence as a Postgres array literal.
+
+    psycopg2 hands array columns back as Python lists, whose str() is '[1, 2]'.
+    Postgres wants '{1,2}', with every element quoted so that commas, quotes and
+    backslashes inside a text element survive the round trip.
+    """
+    parts: list[str] = []
+    for value in values:
+        if value is None:
+            parts.append("NULL")
+            continue
+        if isinstance(value, (list, tuple)):
+            parts.append(_array_literal(value))
+            continue
+        text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        parts.append(f'"{text}"')
+    return "{" + ",".join(parts) + "}"
+
+
+def _render(value: Any) -> Any:
+    """Convert a psycopg2-decoded value into something COPY ... CSV accepts."""
+    if value is None:
+        return "\\N"
+    if isinstance(value, (list, tuple)):
+        return _array_literal(value)
+    if isinstance(value, dict):
+        # Only reachable if a caller passes a dict directly; json/jsonb read
+        # through connect() already arrive as text.
+        import json
+
+        return json.dumps(value)
+    return value
+
+
 def copy_rows(
     conn: psycopg2.extensions.connection,
     schema: str,
@@ -98,7 +141,7 @@ def copy_rows(
         pending = 0
 
     for row in rows:
-        writer.writerow(["\\N" if value is None else value for value in row])
+        writer.writerow([_render(value) for value in row])
         written += 1
         pending += 1
         if pending >= _COPY_BUFFER_ROWS:

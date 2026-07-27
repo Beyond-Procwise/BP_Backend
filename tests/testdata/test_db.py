@@ -44,6 +44,76 @@ def test_copy_rows_inserts_and_returns_count():
 
 
 @pytest.mark.integration
+def test_copy_rows_round_trips_jsonb_verbatim():
+    """psycopg2 hands back jsonb as a Python dict; str(dict) is not JSON."""
+    from scripts.testdata.db import connect
+
+    conn = connect("bp_testdb")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("create schema if not exists scratch")
+            cur.execute("drop table if exists scratch.json_probe")
+            cur.execute("create table scratch.json_probe (a text, b jsonb)")
+            cur.execute(
+                """insert into scratch.json_probe values
+                   ('src', '{"rules": {"weights": {"risk": 0.2}}, "note": "it''s fine"}')"""
+            )
+        conn.commit()
+
+        with conn.cursor() as cur:
+            cur.execute("select a, b from scratch.json_probe")
+            source_rows = cur.fetchall()
+
+        copy_rows(
+            conn, "scratch", "json_probe", ["a", "b"],
+            [("copy", source_rows[0][1])],
+        )
+        conn.commit()
+
+        with conn.cursor() as cur:
+            cur.execute("select b from scratch.json_probe where a = 'src'")
+            original = cur.fetchone()[0]
+            cur.execute("select b from scratch.json_probe where a = 'copy'")
+            copied = cur.fetchone()[0]
+            assert copied == original
+            cur.execute("drop table scratch.json_probe")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.integration
+def test_copy_rows_round_trips_an_integer_array():
+    """psycopg2 hands back int[] as a Python list; str(list) is not an array literal."""
+    from scripts.testdata.db import connect
+
+    conn = connect("bp_testdb")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("create schema if not exists scratch")
+            cur.execute("drop table if exists scratch.array_probe")
+            cur.execute("create table scratch.array_probe (a text, b int[], c text[])")
+        conn.commit()
+
+        copy_rows(
+            conn, "scratch", "array_probe", ["a", "b", "c"],
+            [("one", [1, 2, 3], ["plain", 'has,comma', 'has"quote']), ("empty", [], None)],
+        )
+        conn.commit()
+
+        with conn.cursor() as cur:
+            cur.execute("select a, b, c from scratch.array_probe order by a")
+            assert cur.fetchall() == [
+                ("empty", [], None),
+                ("one", [1, 2, 3], ["plain", "has,comma", 'has"quote']),
+            ]
+            cur.execute("drop table scratch.array_probe")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.integration
 def test_copy_rows_writes_null_for_none():
     from scripts.testdata.db import connect
 
