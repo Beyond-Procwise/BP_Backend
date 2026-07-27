@@ -31,6 +31,27 @@ _SOURCES: tuple[dict[str, str], ...] = (
      "doc_pk": "invoice_id", "line_no": "line_no"},
 )
 
+# po_id and invoice_id are NOT disjoint namespaces (live bp_sqldb has a PO and
+# an invoice both numbered "123456/22"), so a raw doc_pk cannot be used to
+# exclude "the line's own document" from its peer set -- it would also
+# exclude an unrelated document of the other type that happens to share the
+# id, over-excluding real comparison evidence. The pool's point_id already
+# carries the type prefix ("po:"/"inv:"); qualifying every document identity
+# with that same prefix keeps the two namespaces apart everywhere they meet.
+# Quote lines are never IN the pool (load_benchmark_pool reads only PO and
+# invoice lines), so a quote line has no prefix to qualify with and excludes
+# nothing from its peer set -- deliberately, not by omission.
+_POOL_PREFIX_BY_DOC_TYPE: dict[str, str] = {
+    "purchase_order": "po",
+    "invoice": "inv",
+}
+
+
+def _pool_prefix(point_id: str) -> str:
+    """Reuse the type prefix point_id already carries, rather than re-deriving
+    which pool query a row came from some other way."""
+    return point_id.split(":", 1)[0]
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -60,8 +81,9 @@ def build_peer_index(
             _norm_uom(row["unit_of_measure"]),
             _norm_currency(row["currency"]),
         )
+        qualified_doc = f"{_pool_prefix(row['point_id'])}:{row.get('doc_id')}"
         index.setdefault(key, []).append(
-            (row.get("doc_id"), float(row["unit_price"])))
+            (qualified_doc, float(row["unit_price"])))
     return index
 
 
@@ -74,12 +96,18 @@ def peers_for(
 
 
 def describe(line_number: int, item: str, price: float, verdict: Verdict) -> str:
-    """The sentence a reviewer reads. Names the comparison, not the statistics."""
-    direction = "×" if verdict.ratio >= 1 else "÷"
-    factor = verdict.ratio if verdict.ratio >= 1 else 1.0 / verdict.ratio
+    """The sentence a reviewer reads. Names the comparison, not the statistics.
+
+    A bare "÷" is not a word a reviewer reads as English, and a "/" is rewritten
+    by the output-safety gate downstream because it resembles a URL route -- so
+    the direction is spelled out (ABOVE/BELOW) instead of encoded as a symbol.
+    """
+    above = verdict.ratio >= 1
+    factor = verdict.ratio if above else 1.0 / verdict.ratio
+    direction = "ABOVE" if above else "BELOW"
     return (
         f"line {line_number}: '{item}' at {price:,.2f} each is "
-        f"{factor:,.1f}{direction} the usual {verdict.median:,.2f} across "
+        f"{factor:,.1f}× {direction} the usual {verdict.median:,.2f} across "
         f"{verdict.peer_count} comparable purchases — "
         f"check the unit price and quantity"
     )
@@ -124,13 +152,20 @@ def find_outliers(cur, settings: Optional[OutlierSettings] = None) -> list[Findi
 
     for source in _SOURCES:
         currency_by_doc = _line_currency(cur, source)
+        pool_prefix = _POOL_PREFIX_BY_DOC_TYPE.get(source["doc_type"])
         for line in _load_lines(cur, source):
             key = (
                 _norm_item(line["item_description"]),
                 _norm_uom(line["unit_of_measure"]),
                 _norm_currency(currency_by_doc.get(line["doc_pk"])),
             )
-            peers = peers_for(index, key, own_doc=line["doc_pk"])
+            # None for a quote line: quotes are never in the pool, so there is
+            # no qualified id that could ever collide -- nothing is excluded.
+            own_doc = (
+                f"{pool_prefix}:{line['doc_pk']}" if pool_prefix is not None
+                else None
+            )
+            peers = peers_for(index, key, own_doc=own_doc)
             verdict = assess(float(line["unit_price"]), peers, settings)
             if not verdict.flagged:
                 continue
