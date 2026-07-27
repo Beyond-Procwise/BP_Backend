@@ -357,6 +357,7 @@ class BackendScheduler:
 
     DEAL_ASSIGNMENT_JOB_NAME = "deal-assignment"
     EXTRACTION_FEEDBACK_JOB_NAME = "extraction-feedback"
+    STYLE_STAGING_SWEEP_JOB_NAME = "style-staging-sweep"
     PRICE_OUTLIER_JOB_NAME = "price-outlier-scan"
 
     def _register_default_jobs(self) -> None:
@@ -372,6 +373,136 @@ class BackendScheduler:
         self._register_deal_assignment_job()
         self._register_extraction_feedback_job()
         self._register_price_outlier_job()
+        self._register_style_staging_sweep_job()
+        self._register_mailbox_health_job()
+        self._register_style_feedback_job()
+
+    def _register_style_staging_sweep_job(self) -> None:
+        """Register the style-staging TTL sweep.
+
+        Emails pasted for style compilation sit in proc.bp_style_ingest_staging until the
+        compiler consumes them. Someone who pastes five emails and then navigates away
+        leaves them there, so this deletes anything past its purge_after. Hourly is well
+        inside the 24-hour default TTL, and each run writes an audit row whether or not it
+        found anything — a sweep that logged only on a hit would be indistinguishable from
+        one that had silently stopped running.
+
+        Interval via STYLE_STAGING_SWEEP_INTERVAL_MINUTES (default 60).
+        """
+        import os
+        if self.STYLE_STAGING_SWEEP_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("STYLE_STAGING_SWEEP_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.STYLE_STAGING_SWEEP_JOB_NAME,
+            self._run_style_staging_sweep,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_style_staging_sweep(self) -> None:
+        """Purge expired style-ingest staging rows."""
+        try:
+            from services.style.compiler import sweep_expired_staging
+
+            sweep_expired_staging()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Style staging sweep failed")
+
+    MAILBOX_HEALTH_JOB_NAME = "style-mailbox-health"
+
+    def _register_mailbox_health_job(self) -> None:
+        """Register the Mode C mailbox health check.
+
+        A permission grant revoked in the customer's tenant does not tell us so. Without
+        this the platform would keep trying to read a mailbox it no longer may — and
+        worse, would keep drafting against a profile derived from it. The check marks the
+        binding REVOKED, which forces drafting down to the platform baseline with a
+        visible flag rather than a silent generic draft.
+
+        Interval via STYLE_MAILBOX_HEALTH_INTERVAL_MINUTES (default 60).
+        """
+        import os
+        if self.MAILBOX_HEALTH_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("STYLE_MAILBOX_HEALTH_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.MAILBOX_HEALTH_JOB_NAME,
+            self._run_mailbox_health_check,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=15),
+        )
+
+    def _run_mailbox_health_check(self) -> None:
+        """Re-check every active mailbox binding."""
+        try:
+            from services.style.health import check_all_bindings
+
+            check_all_bindings()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Style mailbox health check failed")
+
+    STYLE_FEEDBACK_JOB_NAME = "style-feedback-sweep"
+
+    def _register_style_feedback_job(self) -> None:
+        """Register the style feedback sweep.
+
+        Looks for drafts written back to a bound mailbox that have since been sent, scores
+        how far they drifted from what was drafted, and raises a recompile suggestion where
+        the drift is sustained. It never recompiles — a human accepts the suggestion, and
+        the resulting profile still has to be approved.
+
+        Only Mode C bindings with write-back produce anything: under Mode A the platform
+        never touched a mailbox and has no way to learn what was eventually sent.
+
+        Daily by default — this is a trend, not an alert. Interval via
+        STYLE_FEEDBACK_INTERVAL_MINUTES.
+        """
+        import os
+        if self.STYLE_FEEDBACK_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("STYLE_FEEDBACK_INTERVAL_MINUTES", "1440"))
+        except ValueError:
+            minutes = 1440
+        self.register_job(
+            self.STYLE_FEEDBACK_JOB_NAME,
+            self._run_style_feedback_sweep,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=30),
+        )
+
+    def _run_style_feedback_sweep(self) -> None:
+        """Score sent drafts and raise recompile suggestions where drift is sustained."""
+        try:
+            from services.style.feedback import (
+                StyleFeedbackService,
+                capture_sent_drafts,
+            )
+            from services.style.graph_source import GraphExemplarSource
+            from services.style.mailbox import MailboxBindingRepository
+
+            service = StyleFeedbackService()
+            for binding in MailboxBindingRepository().list_active():
+                if not binding.can_receive_drafts:
+                    continue
+                try:
+                    capture_sent_drafts(
+                        GraphExemplarSource(binding), binding=binding
+                    )
+                    service.suggest_if_sustained(binding.user_ref, "_all")
+                except Exception:
+                    logger.exception(
+                        "Style feedback sweep failed for binding %s", binding.binding_id
+                    )
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Style feedback sweep failed")
 
     def _register_trgt_promotion_job(self) -> None:
         """Register the periodic _stg -> _trgt promotion job.
