@@ -123,3 +123,68 @@ Four, all fixing defects found while executing it:
    records. A regression test asserts no defect type exceeds its declared count,
    sized large enough to actually reach the cap; the 1,200-chain fixture
    exhausts the no-PO pool first and hides the fault.
+
+---
+
+# Stage S1 — Organisation and Catalogue
+
+**Date:** 2026-07-27
+**Plan:** `docs/superpowers/plans/2026-07-27-testdata-s1-organisation-catalogue.md`
+**Command:** `.venv/bin/python -m scripts.testdata.build --target bp_testdb --uicanvas-target uicanvas_test --seed 42 --drop-first`
+
+## Result
+
+| | |
+|---|---|
+| Exit code | 0 |
+| `uicanvas_test.proc.business_unit` | 400 rows (16 columns) — live holds 0 |
+| `uicanvas_test.proc.cost_centre` | 500 rows (26 columns) |
+| `uicanvas_test.proc.item` | 5,000 rows (15 columns) |
+| Blocking checks | V01, V02, V03, V07, V14 PASS |
+| V07 detail | `500 cost centres over 400 business units, 0 unresolved; entity and group levels not verifiable (no entity column in the schema)` |
+| Tests | 221 pass |
+
+## Isolation
+
+```
+Live row counts before: 313 tables, 405,805 rows
+Live row counts after:  313 tables, 405,805 rows
+Result: UNCHANGED
+```
+
+## Two schema facts this stage had to respect
+
+1. **There is no entity or organisation table.** Neither `business_unit` nor
+   `cost_centre` carries an entity column, so the entity and group levels of the
+   roll-up cannot be verified in the database. V07 checks what the schema can
+   express — every cost centre resolves to a business unit that exists — and its
+   detail string names the gap rather than reporting a pass for a narrower
+   question than the one asked.
+
+2. **`category_level_5_id` is not unique** — 121 distinct values across 246
+   leaves, because it identifies a node within its branch rather than a leaf
+   globally. Joining `item` to `bp_category` on it returns 11,752 rows for 5,000
+   items. That fan-out is the data's shape, not duplicate items.
+
+## Bug fixed on the way
+
+`org.py` wrote the **UNSPSC code** into `cost_centre.linked_category_level_5_id`.
+The column wants `bp_category.category_level_5_id` (`C-5101`-style). `TaxonomyLeaf`
+now carries all five level identifiers, which the catalogue also needs so a line
+can resolve to a category path.
+
+## Deferred by design
+
+- `cost_centre.po_id` and `invoice_id` stay NULL until stage S3 has documents to
+  point at.
+- `item.manufacturer`, `brand`, `spec_sheet_url` and `uom_conversion` stay NULL:
+  the generator does not model them, and inventing values would put unverifiable
+  strings in columns nothing reads.
+- V04, V05, V06 and V08–V13 still report `SKIP`, never `PASS`.
+
+## Note on parallel work
+
+A second session committed `scripts/testdata/persist.py` — the document mapping
+for stage S3's six `_trgt` tables — while this plan was being written. S1 adapted
+to it rather than replacing it: `persist_org.py` is a sibling in the same idiom,
+and `loader.py` is shared by both.
