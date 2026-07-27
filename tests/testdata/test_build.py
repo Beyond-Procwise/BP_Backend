@@ -47,3 +47,13 @@ def test_deal_assignment_failure_does_not_abort_the_build(monkeypatch):
     result = build.assign_deals_on("bp_testdb")
     assert "error" in result
     assert "linking engine exploded" in result["error"]
+
+
+def test_profile_defaults_to_test_and_accepts_demo():
+    assert parse_args([]).profile == "test"
+    assert parse_args(["--profile", "demo"]).profile == "demo"
+
+
+def test_an_unknown_profile_is_rejected_at_the_command_line():
+    with pytest.raises(SystemExit):
+        parse_args(["--profile", "production"])

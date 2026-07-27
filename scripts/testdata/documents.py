@@ -149,8 +149,15 @@ def build_chains(
     *,
     fx: Mapping[str, float],
     count: int = 6000,
+    no_po_share: float = NO_PO_SHARE,
 ) -> list[Chain]:
-    """Build `count` requirement-to-invoice chains."""
+    """Build `count` requirement-to-invoice chains.
+
+    `no_po_share` is the fraction that stop before a purchase order is raised.
+    The test profile keeps it high -- that population is what the maverick-spend
+    check measures -- and the demo profile turns it down to the small tail a
+    healthy estate has.
+    """
     rng = make_rng(seed, "documents")
     window_days = (WINDOW_END - WINDOW_START).days
     chains: list[Chain] = []
@@ -185,7 +192,7 @@ def build_chains(
         awarded_supplier_id = awarded_quote.supplier_id
 
         purchase_order: Optional[Document] = None
-        if rng.random() > NO_PO_SHARE:
+        if rng.random() > no_po_share:
             po_date = awarded_quote.doc_date + timedelta(days=rng.randint(2, 30))
             purchase_order = _assemble(
                 doc_id=f"PO{index:06d}",

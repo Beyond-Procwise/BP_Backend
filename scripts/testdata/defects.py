@@ -98,9 +98,24 @@ def _target_count(spec: DefectSpec, available: int) -> int:
 
 
 def plant(
-    seed: int, chains: list[Chain], cost_centres: list[CostCentre]
+    seed: int, chains: list[Chain], cost_centres: list[CostCentre],
+    only: frozenset[str] | set[str] | None = None,
 ) -> PlantResult:
-    """Mutate chains and cost centres to plant defects. Returns the ground truth."""
+    """Mutate chains and cost centres to plant defects. Returns the ground truth.
+
+    `only` restricts planting to the given defect refs. The demo profile passes
+    the negative controls alone, so the estate carries the lump-sum services and
+    credit notes any real one would, and nothing for a detector to find.
+    """
+    wanted = None if only is None else frozenset(only)
+
+    def take(ref: str, available: int) -> int:
+        """How many of this defect to plant. Zero when the profile excludes it,
+        so the block below runs no iterations and mutates nothing."""
+        if wanted is not None and ref not in wanted:
+            return 0
+        return _target_count(SPEC_BY_REF[ref], available)
+
     rng = make_rng(seed, "defects")
     chains = list(chains)
     cost_centres = list(cost_centres)
@@ -122,7 +137,7 @@ def plant(
         for invoice in chain.invoices
     ]
     for invoice in no_po_invoices[
-        : _target_count(SPEC_BY_REF["D05"], len(no_po_invoices))
+        : take("D05", len(no_po_invoices))
     ]:
         planted.append(
             PlantedDefect(
@@ -139,7 +154,7 @@ def plant(
     with_po = [chain for chain in chains if chain.purchase_order is not None and chain.invoices]
 
     # --- D03: invoice unit price above the PO line ---------------------------
-    for index in range(_target_count(SPEC_BY_REF["D03"], len(with_po))):
+    for index in range(take("D03", len(with_po))):
         position = position_of[with_po[index].requirement_id]
         chain = chains[position]
         invoice = chain.invoices[0]
@@ -174,7 +189,7 @@ def plant(
     # --- D04: invoice quantity above PO quantity -----------------------------
     # Runs before D22 nulls quantities, and still picks the first line that
     # carries one, so a lump-sum line elsewhere in the document cannot silence it.
-    for index in range(_target_count(SPEC_BY_REF["D04"], len(with_po))):
+    for index in range(take("D04", len(with_po))):
         position = position_of[with_po[index].requirement_id]
         chain = chains[position]
         invoice = chain.invoices[0]
@@ -212,7 +227,7 @@ def plant(
         )
 
     # --- D06: invoice total above the 5% PO tolerance ------------------------
-    for index in range(_target_count(SPEC_BY_REF["D06"], len(with_po))):
+    for index in range(take("D06", len(with_po))):
         position = position_of[with_po[index].requirement_id]
         chain = chains[position]
         invoice = chain.invoices[0]
@@ -236,7 +251,7 @@ def plant(
         )
 
     # --- D01: exact duplicate invoices ---------------------------------------
-    for index in range(_target_count(SPEC_BY_REF["D01"], len(with_po))):
+    for index in range(take("D01", len(with_po))):
         position = position_of[with_po[index].requirement_id]
         chain = chains[position]
         original = chain.invoices[0]
@@ -256,7 +271,7 @@ def plant(
         )
 
     # --- D02: near-duplicate invoices ----------------------------------------
-    for index in range(_target_count(SPEC_BY_REF["D02"], len(with_po))):
+    for index in range(take("D02", len(with_po))):
         position = position_of[with_po[index].requirement_id]
         chain = chains[position]
         original = chain.invoices[0]
@@ -274,7 +289,7 @@ def plant(
         )
 
     # --- D22 (negative): lump-sum services lines with no quantity ------------
-    for index in range(_target_count(SPEC_BY_REF["D22"], len(chains))):
+    for index in range(take("D22", len(chains))):
         chain = chains[index]
         if not chain.invoices:
             continue
@@ -301,7 +316,7 @@ def plant(
         )
 
     # --- D23 (negative): legitimate credit notes -----------------------------
-    for index in range(_target_count(SPEC_BY_REF["D23"], len(with_po))):
+    for index in range(take("D23", len(with_po))):
         position = position_of[with_po[index].requirement_id]
         chain = chains[position]
         source = chain.invoices[0]
@@ -331,7 +346,7 @@ def plant(
         )
 
     # --- D27: cost-centre budget overruns ------------------------------------
-    for index in range(_target_count(SPEC_BY_REF["D27"], len(cost_centres))):
+    for index in range(take("D27", len(cost_centres))):
         centre = cost_centres[index]
         overrun_factor = round(rng.uniform(1.05, 1.62), 4)
         overspent = round(centre.budget_allocated_annual * overrun_factor, 2)
@@ -362,7 +377,7 @@ def plant(
         and float(chain.invoices[0].net_total)
         > centre_by_id[chain.invoices[0].cc_id].spend_threshold_limit
     ]
-    for chain in bypass_pool[: _target_count(SPEC_BY_REF["D07"], len(bypass_pool))]:
+    for chain in bypass_pool[: take("D07", len(bypass_pool))]:
         invoice = chain.invoices[0]
         centre = centre_by_id[invoice.cc_id]
         planted.append(
@@ -380,7 +395,7 @@ def plant(
 
     # --- D08: split POs, each just under the cost-centre threshold -----------
     split_pool = [chain for chain in chains if chain.purchase_order is not None]
-    for index in range(_target_count(SPEC_BY_REF["D08"], len(split_pool) // 2)):
+    for index in range(take("D08", len(split_pool) // 2)):
         chain = split_pool[index]
         centre = centre_by_id[chain.purchase_order.cc_id]
         threshold = centre.spend_threshold_limit
@@ -401,7 +416,7 @@ def plant(
 
     # --- D09: award not to the lowest compliant quote ------------------------
     award_pool = [chain for chain in chains if len(chain.quotes) >= 2]
-    for index in range(_target_count(SPEC_BY_REF["D09"], len(award_pool))):
+    for index in range(take("D09", len(award_pool))):
         position = position_of[award_pool[index].requirement_id]
         chain = chains[position]
         ordered = sorted(chain.quotes, key=lambda quote: quote.net_total)
@@ -428,14 +443,14 @@ def plant(
     # D10-D21, D24-D26, D28-D30 are properties of populations rather than single
     # mutated documents. Each records the subjects that satisfy it so the scenario
     # tests have an explicit expected set.
-    _plant_population_defects(rng, chains, cost_centres, planted)
+    _plant_population_defects(rng, chains, cost_centres, planted, take)
 
     return PlantResult(chains=chains, cost_centres=cost_centres, planted=planted)
 
 
 def _plant_population_defects(
     rng, chains: list[Chain], cost_centres: list[CostCentre],
-    planted: list[PlantedDefect],
+    planted: list[PlantedDefect], take,
 ) -> None:
     """Record population-level defects: those defined by a pattern across many rows.
 
@@ -473,8 +488,7 @@ def _plant_population_defects(
         spec = SPEC_BY_REF[ref]
         if not pool:
             continue
-        take = _target_count(spec, len(pool))
-        for offset in range(take):
+        for offset in range(take(ref, len(pool))):
             subject = pool[(offset * 7 + len(ref)) % len(pool)]
             planted.append(
                 PlantedDefect(

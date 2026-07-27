@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from scripts.testdata import (
-    persist, persist_org, persist_suppliers, persist_tiers, verify,
+    persist, persist_org, persist_suppliers, persist_tiers, profiles, verify,
 )
 from scripts.testdata.catalogue import build_catalogue
 from scripts.testdata.loader import load_tables
@@ -42,6 +42,14 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--drop-first", action="store_true")
     parser.add_argument("--skip-verify", action="store_true")
+    parser.add_argument(
+        "--profile", default="test", choices=sorted(profiles.PROFILES),
+        help=(
+            "test: every defect planted with an answer key, for measuring the "
+            "detectors. demo: a healthy estate with nothing planted, so a "
+            "document added afterwards is the only thing that raises a finding."
+        ),
+    )
     return parser.parse_args(list(argv))
 
 
@@ -147,6 +155,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    profile = profiles.get(args.profile)
+    print(f"profile: {profile.name} -- {profile.purpose}")
+
     live_before = snapshot_counts(["bp_sqldb", "uicanvas"])
 
     print(f"cloning schema into {args.target} and {args.uicanvas_target}")
@@ -165,7 +176,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     items = build_catalogue(args.seed, leaves, [s.bp_supplier_id for s in suppliers])
     fx = load_fx_rates("bp_sqldb")
     print(f"  FX snapshot: {len(fx)} currencies")
-    chains = build_chains(args.seed, suppliers, items, centres, fx=fx, count=6000)
+    chains = build_chains(
+        args.seed, suppliers, items, centres, fx=fx, count=6000,
+        no_po_share=profile.no_po_share,
+    )
     print(
         f"  {len(suppliers)} suppliers, {len(units)} business units, "
         f"{len(centres)} cost centres, {len(items)} catalogue items, "
@@ -173,7 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     print("planting defects")
-    result = plant(args.seed, chains, centres)
+    result = plant(args.seed, chains, centres, only=profile.plant_refs)
     write_answer_key(result, ANSWER_KEY_JSON, ANSWER_KEY_MD)
     print(f"  {len(result.planted)} defect instances -> {ANSWER_KEY_JSON}")
 
