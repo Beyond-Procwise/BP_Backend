@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -283,18 +285,81 @@ def _linked_deal_ids_needing_summary(cur) -> list[str]:
     return [r[0] for r in cur.fetchall()]
 
 
+def _connect_like(params: dict) -> Any:
+    """Open a new connection to the database `params` describes."""
+    import psycopg2
+
+    return psycopg2.connect(**params)
+
+
+def _factory_matching(conn: Any):
+    """A worker-connection factory targeting the same database as `conn`.
+
+    The workers cannot share `conn` -- psycopg2 connections are not thread-safe
+    -- so each opens its own. Opening those from the environment DSN would write
+    every summary to whatever database the environment points at, regardless of
+    which database the caller was working in. Derive the target from the caller's
+    own connection instead, and fall back to the environment only when the
+    connection cannot describe itself.
+    """
+    describe = getattr(conn, "get_dsn_parameters", None)
+    if describe is None:
+        return None
+    try:
+        params = dict(describe())
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    wanted = {k: params[k] for k in ("dbname", "host", "port", "user") if params.get(k)}
+    if not wanted.get("dbname"):
+        return None
+
+    # get_dsn_parameters never returns the password; take it from the same
+    # environment the default connection would have used.
+    password = os.environ.get("PGPASSWORD") or os.environ.get("DB_PASSWORD")
+    if password:
+        wanted["password"] = password
+
+    @contextmanager
+    def factory():
+        opened = _connect_like(wanted)
+        try:
+            yield opened
+        finally:
+            try:
+                opened.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    return factory
+
+
 def sync_deal_summaries(conn: Any = None, deal_ids: Optional[list[str]] = None,
-                        max_workers: int = 2) -> dict:
+                        max_workers: int = 2, connect: Any = None) -> dict:
     """Generate metrics + narrative for every linked deal missing a current summary.
 
     Each deal is processed on its own connection so failures stay isolated and
     work runs concurrently. Safe to call repeatedly (idempotent).
+
+    `connect` is a callable returning a context manager that yields a connection,
+    the same shape as `get_conn`. Supply it to direct the workers at a specific
+    database. When it is omitted and a `conn` is given, the target is derived
+    from that connection, so summaries land where the caller was working rather
+    than wherever the environment points.
     """
-    if conn is not None:
-        ids = deal_ids if deal_ids is not None else _linked_deal_ids_needing_summary(conn.cursor())
+    if connect is None and conn is not None:
+        connect = _factory_matching(conn)
+    open_worker_conn = connect or get_conn
+
+    if deal_ids is not None:
+        # Nothing to look up, so do not open a connection to answer a question
+        # the caller has already answered.
+        ids = deal_ids
+    elif conn is not None:
+        ids = _linked_deal_ids_needing_summary(conn.cursor())
     else:
-        with get_conn() as own:
-            ids = deal_ids if deal_ids is not None else _linked_deal_ids_needing_summary(own.cursor())
+        with open_worker_conn() as own:
+            ids = _linked_deal_ids_needing_summary(own.cursor())
 
     processed = failed = 0
     done: list[str] = []
@@ -302,8 +367,9 @@ def sync_deal_summaries(conn: Any = None, deal_ids: Optional[list[str]] = None,
     def _work(deal_id: str):
         # Each worker uses an independent connection (psycopg connections are
         # not thread-safe to share). When a conn was passed in we still open a
-        # fresh one per deal to keep failures from poisoning a shared txn.
-        with get_conn() as wc:
+        # fresh one per deal to keep failures from poisoning a shared txn --
+        # but pointed at the caller's database, not the environment's.
+        with open_worker_conn() as wc:
             return generate_for_deal(deal_id, wc)
 
     if not ids:

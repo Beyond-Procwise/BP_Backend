@@ -673,9 +673,17 @@ def reconcile_status(cur) -> int:
     return updated
 
 
-def assign_deals(conn: Any = None, limit: Optional[int] = None) -> dict:
+def assign_deals(conn: Any = None, limit: Optional[int] = None,
+                 connect: Any = None) -> dict:
     """Run look-forward, look-back, reconcile, and unassigned-flag passes,
-    then generate analysis summaries for any newly Deal_Linked deals."""
+    then generate analysis summaries for any newly Deal_Linked deals.
+
+    `connect` is forwarded to the summary step to say which database its worker
+    connections should target. Omit it and the target is derived from `conn`, so
+    a caller working against a non-default database gets its summaries written
+    there rather than wherever the environment points.
+    """
+    summary_conn = None
     if conn is None:
         with get_conn() as own:
             own.autocommit = False
@@ -685,14 +693,17 @@ def assign_deals(conn: Any = None, limit: Optional[int] = None) -> dict:
             except Exception:
                 own.rollback()
                 raise
+        # `own` is closed by here, so the summary step opens its own.
     else:
         r = _run(conn.cursor())
+        summary_conn = conn
 
     # Summary generation is post-link and best-effort: it must never fail the
-    # linking pipeline. Runs on its own connections (see sync_deal_summaries).
+    # linking pipeline. Runs on its own connections (see sync_deal_summaries),
+    # pointed at the same database the linking ran against.
     try:
         from src.services.deal_analysis_service import sync_deal_summaries
-        r["summaries"] = sync_deal_summaries()
+        r["summaries"] = sync_deal_summaries(summary_conn, connect=connect)
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("deal summary sync after assign_deals failed: %s", exc)
         r["summaries"] = {"error": str(exc)}
