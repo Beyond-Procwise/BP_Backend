@@ -73,24 +73,51 @@ def _unusable(reason: str) -> ReplyIntent:
     return ReplyIntent(intent=UNCLASSIFIED, confidence=0.0, quote="", grounded=False, reason=reason)
 
 
+def _field(obj: Any, key: str) -> Any:
+    """One field off a dict OR off an ollama response model.
+
+    ``ollama.chat()`` does not return a dict. It returns a ``ChatResponse``
+    (``ollama._types.SubscriptableBaseModel``, a pydantic model with ``get`` and
+    ``__getitem__``), and its ``message`` is a ``Message`` model, not a dict. So
+    ``isinstance(response, dict)`` is False on the real call path -- which is why
+    this is duck-typed on ``.get`` with an attribute fallback rather than
+    isinstance-gated. Nothing here imports ollama: the shape is what matters, and
+    plain dicts (what the tests pass) must keep working identically.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    getter = getattr(obj, "get", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:  # noqa: BLE001 - some other object's unrelated .get
+            pass
+    return getattr(obj, key, None)
+
+
 def _extract_ollama_message(response: Any) -> str:
     """Pull the model's text out of whichever shape ``call_ollama`` returned.
 
     ``call_ollama`` (src/agents/base_agent.py) returns the raw ``ollama`` client
-    result: the chat shape (``{"message": {"content": ...}}``) when called with
-    ``messages=``, or the generate shape (``{"response": ...}``) otherwise. This is
-    a small local copy of ``EmailDraftingAgent._extract_ollama_message`` -- that
-    method lives on a 7,000-line module and is not worth importing for one helper.
-    Missing or empty in both shapes returns "", which the caller treats as unusable.
+    result: the chat shape (``message.content``) when called with ``messages=``, or
+    the generate shape (``response``) otherwise. Missing or empty in both shapes
+    returns "", which the caller treats as unusable.
+
+    This started as a copy of ``EmailDraftingAgent._extract_ollama_message`` and is
+    deliberately no longer identical to it: that version opens with
+    ``if not isinstance(response, dict): return ""``, which discards every real
+    ``ollama.chat()`` result (see ``_field``). Verified live 2026-07-28 --
+    AgentNick:unified returned exactly the JSON asked for and the extractor threw it
+    away, so every classification came back "did not return usable JSON" and every
+    reply escalated. The same latent bug is still in email_drafting_agent.py:2827;
+    fixing it there is not in this task's scope.
     """
-    if not isinstance(response, dict):
-        return ""
-    message = response.get("message")
-    if isinstance(message, dict):
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-    content = response.get("response")
+    content = _field(_field(response, "message"), "content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    content = _field(response, "response")
     if isinstance(content, str) and content.strip():
         return content.strip()
     return ""
@@ -162,7 +189,17 @@ def classify_reply(body: str, *, caller: Any, min_quote_words: int = 4) -> Reply
             # doing the actual work, not this.
             format="json",
             think=False,  # reasoning models return an empty `response` otherwise
-            temperature=0,
+            # temperature belongs INSIDE options. `call_ollama` pops "options" and
+            # merges it over agent_nick.ollama_options(); every OTHER kwarg is
+            # splatted straight into ollama.chat(), which has no `temperature`
+            # parameter and raises TypeError: Client.chat() got an unexpected keyword
+            # argument 'temperature'. As `temperature=0` that made EVERY live
+            # classification fail ("the classifier was unreachable"), so every reply
+            # escalated -- fail-closed, but the classifier never ran once. Caught by
+            # calling it with a real BaseAgent; the unit tests take **kwargs and so
+            # cannot see it. See tests/engines/test_decide_email_reply.py's live run
+            # in the Task 6 report.
+            options={"temperature": 0},
         )
     except Exception:  # noqa: BLE001
         log.exception("email intent classification failed")

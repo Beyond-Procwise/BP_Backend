@@ -373,6 +373,361 @@ class DecisionEngine:
         return base
 
     # ------------------------------------------------------------------
+    # Email replies
+    # ------------------------------------------------------------------
+    _EMAIL_SUBJECT_TYPE = "email_reply"
+
+    def _fetch_email_reply(self, response_id: str) -> Optional[Dict[str, Any]]:
+        """The supplier's reply, plus the offer it is replying to.
+
+        Column names are the REAL ones on proc.supplier_response (checked against
+        bp_sqldb 2026-07-28): the body is `response_text`, the key is `id`, and the
+        link back to what we sent is `unique_id`.
+
+        The join is on `unique_id`, and it was verified against the live row rather
+        than assumed: supplier_response row 1
+        (`089580f2-...-PeopleFirst HR Solutions Ltd`) matches draft_rfq_emails row 17
+        on that column, so no `payload->>'message_id'` fallback is needed. The unique
+        index on drafts is (workflow_id, unique_id), so `unique_id` alone is not
+        formally unique -- hence ORDER BY d.id DESC LIMIT 1, which makes the single
+        fetched row the most recent draft on the thread rather than an arbitrary one.
+
+        Neither table has a `deal_id` column, so none is read. deal_id in this system
+        is assigned by a database stored procedure and is never set in app code.
+
+        `auto_replies_on_thread` is derived, not stored -- it counts what the agent
+        has already sent unattended on this thread, which is what the per-thread cap
+        governs. It is None, not 0, if that count could not be taken: an unknown
+        history must not read as an empty one.
+        """
+        sql = """
+            SELECT sr.id, sr.workflow_id, sr.unique_id, sr.supplier_id,
+                   sr.response_subject, sr.response_text, sr.response_from,
+                   sr.round_number, sr.match_confidence,
+                   sr.price, sr.currency, sr.payment_terms, sr.lead_time,
+                   d.subject           AS draft_subject,
+                   d.recipient_email   AS draft_recipient,
+                   d.payload           AS draft_payload
+              FROM proc.supplier_response sr
+              LEFT JOIN proc.draft_rfq_emails d
+                     ON d.unique_id = sr.unique_id
+             WHERE sr.id::text = %s
+             ORDER BY d.id DESC
+             LIMIT 1
+        """
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (str(response_id),))
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    cols = [d[0] for d in cur.description]
+                    record = dict(zip(cols, row))
+                    # Prior offer: the price we last put to this supplier, read off the
+                    # draft payload when the drafting agent recorded one. Absent is
+                    # absent -- do not substitute the supplier's own number, which
+                    # would make every reply look like it changed nothing.
+                    #
+                    # AS OF 2026-07-28 NO LIVE DRAFT CARRIES EITHER KEY. All 18 rows in
+                    # proc.draft_rfq_emails were inspected: the payload keys are
+                    # cc/to/body/html/text/round/sender/headers/subject/metadata/
+                    # receiver/action_id/unique_id/message_id/recipients/sent_status/
+                    # supplier_id/workflow_id/thread_index/contact_level/supplier_name/
+                    # thread_headers (+draft_id/supplier_profile on the older 11), and
+                    # nothing matching price|target|amount|value|offer|cost. So
+                    # prior_price is None in production today and every priced reply
+                    # escalates on the "no prior offer" gate below -- which is the safe
+                    # direction, and is asserted by
+                    # test_a_price_with_no_prior_offer_escalates.
+                    #
+                    # There IS a candidate: payload->'metadata'->>'counter_price'
+                    # (96000.0 on draft 17, corroborated by "Our target positioning:
+                    # GBP 96,000.00" in the draft body). It is deliberately NOT wired
+                    # in: promoting a newly-discovered key to an authority input widens
+                    # the auto-send path, which is a governed change, not a code
+                    # cleanup. See the Task 6 report.
+                    payload = record.get("draft_payload")
+                    if isinstance(payload, dict):
+                        record["prior_price"] = payload.get("target_price") or payload.get("offer_price")
+                        record["prior_currency"] = payload.get("currency")
+                    try:
+                        cur.execute(
+                            """
+                            SELECT count(*) FROM proc.bp_decision
+                             WHERE subject_type = %s AND subject_id = %s
+                               AND resolution = %s AND decision = 'send'
+                            """,
+                            (self._EMAIL_SUBJECT_TYPE, record.get("unique_id"), RESOLVED),
+                        )
+                        record["auto_replies_on_thread"] = int((cur.fetchone() or [0])[0] or 0)
+                    except Exception:
+                        # Not fatal to reading the reply, but it IS fatal to enforcing
+                        # the cap. None says "unknown", and the cap gate escalates on
+                        # unknown rather than treating it as none-so-far.
+                        logger.exception(
+                            "failed to count prior unattended replies on thread %s",
+                            record.get("unique_id"),
+                        )
+                        record["auto_replies_on_thread"] = None
+                    return record
+        except Exception:
+            logger.exception("failed to read supplier reply %s", response_id)
+            return None
+
+    def _reply_caller(self) -> Optional[Any]:
+        """An object exposing ``call_ollama``, for the intent classifier.
+
+        ``classify_reply`` needs a one-shot LLM call. That method is ``call_ollama``
+        and it lives on ``BaseAgent``; ``AgentNick`` does NOT inherit from BaseAgent
+        and has no such method, so ``self.agent_nick`` cannot be passed. Any already
+        registered agent instance will do -- they are all BaseAgent subclasses sharing
+        one AgentNick, so the model, settings and connection pool are identical
+        whichever is picked. Failing that, construct a bare BaseAgent.
+
+        Returns None if neither is possible. It never raises, and it never reaches for
+        a different model: AgentNick is the only model in this system.
+        """
+        agents = getattr(self.agent_nick, "agents", None)
+        if isinstance(agents, dict):
+            for instance in agents.values():
+                if callable(getattr(instance, "call_ollama", None)):
+                    return instance
+        try:
+            from src.agents.base_agent import BaseAgent
+
+            return BaseAgent(self.agent_nick)
+        except Exception:
+            logger.exception("no LLM caller could be obtained for reply classification")
+            return None
+
+    def _classify(self, body: str):
+        """Seam for tests; production path goes to the grounded classifier."""
+        from src.services.email_intent import UNCLASSIFIED, ReplyIntent, classify_reply
+
+        caller = self._reply_caller()
+        if caller is None:
+            # Unusable, not unclassified-but-fine: decide_email_reply escalates on
+            # `grounded is False`, which is the right outcome when we could not read
+            # the reply at all.
+            return ReplyIntent(
+                intent=UNCLASSIFIED,
+                confidence=0.0,
+                quote="",
+                grounded=False,
+                reason="no LLM caller was available to classify the reply",
+            )
+        try:
+            return classify_reply(body, caller=caller)
+        except Exception:  # pragma: no cover - classify_reply is documented not to raise
+            logger.exception("reply classification failed")
+            return ReplyIntent(
+                intent=UNCLASSIFIED,
+                confidence=0.0,
+                quote="",
+                grounded=False,
+                reason="the classifier raised",
+            )
+
+    def decide_email_reply(
+        self,
+        response_id: str,
+        *,
+        authority: Optional[Dict[str, Any]] = None,
+        requested: Optional[str] = None,
+    ) -> Decision:
+        """Answer it ourselves, or put it in front of a human -- and say which, and why.
+
+        Deterministic in the part that matters: the model contributes an intent label
+        and a quoted sentence, and every gate below is arithmetic and set membership
+        over governed values. No model is asked whether to send.
+        """
+        facts: Dict[str, Any] = {}
+        evidence: List[Evidence] = []
+
+        row = self._fetch_email_reply(response_id)
+        if not row:
+            return Decision(
+                subject_type=self._EMAIL_SUBJECT_TYPE,
+                subject_id=str(response_id),
+                decision="escalate",
+                resolution=ESCALATED,
+                rationale=(
+                    f"Supplier reply {response_id} was not found in "
+                    "proc.supplier_response, so there are no facts to decide on."
+                ),
+            )
+
+        ref = str(row.get("id"))
+        subject_id = str(row.get("unique_id") or response_id)
+        for key in ("supplier_id", "response_subject", "response_from", "round_number",
+                    "match_confidence", "price", "currency", "payment_terms", "lead_time"):
+            value = row.get(key)
+            if value is None:
+                continue
+            facts[key] = str(value) if isinstance(value, Decimal) else value
+            evidence.append(Evidence(fact=key, value=facts[key],
+                                     source=f"proc.supplier_response.{key}", reference=ref))
+
+        policy_name = (authority or {}).get("policy_name")
+        policy_id = (authority or {}).get("policy_id")
+
+        def _escalate(rationale: str) -> Decision:
+            return Decision(
+                subject_type=self._EMAIL_SUBJECT_TYPE, subject_id=subject_id,
+                decision="escalate", resolution=ESCALATED, rationale=rationale,
+                policy_id=policy_id, policy_name=policy_name,
+                facts=facts, evidence=evidence,
+                # deal_id is NOT set: neither proc.supplier_response nor
+                # proc.draft_rfq_emails has that column, and deal_id is assigned by a
+                # DB stored procedure. A None here is honest; a guess would not be.
+                supplier_id=row.get("supplier_id"),
+            )
+
+        # 1. Authority. No governed limit means no unattended send -- the same rule
+        #    that stops a missing approval threshold from auto-approving money.
+        if not authority or not authority.get("governed"):
+            reason = (authority or {}).get("reason") or (
+                "no send authority was resolved for policy 'email_reply_autonomy'"
+            )
+            facts["authority"] = "ungoverned"
+            evidence.append(Evidence(fact="authority", value="ungoverned",
+                                     source="proc.bp_policy(email_reply_autonomy)",
+                                     reference=reason))
+            return _escalate(
+                f"This reply needs a human because {reason}. Nothing is sent on an "
+                "unknown limit."
+            )
+
+        # 2. Classification, with its quote checked against the supplier's own words.
+        intent = self._classify(str(row.get("response_text") or ""))
+        facts["intent"] = intent.intent
+        facts["intent_confidence"] = intent.confidence
+        evidence.append(Evidence(fact="intent", value=intent.intent,
+                                 source="AgentNick classification of supplier_response.response_text",
+                                 reference=ref))
+        if intent.quote:
+            evidence.append(Evidence(fact="supporting_sentence", value=intent.quote,
+                                     source="proc.supplier_response.response_text",
+                                     reference="verbatim" if intent.grounded else "NOT FOUND in source"))
+        if not intent.grounded:
+            return _escalate(
+                f"The classification '{intent.intent}' could not be grounded: "
+                f"{intent.reason}. An ungrounded reading of a supplier's message is not "
+                "a basis for replying unattended."
+            )
+
+        min_conf = authority.get("min_intent_confidence")
+        if min_conf is not None and intent.confidence < float(min_conf):
+            return _escalate(
+                f"Confidence in '{intent.intent}' is {intent.confidence:.2f}, below the "
+                f"governed minimum of {float(min_conf):.2f}."
+            )
+
+        # 3. Governed intent lists.
+        if intent.intent in (authority.get("escalate_intents") or []):
+            return _escalate(
+                f"'{intent.intent}' is a governed escalate-only intent under "
+                f"{policy_name or 'the autonomy policy'}: a human decides this one."
+            )
+        if intent.intent not in (authority.get("auto_intents") or []):
+            return _escalate(
+                f"'{intent.intent}' is not on the governed auto-reply list, so it goes "
+                "to a human. Widen auto_reply_intents in the policy to change that."
+            )
+
+        # 4. Value at stake against the governed spend limit. Derived, and the
+        #    derivation is stated: two numbers, both cited above.
+        #
+        #    Order matters. A reply that carries a price at all is a reply about money,
+        #    and it may only be sent unattended if BOTH numbers exist: a governed limit
+        #    to test against, and the offer it moves from. resolve_authority() returns
+        #    governed=True with limit_gbp=None whenever the autonomy policy omits
+        #    `defer_value_limit_to`, so "no limit" is a reachable state -- and an absent
+        #    limit is never an unlimited one.
+        price = self._num(row.get("price"))
+        prior = self._num(row.get("prior_price"))
+        limit = self._num(authority.get("limit_gbp"))
+        currency = row.get("currency") or ""
+        if price is not None:
+            if limit is None:
+                facts["value_limit_gbp"] = None
+                evidence.append(Evidence(
+                    fact="value_limit_gbp", value=None,
+                    source="proc.bp_policy(email_reply_autonomy).rules.defer_value_limit_to",
+                    reference=authority.get("reason")))
+                return _escalate(
+                    f"The reply carries a price of {price} {currency} but no governed "
+                    f"value limit was resolved under "
+                    f"{policy_name or 'the autonomy policy'} (limit_gbp is missing, so "
+                    "the policy defers to no approval threshold). There is nothing to "
+                    "test the amount against, and an absent limit is not an unlimited "
+                    "one, so a human decides."
+                )
+
+            facts["value_limit_gbp"] = str(limit)
+            evidence.append(Evidence(
+                fact="value_limit_gbp", value=str(limit),
+                source="proc.bp_policy(email_reply_autonomy) -> approval threshold "
+                       "(resolve_authority.limit_gbp)",
+                reference=str(policy_id) if policy_id is not None else None))
+
+            if prior is None:
+                # We can see their number but not ours. That is not "nothing at stake".
+                return _escalate(
+                    f"The supplier quotes {price} {currency} but no prior offer is "
+                    "recorded on the draft, so the amount at stake cannot be computed. "
+                    "A human should compare these."
+                )
+
+            at_stake = abs(price - prior)
+            facts["value_at_stake"] = str(at_stake)
+            evidence.append(Evidence(
+                fact="value_at_stake", value=str(at_stake),
+                source="derived: abs(supplier_response.price - draft offer price)",
+                reference=ref))
+            if at_stake > limit:
+                return _escalate(
+                    f"The reply moves {at_stake} {currency} "
+                    f"(supplier {price} against our {prior}), above the governed limit "
+                    f"of {limit} {authority.get('limit_currency') or 'GBP'}."
+                )
+
+        # 5. Per-thread cap on unattended replies.
+        cap = authority.get("max_auto_replies_per_thread")
+        already = row.get("auto_replies_on_thread")
+        if cap is not None:
+            facts["auto_replies_on_thread"] = already
+            evidence.append(Evidence(fact="auto_replies_on_thread", value=already,
+                                     source="proc.bp_decision (prior sends on this thread)",
+                                     reference=subject_id))
+            if already is None:
+                return _escalate(
+                    "How many times the agent has already answered this thread "
+                    f"unattended could not be counted, so the governed cap of {cap} "
+                    "cannot be enforced. An unknown history is not an empty one."
+                )
+            if int(already) >= int(cap):
+                return _escalate(
+                    f"The agent has already answered this thread {int(already)} time(s) "
+                    f"unattended, at the governed cap of {cap}. A human takes it from here."
+                )
+
+        return Decision(
+            subject_type=self._EMAIL_SUBJECT_TYPE, subject_id=subject_id,
+            decision="send", resolution=RESOLVED,
+            rationale=(
+                f"'{intent.intent}' is on the governed auto-reply list under "
+                f"{policy_name or 'the autonomy policy'}, the supporting sentence is "
+                f"verbatim from the supplier's reply, confidence is "
+                f"{intent.confidence:.2f}, and nothing exceeds the governed limit."
+            ),
+            policy_id=policy_id, policy_name=policy_name,
+            facts=facts, evidence=evidence,
+            supplier_id=row.get("supplier_id"),
+        )
+
+    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
     def record(

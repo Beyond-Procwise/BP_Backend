@@ -159,3 +159,65 @@ def test_non_numeric_confidence_is_unusable():
     out = classify_reply(REPLY, caller=caller)
     assert out.intent == "unclassified"
     assert out.confidence == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Two bugs found by calling this with a REAL BaseAgent against live Ollama
+# (2026-07-28) rather than a **kwargs stub. Both made every live classification
+# unusable, so every supplier reply escalated and the classifier never once ran.
+# Fail-closed, but inert. The dict-shaped stub above cannot see either.
+# ---------------------------------------------------------------------------
+class _Message(SimpleNamespace):
+    """Shaped like ollama._types.Message: a pydantic model, NOT a dict."""
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+
+class _ChatResponse(_Message):
+    """Shaped like ollama._types.ChatResponse, which is what ollama.chat returns."""
+
+
+def test_the_real_ollama_chat_response_shape_is_read():
+    """`isinstance(response, dict)` is False for a ChatResponse.
+
+    AgentNick:unified returned exactly the JSON asked for and it was discarded,
+    reported as "the classifier did not return usable JSON".
+    """
+    payload = json.dumps({
+        "intent": "price_change",
+        "confidence": 0.95,
+        "quote": "We can offer 94,000.00 GBP",
+    })
+    response = _ChatResponse(message=_Message(role="assistant", content=payload))
+    assert not isinstance(response, dict)
+    out = classify_reply(REPLY, caller=SimpleNamespace(call_ollama=lambda **k: response))
+    assert out.intent == "price_change"
+    assert out.grounded is True
+
+
+def test_temperature_is_passed_inside_options_not_as_a_bare_kwarg():
+    """`call_ollama` splats unknown kwargs into ollama.chat(), which has no
+    `temperature` parameter -- a bare temperature=0 raised TypeError every time.
+    """
+    caller = _caller(json.dumps({
+        "intent": "acknowledge", "confidence": 0.9,
+        "quote": "We can offer 94,000.00 GBP",
+    }))
+    classify_reply(REPLY, caller=caller)
+    _args, kwargs = caller._calls[0]
+    assert "temperature" not in kwargs, "would raise TypeError inside ollama.chat()"
+    assert kwargs["options"]["temperature"] == 0
+
+
+def test_a_caller_whose_chat_rejects_stray_kwargs_still_classifies():
+    """The end-to-end guard: a caller with ollama.chat's real strictness."""
+    def call_ollama(*, model, messages, options=None, format=None, think=None):
+        return {"message": {"content": json.dumps({
+            "intent": "acknowledge", "confidence": 0.9,
+            "quote": "We can offer 94,000.00 GBP",
+        })}}
+
+    out = classify_reply(REPLY, caller=SimpleNamespace(call_ollama=call_ollama))
+    assert out.intent == "acknowledge"
+    assert out.grounded is True
