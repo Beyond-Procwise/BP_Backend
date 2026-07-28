@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import select
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -187,8 +188,24 @@ _INFERRABLE_MONEY: dict[str, tuple[str, ...]] = {
 }
 
 
+def _money_on_page(value: Any, full_text: str) -> bool:
+    """Does this amount actually appear in the document's text?
+
+    Tolerant of how the page happens to write it: 1,234.50 / 1234.5 / 1 234,50.
+    """
+    v = _to_decimal(value)
+    if v is None or not full_text:
+        return False
+    f = float(v)
+    hay = re.sub(r"[\s,]", "", full_text)
+    forms = {f"{f:,.2f}", f"{f:,.1f}", f"{f:,.0f}", f"{f:.2f}", f"{f:.1f}"}
+    if f == int(f):
+        forms.add(str(int(f)))
+    return any(re.sub(r"[\s,]", "", s) in hay for s in forms)
+
+
 def _log_derived_money(
-    cur, doc_type: str, raw_id: int, captured: dict[str, Any], derived: dict[str, Any],
+    cur, doc_type: str, raw_id: int, full_text: str, derived: dict[str, Any],
 ) -> int:
     """Record every money field the pipeline INFERRED rather than read.
 
@@ -199,20 +216,32 @@ def _log_derived_money(
     document stated from one we invented. Invoice_INV618706 was booked with a tax
     of 116.96 and a total of 701.75 that appear nowhere on the page.
 
+    HOW THIS DECIDES, and why it changed. It used to compare the row before and
+    after _compute_derived and declare whatever appeared. That never fired once in
+    the whole corpus, because _compute_derived runs TWICE: context_layer already
+    derives and persists these values before _raw is written, so by promotion the
+    "before" snapshot is itself post-derivation and nothing ever looks new.
+
+    It now asks the only question that actually matters, and asks it of the
+    document: is this figure printed on the page? A value that is not is inferred,
+    whichever layer inferred it and whenever. That also catches figures derived
+    upstream of this function entirely — invoice INV-792631 carries a net of
+    27,680.00 that appears nowhere on its page (30,403.00 - 2,723.00), while the
+    page itself shows 26,580.00.
+
     The value is still written (the safety net is useful) — but it is now declared.
     Non-blocking: this is provenance, not an error.
     """
     fields = _INFERRABLE_MONEY.get(doc_type)
-    if not fields:
+    if not fields or not full_text:
         return 0
     pk_col = _STG_PK.get(doc_type)
     doc_pk = derived.get(pk_col) if pk_col else None
     source_file = derived.get("source_file")
     n = 0
     for f in fields:
-        was_absent = captured.get(f) in (None, "")
-        now_present = derived.get(f) not in (None, "")
-        if was_absent and now_present:
+        present = derived.get(f) not in (None, "")
+        if present and not _money_on_page(derived.get(f), full_text):
             cur.execute(
                 """
                 INSERT INTO proc.bp_extraction_discrepancy
@@ -226,15 +255,98 @@ def _log_derived_money(
                     f, None, None, str(derived.get(f)),
                     "value_derived", "warning", "open",
                     (
-                        f"{f} was not captured from the document — it was COMPUTED "
-                        f"as {derived.get(f)} by the derived-value safety net. The "
-                        f"figure does not appear on the page; treat it as inferred, "
-                        f"not as source data."
+                        f"{f} = {derived.get(f)} does not appear anywhere in this "
+                        f"document's text. It was COMPUTED — typically subtotal + tax, "
+                        f"or subtotal x tax_percent. Treat it as inferred, not as "
+                        f"something the document states."
                     ),
                     False,
                 ),
             )
             n += 1
+    return n
+
+
+# A date the document gives only as a month. "Nov 2024" with no day.
+_MONTH_ONLY = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+((?:19|20)\d{2})\b",
+    re.I,
+)
+_DATE_FIELDS: dict[str, tuple[str, ...]] = {
+    "invoice": ("invoice_date", "due_date"),
+    "purchase_order": ("order_date",),
+    "quote": ("quote_date",),
+}
+
+
+def _log_imprecise_dates(
+    cur, doc_type: str, raw_id: int, full_text: str, row: dict[str, Any],
+) -> int:
+    """Declare a date whose DAY the pipeline supplied rather than read.
+
+    Where a document prints only a month — "Nov 2024", no day — the stored date is
+    the 1st of it. That is a reasonable convention and the month is real, so the
+    value is kept. What was missing is any record that the day was ours: the screen
+    renders "1 Nov 2024" and a reader has no way to tell that the document never
+    said the 1st. Ten invoices in this corpus sit on day 1, the largest single
+    day-bucket in it.
+
+    Only fires when the day is genuinely absent: the stored date must be a 1st, its
+    full form must not appear on the page, and the page must carry that month and
+    year in month-only form. A document that prints "1 Nov 2024" is untouched.
+    """
+    fields = _DATE_FIELDS.get(doc_type)
+    if not fields or not full_text:
+        return 0
+    pk_col = _STG_PK.get(doc_type)
+    doc_pk = row.get(pk_col) if pk_col else None
+    source_file = row.get("source_file")
+    months = {(m.group(1)[:3].lower(), m.group(2)) for m in _MONTH_ONLY.finditer(full_text)}
+    if not months:
+        return 0
+    import calendar
+    n = 0
+    for f in fields:
+        v = row.get(f)
+        if v is None or v == "":
+            continue
+        try:
+            iso = str(v)[:10]
+            y, mth, day = (int(x) for x in iso.split("-"))
+        except (ValueError, TypeError):
+            continue
+        if day != 1:
+            continue                                   # a real day was read
+        key = (calendar.month_abbr[mth].lower(), str(y))
+        if key not in months:
+            continue                                   # that month isn't on the page
+        # If the page states the full date anywhere, the 1st was read, not supplied.
+        if any(s in full_text for s in (iso, f"1 {calendar.month_abbr[mth]} {y}",
+                                        f"01 {calendar.month_abbr[mth]} {y}",
+                                        f"1 {calendar.month_name[mth]} {y}")):
+            continue
+        cur.execute(
+            """
+            INSERT INTO proc.bp_extraction_discrepancy
+                (doc_type, raw_id, source_file, doc_pk_candidate,
+                 field_name, raw_value, expected_value, computed_value,
+                 issue_type, severity, status, notes, blocks_promotion)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                doc_type, raw_id, source_file, str(doc_pk) if doc_pk else None,
+                f, str(v), f"{calendar.month_name[mth]} {y}", iso,
+                "date_precision_inferred", "warning", "open",
+                (
+                    f"{f} is stored as {iso}, but the document gives only "
+                    f"'{calendar.month_abbr[mth]} {y}' — no day. The 1st was supplied "
+                    f"by the pipeline. The month is what the document states; the day "
+                    f"is not, and should not be shown as though it were."
+                ),
+                False,
+            ),
+        )
+        n += 1
     return n
 
 
@@ -519,8 +631,14 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             )
             # Declare anything the safety net inferred. Without this a computed
             # tax/total is indistinguishable from one the document actually printed.
+            # Judged against the document's own text, not against a before/after
+            # snapshot — see the docstring for why the snapshot could never work.
             _discrepancies_logged += _log_derived_money(
-                cur, doc_type, raw_id, captured_data, raw_data,
+                cur, doc_type, raw_id, full_text, raw_data,
+            )
+            # And any date whose day we supplied because the page gave only a month.
+            _discrepancies_logged += _log_imprecise_dates(
+                cur, doc_type, raw_id, full_text, raw_data,
             )
 
             # 1d. Audit columns — every stg row is stamped with the system
