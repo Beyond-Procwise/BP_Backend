@@ -39,6 +39,9 @@ from services.learning_repository import LearningRepository
 from services.static_policy_loader import StaticPolicyLoader
 from services.workflow_memory_service import WorkflowMemoryService
 from utils.gpu import configure_gpu
+# One shared GPU-layer count: a different value makes Ollama load a SECOND copy of
+# the model and blocks the caller for minutes while it does.
+from src.services.ollama_client import ALL_GPU_LAYERS as _OLLAMA_ALL_GPU_LAYERS
 
 try:  # Optional imports used for dataset persistence
     from models.context_trainer import ConversationDatasetWriter, TrainingConfig
@@ -1648,7 +1651,9 @@ class AgentNick:
     # Any value at or above the model's layer count means "all of them"; llama.cpp
     # clamps the excess. AgentNick's Modelfile pins `num_gpu 25`, so the request
     # has to name a number that beats it — see ollama_options below.
-    _ALL_GPU_LAYERS = 999
+    # Shared with ollama_client so the two cannot drift apart: a mismatch makes Ollama
+    # load a second copy of the model and blocks the request while it does.
+    _ALL_GPU_LAYERS = _OLLAMA_ALL_GPU_LAYERS
 
     def ollama_options(self) -> Dict[str, Any]:
         """Return default options for Ollama requests respecting GPU availability.

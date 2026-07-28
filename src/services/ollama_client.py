@@ -30,6 +30,15 @@ _semaphore = threading.Semaphore(_MAX_CONCURRENT)
 
 # Retry and timeout — tuned for queued GPU inference
 # With 2 parallel slots, requests queue in Ollama and may take longer
+# Ollama keys a loaded model on its load-affecting options, so every distinct num_gpu
+# value spawns its OWN runner — a fresh ~20GB load that blocks the caller for minutes at
+# 0% GPU. Three different values were in play (Modelfile 25 via an option-less preload,
+# 99 here, 999 in BaseAgent.ollama_options), so requests kept naming a configuration that
+# was not loaded yet. Live, that timed out every summary and hung /workflows/ask.
+# One value, used by every call site AND by the preload, means one instance.
+# Any number at or above the model's layer count means "all of them"; llama.cpp clamps.
+ALL_GPU_LAYERS = int(os.getenv("OLLAMA_NUM_GPU_LAYERS", "999"))
+
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 10  # seconds
 RETRY_MAX_DELAY = 30  # seconds
@@ -62,7 +71,7 @@ def ollama_generate(
     timeout: int = DEFAULT_TIMEOUT,
     temperature: float = 0,
     num_predict: int = 8192,
-    num_gpu: int = 99,
+    num_gpu: int = ALL_GPU_LAYERS,
     retries: int = MAX_RETRIES,
     stop: Optional[list] = None,
     keep_alive: str | int = KEEP_ALIVE,
@@ -267,7 +276,14 @@ def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
     try:
         response = requests.post(
             f"{OLLAMA_BASE_URL}/api/generate",
-            json={"model": model, "prompt": "", "keep_alive": KEEP_ALIVE},
+            # The layer count MUST match what callers ask for, or this pins an instance
+            # nothing else can use and the first real request stalls loading another.
+            json={
+                "model": model,
+                "prompt": "",
+                "keep_alive": KEEP_ALIVE,
+                "options": {"num_gpu": ALL_GPU_LAYERS},
+            },
             timeout=timeout,
         )
         response.raise_for_status()
