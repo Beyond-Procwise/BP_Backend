@@ -4,18 +4,35 @@ The SMTP layer has always supported attachments (EmailService.send_email builds 
 MIMEBase part per file). What was missing was any way to get one in: the endpoint
 had no field and the draft table had no column.
 
-Two regressions guarded here specifically:
+Regressions guarded here specifically:
 
 1. draft_rfq_emails_repo.load_by_unique_id used to select a fixed column list
    that did not include the new ``attachments`` column, so any caller reading
    ``draft.get("attachments")`` in order to append to it always saw ``None`` --
    every upload would silently REPLACE the previous one instead of adding to
-   it. test_two_successive_uploads_accumulate_not_replace and
-   test_load_by_unique_id_carries_attachments_column both fail against the old
-   (buggy) column list.
+   it. The repo-layer guard for that specific regression is
+   test_load_by_unique_id_carries_attachments_column, which drives the real
+   ``load_by_unique_id`` against a fake cursor and fails against the old
+   (buggy) column list. test_two_successive_uploads_accumulate_not_replace
+   monkeypatches ``load_by_unique_id`` out entirely (it stands in an
+   in-memory-dict-backed loader) and instead proves the OTHER half of the same
+   contract: that ``add_email_attachments`` itself reads whatever the loader
+   hands back and appends to it rather than overwriting. Both halves are
+   necessary and neither alone is sufficient -- a correct repo with a handler
+   that discarded prior attachments would pass the repo test and fail this
+   one; a buggy repo behind a correct handler would fail the repo test but
+   this test, using its own fake loader, would not catch it.
 
 2. The S3 client must be a bare ``boto3.client("s3")`` reading ``settings.s3_bucket_name``
    -- there is no general ``aws_region`` setting in this project.
+
+3. A file whose display name collides with one already stored, or with
+   another file in the same request, must not have its bytes silently
+   clobbered in S3 while the earlier record keeps pointing at the same key.
+   test_duplicate_filename_against_stored_attachment_gets_unique_key and
+   test_two_identically_named_files_in_one_request_get_unique_keys drive the
+   real handler and assert on the keys actually written to the fake S3 store,
+   not merely on the HTTP-level response shape.
 """
 import asyncio
 import importlib
@@ -307,9 +324,17 @@ def _store_backed_loader(store):
 
 
 def test_two_successive_uploads_accumulate_not_replace(monkeypatch):
-    """The regression this guards against: load_by_unique_id used to omit the
-    attachments column entirely, so the second call below would have seen
-    None and silently OVERWRITTEN terms.pdf instead of accumulating."""
+    """Proves the HANDLER's own load-then-append logic: given whatever the
+    draft loader hands back, add_email_attachments must append to it, never
+    replace it. The loader here is an in-memory-dict stand-in
+    (_store_backed_loader), not the real draft_rfq_emails_repo.load_by_unique_id
+    -- so this test would still pass even if that repo function regressed back
+    to omitting the attachments column. That specific regression is guarded
+    separately, by test_load_by_unique_id_carries_attachments_column, which
+    drives the real function against a fake cursor. The two tests compose:
+    together they cover "the repo reads the column back correctly" and "the
+    handler appends rather than overwrites what the repo hands it."
+    """
     _FAKE_S3.clear()
     store: Dict = {}
     calls = []
@@ -343,6 +368,95 @@ def test_two_successive_uploads_accumulate_not_replace(monkeypatch):
     assert store["wf-attach-1"] == second["attachments"]
     assert _FAKE_S3["email-attachments/wf-attach-1/terms.pdf"] == b"first file bytes"
     assert _FAKE_S3["email-attachments/wf-attach-1/invoice.pdf"] == b"second file bytes"
+
+
+def test_duplicate_filename_against_stored_attachment_gets_unique_key(monkeypatch):
+    """Re-uploading "terms.pdf" after it is already stored must not clobber the
+    first object's bytes in S3 while the first record keeps pointing at that
+    same key. Both records keep the human-facing filename "terms.pdf"; the
+    STORAGE key for the second one must differ, and both keys' bytes in the
+    fake S3 store must match what was actually sent for each."""
+    _FAKE_S3.clear()
+    store: Dict = {
+        "wf-attach-8": [
+            {
+                "filename": "terms.pdf",
+                "content_type": "application/pdf",
+                "bytes": len(b"original bytes"),
+                "s3_key": "email-attachments/wf-attach-8/terms.pdf",
+                "added_by": "alice",
+                "added_at": "2026-07-28T00:00:00+00:00",
+            }
+        ]
+    }
+    _FAKE_S3["email-attachments/wf-attach-8/terms.pdf"] = b"original bytes"
+    calls = []
+    conn = _FakeConn(calls, store)
+    agent_nick = _make_agent_nick(conn)
+
+    monkeypatch.setattr(mod, "EmailDispatchService", _FakeDispatchService)
+    monkeypatch.setattr(mod.draft_rfq_emails_repo, "load_by_unique_id", _store_backed_loader(store))
+
+    result = asyncio.run(
+        mod.add_email_attachments(
+            "wf-attach-8",
+            files=[_FakeUpload("terms.pdf", "application/pdf", b"corrected bytes")],
+            user_id="alice",
+            agent_nick=agent_nick,
+        )
+    )
+
+    assert result["rejected"] == []
+    filenames = [a["filename"] for a in result["attachments"]]
+    assert filenames == ["terms.pdf", "terms.pdf"]
+
+    keys = [a["s3_key"] for a in result["attachments"]]
+    assert len(set(keys)) == 2, "the two records must not share a storage key"
+    assert keys[0] == "email-attachments/wf-attach-8/terms.pdf"
+    assert keys[1] != keys[0]
+    assert keys[1].startswith("email-attachments/wf-attach-8/terms__")
+    assert keys[1].endswith(".pdf")
+
+    # Neither object's bytes were disturbed by the other.
+    assert _FAKE_S3[keys[0]] == b"original bytes"
+    assert _FAKE_S3[keys[1]] == b"corrected bytes"
+
+
+def test_two_identically_named_files_in_one_request_get_unique_keys(monkeypatch):
+    """Two files named "dup.pdf" uploaded in the SAME request must not collide
+    either -- the second write must not land on the first file's key."""
+    _FAKE_S3.clear()
+    store: Dict = {}
+    calls = []
+    conn = _FakeConn(calls, store)
+    agent_nick = _make_agent_nick(conn)
+
+    monkeypatch.setattr(mod, "EmailDispatchService", _FakeDispatchService)
+    monkeypatch.setattr(mod.draft_rfq_emails_repo, "load_by_unique_id", _store_backed_loader(store))
+
+    result = asyncio.run(
+        mod.add_email_attachments(
+            "wf-attach-9",
+            files=[
+                _FakeUpload("dup.pdf", "application/pdf", b"first copy"),
+                _FakeUpload("dup.pdf", "application/pdf", b"second copy"),
+            ],
+            user_id="alice",
+            agent_nick=agent_nick,
+        )
+    )
+
+    assert result["rejected"] == []
+    filenames = [a["filename"] for a in result["attachments"]]
+    assert filenames == ["dup.pdf", "dup.pdf"]
+
+    keys = [a["s3_key"] for a in result["attachments"]]
+    assert len(set(keys)) == 2, "identically-named files in one request must not share a storage key"
+    assert keys[0] == "email-attachments/wf-attach-9/dup.pdf"
+    assert keys[1] != keys[0]
+
+    assert _FAKE_S3[keys[0]] == b"first copy"
+    assert _FAKE_S3[keys[1]] == b"second copy"
 
 
 def test_disallowed_type_and_oversize_are_reported_not_dropped(monkeypatch):

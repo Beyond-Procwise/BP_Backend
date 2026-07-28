@@ -1570,6 +1570,33 @@ def _load_draft_attachments(draft: Optional[Dict[str, Any]]) -> List[Dict[str, A
     return list(existing or [])
 
 
+def _unique_attachment_key(unique_id: str, name: str, existing_names: Set[str]) -> str:
+    """Build the S3 key for one attachment, so storage identity never disagrees
+    with the record that names it.
+
+    ``email-attachments/{unique_id}/{name}`` collides whenever a second file
+    with the same display name is stored against the same draft -- either a
+    re-upload of a corrected version, or two identically-named files in one
+    request. An unguarded second write would silently replace the first
+    object's bytes in S3 while the FIRST record stayed in the attachments
+    array pointing at that same (now different) key: the record would then
+    say one thing, S3 would hold another, and ``_load_attachments`` would send
+    the wrong bytes for one of the two entries at dispatch time.
+
+    We keep the re-upload (rather than rejecting it -- the user's intent in
+    re-attaching "terms.pdf" is obvious and rejecting it would just be
+    annoying) by disambiguating the STORAGE key with a short random suffix.
+    The record's own ``filename`` stays exactly what the user typed; only the
+    key changes, so two "terms.pdf" entries can coexist, each pointing at its
+    own untouched bytes.
+    """
+    if name not in existing_names:
+        return f"email-attachments/{unique_id}/{name}"
+    stem, ext = os.path.splitext(name)
+    disambiguator = uuid.uuid4().hex[:8]
+    return f"email-attachments/{unique_id}/{stem}__{disambiguator}{ext}"
+
+
 def _persist_draft_attachments(agent_nick, unique_id: str, records: List[Dict[str, Any]]) -> None:
     """Write the attachment list onto the draft row. Raises on failure — a stored
     file with no record is invisible, and silence here would produce exactly that."""
@@ -1601,7 +1628,11 @@ async def add_email_attachments(
     raise discrepancies against itself.
 
     A previous upload's attachments are loaded first and appended to — never
-    overwritten — so successive uploads to the same draft accumulate.
+    overwritten — so successive uploads to the same draft accumulate. A file
+    whose display name collides with one already stored (or with another file
+    in the same request) is kept under a disambiguated storage key (see
+    ``_unique_attachment_key``) so the stored bytes, the record, and what gets
+    sent can never disagree about which file is which.
     """
     from datetime import datetime, timezone
 
@@ -1611,6 +1642,7 @@ async def add_email_attachments(
 
     records: List[Dict[str, Any]] = _load_draft_attachments(draft)
     total = sum(int(r.get("bytes") or 0) for r in records)
+    existing_names: Set[str] = {r.get("filename") for r in records if r.get("filename")}
 
     service = EmailDispatchService(agent_nick)
     rejected: List[Dict[str, str]] = []
@@ -1627,13 +1659,14 @@ async def add_email_attachments(
         if total + len(data) > service._ATTACHMENT_MAX_TOTAL_BYTES:
             rejected.append({"filename": name, "reason": "message would exceed the total attachment limit"})
             continue
-        key = f"email-attachments/{unique_id}/{name}"
+        key = _unique_attachment_key(unique_id, name, existing_names)
         try:
             await run_in_threadpool(service._write_s3_bytes, key, data, upload.content_type)
         except Exception as exc:  # noqa: BLE001
             rejected.append({"filename": name, "reason": f"upload failed: {exc}"})
             continue
         total += len(data)
+        existing_names.add(name)
         records.append(
             {
                 "filename": name,
