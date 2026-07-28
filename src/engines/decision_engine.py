@@ -1351,3 +1351,154 @@ class DecisionEngine:
         except Exception:
             logger.exception("failed to read decision %s", decision_id)
             return None
+
+    # ------------------------------------------------------------------
+    # Email replies -- human action on an already-recorded decision
+    # ------------------------------------------------------------------
+    def _fetch_email_decision(self, decision_id: int) -> Optional[Dict[str, Any]]:
+        """The previously recorded email-reply decision, exactly as persisted.
+
+        Reads proc.bp_decision ONLY -- never proc.bp_extraction_discrepancy. That
+        table (and `_fetch_finding` / `decide_finding` / `execute`, which read and
+        write it) belongs to the extraction-findings path; an email decision_id has
+        no row there at all, which is the whole reason this sibling method exists.
+
+        Scoped to subject_type = 'email_reply' in SQL, so a finding's decision_id
+        cannot be actioned through the email path by accident.
+        """
+        sql = """
+            SELECT decision_id, subject_type, subject_id, deal_id, supplier_id,
+                   decision, resolution, rationale, policy_id, policy_name,
+                   facts, evidence
+              FROM proc.bp_decision
+             WHERE decision_id = %s AND subject_type = %s
+        """
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (decision_id, self._EMAIL_SUBJECT_TYPE))
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    cols = [d[0] for d in cur.description]
+                    return dict(zip(cols, row))
+        except Exception:
+            logger.exception("failed to read email decision %s", decision_id)
+            return None
+
+    def act_on_email_reply(
+        self,
+        decision_id: int,
+        action: str,
+        *,
+        user_id: str = "api",
+        override_reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Record the human's send/reject on an already-decided email reply.
+
+        This is the email-reply sibling of `execute()`, for a path `execute()`
+        cannot serve: `execute()` and `decide_finding()` key off `finding_id` and
+        read/write proc.bp_extraction_discrepancy, and an email decision has no row
+        there. This method never touches that table -- it reads the decision back
+        from proc.bp_decision via `_fetch_email_decision` (keyed by `decision_id`,
+        which is all the queue in `list_decisions` hands the caller) and persists
+        the human's action with the shared `_record_human_action`, the exact
+        mechanism `execute()` uses for findings.
+
+        Same human-in-the-loop convention as `execute()`, not a different one:
+          * the stored decision already states what the evidence supported;
+          * sending against a recommendation that was ESCALATED contradicts that,
+            so it comes back with requires_override=True and the reasoning rather
+            than proceeding on a bare click;
+          * rejecting one does not conflict -- "do not send" is exactly what an
+            escalation asks a human to weigh, so no override is required for it;
+          * supplying override_reason proceeds and is recorded against the actor.
+        The human is never blocked; they are asked to mean it.
+        """
+        action = (action or "").strip().lower()
+        if action not in ("send", "reject"):
+            return {
+                "applied": False,
+                "error": f"unknown action '{action}' (expected 'send' or 'reject')",
+            }
+
+        row = self._fetch_email_decision(decision_id)
+        if not row:
+            return {
+                "applied": False,
+                "error": f"email decision {decision_id} not found",
+            }
+
+        facts = row.get("facts") or {}
+        if isinstance(facts, str):
+            try:
+                facts = json.loads(facts)
+            except Exception:
+                facts = {}
+
+        raw_evidence = row.get("evidence") or []
+        if isinstance(raw_evidence, str):
+            try:
+                raw_evidence = json.loads(raw_evidence)
+            except Exception:
+                raw_evidence = []
+        evidence = [
+            Evidence(
+                fact=e.get("fact"),
+                value=e.get("value"),
+                source=e.get("source"),
+                reference=e.get("reference"),
+            )
+            for e in raw_evidence
+            if isinstance(e, dict)
+        ]
+
+        recommendation = Decision(
+            subject_type=row.get("subject_type") or self._EMAIL_SUBJECT_TYPE,
+            subject_id=row.get("subject_id"),
+            decision=row.get("decision"),
+            resolution=row.get("resolution") or ESCALATED,
+            rationale=row.get("rationale") or "",
+            policy_id=row.get("policy_id"),
+            policy_name=row.get("policy_name"),
+            facts=facts,
+            evidence=evidence,
+            deal_id=row.get("deal_id"),
+            supplier_id=row.get("supplier_id"),
+            decision_id=row.get("decision_id"),
+        )
+
+        # Same test as execute(): does the human's action contradict the evidence?
+        # An escalated recommendation says "a human must decide"; rejecting (not
+        # sending) is a human deciding not to, which agrees with it. Sending is the
+        # one action that goes the other way.
+        conflicts = action == "send" and recommendation.escalated
+
+        if conflicts and not override_reason:
+            return {
+                "applied": False,
+                "requires_override": True,
+                "recommendation": recommendation.to_dict(),
+                "prompt": (
+                    "The evidence does not support sending here: "
+                    f"{recommendation.rationale} You can still proceed, but the "
+                    "reason will be recorded against your name."
+                ),
+            }
+
+        new_decision_id = self._record_human_action(
+            recommendation,
+            human_action=action,
+            actor=user_id,
+            override_reason=override_reason if conflicts else None,
+        )
+
+        return {
+            "applied": True,
+            "action": action,
+            "decision_id": new_decision_id,
+            "overridden": bool(conflicts),
+            "override_reason": override_reason if conflicts else None,
+            "actioned_by": user_id,
+            "recommendation": recommendation.to_dict(),
+        }

@@ -1,8 +1,17 @@
 """Decisions — make one, and check why it was made.
 
-POST /decisions/finding/{id}   — decide what to do about a finding, grounded in
-                                 the facts and the governed policy, and persist it.
-GET  /decisions/{decision_id}  — the decision WITH the evidence that produced it.
+POST /decisions/finding/{id}            — decide what to do about a finding,
+                                           grounded in the facts and the governed
+                                           policy, and persist it.
+POST /decisions/finding/{id}/action     — carry out a human's approve/reject/etc.
+                                           on a finding (Action Centre).
+POST /decisions/email-reply/{id}        — decide whether to send a supplier reply
+                                           unattended, or escalate it.
+POST /decisions/email-reply/{id}/action — carry out a human's send/reject on an
+                                           already-decided, escalated email reply.
+GET  /decisions                         — the escalation queue (Todo list).
+GET  /decisions/{decision_id}           — the decision WITH the evidence that
+                                           produced it.
 
 The GET is the whole point. A decision you cannot re-derive from source is a guess
 you have chosen to trust.
@@ -11,9 +20,9 @@ you have chosen to trust.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -116,6 +125,145 @@ def act_on_finding(
     if result.get("error") and not result.get("requires_override"):
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+_EMAIL_AGENT = "email_drafting_agent"
+
+
+@router.post("/email-reply/{response_id}")
+def decide_email_reply(
+    response_id: str,
+    body: Optional[DecideRequest] = None,
+    agent_nick=Depends(get_agent_nick),
+) -> Dict[str, Any]:
+    """Decide a supplier reply: answer it unattended, or escalate it to a human.
+
+    Authority is resolved HERE, from the governed policy -- never taken from the
+    request. A limit supplied by the caller would be a limit chosen by the caller,
+    which is exactly the ApprovalsAgent mistake this system does not repeat.
+    """
+    from engines.decision_engine import DecisionEngine
+    from src.services.governance_tools.authority import resolve_authority
+
+    authority = resolve_authority(agent_nick.policy_engine, [_EMAIL_AGENT]).get(_EMAIL_AGENT)
+    engine = DecisionEngine(agent_nick)
+    decision = engine.decide_email_reply(
+        response_id,
+        authority=authority,
+        requested=(body.requested if body else None),
+    )
+    decision_id = engine.record(
+        decision,
+        workflow_id=(body.workflow_id if body else None),
+        agent=_EMAIL_AGENT,
+        created_by=(body.user_id if body and body.user_id else "system"),
+    )
+    payload = decision.to_dict()
+    payload["decision_id"] = decision_id
+    return {"decision": payload, "decision_id": decision_id}
+
+
+class EmailActionRequest(BaseModel):
+    action: str
+    user_id: Optional[str] = None
+    # Required when the action contradicts what the evidence supports. Recorded
+    # against the actor. Not a flag -- a sentence. Same convention as
+    # ActionRequest.override_reason on the finding path.
+    override_reason: Optional[str] = None
+
+
+@router.post("/email-reply/{decision_id}/action")
+def act_on_email_reply(
+    decision_id: int,
+    body: EmailActionRequest,
+    agent_nick=Depends(get_agent_nick),
+) -> Dict[str, Any]:
+    """Carry out the human's send/reject on an already-decided email reply.
+
+    This is the sibling of `act_on_finding` for the email path, and exists because
+    `act_on_finding` cannot serve it: it calls `DecisionEngine.execute()`, which
+    keys off `finding_id` and reads/writes proc.bp_extraction_discrepancy -- a table
+    an email decision has no row in. Nothing in this endpoint's path touches that
+    table; it reads and writes proc.bp_decision only, via
+    `DecisionEngine.act_on_email_reply`.
+
+    Keyed by `decision_id` (not `response_id`) because that is what the queue at
+    `GET /decisions` hands the caller -- the queue row carries no `response_id`.
+
+    Human-in-the-loop, same convention as the finding action route: the stored
+    decision already states what the evidence supported; sending against one that
+    was escalated contradicts that and comes back with requires_override=true and
+    the reasoning; rejecting does not conflict, since "do not send" is what an
+    escalation is asking a human to weigh. Supplying override_reason proceeds and
+    is recorded against the actor. The human is never blocked -- they are asked to
+    mean it.
+    """
+    from engines.decision_engine import DecisionEngine
+
+    result = DecisionEngine(agent_nick).act_on_email_reply(
+        decision_id,
+        body.action,
+        user_id=body.user_id or "api",
+        override_reason=body.override_reason,
+    )
+    if result.get("error") and not result.get("requires_override"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("")
+def list_decisions(
+    subject_type: Optional[str] = Query(default=None),
+    status: str = Query(default="open"),
+    limit: int = Query(default=100, ge=1, le=500),
+    agent_nick=Depends(get_agent_nick),
+) -> Dict[str, Any]:
+    """Escalated decisions awaiting a human — the rows behind the Todo list.
+
+    Only escalations are returned. A decision the agent resolved itself is not a
+    task; it is an audit record, and putting it here would fill the list with work
+    nobody has to do.
+
+    The filters are in SQL, before the LIMIT, and `total` is the true server-side
+    count rather than the page size -- a previous screen in this codebase pinned
+    its badge to the page size, and a growing backlog looked like a plateau.
+    """
+    where = ["d.resolution = 'escalated'"]
+    params: List[Any] = []
+    if subject_type:
+        where.append("d.subject_type = %s")
+        params.append(subject_type)
+    if status:
+        where.append("d.status = %s")
+        params.append(status)
+    clause = " AND ".join(where)
+
+    sql = f"""
+        SELECT d.decision_id, d.subject_type, d.subject_id, d.supplier_id, d.deal_id,
+               d.decision, d.resolution, d.rationale, d.policy_name, d.facts, d.created_at
+          FROM proc.bp_decision d
+         WHERE {clause}
+         ORDER BY d.created_at DESC
+         LIMIT %s
+    """
+    count_sql = f"SELECT count(*) FROM proc.bp_decision d WHERE {clause}"
+    try:
+        with agent_nick.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params) + (limit,))
+                cols = [c[0] for c in cur.description]
+                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                cur.execute(count_sql, tuple(params))
+                total = int((cur.fetchone() or [0])[0] or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("failed to list decisions")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    for row in rows:
+        created = row.get("created_at")
+        if created is not None and not isinstance(created, str):
+            row["created_at"] = created.isoformat()
+    return {"data": rows, "total": total}
 
 
 @router.get("/{decision_id}")
