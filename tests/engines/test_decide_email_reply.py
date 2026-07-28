@@ -298,6 +298,86 @@ def test_an_absent_prior_offer_still_escalates_after_wiring():
 # All three governed gate inputs are None-able from resolve_authority while
 # governed=True. All three must fail closed, for the same reason.
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# Currency. A delta in one currency tested against a limit in another is a wrong
+# answer in the permissive direction. This is a gate, never a conversion.
+# ----------------------------------------------------------------------------
+def test_matching_currencies_reach_the_arithmetic():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": "GBP"}
+    row = {**REPLY_ROW, "currency": "GBP", "price": 94000, "prior_price": 96000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.facts["value_at_stake"] == "2000", "the subtraction must still happen"
+    assert d.resolution == RESOLVED
+
+
+def test_a_lowercase_currency_still_matches():
+    """'gbp' and 'GBP' are the same denomination; only case differs."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": "GBP"}
+    row = {**REPLY_ROW, "currency": "gbp", "prior_price": 96000, "price": 94000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    assert eng.decide_email_reply("1", authority=auth).resolution == RESOLVED
+
+
+def test_a_differing_reply_currency_escalates_without_converting():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": "GBP"}
+    row = {**REPLY_ROW, "currency": "EUR"}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "EUR" in d.rationale and "GBP" in d.rationale
+    assert "no comparison was attempted" in d.rationale.lower()
+    assert "currency problem, not a pricing dispute" in d.rationale
+    # Nothing was computed across denominations, and no rate was invented.
+    assert "value_at_stake" not in d.facts
+    assert "prior_offer" not in d.facts
+
+
+def test_an_absent_reply_currency_escalates():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": "GBP"}
+    for missing in (None, "", "   "):
+        row = {**REPLY_ROW, "currency": missing}
+        eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+        d = eng.decide_email_reply("1", authority=auth)
+        assert d.resolution == ESCALATED, f"currency={missing!r} must not be assumed"
+        assert "no currency is recorded" in d.rationale
+        assert "value_at_stake" not in d.facts
+        source = next(e.source for e in d.evidence if e.fact == "currency")
+        assert source == "proc.supplier_response.currency"
+
+
+def test_an_absent_limit_currency_escalates():
+    """We cannot confirm the denominations match if the limit has none."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": None}
+    eng = _engine(intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "no currency of its own" in d.rationale
+    assert d.facts["value_limit_currency"] is None
+
+
+def test_both_currencies_are_sourced():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": "GBP"}
+    row = {**REPLY_ROW, "currency": "GBP", "prior_price": 96000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    sources = {e.fact: e.source for e in d.evidence}
+    assert sources["currency"] == "proc.supplier_response.currency"
+    assert "email_reply_autonomy" in sources["value_limit_currency"]
+    assert "limit_currency" in sources["value_limit_currency"]
+
+
+def test_a_currency_mismatch_on_an_unpriced_reply_invents_no_money_concern():
+    """No price means no money moves. A stray currency must not manufacture a gate."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": "GBP"}
+    row = {**REPLY_ROW, "price": None, "prior_price": None, "currency": "EUR"}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == RESOLVED
+    assert d.decision == "send"
+    assert "currency" not in d.rationale.lower()
+
+
 def test_a_missing_governed_confidence_minimum_escalates():
     auth = {**GOVERNED, "auto_intents": ["acknowledge"], "min_intent_confidence": None}
     eng = _engine(intent=ReplyIntent("acknowledge", 1.0, "Thank you.", True))

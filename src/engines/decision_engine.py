@@ -679,17 +679,29 @@ class DecisionEngine:
         # 4. Value at stake against the governed spend limit. Derived, and the
         #    derivation is stated: two numbers, both cited above.
         #
-        #    Order matters. A reply that carries a price at all is a reply about money,
-        #    and it may only be sent unattended if BOTH numbers exist: a governed limit
-        #    to test against, and the offer it moves from. resolve_authority() returns
-        #    governed=True with limit_gbp=None whenever the autonomy policy omits
-        #    `defer_value_limit_to`, so "no limit" is a reachable state -- and an absent
-        #    limit is never an unlimited one.
+        #    Order matters, and this is the order:
+        #      4.  is there a price at all?      no  -> no money moves, skip the block
+        #      4.  a governed limit?             no  -> escalate (absent != unlimited)
+        #      4a. the same denomination?        no  -> escalate (never convert)
+        #      4b. a prior offer to move from?   no  -> escalate (absent != unchanged)
+        #      4c. abs(price - prior) > limit?   yes -> escalate
+        #    The currency gate sits at 4a, after the limit is in hand and before any
+        #    subtraction or comparison, so no arithmetic here ever crosses currencies.
+        #    It cannot go earlier: with no limit resolved there is no limit_currency to
+        #    compare against, and "no limit" is the more fundamental authority failure
+        #    to report. It must not go later: a mismatch invalidates the comparison
+        #    whether or not a prior offer exists, so reporting a missing prior first
+        #    would name the smaller problem.
+        #
+        #    resolve_authority() returns governed=True with limit_gbp=None whenever the
+        #    autonomy policy omits `defer_value_limit_to`, so "no limit" is a reachable
+        #    state -- and an absent limit is never an unlimited one.
         price = self._num(row.get("price"))
         prior = self._num(row.get("prior_price"))
         limit = self._num(authority.get("limit_gbp"))
-        currency = row.get("currency") or ""
+        reply_currency = str(row.get("currency") or "").strip()
         if price is not None:
+            priced = f"{price} {reply_currency}".strip()
             if limit is None:
                 facts["value_limit_gbp"] = None
                 evidence.append(Evidence(
@@ -697,7 +709,7 @@ class DecisionEngine:
                     source="proc.bp_policy(email_reply_autonomy).rules.defer_value_limit_to",
                     reference=authority.get("reason")))
                 return _escalate(
-                    f"The reply carries a price of {price} {currency} but no governed "
+                    f"The reply carries a price of {priced} but no governed "
                     f"value limit was resolved under "
                     f"{policy_name or 'the autonomy policy'} (limit_gbp is missing, so "
                     "the policy defers to no approval threshold). There is nothing to "
@@ -712,10 +724,53 @@ class DecisionEngine:
                        "(resolve_authority.limit_gbp)",
                 reference=str(policy_id) if policy_id is not None else None))
 
+            # 4a. Same denomination, or no comparison. This fires BEFORE any
+            #     subtraction or comparison, so no arithmetic in this method ever
+            #     crosses currencies. It is a GATE, not a conversion: there is an FX
+            #     facility in this codebase, but a rate nobody chose -- fabricated or
+            #     stale -- underneath a spend decision is worse than a human looking at
+            #     it. Amounts in different currencies are never combined here without an
+            #     explicit conversion basis, and none is chosen.
+            limit_currency = str(authority.get("limit_currency") or "").strip()
+            facts["value_limit_currency"] = limit_currency or None
+            evidence.append(Evidence(
+                fact="value_limit_currency", value=limit_currency or None,
+                source="proc.bp_policy(email_reply_autonomy) -> approval threshold "
+                       "(resolve_authority.limit_currency)",
+                reference=str(policy_id) if policy_id is not None else None))
+            if not reply_currency:
+                evidence.append(Evidence(
+                    fact="currency", value=None,
+                    source="proc.supplier_response.currency", reference=ref))
+                return _escalate(
+                    f"The reply carries a price of {price} but no currency is recorded "
+                    f"against it, while the governed limit of {limit} is denominated in "
+                    f"{limit_currency or 'an unstated currency'}. No comparison was "
+                    "attempted, because an amount whose denomination is unknown cannot "
+                    "be tested against a limit in a specific one. This is a currency "
+                    "problem, not a pricing dispute."
+                )
+            if not limit_currency:
+                return _escalate(
+                    f"The reply is priced in {reply_currency} but the governed limit of "
+                    f"{limit} carries no currency of its own under "
+                    f"{policy_name or 'the autonomy policy'}, so there is nothing to "
+                    "confirm the two are the same denomination. No comparison was "
+                    "attempted. This is a currency problem, not a pricing dispute."
+                )
+            if reply_currency.upper() != limit_currency.upper():
+                return _escalate(
+                    f"The reply is priced in {reply_currency} but the governed limit of "
+                    f"{limit} is denominated in {limit_currency}. No comparison was "
+                    "attempted: amounts in different currencies are never combined "
+                    "without an explicit conversion basis, and none is chosen here. "
+                    "This is a currency problem, not a pricing dispute."
+                )
+
             if prior is None:
                 # We can see their number but not ours. That is not "nothing at stake".
                 return _escalate(
-                    f"The supplier quotes {price} {currency} but no prior offer is "
+                    f"The supplier quotes {priced} but no prior offer is "
                     "recorded on the draft, so the amount at stake cannot be computed. "
                     "A human should compare these."
                 )
@@ -734,10 +789,12 @@ class DecisionEngine:
                 source=f"derived: abs(proc.supplier_response.price - {prior_source})",
                 reference=ref))
             if at_stake > limit:
+                # Both sides are in reply_currency, which gate 4a has already confirmed
+                # equals limit_currency -- so no default denomination is assumed here.
                 return _escalate(
-                    f"The reply moves {at_stake} {currency} "
+                    f"The reply moves {at_stake} {reply_currency} "
                     f"(supplier {price} against our {prior}), above the governed limit "
-                    f"of {limit} {authority.get('limit_currency') or 'GBP'}."
+                    f"of {limit} {limit_currency}."
                 )
 
         # 5. Per-thread cap on unattended replies. Fail-closed on BOTH unknowns: an
