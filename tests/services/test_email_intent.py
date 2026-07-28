@@ -42,3 +42,81 @@ def test_a_fabricated_sentence_never_grounds():
 
 def test_empty_source_never_grounds():
     assert is_quote_grounded("We can offer 94,000.00 GBP", "", min_words=4) is False
+
+
+import json
+from types import SimpleNamespace
+
+from src.services.email_intent import ReplyIntent, classify_reply
+
+
+def _caller(payload):
+    """Stand-in for a BaseAgent-like caller: one call_ollama call.
+
+    ``call_ollama`` (src/agents/base_agent.py) returns the ``ollama`` chat shape
+    when called with ``messages=`` -- ``{"message": {"content": ...}}`` -- so the
+    stub mirrors that instead of the nonexistent ``agent_nick.chat(...)``.
+    """
+    calls = []
+
+    def call_ollama(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"message": {"content": payload}}
+
+    return SimpleNamespace(call_ollama=call_ollama, _calls=calls)
+
+
+def test_classifies_a_price_change_with_a_grounded_quote():
+    caller = _caller(json.dumps({
+        "intent": "price_change",
+        "confidence": 0.94,
+        "quote": "We can offer 94,000.00 GBP",
+    }))
+    out = classify_reply(REPLY, caller=caller)
+    assert out.intent == "price_change"
+    assert out.confidence == 0.94
+    assert out.grounded is True
+
+
+def test_an_ungrounded_quote_is_reported_not_trusted():
+    caller = _caller(json.dumps({
+        "intent": "price_change",
+        "confidence": 0.99,
+        "quote": "We will absorb the increase entirely",
+    }))
+    out = classify_reply(REPLY, caller=caller)
+    assert out.grounded is False
+    # The claim is preserved for inspection; the caller decides (it escalates).
+    assert out.intent == "price_change"
+    assert "not found" in out.reason.lower()
+
+
+def test_an_unknown_intent_becomes_unclassified():
+    caller = _caller(json.dumps(
+        {"intent": "vibes", "confidence": 0.9, "quote": "We can offer 94,000.00 GBP"}
+    ))
+    out = classify_reply(REPLY, caller=caller)
+    assert out.intent == "unclassified"
+    assert out.confidence == 0.0
+
+
+def test_unparseable_model_output_is_unusable_not_guessed():
+    out = classify_reply(REPLY, caller=_caller("I think it's a price change!"))
+    assert out.intent == "unclassified"
+    assert out.confidence == 0.0
+    assert out.grounded is False
+
+
+def test_a_raising_model_is_unusable_not_fatal():
+    def boom(*a, **k):
+        raise RuntimeError("ollama down")
+
+    out = classify_reply(REPLY, caller=SimpleNamespace(call_ollama=boom))
+    assert out.intent == "unclassified"
+    assert out.confidence == 0.0
+
+
+def test_empty_body_is_unusable():
+    out = classify_reply("", caller=_caller("{}"))
+    assert out.intent == "unclassified"
+    assert isinstance(out, ReplyIntent)
