@@ -78,10 +78,18 @@ def test_line_sum_mismatch_flagged():
 
 
 def test_within_tolerance_reconciles():
+    # Rewritten when the reconciliation tolerance stopped being proportional. This used
+    # to assert that 98.00 against a header of 100.00 reconciles, on the grounds that 2%
+    # is inside a 5% band. It is a £2 discrepancy on a £100 invoice, and calling it
+    # rounding is what let a £1,000 gap through on a £112k quote. Rounding is pennies.
     cols = {"invoice_id": "INV1", "invoice_amount": 100.0}
-    lines = [{"line_amount": 98.0}]  # 2% < 5% tolerance
-    r = assess("invoice", cols, lines, has_line_schema=True, missing_required=[])
+    r = assess("invoice", cols, [{"line_amount": 99.99}],
+               has_line_schema=True, missing_required=[])
     assert r.is_complete is True
+
+    r_off = assess("invoice", cols, [{"line_amount": 98.0}],
+                   has_line_schema=True, missing_required=[])
+    assert r_off.status == "line_sum_mismatch"
 
 
 def test_no_header_total_cannot_flag_mismatch():
@@ -116,3 +124,42 @@ def test_header_subtotal_helper():
     assert header_subtotal("quote", {"total_amount": 50.0}) == 50.0
     assert header_subtotal("invoice", {}) is None
     assert header_subtotal("contract", {"foo": 1}) is None
+
+
+# ---------------------------------------------------------------------------
+# Header-vs-lines reconciliation tolerance.
+#
+# This was 5% of the header total, so the slack grew with the document. A £111,975
+# quote tolerated £5,600 of error, and WSG100024 carried a header £1,000 above its
+# own fifteen line items with nothing flagging it — the tax and gross are computed
+# from that header, so the error reached three figures on screen.
+# ---------------------------------------------------------------------------
+def test_thousand_pound_gap_on_a_six_figure_document_does_not_reconcile():
+    # The real shape of WSG100024.
+    lines = [{"line_total": 110975.00}]
+    report = assess(
+        "quote", {"total_amount": 111975.00}, lines,
+        has_line_schema=True,
+    )
+    assert report.lines_reconcile is False
+    assert report.status == "line_sum_mismatch"
+    assert any("line_sum_mismatch" in g for g in report.gaps)
+
+
+def test_penny_rounding_still_reconciles():
+    lines = [{"line_total": 1000.00}, {"line_total": 234.49}]
+    report = assess(
+        "quote", {"total_amount": 1234.50}, lines, has_line_schema=True,
+    )
+    assert report.lines_reconcile is True
+
+
+def test_tolerance_does_not_scale_with_the_value():
+    # The same absolute gap must be judged the same way whether the document is
+    # small or large. Under the old proportional band the second of these passed.
+    small = assess("quote", {"total_amount": 100.00},
+                   [{"line_total": 90.00}], has_line_schema=True)
+    large = assess("quote", {"total_amount": 1000000.00},
+                   [{"line_total": 999990.00}], has_line_schema=True)
+    assert small.lines_reconcile is False
+    assert large.lines_reconcile is False

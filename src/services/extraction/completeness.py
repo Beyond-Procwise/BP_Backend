@@ -27,7 +27,26 @@ _LINE_AMOUNT_COL = {
     "quote": "line_total",
 }
 
+# Used ONLY to recognise a closure row: a final line whose amount equals the sum of the
+# lines above it is a printed total, not another item. Proportional is right for that job —
+# it is a shape-recognition question, and tightening it would start folding printed totals
+# back into the sum as though they were line items.
 _RECONCILE_TOLERANCE = 0.05  # 5%
+
+# Rounding allowance when reconciling the LINES against the HEADER total. Absolute, in
+# currency units — deliberately not a percentage.
+#
+# This was 5% of the header, which scales the blind spot with the value: the larger the
+# document, the more error it hides. On a £111,975 quote that is £5,600 of slack, and it
+# is how WSG100024 and WSG100025 each came to carry a header total £1,000 above the fifteen
+# line items it is made of with nothing flagging it. The tax and gross are computed from
+# that header, so the error reached three figures on the screen.
+#
+# Per-line rounding across even a hundred lines cannot amount to more than a few pence, so
+# rounding is the only thing this needs to absorb. On the current corpus the gaps are
+# bimodal — 120 documents reconcile to the penny and 12 are out by hundreds or thousands —
+# so there is no band of legitimate small differences for a wider tolerance to protect.
+_RECONCILE_ABS_TOLERANCE = 1.00
 
 
 @dataclass
@@ -110,7 +129,7 @@ def _reconciles(lsum: Optional[float], header_total: Optional[float]) -> bool:
         return True
     if lsum is None:
         return False
-    return abs(lsum - header_total) <= max(0.01, _RECONCILE_TOLERANCE * abs(header_total))
+    return abs(lsum - header_total) <= _RECONCILE_ABS_TOLERANCE
 
 
 def assess(
