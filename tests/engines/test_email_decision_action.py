@@ -51,9 +51,10 @@ class FakeCursor:
     in `_close_original_email_decision`.
     """
 
-    def __init__(self, select_row, fail_update=False):
+    def __init__(self, select_row, fail_update=False, fail_insert=False):
         self.select_row = select_row
         self.fail_update = fail_update
+        self.fail_insert = fail_insert
         self.description = None
         self.executed = []
         self.insert_params = None
@@ -78,6 +79,13 @@ class FakeCursor:
             self.description = [(c,) for c in _SELECT_COLUMNS]
             self._last_result = self.select_row
         elif norm.startswith("INSERT INTO proc.bp_decision"):
+            if self.fail_insert:
+                # `_record_human_action`'s own try/except (pre-existing, lines
+                # ~1328-1330) catches exactly this and returns None -- it never
+                # propagates. Raising here exercises that real, existing
+                # behaviour rather than assuming it.
+                self.insert_params = params
+                raise RuntimeError("simulated: the audit write failed")
             self.insert_params = params
             self._last_result = (555,)
         else:  # pragma: no cover - would indicate an unexpected query
@@ -105,8 +113,8 @@ class FakeConn:
         self.committed = True
 
 
-def _engine(select_row, fail_update=False):
-    cur = FakeCursor(select_row, fail_update=fail_update)
+def _engine(select_row, fail_update=False, fail_insert=False):
+    cur = FakeCursor(select_row, fail_update=fail_update, fail_insert=fail_insert)
     conn = FakeConn(cur)
     nick = SimpleNamespace(
         get_db_connection=lambda: conn,
@@ -157,7 +165,15 @@ def test_overriding_a_send_records_who_and_why():
     assert result["applied"] is True
     assert result["overridden"] is True
     assert result["override_reason"] == "supplier confirmed on the phone"
+    # Fix round 2: two DIFFERENT decision_ids under unambiguous, separate names.
+    # `decision_id` is kept only as a backwards-compatible alias of
+    # `audit_decision_id` and must not be conflated with the ORIGINAL row's id,
+    # which is `original_decision_id` (== the recommendation's own decision_id,
+    # via the unmodified Decision.to_dict() the findings path also uses).
+    assert result["audit_decision_id"] == 555
+    assert result["original_decision_id"] == 7
     assert result["decision_id"] == 555
+    assert result["recommendation"]["decision_id"] == 7
 
     params = cur.insert_params
     assert params is not None
@@ -251,8 +267,34 @@ def test_a_failed_close_is_reported_not_hidden_behind_a_plain_success():
     # But the response is explicit that the queue entry did not close.
     assert result["queue_closed"] is False
     assert "warning" in result
-    assert "decision_id=555" in result["warning"]
+    assert "audit_decision_id=555" in result["warning"]
     assert "7" in result["warning"]
+    # And the warning is honest that re-posting is not a safe retry -- it would
+    # insert a SECOND audit row, not retry only the close.
+    assert "second" in result["warning"].lower() or "not a safe retry" in result["warning"].lower()
+
+
+def test_a_failed_audit_write_does_not_close_the_original_and_is_reported():
+    """Fix round 2, CRITICAL: gate the close on the audit write. If
+    `_record_human_action` fails (it catches its own exceptions and returns
+    None -- never raises), the ORIGINAL row must NOT be closed: the decision
+    genuinely has not been dealt with, and closing it anyway would be the worst
+    available outcome -- the record of who acted is gone, the task vanishes
+    from the queue, and the caller is told it worked.
+    """
+    eng, cur = _engine(select_row=ESCALATED_ROW, fail_insert=True)
+    result = eng.act_on_email_reply(7, "reject", user_id="bob")
+
+    assert result["applied"] is False
+    assert "error" in result
+    assert "not be recorded" in result["error"] or "could not be recorded" in result["error"]
+    # decision_id must NOT be silently reported as if it existed.
+    assert "decision_id" not in result or result.get("decision_id") is None
+    assert "audit_decision_id" not in result
+
+    # The queue-closing UPDATE must never have been attempted.
+    assert cur.update_params is None
+    assert not any("UPDATE" in sql for sql, _params in cur.executed)
 
 
 def test_the_fetch_is_scoped_to_email_reply_in_sql():

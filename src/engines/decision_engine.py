@@ -1553,6 +1553,25 @@ class DecisionEngine:
             override_reason=override_reason if conflicts else None,
         )
 
+        # Fix round 2, CRITICAL: the close must be GATED on the audit write
+        # having actually succeeded. `_record_human_action` catches its own
+        # exceptions and returns None on failure (never raises) -- if it failed,
+        # there is nothing worth closing: closing the original row anyway would
+        # be the worst available outcome -- the record of who acted is gone,
+        # the task vanishes from the human's queue, and the caller is told it
+        # worked. Leaving the original row open is correct here, because the
+        # decision genuinely has not been dealt with.
+        if new_decision_id is None:
+            return {
+                "applied": False,
+                "error": (
+                    "The action could not be recorded (the write to "
+                    "proc.bp_decision failed), so nothing was closed. The "
+                    "decision remains in the queue."
+                ),
+                "recommendation": recommendation.to_dict(),
+            }
+
         # Same status word `_record_human_action` just wrote on the NEW row --
         # the original row's queue entry is closed with the identical vocabulary,
         # not a third value.
@@ -1562,6 +1581,16 @@ class DecisionEngine:
         result: Dict[str, Any] = {
             "applied": True,
             "action": action,
+            # Fix round 2: two DIFFERENT decision_ids were being returned under
+            # the same ambiguous key at different response depths --
+            # `decision_id` here (the NEW audit row) vs. `recommendation.
+            # decision_id` (the ORIGINAL row `Decision.to_dict()` already emits,
+            # unchanged -- that shape is shared with the findings path and is
+            # not touched here). These two explicit names are now authoritative;
+            # `decision_id` is kept ONLY as a backwards-compatible alias for
+            # `audit_decision_id` and should not be read as "the" decision id.
+            "audit_decision_id": new_decision_id,
+            "original_decision_id": decision_id,
             "decision_id": new_decision_id,
             "overridden": bool(conflicts),
             "override_reason": override_reason if conflicts else None,
@@ -1573,10 +1602,17 @@ class DecisionEngine:
             # The action WAS recorded (new_decision_id is real audit trail) -- but
             # the caller must not read `applied: True` as "the queue is up to
             # date". Say plainly that it may not be.
+            #
+            # NOTE for callers: this is NOT safely retryable by re-POSTing the
+            # same action. Re-POSTing re-runs `_record_human_action` and inserts
+            # a SECOND audit row rather than retrying only the close. There is
+            # currently no endpoint that retries just the close step.
             result["warning"] = (
-                f"The action was recorded (decision_id={new_decision_id}), but "
-                f"the original decision {decision_id} could not be marked "
+                f"The action was recorded (audit_decision_id={new_decision_id}), "
+                f"but the original decision {decision_id} could not be marked "
                 f"'{status_word}', so it may still appear in the escalation "
-                "queue until this is retried."
+                "queue. Re-posting this action is NOT a safe retry -- it "
+                "records a second, separate audit row rather than retrying "
+                "only the close."
             )
         return result

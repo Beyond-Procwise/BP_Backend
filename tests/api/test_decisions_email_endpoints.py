@@ -231,9 +231,14 @@ class _MemoryBpDecisionTable:
     email_decision`, and `list_decisions` issue.
     """
 
-    def __init__(self, rows):
+    def __init__(self, rows, fail_insert=False):
         self.rows = [dict(r) for r in rows]
         self.next_id = max((r["decision_id"] for r in self.rows), default=0) + 1
+        # Fix round 2: lets a test simulate `_record_human_action`'s INSERT
+        # failing, the same way that method's own pre-existing try/except would
+        # see a real DB error -- it catches it and returns None, it never raises
+        # out to the caller.
+        self.fail_insert = fail_insert
 
 
 def _queue_matches(row, sql, params):
@@ -280,6 +285,10 @@ class _MemoryCursor:
             return
 
         if norm.startswith("INSERT INTO proc.bp_decision"):
+            if self.table.fail_insert:
+                # Exercises `_record_human_action`'s own pre-existing try/except:
+                # it catches this and returns None -- it never propagates.
+                raise RuntimeError("simulated: the audit write failed")
             (subject_type, subject_id, deal_id, supplier_id, decision, resolution,
              rationale, policy_id, policy_name, facts, evidence, status, actioned_by,
              override_reason, agent, created_by) = params
@@ -305,6 +314,15 @@ class _MemoryCursor:
 
         if norm.startswith("SELECT") and "FROM proc.bp_decision d" in norm:
             matched = [r for r in self.table.rows if _queue_matches(r, norm, params)]
+            # Mirror `ORDER BY d.created_at DESC LIMIT %s` for real: the LIMIT is
+            # the trailing param the router appends AFTER subject_type/status, and
+            # without actually slicing here, a test could never tell a true
+            # server-side count apart from `len(data)` -- exactly the regression
+            # this fake exists to catch.
+            matched.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+            limit = params[-1] if params else None
+            if isinstance(limit, int):
+                matched = matched[:limit]
             self.description = [
                 ("decision_id",), ("subject_type",), ("subject_id",), ("supplier_id",),
                 ("deal_id",), ("decision",), ("resolution",), ("rationale",),
@@ -426,3 +444,99 @@ def test_after_an_action_the_original_decision_no_longer_matches_the_queue():
     still_open = memory_client.get("/decisions", params={"subject_type": "email_reply", "status": "open"})
     assert still_open.json()["total"] == 1
     assert still_open.json()["data"][0]["decision_id"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2, CRITICAL: the close must be gated on the audit write succeeding.
+# `_record_human_action` catches its own exceptions and returns None -- it
+# never raises. Before this fix, `act_on_email_reply` closed the original row
+# and reported `applied: True` regardless, which on a failed write is the worst
+# available outcome: the record of who acted is lost, the task disappears from
+# the human's queue, and the caller is told it worked.
+# ---------------------------------------------------------------------------
+
+def test_a_failed_audit_write_leaves_the_original_decision_in_the_queue():
+    """Runs the real failure path (no monkeypatching of act_on_email_reply)
+    against the in-memory table. Asserts BOTH that the engine reports
+    applied=False directly, and that the real GET /decisions queue still
+    contains the original, un-actioned decision afterward.
+    """
+    from engines.decision_engine import DecisionEngine
+
+    table = _MemoryBpDecisionTable(rows=[{
+        "decision_id": 7, "subject_type": "email_reply", "subject_id": "wf-1-PeopleFirst",
+        "deal_id": "DEAL-1", "supplier_id": "PeopleFirst HR Solutions Ltd",
+        "decision": "escalate", "resolution": "escalated",
+        "rationale": "price_change is escalate-only", "policy_id": 11,
+        "policy_name": "EmailReplyAutonomyPolicy", "facts": {"intent": "price_change"},
+        "evidence": [], "status": "open", "created_at": "2026-07-28T10:00:00+00:00",
+    }], fail_insert=True)
+
+    app = FastAPI()
+    app.include_router(decisions_router.router)
+    nick = SimpleNamespace(
+        get_db_connection=lambda: _MemoryConn(table),
+        policy_engine=SimpleNamespace(get_policy=lambda slug: None),
+    )
+    app.state.agent_nick = nick
+    memory_client = TestClient(app)
+
+    result = DecisionEngine(nick).act_on_email_reply(7, "reject", user_id="bob")
+    assert result["applied"] is False
+    assert "error" in result
+    assert "audit_decision_id" not in result
+
+    # The row was never closed -- it genuinely has not been dealt with.
+    assert table.rows[0]["status"] == "open"
+    # No second row was inserted either: the audit write itself failed.
+    assert len(table.rows) == 1
+
+    still_open = memory_client.get("/decisions", params={"subject_type": "email_reply", "status": "open"})
+    assert still_open.status_code == 200
+    assert still_open.json()["total"] == 1
+    assert still_open.json()["data"][0]["decision_id"] == 7
+
+    # Also confirmed at the HTTP layer: the router maps a plain error (no
+    # requires_override) to 400, so the human sees the action did NOT succeed.
+    res = memory_client.post("/decisions/email-reply/7/action",
+                             json={"action": "reject", "user_id": "bob"})
+    assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2: the true-count claim was untested. Neither the brief's fixture
+# nor the Fix round 1 in-memory table ever created limit < total_escalations,
+# so a regression to `total = len(rows)` would have passed every test here.
+# ---------------------------------------------------------------------------
+
+def test_total_reflects_the_true_server_side_count_not_the_page_size():
+    rows = [
+        {
+            "decision_id": i, "subject_type": "email_reply", "subject_id": f"wf-{i}",
+            "deal_id": None, "supplier_id": f"Supplier {i}", "decision": "escalate",
+            "resolution": "escalated", "rationale": "needs a human", "policy_id": 11,
+            "policy_name": "EmailReplyAutonomyPolicy", "facts": {}, "evidence": [],
+            "status": "open", "created_at": f"2026-07-28T{10 + i}:00:00+00:00",
+        }
+        for i in range(1, 4)  # three escalated decisions
+    ]
+    table = _MemoryBpDecisionTable(rows=rows)
+    app = FastAPI()
+    app.include_router(decisions_router.router)
+    app.state.agent_nick = SimpleNamespace(
+        get_db_connection=lambda: _MemoryConn(table),
+        policy_engine=SimpleNamespace(get_policy=lambda slug: None),
+    )
+    memory_client = TestClient(app)
+
+    res = memory_client.get(
+        "/decisions", params={"subject_type": "email_reply", "status": "open", "limit": 2}
+    )
+    assert res.status_code == 200
+    body = res.json()
+    # The page is capped at 2 -- but the true backlog is 3. A regression to
+    # `total = len(data)` would report 2, not 3, and this is the assertion that
+    # catches it.
+    assert len(body["data"]) == 2
+    assert body["total"] == 3
+    assert body["total"] > len(body["data"])
