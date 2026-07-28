@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -354,42 +355,152 @@ def _summary_personas(conn: Any) -> list[str]:
     return [r[0] for r in cur.fetchall()]
 
 
+_DEFAULT_MAX_DEALS = 50
+_DEFAULT_BUDGET_SECONDS = 20 * 60
+_DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def _recent_deal_ids(conn: Any) -> list[str]:
+    """Every deal id, most recently touched first.
+
+    Warming the cache is only worth anything for the deals somebody is likely to open,
+    and the caller keeps just the head of this list.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT deal_id FROM ("
+            "  SELECT deal_id, MAX(created_date) AS seen FROM proc.bp_invoice_trgt"
+            "   WHERE deal_id IS NOT NULL GROUP BY deal_id"
+            "  UNION ALL SELECT deal_id, MAX(created_date) FROM proc.bp_purchase_order_trgt"
+            "   WHERE deal_id IS NOT NULL GROUP BY deal_id"
+            "  UNION ALL SELECT deal_id, MAX(created_date) FROM proc.bp_quote_trgt"
+            "   WHERE deal_id IS NOT NULL GROUP BY deal_id"
+            ") t GROUP BY deal_id ORDER BY MAX(seen) DESC NULLS LAST"
+        )
+        rows = [r[0] for r in cur.fetchall()]
+        if rows:
+            return rows
+    except Exception:  # pragma: no cover - schema drift; order is an optimisation only
+        log.warning("summary precompute: recency ordering unavailable; using unordered ids")
+    return _distinct_deal_ids(conn)
+
+
 def precompute_summaries(
     personas: Optional[list[str]] = None,
     deal_ids: Optional[list[str]] = None,
     conn: Any = None,
+    max_deals: Optional[int] = None,
+    budget_seconds: Optional[float] = None,
+    max_consecutive_failures: Optional[int] = None,
 ) -> dict:
-    """Generate current summaries for every persona x scope (portfolio + each
-    deal). Per-item failures are logged and skipped. Returns counts.
+    """Warm the summary cache for the portfolio and the most recent deals.
+
+    This is an OPTIMISATION, not a source of truth: anything not warmed here is generated
+    on demand by POST /summary, so leaving deals out costs a slower first open and nothing
+    else.
+
+    It is bounded three ways because it shares one Ollama model with every interactive
+    request. Unbounded, it planned 3 personas x 5038 deals = 15114 sequential generations;
+    live, that ran for six hours without finishing while each failing item burned ~150s in
+    timeouts and retries, and every user-facing call queued behind it.
+
+      max_deals                 - warm the newest N deals, not all of them
+      budget_seconds            - give the whole run a wall clock, so it always ends
+      max_consecutive_failures  - abort when the model is clearly unavailable; it will not
+                                  recover by being asked another 15000 times
+
+    An explicit deal_ids list is honoured in full — the caller asked for those.
     """
     if conn is None:
         with get_conn() as own:
-            return precompute_summaries(personas, deal_ids, conn=own)
+            return precompute_summaries(
+                personas, deal_ids, conn=own,
+                max_deals=max_deals,
+                budget_seconds=budget_seconds,
+                max_consecutive_failures=max_consecutive_failures,
+            )
+
+    try:  # settings are optional so the function stays unit-testable in isolation
+        from config.settings import settings as _settings
+    except Exception:  # pragma: no cover
+        _settings = None
+
+    def _cfg(name, fallback):
+        return getattr(_settings, name, fallback) if _settings is not None else fallback
+
+    if max_deals is None:
+        max_deals = int(_cfg("summary_precompute_max_deals", _DEFAULT_MAX_DEALS))
+    if budget_seconds is None:
+        budget_seconds = float(_cfg("summary_precompute_budget_minutes", 20)) * 60.0
+    if max_consecutive_failures is None:
+        max_consecutive_failures = int(
+            _cfg("summary_precompute_max_consecutive_failures", _DEFAULT_MAX_CONSECUTIVE_FAILURES)
+        )
 
     personas = personas or _summary_personas(conn)
-    deal_ids = deal_ids if deal_ids is not None else _distinct_deal_ids(conn)
-    scopes: list[Optional[str]] = [None] + list(deal_ids)  # None = portfolio
-    planned = len(personas) * len(scopes)
+
+    explicit = deal_ids is not None
+    skipped_deals = 0
+    if explicit:
+        chosen = list(deal_ids)
+    else:
+        available = _recent_deal_ids(conn)
+        chosen = available[:max_deals] if max_deals and max_deals > 0 else available
+        skipped_deals = max(0, len(available) - len(chosen))
+
+    scopes: list[Optional[str]] = [None] + chosen  # None = portfolio
     log.info(
-        "summary precompute: %d personas x %d scopes = %d generations",
-        len(personas), len(scopes), planned,
+        "summary precompute: %d personas x %d scopes (%d deals skipped, budget %.0fs)",
+        len(personas), len(scopes), skipped_deals, budget_seconds or 0,
     )
 
+    start = time.monotonic()
     generated = 0
     failed = 0
+    consecutive = 0
+    stopped_reason = None
+
     for persona in personas:
         for deal_id in scopes:
+            if budget_seconds and (time.monotonic() - start) >= budget_seconds:
+                stopped_reason = "budget"
+                break
             try:
                 generate_summary(persona, deal_id=deal_id, conn=conn)
                 generated += 1
-            except Exception:  # pragma: no cover - logged, run continues
+                consecutive = 0
+            except Exception:  # logged, run continues unless the model is clearly down
                 failed += 1
+                consecutive += 1
                 log.exception(
                     "precompute failed for persona=%s deal_id=%s", persona, deal_id
                 )
+                if max_consecutive_failures and consecutive >= max_consecutive_failures:
+                    stopped_reason = "failures"
+                    break
+        if stopped_reason:
+            break
+
+    elapsed = time.monotonic() - start
+    if stopped_reason:
+        # Never let a truncated run read as a complete one.
+        log.warning(
+            "summary precompute stopped early (%s) after %.0fs: %d generated, %d failed",
+            stopped_reason, elapsed, generated, failed,
+        )
+    if skipped_deals:
+        log.info(
+            "summary precompute warmed the %d most recent deals; %d not warmed "
+            "(generated on demand at first open)", len(chosen), skipped_deals,
+        )
+
     return {
         "generated": generated,
         "failed": failed,
         "personas": len(personas),
         "scopes": len(scopes),
+        "skipped_deals": skipped_deals,
+        "stopped_reason": stopped_reason,
+        "elapsed_seconds": round(elapsed, 1),
     }

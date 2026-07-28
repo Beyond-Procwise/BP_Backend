@@ -248,3 +248,66 @@ def test_get_cached_summary_returns_current_row():
 def test_get_cached_summary_none_when_absent():
     conn = _FakeConn({"FROM proc.bp_summary": (["summary_id"], [])})
     assert sa.get_cached_summary("compliance", "D-9", conn=conn) is None
+
+
+# --- precompute must never be able to occupy the model indefinitely -------------------
+# A daily job that plans 3 personas x 5038 deals = 15114 sequential LLM generations does
+# not finish: observed live, it ran 6 hours without completing while every interactive
+# request queued behind it on the single Ollama model. These lock the three bounds.
+
+def test_precompute_caps_the_number_of_deals(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sa, "generate_summary",
+                        lambda persona, deal_id=None, as_of=None, conn=None: calls.append((persona, deal_id)) or {"summary_id": "x"})
+    conn = _FakeConn({
+        "prompt_type = 'summary_persona'": (["prompt_name"], [("analysis",)]),
+        "FROM proc.bp_invoice_trgt": (["deal_id"], [(f"D-{i}",) for i in range(100)]),
+        "SELECT DISTINCT deal_id": (["deal_id"], [(f"D-{i}",) for i in range(100)]),
+    })
+    out = sa.precompute_summaries(conn=conn, max_deals=5)
+    # portfolio + 5 deals, not portfolio + 100
+    assert out["scopes"] == 6, out
+    assert len(calls) == 6
+    assert out["skipped_deals"] == 95
+
+
+def test_precompute_stops_at_its_time_budget(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(sa.time, "monotonic", lambda: clock["t"])
+    def slow(persona, deal_id=None, as_of=None, conn=None):
+        clock["t"] += 10.0
+        return {"summary_id": "x"}
+    monkeypatch.setattr(sa, "generate_summary", slow)
+    conn = _FakeConn({
+        "prompt_type = 'summary_persona'": (["prompt_name"], [("analysis",)]),
+        "FROM proc.bp_invoice_trgt": (["deal_id"], [(f"D-{i}",) for i in range(50)]),
+        "SELECT DISTINCT deal_id": (["deal_id"], [(f"D-{i}",) for i in range(50)]),
+    })
+    out = sa.precompute_summaries(conn=conn, budget_seconds=25)
+    assert out["generated"] < 51
+    assert out["stopped_reason"] == "budget"
+
+
+def test_precompute_aborts_when_the_model_keeps_failing(monkeypatch):
+    def always_fails(persona, deal_id=None, as_of=None, conn=None):
+        raise RuntimeError("Ollama read timeout")
+    monkeypatch.setattr(sa, "generate_summary", always_fails)
+    conn = _FakeConn({
+        "prompt_type = 'summary_persona'": (["prompt_name"], [("analysis",)]),
+        "FROM proc.bp_invoice_trgt": (["deal_id"], [(f"D-{i}",) for i in range(500)]),
+        "SELECT DISTINCT deal_id": (["deal_id"], [(f"D-{i}",) for i in range(500)]),
+    })
+    out = sa.precompute_summaries(conn=conn, max_consecutive_failures=3)
+    # a model that is timing out will not recover by being asked 500 more times
+    assert out["failed"] == 3
+    assert out["stopped_reason"] == "failures"
+
+
+def test_explicit_deal_ids_are_not_silently_truncated(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sa, "generate_summary",
+                        lambda persona, deal_id=None, as_of=None, conn=None: calls.append(deal_id) or {"summary_id": "x"})
+    conn = _FakeConn({"prompt_type = 'summary_persona'": (["prompt_name"], [("analysis",)])})
+    out = sa.precompute_summaries(conn=conn, deal_ids=["D-1", "D-2", "D-3"], max_deals=1)
+    assert out["skipped_deals"] == 0
+    assert calls == [None, "D-1", "D-2", "D-3"]

@@ -448,6 +448,18 @@ class Settings(BaseSettings):
     )
     enable_summary_precompute: bool = True
     summary_precompute_interval_hours: int = 24
+    # Precompute shares one Ollama model with every interactive request, so it is bounded.
+    # Unbounded it planned 3 personas x 5038 deals and ran for six hours without finishing,
+    # starving /workflows/ask. Anything not warmed is generated on demand at first open.
+    summary_precompute_max_deals: int = Field(
+        default=50, env="SUMMARY_PRECOMPUTE_MAX_DEALS"
+    )
+    summary_precompute_budget_minutes: int = Field(
+        default=20, env="SUMMARY_PRECOMPUTE_BUDGET_MINUTES"
+    )
+    summary_precompute_max_consecutive_failures: int = Field(
+        default=3, env="SUMMARY_PRECOMPUTE_MAX_CONSECUTIVE_FAILURES"
+    )
     verbose_agent_debug: bool = Field(
         default=False, env="VERBOSE_AGENT_DEBUG"
     )
