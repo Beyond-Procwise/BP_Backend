@@ -1672,7 +1672,25 @@ async def add_email_attachments(
         try:
             await run_in_threadpool(service._write_s3_bytes, key, data, upload.content_type)
         except Exception as exc:  # noqa: BLE001
-            rejected.append({"filename": name, "reason": f"upload failed: {exc}"})
+            # `rejected[].reason` is rendered VERBATIM in the review panel's "Not
+            # attached" box. A boto3/ClientError message names the bucket and the object
+            # key, so interpolating it here put storage internals on a buyer's screen --
+            # the same defect already fixed on the fail-closed rationale and GET
+            # /decisions. The type, the message and the traceback go to the LOG under a
+            # short reference that also appears in the reason, which is what connects the
+            # two without the user reading either.
+            ref = uuid.uuid4().hex[:8]
+            logger.exception(
+                "attachment upload failed for unique_id=%s key=%s [ref %s]: %s: %s",
+                unique_id, key, ref, type(exc).__name__, exc,
+            )
+            rejected.append({
+                "filename": name,
+                "reason": (
+                    "it could not be stored, so it was not attached. The technical "
+                    f"details were recorded for support under reference {ref}."
+                ),
+            })
             continue
         total += len(data)
         existing_names.add(name)

@@ -502,7 +502,10 @@ def test_no_attachment_is_sent_as_an_empty_part_when_upload_fails(monkeypatch):
 
     class _FailingDispatchService(_FakeDispatchService):
         def _write_s3_bytes(self, s3_key, data, content_type):
-            raise RuntimeError("S3 unavailable")
+            raise RuntimeError(
+                "An error occurred (AccessDenied) when calling the PutObject operation: "
+                "arn:aws:s3:::procwise-prod-docs/email-attachments/wf-attach-5/terms.pdf"
+            )
 
     monkeypatch.setattr(mod, "EmailDispatchService", _FailingDispatchService)
     monkeypatch.setattr(mod.draft_rfq_emails_repo, "load_by_unique_id", _store_backed_loader(store))
@@ -518,6 +521,15 @@ def test_no_attachment_is_sent_as_an_empty_part_when_upload_fails(monkeypatch):
     assert result["attachments"] == []
     assert len(result["rejected"]) == 1
     assert "terms.pdf" == result["rejected"][0]["filename"]
+
+    # The reason is rendered VERBATIM in the review panel's "Not attached" box, so the
+    # driver's own text -- which names the bucket and the object key -- must not be in
+    # it. The user gets a sentence plus a reference; the detail is in the log.
+    reason = result["rejected"][0]["reason"]
+    assert "could not be stored" in reason
+    for leak in ("AccessDenied", "procwise-prod-docs", "email-attachments/", "PutObject"):
+        assert leak not in reason, f"storage internals leaked to the panel: {reason}"
+    assert "reference" in reason
 
 
 def test_delete_removes_one_attachment_by_index(monkeypatch):

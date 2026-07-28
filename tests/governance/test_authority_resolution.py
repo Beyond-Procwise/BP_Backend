@@ -100,7 +100,12 @@ def test_missing_autonomy_policy_fails_closed():
     engine = PolicyEngine(policy_rows=[_APPROVAL_ROW])  # autonomy row absent
     block = resolve_authority(engine, AGENTS)["email_drafting_agent"]
     assert block["governed"] is False
-    assert "email_reply_autonomy" in block["reason"]
+    # `reason` is interpolated verbatim into the decision rationale and rendered on a
+    # buyer's Action Centre card, so it names the policy IN WORDS and never the slug.
+    # It must still say WHICH of the two policies failed -- "could not be read" alone
+    # would not tell the reader whether autonomy or the spend limit is missing.
+    assert "may answer unattended" in block["reason"]
+    assert "email_reply_autonomy" not in block["reason"]
 
 
 def test_missing_approval_policy_fails_closed():
@@ -109,7 +114,8 @@ def test_missing_approval_policy_fails_closed():
     # An autonomy rule that defers its money limit to a policy that does not exist
     # has no limit at all. Ungoverned money must not be spendable.
     assert block["governed"] is False
-    assert "approval_threshold" in block["reason"]
+    assert "spend approval policy" in block["reason"]
+    assert "approval_threshold" not in block["reason"]
 
 
 def test_unparseable_rules_fail_closed():
@@ -154,7 +160,8 @@ def test_deferred_approval_lookup_raising_fails_closed():
     out = resolve_authority(ExplodingOnDeferredLookup(), ["email_drafting_agent"])
     block = out["email_drafting_agent"]
     assert block["governed"] is False
-    assert "approval_threshold" in block["reason"]
+    assert "spend approval policy" in block["reason"]
+    assert "approval_threshold" not in block["reason"]
 
 
 def test_resolution_runs_concurrently():

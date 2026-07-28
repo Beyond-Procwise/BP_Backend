@@ -596,10 +596,19 @@ class DecisionEngine:
         method an authority dict over HTTP. A malformed one must produce an escalation
         that says so, not a 500 -- an exception on the send path is the one outcome that
         is neither a send nor a decision anybody can act on.
+
+        `facts`/`evidence` are owned HERE and handed down, not built inside
+        `_decide_email_reply`, so an internal failure still persists whatever was
+        gathered before it. They used to be locals of the inner method, which made the
+        guard's escalation the one kind a human could not re-derive: `trace()` showed a
+        rationale and nothing else. The inner method mutates these in place.
         """
+        facts: Dict[str, Any] = {}
+        evidence: List[Evidence] = []
         try:
             return self._decide_email_reply(
-                response_id, authority=authority, requested=requested
+                response_id, authority=authority, requested=requested,
+                facts=facts, evidence=evidence,
             )
         except Exception as exc:  # noqa: BLE001 - fail CLOSED, and say what broke
             # The exception type, its message and the traceback go to the LOG, under a
@@ -624,6 +633,13 @@ class DecisionEngine:
                 ),
                 policy_id=(authority or {}).get("policy_id"),
                 policy_name=(authority or {}).get("policy_name"),
+                # Whatever was gathered before the failure, so this escalation is
+                # re-derivable like every other one. Empty when the failure happened
+                # before the first fact was read -- which is itself a true statement.
+                facts=facts, evidence=evidence,
+                # From the row if it was read at all; never guessed. deal_id stays None
+                # for the reason given in `_escalate` below.
+                supplier_id=facts.get("supplier_id"),
             )
 
     def _decide_email_reply(
@@ -632,15 +648,23 @@ class DecisionEngine:
         *,
         authority: Optional[Dict[str, Any]] = None,
         requested: Optional[str] = None,
+        facts: Optional[Dict[str, Any]] = None,
+        evidence: Optional[List[Evidence]] = None,
     ) -> Decision:
         """The decision itself. See `decide_email_reply` for the no-raise guarantee.
 
         Deterministic in the part that matters: the model contributes an intent label
         and a quoted sentence, and every gate below is arithmetic and set membership
         over governed values. No model is asked whether to send.
+
+        `facts`/`evidence` are supplied by `decide_email_reply` and mutated in place, so
+        its never-raises guard can persist what was gathered before a failure. Defaulted
+        here so calling this method directly still works.
         """
-        facts: Dict[str, Any] = {}
-        evidence: List[Evidence] = []
+        if facts is None:
+            facts = {}
+        if evidence is None:
+            evidence = []
 
         row = self._fetch_email_reply(response_id)
         if not row:
@@ -688,9 +712,12 @@ class DecisionEngine:
         # 1. Authority. No governed limit means no unattended send -- the same rule
         #    that stops a missing approval threshold from auto-approving money.
         if not authority or not authority.get("governed"):
+            # Plain English, no slug: this string is interpolated into the rationale
+            # below and rendered verbatim on the buyer's card. The same rule
+            # `resolve_authority`'s own reasons follow.
             reason = (authority or {}).get("reason") or (
-                "no authority to answer replies unattended was resolved from the "
-                "policy 'email_reply_autonomy'"
+                "no authority to answer replies unattended was resolved from governed "
+                "policy"
             )
             facts["authority"] = "ungoverned"
             evidence.append(Evidence(fact="authority", value="ungoverned",
@@ -964,9 +991,16 @@ class DecisionEngine:
                     reference=ref))
 
             at_stake = abs(price - prior)
-            facts["value_at_stake"] = str(at_stake)
+            # DENOMINATED, not bare. `facts["currency"]` sits right beside this one, but
+            # nothing forces a reader (or the Action Centre card, which renders this fact
+            # directly) to put the two together -- and a bare "36500.0000 at stake" is a
+            # sum of money with no unit. Gate 4a above has already proved the reply's
+            # currency equals the limit's, so this is the denomination the comparison was
+            # actually made in, not an assumed default.
+            at_stake_stated = f"{at_stake} {reply_currency}"
+            facts["value_at_stake"] = at_stake_stated
             evidence.append(Evidence(
-                fact="value_at_stake", value=str(at_stake),
+                fact="value_at_stake", value=at_stake_stated,
                 source=f"derived: abs(proc.supplier_response.price - {prior_source})",
                 reference=ref))
 
@@ -1068,7 +1102,12 @@ class DecisionEngine:
                 # would assert a conclusion no evidence in this record supports.
                 + (limit_tested if limit_tested else
                    "no price was recorded on the reply, so no amount was tested")
-                + f". This is reply {int(already)} of a permitted {int(cap)} on the thread."
+                # `already` counts the sends BEFORE this one, so the reply this record
+                # describes is the next one: already + 1. The GATE above is correct and
+                # caps sends at exactly `cap`; the sentence used to say "reply 0 of a
+                # permitted 2", which understated an audit trail whose whole purpose is
+                # re-derivability.
+                + f". This is reply {int(already) + 1} of a permitted {int(cap)} on the thread."
             ),
             policy_id=policy_id, policy_name=policy_name,
             facts=facts, evidence=evidence,

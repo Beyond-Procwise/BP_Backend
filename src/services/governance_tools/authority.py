@@ -29,7 +29,16 @@ from typing import Any, Dict, List, Optional, Sequence
 log = logging.getLogger(__name__)
 
 DEFAULT_AUTONOMY_SLUG = "email_reply_autonomy"
-DEFAULT_APPROVAL_SLUG = "approval_threshold"
+
+# `reason` is USER-FACING. It is interpolated verbatim into the decision rationale
+# (DecisionEngine._decide_email_reply, authority gate) and rendered on the Action Centre
+# card, so nothing in it may be a config identifier: a buyer reading
+# "no usable governed policy 'email_reply_autonomy'" is being handed a slug to decode,
+# and it tells anyone else more about our internals than a review screen should. The slug
+# that failed goes to the LOG, where the person who can act on it will look. These two
+# phrases name the same two policies the module resolves, in words.
+_AUTONOMY_IN_WORDS = "the policy that sets what this agent may answer unattended"
+_APPROVAL_IN_WORDS = "the spend approval policy it takes its value limit from"
 
 # Resolution is IO-bound (one policy lookup per agent) and the agent count per run
 # is small; a handful of threads is plenty and keeps the DB pool calm.
@@ -89,42 +98,62 @@ def _str_list(value: Any) -> List[str]:
 
 
 def _resolve_one(
-    policy_engine: Any, agent: str, autonomy_slug: str, approval_slug: str
+    policy_engine: Any, agent: str, autonomy_slug: str
 ) -> Dict[str, Any]:
     try:
         autonomy = policy_engine.get_policy(autonomy_slug)
     except Exception:  # noqa: BLE001 - fail CLOSED, and say why
-        log.exception("authority: autonomy policy lookup failed for %s", agent)
-        return ungoverned_block(
-            agent, f"the governed policy '{autonomy_slug}' could not be read"
+        log.exception(
+            "authority: autonomy policy lookup failed for %s (slug %r)",
+            agent, autonomy_slug,
         )
+        return ungoverned_block(agent, f"{_AUTONOMY_IN_WORDS} could not be read")
 
     rules = _rules(autonomy)
     if not autonomy or not rules:
+        log.warning(
+            "authority: no usable autonomy policy for %s (slug %r)", agent, autonomy_slug
+        )
         return ungoverned_block(
             agent,
-            f"there is no usable governed policy '{autonomy_slug}' -- it carries no "
+            f"there is no usable version of {_AUTONOMY_IN_WORDS} -- it carries no "
             "rules to apply",
         )
 
     limit_gbp: Optional[str] = None
     limit_currency: Optional[str] = None
+    # The autonomy policy names the policy its money limit comes from. There is no
+    # module-level default to fall back on, deliberately: a policy that does NOT defer
+    # states no value limit, and resolving one from a default approval slug anyway would
+    # invent an authority the governed row never delegated -- the fail-OPEN direction
+    # this module exists to prevent. limit_gbp stays None, which the decision engine
+    # escalates on. (This replaces a dead `approval_slug` parameter: it sat inside this
+    # `if deferred:` block behind `str(deferred) or approval_slug`, where `str()` of a
+    # truthy value is never empty, so the `or` could not fire and the public keyword
+    # argument looked configurable while being inert.)
     deferred = rules.get("defer_value_limit_to")
     if deferred:
         try:
-            approval = policy_engine.get_policy(str(deferred) or approval_slug)
+            approval = policy_engine.get_policy(str(deferred))
         except Exception:  # noqa: BLE001
-            log.exception("authority: approval policy lookup failed for %s", agent)
+            log.exception(
+                "authority: approval policy lookup failed for %s (slug %r)",
+                agent, deferred,
+            )
             return ungoverned_block(
-                agent, f"the governed policy '{deferred}' could not be read"
+                agent, f"{_APPROVAL_IN_WORDS} could not be read"
             )
         approval_rules = _rules(approval)
         threshold = approval_rules.get("default_threshold_gbp")
         if threshold is None:
+            log.warning(
+                "authority: approval policy %r sets no default_threshold_gbp for %s",
+                deferred, agent,
+            )
             return ungoverned_block(
                 agent,
-                f"the autonomy policy takes its value limit from '{deferred}', which "
-                "sets no threshold amount -- so there is no limit to enforce",
+                f"{_APPROVAL_IN_WORDS} sets no threshold amount -- so there is no "
+                "limit to enforce",
             )
         limit_gbp = str(threshold)
         # NOT `or "GBP"`. Defaulting the denomination fabricates one: a limit whose
@@ -165,7 +194,6 @@ def resolve_authority(
     agents: Sequence[str],
     *,
     autonomy_slug: str = DEFAULT_AUTONOMY_SLUG,
-    approval_slug: str = DEFAULT_APPROVAL_SLUG,
 ) -> Dict[str, Dict[str, Any]]:
     """Resolve each agent's send authority concurrently. Never raises."""
     names = [str(a) for a in agents if a]
@@ -175,7 +203,7 @@ def resolve_authority(
     out: Dict[str, Dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="authority") as pool:
         futures = {
-            pool.submit(_resolve_one, policy_engine, name, autonomy_slug, approval_slug): name
+            pool.submit(_resolve_one, policy_engine, name, autonomy_slug): name
             for name in names
         }
         for future, name in futures.items():

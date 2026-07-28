@@ -153,19 +153,26 @@ def test_an_ungrounded_classification_escalates():
     assert "ground" in d.rationale.lower()
 
 
-def test_missing_authority_escalates_and_names_the_policy():
+def test_missing_authority_escalates_and_says_no_authority_was_resolved():
+    """No slug on screen. The sentence must still say WHAT is missing, in words -- the
+    reader of an Action Centre card cannot decode 'email_reply_autonomy', and the jargon
+    sweep below now enforces that for every escalation, this one included."""
     d = _engine().decide_email_reply("1", authority=None)
     assert d.resolution == ESCALATED
-    assert "email_reply_autonomy" in d.rationale
+    assert "no authority to answer replies unattended was resolved" in d.rationale
+    assert "email_reply_autonomy" not in d.rationale
 
 
 def test_ungoverned_authority_escalates():
     auth = {"agent": "email_drafting_agent", "governed": False,
             "auto_intents": [], "escalate_intents": [],
-            "reason": "no usable governed policy 'email_reply_autonomy'"}
+            # The resolver's own wording, which names no identifier -- see
+            # authority._AUTONOMY_IN_WORDS.
+            "reason": "there is no usable version of the policy that sets what this "
+                      "agent may answer unattended -- it carries no rules to apply"}
     d = _engine().decide_email_reply("1", authority=auth)
     assert d.resolution == ESCALATED
-    assert "no usable governed policy" in d.rationale
+    assert "no usable version of the policy" in d.rationale
 
 
 def test_thread_cap_escalates():
@@ -281,6 +288,69 @@ def test_the_send_rationale_states_the_amount_and_limit_when_one_was_tested():
     assert "governed minimum of 0.80" in d.rationale
 
 
+def test_the_send_rationale_counts_this_reply_itself():
+    """`auto_replies_on_thread` counts the sends BEFORE this one, so the reply being
+    recorded is number already+1. Nothing pinned either number before, and the sentence
+    read "This is reply 0 of a permitted 2" on the very first send -- an understatement in
+    a record whose only purpose is being re-derivable."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "price": None, "prior_price": None, "auto_replies_on_thread": 0}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == RESOLVED
+    assert "This is reply 1 of a permitted 2 on the thread." in d.rationale
+    # The FACT still records the prior count, unchanged -- the sentence counts this
+    # reply, the fact counts history, and the two must not be conflated.
+    assert d.facts["auto_replies_on_thread"] == 0
+
+    # One prior send under a cap of 2: this is the second and last permitted reply.
+    row2 = {**row, "auto_replies_on_thread": 1}
+    d2 = _engine(row=row2, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True)
+                 ).decide_email_reply("1", authority=auth)
+    assert d2.resolution == RESOLVED
+    assert "This is reply 2 of a permitted 2 on the thread." in d2.rationale
+
+
+def test_the_amount_at_stake_is_recorded_with_its_denomination():
+    """A sum of money with no unit is not a fact a reader can act on. The Action Centre
+    card renders this fact directly ("36500.0000 at stake"), and `facts['currency']`
+    sitting beside it does not force the two together."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "prior_price": 96000}
+    d = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True)
+                ).decide_email_reply("1", authority=auth)
+    assert d.facts["value_at_stake"] == "2000 GBP"
+    # And the evidence item says the same thing, not a bare number beside it.
+    at_stake = next(e for e in d.evidence if e.fact == "value_at_stake")
+    assert at_stake.value == "2000 GBP"
+
+
+def test_a_guard_produced_escalation_still_carries_the_facts_it_gathered():
+    """The never-raises guard on `decide_email_reply` used to build its Decision outside
+    the inner method, so `facts`/`evidence` were locals it could not see: an
+    internal-error escalation was the ONE kind a human could not re-derive.
+
+    The raise here is a malformed authority block -- Task 7 hands this method an
+    authority dict over HTTP, so `float('not-a-number')` is the real shape of this
+    failure -- and it happens AFTER the reply row has been read into `facts`.
+    """
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"],
+            "min_intent_confidence": "not-a-number"}
+    d = _engine(intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True)
+                ).decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "did not finish" in d.rationale
+    # Everything read off the reply before the failure is on the record.
+    assert d.facts["supplier_id"] == "PeopleFirst HR Solutions Ltd"
+    assert d.facts["intent"] == "acknowledge"
+    assert d.facts["currency"] == "GBP"
+    assert d.evidence, "an escalation with no evidence is the one a human cannot re-derive"
+    assert {e.fact for e in d.evidence} >= {"supplier_id", "intent"}
+    # And the supplier is attributed from the row that was read, not guessed.
+    assert d.supplier_id == "PeopleFirst HR Solutions Ltd"
+    assert d.deal_id is None
+
+
 # ----------------------------------------------------------------------------
 # A priced reply with no resolved limit. resolve_authority() returns
 # governed=True with limit_gbp=None whenever the autonomy policy omits
@@ -374,7 +444,7 @@ def test_a_wired_prior_offer_computes_the_amount_at_stake():
     eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.facts["prior_offer"] == "96000"
-    assert d.facts["value_at_stake"] == "2000"
+    assert d.facts["value_at_stake"] == "2000 GBP"
     assert d.resolution == RESOLVED
 
 
@@ -423,7 +493,7 @@ def test_matching_currencies_reach_the_arithmetic():
     row = {**REPLY_ROW, "currency": "GBP", "price": 94000, "prior_price": 96000}
     eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
-    assert d.facts["value_at_stake"] == "2000", "the subtraction must still happen"
+    assert d.facts["value_at_stake"] == "2000 GBP", "the subtraction must still happen"
     assert d.resolution == RESOLVED
 
 
@@ -499,7 +569,7 @@ def test_the_prior_offers_assumed_currency_is_disclosed_in_the_evidence():
 
     # Behaviour is unchanged: this still sends, and still computes the same amount.
     assert d.resolution == RESOLVED
-    assert d.facts["value_at_stake"] == "2000"
+    assert d.facts["value_at_stake"] == "2000 GBP"
 
     disclosure = next(
         (e for e in d.evidence if e.fact == "prior_offer_currency_basis"), None
@@ -569,7 +639,7 @@ def test_a_matching_round_proceeds_to_the_arithmetic():
     eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == RESOLVED
-    assert d.facts["value_at_stake"] == "2000"
+    assert d.facts["value_at_stake"] == "2000 GBP"
     assert d.facts["prior_offer_round"] == "1"
     assert "prior_offer_round_basis" not in d.facts, "nothing to disclose when verified"
 
@@ -588,7 +658,7 @@ def test_an_unverifiable_round_is_disclosed_not_escalated(reply_round, draft_rou
     eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == RESOLVED, "disclosure, not a gate"
-    assert d.facts["value_at_stake"] == "2000"
+    assert d.facts["value_at_stake"] == "2000 GBP"
     basis = next(e for e in d.evidence if e.fact == "prior_offer_round_basis")
     assert "unverified" in str(basis.value)
     assert who in str(basis.value)
@@ -663,7 +733,7 @@ def test_the_arithmetic_runs_on_the_decimal_types_production_actually_uses():
     eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == RESOLVED
-    assert d.facts["value_at_stake"] == "2000.0000", "the live string, not '2000'"
+    assert d.facts["value_at_stake"] == "2000.0000 GBP", "the live string, not '2000'"
     assert d.facts["price"] == "94000.0000"
 
 
@@ -959,7 +1029,8 @@ def _every_escalation():
     case("no_authority_at_all", lambda: _engine().decide_email_reply("1", authority=None))
     case("ungoverned_literal", lambda: _engine().decide_email_reply(
         "1", authority={"governed": False, "auto_intents": [], "escalate_intents": [],
-                        "reason": "no usable governed policy 'email_reply_autonomy'"}))
+                        "reason": "there is no usable version of the policy that sets "
+                                  "what this agent may answer unattended"}))
     # Through the REAL resolver: each of authority.py's fail-closed reasons in turn.
     case("resolver_no_policy", lambda: _engine().decide_email_reply(
         "1", authority=_real_authority([])))
@@ -1071,24 +1142,76 @@ _QUOTED = re.compile(r"'[^']*'")
 _SNAKE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 
 
+def _recorded_values(d):
+    """Every value this decision actually RECORDED, as strings.
+
+    The exemption below is for data, and data is what is in `facts`. Evidence values are
+    included because every fact is cited there too, and a value the record cites is
+    still a value the record carries.
+    """
+    values = {str(v) for v in (d.facts or {}).values() if v is not None}
+    values |= {str(e.value) for e in (d.evidence or []) if e.value is not None}
+    return values
+
+
+def _prose_only(d):
+    """`d.rationale` with quoted RECORDED VALUES removed, and nothing else removed.
+
+    The round-1 version stripped every quoted span, which is why this sweep could not
+    see a config slug: `"there is no usable governed policy 'email_reply_autonomy'"` is
+    quoted, so the identifier was exempted along with the classifier's `'price_change'`.
+    A quoted span is only data if the decision recorded that value; anything else in
+    quotes is prose the reader has to decode, and stays in the string this test checks.
+    """
+    recorded = _recorded_values(d)
+
+    def _strip_if_data(match):
+        inner = match.group(0)[1:-1]
+        return "" if inner in recorded else match.group(0)
+
+    return _QUOTED.sub(_strip_if_data, d.rationale)
+
+
 @pytest.mark.parametrize("gate", sorted(_SWEEP))
 def test_no_rationale_hands_the_reader_an_identifier_to_decode(gate):
     d, _lines = _SWEEP[gate]
-    prose = _QUOTED.sub("", d.rationale)
+    prose = _prose_only(d)
     leaked = _SNAKE.findall(prose)
     assert not leaked, f"{gate} leaked {leaked} in: {d.rationale}"
     assert "proc." not in d.rationale, f"{gate}: {d.rationale}"
+
+
+# Phrases that state an ABSENCE of governed authority. Deliberately specific rather than
+# a bare search for "no"/"not": the point is that a nameless appeal to governance has to
+# say WHAT is missing, not merely contain a negative word.
+_STATES_ABSENCE = re.compile(
+    r"no usable|no authority|could not be read|could not be found|"
+    r"carries no rules|sets no threshold|no limit to enforce|unknown limit",
+    re.I,
+)
 
 
 @pytest.mark.parametrize("gate", sorted(_SWEEP))
 def test_an_escalation_that_leans_on_governance_says_whose(gate):
     """Derived, not a hardcoded list of gate names: if the sentence appeals to a
     governed rule at all, the policy that set it must be named, or the reader cannot
-    re-derive the decision from what is on screen."""
+    re-derive the decision from what is on screen.
+
+    The ungoverned path has no policy to name, and the round-1 version returned early on
+    a falsy `policy_name` -- so it asserted NOTHING about exactly the escalations where
+    governance is the whole subject of the sentence. Those must instead say plainly that
+    the authority is absent, which is the only honest thing available to them.
+    """
     d, _lines = _SWEEP[gate]
     leans = ("governed" in d.rationale or "policy" in d.rationale.lower())
-    if not leans or not d.policy_name:
+    if not leans:
         return
-    assert d.policy_name in d.rationale, (
-        f"{gate} appeals to a governed rule without naming the policy: {d.rationale}"
+    if d.policy_name:
+        assert d.policy_name in d.rationale, (
+            f"{gate} appeals to a governed rule without naming the policy: {d.rationale}"
+        )
+        return
+    assert _STATES_ABSENCE.search(d.rationale), (
+        f"{gate} appeals to governance with no policy resolved, and does not say what "
+        f"is missing: {d.rationale}"
     )
