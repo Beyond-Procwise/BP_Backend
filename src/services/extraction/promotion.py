@@ -257,7 +257,8 @@ def _check_tax_total_consistency(
     doc_pk = row.get(pk_col) if pk_col else None
     source_file = row.get("source_file")
 
-    def _log(field_name: str, issue: str, expected, computed, notes):
+    def _log(field_name: str, issue: str, expected, computed, notes,
+             severity: str = "warning"):
         cur.execute(
             """
             INSERT INTO proc.bp_extraction_discrepancy
@@ -272,7 +273,7 @@ def _check_tax_total_consistency(
                 str(row.get(field_name)) if row.get(field_name) is not None else None,
                 str(expected) if expected is not None else None,
                 str(computed) if computed is not None else None,
-                issue, "warning", "open", notes, False,
+                issue, severity, "open", notes, False,
             ),
         )
 
@@ -297,6 +298,45 @@ def _check_tax_total_consistency(
                     ),
                 )
                 n_logged += 1
+
+    # 1b. Net exceeds gross — not a reconciliation gap but an IMPOSSIBILITY.
+    #
+    # Check 1 above fires whenever subtotal + tax != total, which on this corpus is
+    # 84 findings across 41 documents: usually a discount, shipping or rounding line
+    # the header does not carry, and a warning is the right response. This check is
+    # deliberately narrower. A net-of-tax figure can never exceed the tax-inclusive
+    # figure for the same document; tax is not negative. When it does, one of the two
+    # values is simply wrong, and no amount of human triage will reconcile them.
+    #
+    # Recorded as CRITICAL so it is distinguishable from the routine reconciliation
+    # warnings it would otherwise be buried among. Kept non-blocking, in line with the
+    # standing "surface, don't auto-fix" rule for money fields — the reporting layer
+    # refuses to publish the value instead (see the gateway's Quotes query).
+    #
+    # Live example: quote ORB-Q-6612 carries total_amount 3,335,591.00 against
+    # total_amount_incl_tax 1,315,200.00 with tax 219,200.00. Its own tax line implies
+    # a net of 1,096,000.00, so the recorded net is out by a factor of three. It is not
+    # corrected here: the value must come from the document, not from our arithmetic.
+    if sub_f and tot_f:
+        s = _to_decimal(row.get(sub_f))
+        g = _to_decimal(row.get(tot_f))
+        if s is not None and g is not None and (s - g) > _DEFAULT_DISCREPANCY_TOLERANCE:
+            t = _to_decimal(row.get(tax_f)) if tax_f else None
+            implied = f" Its tax line implies a net of {(g - t).quantize(Decimal('0.01'))}." if t is not None else ""
+            _log(
+                field_name=sub_f,
+                issue="net_exceeds_gross",
+                expected=g,
+                computed=s,
+                notes=(
+                    f"{sub_f}({s}) exceeds {tot_f}({g}), which is impossible: a "
+                    f"net-of-tax amount cannot be larger than the tax-inclusive "
+                    f"amount for the same document.{implied} One of the two values "
+                    f"was mis-read and the document needs re-extracting."
+                ),
+                severity="critical",
+            )
+            n_logged += 1
 
     # 2. subtotal × tax_percent / 100 = tax_amount
     sub_f2, pct_f, tax_f2 = _TAX_PERCENT_TRIPLE.get(doc_type, (None, None, None))
