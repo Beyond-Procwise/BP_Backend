@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -50,6 +51,18 @@ MAX_DOC_TEXT_CHARS = 16000
 # the JSON emission, so we need headroom for both. 4096 is enough for
 # the widest PO schema (~23 fields) with substantial thinking.
 MAX_RESPONSE_TOKENS = 4096
+
+# Ceiling for the context-layer LLM call. Was hardcoded at 120s against a 4096-token
+# budget — a pair that could not complete: measured, that call did not finish inside 300s,
+# so it timed out, retried, timed out again and gave up. The layer then returned nothing
+# and the document fell through to regex-only extraction, keeping whatever L1 could match
+# and losing the rest. It is not a rare edge: artifacts/llm_failures holds 4,448
+# ollama_generate.exhausted captures.
+#
+# This is a backstop, not a budget. With think=False the same call now returns in ~26s
+# (see _call_llm), so nothing should approach this — it exists to bound a genuinely stuck
+# request rather than to time-box a healthy one. Tunable for slower hardware.
+LLM_TIMEOUT_SECONDS = int(os.getenv("EXTRACTION_LLM_TIMEOUT", "600"))
 
 # FX rates to USD — LAST-RESORT fallback only. These are a frozen 2026-05 snapshot;
 # GBP has since drifted from 1.27 to ~1.34 (5.5%), well past the "~2%" this table was
@@ -774,7 +787,19 @@ def _call_llm(prompt: str, temperature: float = 0.0, fmt=None) -> str | None:
             num_predict=MAX_RESPONSE_TOKENS,
             temperature=temperature,
             retries=2,
-            timeout=120,
+            timeout=LLM_TIMEOUT_SECONDS,
+            # _LLM_MODEL is now always AgentNick:unified, a hybrid REASONING model —
+            # the :extract specialist this call was written for is retired. Left unset,
+            # the model reasons at length and ollama_client returns only `response`,
+            # not `thinking`, so all of that time is spent and thrown away.
+            #
+            # Measured on this call's own prompt, same 488-character answer both ways:
+            #   think unset   451.6s
+            #   think=False    26.0s
+            #
+            # That 425s is what pushed every call past its ceiling. See the note on
+            # LLM_TIMEOUT_SECONDS for what that was costing.
+            think=False,
             format=fmt,
         )
     except Exception as exc:  # noqa: BLE001
