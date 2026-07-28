@@ -120,3 +120,42 @@ def test_empty_body_is_unusable():
     out = classify_reply("", caller=_caller("{}"))
     assert out.intent == "unclassified"
     assert isinstance(out, ReplyIntent)
+
+
+def test_a_bare_json_scalar_is_unusable_not_a_crash():
+    # json.loads("null") succeeds and returns None, not a dict. Nothing upstream
+    # constrains the model to emit an object -- format="json" is inert on this
+    # call path (see the comment at the call site) -- so this is a real response
+    # shape, not a hypothetical. Must fold into the unusable result, not raise
+    # AttributeError out of payload.get(...).
+    out = classify_reply(REPLY, caller=_caller("null"))
+    assert out.intent == "unclassified"
+    assert out.confidence == 0.0
+    assert out.grounded is False
+
+
+def test_a_bare_json_list_is_unusable_not_a_crash():
+    out = classify_reply(REPLY, caller=_caller("[1, 2]"))
+    assert out.intent == "unclassified"
+    assert out.confidence == 0.0
+
+
+def test_missing_confidence_is_unusable():
+    caller = _caller(json.dumps({
+        "intent": "price_change",
+        "quote": "We can offer 94,000.00 GBP",
+    }))
+    out = classify_reply(REPLY, caller=caller)
+    assert out.intent == "unclassified"
+    assert out.confidence == 0.0
+
+
+def test_non_numeric_confidence_is_unusable():
+    caller = _caller(json.dumps({
+        "intent": "price_change",
+        "confidence": "high",
+        "quote": "We can offer 94,000.00 GBP",
+    }))
+    out = classify_reply(REPLY, caller=caller)
+    assert out.intent == "unclassified"
+    assert out.confidence == 0.0

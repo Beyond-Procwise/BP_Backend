@@ -97,20 +97,28 @@ def _extract_ollama_message(response: Any) -> str:
 
 
 def _extract_json(text: str) -> dict:
-    """Parse ``format="json"`` output. Falls back to the first JSON object in the
-    text for a model that still wraps its answer in prose despite the instruction
-    and the grammar constraint.
+    """Parse the model's JSON object. ``format="json"`` is requested at the call
+    site but is currently inert on this call path (see the comment there) --
+    nothing constrains the model to emit an object at all, so a syntactically
+    valid but non-object response (``"null"``, ``"5"``, ``"[1,2]"``, ``"true"``)
+    is a real possibility, not a hypothetical. Falls back to the first ``{...}``
+    block in the text for a model that wraps its answer in prose. Either way, the
+    result must be a dict -- a bare scalar or list is not "usable JSON" and must
+    raise so the caller folds it into the unusable result instead of crashing on
+    ``.get()``.
     """
     if not text:
         raise ValueError("empty response")
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except (TypeError, ValueError):
-        pass
-    match = re.search(r"\{.*\}", str(text), re.DOTALL)
-    if not match:
-        raise ValueError("no JSON object in response")
-    return json.loads(match.group(0))
+        match = re.search(r"\{.*\}", str(text), re.DOTALL)
+        if not match:
+            raise ValueError("no JSON object in response")
+        parsed = json.loads(match.group(0))
+    if not isinstance(parsed, dict):
+        raise ValueError(f"parsed JSON is not an object (got {type(parsed).__name__})")
+    return parsed
 
 
 def _resolve_model(caller: Any) -> str:
@@ -146,6 +154,12 @@ def classify_reply(body: str, *, caller: Any, min_quote_words: int = 4) -> Reply
         response = caller.call_ollama(
             model=model,
             messages=messages,
+            # NOTE: currently inert on this path. BaseAgent.call_ollama
+            # (base_agent.py:1150) only forwards `format` to ollama.generate();
+            # the messages= branch calls ollama.chat() without it. Kept anyway --
+            # harmless, and becomes a real grammar constraint for free if that is
+            # ever fixed. Until then, `_extract_json`'s prose fallback below is
+            # doing the actual work, not this.
             format="json",
             think=False,  # reasoning models return an empty `response` otherwise
             temperature=0,
