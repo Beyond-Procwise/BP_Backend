@@ -46,15 +46,18 @@ RESOLVED_SEND_ROW = (
 
 
 class FakeCursor:
-    """Stands in for a psycopg2 cursor across BOTH the SELECT in
-    `_fetch_email_decision` and the INSERT in `_record_human_action`.
+    """Stands in for a psycopg2 cursor across the SELECT in
+    `_fetch_email_decision`, the INSERT in `_record_human_action`, and the UPDATE
+    in `_close_original_email_decision`.
     """
 
-    def __init__(self, select_row):
+    def __init__(self, select_row, fail_update=False):
         self.select_row = select_row
+        self.fail_update = fail_update
         self.description = None
         self.executed = []
         self.insert_params = None
+        self.update_params = None
         self._last_result = None
 
     def __enter__(self):
@@ -66,7 +69,12 @@ class FakeCursor:
     def execute(self, sql, params=None):
         self.executed.append((sql, params))
         norm = " ".join(sql.split())
-        if norm.startswith("SELECT") and "FROM proc.bp_decision" in norm:
+        if norm.startswith("UPDATE proc.bp_decision"):
+            if self.fail_update:
+                raise RuntimeError("simulated: closing the queue entry failed")
+            self.update_params = params
+            self._last_result = None
+        elif norm.startswith("SELECT") and "FROM proc.bp_decision" in norm:
             self.description = [(c,) for c in _SELECT_COLUMNS]
             self._last_result = self.select_row
         elif norm.startswith("INSERT INTO proc.bp_decision"):
@@ -97,8 +105,8 @@ class FakeConn:
         self.committed = True
 
 
-def _engine(select_row):
-    cur = FakeCursor(select_row)
+def _engine(select_row, fail_update=False):
+    cur = FakeCursor(select_row, fail_update=fail_update)
     conn = FakeConn(cur)
     nick = SimpleNamespace(
         get_db_connection=lambda: conn,
@@ -126,6 +134,7 @@ def test_decision_not_found_returns_an_error_not_a_500():
     assert result == {"applied": False, "error": "email decision 404 not found"}
     # No INSERT was attempted for a decision that could not be read.
     assert cur.insert_params is None
+    assert cur.update_params is None
 
 
 def test_sending_against_an_escalated_recommendation_requires_an_override():
@@ -134,8 +143,10 @@ def test_sending_against_an_escalated_recommendation_requires_an_override():
     assert result["applied"] is False
     assert result["requires_override"] is True
     assert "price_change is escalate-only" in result["prompt"]
-    # Nothing was written until the human means it.
+    # Nothing was written until the human means it -- neither the audit INSERT
+    # nor the queue-closing UPDATE.
     assert cur.insert_params is None
+    assert cur.update_params is None
 
 
 def test_overriding_a_send_records_who_and_why():
@@ -167,6 +178,20 @@ def test_overriding_a_send_records_who_and_why():
     assert json.loads(params[10])[0]["fact"] == "intent"
 
 
+def test_overriding_a_send_also_closes_the_original_decisions_queue_entry():
+    """Concern 1's fix: without this, the original escalated row stays
+    status='open' forever and keeps matching GET /decisions's default queue
+    filter even after the human has acted on it."""
+    eng, cur = _engine(select_row=ESCALATED_ROW)
+    result = eng.act_on_email_reply(
+        7, "send", user_id="alice", override_reason="supplier confirmed on the phone"
+    )
+    assert result["queue_closed"] is True
+    assert "warning" not in result
+    # (status, decision_id, subject_type)
+    assert cur.update_params == ("overridden", 7, "email_reply")
+
+
 def test_rejecting_an_escalated_recommendation_needs_no_override():
     """'Do not send' is exactly what an escalation asks a human to weigh -- it does
     not contradict the recommendation, so no override_reason is required."""
@@ -181,6 +206,11 @@ def test_rejecting_an_escalated_recommendation_needs_no_override():
     assert params[11] == "actioned"     # not "overridden" -- nothing was overridden
     assert params[13] is None           # override_reason
 
+    # The original row is closed with the SAME word ('actioned') the new audit
+    # row was just given -- not a third, invented status value.
+    assert result["queue_closed"] is True
+    assert cur.update_params == ("actioned", 7, "email_reply")
+
 
 def test_sending_a_resolved_send_recommendation_does_not_conflict():
     """Acting on a decision the engine already resolved as 'send' is not a
@@ -193,6 +223,36 @@ def test_sending_a_resolved_send_recommendation_does_not_conflict():
     assert params[4] == "send"
     assert params[5] == "resolved"
     assert params[11] == "actioned"
+    assert result["queue_closed"] is True
+    assert cur.update_params == ("actioned", 9, "email_reply")
+
+
+def test_the_close_update_is_scoped_to_decision_id_and_email_reply_subject_type():
+    """So this can never write to a findings row -- the findings screen's own
+    queue does not read this column and must not be touched."""
+    eng, cur = _engine(select_row=ESCALATED_ROW)
+    eng.act_on_email_reply(7, "reject", user_id="bob")
+    update_sql = next(sql for sql, params in cur.executed if "UPDATE" in sql)
+    assert "decision_id = %s AND subject_type = %s" in " ".join(update_sql.split())
+    assert cur.update_params == ("actioned", 7, "email_reply")
+
+
+def test_a_failed_close_is_reported_not_hidden_behind_a_plain_success():
+    """If the audit INSERT succeeds but the closing UPDATE fails, the caller must
+    be told the queue may be stale -- never a bare `applied: True` that implies
+    everything, including the queue, is now consistent."""
+    eng, cur = _engine(select_row=ESCALATED_ROW, fail_update=True)
+    result = eng.act_on_email_reply(7, "reject", user_id="bob")
+    # The audit trail is NOT sacrificed for the queue update: the human's action
+    # was still recorded.
+    assert result["applied"] is True
+    assert cur.insert_params is not None
+    assert cur.insert_params[4] == "reject"
+    # But the response is explicit that the queue entry did not close.
+    assert result["queue_closed"] is False
+    assert "warning" in result
+    assert "decision_id=555" in result["warning"]
+    assert "7" in result["warning"]
 
 
 def test_the_fetch_is_scoped_to_email_reply_in_sql():

@@ -1386,6 +1386,53 @@ class DecisionEngine:
             logger.exception("failed to read email decision %s", decision_id)
             return None
 
+    def _close_original_email_decision(self, decision_id: int, *, status: str) -> bool:
+        """Mark the ORIGINAL escalated decision's queue entry closed.
+
+        `_record_human_action` (unmodified) always INSERTs a new audit row; it
+        never updates the row it is auditing. Left alone, that original row keeps
+        `status = 'open'` forever, which is exactly what `GET /decisions` filters
+        on by default -- so a decision a human has already sent or rejected would
+        keep showing up in the Todo queue, looking untouched.
+
+        Only `status` is written here. `rationale` / `facts` / `evidence` on the
+        original row are left exactly as recorded: they describe what the AGENT
+        decided and why, and that does not change because a human later acted on
+        it. What the human did, when, and any override reason live on the separate
+        row `_record_human_action` inserts -- this call only flips the lifecycle
+        column that determines whether the ORIGINAL row still matches the queue.
+
+        Uses the SAME status vocabulary `_record_human_action` already writes on
+        that new row ('actioned' / 'overridden') rather than inventing a third
+        value -- the caller passes whichever one applies.
+
+        Scoped to `decision_id` AND `subject_type = 'email_reply'`, same as
+        `_fetch_email_decision`, so this can never write to a findings row -- the
+        findings screen's queue does not read this column and must not be touched.
+
+        Returns True on success, False on failure (never raises) -- the caller
+        must be able to tell a closed queue entry from one that silently stayed
+        open.
+        """
+        try:
+            with self.agent_nick.get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE proc.bp_decision
+                           SET status = %s
+                         WHERE decision_id = %s AND subject_type = %s
+                        """,
+                        (status, decision_id, self._EMAIL_SUBJECT_TYPE),
+                    )
+                conn.commit()
+            return True
+        except Exception:
+            logger.exception(
+                "failed to close the queue entry for email decision %s", decision_id
+            )
+            return False
+
     def act_on_email_reply(
         self,
         decision_id: int,
@@ -1414,6 +1461,19 @@ class DecisionEngine:
             escalation asks a human to weigh, so no override is required for it;
           * supplying override_reason proceeds and is recorded against the actor.
         The human is never blocked; they are asked to mean it.
+
+        After the audit row is recorded, the ORIGINAL escalated decision's
+        `status` is also closed (see `_close_original_email_decision`), so it
+        stops matching `GET /decisions`'s queue filter. These are two separate
+        writes on proc.bp_decision (through the same, unmodified
+        `_record_human_action`, plus a new narrowly-scoped UPDATE) rather than one
+        atomic transaction -- `_record_human_action` manages and commits its own
+        connection internally, and touching that is out of scope here. The audit
+        INSERT is done FIRST: losing the record of who acted and why would be
+        worse than a queue entry that stays open one call longer. If the INSERT
+        succeeds but the closing UPDATE fails, the response says so explicitly
+        via `queue_closed: False` and a `warning` -- it never reports a plain
+        success while the queue is left stale, silently.
         """
         action = (action or "").strip().lower()
         if action not in ("send", "reject"):
@@ -1493,7 +1553,13 @@ class DecisionEngine:
             override_reason=override_reason if conflicts else None,
         )
 
-        return {
+        # Same status word `_record_human_action` just wrote on the NEW row --
+        # the original row's queue entry is closed with the identical vocabulary,
+        # not a third value.
+        status_word = "overridden" if conflicts else "actioned"
+        queue_closed = self._close_original_email_decision(decision_id, status=status_word)
+
+        result: Dict[str, Any] = {
             "applied": True,
             "action": action,
             "decision_id": new_decision_id,
@@ -1501,4 +1567,16 @@ class DecisionEngine:
             "override_reason": override_reason if conflicts else None,
             "actioned_by": user_id,
             "recommendation": recommendation.to_dict(),
+            "queue_closed": queue_closed,
         }
+        if not queue_closed:
+            # The action WAS recorded (new_decision_id is real audit trail) -- but
+            # the caller must not read `applied: True` as "the queue is up to
+            # date". Say plainly that it may not be.
+            result["warning"] = (
+                f"The action was recorded (decision_id={new_decision_id}), but "
+                f"the original decision {decision_id} could not be marked "
+                f"'{status_word}', so it may still appear in the escalation "
+                "queue until this is retried."
+            )
+        return result
