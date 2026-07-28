@@ -132,22 +132,53 @@ def test_a_raising_policy_engine_fails_closed_not_open():
     assert out["negotiation_agent"]["governed"] is False
 
 
+def test_deferred_approval_lookup_raising_fails_closed():
+    # The autonomy lookup (first call) succeeds and defers its value limit to
+    # "approval_threshold"; the SECOND call -- the approval lookup this defers
+    # to -- is the one that raises. This is a different raise site from
+    # test_a_raising_policy_engine_fails_closed_not_open, which never gets past
+    # the first call, and it must fail closed too.
+    autonomy_policy = {
+        "policy_type": "email_autonomy",
+        "slug": "email_reply_autonomy",
+        "policyName": "EmailReplyAutonomyPolicy",
+        "details": {"rules": AUTONOMY_RULES},
+        "raw_row": {"policy_id": 11, "policy_name": "EmailReplyAutonomyPolicy"},
+    }
+
+    class ExplodingOnDeferredLookup:
+        def get_policy(self, slug):
+            if slug == "email_reply_autonomy":
+                return autonomy_policy
+            raise RuntimeError("approval policy table unreachable")
+
+    out = resolve_authority(ExplodingOnDeferredLookup(), ["email_drafting_agent"])
+    block = out["email_drafting_agent"]
+    assert block["governed"] is False
+    assert "approval_threshold" in block["reason"]
+
+
 def test_resolution_runs_concurrently():
     # Each agent's resolution is an independent read; serial round-trips are the
-    # only cost. Assert overlap rather than wall-clock, which is flaky.
+    # only cost. Prove concurrent entry with a Barrier rather than a timing
+    # heuristic: every call blocks until ALL agents' calls have arrived. A
+    # serial implementation can never get more than one thread onto the
+    # barrier at a time, so it cannot fill the barrier before the timeout and
+    # every call raises BrokenBarrierError -- which fails the test without
+    # ever asserting a wall-clock duration.
     import threading
-    import time
 
-    inside = []
-    barrier_hit = threading.Event()
+    agents = ["a_agent", "b_agent", "c_agent"]
+    barrier = threading.Barrier(len(agents), timeout=2)
+    broke = {"happened": False}
 
     class Slow:
         def get_policy(self, slug):
-            inside.append(slug)
-            if len(inside) >= 2:
-                barrier_hit.set()
-            time.sleep(0.15)
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                broke["happened"] = True
             return None
 
-    resolve_authority(Slow(), ["a_agent", "b_agent", "c_agent"])
-    assert barrier_hit.is_set(), "agents were resolved one after another"
+    resolve_authority(Slow(), agents)
+    assert not broke["happened"], "agents were not resolved concurrently (barrier never filled)"
