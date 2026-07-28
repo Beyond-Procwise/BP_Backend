@@ -788,13 +788,42 @@ class DecisionEngine:
                 fact="value_at_stake", value=str(at_stake),
                 source=f"derived: abs(proc.supplier_response.price - {prior_source})",
                 reference=ref))
+
+            # DISCLOSED ASSUMPTION, not a gate. Gate 4a proved the REPLY's currency
+            # matches the limit's. It cannot prove the same of the prior offer, because
+            # `metadata` carries no currency key at all -- so one operand of the
+            # subtraction above has an unstated denomination, and this subtraction
+            # assumes it matches the reply's.
+            #
+            # This is recorded rather than gated deliberately: a gate here would fire on
+            # every row (the currency is unstated on all of them), which would return
+            # the limit gate to never executing. But "every fact carries a source" means
+            # an assumed operand must be visible as assumed, or the decision is not
+            # re-derivable from its evidence. It lands in proc.bp_decision.evidence and
+            # shows up in trace(). The real fix is upstream -- the drafting agent
+            # recording a currency alongside counter_price. See the Task 6 report.
+            currency_basis = (
+                f"assumed {reply_currency}; unstated in source"
+            )
+            facts["prior_offer_currency_basis"] = currency_basis
+            evidence.append(Evidence(
+                fact="prior_offer_currency_basis", value=currency_basis,
+                source=(
+                    f"ASSUMPTION: {prior_source} carries no currency key, so the prior "
+                    f"offer's denomination is unstated in the source. It was assumed to "
+                    f"match the reply's {reply_currency} "
+                    f"(proc.supplier_response.currency). No conversion was applied."
+                ),
+                reference=ref))
+
             if at_stake > limit:
                 # Both sides are in reply_currency, which gate 4a has already confirmed
                 # equals limit_currency -- so no default denomination is assumed here.
                 return _escalate(
                     f"The reply moves {at_stake} {reply_currency} "
-                    f"(supplier {price} against our {prior}), above the governed limit "
-                    f"of {limit} {limit_currency}."
+                    f"(supplier {price} against our {prior}, whose currency is unstated "
+                    f"in the source and assumed to be {reply_currency}), above the "
+                    f"governed limit of {limit} {limit_currency}."
                 )
 
         # 5. Per-thread cap on unattended replies. Fail-closed on BOTH unknowns: an

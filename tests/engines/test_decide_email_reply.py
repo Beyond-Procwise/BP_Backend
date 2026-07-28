@@ -367,6 +367,56 @@ def test_both_currencies_are_sourced():
     assert "limit_currency" in sources["value_limit_currency"]
 
 
+def test_the_prior_offers_assumed_currency_is_disclosed_in_the_evidence():
+    """One operand of the subtraction has an unstated denomination. Say so.
+
+    payload->'metadata' carries no currency key on any live row, so gate 4a can prove
+    the REPLY matches the limit's currency but not the prior offer. That assumption is
+    recorded rather than gated -- a gate would fire on every row and put the limit gate
+    back to never executing -- but it must be visible, or `value_at_stake` is not
+    re-derivable from its evidence.
+    """
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": "GBP"}
+    row = {**REPLY_ROW, "currency": "GBP", "price": 94000, "prior_price": 96000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+
+    # Behaviour is unchanged: this still sends, and still computes the same amount.
+    assert d.resolution == RESOLVED
+    assert d.facts["value_at_stake"] == "2000"
+
+    disclosure = next(
+        (e for e in d.evidence if e.fact == "prior_offer_currency_basis"), None
+    )
+    assert disclosure is not None, "an assumed operand must be visible as assumed"
+    assert "assumed GBP" in str(disclosure.value)
+    assert "unstated" in str(disclosure.value)
+    # The source names WHERE the prior came from and WHY its currency is unknown.
+    assert "counter_price" in disclosure.source
+    assert "no currency key" in disclosure.source
+    assert "No conversion was applied" in disclosure.source
+    assert d.facts["prior_offer_currency_basis"]
+
+
+def test_no_currency_disclosure_when_no_amount_was_computed():
+    """The disclosure belongs to the subtraction. No subtraction, no claim about it."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "prior_price": None, "prior_price_source": None}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert "value_at_stake" not in d.facts
+    assert not [e for e in d.evidence if e.fact == "prior_offer_currency_basis"]
+
+
+def test_the_over_limit_rationale_discloses_the_assumed_currency():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_gbp": "1000"}
+    eng = _engine(intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "4000" in d.rationale.replace(",", "")
+    assert "unstated in the source" in d.rationale
+
+
 def test_a_currency_mismatch_on_an_unpriced_reply_invents_no_money_concern():
     """No price means no money moves. A stray currency must not manufacture a gate."""
     auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_currency": "GBP"}
