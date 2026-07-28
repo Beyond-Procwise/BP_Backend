@@ -46,6 +46,10 @@ _DEFAULT_THREAD_TABLE = DEFAULT_THREAD_TABLE
 class EmailDispatchService:
     """Send persisted RFQ drafts via Amazon SES and update their status."""
 
+    # Attachment limits are configuration, not literals buried in a handler.
+    _ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+    _ATTACHMENT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
+
     def __init__(self, agent_nick):
         self.agent_nick = agent_nick
         self.email_service = EmailService(agent_nick)
@@ -136,6 +140,9 @@ class EmailDispatchService:
                 )
 
             draft = self._hydrate_draft(draft_row)
+
+            if attachments is None:
+                attachments = self._load_attachments(draft) or None
 
             unique_id = draft.get("unique_id")
             if not unique_id:
@@ -944,13 +951,76 @@ class EmailDispatchService:
 
         return True
 
+    def _read_s3_bytes(self, s3_key: str) -> bytes:
+        """Fetch one attachment's bytes. Separated so tests can stand it in."""
+        import boto3
+        from config.settings import settings
+
+        client = boto3.client("s3")
+        obj = client.get_object(Bucket=settings.s3_bucket_name, Key=s3_key)
+        return obj["Body"].read()
+
+    def _write_s3_bytes(self, s3_key: str, data: bytes, content_type: Optional[str]) -> None:
+        """Upload one attachment's bytes under the email-attachments/ prefix.
+
+        Deliberately not the document-ingestion upload path: that path feeds
+        the extraction pipeline, and a supplier's countersigned contract
+        arriving there would raise discrepancy findings against itself.
+        """
+        import boto3
+        from config.settings import settings
+
+        client = boto3.client("s3")
+        client.put_object(
+            Bucket=settings.s3_bucket_name,
+            Key=s3_key,
+            Body=data,
+            ContentType=content_type or "application/octet-stream",
+        )
+
+    def _load_attachments(self, draft: Dict[str, Any]) -> List[Tuple[bytes, str]]:
+        """Stored attachments as (bytes, filename), ready for the MIME path.
+
+        An attachment we cannot read is SKIPPED and logged, never sent as an
+        empty part: a zero-byte file named terms.pdf is a false statement
+        about what the supplier received.
+        """
+        raw = (draft or {}).get("attachments")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                logger.warning("draft attachments column held unparseable JSON")
+                return []
+        if not isinstance(raw, list):
+            return []
+
+        loaded: List[Tuple[bytes, str]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key, filename = item.get("s3_key"), item.get("filename")
+            if not key or not filename:
+                continue
+            try:
+                data = self._read_s3_bytes(str(key))
+            except Exception:  # noqa: BLE001
+                logger.exception("attachment %s could not be read; not sending it", key)
+                continue
+            if not data:
+                logger.warning("attachment %s read as empty; not sending it", key)
+                continue
+            loaded.append((data, str(filename)))
+        return loaded
+
     def _fetch_latest_draft(self, conn, identifier: str) -> Optional[Tuple]:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, rfq_id, supplier_id, supplier_name, subject, body, sent,
                        recipient_email, contact_level, thread_index, payload, sender, sent_on,
-                       workflow_id, run_id, unique_id, mailbox, dispatch_run_id, dispatched_at
+                       workflow_id, run_id, unique_id, mailbox, dispatch_run_id, dispatched_at,
+                       attachments
                 FROM proc.draft_rfq_emails
                 WHERE unique_id = %s
                 ORDER BY sent ASC, thread_index DESC, id DESC
@@ -968,7 +1038,8 @@ class EmailDispatchService:
                 """
                 SELECT id, rfq_id, supplier_id, supplier_name, subject, body, sent,
                        recipient_email, contact_level, thread_index, payload, sender, sent_on,
-                       workflow_id, run_id, unique_id, mailbox, dispatch_run_id, dispatched_at
+                       workflow_id, run_id, unique_id, mailbox, dispatch_run_id, dispatched_at,
+                       attachments
                 FROM proc.draft_rfq_emails
                 WHERE rfq_id = %s
                 ORDER BY sent ASC, thread_index DESC, id DESC
@@ -980,8 +1051,8 @@ class EmailDispatchService:
 
     def _hydrate_draft(self, row: Tuple) -> Dict[str, Any]:
         values = list(row)
-        if len(values) < 19:
-            values.extend([None] * (19 - len(values)))
+        if len(values) < 20:
+            values.extend([None] * (20 - len(values)))
 
         (
             draft_id,
@@ -1003,7 +1074,8 @@ class EmailDispatchService:
             mailbox,
             dispatch_run_id,
             dispatched_at,
-        ) = values[:19]
+            attachments_column,
+        ) = values[:20]
 
         hydrated: Dict[str, Any]
         if isinstance(payload, dict):
@@ -1033,6 +1105,7 @@ class EmailDispatchService:
             "mailbox": mailbox,
             "dispatch_run_id": dispatch_run_id,
             "dispatched_at": dispatched_at,
+            "attachments": attachments_column,
         }
         for key, value in defaults.items():
             hydrated.setdefault(key, value)

@@ -122,16 +122,20 @@ def load_by_unique_id(unique_id: str) -> Optional[Dict[str, Any]]:
     try:
         with get_conn() as conn:
             if isinstance(conn, sqlite3.Connection):
+                # sqlite branch mirrors the postgres column positions exactly
+                # (14 columns, then attachments) so the positional dict below
+                # lines up for both backends -- it just has no attachments
+                # column to select, so it fills that slot with NULL.
                 query = (
                     "SELECT id, NULL, supplier_id, NULL, NULL, NULL, dispatched_at, sent, NULL, NULL, "
-                    "workflow_id, run_id, unique_id, NULL FROM draft_rfq_emails "
+                    "workflow_id, run_id, unique_id, NULL, NULL FROM draft_rfq_emails "
                     "WHERE unique_id = ? ORDER BY dispatched_at DESC LIMIT 1"
                 )
                 params = (unique_id,)
             else:
                 query = (
                     "SELECT id, rfq_id, supplier_id, supplier_name, subject, body, created_on, sent, sender, payload, "
-                    "workflow_id, run_id, unique_id, mailbox FROM proc.draft_rfq_emails "
+                    "workflow_id, run_id, unique_id, mailbox, attachments FROM proc.draft_rfq_emails "
                     "WHERE unique_id = %s ORDER BY created_on DESC LIMIT 1"
                 )
                 params = (unique_id,)
@@ -162,4 +166,5 @@ def load_by_unique_id(unique_id: str) -> Optional[Dict[str, Any]]:
         "run_id": row[11],
         "unique_id": row[12],
         "mailbox": row[13],
+        "attachments": row[14],
     }

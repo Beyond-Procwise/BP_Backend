@@ -10,7 +10,7 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator, ConfigDict
@@ -1552,6 +1552,121 @@ async def dispatch_batch_emails(
         "failed": len(results) - success_count,
         "results": results,
     }
+
+
+_ATTACHMENT_ALLOWED_SUFFIXES = {
+    ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".xls", ".docx", ".doc", ".txt",
+}
+
+
+def _load_draft_attachments(draft: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Existing attachment records for a draft, tolerating a JSON-string column."""
+    existing = draft.get("attachments") if draft else None
+    if isinstance(existing, str):
+        try:
+            existing = json.loads(existing)
+        except (TypeError, ValueError):
+            existing = []
+    return list(existing or [])
+
+
+def _persist_draft_attachments(agent_nick, unique_id: str, records: List[Dict[str, Any]]) -> None:
+    """Write the attachment list onto the draft row. Raises on failure — a stored
+    file with no record is invisible, and silence here would produce exactly that."""
+    with agent_nick.get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE proc.draft_rfq_emails SET attachments = %s::jsonb, updated_on = now()"
+                " WHERE unique_id = %s",
+                (json.dumps(records), unique_id),
+            )
+        conn.commit()
+
+
+@router.post(
+    "/email/{unique_id}/attachments",
+    summary="Attach files to a persisted draft (no send)",
+)
+async def add_email_attachments(
+    unique_id: str,
+    files: List[UploadFile] = File(...),
+    user_id: str = Form(default="api"),
+    agent_nick=Depends(get_agent_nick),
+) -> Dict[str, Any]:
+    """Store attachments against a draft, in S3 plus a record on the draft row.
+
+    The bytes go to an email-attachments/ prefix, NOT through
+    /data-integration/presigned-url: that path feeds document extraction, and a
+    supplier's countersigned contract arriving as an "uploaded document" would
+    raise discrepancies against itself.
+
+    A previous upload's attachments are loaded first and appended to — never
+    overwritten — so successive uploads to the same draft accumulate.
+    """
+    from datetime import datetime, timezone
+
+    draft = draft_rfq_emails_repo.load_by_unique_id(unique_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail=f"No draft for unique_id {unique_id}")
+
+    records: List[Dict[str, Any]] = _load_draft_attachments(draft)
+    total = sum(int(r.get("bytes") or 0) for r in records)
+
+    service = EmailDispatchService(agent_nick)
+    rejected: List[Dict[str, str]] = []
+    for upload in files:
+        name = os.path.basename(upload.filename or "")
+        suffix = os.path.splitext(name)[1].lower()
+        if not name or suffix not in _ATTACHMENT_ALLOWED_SUFFIXES:
+            rejected.append({"filename": name, "reason": f"file type {suffix or 'unknown'} not allowed"})
+            continue
+        data = await upload.read()
+        if len(data) > service._ATTACHMENT_MAX_BYTES:
+            rejected.append({"filename": name, "reason": "file exceeds the per-file limit"})
+            continue
+        if total + len(data) > service._ATTACHMENT_MAX_TOTAL_BYTES:
+            rejected.append({"filename": name, "reason": "message would exceed the total attachment limit"})
+            continue
+        key = f"email-attachments/{unique_id}/{name}"
+        try:
+            await run_in_threadpool(service._write_s3_bytes, key, data, upload.content_type)
+        except Exception as exc:  # noqa: BLE001
+            rejected.append({"filename": name, "reason": f"upload failed: {exc}"})
+            continue
+        total += len(data)
+        records.append(
+            {
+                "filename": name,
+                "content_type": upload.content_type or "application/octet-stream",
+                "bytes": len(data),
+                "s3_key": key,
+                "added_by": user_id,
+                "added_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    _persist_draft_attachments(agent_nick, unique_id, records)
+    return {"unique_id": unique_id, "attachments": records, "rejected": rejected}
+
+
+@router.delete(
+    "/email/{unique_id}/attachments/{index}",
+    summary="Remove one attachment from a draft before sending",
+)
+def remove_email_attachment(
+    unique_id: str,
+    index: int,
+    agent_nick=Depends(get_agent_nick),
+) -> Dict[str, Any]:
+    draft = draft_rfq_emails_repo.load_by_unique_id(unique_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail=f"No draft for unique_id {unique_id}")
+    records = _load_draft_attachments(draft)
+    if index < 0 or index >= len(records):
+        raise HTTPException(status_code=404, detail=f"No attachment at index {index}")
+    records.pop(index)
+    _persist_draft_attachments(agent_nick, unique_id, records)
+    return {"unique_id": unique_id, "attachments": records}
 
 
 @router.post("/{workflow_id}/email/dispatch-all")
