@@ -51,6 +51,7 @@ from agents.supplier_interaction_agent import SupplierInteractionAgent
 from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, deal_proposals, promotion, summary, negotiate, opportunities,session
 from api.routers import ws as ws_router_mod
 from api.routers import agent_workflows as agent_workflows_router
+from api.routers import models as models_router
 from api.routers import decisions as decisions_router
 from api.routers import support as support_router
 from api.routers import extraction_feedback as extraction_feedback_router
@@ -170,9 +171,13 @@ async def lifespan(app: FastAPI):
         # handlers in api/routers/agent_workflows.py).
         try:
             from repositories import agent_workflow_repo as _agent_workflow_repo
+            from repositories import model_catalogue_repo as _model_catalogue_repo
             from repositories import workflow_input_request_repo as _workflow_input_request_repo
             _agent_workflow_repo.ensure_schema()
             _workflow_input_request_repo.ensure_schema()
+            # Seeded once, from what this machine already runs, so the offered-model
+            # list agrees with reality rather than announcing a model nothing uses.
+            _model_catalogue_repo.ensure_schema()
             logger.info("Agent-workflows schema ensured")
         except Exception:
             logger.exception("Agent-workflows schema init failed (non-critical)")
@@ -397,6 +402,7 @@ app.include_router(metrics.router)
 app.include_router(extraction_feedback_router.router)
 app.include_router(decisions_router.router)
 app.include_router(agent_workflows_router.router)
+app.include_router(models_router.router)
 app.include_router(support_router.router)
 app.include_router(supplier_review_router.router)
 app.include_router(supplier_research_router.router)
@@ -437,7 +443,11 @@ from services import output_safety as osafe  # noqa: E402
 # Endpoints whose whole job is to describe the machine to an operator. They are not user
 # surfaces, and scrubbing them would leave nothing behind. They must not be reachable by an
 # end user — see the note in the security spec.
-_OPERATOR_PATHS = ("/docs", "/redoc", "/openapi.json")
+# /models names models on purpose: it is the list an operator picks from, and a
+# scrubbed list reads "[withheld], [withheld], [withheld]" and cannot be chosen
+# from at all. It returns display names and keys only — never the provider-facing
+# reference — so exempting it leaks nothing the operator did not already decide.
+_OPERATOR_PATHS = ("/docs", "/redoc", "/openapi.json", "/models")
 
 
 @app.exception_handler(StarletteHTTPException)

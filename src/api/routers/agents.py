@@ -165,6 +165,125 @@ class CreateAgentBody(BaseModel):
     backing_slug: str
     instructions: str
     capabilities: Optional[List[str]] = None
+    # Both optional, and both meaning "leave it alone" when absent. An agent
+    # created without them behaves exactly as one created before they existed:
+    # standard model, governed by whatever already links to it.
+    model_key: Optional[str] = None      # a key from proc.bp_model, never a model name
+    prompt_ids: Optional[List[int]] = None
+    policy_ids: Optional[List[int]] = None
+
+
+@router.get("/governance-options")
+def governance_options(agent_nick=Depends(get_agent_nick)):
+    """Active prompts and policies a new agent can be linked to.
+
+    Ids and names only. The prompt BODY is not returned: this list exists to pick
+    from, and shipping every governed instruction to the browser to render a
+    dropdown would put the system's operating instructions on the wire for no
+    reason.
+    """
+    out: Dict[str, List[Dict[str, Any]]] = {"prompts": [], "policies": []}
+    try:
+        conn = agent_nick.get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT prompt_id, prompt_name, version FROM proc.bp_prompt "
+                    "WHERE prompts_status = 1 ORDER BY prompt_name, version DESC"
+                )
+                out["prompts"] = [
+                    {"id": r[0], "name": r[1], "version": r[2]} for r in cur.fetchall()
+                ]
+                cur.execute(
+                    "SELECT policy_id, policy_name, version FROM proc.bp_policy "
+                    "WHERE policy_status = 1 ORDER BY policy_name, version DESC"
+                )
+                out["policies"] = [
+                    {"id": r[0], "name": r[1], "version": r[2]} for r in cur.fetchall()
+                ]
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        # An unreadable governance table must not block agent creation — the
+        # picker renders empty and the agent is created ungoverned, which is
+        # exactly what it would have been before this option existed.
+        logger.exception("governance options unavailable")
+        return {"prompts": [], "policies": [], "error": "Governance list unavailable."}
+    return out
+
+
+def _link_governance(agent_nick, gov_slug: str, table: str, id_col: str,
+                     link_col: str, ids: List[int]) -> List[int]:
+    """Append ``gov_slug`` to the linked-agents column of each row.
+
+    Appends rather than replaces: these rows govern OTHER agents too, and the
+    workspace linking one to a new agent must never quietly un-govern the ones
+    already relying on it. The token is added only when absent, so a repeated
+    link is a no-op rather than a duplicate.
+    """
+    linked: List[int] = []
+    if not ids:
+        return linked
+    conn = agent_nick.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            for row_id in ids:
+                cur.execute(
+                    f"SELECT {link_col} FROM proc.{table} WHERE {id_col} = %s", (row_id,)
+                )
+                record = cur.fetchone()
+                if record is None:
+                    continue
+                current = (record[0] or "").strip()
+                tokens = [t.strip() for t in re.split(r"[,;]", current) if t.strip()]
+                if gov_slug in tokens:
+                    linked.append(row_id)
+                    continue
+                tokens.append(gov_slug)
+                cur.execute(
+                    f"UPDATE proc.{table} SET {link_col} = %s WHERE {id_col} = %s",
+                    (", ".join(tokens), row_id),
+                )
+                linked.append(row_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return linked
+
+
+def _unlink_governance(agent_nick, gov_slug: str) -> int:
+    """Remove ``gov_slug`` from every governance row that names it.
+
+    The reverse of _link_governance, for delete. A deleted agent that stays
+    listed in prompt_linked_agents leaves the governance badge of every other
+    agent sharing that row citing something that no longer exists.
+    """
+    removed = 0
+    conn = agent_nick.get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            for table, id_col, link_col in (
+                ("bp_prompt", "prompt_id", "prompt_linked_agents"),
+                ("bp_policy", "policy_id", "policy_linked_agents"),
+            ):
+                cur.execute(
+                    f"SELECT {id_col}, {link_col} FROM proc.{table} "
+                    f"WHERE {link_col} IS NOT NULL AND {link_col} <> ''"
+                )
+                for row_id, linked_agents in cur.fetchall():
+                    tokens = [t.strip() for t in re.split(r"[,;]", linked_agents or "") if t.strip()]
+                    if gov_slug not in tokens:
+                        continue
+                    kept = [t for t in tokens if t != gov_slug]
+                    cur.execute(
+                        f"UPDATE proc.{table} SET {link_col} = %s WHERE {id_col} = %s",
+                        (", ".join(kept), row_id),
+                    )
+                    removed += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return removed
 
 
 @router.get("/creatable-bases")
@@ -233,6 +352,30 @@ async def create_agent(
             ),
         )
 
+    # An override is validated against proc.bp_model BEFORE anything is written:
+    # a model key that is not offered, or one whose provider has no key, must be
+    # refused at the door rather than stored and discovered at run time by an
+    # agent that then silently falls back.
+    model_ref: Optional[str] = None
+    if body.model_key:
+        from repositories import model_catalogue_repo as model_repo
+
+        row = model_repo.get(body.model_key)
+        if row is None or not row.get("model_status"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"model {body.model_key!r} is not offered on this installation",
+            )
+        if not row.get("selectable"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"model {row['display_name']!r} needs an API key to be configured first",
+            )
+        # The standard model resolves to None on purpose: "standard" means
+        # "whatever every other agent uses". Pinning today's standard onto this
+        # agent would leave it behind the next time the standard moves.
+        model_ref = model_repo.resolve_ref(body.model_key)
+
     # The derived entry IS the backing entry (class_path, inputs, outputs,
     # elicit, dependencies, ...) under a new identity. Nothing is invented.
     entry = copy.deepcopy(backing)
@@ -243,6 +386,9 @@ async def create_agent(
         entry["capabilities"] = list(body.capabilities)
     entry["derived_from"] = body.backing_slug
     entry["created_by"] = "workspace"
+    if model_ref:
+        entry["model_key"] = body.model_key   # what was chosen, for the UI to echo back
+        entry["model"] = model_ref            # what AgentNick calls (see get_agent_model)
 
     # Governance token: PromptEngine tokenises linkage text on word characters
     # (a hyphen splits a token in two), so the kebab slug is stored underscored.
@@ -331,11 +477,36 @@ async def create_agent(
             orchestrator._prompt_cache = None
             orchestrator._policy_cache = None
 
+        # A model chosen for THIS agent only matters if the resolver can see it.
+        # The registry is built once and cached, so it has to be told.
+        if hasattr(agent_nick, "refresh_agent_model_registry"):
+            agent_nick.refresh_agent_model_registry()
+
         reload_report = _do_reload_governance(agent_nick)
     except Exception as exc:
         # The agent exists on disk and in bp_prompt; a restart picks it up.
         logger.exception("create_agent: in-process reload failed")
         reload_report = {"error": str(exc)}
+
+    # Linking runs LAST and never fails the create: the agent is already real by
+    # this point, and an agent that exists ungoverned is recoverable (link it
+    # again), whereas a 500 after the catalogue write would leave the user
+    # believing nothing had happened while the agent sat there.
+    linked: Dict[str, Any] = {"prompts": [], "policies": []}
+    try:
+        linked["prompts"] = _link_governance(
+            agent_nick, gov_slug, "bp_prompt", "prompt_id",
+            "prompt_linked_agents", body.prompt_ids or [],
+        )
+        linked["policies"] = _link_governance(
+            agent_nick, gov_slug, "bp_policy", "policy_id",
+            "policy_linked_agents", body.policy_ids or [],
+        )
+        if linked["prompts"] or linked["policies"]:
+            reload_report = _do_reload_governance(agent_nick)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("create_agent: governance linking failed")
+        linked["error"] = str(exc)
 
     return {
         "status": "created",
@@ -344,8 +515,10 @@ async def create_agent(
         "derived_from": body.backing_slug,
         "prompt_id": prompt_id,
         "prompt_name": prompt_name,
+        "model_key": body.model_key or None,
         "registered": slug in agent_nick.agents,
         "governance": reload_report,
+        "linked": linked,
     }
 
 
@@ -465,6 +638,11 @@ async def delete_agent(
             orchestrator._prompt_cache = None
             orchestrator._policy_cache = None
 
+        # A model chosen for this agent dies with it (the entry carried it), but
+        # the cached registry still holds the mapping until it is rebuilt.
+        if hasattr(agent_nick, "refresh_agent_model_registry"):
+            agent_nick.refresh_agent_model_registry()
+
         reload_report = _do_reload_governance(agent_nick)
     except Exception as exc:
         # The agent is already gone from disk and bp_prompt; a restart
@@ -472,10 +650,23 @@ async def delete_agent(
         logger.exception("delete_agent: in-process reload failed")
         reload_report = {"error": str(exc)}
 
+    # Rows this agent was LINKED to (as opposed to the instructions row created
+    # for it, deleted above) survive — they govern other agents. Only this
+    # agent's token is removed, or every badge citing that row would keep naming
+    # an agent that no longer exists.
+    unlinked = 0
+    try:
+        unlinked = _unlink_governance(agent_nick, gov_slug)
+        if unlinked:
+            reload_report = _do_reload_governance(agent_nick)
+    except Exception:  # noqa: BLE001
+        logger.exception("delete_agent: governance unlink failed")
+
     return {
         "status": "deleted",
         "slug": slug,
         "prompts_deleted": prompts_deleted,
+        "governance_unlinked": unlinked,
         "governance": reload_report,
     }
 

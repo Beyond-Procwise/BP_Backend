@@ -1023,10 +1023,20 @@ class BaseAgent:
         base_model = fallback_model
         resolver = getattr(self.agent_nick, "get_agent_model", None)
         if callable(resolver):
+            # THIS agent's identity, then the class it was built from. A derived
+            # agent shares its backing class with every other agent derived from
+            # it, so resolving on the class name alone meant a model chosen for
+            # one derived agent silently applied to all of them — and to the
+            # built-in agent they were derived from. _governance_slug is the same
+            # identity prompts and policies already resolve on.
             try:
-                resolved_model = resolver(
-                    self.__class__.__name__, fallback=fallback_model
-                )
+                identity = self._governance_slug()
+            except Exception:  # pragma: no cover - defensive only
+                identity = ""
+            try:
+                resolved_model = (
+                    resolver(identity, strict=True) if identity else None
+                ) or resolver(self.__class__.__name__, fallback=fallback_model)
             except Exception:  # pragma: no cover - defensive logging only
                 logger.debug(
                     "Agent-specific model resolution failed for %s",
@@ -1676,6 +1686,17 @@ class AgentNick:
                 value = value.strip()
                 if value:
                     registry[slug] = value
+        # An agent created in the workspace can carry its own model on its
+        # catalogue entry (see POST /agents). Registered under the agent's OWN
+        # slug, so it applies to that agent and not to every other agent built
+        # on the same class. Settings overrides above still win: an operator
+        # editing configuration outranks a choice made in the UI.
+        for entry in self._catalogue_model_entries():
+            slug = _slugify_agent_name(entry.get("slug"))
+            model_name = entry.get("model")
+            if slug and slug not in registry and isinstance(model_name, str) and model_name.strip():
+                registry[slug] = model_name.strip()
+
         for slug, fields in _AGENT_MODEL_FIELD_PREFERENCES.items():
             if slug in registry:
                 continue
@@ -1690,6 +1711,22 @@ class AgentNick:
         self._agent_model_registry = registry
         return registry
 
+    @staticmethod
+    def _catalogue_model_entries() -> List[Dict[str, Any]]:
+        """Catalogue entries that name a model of their own.
+
+        Read defensively: the model registry is built during startup, and an
+        unreadable catalogue must degrade to "no per-agent models" rather than
+        stop every agent from resolving a model at all.
+        """
+        try:
+            from agents.definitions import load_agent_definitions
+
+            return [a for a in load_agent_definitions() if a.get("model")]
+        except Exception:  # pragma: no cover - defensive only
+            logger.debug("agent catalogue unavailable for model registry", exc_info=True)
+            return []
+
     def refresh_agent_model_registry(self) -> None:
         """Force regeneration of the cached agent model registry."""
 
@@ -1701,8 +1738,16 @@ class AgentNick:
         agent_identifier: Any,
         *,
         fallback: Optional[str] = None,
+        strict: bool = False,
     ) -> Optional[str]:
-        """Return the preferred model for ``agent_identifier``."""
+        """Return the preferred model for ``agent_identifier``.
+
+        ``strict`` returns None when this exact identifier has no model of its
+        own, instead of falling back to the global one. Callers that ask about a
+        specific agent before asking about its class need to tell "this agent
+        chose a model" apart from "nobody chose anything" — without it, the
+        first question always answers yes and the second is never reached.
+        """
 
         slug = _slugify_agent_name(agent_identifier)
         registry = self._agent_model_registry
@@ -1712,6 +1757,8 @@ class AgentNick:
             model_name = registry.get(slug)
             if isinstance(model_name, str) and model_name.strip():
                 return model_name.strip()
+        if strict:
+            return None
         if fallback is not None:
             return fallback
         if isinstance(self._agent_model_fallback, str) and self._agent_model_fallback:

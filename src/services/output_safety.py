@@ -53,6 +53,10 @@ SAFE_REPLY = "I couldn't retrieve that. I've raised it with the team."
 # the value is right; replacing an identifier with prose is not.
 SAFE_FIELD = "[withheld]"
 
+# A structured field whose ONLY problem is that it names a model says this instead.
+# See _field_marker: the product's answer to "which model?" is "the standard one".
+DEFAULT_FIELD = "default"
+
 # Handed back to the model when its draft was mechanism-level. It already has the facts — it
 # framed them wrong — so this is a re-frame, not a refusal.
 RETRY_INSTRUCTION = (
@@ -351,7 +355,11 @@ def scrub_payload(obj: Any, *, where: str = "") -> Any:
     if isinstance(obj, list):
         return [scrub_payload(v, where=where) for v in obj]
     if isinstance(obj, str):
-        return enforce(obj, prose=False, where=where)
+        # A string inside a list is a value, not a sentence — same treatment as a
+        # blocked dict value. Without this, one blocked entry in an array became a
+        # full apology sentence sitting among its unblocked siblings.
+        safe = enforce(obj, prose=False, where=where)
+        return _field_marker(obj, prose=False) if safe is SAFE_REPLY else safe
     return obj
 
 
@@ -366,6 +374,24 @@ def _scrub_value(key: str, value: Any, where: str) -> Any:
         # A blocked structured field must NOT: it is an id, a name, a status, and the
         # consumer may persist or compare it. Withhold it as a marker instead.
         if safe is SAFE_REPLY and not is_prose:
-            return SAFE_FIELD
+            return _field_marker(value, prose=is_prose)
         return safe
     return value
+
+
+def _field_marker(value: str, *, prose: bool) -> str:
+    """What a blocked structured field says instead of its value.
+
+    A model name gets "default", not "[withheld]". Which model answered is not a
+    secret being kept from the user, it is a detail they have no use for — and
+    "[withheld]" reads like something was hidden from them, which invites the
+    question the withholding was meant to avoid. "default" is the truth at the
+    level the product speaks: it ran on the standard model. A model the operator
+    deliberately chose is named by proc.bp_model through /models, which is exempt
+    from this scrubber precisely because naming it there is the point.
+
+    Everything else — a table, a credential, a stack frame — keeps the neutral
+    marker. Calling a leaked connection string "default" would be absurd.
+    """
+    kinds = {v.kind for v in inspect(value, prose=prose)}
+    return DEFAULT_FIELD if kinds == {"model_name"} else SAFE_FIELD

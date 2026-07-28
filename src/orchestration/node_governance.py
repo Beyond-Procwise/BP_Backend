@@ -22,6 +22,7 @@ badge here could disagree with what is genuinely linked at run time.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 from engines.policy_engine import PolicyEngine
@@ -35,8 +36,25 @@ from services.db import get_conn
 _coerce_linked_agents = PolicyEngine._coerce_linked_agents
 
 
+def _token_form(slug: str) -> str:
+    """The slug as it appears once ``_coerce_linked_agents`` has tokenised it.
+
+    That tokeniser splits the column on anything outside ``[A-Za-z0-9_]``, so a
+    hyphen becomes a token boundary: "advanced-probe" stored as a link is read
+    back as "advanced_probe". Comparing the raw slug against those tokens could
+    therefore never match for any agent created in the workspace, whose ids are
+    kebab-case by definition — every one of them showed "built-in default" on the
+    canvas no matter how much governance was genuinely linked to it. The run-time
+    engines were never confused (they resolve on the underscored governance slug);
+    only this badge was, which is the worse failure: governance silently
+    under-reported reads as governance absent.
+    """
+    return re.sub(r"[^A-Za-z0-9]+", "_", (slug or "")).strip("_").lower()
+
+
 def normalise_agent_name(slug: str) -> str:
     """Registry uses `supplier_ranking`; the governance tables use `supplier_ranking_agent`."""
+    slug = _token_form(slug)
     return slug if slug.endswith("_agent") else f"{slug}_agent"
 
 
