@@ -320,6 +320,62 @@ class Orchestrator:
             logger.debug("governance envelope failed for %s", workflow_name, exc_info=True)
             return None
 
+    # Workflows whose agents can put mail in front of a supplier. Extraction is
+    # excluded for the same reason the governance envelope excludes it: it must
+    # stay deterministic.
+    _AUTHORITY_WORKFLOWS = {
+        "supplier_interaction": ["email_drafting_agent", "negotiation_agent",
+                                  "supplier_interaction_agent"],
+        "negotiation": ["email_drafting_agent", "negotiation_agent"],
+        "email_drafting": ["email_drafting_agent"],
+    }
+
+    def _resolve_authority_for(self, agents):
+        """Seam for tests; production path goes to the parallel resolver."""
+        from src.services.governance_tools.authority import resolve_authority
+        return resolve_authority(self.policy_engine, agents)
+
+    def _apply_authority(self, workflow_name, context, enriched_input):
+        """Resolve + inject each email agent's send authority. FAIL-CLOSED.
+
+        This is deliberately NOT `_apply_governance_envelope` above, and the two
+        must never be merged:
+          * the envelope is FAIL-OPEN -- it carries prompts, and a governance
+            error there must never break a workflow.
+          * this is FAIL-CLOSED -- it carries an authority limit, so a failure
+            here must still inject a block (an ungoverned one, built by the one
+            shared `ungoverned_block()` in services/governance_tools/authority.py,
+            not a hand-rolled copy) rather than let a workflow run unlimited.
+        Absent authority must be indistinguishable from ungoverned authority
+        downstream, and both must mean escalate -- injecting nothing would let a
+        consumer that forgets to check read it as "no restriction".
+        """
+        agents = self._AUTHORITY_WORKFLOWS.get(workflow_name)
+        if not agents:
+            return None
+        try:
+            resolved = self._resolve_authority_for(agents)
+        except Exception:  # noqa: BLE001 - fail CLOSED: still inject, never nothing
+            logger.exception("authority resolution failed for %s", workflow_name)
+            from src.services.governance_tools.authority import ungoverned_block
+            resolved = {
+                agent: ungoverned_block(agent, "authority resolution failed")
+                for agent in agents
+            }
+        if isinstance(enriched_input, dict):
+            enriched_input["authority"] = resolved
+        try:
+            context.input_data["authority"] = resolved
+        except Exception:  # noqa: BLE001
+            pass
+        ungoverned = [a for a, b in resolved.items() if not b.get("governed")]
+        logger.info(
+            "authority resolved for %s: %d agents, %d ungoverned%s",
+            workflow_name, len(resolved), len(ungoverned),
+            f" ({', '.join(ungoverned)})" if ungoverned else "",
+        )
+        return resolved
+
     def execute_workflow(
         self, workflow_name: str, input_data: Dict, user_id: str = None
     ) -> Dict:
@@ -368,6 +424,11 @@ class Orchestrator:
             # fail-open). Additive — agents unaffected unless they read `governed`.
             governance_applied = self._apply_governance_envelope(
                 workflow_name, context, enriched_input)
+
+            # Send authority for email-capable workflows. Separate from the
+            # envelope above and fail-closed -- see services/governance_tools/
+            # authority.py and the docstring on _apply_authority.
+            self._apply_authority(workflow_name, context, enriched_input)
 
             # Validate against policies
             if not self._validate_workflow(workflow_name, context):

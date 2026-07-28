@@ -36,8 +36,16 @@ DEFAULT_APPROVAL_SLUG = "approval_threshold"
 _MAX_WORKERS = 8
 
 
-def _ungoverned(agent: str, reason: str) -> Dict[str, Any]:
-    """The fail-closed block. Every field a caller reads is present and empty."""
+def ungoverned_block(agent: str, reason: str) -> Dict[str, Any]:
+    """The fail-closed block. Every field a caller reads is present and empty.
+
+    Public on purpose: this is the ONE definition of "ungoverned" in the system.
+    Any caller that needs a fail-closed placeholder (e.g. the orchestrator, when
+    the resolver itself blows up before this module's own try/except gets a
+    chance to run) must call this rather than hand-building the same 12 keys --
+    two copies of a fail-closed shape will drift, and a consumer reading the
+    stale copy after a key is added to one of them gets a `KeyError`.
+    """
     return {
         "agent": agent,
         "governed": False,
@@ -87,11 +95,11 @@ def _resolve_one(
         autonomy = policy_engine.get_policy(autonomy_slug)
     except Exception:  # noqa: BLE001 - fail CLOSED, and say why
         log.exception("authority: autonomy policy lookup failed for %s", agent)
-        return _ungoverned(agent, f"policy lookup for '{autonomy_slug}' raised")
+        return ungoverned_block(agent, f"policy lookup for '{autonomy_slug}' raised")
 
     rules = _rules(autonomy)
     if not autonomy or not rules:
-        return _ungoverned(
+        return ungoverned_block(
             agent,
             f"no usable governed policy '{autonomy_slug}' (rules absent or not an object)",
         )
@@ -104,11 +112,11 @@ def _resolve_one(
             approval = policy_engine.get_policy(str(deferred) or approval_slug)
         except Exception:  # noqa: BLE001
             log.exception("authority: approval policy lookup failed for %s", agent)
-            return _ungoverned(agent, f"policy lookup for '{deferred}' raised")
+            return ungoverned_block(agent, f"policy lookup for '{deferred}' raised")
         approval_rules = _rules(approval)
         threshold = approval_rules.get("default_threshold_gbp")
         if threshold is None:
-            return _ungoverned(
+            return ungoverned_block(
                 agent,
                 f"autonomy defers its value limit to '{deferred}', which has no "
                 "default_threshold_gbp -- there is no limit to enforce",
@@ -163,5 +171,5 @@ def resolve_authority(
                 out[name] = future.result()
             except Exception:  # noqa: BLE001 - a thread that died is not a licence to send
                 log.exception("authority resolution thread failed for %s", name)
-                out[name] = _ungoverned(name, "authority resolution failed")
+                out[name] = ungoverned_block(name, "authority resolution failed")
     return out
