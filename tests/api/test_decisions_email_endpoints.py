@@ -6,12 +6,14 @@ exists because act_on_finding (and DecisionEngine.execute/decide_finding underne
 key off finding_id and read proc.bp_extraction_discrepancy -- a table an email decision
 has no row in.
 """
-import os
-import sys
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
-
+# No sys.path juggling here on purpose: tests/conftest.py already puts BOTH the repo
+# root and src/ on the path. Re-inserting src/ at position 0 at collection time
+# FLIPPED that precedence for every module imported afterwards, which let two tests in
+# this directory bind different module objects for the same router file (and so a
+# different module-level store) depending on collection order. The suite went red with
+# names that moved when the order moved. conftest is the one place that owns the path.
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -830,3 +832,67 @@ def test_the_received_time_is_serialised_and_falls_back_to_the_sent_date():
     # Neither recorded -> absent, not "now".
     client, _cur = _message_client([DECISION_ROW], [REPLY_ROW])
     assert client.get("/decisions/email-reply/7/message").json()["message"]["received_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2: the queue endpoint answered a failure with the driver's own words.
+# `detail=str(exc)` sent "column d.evidence does not exist" -- statement, table and
+# column -- to every caller. The UI swallows the body; the gateway, curl and Swagger
+# render it.
+# ---------------------------------------------------------------------------
+
+class _ExplodingCursor:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        raise RuntimeError(
+            'column d.evidence does not exist\nLINE 3: CASE WHEN jsonb_typeof(d.evidence)'
+        )
+
+    def fetchone(self):
+        return None
+
+    def fetchall(self):
+        return []
+
+
+class _ExplodingConn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def cursor(self):
+        return _ExplodingCursor()
+
+
+def test_a_failed_queue_read_says_so_without_quoting_the_driver(caplog):
+    import logging
+    app = FastAPI()
+    app.include_router(decisions_router.router)
+    app.state.agent_nick = SimpleNamespace(
+        get_db_connection=lambda: _ExplodingConn(),
+        policy_engine=SimpleNamespace(get_policy=lambda slug: None),
+    )
+    with caplog.at_level(logging.ERROR, logger="api.routers.decisions"):
+        res = TestClient(app, raise_server_exceptions=False).get(
+            "/decisions", params={"subject_type": "email_reply"})
+    assert res.status_code == 500
+    detail = res.json()["detail"]
+    assert "The escalation queue could not be read" in detail
+    assert "Nothing was changed" in detail
+    for token in ("column", "d.evidence", "jsonb_typeof", "proc.", "LINE 3", "RuntimeError"):
+        assert token not in detail, f"leaked '{token}': {detail}"
+    # Nothing is lost: the driver's message and the type are in the log, findable by
+    # the reference the caller was given.
+    import re
+    ref = re.search(r"reference ([0-9a-f]{8})", detail)
+    assert ref, f"no correlation reference in: {detail}"
+    assert ref.group(1) in caplog.text
+    assert "column d.evidence does not exist" in caplog.text
+    assert "RuntimeError" in caplog.text

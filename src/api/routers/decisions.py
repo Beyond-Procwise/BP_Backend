@@ -23,6 +23,7 @@ you have chosen to trust.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -413,8 +414,23 @@ def list_decisions(
                 cur.execute(count_sql, tuple(params))
                 total = int((cur.fetchone() or [0])[0] or 0)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("failed to list decisions")
-        raise HTTPException(status_code=500, detail=str(exc))
+        # `detail=str(exc)` put the driver's own words on the wire -- a jsonb or
+        # missing-column failure answered every caller with the failing statement, table
+        # and column names included. This UI happens to swallow the body, but the
+        # gateway, curl and Swagger all render it. Same treatment as the message route
+        # and the fail-closed rationale: the reader gets a sentence, the log gets
+        # everything, and the reference in the sentence is what connects them.
+        ref = uuid.uuid4().hex[:8]
+        logger.exception(
+            "failed to list decisions [ref %s]: %s: %s", ref, type(exc).__name__, exc
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "The escalation queue could not be read. Nothing was changed. "
+                f"The details were recorded for support under reference {ref}."
+            ),
+        )
 
     for row in rows:
         created = row.get("created_at")

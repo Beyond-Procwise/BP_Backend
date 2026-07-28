@@ -12,12 +12,11 @@ No real database is touched: a fake cursor/connection stand in, and every SQL
 string executed is asserted never to mention bp_extraction_discrepancy.
 """
 import json
-import os
-import sys
+
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
-
+# tests/conftest.py owns sys.path (repo root + src/) -- see the note in
+# tests/api/test_decisions_email_endpoints.py.
 from engines.decision_engine import DecisionEngine, ESCALATED, RESOLVED
 
 # Column order of the SELECT in DecisionEngine._fetch_email_decision:

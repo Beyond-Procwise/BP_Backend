@@ -7,14 +7,14 @@ is the ONLY thing that enables a send.
 No database is touched: `_fetch_email_reply` and `_classify` are replaced, the same
 way tests/test_decision_variance.py replaces `_fetch_finding`.
 """
-import os
-import sys
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
-
+# tests/conftest.py owns sys.path (repo root + src/). See the note in
+# tests/api/test_decisions_email_endpoints.py: re-inserting src/ here reordered
+# precedence for everything imported after collection and made the suite
+# order-dependent.
 import pytest
 
 from engines.decision_engine import DecisionEngine, ESCALATED, RESOLVED
@@ -177,7 +177,7 @@ def test_thread_cap_escalates():
     # `"2" in d.rationale` proved almost nothing -- nearly every rationale here
     # contains a 2 somewhere. Assert the sentence this gate actually writes.
     assert "already answered this thread 2 time(s) unattended" in d.rationale
-    assert "at the governed cap of 2" in d.rationale
+    assert "at the cap of 2 set by EmailReplyAutonomyPolicy" in d.rationale
 
 
 def test_an_uncounted_thread_history_escalates():
@@ -795,74 +795,300 @@ def test_an_unobtainable_classifier_escalates_instead_of_raising():
     assert "ground" in d.rationale.lower()
 
 
-# ----------------------------------------------------------------------------
-# Fix round 1 (C): every rationale on this path is read by a buyer on the Action
-# Centre card and in the reply-review panel. None of them may hand that person a
-# storage identifier or a policy config key to decode -- and the sweep is here,
-# across the gates, rather than one assertion per gate, because the failure mode is
-# somebody adding a NEW gate with a key in its sentence.
+
+
+# ============================================================================
+# The rationale sweeps (fix round 2 rebuild of the round-1 versions).
 #
-# Each rationale must still name the policy that decided, so the decision stays
-# re-derivable from what is on screen.
-# ----------------------------------------------------------------------------
-_JARGON = [
-    "proc.", "supplier_response", "bp_decision", "draft_rfq_emails",
-    "min_intent_confidence", "max_auto_replies_per_thread", "limit_gbp",
-    "auto_reply_intents", "auto_intents", "escalate_intents",
-    "defer_value_limit_to", "default_threshold_gbp",
-]
+# Every rationale here is read by a buyer, on the Action Centre card and in the
+# reply-review panel. None may hand that person a storage identifier or a policy
+# config key to decode, and one that leans on governance must say whose.
+#
+# The round-1 versions could not do the job they claimed. They swept a hand-written
+# dict of 10 escalations while `_decide_email_reply` has TWENTY escalating exits, and
+# they matched against a fixed denylist of known keys -- so a gate added tomorrow, or
+# an old gate leaking a NEW key, passed silently. Both are now derived from the code:
+#
+#   * the exits are enumerated by parsing the source (AST), and the fixture is asserted
+#     to reach every one of them -- proved by TRACING which exit line each fixture case
+#     actually executes, not by trusting its name. Add a gate without covering it and
+#     the build breaks;
+#   * the jargon rule is general, not a list: after quoted values are stripped (an
+#     intent like 'price_change' IS data and belongs on screen), no snake_case
+#     identifier may remain. A brand-new key fails without anyone updating a denylist.
+# ============================================================================
+import ast
+import os
+import re
+import sys
+from pathlib import Path
+
+# The filename frames will actually carry, taken from the imported code object rather
+# than rebuilt from __file__: the module is imported through a sys.path entry that is not
+# normalised ("tests/../src/..."), so a path built by hand here matches the AST but never
+# matches a live frame -- which silently made the coverage check pass against nothing.
+_ENGINE_CO_FILE = DecisionEngine._decide_email_reply.__code__.co_filename
+_ENGINE_SRC = Path(os.path.realpath(_ENGINE_CO_FILE))
+
+
+def _escalating_exit_lines():
+    """Line numbers of every escalating exit in the email-reply decision, from source.
+
+    Counted: `return _escalate(...)` and `return Decision(...)` carrying ESCALATED, in
+    `_decide_email_reply`, plus the fail-closed exit in `decide_email_reply` itself. NOT
+    counted: the `return Decision(...)` inside the nested `_escalate` factory (it is how
+    the others are built, not an exit of its own) and the final send, which is not an
+    escalation.
+    """
+    tree = ast.parse(_ENGINE_SRC.read_text())
+    cls = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "DecisionEngine")
+    wanted = {"_decide_email_reply", "decide_email_reply"}
+    lines = set()
+    for fn in cls.body:
+        if not isinstance(fn, ast.FunctionDef) or fn.name not in wanted:
+            continue
+        nested = {n for f in ast.walk(fn)
+                  if isinstance(f, ast.FunctionDef) and f is not fn
+                  for n in ast.walk(f)}
+        for node in ast.walk(fn):
+            if node in nested or not isinstance(node, ast.Return) or node.value is None:
+                continue
+            call = node.value
+            if not isinstance(call, ast.Call):
+                continue
+            name = getattr(call.func, "id", None) or getattr(call.func, "attr", None)
+            if name == "_escalate":
+                lines.add(node.lineno)
+            elif name == "Decision" and any(
+                isinstance(kw.value, ast.Name) and kw.value.id == "ESCALATED"
+                for kw in call.keywords
+            ):
+                lines.add(node.lineno)
+    return lines
+
+
+def _traced(call):
+    """Run `call`, recording which lines of the decision engine executed.
+
+    Pure stdlib line tracing; any trace function already installed is restored
+    afterwards, so this cannot disturb the rest of the run.
+    """
+    seen = set()
+
+    def tracer(frame, event, arg):
+        if frame.f_code.co_filename != _ENGINE_CO_FILE:
+            return None
+        if event == "line":
+            seen.add(frame.f_lineno)
+        return tracer
+
+    previous = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        result = call()
+    finally:
+        sys.settrace(previous)
+    return result, seen
+
+
+_ACK = ReplyIntent("acknowledge", 0.99, "Thank you.", True)
+_WIDE = {**GOVERNED, "auto_intents": ["acknowledge"]}
+
+
+def _real_authority(policy_rows, *, raising=False):
+    """An authority block from the REAL resolver, not a hand-written dict.
+
+    The four fail-closed `reason` strings in authority.py are interpolated straight
+    into the rationale a person reads, so at least one path has to arrive here through
+    the resolver itself rather than through a literal a test author chose.
+    """
+    from engines.policy_engine import PolicyEngine
+    from src.services.governance_tools.authority import resolve_authority
+
+    engine = PolicyEngine(policy_rows=list(policy_rows))
+    if raising:
+        def _boom(_slug):
+            raise RuntimeError("policy store unavailable")
+        engine.get_policy = _boom  # type: ignore[assignment]
+    return resolve_authority(engine, ["email_drafting_agent"])["email_drafting_agent"]
+
+
+def _autonomy_policy_row(rules_overrides=None):
+    import json as _json
+    rules = {
+        "auto_reply_intents": [], "escalate_intents": ["price_change"],
+        "defer_value_limit_to": "approval_threshold",
+        "max_auto_replies_per_thread": 2, "min_intent_confidence": 0.8,
+    }
+    rules.update(rules_overrides or {})
+    return {
+        "policy_id": 11, "policy_name": "EmailReplyAutonomyPolicy",
+        "policy_type": "email_autonomy", "policy_desc": "When the agent may reply",
+        "policy_details": _json.dumps(
+            {"policy_identifier": "email_reply_autonomy", "rules": rules}),
+        "policy_linked_agents": "email_drafting_agent",
+    }
+
+
+def _no_threshold_approval_row():
+    import json as _json
+    return {
+        "policy_id": 10, "policy_name": "ApprovalThresholdPolicy",
+        "policy_type": "approval", "policy_desc": "Spend authority",
+        # No default_threshold_gbp -> the resolver's "sets no threshold amount" reason.
+        "policy_details": _json.dumps(
+            {"policy_identifier": "approval_threshold", "rules": {"currency": "GBP"}}),
+        "policy_linked_agents": "email_drafting_agent",
+    }
 
 
 def _every_escalation():
-    """One escalation per gate, keyed by the gate's name."""
-    ack = ReplyIntent("acknowledge", 0.99, "Thank you.", True)
-    widened = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    """One escalation per gate. Values are (decision, lines executed).
+
+    Keys are for readable failures only -- coverage is proved by the traced lines, so a
+    case that stops reaching the gate its name claims fails
+    `test_every_escalation_exit_in_the_code_is_swept` rather than passing quietly.
+    """
     out = {}
-    out["ungoverned"] = _engine().decide_email_reply("1", authority=None)
-    out["escalate_list"] = _engine(
-        intent=ReplyIntent("price_change", 0.99, "We can offer 94,000.00 GBP", True)
-    ).decide_email_reply("1", authority=GOVERNED)
-    out["not_auto_listed"] = _engine(intent=ack).decide_email_reply("1", authority=GOVERNED)
-    out["low_confidence"] = _engine(
-        intent=ReplyIntent("acknowledge", 0.4, "Thank you.", True)
-    ).decide_email_reply("1", authority=widened)
-    out["no_min_confidence"] = _engine(intent=ack).decide_email_reply(
-        "1", authority={**widened, "min_intent_confidence": None})
-    out["no_value_limit"] = _engine(intent=ack).decide_email_reply(
-        "1", authority={**widened, "limit_gbp": None})
-    out["no_thread_cap"] = _engine(
-        row={**REPLY_ROW, "price": None, "prior_price": None}, intent=ack
-    ).decide_email_reply("1", authority={**widened, "max_auto_replies_per_thread": None})
-    out["thread_cap_hit"] = _engine(
-        row={**REPLY_ROW, "auto_replies_on_thread": 2}, intent=ack
-    ).decide_email_reply("1", authority=widened)
-    out["ungrounded"] = _engine(
+
+    def case(name, build):
+        out[name] = _traced(build)
+
+    # -- authority --------------------------------------------------------------
+    case("no_authority_at_all", lambda: _engine().decide_email_reply("1", authority=None))
+    case("ungoverned_literal", lambda: _engine().decide_email_reply(
+        "1", authority={"governed": False, "auto_intents": [], "escalate_intents": [],
+                        "reason": "no usable governed policy 'email_reply_autonomy'"}))
+    # Through the REAL resolver: each of authority.py's fail-closed reasons in turn.
+    case("resolver_no_policy", lambda: _engine().decide_email_reply(
+        "1", authority=_real_authority([])))
+    case("resolver_policy_unreadable", lambda: _engine().decide_email_reply(
+        "1", authority=_real_authority([], raising=True)))
+    case("resolver_no_rules", lambda: _engine().decide_email_reply(
+        "1", authority=_real_authority([{**_autonomy_policy_row(), "policy_details": "{}"}])))
+    case("resolver_no_threshold_amount", lambda: _engine().decide_email_reply(
+        "1", authority=_real_authority(
+            [_autonomy_policy_row(), _no_threshold_approval_row()])))
+    # -- classification ---------------------------------------------------------
+    case("ungrounded", lambda: _engine(
         intent=ReplyIntent("acknowledge", 0.99, "invented sentence", False)
-    ).decide_email_reply("1", authority=widened)
-    out["missing_reply"] = _missing_reply_decision()
+    ).decide_email_reply("1", authority=_WIDE))
+    case("no_min_confidence", lambda: _engine(intent=_ACK).decide_email_reply(
+        "1", authority={**_WIDE, "min_intent_confidence": None}))
+    case("low_confidence", lambda: _engine(
+        intent=ReplyIntent("acknowledge", 0.4, "Thank you.", True)
+    ).decide_email_reply("1", authority=_WIDE))
+    # -- intent lists -----------------------------------------------------------
+    case("escalate_listed", lambda: _engine(
+        intent=ReplyIntent("price_change", 0.99, "We can offer 94,000.00 GBP", True)
+    ).decide_email_reply("1", authority=GOVERNED))
+    case("not_auto_listed", lambda: _engine(intent=_ACK).decide_email_reply(
+        "1", authority=GOVERNED))
+    # -- money ------------------------------------------------------------------
+    case("unreadable_price", lambda: _engine(
+        row={**REPLY_ROW, "price": "circa 90k"}, intent=_ACK
+    ).decide_email_reply("1", authority=_WIDE))
+    case("no_price_but_a_prior_offer", lambda: _engine(
+        row={**REPLY_ROW, "price": None, "prior_price": Decimal("90000")}, intent=_ACK
+    ).decide_email_reply("1", authority=_WIDE))
+    case("no_value_limit", lambda: _engine(intent=_ACK).decide_email_reply(
+        "1", authority={**_WIDE, "limit_gbp": None}))
+    case("reply_has_no_currency", lambda: _engine(
+        row={**REPLY_ROW, "currency": None}, intent=_ACK
+    ).decide_email_reply("1", authority=_WIDE))
+    case("limit_has_no_currency", lambda: _engine(intent=_ACK).decide_email_reply(
+        "1", authority={**_WIDE, "limit_currency": None}))
+    case("currency_mismatch", lambda: _engine(
+        row={**REPLY_ROW, "currency": "EUR"}, intent=_ACK
+    ).decide_email_reply("1", authority=_WIDE))
+    case("no_prior_offer", lambda: _engine(
+        row={**REPLY_ROW, "prior_price": None, "draft_payload": {}}, intent=_ACK
+    ).decide_email_reply("1", authority=_WIDE))
+    case("round_mismatch", lambda: _engine(
+        row={**REPLY_ROW, "round_number": 2, "prior_price_round": Decimal("1")}, intent=_ACK
+    ).decide_email_reply("1", authority=_WIDE))
+    case("over_the_limit", lambda: _engine(intent=_ACK).decide_email_reply(
+        "1", authority={**_WIDE, "limit_gbp": "1000"}))
+    # -- thread cap -------------------------------------------------------------
+    case("no_thread_cap", lambda: _engine(
+        row={**REPLY_ROW, "price": None, "prior_price": None}, intent=_ACK
+    ).decide_email_reply("1", authority={**_WIDE, "max_auto_replies_per_thread": None}))
+    case("uncounted_history", lambda: _engine(
+        row={**REPLY_ROW, "auto_replies_on_thread": None}, intent=_ACK
+    ).decide_email_reply("1", authority=_WIDE))
+    case("thread_cap_hit", lambda: _engine(
+        row={**REPLY_ROW, "auto_replies_on_thread": 2}, intent=_ACK
+    ).decide_email_reply("1", authority=_WIDE))
+    # -- the reply itself, and the fail-closed handler ---------------------------
+    def _missing_reply():
+        eng = _engine()
+        eng._fetch_email_reply = lambda _id: None  # type: ignore
+        return eng.decide_email_reply("999", authority=GOVERNED)
+    case("missing_reply", _missing_reply)
+
+    def _raising_fetch():
+        eng = _engine()
+        def boom(_id):
+            raise RuntimeError('relation "proc.supplier_response" does not exist')
+        eng._fetch_email_reply = boom  # type: ignore
+        return eng.decide_email_reply("1", authority=GOVERNED)
+    case("decision_did_not_finish", _raising_fetch)
     return out
 
 
-def _missing_reply_decision():
-    eng = _engine()
-    eng._fetch_email_reply = lambda _id: None  # type: ignore
-    return eng.decide_email_reply("999", authority=GOVERNED)
+_SWEEP = _every_escalation()
 
 
-@pytest.mark.parametrize("gate", sorted(_every_escalation().keys()))
+def test_every_escalation_exit_in_the_code_is_swept():
+    """The sweep must cover the CODE, not a list somebody kept up to date by hand.
+
+    Exits come from the source; coverage comes from tracing what actually ran. Add an
+    escalation gate and this fails until the fixture above reaches it -- which is the
+    only version of this test that does what the round-1 one claimed to.
+    """
+    exits = _escalating_exit_lines()
+    assert len(exits) >= 19, f"expected ~20 escalating exits, parsed {len(exits)}"
+    covered = set()
+    for _name, (_d, lines) in _SWEEP.items():
+        covered |= lines & exits
+    missing = sorted(exits - covered)
+    assert not missing, (
+        "escalation exits never reached by the sweep, at "
+        f"{_ENGINE_SRC.name} lines {missing} -- add a case to _every_escalation()"
+    )
+
+
+def test_all_of_them_really_are_escalations():
+    for name, (d, _lines) in _SWEEP.items():
+        assert d.resolution == ESCALATED, f"{name} did not escalate"
+        assert d.subject_type == "email_reply"
+
+
+# A quoted value is DATA and belongs on screen ('price_change' is what the classifier
+# read). Everything outside quotes is prose, and prose has no snake_case in it.
+_QUOTED = re.compile(r"'[^']*'")
+_SNAKE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+
+
+@pytest.mark.parametrize("gate", sorted(_SWEEP))
 def test_no_rationale_hands_the_reader_an_identifier_to_decode(gate):
-    d = _every_escalation()[gate]
-    assert d.resolution == ESCALATED
-    for token in _JARGON:
-        assert token not in d.rationale, f"{gate} leaked '{token}': {d.rationale}"
+    d, _lines = _SWEEP[gate]
+    prose = _QUOTED.sub("", d.rationale)
+    leaked = _SNAKE.findall(prose)
+    assert not leaked, f"{gate} leaked {leaked} in: {d.rationale}"
+    assert "proc." not in d.rationale, f"{gate}: {d.rationale}"
 
 
-@pytest.mark.parametrize("gate", [
-    "escalate_list", "not_auto_listed", "low_confidence", "no_min_confidence",
-    "no_value_limit", "no_thread_cap",
-])
-def test_a_policy_driven_escalation_still_names_the_policy(gate):
-    """Plain English must not cost re-derivability: if a governed setting drove the
-    outcome, the sentence says which policy that was."""
-    d = _every_escalation()[gate]
-    assert "EmailReplyAutonomyPolicy" in d.rationale
+@pytest.mark.parametrize("gate", sorted(_SWEEP))
+def test_an_escalation_that_leans_on_governance_says_whose(gate):
+    """Derived, not a hardcoded list of gate names: if the sentence appeals to a
+    governed rule at all, the policy that set it must be named, or the reader cannot
+    re-derive the decision from what is on screen."""
+    d, _lines = _SWEEP[gate]
+    leans = ("governed" in d.rationale or "policy" in d.rationale.lower())
+    if not leans or not d.policy_name:
+        return
+    assert d.policy_name in d.rationale, (
+        f"{gate} appeals to a governed rule without naming the policy: {d.rationale}"
+    )

@@ -615,6 +615,15 @@ class EmailDispatchResponse(BaseModel):
     success: bool
     unique_id: str
     sent: bool
+    # `sent` (and `success`) mean "this draft has been sent", which is TRUE for a draft
+    # that went out earlier: the dispatch service short-circuits a re-send and returns
+    # the original message_id without putting anything on the wire. These two say what
+    # THIS call did, so a caller reporting an outcome to a person cannot fabricate a
+    # success -- declared rather than left to `extra="allow"` so the contract is visible
+    # in the schema the gateway and Swagger read.
+    dispatched_now: Optional[bool] = None
+    duplicate: Optional[bool] = None
+    duplicate_note: Optional[str] = None
     message_id: Optional[str] = None
     recipients: List[str]
     sender: str

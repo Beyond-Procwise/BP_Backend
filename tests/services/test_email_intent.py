@@ -7,11 +7,9 @@ a parameter, not a constant -- and lowering it must not reintroduce
 extraction_v3.is_value_grounded's digit-signature fallback, which passes wholly
 invented sentences.
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
-
+# tests/conftest.py owns sys.path (repo root + src/) -- see the note in
+# tests/api/test_decisions_email_endpoints.py.
 from src.services.obligations.grounding import is_quote_grounded
 
 REPLY = (

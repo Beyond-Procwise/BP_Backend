@@ -1,10 +1,9 @@
 """The autonomy policy must resolve by slug, and ship with auto-reply disabled."""
 import json
-import os
-import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-
+# tests/conftest.py owns sys.path (repo root + src/). This file used to append the repo
+# root itself; harmless, but the per-file pattern is what produced the order-dependent
+# import precedence fixed in this round, so the path lives in exactly one place now.
 from engines.policy_engine import PolicyEngine
 
 # The rules body exactly as the migration writes it. If the migration and this
@@ -218,8 +217,8 @@ def test_a_stated_non_sterling_currency_is_carried_through_unchanged():
 
 def test_a_resolved_block_with_no_currency_escalates_at_decide_time():
     """The other half of the fix: the resolver reports it, the engine acts on it."""
-    import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
+    # conftest owns sys.path; this used to re-insert src/ mid-test, which reordered
+    # import precedence for every module loaded after it ran.
     from engines.decision_engine import DecisionEngine, ESCALATED
 
     approval = {**_APPROVAL_ROW, "policy_details": json.dumps({

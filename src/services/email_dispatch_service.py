@@ -637,6 +637,16 @@ class EmailDispatchService:
             return {
                 "unique_id": unique_id,
                 "sent": bool(sent),
+                # Did THIS call put a message on the wire? `sent` cannot answer that on
+                # its own: the duplicate short-circuit in
+                # `_maybe_return_existing_dispatch` also returns sent=True, with the
+                # message_id of the send that already happened. A caller that reports
+                # "Sent." on `sent` alone therefore fabricates a success for a call that
+                # sent nothing -- which on a human approval screen is the one outcome
+                # that must never be invented. These two keys are explicit so no caller
+                # has to infer it from the shape of an id.
+                "dispatched_now": bool(sent),
+                "duplicate": False,
                 "recipients": recipient_list,
                 "sender": sender_email,
                 "subject": subject,
@@ -1536,7 +1546,18 @@ class EmailDispatchService:
 
         return {
             "unique_id": unique_id,
+            # `sent: True` is kept for every existing caller: the draft HAS been sent,
+            # which is what they ask this for. But nothing was sent by THIS call, and a
+            # caller that reports a success to a person has to be able to tell the
+            # difference -- so it is stated outright rather than left to be inferred
+            # from a message_id the caller might not have seen before.
             "sent": True,
+            "dispatched_now": False,
+            "duplicate": True,
+            "duplicate_note": (
+                "This draft had already been sent, so nothing was sent again. The "
+                "details below describe the message that went out earlier."
+            ),
             "recipients": resolved_recipients,
             "sender": sender_email,
             "subject": subject,

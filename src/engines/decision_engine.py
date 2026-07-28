@@ -877,7 +877,8 @@ class DecisionEngine:
                     source="proc.supplier_response.currency", reference=ref))
                 return _escalate(
                     f"The reply carries a price of {price} but no currency is recorded "
-                    f"against it, while the governed limit of {limit} is denominated in "
+                    f"against it, while the limit of {limit} set by "
+                    f"{policy_name or 'the autonomy policy'} is denominated in "
                     f"{limit_currency or 'an unstated currency'}. No comparison was "
                     "attempted, because an amount whose denomination is unknown cannot "
                     "be tested against a limit in a specific one. This is a currency "
@@ -893,8 +894,9 @@ class DecisionEngine:
                 )
             if reply_currency.upper() != limit_currency.upper():
                 return _escalate(
-                    f"The reply is priced in {reply_currency} but the governed limit of "
-                    f"{limit} is denominated in {limit_currency}. No comparison was "
+                    f"The reply is priced in {reply_currency} but the limit of {limit} "
+                    f"set by {policy_name or 'the autonomy policy'} is denominated in "
+                    f"{limit_currency}. No comparison was "
                     "attempted: amounts in different currencies are never combined "
                     "without an explicit conversion basis, and none is chosen here. "
                     "This is a currency problem, not a pricing dispute."
@@ -1002,7 +1004,8 @@ class DecisionEngine:
                     f"The reply moves {at_stake} {reply_currency} "
                     f"(supplier {price} against our {prior}, whose currency is unstated "
                     f"in the source and assumed to be {reply_currency}), above the "
-                    f"governed limit of {limit} {limit_currency}."
+                    f"limit of {limit} {limit_currency} set by "
+                    f"{policy_name or 'the autonomy policy'}."
                 )
             # An amount really was compared. Only now may a send claim so.
             limit_tested = (
@@ -1039,13 +1042,15 @@ class DecisionEngine:
         if already is None:
             return _escalate(
                 "How many times the agent has already answered this thread "
-                f"unattended could not be counted, so the governed cap of {cap} "
-                "cannot be enforced. An unknown history is not an empty one."
+                f"unattended could not be counted, so the cap of {cap} set by "
+                f"{policy_name or 'the autonomy policy'} cannot be enforced. An unknown "
+                "history is not an empty one."
             )
         if int(already) >= int(cap):
             return _escalate(
                 f"The agent has already answered this thread {int(already)} time(s) "
-                f"unattended, at the governed cap of {cap}. A human takes it from here."
+                f"unattended, at the cap of {cap} set by "
+                f"{policy_name or 'the autonomy policy'}. A human takes it from here."
             )
 
         return Decision(
