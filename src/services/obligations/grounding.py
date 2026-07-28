@@ -24,10 +24,18 @@ from src.services.extraction_v3.grounding import _norm
 MIN_QUOTE_WORDS = 8
 
 
-def is_quote_grounded(quote: str, full_text: str) -> bool:
-    """True only if ``quote`` appears verbatim (modulo case/whitespace) in ``full_text``."""
+def is_quote_grounded(quote: str, full_text: str, *, min_words: int = MIN_QUOTE_WORDS) -> bool:
+    """True only if ``quote`` appears verbatim (modulo case/whitespace) in ``full_text``.
+
+    ``min_words`` defaults to the contract floor, so every existing caller is
+    unchanged. The email path passes a lower floor because a supplier's most
+    consequential sentence is often five words ("We can offer 94,000.00 GBP"),
+    while a bare clause reference is still refused. What does NOT change with the
+    floor is the rule that makes this guard safe: whole-quote containment, with no
+    digit fallback, no date fallback, and no "cannot verify -> allow".
+    """
     q = _norm(quote)
-    if len(q.split()) < MIN_QUOTE_WORDS:
+    if len(q.split()) < max(1, int(min_words)):
         return False
     if not _norm(full_text):
         # No document means no proof, and no proof means no obligation.
