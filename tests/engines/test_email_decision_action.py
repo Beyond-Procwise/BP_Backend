@@ -267,11 +267,16 @@ def test_a_failed_close_is_reported_not_hidden_behind_a_plain_success():
     # But the response is explicit that the queue entry did not close.
     assert result["queue_closed"] is False
     assert "warning" in result
-    assert "audit_decision_id=555" in result["warning"]
+    # The id of the audit row is carried as a FIELD (audit_decision_id), not spelled
+    # into the sentence: the warning is rendered verbatim to a person, and Task 10's
+    # panel shows it as-is.
+    assert result["audit_decision_id"] == 555
     assert "7" in result["warning"]
-    # And the warning is honest that re-posting is not a safe retry -- it would
+    # And the warning is honest that re-sending is not a safe retry -- it would
     # insert a SECOND audit row, not retry only the close.
     assert "second" in result["warning"].lower() or "not a safe retry" in result["warning"].lower()
+    # No storage table or column name reaches the reader.
+    assert "proc." not in result["warning"]
 
 
 def test_a_failed_audit_write_does_not_close_the_original_and_is_reported():
@@ -287,7 +292,10 @@ def test_a_failed_audit_write_does_not_close_the_original_and_is_reported():
 
     assert result["applied"] is False
     assert "error" in result
-    assert "not be recorded" in result["error"] or "could not be recorded" in result["error"]
+    assert "could not be saved" in result["error"]
+    # The reason a person needs is "it did not save, it is still in your queue" --
+    # not the name of the table it would have been written to.
+    assert "proc." not in result["error"]
     # decision_id must NOT be silently reported as if it existed.
     assert "decision_id" not in result or result.get("decision_id") is None
     assert "audit_decision_id" not in result

@@ -640,8 +640,12 @@ class DecisionEngine:
                 decision="escalate",
                 resolution=ESCALATED,
                 rationale=(
-                    f"Supplier reply {response_id} was not found in "
-                    "proc.supplier_response, so there are no facts to decide on."
+                    # Plain English on purpose: this string is rendered verbatim on the
+                    # Action Centre card, and the name of a storage table means nothing
+                    # to the person reading it (while telling anyone else more about our
+                    # internals than a review screen should).
+                    f"Supplier reply {response_id} could not be found in our records, "
+                    "so there are no facts to decide on."
                 ),
             )
 
@@ -1564,9 +1568,11 @@ class DecisionEngine:
         if new_decision_id is None:
             return {
                 "applied": False,
+                # Same discipline as the missing-reply rationale above: this reaches a
+                # person, so it says what happened and what it means for them, without
+                # naming where the record would have been written.
                 "error": (
-                    "The action could not be recorded (the write to "
-                    "proc.bp_decision failed), so nothing was closed. The "
+                    "The action could not be saved, so nothing was closed. The "
                     "decision remains in the queue."
                 ),
                 "recommendation": recommendation.to_dict(),
@@ -1608,11 +1614,10 @@ class DecisionEngine:
             # a SECOND audit row rather than retrying only the close. There is
             # currently no endpoint that retries just the close step.
             result["warning"] = (
-                f"The action was recorded (audit_decision_id={new_decision_id}), "
-                f"but the original decision {decision_id} could not be marked "
-                f"'{status_word}', so it may still appear in the escalation "
-                "queue. Re-posting this action is NOT a safe retry -- it "
-                "records a second, separate audit row rather than retrying "
-                "only the close."
+                "Your action was recorded, but decision "
+                f"{decision_id} could not be marked '{status_word}', so it may "
+                "still appear in the escalation queue. Sending this action "
+                "again is NOT a safe retry -- it records a second, separate "
+                "audit entry rather than retrying only the part that failed."
             )
         return result

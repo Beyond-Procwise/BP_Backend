@@ -23,14 +23,16 @@ import api.routers.decisions as decisions_router
 ROWS = [
     (7, "email_reply", "wf-1-PeopleFirst", "PeopleFirst HR Solutions Ltd", "DEAL-1",
      "escalate", "escalated", "price_change is escalate-only", "EmailReplyAutonomyPolicy",
-     {"intent": "price_change"}, "2026-07-28T10:00:00+00:00"),
+     {"intent": "price_change"}, "2026-07-28T10:00:00+00:00",
+     "We must raise our rate to GBP 94,000 for the coming term.", "verbatim"),
 ]
 
 
 class _Cur:
     description = [("decision_id",), ("subject_type",), ("subject_id",), ("supplier_id",),
                    ("deal_id",), ("decision",), ("resolution",), ("rationale",),
-                   ("policy_name",), ("facts",), ("created_at",)]
+                   ("policy_name",), ("facts",), ("created_at",),
+                   ("supporting_sentence",), ("supporting_sentence_grounding",)]
 
     def __init__(self):
         self.sql = ""
@@ -99,6 +101,77 @@ def test_queue_filters_on_escalations_in_sql_not_in_python(client):
     # busy queue -- the exact bug that pinned the findings badge at its page size.
     assert "resolution" in sql
     assert "where" in sql
+
+
+# ---------------------------------------------------------------------------
+# Task 10: the supplier's own cited sentence has to reach the client. The
+# decision records it in `evidence` as `supporting_sentence`; this query used to
+# select `facts` and not `evidence`, so the review panel had nothing to quote.
+# ---------------------------------------------------------------------------
+
+def test_queue_returns_the_supplier_s_cited_sentence_and_its_grounding(client):
+    res = client.get("/decisions", params={"subject_type": "email_reply", "status": "open"})
+    row = res.json()["data"][0]
+    assert row["supporting_sentence"] == (
+        "We must raise our rate to GBP 94,000 for the coming term."
+    )
+    # Returned WITH the sentence: a caller must not attribute an ungrounded
+    # sentence to the supplier, so it never has to assume this.
+    assert row["supporting_sentence_grounding"] == "verbatim"
+
+
+def test_the_sentence_is_read_out_of_evidence_without_shipping_all_of_it(client):
+    client.get("/decisions", params={"subject_type": "email_reply", "status": "open"})
+    # `.sql` holds the LAST statement, which is the count query -- the row query is
+    # the first one issued.
+    sql = " ".join(client.app.state._cur.executed[0][0].split())
+    assert "supporting_sentence" in sql
+    assert "jsonb_array_elements" in sql
+    # A polled list endpoint that can be asked for 500 rows must not return the whole
+    # provenance array to render one sentence -- `GET /decisions/{id}` is for that.
+    assert "d.evidence," not in sql
+    assert "d.evidence FROM" not in sql
+    # And the array is only walked when it really is an array: `evidence` is nullable.
+    assert "jsonb_typeof(d.evidence) = 'array'" in sql
+
+
+def test_an_ungrounded_sentence_is_flagged_and_a_dataless_row_stays_absent():
+    """Two honest edges, through the real query path's own column mapping: a quote the
+    classifier could not find in the supplier's message is returned WITH that verdict,
+    and a decision carrying no evidence at all returns None rather than a guess."""
+    table = _MemoryBpDecisionTable(rows=[
+        {
+            "decision_id": 11, "subject_type": "email_reply", "subject_id": "wf-11",
+            "deal_id": None, "supplier_id": "Acme Ltd", "decision": "escalate",
+            "resolution": "escalated", "rationale": "could not be grounded",
+            "policy_id": 11, "policy_name": "EmailReplyAutonomyPolicy", "facts": {},
+            "evidence": [{"fact": "supporting_sentence",
+                          "value": "we accept your price",
+                          "reference": "NOT FOUND in source"}],
+            "status": "open", "created_at": "2026-07-28T13:00:00+00:00",
+        },
+        {
+            "decision_id": 12, "subject_type": "email_reply", "subject_id": "wf-12",
+            "deal_id": None, "supplier_id": "Beta Ltd", "decision": "escalate",
+            "resolution": "escalated", "rationale": "no send authority",
+            "policy_id": None, "policy_name": None, "facts": {}, "evidence": [],
+            "status": "open", "created_at": "2026-07-28T12:00:00+00:00",
+        },
+    ])
+    app = FastAPI()
+    app.include_router(decisions_router.router)
+    app.state.agent_nick = SimpleNamespace(
+        get_db_connection=lambda: _MemoryConn(table),
+        policy_engine=SimpleNamespace(get_policy=lambda slug: None),
+    )
+    body = TestClient(app).get(
+        "/decisions", params={"subject_type": "email_reply", "status": "open"}
+    ).json()
+    ungrounded, dataless = body["data"][0], body["data"][1]
+    assert ungrounded["supporting_sentence"] == "we accept your price"
+    assert ungrounded["supporting_sentence_grounding"] == "NOT FOUND in source"
+    assert dataless["supporting_sentence"] is None
+    assert dataless["supporting_sentence_grounding"] is None
 
 
 def test_decide_endpoint_returns_the_decision_and_records_it(client, monkeypatch):
@@ -241,6 +314,20 @@ class _MemoryBpDecisionTable:
         self.fail_insert = fail_insert
 
 
+def _cited(evidence, key):
+    """The `supporting_sentence` evidence record's `value`/`reference`, or None.
+
+    Stands in for the CASE + jsonb_array_elements subqueries in list_decisions's SQL,
+    including their tolerance of a non-array payload.
+    """
+    if not isinstance(evidence, list):
+        return None
+    for item in evidence:
+        if isinstance(item, dict) and item.get("fact") == "supporting_sentence":
+            return item.get(key)
+    return None
+
+
 def _queue_matches(row, sql, params):
     """Mirror list_decisions's WHERE clause: resolution='escalated' is always
     required (it's baked into the SQL, not a parameter); subject_type/status are
@@ -327,11 +414,16 @@ class _MemoryCursor:
                 ("decision_id",), ("subject_type",), ("subject_id",), ("supplier_id",),
                 ("deal_id",), ("decision",), ("resolution",), ("rationale",),
                 ("policy_name",), ("facts",), ("created_at",),
+                ("supporting_sentence",), ("supporting_sentence_grounding",),
             ]
             self._rows_result = [
                 (r["decision_id"], r["subject_type"], r["subject_id"], r["supplier_id"],
                  r["deal_id"], r["decision"], r["resolution"], r["rationale"],
-                 r["policy_name"], r["facts"], r["created_at"])
+                 r["policy_name"], r["facts"], r["created_at"],
+                 # Mirrors the two derived columns in list_decisions's SQL: the first
+                 # `supporting_sentence` record in `evidence`, and its own reference
+                 # (the grounding verdict), or None when there is no such record.
+                 _cited(r.get("evidence"), "value"), _cited(r.get("evidence"), "reference"))
                 for r in matched
             ]
             return

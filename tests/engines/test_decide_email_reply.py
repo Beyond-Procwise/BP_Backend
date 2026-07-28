@@ -194,6 +194,12 @@ def test_a_missing_reply_escalates_rather_than_inventing_a_subject():
     d = eng.decide_email_reply("999", authority=GOVERNED)
     assert d.resolution == ESCALATED
     assert "999" in d.rationale
+    # This rationale is rendered verbatim on the Action Centre card (and now in the
+    # reply-review panel), so it must read as English to the person reviewing it.
+    # It used to name the storage table the reply was looked for in.
+    assert "proc." not in d.rationale
+    assert "supplier_response" not in d.rationale
+    assert "could not be found in our records" in d.rationale
 
 
 def test_a_widened_policy_permits_an_auto_send():

@@ -227,6 +227,28 @@ def list_decisions(
     The filters are in SQL, before the LIMIT, and `total` is the true server-side
     count rather than the page size -- a previous screen in this codebase pinned
     its badge to the page size, and a growing backlog looked like a plateau.
+
+    THE CITED SENTENCE. Each escalated email decision records the supplier's own
+    quoted sentence as an `evidence` fact called `supporting_sentence` -- and it is
+    the single most useful thing on the card, because it is what the supplier
+    actually wrote. This query used to select `facts` but not `evidence`, so the
+    sentence never reached the client and the review panel had nothing to show.
+
+    It is selected NARROWLY (two derived columns) rather than by returning the whole
+    `evidence` array, deliberately: this is a polled list endpoint that can be asked
+    for up to 500 rows, the recorded decisions in bp_sqldb already average ~1.5 KB of
+    evidence each (measured 2026-07-28), and an email decision records ~20 facts with
+    long provenance strings on top of that. Shipping all of it on every poll to render
+    one sentence would multiply the queue payload for data no card displays. The full
+    array is still available a row at a time from `GET /decisions/{decision_id}`,
+    which is what the provenance view is for.
+
+    `supporting_sentence_grounding` is returned WITH the sentence and is not
+    decoration. The value is the evidence record's own reference -- `verbatim` when
+    the sentence was found in the supplier's message, `NOT FOUND in source` when it
+    was not (an ungrounded reading is one of the reasons a reply gets escalated in
+    the first place). A caller must not attribute an ungrounded sentence to the
+    supplier, so the flag travels with the text rather than being assumed.
     """
     where = ["d.resolution = 'escalated'"]
     params: List[Any] = []
@@ -238,9 +260,21 @@ def list_decisions(
         params.append(status)
     clause = " AND ".join(where)
 
+    # The CASE guard is load-bearing: jsonb_array_elements() errors on a value that is
+    # not an array, and `evidence` is nullable (a decision that failed before it
+    # gathered any). CASE short-circuits, so a null or object payload yields NULL here
+    # instead of failing the whole queue query.
     sql = f"""
         SELECT d.decision_id, d.subject_type, d.subject_id, d.supplier_id, d.deal_id,
-               d.decision, d.resolution, d.rationale, d.policy_name, d.facts, d.created_at
+               d.decision, d.resolution, d.rationale, d.policy_name, d.facts, d.created_at,
+               CASE WHEN jsonb_typeof(d.evidence) = 'array' THEN (
+                    SELECT e->>'value' FROM jsonb_array_elements(d.evidence) e
+                     WHERE e->>'fact' = 'supporting_sentence' LIMIT 1
+               ) END AS supporting_sentence,
+               CASE WHEN jsonb_typeof(d.evidence) = 'array' THEN (
+                    SELECT e->>'reference' FROM jsonb_array_elements(d.evidence) e
+                     WHERE e->>'fact' = 'supporting_sentence' LIMIT 1
+               ) END AS supporting_sentence_grounding
           FROM proc.bp_decision d
          WHERE {clause}
          ORDER BY d.created_at DESC
