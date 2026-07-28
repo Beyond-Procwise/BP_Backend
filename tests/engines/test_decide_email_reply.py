@@ -98,7 +98,45 @@ def test_value_over_the_governed_limit_escalates_even_for_a_routine_intent():
 def test_low_confidence_escalates():
     auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
     eng = _engine(intent=ReplyIntent("acknowledge", 0.4, "Thank you.", True))
-    assert eng.decide_email_reply("1", authority=auth).resolution == ESCALATED
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    # Not just "escalated" -- escalated FOR THIS REASON. An always-escalate
+    # implementation satisfies the resolution assertion on its own.
+    assert "0.40" in d.rationale
+    assert "below the governed minimum of 0.80" in d.rationale
+
+
+# ----------------------------------------------------------------------------
+# The two intent gates. Neither was pinned before: every other test reaches these
+# with an intent that is on the escalate list OR on a widened auto list, so either
+# gate could be deleted and the suite stayed green. These two tests are the ones
+# that fail when a gate is removed, and they assert text distinctive enough to say
+# WHICH gate answered.
+# ----------------------------------------------------------------------------
+def test_an_intent_on_neither_governed_list_is_denied_by_default():
+    """GOVERNED ships auto_intents empty. 'acknowledge' is on neither list."""
+    eng = _engine(intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=GOVERNED)
+    assert d.resolution == ESCALATED
+    assert "is not on the governed auto-reply list" in d.rationale
+    assert "Widen auto_reply_intents in the policy to change that." in d.rationale
+    # Distinctively NOT the escalate-list gate's wording.
+    assert "escalate-only intent" not in d.rationale
+
+
+def test_the_escalate_list_wins_when_an_intent_is_on_both_lists():
+    """Precedence: a consequential intent is not rescued by also being auto-listed."""
+    auth = {**GOVERNED,
+            "auto_intents": ["price_change", "acknowledge"],
+            "escalate_intents": ["price_change"]}
+    eng = _engine(intent=ReplyIntent("price_change", 0.99,
+                                     "We can offer 94,000.00 GBP", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED, "the escalate list must take precedence"
+    assert "is a governed escalate-only intent under" in d.rationale
+    # Distinctively NOT the default-deny gate's wording, which would also mention
+    # price_change and would also escalate -- that ambiguity is what hid this.
+    assert "is not on the governed auto-reply list" not in d.rationale
 
 
 def test_an_ungrounded_classification_escalates():
@@ -130,7 +168,10 @@ def test_thread_cap_escalates():
     eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == ESCALATED
-    assert "2" in d.rationale
+    # `"2" in d.rationale` proved almost nothing -- nearly every rationale here
+    # contains a 2 somewhere. Assert the sentence this gate actually writes.
+    assert "already answered this thread 2 time(s) unattended" in d.rationale
+    assert "at the governed cap of 2" in d.rationale
 
 
 def test_an_uncounted_thread_history_escalates():
@@ -164,11 +205,68 @@ def test_a_widened_policy_permits_an_auto_send():
     assert d.decision == "send"
 
 
-def test_every_fact_carries_a_source():
-    d = _engine().decide_email_reply("1", authority=GOVERNED)
+@pytest.mark.parametrize("authority,intent", [
+    (GOVERNED, None),                                                    # escalate path
+    ({**GOVERNED, "auto_intents": ["acknowledge"]},
+     ReplyIntent("acknowledge", 0.99, "Thank you.", True)),              # send path
+])
+def test_every_fact_carries_a_source(authority, intent):
+    """Iterate the FACTS, not the evidence.
+
+    Iterating d.evidence only proves that the items which exist have a source -- it
+    cannot notice a fact that has no evidence item at all, which is the failure that
+    matters: a decision is re-derivable only if every fact it rests on is traceable.
+    """
+    row = {**REPLY_ROW, "prior_price": 96000}
+    d = _engine(row=row, intent=intent).decide_email_reply("1", authority=authority)
     assert d.evidence, "a decision with no evidence is a guess"
     for item in d.evidence:
         assert item.source, f"fact {item.fact} has no source"
+    sourced = {e.fact for e in d.evidence if e.source}
+    missing = set(d.facts) - sourced
+    assert not missing, f"facts with no evidence item: {sorted(missing)}"
+
+
+def test_a_send_records_the_governed_values_it_cleared():
+    """I1: a send must be re-derivable for all three governed gates, not just one.
+
+    The record used to hold the model's confidence and the thread count, but neither
+    the governed minimum that confidence beat nor the cap the count was under -- so two
+    of the three gates could not be checked from the record afterwards.
+    """
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "prior_price": 96000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == RESOLVED
+    assert d.facts["min_intent_confidence"] == 0.8
+    assert d.facts["max_auto_replies_per_thread"] == 2
+    assert d.facts["value_limit_gbp"] == "10000"
+    sources = {e.fact: e.source for e in d.evidence}
+    assert "min_intent_confidence" in sources["min_intent_confidence"]
+    assert "max_auto_replies_per_thread" in sources["max_auto_replies_per_thread"]
+    assert "intent_confidence" in sources, "the model's own claim needs a source too"
+
+
+def test_the_send_rationale_does_not_claim_an_untested_limit():
+    """I2: on the unpriced path no limit was consulted -- and there may be none."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_gbp": None}
+    row = {**REPLY_ROW, "price": None, "prior_price": None}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == RESOLVED
+    assert "no price was recorded on the reply, so no amount was tested" in d.rationale
+    assert "nothing exceeds the governed limit" not in d.rationale
+
+
+def test_the_send_rationale_states_the_amount_and_limit_when_one_was_tested():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "prior_price": 96000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == RESOLVED
+    assert "the amount at stake is 2000 GBP, within the governed limit of 10000 GBP" in d.rationale
+    assert "governed minimum of 0.80" in d.rationale
 
 
 # ----------------------------------------------------------------------------
@@ -198,7 +296,11 @@ def test_a_priced_reply_with_no_resolved_limit_escalates_even_within_any_amount(
     auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_gbp": None}
     row = {**REPLY_ROW, "price": 1, "prior_price": 1}
     eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
-    assert eng.decide_email_reply("1", authority=auth).resolution == ESCALATED
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    # Escalated for THIS reason, not merely escalated.
+    assert "no governed value limit was resolved" in d.rationale
+    assert "an absent limit is not an unlimited one" in d.rationale
 
 
 def test_an_unpriced_reply_does_not_need_a_limit():
@@ -426,6 +528,170 @@ def test_a_currency_mismatch_on_an_unpriced_reply_invents_no_money_concern():
     assert d.resolution == RESOLVED
     assert d.decision == "send"
     assert "currency" not in d.rationale.lower()
+
+
+# ----------------------------------------------------------------------------
+# I3: is the prior offer the one THIS reply answers? The draft is matched on
+# unique_id (workflow+supplier), which is not round-specific.
+# ----------------------------------------------------------------------------
+def test_a_prior_offer_from_a_different_round_escalates():
+    """Round N+1 already dispatched when the round-N reply lands."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "round_number": 1, "prior_price": 96000,
+           "prior_price_round": 2}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "is round 1" in d.rationale and "belongs to round 2" in d.rationale
+    assert "not the offer this reply answers" in d.rationale
+    assert "value_at_stake" not in d.facts, "no amount across mismatched rounds"
+
+
+def test_a_matching_round_proceeds_to_the_arithmetic():
+    """The live path: both sides state a round and they agree."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "round_number": 1, "prior_price": 96000,
+           "prior_price_round": 1}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == RESOLVED
+    assert d.facts["value_at_stake"] == "2000"
+    assert d.facts["prior_offer_round"] == "1"
+    assert "prior_offer_round_basis" not in d.facts, "nothing to disclose when verified"
+
+
+@pytest.mark.parametrize("reply_round,draft_round,who", [
+    (1, None, "the draft"),
+    (None, 1, "the reply"),
+    (None, None, "the reply"),
+])
+def test_an_unverifiable_round_is_disclosed_not_escalated(reply_round, draft_round, who):
+    """Ruling: disclose, do not escalate -- an always-escalate here would put the
+    limit gate back to never executing."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "round_number": reply_round, "prior_price": 96000,
+           "prior_price_round": draft_round}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == RESOLVED, "disclosure, not a gate"
+    assert d.facts["value_at_stake"] == "2000"
+    basis = next(e for e in d.evidence if e.fact == "prior_offer_round_basis")
+    assert "unverified" in str(basis.value)
+    assert who in str(basis.value)
+    assert "most recent draft" in basis.source
+    assert "may not be the offer" in basis.source
+
+
+# ----------------------------------------------------------------------------
+# I4: price IS NULL is an extraction outcome, not proof no money is discussed.
+# ----------------------------------------------------------------------------
+def test_no_extracted_price_but_a_recorded_offer_escalates():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "price": None, "prior_price": 96000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "No price was extracted from this reply" in d.rationale
+    assert "96000" in d.rationale
+    assert d.facts["prior_offer"] == "96000"
+
+
+def test_no_price_and_no_offer_is_still_genuinely_unpriced():
+    """The existing unpriced send path must survive I4."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "price": None, "prior_price": None}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    assert eng.decide_email_reply("1", authority=auth).resolution == RESOLVED
+
+
+# ----------------------------------------------------------------------------
+# M1: junk and non-finite prices must not read as "no money moves".
+# ----------------------------------------------------------------------------
+@pytest.mark.parametrize("junk", ["TBC", "circa 90k", "ninety thousand", "-", "£"])
+def test_an_unreadable_price_escalates_rather_than_reading_as_unpriced(junk):
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "price": junk, "prior_price": None}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "is not a finite number" in d.rationale
+    assert d.facts["price_unreadable"] == junk
+
+
+@pytest.mark.parametrize("bad", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")])
+def test_a_non_finite_price_escalates_instead_of_raising(bad):
+    """Decimal('NaN') survives _num, then raises InvalidOperation on the comparison."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "price": bad, "prior_price": 96000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "is not a finite number" in d.rationale
+
+
+def test_a_non_finite_prior_offer_is_absent_not_arithmetic():
+    assert _engine()._prior_offer({"metadata": {"counter_price": "NaN"}}) == (None, None)
+
+
+# ----------------------------------------------------------------------------
+# I6: the suite ran entirely on int/str operands. Production yields Decimal.
+# ----------------------------------------------------------------------------
+def test_the_arithmetic_runs_on_the_decimal_types_production_actually_uses():
+    """proc.supplier_response.price is numeric -> Decimal('94000.0000'), and
+    metadata.counter_price parses to Decimal('96000.0'). The live value_at_stake is
+    '2000.0000', a string no int-based test ever produced."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW,
+           "price": Decimal("94000.0000"),
+           "prior_price": Decimal("96000.0"),
+           "round_number": 1, "prior_price_round": Decimal("1"),
+           "currency": "GBP"}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == RESOLVED
+    assert d.facts["value_at_stake"] == "2000.0000", "the live string, not '2000'"
+    assert d.facts["price"] == "94000.0000"
+
+
+def test_the_over_limit_gate_bites_on_decimal_operands():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "limit_gbp": "1000"}
+    row = {**REPLY_ROW, "price": Decimal("94000.0000"),
+           "prior_price": Decimal("96000.0"), "round_number": 1,
+           "prior_price_round": Decimal("1")}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "moves 2000.0000 GBP" in d.rationale
+
+
+# ----------------------------------------------------------------------------
+# M2: never raises, because Task 7 hands this an authority dict over HTTP.
+# ----------------------------------------------------------------------------
+@pytest.mark.parametrize("broken", [
+    {"min_intent_confidence": "high"},
+    {"min_intent_confidence": object()},
+    {"max_auto_replies_per_thread": "lots"},
+    {"escalate_intents": 42},
+    {"auto_intents": None, "max_auto_replies_per_thread": []},
+])
+def test_a_malformed_authority_block_escalates_rather_than_raising(broken):
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], **broken}
+    eng = _engine(intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)   # must not raise
+    assert d.resolution == ESCALATED
+    assert d.subject_type == "email_reply"
+
+
+def test_a_raising_fetch_escalates_rather_than_propagating():
+    eng = _engine()
+    def boom(_id):
+        raise RuntimeError("connection reset")
+    eng._fetch_email_reply = boom  # type: ignore
+    d = eng.decide_email_reply("1", authority=GOVERNED)
+    assert d.resolution == ESCALATED
+    assert "RuntimeError" in d.rationale
+    assert "connection reset" in d.rationale
+    assert "did not complete" in d.rationale
 
 
 def test_a_missing_governed_confidence_minimum_escalates():

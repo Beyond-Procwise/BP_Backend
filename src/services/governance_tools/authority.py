@@ -122,7 +122,14 @@ def _resolve_one(
                 "default_threshold_gbp -- there is no limit to enforce",
             )
         limit_gbp = str(threshold)
-        limit_currency = str(approval_rules.get("currency") or "GBP")
+        # NOT `or "GBP"`. Defaulting the denomination fabricates one: a limit whose
+        # policy states no currency would arrive at the decision engine looking like a
+        # sterling limit, and its currency gate would then match a GBP reply against a
+        # denomination nobody chose. None means "the policy does not say", which the
+        # decision engine escalates on. governed stays True -- the escalation belongs at
+        # decide time, where it can be explained to a human, not in the resolver.
+        currency = approval_rules.get("currency")
+        limit_currency = str(currency) if currency else None
 
     ids = _ids(autonomy)
     confidence = rules.get("min_intent_confidence")

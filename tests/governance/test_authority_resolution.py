@@ -182,3 +182,70 @@ def test_resolution_runs_concurrently():
 
     resolve_authority(Slow(), agents)
     assert not broke["happened"], "agents were not resolved concurrently (barrier never filled)"
+
+
+def test_an_approval_policy_with_no_currency_yields_no_currency():
+    """A denomination the policy does not state must not be invented as 'GBP'.
+
+    `str(rules.get("currency") or "GBP")` handed the decision engine a limit that
+    looked like sterling when nobody had said so, and its currency gate would then
+    match a GBP reply against a currency of the resolver's own invention. None means
+    "the policy does not say", and the decision engine escalates on that.
+
+    governed stays True on purpose: the escalation belongs at decide time, where it can
+    be explained to a human, not in the resolver.
+    """
+    approval = {**_APPROVAL_ROW, "policy_details": json.dumps({
+        "policy_identifier": "approval_threshold",
+        "rules": {"default_threshold_gbp": 10000},   # no currency stated
+    })}
+    engine = PolicyEngine(policy_rows=[_autonomy_row(), approval])
+    block = resolve_authority(engine, ["email_drafting_agent"])["email_drafting_agent"]
+    assert block["governed"] is True
+    assert block["limit_gbp"] == "10000"
+    assert block["limit_currency"] is None, "a currency nobody stated is not GBP"
+
+
+def test_a_stated_non_sterling_currency_is_carried_through_unchanged():
+    approval = {**_APPROVAL_ROW, "policy_details": json.dumps({
+        "policy_identifier": "approval_threshold",
+        "rules": {"currency": "EUR", "default_threshold_gbp": 10000},
+    })}
+    engine = PolicyEngine(policy_rows=[_autonomy_row(), approval])
+    block = resolve_authority(engine, ["email_drafting_agent"])["email_drafting_agent"]
+    assert block["limit_currency"] == "EUR"
+
+
+def test_a_resolved_block_with_no_currency_escalates_at_decide_time():
+    """The other half of the fix: the resolver reports it, the engine acts on it."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
+    from engines.decision_engine import DecisionEngine, ESCALATED
+
+    approval = {**_APPROVAL_ROW, "policy_details": json.dumps({
+        "policy_identifier": "approval_threshold",
+        "rules": {"default_threshold_gbp": 10000},
+    })}
+    engine = PolicyEngine(policy_rows=[_autonomy_row(), approval])
+    block = resolve_authority(engine, ["email_drafting_agent"])["email_drafting_agent"]
+    # Widen the intent list so the decision reaches the money gates at all.
+    block = {**block, "auto_intents": ["acknowledge"]}
+
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from src.services.email_intent import ReplyIntent
+
+    eng = DecisionEngine(SimpleNamespace(
+        policy_engine=None,
+        get_db_connection=MagicMock(side_effect=RuntimeError("db off in test")),
+    ))
+    eng._fetch_email_reply = lambda _id: {          # type: ignore
+        "id": 1, "unique_id": "wf-1-x", "supplier_id": "x",
+        "response_text": "Thank you.", "price": 94000, "currency": "GBP",
+        "prior_price": 96000, "round_number": 1, "prior_price_round": 1,
+        "auto_replies_on_thread": 0,
+    }
+    eng._classify = lambda _b: ReplyIntent("acknowledge", 0.99, "Thank you.", True)  # type: ignore
+    d = eng.decide_email_reply("1", authority=block)
+    assert d.resolution == ESCALATED
+    assert "carries no currency of its own" in d.rationale

@@ -391,6 +391,28 @@ class DecisionEngine:
     def _prior_offer_source(self) -> str:
         return "proc.draft_rfq_emails.payload." + ".".join(self._PRIOR_OFFER_PATH)
 
+    # Where the draft records which negotiation round its counter belongs to. Verified
+    # live on all 18 rows: `metadata.round` is present (and equals the top-level
+    # `round`). metadata is preferred because it is the same object as counter_price, so
+    # it describes THAT counter rather than the draft in general.
+    _PRIOR_ROUND_PATHS = (("metadata", "round"), ("round",))
+
+    def _prior_offer_round(self, payload: Any) -> Optional[Decimal]:
+        """Which round the prior offer belongs to, or None if the draft does not say."""
+        if not isinstance(payload, dict):
+            return None
+        for path in self._PRIOR_ROUND_PATHS:
+            cursor: Any = payload
+            for key in path:
+                if not isinstance(cursor, dict):
+                    cursor = None
+                    break
+                cursor = cursor.get(key)
+            value = self._num(cursor)
+            if value is not None and value.is_finite():
+                return value
+        return None
+
     def _prior_offer(self, payload: Any) -> tuple[Optional[Decimal], Optional[str]]:
         """The price WE last put to this supplier, and where it came from.
 
@@ -402,9 +424,11 @@ class DecisionEngine:
         * Never parsed out of the body prose. The £96,000 is also written in the
           draft's HTML, which is how the structured key was corroborated, but prose
           is not a source of record and a regex over it would invent precision.
-        * Missing, non-numeric or unparseable is ABSENT, not zero. It returns
-          (None, None) and the caller escalates on the missing-prior gate, exactly as
-          it did before this was wired.
+        * Missing, non-numeric, non-finite or unparseable is ABSENT, not zero. It
+          returns (None, None) and the caller escalates on the missing-prior gate,
+          exactly as it did before this was wired. Non-finite matters as much as
+          non-numeric: a Decimal('NaN') prior would survive to `at_stake > limit` and
+          raise InvalidOperation there instead of escalating.
 
         Returns (value, source) so the caller can cite the real path rather than a
         hardcoded guess about where the number came from.
@@ -417,7 +441,7 @@ class DecisionEngine:
                 return None, None
             cursor = cursor.get(key)
         value = self._num(cursor)
-        if value is None:
+        if value is None or not value.is_finite():
             return None, None
         return value, self._prior_offer_source
 
@@ -474,6 +498,9 @@ class DecisionEngine:
                     prior, prior_source = self._prior_offer(record.get("draft_payload"))
                     record["prior_price"] = prior
                     record["prior_price_source"] = prior_source
+                    record["prior_price_round"] = self._prior_offer_round(
+                        record.get("draft_payload")
+                    )
                     try:
                         cur.execute(
                             """
@@ -561,6 +588,43 @@ class DecisionEngine:
     ) -> Decision:
         """Answer it ourselves, or put it in front of a human -- and say which, and why.
 
+        Never raises, which is the same property `_fetch_email_reply` and `_classify`
+        already have. The gates coerce values out of the authority block
+        (`float(min_intent_confidence)`, `int(max_auto_replies_per_thread)`), and while
+        `resolve_authority` cannot produce a block that breaks them, Task 7 hands this
+        method an authority dict over HTTP. A malformed one must produce an escalation
+        that says so, not a 500 -- an exception on the send path is the one outcome that
+        is neither a send nor a decision anybody can act on.
+        """
+        try:
+            return self._decide_email_reply(
+                response_id, authority=authority, requested=requested
+            )
+        except Exception as exc:  # noqa: BLE001 - fail CLOSED, and say what broke
+            logger.exception("email reply decision failed for %s", response_id)
+            return Decision(
+                subject_type=self._EMAIL_SUBJECT_TYPE,
+                subject_id=str(response_id),
+                decision="escalate",
+                resolution=ESCALATED,
+                rationale=(
+                    f"Deciding this reply failed with "
+                    f"{type(exc).__name__}: {str(exc)[:200]}. Nothing is sent on a "
+                    "decision that did not complete."
+                ),
+                policy_id=(authority or {}).get("policy_id"),
+                policy_name=(authority or {}).get("policy_name"),
+            )
+
+    def _decide_email_reply(
+        self,
+        response_id: str,
+        *,
+        authority: Optional[Dict[str, Any]] = None,
+        requested: Optional[str] = None,
+    ) -> Decision:
+        """The decision itself. See `decide_email_reply` for the no-raise guarantee.
+
         Deterministic in the part that matters: the model contributes an intent label
         and a quoted sentence, and every gate below is arithmetic and set membership
         over governed values. No model is asked whether to send.
@@ -629,6 +693,11 @@ class DecisionEngine:
         evidence.append(Evidence(fact="intent", value=intent.intent,
                                  source="AgentNick classification of supplier_response.response_text",
                                  reference=ref))
+        evidence.append(Evidence(
+            fact="intent_confidence", value=intent.confidence,
+            source="AgentNick classification of supplier_response.response_text "
+                   "(self-reported confidence)",
+            reference=ref))
         if intent.quote:
             evidence.append(Evidence(fact="supporting_sentence", value=intent.quote,
                                      source="proc.supplier_response.response_text",
@@ -645,13 +714,18 @@ class DecisionEngine:
         # governed=True with any of the three as None (it only populates what the
         # policy carries), and shipping one of them fail-closed and the others
         # permissive would be a trap for whoever reads this next.
+        # Recorded whether or not it fires, like value_limit_gbp below: a send that
+        # cleared a governed minimum is only re-derivable if the record says what the
+        # minimum was, not merely what the model claimed.
         min_conf = authority.get("min_intent_confidence")
+        facts["min_intent_confidence"] = None if min_conf is None else float(min_conf)
+        evidence.append(Evidence(
+            fact="min_intent_confidence",
+            value=facts["min_intent_confidence"],
+            source="proc.bp_policy(email_reply_autonomy).rules.min_intent_confidence",
+            reference=(authority.get("reason") if min_conf is None
+                       else (str(policy_id) if policy_id is not None else None))))
         if min_conf is None:
-            facts["min_intent_confidence"] = None
-            evidence.append(Evidence(
-                fact="min_intent_confidence", value=None,
-                source="proc.bp_policy(email_reply_autonomy).rules.min_intent_confidence",
-                reference=authority.get("reason")))
             return _escalate(
                 f"No governed minimum confidence was resolved under "
                 f"{policy_name or 'the autonomy policy'} (min_intent_confidence is "
@@ -680,11 +754,14 @@ class DecisionEngine:
         #    derivation is stated: two numbers, both cited above.
         #
         #    Order matters, and this is the order:
+        #      4.  a price that is not a number? yes -> escalate (junk != no money)
+        #      4.  no price, but WE offered one? yes -> escalate (uncomputable)
         #      4.  is there a price at all?      no  -> no money moves, skip the block
         #      4.  a governed limit?             no  -> escalate (absent != unlimited)
         #      4a. the same denomination?        no  -> escalate (never convert)
         #      4b. a prior offer to move from?   no  -> escalate (absent != unchanged)
-        #      4c. abs(price - prior) > limit?   yes -> escalate
+        #      4c. the round it answers?         differs -> escalate (uncomputable)
+        #      4d. abs(price - prior) > limit?   yes -> escalate
         #    The currency gate sits at 4a, after the limit is in hand and before any
         #    subtraction or comparison, so no arithmetic here ever crosses currencies.
         #    It cannot go earlier: with no limit resolved there is no limit_currency to
@@ -696,10 +773,45 @@ class DecisionEngine:
         #    resolve_authority() returns governed=True with limit_gbp=None whenever the
         #    autonomy policy omits `defer_value_limit_to`, so "no limit" is a reachable
         #    state -- and an absent limit is never an unlimited one.
-        price = self._num(row.get("price"))
+        raw_price = row.get("price")
+        price = self._num(raw_price)
         prior = self._num(row.get("prior_price"))
         limit = self._num(authority.get("limit_gbp"))
         reply_currency = str(row.get("currency") or "").strip()
+        limit_tested: Optional[str] = None   # set when an amount really was compared
+
+        # A price we cannot read is not an absence of price. `_num` returns None for
+        # junk ("TBC", "circa 90k") and accepts Decimal('NaN'), which would then raise
+        # InvalidOperation on the comparison below instead of escalating. Both are money
+        # we cannot reason about, so both stop here rather than falling through to the
+        # `price is None` path, which means "nothing priced".
+        if raw_price is not None and (price is None or not price.is_finite()):
+            facts["price_unreadable"] = str(raw_price)[:200]
+            evidence.append(Evidence(
+                fact="price_unreadable", value=str(raw_price)[:200],
+                source="proc.supplier_response.price", reference=ref))
+            return _escalate(
+                f"The reply records a price of '{str(raw_price)[:80]}', which is not a "
+                "finite number, so no amount can be derived from it. An unreadable price "
+                "is not the same as no price: a human should read this one."
+            )
+
+        # No price extracted, but WE put a number to them. `price` is an upstream
+        # extraction outcome, not proof the email mentions no money -- and a reply to a
+        # priced offer is about that price whether or not extraction caught it. Same
+        # reasoning as the price-without-prior gate, in the other direction.
+        if price is None and prior is not None:
+            facts["prior_offer"] = str(prior)
+            evidence.append(Evidence(
+                fact="prior_offer", value=str(prior),
+                source=row.get("prior_price_source") or self._prior_offer_source,
+                reference=ref))
+            return _escalate(
+                f"No price was extracted from this reply, but our own last offer on the "
+                f"thread was {prior}, so the reply may well answer it and the amount at "
+                "stake cannot be computed. A human should read what they actually said."
+            )
+
         if price is not None:
             priced = f"{price} {reply_currency}".strip()
             if limit is None:
@@ -782,6 +894,52 @@ class DecisionEngine:
             evidence.append(Evidence(fact="prior_offer", value=str(prior),
                                      source=prior_source, reference=ref))
 
+            # 4c. Is that our offer to THIS reply? The draft is matched on `unique_id`,
+            #     which is workflow+supplier and not round-specific, so a multi-round
+            #     thread has several drafts sharing it and the newest is not necessarily
+            #     the one this reply answers. If round N+1 was dispatched before the
+            #     round-N reply landed, subtracting the newer offer computes a move the
+            #     supplier never saw -- and that error can run permissive.
+            #
+            #     Match when both sides state a round; escalate as uncomputable when they
+            #     state different ones; DISCLOSE when either side states none. Not a
+            #     blanket escalate: that would put the limit gate back to never
+            #     executing, which is the outcome rejected in round 3.
+            #
+            #     Live 2026-07-28: all 18 draft rows record metadata.round (and a
+            #     top-level `round`), and supplier_response.round_number is populated, so
+            #     the MATCHING branch is the live path -- for reply 1 both state round 1.
+            reply_round = self._num(row.get("round_number"))
+            draft_round = self._num(row.get("prior_price_round"))
+            if reply_round is not None and draft_round is not None:
+                facts["prior_offer_round"] = str(draft_round)
+                evidence.append(Evidence(
+                    fact="prior_offer_round", value=str(draft_round),
+                    source="proc.draft_rfq_emails.payload.metadata.round",
+                    reference=ref))
+                if reply_round != draft_round:
+                    return _escalate(
+                        f"The reply is round {reply_round}, but the last offer recorded "
+                        f"on the thread ({prior}) belongs to round {draft_round}, so it "
+                        "is not the offer this reply answers and the amount at stake "
+                        "cannot be computed against it. A human should compare the "
+                        "reply with the offer it actually replies to."
+                    )
+            else:
+                missing = ("the reply" if reply_round is None else "the draft")
+                basis = f"unverified; {missing} states no round"
+                facts["prior_offer_round_basis"] = basis
+                evidence.append(Evidence(
+                    fact="prior_offer_round_basis", value=basis,
+                    source=(
+                        "ASSUMPTION: the prior offer is the most recent draft on this "
+                        "thread (proc.draft_rfq_emails matched on unique_id, ORDER BY "
+                        "id DESC), because the round it belongs to could not be "
+                        f"confirmed -- {missing} records none. It may not be the offer "
+                        "this reply answers."
+                    ),
+                    reference=ref))
+
             at_stake = abs(price - prior)
             facts["value_at_stake"] = str(at_stake)
             evidence.append(Evidence(
@@ -825,18 +983,27 @@ class DecisionEngine:
                     f"in the source and assumed to be {reply_currency}), above the "
                     f"governed limit of {limit} {limit_currency}."
                 )
+            # An amount really was compared. Only now may a send claim so.
+            limit_tested = (
+                f"the amount at stake is {at_stake} {reply_currency}, within the governed "
+                f"limit of {limit} {limit_currency}"
+            )
 
         # 5. Per-thread cap on unattended replies. Fail-closed on BOTH unknowns: an
         #    absent cap is not an unlimited one, and an uncounted history is not an
-        #    empty one.
+        #    empty one. Recorded whether or not it fires, like the limit and the
+        #    confidence minimum: a send that stayed under a cap is only re-derivable if
+        #    the record says what the cap was.
         cap = authority.get("max_auto_replies_per_thread")
         already = row.get("auto_replies_on_thread")
+        facts["max_auto_replies_per_thread"] = None if cap is None else int(cap)
+        evidence.append(Evidence(
+            fact="max_auto_replies_per_thread",
+            value=facts["max_auto_replies_per_thread"],
+            source="proc.bp_policy(email_reply_autonomy).rules.max_auto_replies_per_thread",
+            reference=(authority.get("reason") if cap is None
+                       else (str(policy_id) if policy_id is not None else None))))
         if cap is None:
-            facts["max_auto_replies_per_thread"] = None
-            evidence.append(Evidence(
-                fact="max_auto_replies_per_thread", value=None,
-                source="proc.bp_policy(email_reply_autonomy).rules.max_auto_replies_per_thread",
-                reference=authority.get("reason")))
             return _escalate(
                 f"No governed cap on unattended replies per thread was resolved under "
                 f"{policy_name or 'the autonomy policy'} "
@@ -868,7 +1035,15 @@ class DecisionEngine:
                 f"'{intent.intent}' is on the governed auto-reply list under "
                 f"{policy_name or 'the autonomy policy'}, the supporting sentence is "
                 f"verbatim from the supplier's reply, confidence is "
-                f"{intent.confidence:.2f}, and nothing exceeds the governed limit."
+                f"{intent.confidence:.2f} against a governed minimum of "
+                f"{float(min_conf):.2f}, and "
+                # Only claim a limit was cleared if one was actually applied to an
+                # amount. On the unpriced path no limit was consulted -- and there may
+                # not even be one -- so saying "nothing exceeds the governed limit"
+                # would assert a conclusion no evidence in this record supports.
+                + (limit_tested if limit_tested else
+                   "no price was recorded on the reply, so no amount was tested")
+                + f". This is reply {int(already)} of a permitted {int(cap)} on the thread."
             ),
             policy_id=policy_id, policy_name=policy_name,
             facts=facts, evidence=evidence,
