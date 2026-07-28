@@ -190,9 +190,26 @@ def test_the_real_ollama_chat_response_shape_is_read():
         "quote": "We can offer 94,000.00 GBP",
     })
     response = _ChatResponse(message=_Message(role="assistant", content=payload))
+    # Both levels are models, not dicts -- exactly what ollama.chat returns. If this
+    # stub is ever "simplified" back to plain dicts these assertions fail, which is
+    # the point: a dict stub is what let both bugs ship.
     assert not isinstance(response, dict)
+    assert not isinstance(response.get("message"), dict)
     out = classify_reply(REPLY, caller=SimpleNamespace(call_ollama=lambda **k: response))
     assert out.intent == "price_change"
+    assert out.grounded is True
+
+
+def test_the_generate_response_shape_is_read_when_it_is_not_a_dict_either():
+    """The other real shape: ollama.generate() -> GenerateResponse.response."""
+    payload = json.dumps({
+        "intent": "acknowledge", "confidence": 0.9,
+        "quote": "We can offer 94,000.00 GBP",
+    })
+    response = _ChatResponse(response=payload, message=None)
+    assert not isinstance(response, dict)
+    out = classify_reply(REPLY, caller=SimpleNamespace(call_ollama=lambda **k: response))
+    assert out.intent == "acknowledge"
     assert out.grounded is True
 
 

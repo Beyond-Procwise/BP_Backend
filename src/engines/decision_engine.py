@@ -377,6 +377,50 @@ class DecisionEngine:
     # ------------------------------------------------------------------
     _EMAIL_SUBJECT_TYPE = "email_reply"
 
+    # The ONE structured location the prior offer is read from. Verified against all
+    # 18 live rows of proc.draft_rfq_emails (bp_sqldb, 2026-07-28): the negotiation
+    # drafting path records its counter here, e.g. 96000.0 on draft 17, corroborated
+    # by "Our target positioning: GBP 96,000.00" in that draft's own body. The
+    # brief's `target_price` / `offer_price` do NOT exist in any row -- a scan of
+    # jsonb_object_keys(payload) for price|target|amount|value|offer|cost returns
+    # nothing -- so they are not read; a lookup that can never hit is worse than no
+    # lookup, because it reads as though a prior offer were being checked for.
+    _PRIOR_OFFER_PATH = ("metadata", "counter_price")
+
+    @property
+    def _prior_offer_source(self) -> str:
+        return "proc.draft_rfq_emails.payload." + ".".join(self._PRIOR_OFFER_PATH)
+
+    def _prior_offer(self, payload: Any) -> tuple[Optional[Decimal], Optional[str]]:
+        """The price WE last put to this supplier, and where it came from.
+
+        Read only from `payload->'metadata'->>'counter_price'`. Deliberately narrow:
+
+        * Never the supplier's own number. Using their figure as "ours" would make
+          every reply show nothing at stake -- the one wrong answer that turns this
+          gate off silently.
+        * Never parsed out of the body prose. The £96,000 is also written in the
+          draft's HTML, which is how the structured key was corroborated, but prose
+          is not a source of record and a regex over it would invent precision.
+        * Missing, non-numeric or unparseable is ABSENT, not zero. It returns
+          (None, None) and the caller escalates on the missing-prior gate, exactly as
+          it did before this was wired.
+
+        Returns (value, source) so the caller can cite the real path rather than a
+        hardcoded guess about where the number came from.
+        """
+        if not isinstance(payload, dict):
+            return None, None
+        cursor: Any = payload
+        for key in self._PRIOR_OFFER_PATH:
+            if not isinstance(cursor, dict):
+                return None, None
+            cursor = cursor.get(key)
+        value = self._num(cursor)
+        if value is None:
+            return None, None
+        return value, self._prior_offer_source
+
     def _fetch_email_reply(self, response_id: str) -> Optional[Dict[str, Any]]:
         """The supplier's reply, plus the offer it is replying to.
 
@@ -399,6 +443,9 @@ class DecisionEngine:
         has already sent unattended on this thread, which is what the per-thread cap
         governs. It is None, not 0, if that count could not be taken: an unknown
         history must not read as an empty one.
+
+        `prior_price` / `prior_price_source` come from the draft payload via
+        `_prior_offer` -- see that method for where, and why only there.
         """
         sql = """
             SELECT sr.id, sr.workflow_id, sr.unique_id, sr.supplier_id,
@@ -424,33 +471,9 @@ class DecisionEngine:
                         return None
                     cols = [d[0] for d in cur.description]
                     record = dict(zip(cols, row))
-                    # Prior offer: the price we last put to this supplier, read off the
-                    # draft payload when the drafting agent recorded one. Absent is
-                    # absent -- do not substitute the supplier's own number, which
-                    # would make every reply look like it changed nothing.
-                    #
-                    # AS OF 2026-07-28 NO LIVE DRAFT CARRIES EITHER KEY. All 18 rows in
-                    # proc.draft_rfq_emails were inspected: the payload keys are
-                    # cc/to/body/html/text/round/sender/headers/subject/metadata/
-                    # receiver/action_id/unique_id/message_id/recipients/sent_status/
-                    # supplier_id/workflow_id/thread_index/contact_level/supplier_name/
-                    # thread_headers (+draft_id/supplier_profile on the older 11), and
-                    # nothing matching price|target|amount|value|offer|cost. So
-                    # prior_price is None in production today and every priced reply
-                    # escalates on the "no prior offer" gate below -- which is the safe
-                    # direction, and is asserted by
-                    # test_a_price_with_no_prior_offer_escalates.
-                    #
-                    # There IS a candidate: payload->'metadata'->>'counter_price'
-                    # (96000.0 on draft 17, corroborated by "Our target positioning:
-                    # GBP 96,000.00" in the draft body). It is deliberately NOT wired
-                    # in: promoting a newly-discovered key to an authority input widens
-                    # the auto-send path, which is a governed change, not a code
-                    # cleanup. See the Task 6 report.
-                    payload = record.get("draft_payload")
-                    if isinstance(payload, dict):
-                        record["prior_price"] = payload.get("target_price") or payload.get("offer_price")
-                        record["prior_currency"] = payload.get("currency")
+                    prior, prior_source = self._prior_offer(record.get("draft_payload"))
+                    record["prior_price"] = prior
+                    record["prior_price_source"] = prior_source
                     try:
                         cur.execute(
                             """
@@ -617,8 +640,25 @@ class DecisionEngine:
                 "a basis for replying unattended."
             )
 
+        # A governed minimum we do not have is not a minimum of zero. Same rule as the
+        # value limit below and the thread cap after it: resolve_authority can return
+        # governed=True with any of the three as None (it only populates what the
+        # policy carries), and shipping one of them fail-closed and the others
+        # permissive would be a trap for whoever reads this next.
         min_conf = authority.get("min_intent_confidence")
-        if min_conf is not None and intent.confidence < float(min_conf):
+        if min_conf is None:
+            facts["min_intent_confidence"] = None
+            evidence.append(Evidence(
+                fact="min_intent_confidence", value=None,
+                source="proc.bp_policy(email_reply_autonomy).rules.min_intent_confidence",
+                reference=authority.get("reason")))
+            return _escalate(
+                f"No governed minimum confidence was resolved under "
+                f"{policy_name or 'the autonomy policy'} (min_intent_confidence is "
+                f"missing), so the classifier's {intent.confidence:.2f} cannot be tested "
+                "against anything. An absent minimum is not a minimum of zero."
+            )
+        if intent.confidence < float(min_conf):
             return _escalate(
                 f"Confidence in '{intent.intent}' is {intent.confidence:.2f}, below the "
                 f"governed minimum of {float(min_conf):.2f}."
@@ -680,11 +720,18 @@ class DecisionEngine:
                     "A human should compare these."
                 )
 
+            # Both numbers are cited individually, so the subtraction can be checked
+            # rather than believed.
+            prior_source = row.get("prior_price_source") or self._prior_offer_source
+            facts["prior_offer"] = str(prior)
+            evidence.append(Evidence(fact="prior_offer", value=str(prior),
+                                     source=prior_source, reference=ref))
+
             at_stake = abs(price - prior)
             facts["value_at_stake"] = str(at_stake)
             evidence.append(Evidence(
                 fact="value_at_stake", value=str(at_stake),
-                source="derived: abs(supplier_response.price - draft offer price)",
+                source=f"derived: abs(proc.supplier_response.price - {prior_source})",
                 reference=ref))
             if at_stake > limit:
                 return _escalate(
@@ -693,25 +740,40 @@ class DecisionEngine:
                     f"of {limit} {authority.get('limit_currency') or 'GBP'}."
                 )
 
-        # 5. Per-thread cap on unattended replies.
+        # 5. Per-thread cap on unattended replies. Fail-closed on BOTH unknowns: an
+        #    absent cap is not an unlimited one, and an uncounted history is not an
+        #    empty one.
         cap = authority.get("max_auto_replies_per_thread")
         already = row.get("auto_replies_on_thread")
-        if cap is not None:
-            facts["auto_replies_on_thread"] = already
-            evidence.append(Evidence(fact="auto_replies_on_thread", value=already,
-                                     source="proc.bp_decision (prior sends on this thread)",
-                                     reference=subject_id))
-            if already is None:
-                return _escalate(
-                    "How many times the agent has already answered this thread "
-                    f"unattended could not be counted, so the governed cap of {cap} "
-                    "cannot be enforced. An unknown history is not an empty one."
-                )
-            if int(already) >= int(cap):
-                return _escalate(
-                    f"The agent has already answered this thread {int(already)} time(s) "
-                    f"unattended, at the governed cap of {cap}. A human takes it from here."
-                )
+        if cap is None:
+            facts["max_auto_replies_per_thread"] = None
+            evidence.append(Evidence(
+                fact="max_auto_replies_per_thread", value=None,
+                source="proc.bp_policy(email_reply_autonomy).rules.max_auto_replies_per_thread",
+                reference=authority.get("reason")))
+            return _escalate(
+                f"No governed cap on unattended replies per thread was resolved under "
+                f"{policy_name or 'the autonomy policy'} "
+                "(max_auto_replies_per_thread is missing), so there is nothing to stop "
+                "the agent answering this thread indefinitely. An absent cap is not an "
+                "unlimited one."
+            )
+
+        facts["auto_replies_on_thread"] = already
+        evidence.append(Evidence(fact="auto_replies_on_thread", value=already,
+                                 source="proc.bp_decision (prior sends on this thread)",
+                                 reference=subject_id))
+        if already is None:
+            return _escalate(
+                "How many times the agent has already answered this thread "
+                f"unattended could not be counted, so the governed cap of {cap} "
+                "cannot be enforced. An unknown history is not an empty one."
+            )
+        if int(already) >= int(cap):
+            return _escalate(
+                f"The agent has already answered this thread {int(already)} time(s) "
+                f"unattended, at the governed cap of {cap}. A human takes it from here."
+            )
 
         return Decision(
             subject_type=self._EMAIL_SUBJECT_TYPE, subject_id=subject_id,

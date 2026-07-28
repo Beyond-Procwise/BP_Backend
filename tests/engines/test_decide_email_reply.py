@@ -9,6 +9,7 @@ way tests/test_decision_variance.py replaces `_fetch_finding`.
 """
 import os
 import sys
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -51,8 +52,9 @@ REPLY_ROW = {
     "currency": "GBP",
     "payment_terms": "45 Days",
     "lead_time": 14,
-    "prior_price": 90000,       # from the matched draft
-    "prior_currency": "GBP",
+    # from the matched draft, via payload->metadata->counter_price
+    "prior_price": 90000,
+    "prior_price_source": "proc.draft_rfq_emails.payload.metadata.counter_price",
     "auto_replies_on_thread": 0,
 }
 
@@ -227,6 +229,93 @@ def test_the_governed_limit_is_cited_as_evidence():
     assert "email_reply_autonomy" in sources["value_limit_gbp"]
     assert "draft" in sources["value_at_stake"]
     assert sources["price"] == "proc.supplier_response.price"
+    # The prior offer is cited at its real path, not as "the draft" in general.
+    assert sources["prior_offer"] == (
+        "proc.draft_rfq_emails.payload.metadata.counter_price"
+    )
+    assert "proc.supplier_response.price" in sources["value_at_stake"]
+    assert "counter_price" in sources["value_at_stake"]
+
+
+# ----------------------------------------------------------------------------
+# The prior offer, read from the one structured location that really carries it:
+# payload->'metadata'->>'counter_price'. Verified live on all 18 draft rows.
+# ----------------------------------------------------------------------------
+def test_the_prior_offer_is_read_from_the_draft_payload():
+    eng = _engine()
+    value, source = eng._prior_offer(
+        {"metadata": {"counter_price": 96000.0, "strategy": "counter"},
+         "body": "<li>Our target positioning: &#163;96,000.00</li>"}
+    )
+    assert value == Decimal("96000.0")
+    assert source == "proc.draft_rfq_emails.payload.metadata.counter_price"
+
+
+def test_a_wired_prior_offer_computes_the_amount_at_stake():
+    """94,000 against our 96,000 is 2,000 at stake -- inside a 10,000 limit."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "price": 94000, "prior_price": 96000}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.facts["prior_offer"] == "96000"
+    assert d.facts["value_at_stake"] == "2000"
+    assert d.resolution == RESOLVED
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,                                       # no draft joined
+        {},                                         # payload with no metadata
+        {"metadata": None},                         # metadata explicitly null
+        {"metadata": {}},                           # metadata without the key
+        {"metadata": {"counter_price": None}},      # key present, null
+        {"metadata": {"counter_price": ""}},        # key present, empty
+        {"metadata": {"counter_price": "about 96k"}},  # unparseable
+        {"metadata": {"counter_price": {"gbp": 96000}}},  # wrong shape
+        {"metadata": "counter_price=96000"},        # metadata not an object
+        "not json at all",                          # payload not an object
+        # The supplier's OWN number must never become "our" prior offer.
+        {"price": 94000, "target_price": 94000, "offer_price": 94000},
+    ],
+)
+def test_an_unusable_prior_offer_is_absent_not_zero(payload):
+    assert _engine()._prior_offer(payload) == (None, None)
+
+
+def test_an_absent_prior_offer_still_escalates_after_wiring():
+    """The wiring must not have turned the missing-prior gate off."""
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    row = {**REPLY_ROW, "prior_price": None, "prior_price_source": None}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED
+    assert "no prior offer" in d.rationale
+    assert "value_at_stake" not in d.facts
+
+
+# ----------------------------------------------------------------------------
+# All three governed gate inputs are None-able from resolve_authority while
+# governed=True. All three must fail closed, for the same reason.
+# ----------------------------------------------------------------------------
+def test_a_missing_governed_confidence_minimum_escalates():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"], "min_intent_confidence": None}
+    eng = _engine(intent=ReplyIntent("acknowledge", 1.0, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED, "an absent minimum is not a minimum of zero"
+    assert "min_intent_confidence" in d.rationale
+    assert d.facts["min_intent_confidence"] is None
+
+
+def test_a_missing_governed_thread_cap_escalates():
+    auth = {**GOVERNED, "auto_intents": ["acknowledge"],
+            "max_auto_replies_per_thread": None}
+    row = {**REPLY_ROW, "price": None, "prior_price": None}
+    eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
+    d = eng.decide_email_reply("1", authority=auth)
+    assert d.resolution == ESCALATED, "an absent cap is not an unlimited one"
+    assert "max_auto_replies_per_thread" in d.rationale
+    assert d.facts["max_auto_replies_per_thread"] is None
 
 
 def test_deal_id_is_not_invented():
