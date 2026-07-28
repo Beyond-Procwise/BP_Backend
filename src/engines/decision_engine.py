@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
@@ -601,16 +602,25 @@ class DecisionEngine:
                 response_id, authority=authority, requested=requested
             )
         except Exception as exc:  # noqa: BLE001 - fail CLOSED, and say what broke
-            logger.exception("email reply decision failed for %s", response_id)
+            # The exception type, its message and the traceback go to the LOG, under a
+            # short reference that also appears in the rationale -- so the failure is
+            # fully diagnosable without a database driver's text (which routinely names
+            # tables and columns) rendering on a buyer's review screen. The reference is
+            # what connects the two.
+            ref = uuid.uuid4().hex[:8]
+            logger.exception(
+                "email reply decision failed for %s [ref %s]: %s: %s",
+                response_id, ref, type(exc).__name__, exc,
+            )
             return Decision(
                 subject_type=self._EMAIL_SUBJECT_TYPE,
                 subject_id=str(response_id),
                 decision="escalate",
                 resolution=ESCALATED,
                 rationale=(
-                    f"Deciding this reply failed with "
-                    f"{type(exc).__name__}: {str(exc)[:200]}. Nothing is sent on a "
-                    "decision that did not complete."
+                    f"Deciding supplier reply {response_id} did not finish, so nothing "
+                    "was sent and it needs a person. The technical details were recorded "
+                    f"for support under reference {ref}."
                 ),
                 policy_id=(authority or {}).get("policy_id"),
                 policy_name=(authority or {}).get("policy_name"),
@@ -679,7 +689,8 @@ class DecisionEngine:
         #    that stops a missing approval threshold from auto-approving money.
         if not authority or not authority.get("governed"):
             reason = (authority or {}).get("reason") or (
-                "no send authority was resolved for policy 'email_reply_autonomy'"
+                "no authority to answer replies unattended was resolved from the "
+                "policy 'email_reply_autonomy'"
             )
             facts["authority"] = "ungoverned"
             evidence.append(Evidence(fact="authority", value="ungoverned",
@@ -730,28 +741,36 @@ class DecisionEngine:
             reference=(authority.get("reason") if min_conf is None
                        else (str(policy_id) if policy_id is not None else None))))
         if min_conf is None:
+            # Plain English, and still re-derivable: it names the policy and says which
+            # of its settings is missing, in words rather than as a config key. The
+            # person reading this screen is not the person who edits the policy file.
             return _escalate(
-                f"No governed minimum confidence was resolved under "
-                f"{policy_name or 'the autonomy policy'} (min_intent_confidence is "
-                f"missing), so the classifier's {intent.confidence:.2f} cannot be tested "
-                "against anything. An absent minimum is not a minimum of zero."
+                f"{policy_name or 'The autonomy policy'} sets no minimum confidence for "
+                f"answering a reply unattended, so how sure the agent is about this one "
+                f"({intent.confidence:.2f}) cannot be tested against anything. A missing "
+                "minimum is not a minimum of zero."
             )
         if intent.confidence < float(min_conf):
             return _escalate(
-                f"Confidence in '{intent.intent}' is {intent.confidence:.2f}, below the "
-                f"governed minimum of {float(min_conf):.2f}."
+                f"How sure the agent is that this reply is about '{intent.intent}' is "
+                f"{intent.confidence:.2f}, below the minimum of {float(min_conf):.2f} "
+                f"that {policy_name or 'the autonomy policy'} requires before a reply "
+                "may be answered unattended."
             )
 
         # 3. Governed intent lists.
         if intent.intent in (authority.get("escalate_intents") or []):
             return _escalate(
-                f"'{intent.intent}' is a governed escalate-only intent under "
-                f"{policy_name or 'the autonomy policy'}: a human decides this one."
+                f"'{intent.intent}' is a kind of reply that "
+                f"{policy_name or 'the autonomy policy'} always puts in front of a "
+                "person, whatever it says: a human decides this one."
             )
         if intent.intent not in (authority.get("auto_intents") or []):
             return _escalate(
-                f"'{intent.intent}' is not on the governed auto-reply list, so it goes "
-                "to a human. Widen auto_reply_intents in the policy to change that."
+                f"'{intent.intent}' is not one of the kinds of reply the agent is allowed "
+                f"to answer on its own under {policy_name or 'the autonomy policy'}, so "
+                "it goes to a human. Adding it to that policy's list of replies the agent "
+                "may answer unattended would change that."
             )
 
         # 4. Value at stake against the governed spend limit. Derived, and the
@@ -825,12 +844,10 @@ class DecisionEngine:
                     source="proc.bp_policy(email_reply_autonomy).rules.defer_value_limit_to",
                     reference=authority.get("reason")))
                 return _escalate(
-                    f"The reply carries a price of {priced} but no governed "
-                    f"value limit was resolved under "
-                    f"{policy_name or 'the autonomy policy'} (limit_gbp is missing, so "
-                    "the policy defers to no approval threshold). There is nothing to "
-                    "test the amount against, and an absent limit is not an unlimited "
-                    "one, so a human decides."
+                    f"The reply carries a price of {priced} but "
+                    f"{policy_name or 'the autonomy policy'} points at no approval "
+                    "threshold for amounts, so there is no limit to test it against. An "
+                    "absent limit is not an unlimited one, so a human decides."
                 )
 
             facts["value_limit_gbp"] = str(limit)
@@ -1009,11 +1026,10 @@ class DecisionEngine:
                        else (str(policy_id) if policy_id is not None else None))))
         if cap is None:
             return _escalate(
-                f"No governed cap on unattended replies per thread was resolved under "
-                f"{policy_name or 'the autonomy policy'} "
-                "(max_auto_replies_per_thread is missing), so there is nothing to stop "
-                "the agent answering this thread indefinitely. An absent cap is not an "
-                "unlimited one."
+                f"{policy_name or 'The autonomy policy'} sets no limit on how many times "
+                "the agent may answer one thread unattended, so there is nothing to stop "
+                "it answering this one indefinitely. A missing cap is not an unlimited "
+                "one."
             )
 
         facts["auto_replies_on_thread"] = already

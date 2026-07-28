@@ -103,7 +103,9 @@ def test_low_confidence_escalates():
     # Not just "escalated" -- escalated FOR THIS REASON. An always-escalate
     # implementation satisfies the resolution assertion on its own.
     assert "0.40" in d.rationale
-    assert "below the governed minimum of 0.80" in d.rationale
+    assert "below the minimum of 0.80" in d.rationale
+    # Which governed setting drove it stays visible, in words.
+    assert "EmailReplyAutonomyPolicy" in d.rationale
 
 
 # ----------------------------------------------------------------------------
@@ -118,10 +120,13 @@ def test_an_intent_on_neither_governed_list_is_denied_by_default():
     eng = _engine(intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=GOVERNED)
     assert d.resolution == ESCALATED
-    assert "is not on the governed auto-reply list" in d.rationale
-    assert "Widen auto_reply_intents in the policy to change that." in d.rationale
+    assert "is not one of the kinds of reply the agent is allowed to answer on its own" in d.rationale
+    # Says which governed setting to change, in words rather than as a config key -- the
+    # person reading this screen is not the person who edits the policy.
+    assert "list of replies the agent may answer unattended" in d.rationale
+    assert "auto_reply_intents" not in d.rationale
     # Distinctively NOT the escalate-list gate's wording.
-    assert "escalate-only intent" not in d.rationale
+    assert "always puts in front of a person" not in d.rationale
 
 
 def test_the_escalate_list_wins_when_an_intent_is_on_both_lists():
@@ -133,10 +138,11 @@ def test_the_escalate_list_wins_when_an_intent_is_on_both_lists():
                                      "We can offer 94,000.00 GBP", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == ESCALATED, "the escalate list must take precedence"
-    assert "is a governed escalate-only intent under" in d.rationale
+    assert "always puts in front of a person" in d.rationale
+    assert "EmailReplyAutonomyPolicy" in d.rationale, "which policy decided must stay visible"
     # Distinctively NOT the default-deny gate's wording, which would also mention
     # price_change and would also escalate -- that ambiguity is what hid this.
-    assert "is not on the governed auto-reply list" not in d.rationale
+    assert "is not one of the kinds of reply" not in d.rationale
 
 
 def test_an_ungrounded_classification_escalates():
@@ -287,7 +293,9 @@ def test_a_priced_reply_with_no_resolved_limit_escalates():
     eng = _engine(intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == ESCALATED, "an absent limit is not an unlimited one"
-    assert "no governed value limit" in d.rationale
+    # Plain English: which policy, and what it does not set -- no config key.
+    assert "points at no approval threshold for amounts" in d.rationale
+    assert "limit_gbp" not in d.rationale
     # The absence is itself recorded, with the source that should have carried it --
     # otherwise the escalation could not be re-derived from the evidence.
     assert d.facts["value_limit_gbp"] is None
@@ -305,8 +313,8 @@ def test_a_priced_reply_with_no_resolved_limit_escalates_even_within_any_amount(
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == ESCALATED
     # Escalated for THIS reason, not merely escalated.
-    assert "no governed value limit was resolved" in d.rationale
-    assert "an absent limit is not an unlimited one" in d.rationale
+    assert "points at no approval threshold for amounts" in d.rationale
+    assert "An absent limit is not an unlimited one" in d.rationale
 
 
 def test_an_unpriced_reply_does_not_need_a_limit():
@@ -688,16 +696,39 @@ def test_a_malformed_authority_block_escalates_rather_than_raising(broken):
     assert d.subject_type == "email_reply"
 
 
-def test_a_raising_fetch_escalates_rather_than_propagating():
+def test_a_raising_fetch_escalates_rather_than_propagating(caplog):
+    """Fail closed, say why, and keep the driver's words off the review screen.
+
+    A psycopg error message routinely quotes the failing statement -- table and column
+    names included -- and this rationale renders verbatim on a buyer's card. The type,
+    the message and the traceback belong in the log; the reader gets a sentence and a
+    reference that ties the two together.
+    """
+    import logging
     eng = _engine()
     def boom(_id):
-        raise RuntimeError("connection reset")
+        raise RuntimeError('relation "proc.supplier_response" does not exist')
     eng._fetch_email_reply = boom  # type: ignore
-    d = eng.decide_email_reply("1", authority=GOVERNED)
+    with caplog.at_level(logging.ERROR, logger="engines.decision_engine"):
+        d = eng.decide_email_reply("1", authority=GOVERNED)
     assert d.resolution == ESCALATED
-    assert "RuntimeError" in d.rationale
-    assert "connection reset" in d.rationale
-    assert "did not complete" in d.rationale
+    # It still says why it escalated, and which reply.
+    assert "did not finish" in d.rationale
+    assert "nothing" in d.rationale.lower() and "sent" in d.rationale
+    assert "supplier reply 1" in d.rationale
+    # But no driver text, and nothing that names storage.
+    assert "RuntimeError" not in d.rationale
+    assert "proc." not in d.rationale
+    assert "relation" not in d.rationale
+    # The information is not lost: type, message and reference are all in the log,
+    # and the reference in the rationale is what finds them.
+    logged = caplog.text
+    assert "RuntimeError" in logged
+    assert 'relation "proc.supplier_response" does not exist' in logged
+    import re as _re
+    ref = _re.search(r"reference ([0-9a-f]{8})", d.rationale)
+    assert ref, "the rationale must carry the reference that finds the log entry"
+    assert ref.group(1) in logged
 
 
 def test_a_missing_governed_confidence_minimum_escalates():
@@ -705,7 +736,11 @@ def test_a_missing_governed_confidence_minimum_escalates():
     eng = _engine(intent=ReplyIntent("acknowledge", 1.0, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == ESCALATED, "an absent minimum is not a minimum of zero"
-    assert "min_intent_confidence" in d.rationale
+    # Plain English on screen; the config key stays in `facts`, where a developer
+    # re-deriving the decision can still find it.
+    assert "sets no minimum confidence for answering a reply unattended" in d.rationale
+    assert "min_intent_confidence" not in d.rationale
+    assert "EmailReplyAutonomyPolicy" in d.rationale, "which policy decided must stay visible"
     assert d.facts["min_intent_confidence"] is None
 
 
@@ -716,7 +751,9 @@ def test_a_missing_governed_thread_cap_escalates():
     eng = _engine(row=row, intent=ReplyIntent("acknowledge", 0.99, "Thank you.", True))
     d = eng.decide_email_reply("1", authority=auth)
     assert d.resolution == ESCALATED, "an absent cap is not an unlimited one"
-    assert "max_auto_replies_per_thread" in d.rationale
+    assert "sets no limit on how many times the agent may answer one thread" in d.rationale
+    assert "max_auto_replies_per_thread" not in d.rationale
+    assert "EmailReplyAutonomyPolicy" in d.rationale, "which policy decided must stay visible"
     assert d.facts["max_auto_replies_per_thread"] is None
 
 
@@ -756,3 +793,76 @@ def test_an_unobtainable_classifier_escalates_instead_of_raising():
     d = eng.decide_email_reply("1", authority=GOVERNED)
     assert d.resolution == ESCALATED
     assert "ground" in d.rationale.lower()
+
+
+# ----------------------------------------------------------------------------
+# Fix round 1 (C): every rationale on this path is read by a buyer on the Action
+# Centre card and in the reply-review panel. None of them may hand that person a
+# storage identifier or a policy config key to decode -- and the sweep is here,
+# across the gates, rather than one assertion per gate, because the failure mode is
+# somebody adding a NEW gate with a key in its sentence.
+#
+# Each rationale must still name the policy that decided, so the decision stays
+# re-derivable from what is on screen.
+# ----------------------------------------------------------------------------
+_JARGON = [
+    "proc.", "supplier_response", "bp_decision", "draft_rfq_emails",
+    "min_intent_confidence", "max_auto_replies_per_thread", "limit_gbp",
+    "auto_reply_intents", "auto_intents", "escalate_intents",
+    "defer_value_limit_to", "default_threshold_gbp",
+]
+
+
+def _every_escalation():
+    """One escalation per gate, keyed by the gate's name."""
+    ack = ReplyIntent("acknowledge", 0.99, "Thank you.", True)
+    widened = {**GOVERNED, "auto_intents": ["acknowledge"]}
+    out = {}
+    out["ungoverned"] = _engine().decide_email_reply("1", authority=None)
+    out["escalate_list"] = _engine(
+        intent=ReplyIntent("price_change", 0.99, "We can offer 94,000.00 GBP", True)
+    ).decide_email_reply("1", authority=GOVERNED)
+    out["not_auto_listed"] = _engine(intent=ack).decide_email_reply("1", authority=GOVERNED)
+    out["low_confidence"] = _engine(
+        intent=ReplyIntent("acknowledge", 0.4, "Thank you.", True)
+    ).decide_email_reply("1", authority=widened)
+    out["no_min_confidence"] = _engine(intent=ack).decide_email_reply(
+        "1", authority={**widened, "min_intent_confidence": None})
+    out["no_value_limit"] = _engine(intent=ack).decide_email_reply(
+        "1", authority={**widened, "limit_gbp": None})
+    out["no_thread_cap"] = _engine(
+        row={**REPLY_ROW, "price": None, "prior_price": None}, intent=ack
+    ).decide_email_reply("1", authority={**widened, "max_auto_replies_per_thread": None})
+    out["thread_cap_hit"] = _engine(
+        row={**REPLY_ROW, "auto_replies_on_thread": 2}, intent=ack
+    ).decide_email_reply("1", authority=widened)
+    out["ungrounded"] = _engine(
+        intent=ReplyIntent("acknowledge", 0.99, "invented sentence", False)
+    ).decide_email_reply("1", authority=widened)
+    out["missing_reply"] = _missing_reply_decision()
+    return out
+
+
+def _missing_reply_decision():
+    eng = _engine()
+    eng._fetch_email_reply = lambda _id: None  # type: ignore
+    return eng.decide_email_reply("999", authority=GOVERNED)
+
+
+@pytest.mark.parametrize("gate", sorted(_every_escalation().keys()))
+def test_no_rationale_hands_the_reader_an_identifier_to_decode(gate):
+    d = _every_escalation()[gate]
+    assert d.resolution == ESCALATED
+    for token in _JARGON:
+        assert token not in d.rationale, f"{gate} leaked '{token}': {d.rationale}"
+
+
+@pytest.mark.parametrize("gate", [
+    "escalate_list", "not_auto_listed", "low_confidence", "no_min_confidence",
+    "no_value_limit", "no_thread_cap",
+])
+def test_a_policy_driven_escalation_still_names_the_policy(gate):
+    """Plain English must not cost re-derivability: if a governed setting drove the
+    outcome, the sentence says which policy that was."""
+    d = _every_escalation()[gate]
+    assert "EmailReplyAutonomyPolicy" in d.rationale

@@ -9,6 +9,9 @@ POST /decisions/email-reply/{id}        — decide whether to send a supplier re
                                            unattended, or escalate it.
 POST /decisions/email-reply/{id}/action — carry out a human's send/reject on an
                                            already-decided, escalated email reply.
+GET  /decisions/email-reply/{id}/message — the supplier's inbound message behind an
+                                           escalated email decision, so a person can
+                                           read it beside the reply they are approving.
 GET  /decisions                         — the escalation queue (Todo list).
 GET  /decisions/{decision_id}           — the decision WITH the evidence that
                                            produced it.
@@ -209,6 +212,126 @@ def act_on_email_reply(
     if result.get("error") and not result.get("requires_override"):
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+@router.get("/email-reply/{decision_id}/message")
+def get_email_reply_message(
+    decision_id: int,
+    agent_nick=Depends(get_agent_nick),
+) -> Dict[str, Any]:
+    """The supplier's own message behind an escalated email decision.
+
+    Reviewing a reply without the message it answers is not reviewing, and until this
+    route existed there was no way to read one: the text is stored, but nothing served
+    it. The review panel shows what comes back here beside the reply a person is about
+    to send.
+
+    SCOPED THE SAME WAY AS THE ACTION ROUTE, and for the same reason: the lookup
+    requires `decision_id` AND subject_type 'email_reply', in SQL. Email decision ids
+    and extraction-finding ids are independent sequences that both start at 1, so an
+    unscoped lookup by id is a live path to reading (or acting on) something entirely
+    unrelated -- a mistake this plan has already had to fix once. A finding's id
+    presented here is a 404, not a different document.
+
+    HONEST ABOUT ABSENCE. A decision whose message cannot be found comes back 200 with
+    `available: false` and a plain-English `note`, not an error and never a synthesised
+    body: the panel renders the absence. 404 is reserved for "there is no such
+    email-reply decision", which is a different statement.
+
+    Nothing in the response -- including every error path -- names a table, a column or
+    a driver. The keys are the parts of an email (`from`, `subject`, `received_at`,
+    `body`), which is what the reader is looking at.
+    """
+    # Taken from the engine rather than repeated as a literal here: the scoping value
+    # and the value the decision was WRITTEN with must be the same string, always.
+    from engines.decision_engine import DecisionEngine
+
+    subject_type = DecisionEngine._EMAIL_SUBJECT_TYPE
+
+    # The decision first: it is also the authorisation check. Its subject_id is the
+    # thread identifier the message is found by.
+    decision_sql = """
+        SELECT decision_id, subject_id, supplier_id, deal_id
+          FROM proc.bp_decision
+         WHERE decision_id = %s AND subject_type = %s
+    """
+    # Preferred match is the thread identifier the decision carries. The id fallback
+    # covers the one case where a decision recorded no thread identifier because the
+    # reply itself could not be found -- it is the same identifier the decision was
+    # made from, not a guess at a different message. ORDER BY prefers a thread match
+    # and then the most recent message on it, so a multi-round thread resolves to the
+    # message the escalation is about rather than an arbitrary one.
+    message_sql = """
+        SELECT sr.response_from, sr.response_subject, sr.response_text, sr.response_body,
+               sr.received_time, sr.response_date, sr.supplier_id
+          FROM proc.supplier_response sr
+         WHERE sr.unique_id = %s OR sr.id::text = %s
+         ORDER BY (sr.unique_id = %s) DESC, sr.id DESC
+         LIMIT 1
+    """
+    try:
+        with agent_nick.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(decision_sql, (decision_id, subject_type))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=(
+                            f"There is no supplier-reply decision {decision_id}. "
+                            "Nothing was read."
+                        ),
+                    )
+                cols = [c[0] for c in cur.description]
+                decision = dict(zip(cols, row))
+                subject_id = str(decision.get("subject_id") or "")
+
+                message: Optional[Dict[str, Any]] = None
+                if subject_id:
+                    cur.execute(message_sql, (subject_id, subject_id, subject_id))
+                    found = cur.fetchone()
+                    if found:
+                        mcols = [c[0] for c in cur.description]
+                        raw = dict(zip(mcols, found))
+                        received = raw.get("received_time") or raw.get("response_date")
+                        message = {
+                            "from": raw.get("response_from") or None,
+                            "subject": raw.get("response_subject") or None,
+                            # `response_text` is the body the classifier read, so it is
+                            # the body a reviewer should be shown -- the same words the
+                            # decision was made from. Falls back to the alternate stored
+                            # body only when it is empty.
+                            "body": raw.get("response_text") or raw.get("response_body") or None,
+                            "received_at": (
+                                received.isoformat()
+                                if received is not None and not isinstance(received, str)
+                                else received
+                            ),
+                            "supplier": raw.get("supplier_id") or None,
+                        }
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        # The detail stays in the log; the reader gets a sentence.
+        logger.exception("failed to read the supplier message for decision %s", decision_id)
+        raise HTTPException(
+            status_code=500,
+            detail="The supplier's message could not be read. Nothing was changed.",
+        )
+
+    available = bool(message and message.get("body"))
+    return {
+        "decision_id": decision_id,
+        "subject_id": subject_id or None,
+        "supplier_id": decision.get("supplier_id"),
+        "deal_id": decision.get("deal_id"),
+        "available": available,
+        "message": message if available else None,
+        "note": None if available else (
+            "The supplier's message could not be found for this decision, so there is "
+            "nothing to show. What the decision was made on is still recorded against it."
+        ),
+    }
 
 
 @router.get("")

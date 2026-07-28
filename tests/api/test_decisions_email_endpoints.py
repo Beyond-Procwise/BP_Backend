@@ -632,3 +632,201 @@ def test_total_reflects_the_true_server_side_count_not_the_page_size():
     assert len(body["data"]) == 2
     assert body["total"] == 3
     assert body["total"] > len(body["data"])
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 (A): GET /decisions/email-reply/{decision_id}/message
+#
+# The supplier's own message, so a person can read it beside the reply they are
+# approving. This is the feature the restored panel exists for; the text was stored
+# and nothing served it.
+#
+# The fake below answers the route's two statements and NOTHING else -- an
+# unexpected statement is an assertion failure, which is how these tests can claim
+# the lookup really is scoped by decision_id AND subject_type rather than merely
+# looking like it in the source.
+# ---------------------------------------------------------------------------
+
+DECISION_ROW = {
+    "decision_id": 7, "subject_type": "email_reply",
+    "subject_id": "089580f2-PeopleFirst", "supplier_id": "PeopleFirst HR Solutions Ltd",
+    "deal_id": None,
+}
+FINDING_ROW = {
+    "decision_id": 7, "subject_type": "finding", "subject_id": "421",
+    "supplier_id": None, "deal_id": None,
+}
+REPLY_ROW = {
+    "unique_id": "089580f2-PeopleFirst", "id": 1,
+    "response_from": "billing@peoplefirst.invalid",
+    "response_subject": "RE: Negotiation",
+    "response_text": "Thank you for the proposal. We can offer 94,000.00 GBP with 45 day payment terms",
+    "response_body": None,
+    "received_time": None,
+    "response_date": None,
+    "supplier_id": "PeopleFirst HR Solutions Ltd",
+}
+
+
+class _MessageCursor:
+    def __init__(self, decisions, replies, raise_on_message=False):
+        self.decisions, self.replies = decisions, replies
+        self.raise_on_message = raise_on_message
+        self.executed = []
+        self.description = None
+        self._result = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        norm = " ".join((sql or "").split())
+        self.executed.append((norm, params or ()))
+        if "FROM proc.bp_decision" in norm:
+            # The scope is the point: BOTH the id and the subject type, in SQL.
+            assert "decision_id = %s AND subject_type = %s" in norm
+            decision_id, subject_type = params
+            match = next((d for d in self.decisions
+                          if d["decision_id"] == decision_id
+                          and d["subject_type"] == subject_type), None)
+            self.description = [("decision_id",), ("subject_id",), ("supplier_id",), ("deal_id",)]
+            self._result = None if match is None else (
+                match["decision_id"], match["subject_id"], match["supplier_id"], match["deal_id"])
+            return
+        if "FROM proc.supplier_response" in norm:
+            if self.raise_on_message:
+                raise RuntimeError('relation "proc.supplier_response" does not exist')
+            subject_id = params[0]
+            match = next((r for r in self.replies
+                          if r["unique_id"] == subject_id or str(r["id"]) == str(subject_id)), None)
+            self.description = [("response_from",), ("response_subject",), ("response_text",),
+                                ("response_body",), ("received_time",), ("response_date",),
+                                ("supplier_id",)]
+            self._result = None if match is None else (
+                match["response_from"], match["response_subject"], match["response_text"],
+                match["response_body"], match["received_time"], match["response_date"],
+                match["supplier_id"])
+            return
+        raise AssertionError(f"unexpected SQL on the message route: {norm}")
+
+    def fetchone(self):
+        return self._result
+
+
+class _MessageConn:
+    def __init__(self, cur):
+        self._cur = cur
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def cursor(self):
+        return self._cur
+
+
+def _message_client(decisions, replies, raise_on_message=False):
+    cur = _MessageCursor(decisions, replies, raise_on_message)
+    app = FastAPI()
+    app.include_router(decisions_router.router)
+    app.state.agent_nick = SimpleNamespace(
+        get_db_connection=lambda: _MessageConn(cur),
+        policy_engine=SimpleNamespace(get_policy=lambda slug: None),
+    )
+    app.state._cur = cur
+    return TestClient(app), cur
+
+
+def test_the_message_route_returns_the_supplier_s_own_words():
+    client, _cur = _message_client([DECISION_ROW], [REPLY_ROW])
+    res = client.get("/decisions/email-reply/7/message")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["available"] is True
+    assert body["note"] is None
+    msg = body["message"]
+    assert msg["from"] == "billing@peoplefirst.invalid"
+    assert msg["subject"] == "RE: Negotiation"
+    assert msg["body"].startswith("Thank you for the proposal.")
+    assert body["supplier_id"] == "PeopleFirst HR Solutions Ltd"
+    assert body["subject_id"] == "089580f2-PeopleFirst"
+
+
+def test_the_message_lookup_is_scoped_by_subject_type_not_by_id_alone():
+    """A finding's decision_id must not reach an email message. The two id sequences
+    are independent and both start at 1 -- an unscoped lookup by id is the same class
+    of bug that already had to be fixed on the card path."""
+    client, cur = _message_client([FINDING_ROW], [REPLY_ROW])
+    res = client.get("/decisions/email-reply/7/message")
+    assert res.status_code == 404
+    assert "7" in res.json()["detail"]
+    # And it never went looking for a message at all.
+    assert not any("supplier_response" in sql for sql, _p in cur.executed)
+    # The scope really was in the parameters, not filtered afterwards in Python.
+    assert cur.executed[0][1] == (7, "email_reply")
+
+
+def test_an_unknown_decision_is_a_404_and_names_nothing_internal():
+    client, _cur = _message_client([], [])
+    res = client.get("/decisions/email-reply/404/message")
+    assert res.status_code == 404
+    detail = res.json()["detail"]
+    assert "404" in detail
+    for token in ("proc.", "supplier_response", "bp_decision", "subject_type"):
+        assert token not in detail
+
+
+def test_a_missing_message_is_an_honest_absence_not_an_error_or_an_invention():
+    """The decision exists; its message does not. That is 200 + available:false, so
+    the panel renders the absence -- never a synthesised body, never a 500."""
+    client, _cur = _message_client([DECISION_ROW], [])
+    res = client.get("/decisions/email-reply/7/message")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["available"] is False
+    assert body["message"] is None
+    assert body["note"] and "could not be found" in body["note"]
+    for token in ("proc.", "supplier_response", "response_text"):
+        assert token not in body["note"]
+
+
+def test_a_stored_row_with_no_body_reads_as_unavailable():
+    """Headers without a body is not a message to review. It must not render as an
+    empty quotation with a From line implying there is something there."""
+    client, _cur = _message_client([DECISION_ROW], [{**REPLY_ROW, "response_text": None,
+                                                    "response_body": None}])
+    body = client.get("/decisions/email-reply/7/message").json()
+    assert body["available"] is False
+    assert body["message"] is None
+
+
+def test_a_read_failure_says_so_without_quoting_the_driver():
+    client, _cur = _message_client([DECISION_ROW], [REPLY_ROW], raise_on_message=True)
+    res = client.get("/decisions/email-reply/7/message")
+    assert res.status_code == 500
+    detail = res.json()["detail"]
+    assert "could not be read" in detail
+    # The driver's message named a table; the reader must not see it.
+    for token in ("proc.", "supplier_response", "relation", "RuntimeError"):
+        assert token not in detail
+
+
+def test_the_received_time_is_serialised_and_falls_back_to_the_sent_date():
+    from datetime import datetime, timezone
+    when = datetime(2026, 7, 28, 9, 30, tzinfo=timezone.utc)
+    client, _cur = _message_client([DECISION_ROW], [{**REPLY_ROW, "received_time": when}])
+    assert client.get("/decisions/email-reply/7/message").json()["message"]["received_at"] \
+        == when.isoformat()
+    # No received time recorded -> the date the supplier's mail carries, if any.
+    client, _cur = _message_client([DECISION_ROW], [{**REPLY_ROW, "received_time": None,
+                                                     "response_date": when}])
+    assert client.get("/decisions/email-reply/7/message").json()["message"]["received_at"] \
+        == when.isoformat()
+    # Neither recorded -> absent, not "now".
+    client, _cur = _message_client([DECISION_ROW], [REPLY_ROW])
+    assert client.get("/decisions/email-reply/7/message").json()["message"]["received_at"] is None

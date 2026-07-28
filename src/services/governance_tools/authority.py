@@ -95,13 +95,16 @@ def _resolve_one(
         autonomy = policy_engine.get_policy(autonomy_slug)
     except Exception:  # noqa: BLE001 - fail CLOSED, and say why
         log.exception("authority: autonomy policy lookup failed for %s", agent)
-        return ungoverned_block(agent, f"policy lookup for '{autonomy_slug}' raised")
+        return ungoverned_block(
+            agent, f"the governed policy '{autonomy_slug}' could not be read"
+        )
 
     rules = _rules(autonomy)
     if not autonomy or not rules:
         return ungoverned_block(
             agent,
-            f"no usable governed policy '{autonomy_slug}' (rules absent or not an object)",
+            f"there is no usable governed policy '{autonomy_slug}' -- it carries no "
+            "rules to apply",
         )
 
     limit_gbp: Optional[str] = None
@@ -112,14 +115,16 @@ def _resolve_one(
             approval = policy_engine.get_policy(str(deferred) or approval_slug)
         except Exception:  # noqa: BLE001
             log.exception("authority: approval policy lookup failed for %s", agent)
-            return ungoverned_block(agent, f"policy lookup for '{deferred}' raised")
+            return ungoverned_block(
+                agent, f"the governed policy '{deferred}' could not be read"
+            )
         approval_rules = _rules(approval)
         threshold = approval_rules.get("default_threshold_gbp")
         if threshold is None:
             return ungoverned_block(
                 agent,
-                f"autonomy defers its value limit to '{deferred}', which has no "
-                "default_threshold_gbp -- there is no limit to enforce",
+                f"the autonomy policy takes its value limit from '{deferred}', which "
+                "sets no threshold amount -- so there is no limit to enforce",
             )
         limit_gbp = str(threshold)
         # NOT `or "GBP"`. Defaulting the denomination fabricates one: a limit whose
