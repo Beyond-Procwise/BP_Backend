@@ -1,0 +1,167 @@
+"""What is this agent allowed to send on its own -- resolved, in parallel, fail-closed.
+
+This is deliberately NOT `envelope.resolve_governance`, and the difference is the
+whole point of a separate module:
+
+  * `envelope` is FAIL-OPEN. A governance error there must never break a workflow,
+    because what it carries is prompts and descriptive policy summaries.
+  * this is FAIL-CLOSED. What it carries is an authority limit. A missing limit is
+    not "carry on unlimited", it is "stop and ask a human" -- the same rule
+    DecisionEngine already applies to a missing approval threshold, and the exact
+    mistake ApprovalsAgent once made by defaulting a spend limit to 1000.
+
+Do not "tidy" these two into one module. `governed: False` here means escalate --
+there is no other reading of it. Every failure path (missing policy, missing
+deferred spend limit, unparseable rules, a raising policy engine, a dead worker
+thread) must produce `governed: False`, never a permissive default.
+
+It also resolves through `PolicyEngine.get_policy()` -- the engine's own selection
+logic -- rather than a static workflow->agent map, so the row reported is the row
+that would genuinely apply at run time. `node_governance` says plainly that it
+cannot make that claim; this can, because it asks the engine.
+"""
+from __future__ import annotations
+
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Sequence
+
+log = logging.getLogger(__name__)
+
+DEFAULT_AUTONOMY_SLUG = "email_reply_autonomy"
+DEFAULT_APPROVAL_SLUG = "approval_threshold"
+
+# Resolution is IO-bound (one policy lookup per agent) and the agent count per run
+# is small; a handful of threads is plenty and keeps the DB pool calm.
+_MAX_WORKERS = 8
+
+
+def _ungoverned(agent: str, reason: str) -> Dict[str, Any]:
+    """The fail-closed block. Every field a caller reads is present and empty."""
+    return {
+        "agent": agent,
+        "governed": False,
+        "slug": None,
+        "policy_id": None,
+        "policy_name": None,
+        "auto_intents": [],
+        "escalate_intents": [],
+        "limit_gbp": None,
+        "limit_currency": None,
+        "max_auto_replies_per_thread": None,
+        "min_intent_confidence": None,
+        "reason": reason,
+    }
+
+
+def _rules(policy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Rule body out of PolicyEngine's normalised shape (same accessor order as
+    DecisionEngine._rules -- one convention, not two)."""
+    if not policy:
+        return {}
+    details = policy.get("details") or policy.get("policy_details") or {}
+    if not isinstance(details, dict):
+        return {}
+    rules = details.get("rules") or policy.get("rules") or {}
+    return rules if isinstance(rules, dict) else {}
+
+
+def _ids(policy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    raw = (policy or {}).get("raw_row") or {}
+    return {
+        "policy_id": raw.get("policy_id"),
+        "policy_name": raw.get("policy_name") or (policy or {}).get("policyName"),
+    }
+
+
+def _str_list(value: Any) -> List[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(v) for v in value if v is not None]
+
+
+def _resolve_one(
+    policy_engine: Any, agent: str, autonomy_slug: str, approval_slug: str
+) -> Dict[str, Any]:
+    try:
+        autonomy = policy_engine.get_policy(autonomy_slug)
+    except Exception:  # noqa: BLE001 - fail CLOSED, and say why
+        log.exception("authority: autonomy policy lookup failed for %s", agent)
+        return _ungoverned(agent, f"policy lookup for '{autonomy_slug}' raised")
+
+    rules = _rules(autonomy)
+    if not autonomy or not rules:
+        return _ungoverned(
+            agent,
+            f"no usable governed policy '{autonomy_slug}' (rules absent or not an object)",
+        )
+
+    limit_gbp: Optional[str] = None
+    limit_currency: Optional[str] = None
+    deferred = rules.get("defer_value_limit_to")
+    if deferred:
+        try:
+            approval = policy_engine.get_policy(str(deferred) or approval_slug)
+        except Exception:  # noqa: BLE001
+            log.exception("authority: approval policy lookup failed for %s", agent)
+            return _ungoverned(agent, f"policy lookup for '{deferred}' raised")
+        approval_rules = _rules(approval)
+        threshold = approval_rules.get("default_threshold_gbp")
+        if threshold is None:
+            return _ungoverned(
+                agent,
+                f"autonomy defers its value limit to '{deferred}', which has no "
+                "default_threshold_gbp -- there is no limit to enforce",
+            )
+        limit_gbp = str(threshold)
+        limit_currency = str(approval_rules.get("currency") or "GBP")
+
+    ids = _ids(autonomy)
+    confidence = rules.get("min_intent_confidence")
+    cap = rules.get("max_auto_replies_per_thread")
+    return {
+        "agent": agent,
+        "governed": True,
+        # The slug we asked for -- not the policy's own display-name-derived
+        # `slug` attribute, which is a different string (PolicyEngine slugifies
+        # `policy_name`, e.g. "EmailReplyAutonomyPolicy" ->
+        # "email_reply_autonomy_policy"). `autonomy` only reached this point
+        # because that lookup already resolved by alias, so this is accurate.
+        "slug": autonomy_slug,
+        "policy_id": ids["policy_id"],
+        "policy_name": ids["policy_name"],
+        "auto_intents": _str_list(rules.get("auto_reply_intents")),
+        "escalate_intents": _str_list(rules.get("escalate_intents")),
+        "limit_gbp": limit_gbp,
+        "limit_currency": limit_currency,
+        "max_auto_replies_per_thread": int(cap) if cap is not None else None,
+        "min_intent_confidence": float(confidence) if confidence is not None else None,
+        "reason": "resolved from governed policy",
+    }
+
+
+def resolve_authority(
+    policy_engine: Any,
+    agents: Sequence[str],
+    *,
+    autonomy_slug: str = DEFAULT_AUTONOMY_SLUG,
+    approval_slug: str = DEFAULT_APPROVAL_SLUG,
+) -> Dict[str, Dict[str, Any]]:
+    """Resolve each agent's send authority concurrently. Never raises."""
+    names = [str(a) for a in agents if a]
+    if not names:
+        return {}
+    workers = min(_MAX_WORKERS, len(names))
+    out: Dict[str, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="authority") as pool:
+        futures = {
+            pool.submit(_resolve_one, policy_engine, name, autonomy_slug, approval_slug): name
+            for name in names
+        }
+        for future, name in futures.items():
+            try:
+                out[name] = future.result()
+            except Exception:  # noqa: BLE001 - a thread that died is not a licence to send
+                log.exception("authority resolution thread failed for %s", name)
+                out[name] = _ungoverned(name, "authority resolution failed")
+    return out
