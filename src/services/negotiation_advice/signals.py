@@ -106,17 +106,30 @@ def supplier_performance_dict(signals: dict) -> dict:
     return out
 
 
+RISK_ELEVATED = 60.0        # risk_score is a 0-100 scale here, median 49.57
+THIN_MARKET_ALTERNATIVES = 93   # the per-deal median; below it the market is thin
+
+
 def market_context_dict(signals: dict) -> dict:
     """Only keys _score_market_context reads, and only when known.
 
     An uncomputable signal is omitted: the scorer returns (0.0, []) on an empty
     dict, which is the honest "no signal" outcome. Defaulting would invent a nudge.
+
+    Both thresholds are on measured scales. `risk_score` is stored as VARCHAR on
+    a 0-100 scale (min 5.00, median 49.57, max 94.94) — comparing it against 0.6
+    matches 5000 of 5000 suppliers, i.e. always. `alternative_supplier_count` is
+    a per-deal union whose median is 93, so a "thin market" test of <= 2 would
+    never fire.
+
+    The scorer treats "high", "elevated" and "tight" identically, so there is one
+    tier and one string rather than a false distinction.
     """
     out: dict = {}
     alt = signals.get("alternative_supplier_count")
     risk = signals.get("risk_score")
-    if alt is not None and alt <= 2:
-        out["supply_risk"] = "high"
-    elif risk is not None and risk >= 0.6:
+    if alt is not None and alt < THIN_MARKET_ALTERNATIVES:
+        out["supply_risk"] = "elevated"
+    elif risk is not None and risk >= RISK_ELEVATED:
         out["supply_risk"] = "elevated"
     return out

@@ -80,3 +80,20 @@ def test_market_context_flags_high_supply_risk_when_few_alternatives():
 def test_supplier_performance_uses_a_key_the_scorer_reads():
     perf = sg.supplier_performance_dict({"on_time_ratio": 0.72})
     assert set(perf) & {"on_time_delivery", "on_time", "delivery_score", "otif"}
+
+
+def test_risk_threshold_is_on_the_0_to_100_scale():
+    # 0.8 is a low risk on a 0-100 scale and must NOT flag
+    assert "supply_risk" not in sg.market_context_dict(
+        {"alternative_supplier_count": 200, "risk_score": 0.8})
+    # 80 is genuinely high and must flag
+    assert sg.market_context_dict(
+        {"alternative_supplier_count": 200, "risk_score": 80.0})["supply_risk"]
+
+
+def test_thin_market_uses_the_per_deal_scale():
+    # 200 alternatives is a contested market, not a thin one
+    assert "supply_risk" not in sg.market_context_dict(
+        {"alternative_supplier_count": 200, "risk_score": 10.0})
+    assert sg.market_context_dict(
+        {"alternative_supplier_count": 40, "risk_score": 10.0})["supply_risk"]
