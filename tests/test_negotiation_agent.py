@@ -40,6 +40,31 @@ class DummyNick:
             ses_default_sender="noreply@example.com",
             enable_learning=enable_learning,
             hitl_enabled=True,
+            # Do not wait for a supplier who does not exist. Absent these two, the agent
+            # reads its PRODUCTION defaults through getattr -- 900s with a 60s poll -- and
+            # every test here that reaches _await_supplier_responses really does sit in
+            # SupplierResponseWorkflow.await_dispatch_completion for fifteen minutes,
+            # polling a fake DB that will never return a dispatch. Three test modules did
+            # this, which is roughly three quarters of an hour of a full-suite run spent
+            # asleep. Zero is a real deadline (max(0, 0)), so the loop exits on its first
+            # pass having waited nothing -- the same "incomplete" outcome the 900s wait
+            # reached, just without the wait. It must not be None: None means no deadline
+            # at all, and the loop would never end.
+            email_response_timeout_seconds=0,
+            email_response_poll_seconds=0,
+            # The round wait has its own budget, built from a second set of production
+            # defaults: 900s base plus 300s per supplier, so a two-supplier round-1 wait
+            # is twenty-five minutes on its own.
+            #
+            # One second, NOT zero. Zero means opposite things on the two waits this
+            # agent uses: SupplierResponseWorkflow.await_dispatch_completion treats it as
+            # a real deadline that expires at once (None is its "no deadline"), while
+            # _await_responses_with_coordinator does `if loop_timeout and ...`, so zero
+            # is falsy there and the asyncio poll loop never times out at all. A second
+            # is unambiguous under both readings.
+            negotiation_round_base_timeout=1,
+            negotiation_per_supplier_timeout=0,
+            negotiation_max_round_timeout=1,
         )
         self.action_logs: List[Dict[str, Any]] = []
 
