@@ -2281,6 +2281,7 @@ class OpportunityMinerAgent(BaseAgent):
         # "indices": "indices",
         # "shipments": "shipments",
         "supplier_master": "proc.bp_supplier",
+        "deal_overview": "proc.bp_deal_overview",
     }
     TABLES = list(TABLE_MAP.keys())
 
@@ -2936,6 +2937,10 @@ class OpportunityMinerAgent(BaseAgent):
         )
         tables["contracts"] = convert(tables.get("contracts", pd.DataFrame()), ["total_contract_value"])
         tables["shipments"] = convert(tables.get("shipments", pd.DataFrame()), ["logistics_cost"])
+        tables["deal_overview"] = convert(
+            tables.get("deal_overview", pd.DataFrame()),
+            ["quote_total", "po_total", "invoice_total"],
+        )
         return tables
 
     def _apply_index_adjustment(self, tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
@@ -4306,6 +4311,13 @@ class OpportunityMinerAgent(BaseAgent):
                 "ESG Opportunity",
                 self._policy_esg_opportunity,
                 ["esg_scores"],
+            ),
+            "invoice_po_variance_check": entry(
+                "invoice_po_variance_check",
+                "Invoice Overbilling",
+                self._policy_invoice_po_variance,
+                ["variance_threshold_pct"],
+                {"variance_threshold_pct": 10.0},
             ),
         }
 
@@ -5742,6 +5754,101 @@ class OpportunityMinerAgent(BaseAgent):
             policy_id, supplier_id, "Price variance threshold breached", details
         )
         self._default_notifications(notifications)
+        return findings
+
+    def _policy_invoice_po_variance(
+        self,
+        tables: Dict[str, pd.DataFrame],
+        input_data: Dict[str, Any],
+        notifications: set[str],
+        policy_cfg: Dict[str, Any],
+    ) -> List[Finding]:
+        """Flag deals invoiced above their committed PO/quote value.
+
+        proc.bp_deal_overview already reconciles quote/PO/invoice totals per
+        deal, but nothing previously read its price_variance_pct — a deal
+        could be invoiced at 3x its PO value and still show three_way_match
+        true (that flag only checked all three document types exist, not
+        that their amounts agree) with no opportunity ever raised.
+        """
+        findings: List[Finding] = []
+        detector = policy_cfg.get("detector", "Invoice Overbilling")
+        policy_id = policy_cfg.get("policy_id")
+        policy_name = policy_cfg.get("policy_name")
+
+        df = tables.get("deal_overview", pd.DataFrame())
+        if df.empty or "deal_id" not in df.columns:
+            return findings
+
+        threshold_pct = self._to_float(
+            self._get_condition(input_data, "variance_threshold_pct", 10.0)
+        )
+
+        po_col = self._choose_first_column(df, ["po_total_gbp", "po_total"])
+        quote_col = self._choose_first_column(df, ["quote_total_gbp", "quote_total"])
+        invoice_col = self._choose_first_column(
+            df, ["invoice_total_gbp", "invoice_total"]
+        )
+        if invoice_col is None or (po_col is None and quote_col is None):
+            return findings
+
+        df = df.dropna(subset=["deal_id"])
+        for row in df.itertuples(index=False):
+            deal_id = str(getattr(row, "deal_id"))
+            po_total = self._to_float(getattr(row, po_col, None), default=float("nan"))
+            quote_total = self._to_float(
+                getattr(row, quote_col, None), default=float("nan")
+            )
+            invoice_total = self._to_float(
+                getattr(row, invoice_col, None), default=float("nan")
+            )
+            if pd.isna(invoice_total):
+                continue
+
+            anchor = po_total if pd.notna(po_total) and po_total > 0 else quote_total
+            if pd.isna(anchor) or anchor <= 0:
+                continue
+
+            variance_pct = 100.0 * (invoice_total - anchor) / anchor
+            if variance_pct <= threshold_pct:
+                continue
+
+            impact = invoice_total - anchor
+            supplier_id = getattr(row, "supplier_id", None)
+            supplier_name = getattr(row, "supplier_name", None)
+            details = {
+                "deal_id": deal_id,
+                "quote_total": self._to_float(quote_total) if pd.notna(quote_total) else None,
+                "po_total": self._to_float(po_total) if pd.notna(po_total) else None,
+                "invoice_total": self._to_float(invoice_total),
+                "variance_pct": round(variance_pct, 2),
+                "auto_detect": True,
+            }
+            finding = self._build_finding(
+                detector,
+                supplier_id,
+                None,
+                None,
+                impact,
+                details,
+                [deal_id],
+                policy_id=policy_id,
+                policy_name=policy_name,
+            )
+            if supplier_name is not None and not (
+                isinstance(supplier_name, float) and pd.isna(supplier_name)
+            ):
+                finding.supplier_name = str(supplier_name)
+            findings.append(finding)
+            self._record_escalation(
+                policy_id,
+                supplier_id,
+                "Deal invoiced above its committed PO/quote value",
+                details,
+            )
+
+        if findings:
+            self._default_notifications(notifications)
         return findings
 
     def _policy_volume_consolidation(

@@ -1051,6 +1051,99 @@ def test_price_variance_auto_detects_supplier_from_po_history(monkeypatch):
     assert any(event["supplier_id"] == "SI0002" for event in agent._event_log)
 
 
+def test_invoice_po_variance_flags_deal_invoiced_above_po():
+    """A deal invoiced for 3x its PO value must raise a finding — this is the
+    exact shape of DEALV2-005049 (Kestrel Supplies): quote_total == po_total,
+    but invoice_total is 3x that, and nothing previously compared the two."""
+    nick = DummyNick()
+    agent = OpportunityMinerAgent(nick)
+
+    deal_overview = pd.DataFrame(
+        {
+            "deal_id": ["DEALV2-005049", "DEALV2-000001"],
+            "supplier_id": ["SUP-KestrelSupplies8", "SUP-Other1"],
+            "supplier_name": ["Kestrel Supplies", "Other Supplier"],
+            "currency": ["INR", "GBP"],
+            "quote_total": [14563441.10, 5000.0],
+            "po_total": [14563441.10, 5000.0],
+            # DEALV2-000001 is invoiced 2% over its PO — within tolerance.
+            "invoice_total": [43690323.30, 5100.0],
+        }
+    )
+    tables = {"deal_overview": deal_overview}
+    notifications: set[str] = set()
+    policy_cfg = {
+        "policy_id": "oppfinderpolicy_invoice_po_variance_detection",
+        "detector": "Invoice Overbilling",
+        "policy_name": "Invoice Overbilling",
+    }
+    input_data = {"conditions": {"variance_threshold_pct": 10.0}}
+
+    findings = agent._policy_invoice_po_variance(
+        tables, input_data, notifications, policy_cfg
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.supplier_id == "SUP-KestrelSupplies8"
+    assert finding.calculation_details["deal_id"] == "DEALV2-005049"
+    assert finding.calculation_details["variance_pct"] == pytest.approx(200.0, abs=0.1)
+    assert finding.financial_impact_gbp == pytest.approx(
+        43690323.30 - 14563441.10, rel=1e-6
+    )
+
+
+def test_invoice_po_variance_ignores_deals_within_threshold():
+    nick = DummyNick()
+    agent = OpportunityMinerAgent(nick)
+
+    deal_overview = pd.DataFrame(
+        {
+            "deal_id": ["DEALV2-000001"],
+            "supplier_id": ["SUP-Other1"],
+            "supplier_name": ["Other Supplier"],
+            "currency": ["GBP"],
+            "quote_total": [5000.0],
+            "po_total": [5000.0],
+            "invoice_total": [5100.0],
+        }
+    )
+    tables = {"deal_overview": deal_overview}
+    policy_cfg = {"detector": "Invoice Overbilling"}
+    input_data = {"conditions": {"variance_threshold_pct": 10.0}}
+
+    findings = agent._policy_invoice_po_variance(tables, input_data, set(), policy_cfg)
+
+    assert findings == []
+
+
+def test_invoice_po_variance_falls_back_to_quote_when_po_missing():
+    """No PO recorded yet (quote-only pipeline stage): fall back to comparing
+    against the quote total rather than skipping the deal entirely."""
+    nick = DummyNick()
+    agent = OpportunityMinerAgent(nick)
+
+    deal_overview = pd.DataFrame(
+        {
+            "deal_id": ["DEALV2-000002"],
+            "supplier_id": ["SUP-Other2"],
+            "supplier_name": ["Other Supplier 2"],
+            "currency": ["GBP"],
+            "quote_total": [1000.0],
+            "po_total": [None],
+            "invoice_total": [2000.0],
+        }
+    )
+    tables = {"deal_overview": deal_overview}
+    policy_cfg = {"detector": "Invoice Overbilling"}
+    input_data = {"conditions": {"variance_threshold_pct": 10.0}}
+
+    findings = agent._policy_invoice_po_variance(tables, input_data, set(), policy_cfg)
+
+    assert len(findings) == 1
+    assert findings[0].calculation_details["deal_id"] == "DEALV2-000002"
+
+
 def test_supplier_performance_auto_records_from_invoice_history():
     nick = DummyNick()
     agent = OpportunityMinerAgent(nick)

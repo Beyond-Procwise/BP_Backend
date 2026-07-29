@@ -81,6 +81,34 @@ def test_a_progressed_stage_is_still_never_demoted():
     assert "else proc.bp_opportunity.stage end" in sql
 
 
+def test_deal_id_is_persisted_when_the_finding_carries_one():
+    """A deal-scoped detector (e.g. Invoice Overbilling) knows its deal_id
+    directly — it must not depend on the fragile quote-anchored backfill in
+    opportunity_linkage.py, which only fires when o.quote_id matches a quote
+    document and leaves everything else deal_id=NULL forever."""
+    cur = _Cur()
+    store.upsert_opportunity(cur, {
+        "opportunity_id": "1", "opportunity_ref_id": "ref-1",
+        "financial_impact_gbp": 10.0,
+        "deal_id": "DEALV2-005049",
+    })
+
+    sql = cur.sql[0].lower()
+    assert "deal_id" in sql
+    assert "DEALV2-005049" in cur.params[0]
+
+
+def test_deal_id_falls_back_to_calculation_details():
+    cur = _Cur()
+    store.upsert_opportunity(cur, {
+        "opportunity_id": "1", "opportunity_ref_id": "ref-1",
+        "financial_impact_gbp": 10.0,
+        "calculation_details": {"deal_id": "DEALV2-000001"},
+    })
+
+    assert "DEALV2-000001" in cur.params[0]
+
+
 # ---------------------------------------------------------------------------
 # Retirement
 # ---------------------------------------------------------------------------
