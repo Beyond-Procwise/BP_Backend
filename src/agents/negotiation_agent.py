@@ -3735,11 +3735,21 @@ class NegotiationAgent(BaseAgent):
         negotiation_state.setdefault("round_history", []).append(round_result)
         negotiation_state["current_round"] = round_num
 
+        # Both of these are on the state this method is handed -- _run_multi_round puts
+        # them there when it builds it -- but they were read as bare names, which are not
+        # locals here and never were. Every round therefore ended in NameError before it
+        # could decide whether the negotiation was over, so the session state was neither
+        # cleared on the last round nor saved between rounds. The two multi-round tests
+        # never caught it because they sat in a 15-minute dispatch wait and were killed
+        # before they got this far.
+        max_rounds = negotiation_state.get("max_rounds") or round_num
+        session = negotiation_state.get("session")
+
         if round_num >= max_rounds or len(negotiation_state["completed_suppliers"]) >= len(
             negotiation_state.get("active_suppliers", {})
         ):
             self._clear_session_state(workflow_id)
-        else:
+        elif session is not None:
             self._save_session_state_obj(workflow_id, session)
 
         return round_result
