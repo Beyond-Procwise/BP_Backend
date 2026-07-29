@@ -1486,12 +1486,19 @@ class SupplierInteractionAgent(BaseAgent):
         self._ensure_dispatch_tracking_schema()
 
         poll_seconds = max(0.0, float(poll_interval) if poll_interval is not None else self._normalise_poll_interval(None))
+        # A timeout of zero is a caller saying "look once and tell me what is there".
+        # Requiring `> 0` folded it in with None -- no deadline -- so the loop below had
+        # nothing to break on and polled until every expected dispatch appeared. With
+        # poll_interval=0 as well that is time.sleep(0) in a tight loop: a spin that never
+        # ends, which is what hung test_dispatch_gate_requires_all_expected. None still
+        # means unbounded, the convention
+        # SupplierResponseWorkflow.await_dispatch_completion already uses.
         deadline = None
-        if timeout is not None and timeout > 0:
+        if timeout is not None:
             try:
-                deadline = time.monotonic() + float(timeout)
+                deadline = time.monotonic() + max(0.0, float(timeout))
             except Exception:
-                deadline = time.monotonic() + float(timeout or 0)
+                deadline = time.monotonic()
         start = time.monotonic()
 
         dispatch_map: Dict[str, Dict[str, Any]] = {}
