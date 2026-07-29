@@ -710,9 +710,39 @@ def assign_deals(conn: Any = None, limit: Optional[int] = None,
     return r
 
 
-def _run(cur) -> dict:
+def assign_deals_fast(conn: Any = None) -> dict:
+    """Link one upload to its deal now, instead of on the next 15-minute sweep.
+
+    Everything an upload needs to become readable — look-forward stamping and the
+    _stg -> _trgt promotion it drives, plus PO-chain propagation and the metadata
+    passes — costs about a second. It was bundled with `_look_back`, a 245-second
+    corpus-wide backfill, behind a 15-minute timer, so a document that finished
+    extracting at 10:11 did not reach _trgt until 10:22 and the report opened on
+    an empty deal.
+
+    look-back is excluded here, not merely deferred for speed: it only stamps
+    documents that are still unlinked and explicitly skips anything look-forward
+    has claimed, so it has nothing to contribute to the upload that just landed.
+    Summary generation is excluded too — it is an LLM call, and holding the
+    client's "ready" signal behind one would reinstate the wait this removes.
+    Both still run on the scheduled sweep.
+    """
+    if conn is None:
+        with get_conn() as own:
+            own.autocommit = False
+            try:
+                r = _run(own.cursor(), include_look_back=False)
+                own.commit()
+            except Exception:
+                own.rollback()
+                raise
+        return r
+    return _run(conn.cursor(), include_look_back=False)
+
+
+def _run(cur, include_look_back: bool = True) -> dict:
     fwd = _look_forward(cur)
-    back = _look_back(cur)
+    back = _look_back(cur) if include_look_back else None
     rec = _reconcile_legacy(cur)
     prop = _propagate_deal_along_po(cur)
     conflicts = _flag_conflict_po_chains(cur)

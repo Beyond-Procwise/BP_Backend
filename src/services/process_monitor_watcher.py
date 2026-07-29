@@ -56,6 +56,16 @@ class ProcessMonitorWatcher:
         )
         self._processing_ids: set[int] = set()
         self._processing_lock = threading.Lock()
+        # Sessions with a promotion currently in flight, and those that had more
+        # documents land while one was running. Every extraction worker calls the
+        # finaliser as it finishes, so these coalesce the calls — WITHOUT ever
+        # marking a session permanently done, which would strand the documents of
+        # a later type-group (the Analyse screen uploads quotes, POs and invoices
+        # as separate groups under one session, so the first group can finish
+        # extracting before the last group's rows even exist).
+        self._promoting_sessions: set[str] = set()
+        self._promote_again: set[str] = set()
+        self._finalise_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Connection helpers
@@ -790,7 +800,128 @@ class ProcessMonitorWatcher:
 
     def _dispatch(self, record: Dict[str, Any]) -> None:
         """Submit a record for extraction on the thread pool."""
-        self._executor.submit(self._process_record, record)
+        self._executor.submit(self._process_and_finalise, record)
+
+    def _process_and_finalise(self, record: Dict[str, Any]) -> None:
+        """Extract one document, then promote the upload if it was the last one."""
+        try:
+            self._process_record(record)
+        finally:
+            try:
+                self._finalise_session_if_complete(record.get("session_id"))
+            except Exception:
+                logger.exception(
+                    "Session finalisation check failed for record %s", record.get("id")
+                )
+
+    # Statuses that mean "this document is no longer being worked on".
+    _EXTRACTION_TERMINAL = ("Extracted", "Extraction_Failed", "Deal_Linked")
+
+    def _finalise_session_if_complete(self, session_id: Optional[str]) -> None:
+        """Promote an upload into _trgt as soon as its last document is extracted.
+
+        _trgt is the only tier the product reads, and promotion into it only ever
+        ran on a 15-minute scheduled sweep. Inserting into _trgt is also what fires
+        the outcome triggers that resolve the session — the signal the report page
+        waits on before it renders. So the entire upload -> readable chain hung off
+        that timer: measured on a live upload, extraction finished at 12:27:47 and
+        nothing was readable until the sweep ran at 12:29:55.
+
+        Every extraction worker calls this as it finishes; the one that finds
+        nothing left pending promotes. That check is deliberately NOT one-shot: the
+        Analyse screen uploads each document type as its own group under a single
+        session, so the quotes can finish extracting before the invoice group's
+        rows exist. A run therefore only coalesces against one already in flight,
+        and a session that gains more documents later promotes again. Promotion is
+        idempotent (it copies only _stg rows absent from _trgt), so a repeat pass
+        costs a query and changes nothing.
+
+        Disable with SESSION_FAST_PROMOTE_ENABLED=0 to fall back to the sweep alone.
+        """
+        if not session_id:
+            return
+        if os.getenv("SESSION_FAST_PROMOTE_ENABLED", "1").strip() in ("0", "false", "False"):
+            return
+
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT count(*) FROM proc.process_monitor
+                     WHERE session_id = %s AND status <> ALL(%s)
+                    """,
+                    (session_id, list(self._EXTRACTION_TERMINAL)),
+                )
+                pending = cur.fetchone()[0]
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if pending:
+            return
+
+        with self._finalise_lock:
+            if session_id in self._promoting_sessions:
+                # Already promoting this upload — make sure the documents that
+                # just landed get a pass too, rather than being dropped.
+                self._promote_again.add(session_id)
+                return
+            self._promoting_sessions.add(session_id)
+
+        self._promote_session(session_id)
+
+    def _finish_promotion(self, session_id: str) -> bool:
+        """Release the in-flight marker. True means run again — more documents
+        finished while the pass we just completed was running."""
+        with self._finalise_lock:
+            if session_id in self._promote_again:
+                self._promote_again.discard(session_id)
+                return True
+            self._promoting_sessions.discard(session_id)
+            return False
+
+    def _promote_session(self, session_id: str) -> None:
+        """Run the confidence-gated _stg -> _trgt promotion, then link the deal.
+
+        Off the extraction worker so the pool keeps draining. Fail-open: if this
+        errors the scheduled sweep still picks the upload up, exactly as before.
+        """
+        def _run() -> None:
+            while True:
+                try:
+                    from src.services.linking_engine import promote_ready
+                    started = time.monotonic()
+                    promoted = promote_ready()
+                    logger.info(
+                        "Session %s promoted to _trgt in %.2fs: %s",
+                        session_id, time.monotonic() - started, promoted,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Fast promotion failed for session %s — the scheduled sweep "
+                        "will pick it up", session_id,
+                    )
+                try:
+                    from src.services.deal_assignment_service import assign_deals_fast
+                    started = time.monotonic()
+                    linked = assign_deals_fast()
+                    logger.info(
+                        "Session %s deal-linked in %.2fs: %s",
+                        session_id, time.monotonic() - started, linked,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Fast deal-linking failed for session %s — the scheduled sweep "
+                        "will pick it up", session_id,
+                    )
+                if not self._finish_promotion(session_id):
+                    return
+
+        threading.Thread(
+            target=_run, name=f"session-promote-{session_id}", daemon=True
+        ).start()
 
     # ------------------------------------------------------------------
     # Listener thread (LISTEN/NOTIFY)

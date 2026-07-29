@@ -171,6 +171,54 @@ class SessionNotifyListener:
             payload.get("failed"),
         )
 
+        # Link the upload to its deal BEFORE telling the client it is ready.
+        # The terminal frame is the report page's cue to stop waiting and render,
+        # so sending it while the documents are still sitting in _stg is what
+        # produced an empty "Document Analysis Report" for up to 11 minutes.
+        # Run it off the LISTEN thread so notifications keep flowing.
+        threading.Thread(
+            target=self._link_then_broadcast,
+            args=(session_id, payload),
+            name=f"session-finalise-{session_id}",
+            daemon=True,
+        ).start()
+
+    def _link_then_broadcast(self, session_id: str, payload: dict) -> None:
+        """Link, then broadcast — and broadcast even if linking fails.
+
+        Fail-open is deliberate: a linking error must never strand the page on a
+        spinner. The client is told the session resolved either way; a failure
+        shows up as a report with no documents, which is what it would have shown
+        before this existed.
+        """
+        try:
+            self._link_session(session_id)
+        except Exception:
+            log.exception(
+                "Fast deal-linking failed for session %s — broadcasting anyway; "
+                "the scheduled sweep will pick it up",
+                session_id,
+            )
+        self._broadcast(session_id, payload)
+
+    def _link_session(self, session_id: str) -> None:
+        """Run the sub-second linking passes for the documents that just landed.
+
+        Disable with SESSION_FAST_LINK_ENABLED=0 to fall back to the old
+        behaviour (linking only on the 15-minute scheduled sweep).
+        """
+        if os.getenv("SESSION_FAST_LINK_ENABLED", "1").strip() in ("0", "false", "False"):
+            return
+        from src.services.deal_assignment_service import assign_deals_fast  # noqa: PLC0415
+
+        started = time.monotonic()
+        result = assign_deals_fast()
+        log.info(
+            "Session %s linked in %.2fs before broadcast: %s",
+            session_id, time.monotonic() - started, result,
+        )
+
+    def _broadcast(self, session_id: str, payload: dict) -> None:
         # Import here to avoid circular imports at module load time.
         from src.services.ws_manager import ws_manager  # noqa: PLC0415
 
