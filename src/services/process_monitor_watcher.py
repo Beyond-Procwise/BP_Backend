@@ -458,9 +458,16 @@ class ProcessMonitorWatcher:
                                 # Essential: mark duplicate. Must succeed before
                                 # any best-effort logging so a log failure can
                                 # never prevent the skip.
+                                # Record WHICH upload this matched. Skipping is
+                                # correct — the same document on two deals would
+                                # double-count everywhere — but the user still has
+                                # to be told where it already lives, and that is
+                                # resolved by joining to this row's deal.
                                 cur.execute(
-                                    "UPDATE proc.process_monitor SET doc_action = 'duplicate' WHERE id = %s",
-                                    (record_id,),
+                                    "UPDATE proc.process_monitor "
+                                    "SET doc_action = 'duplicate', duplicate_of_id = %s "
+                                    "WHERE id = %s",
+                                    (prior[0], record_id),
                                 )
                                 is_duplicate = True
                                 # Best-effort: audit note (non-blocking severity).
