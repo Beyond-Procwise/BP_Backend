@@ -51,7 +51,15 @@ logger = logging.getLogger(__name__)
 # -----------------------------
 MAX_SUPPLIER_REPLIES = int(os.getenv("NEG_MAX_SUPPLIER_REPLIES", "3"))
 LLM_ENABLED = os.getenv("NEG_ENABLE_LLM", "1").strip() not in {"0", "false", "False"}
-LLM_MODEL = os.getenv("NEG_LLM_MODEL", "llama3.2:latest")
+# AgentNick, like every other non-extraction caller. The old default was
+# "llama3.2:latest", which is not a model this host has ever had installed, so the one
+# call that uses it (_llm_* in the counter composer) answered 404 on every attempt,
+# retried three times, and fell through to the non-LLM path -- silently, because the
+# fallback looks like an ordinary result. NEG_LLM_MODEL still overrides, and
+# AGENTNICK_MODEL is the same knob src/services/tool_runtime.py reads.
+LLM_MODEL = os.getenv("NEG_LLM_MODEL") or os.getenv(
+    "AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified"
+)
 COST_OF_CAPITAL_APR = float(os.getenv("NEG_COST_OF_CAPITAL_APR", "0.12"))
 LEAD_TIME_VALUE_PCT_PER_WEEK = float(os.getenv("NEG_LT_VALUE_PCT_PER_WEEK", "0.01"))
 def _resolve_thread_transcript_limit() -> Optional[int]:
