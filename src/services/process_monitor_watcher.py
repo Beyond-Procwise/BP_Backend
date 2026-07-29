@@ -814,8 +814,16 @@ class ProcessMonitorWatcher:
                     "Session finalisation check failed for record %s", record.get("id")
                 )
 
-    # Statuses that mean "this document is no longer being worked on".
-    _EXTRACTION_TERMINAL = ("Extracted", "Extraction_Failed", "Deal_Linked")
+    # Statuses that mean "this document has not finished extracting yet".
+    #
+    # Deliberately the PENDING set rather than the terminal set. A document goes
+    # Completed/Running -> Extracting -> Extracted -> Staged -> Deal_Linked, and may
+    # land on Extraction_Failed or Extraction_InReview instead. Listing terminals
+    # means any status added later is read as "still pending" and the upload never
+    # promotes — which is exactly what happened with 'Staged'. Listing pending
+    # states fails the other way: an unknown status counts as done, and promotion
+    # is idempotent, so an early pass costs a query and the next one catches up.
+    _EXTRACTION_PENDING = ("Completed", "Running", "Extracting")
 
     def _finalise_session_if_complete(self, session_id: Optional[str]) -> None:
         """Promote an upload into _trgt as soon as its last document is extracted.
@@ -849,9 +857,9 @@ class ProcessMonitorWatcher:
                 cur.execute(
                     """
                     SELECT count(*) FROM proc.process_monitor
-                     WHERE session_id = %s AND status <> ALL(%s)
+                     WHERE session_id = %s AND status = ANY(%s)
                     """,
-                    (session_id, list(self._EXTRACTION_TERMINAL)),
+                    (session_id, list(self._EXTRACTION_PENDING)),
                 )
                 pending = cur.fetchone()[0]
         finally:

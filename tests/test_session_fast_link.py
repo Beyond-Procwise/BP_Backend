@@ -186,6 +186,22 @@ def _watcher(monkeypatch, pending):
     return w
 
 
+def test_pending_is_defined_by_the_in_flight_statuses(monkeypatch):
+    """Listing terminal statuses hangs the upload the moment a new one appears.
+
+    Observed live: the PO and invoices reached 'Staged' — extraction finished —
+    but a terminal allowlist of Extracted/Extraction_Failed/Deal_Linked read them
+    as pending, so the session never counted as complete and never promoted.
+    """
+    from src.services.process_monitor_watcher import ProcessMonitorWatcher
+    pending = set(ProcessMonitorWatcher._EXTRACTION_PENDING)
+
+    assert pending == {"Completed", "Running", "Extracting"}
+    for finished in ("Extracted", "Staged", "Deal_Linked",
+                     "Extraction_Failed", "Extraction_InReview", "Failed"):
+        assert finished not in pending
+
+
 def test_no_promotion_while_documents_are_still_extracting(monkeypatch):
     ran = []
     w = _watcher(monkeypatch, pending=2)
