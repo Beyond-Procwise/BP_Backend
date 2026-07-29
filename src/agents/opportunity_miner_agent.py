@@ -28,6 +28,23 @@ logger = logging.getLogger(__name__)
 
 _CATALOG_MATCH_THRESHOLD = 0.45
 
+
+def _output_path(filename: str) -> str:
+    """Where the miner's file outputs go.
+
+    A bare relative name resolves against the process CWD, which is the repo root
+    for the service AND for pytest — so running the unit suite rewrote the
+    checked-in opportunity_findings.json/.xlsx every time. Under pytest they go to
+    a temp directory instead. Production is unchanged: the same bare name, so the
+    file lands exactly where GET /opportunities/sync expects to read it.
+    """
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return filename
+    import tempfile
+    out_dir = os.path.join(tempfile.gettempdir(), "procwise-test-output")
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, filename)
+
 _PURCHASE_LINE_VALUE_COLUMNS = [
     "line_amount_gbp",
     "total_amount_incl_tax_gbp",
@@ -7371,7 +7388,7 @@ class OpportunityMinerAgent(BaseAgent):
         if not findings:
             return
         df = pd.DataFrame([f.as_dict() for f in findings]).sort_values("financial_impact_gbp", ascending=False)
-        with pd.ExcelWriter("opportunity_findings.xlsx") as writer:
+        with pd.ExcelWriter(_output_path("opportunity_findings.xlsx")) as writer:
             summary = df.groupby("detector_type")["financial_impact_gbp"].sum().reset_index()
             summary.to_excel(writer, sheet_name="summary", index=False)
             for detector, group in df.groupby("detector_type"):
@@ -7380,7 +7397,7 @@ class OpportunityMinerAgent(BaseAgent):
                 )
 
     def _output_feed(self, findings: List[Finding]) -> None:
-        path = "opportunity_findings.json"
+        path = _output_path("opportunity_findings.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump([f.as_dict() for f in findings], f, ensure_ascii=False, indent=2)
         logger.info("Wrote %d findings to %s", len(findings), path)

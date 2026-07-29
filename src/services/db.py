@@ -1059,11 +1059,41 @@ def _pg_dsn() -> Optional[str]:
         parts.append(f"sslmode={sslmode}")
     return " ".join(parts)
 
+
+def _use_fake_conn(dsn: Optional[str]) -> bool:
+    """True when this process must not open a real database connection.
+
+    Under pytest the in-memory stand-in is the DEFAULT. It used to engage only
+    when the database happened to be unreachable, which meant the safety net
+    worked on a machine with no connectivity and did nothing on a developer
+    machine with a working .env — there, the unit suite ran against live data and
+    anything that persists wrote to it. The opportunity miner does exactly that:
+    it upserts findings into proc.bp_opportunity through this chokepoint, using a
+    DSN from the environment rather than the stub agent_nick the tests inject, so
+    every run of its test file left four fixture rows behind in the real table.
+
+    Set PROCWISE_TEST_LIVE_DB=1 for a run that genuinely needs the live database
+    (the integration and data-assurance tests). Outside pytest this is always
+    False — the real application is never gated by it.
+    """
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    allowed = os.environ.get("PROCWISE_TEST_LIVE_DB", "").strip().lower()
+    return allowed not in ("1", "true", "yes", "on")
+
+
 @contextmanager
 def get_conn():
     """Yield a PostgreSQL connection using environment derived DSN."""
 
     dsn = _pg_dsn()
+    if _use_fake_conn(dsn):
+        conn = _FakeConnection()
+        try:
+            yield conn
+        finally:
+            conn.close()
+        return
     if not dsn or psycopg2 is None:
         if os.environ.get("PYTEST_CURRENT_TEST"):
             conn = _FakeConnection()
