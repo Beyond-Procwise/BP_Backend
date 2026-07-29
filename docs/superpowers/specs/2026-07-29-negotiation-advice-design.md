@@ -88,9 +88,30 @@ already exists.
 
 | Signal | Source |
 |---|---|
-| Spend for this supplier / category | `bp_invoice_trgt`, `bp_purchase_order_trgt` |
-| Alternative suppliers in the category | distinct suppliers on `_trgt` rows for the category |
-| Criticality / risk | `bp_supplier.risk_score`, `is_preferred_supplier` |
+| Spend for this supplier | `bp_deal_overview.invoice_total` / `po_total` / `quote_total`, and the supplier's total across `bp_invoice_trgt` |
+| Alternative suppliers for the deal's items | distinct `bp_quote_trgt.supplier_id` quoting the same `bp_quote_line_items_trgt.item_description` |
+| Criticality / risk | `bp_supplier.risk_score`, `is_preferred_supplier` (populated for 5,000 of 5,019 suppliers) |
+
+**Measured against the live database, three candidate signals were rejected as
+unavailable:**
+
+- **Category** — there is no category dimension at volume. `proc.bp_category`
+  (`item_description → category`) holds **0 rows**, `bp_analysis_summary.category`
+  holds **6**, and neither `bp_purchase_order_trgt` nor `bp_deal_overview` has a
+  `category` column at all. (This also means
+  `requirement_service.seed_context()`, which queries
+  `bp_purchase_order_trgt WHERE lower(coalesce(category,'')) = lower(%s)`, can
+  only ever raise and return `{}` — noted in §14.)
+- **Competing quotes on the deal** — only **1 of 5,038** deals has quotes from
+  more than one supplier; 5,037 have exactly one.
+- **`bp_supplier.supplier_type`** — despite the name, it is a business-type
+  taxonomy (Consulting, Retailer, Manufacturer, Distributor, Wholesaler, Service
+  Provider), **not** Kraljic. `_normalise_supplier_type` returns `None` for every
+  one of those values, so it must not be used as the quadrant source.
+
+Item-level supplier overlap is therefore the only viable competitiveness measure,
+and it is strong: 5,019 distinct item descriptions, with suppliers per item at
+min 1, p25 20, **median 23**, p75 26, max 41.
 
 | Spend | Alternatives | Quadrant |
 |---|---|---|
@@ -106,7 +127,11 @@ immediately.
 
 Thresholds for "high spend" and "many alternatives" are governed data in
 `proc.bp_policy`, not constants, so they are tunable per organisation without a
-deploy.
+deploy. Seed defaults are taken from the live distribution — high spend at the
+deal-value p90 (£98,175; median is £4,180), many alternatives at the
+suppliers-per-item median (23). These are **testdata-derived**: the corpus is
+almost entirely generated, so the seeds are a starting point to be retuned
+against real spend, which is exactly why they are data and not constants.
 
 When spend or alternatives cannot be determined, no quadrant is guessed: the
 buyer is asked to choose, with the partial evidence shown. A wrong quadrant sends
@@ -150,7 +175,7 @@ does not exist loses credibility with the supplier.
 
 | Play family | Precondition |
 |---|---|
-| Competitive tension | ≥2 quotes on the deal, or ≥2 suppliers in the category |
+| Competitive tension | ≥2 quote suppliers on the deal, or ≥2 alternative suppliers for its items. Since only 1 of 5,038 deals has multiple quote suppliers, this almost always resolves through item overlap — and a deal with alternatives but no second quote is precisely the *groundwork* case below |
 | Volume / tiering | volume or spend above the tiering threshold |
 | Price challenge | benchmark position known for the item or category |
 | Overbilling recovery | invoice-vs-PO variance found on this deal |
@@ -250,9 +275,12 @@ idempotent. `deal_id` is read only — it remains owned by the stored procedure.
   advice reverts to measured evidence.
 
 `negotiate_dashboard.negotiation_strategy()` keeps its computed
-`highLevelSummary`, `currentStandpoint` and `preferredOutcome`. Its three
-constant fields — `leveragePoints` and `counterStrategy` — are replaced by the
-ranked plays, since that is the surface the buyer reads.
+`highLevelSummary`, `currentStandpoint`, `preferredOutcome` and
+`supplierInsights`. Two fields carrying three constant strings —
+`leveragePoints` (`rationale`, `approach`) and `counterStrategy` (`action`) — are
+replaced by a `plays` list, since that is the surface the buyer reads. An advice
+failure degrades `plays` to `[]` rather than breaking the rest of the payload,
+which is unrelated to advice.
 
 ## 11. Testing
 
@@ -308,6 +336,15 @@ Two summary-agent defects found in the same investigation, not addressed here:
    prompt appended after the persona says *"summary of the deal"* and *"Respond
    in EXACTLY this format"* with only `Key Outcomes` and `Conclusion`, so a
    persona asking for approach, levers or next steps cannot produce them.
+
+3. **`requirement_service.seed_context()` cannot succeed.** It queries
+   `proc.bp_purchase_order_trgt WHERE lower(coalesce(category, '')) = lower(%s)`,
+   but that table has no `category` column. The call is wrapped in a
+   `try/except` returning `{}`, so it fails silently — which is why the "prior
+   suppliers for this category" context has never appeared anywhere. This
+   matters to the requirements design
+   (`2026-07-29-requirements-scope-agents-design.md`), whose Zone 1 lists prior
+   suppliers as inherited context.
 
 Also minor: `src/scripts/end_to_end_demo.py:42` calls
 `agent.generate_negotiation_strategy(...)`, which does not exist on
