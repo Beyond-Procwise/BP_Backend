@@ -922,6 +922,46 @@ def _parse_json(raw: str) -> dict | None:
 _ID_PREFIX_RE = re.compile(r"^(?:INV|PO|QUT|QTE|RFQ)[\-_]?", re.IGNORECASE)
 
 
+# A revision marker sitting immediately after a quote reference: "(V2)",
+# "(V3 (BAFO))", "( v2 )", "Rev 3". The nested-parenthesis form is what defeated the
+# previous handling — the model returned the bare number for those documents.
+_QUOTE_REV_RE = re.compile(r"\s*(?:\(\s*v\s*(\d+)|\bre?v\.?\s*(\d+)\b)", re.IGNORECASE)
+
+
+def canonical_quote_revision(quote_id, full_text):
+    """Return ``quote_id`` carrying the revision the document states.
+
+    A revised quote is a distinct document and must persist under a distinct key.
+    The identifier prompt says "Output the raw token", which left it to the model
+    whether the version marker was part of the token: it kept "(V2)" and dropped
+    "(V1)" and "(V3 (BAFO))". V1 and V3 then shared a primary key, collided on
+    persist, and last-write-wins kept whichever finished last — nine uploaded
+    quotes became five rows and two best-and-final offers were overwritten by
+    their opening bids.
+
+    The marker is read deterministically from the text, adjacent to THIS quote's
+    reference, so a covering letter citing another quote cannot retag this one.
+    Output matches the convention the gateway already parses: a bare id IS version
+    one, so V1 gains no suffix — adding one would create a second identity for the
+    same quote.
+    """
+    if not quote_id or not full_text:
+        return quote_id
+    base = re.sub(r"\s*\(\s*v\s*\d+.*$", "", str(quote_id), flags=re.IGNORECASE).strip()
+    if not base:
+        return quote_id
+    idx = str(full_text).find(base)
+    if idx < 0:
+        return quote_id
+    tail = str(full_text)[idx + len(base):]
+    m = _QUOTE_REV_RE.match(tail)
+    if not m:
+        return quote_id
+    version = int(m.group(1) or m.group(2))
+    # Version 1 is the unsuffixed form; anything else carries its number.
+    return base if version <= 1 else f"{base} (V{version})"
+
+
 def _id_field_grounded(value: str, full_text: str) -> bool:
     """Grounding for invoice/po/quote IDs — accept prefix-stripped form too."""
     if not value:
@@ -1149,7 +1189,11 @@ def _validate_and_bind(
             # ID fields tolerate prefix gap (QUT136700 / 136700).
             if name in ("invoice_id", "po_id", "quote_id"):
                 if _id_field_grounded(sval, full_text):
-                    out[name] = sval
+                    # A quote revision is its own document and needs its own key.
+                    # Recover the version from the text rather than relying on the
+                    # model to decide whether the marker was part of the token.
+                    out[name] = (canonical_quote_revision(sval, full_text)
+                                 if name == "quote_id" else sval)
                 else:
                     log.debug("context_layer: dropped ungrounded id %s=%r", name, sval)
                     out[name] = None
