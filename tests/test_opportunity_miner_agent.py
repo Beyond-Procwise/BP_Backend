@@ -328,6 +328,38 @@ def test_normalise_currency_handles_decimal_sources():
     assert pytest.approx(80.0) == purchase_orders.loc[0, "total_amount_gbp"]
 
 
+def test_normalise_currency_survives_rows_with_no_currency():
+    """A line with no currency recorded must not abort the whole mining run.
+
+    proc.bp_po_line_items_trgt legitimately carries NULL currency on some lines.
+    Under the pandas `str` dtype those arrive as float NaN and `.astype(str)` is
+    a no-op, so the unconvertible-currency diagnostic used to sort a set mixing
+    str and float and raise TypeError — killing opportunity mining entirely.
+    """
+    nick = DummyNick()
+    nick.query_engine = None
+    agent = OpportunityMinerAgent(nick)
+
+    tables = {
+        "purchase_order_lines": pd.DataFrame(
+            [
+                {"po_id": "PO-1", "currency": "GBP", "line_total": Decimal("10.00")},
+                {"po_id": "PO-2", "currency": None, "line_total": Decimal("20.00")},
+                {"po_id": "PO-3", "currency": "USD", "line_total": Decimal("30.00")},
+            ]
+        ),
+    }
+
+    normalised = agent._normalise_currency(tables)
+    lines = normalised["purchase_order_lines"]
+
+    # GBP needs no conversion; the other two cannot be converted honestly, so
+    # they are excluded from the *_gbp column rather than assumed 1:1.
+    assert pytest.approx(10.0) == lines.loc[0, "line_total_gbp"]
+    assert pd.isna(lines.loc[1, "line_total_gbp"])
+    assert pd.isna(lines.loc[2, "line_total_gbp"])
+
+
 def _sample_tables() -> Dict[str, Any]:
     purchase_orders = pd.DataFrame(
         [

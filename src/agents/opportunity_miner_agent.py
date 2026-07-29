@@ -2787,7 +2787,18 @@ class OpportunityMinerAgent(BaseAgent):
 
             unconvertible = rate_to_gbp.isna() & ~is_gbp
             if bool(unconvertible.any()):
-                bad_currencies = sorted(set(currency_series[unconvertible].tolist()))
+                # A line with no currency recorded is a real state in the corpus, and
+                # under the pandas `str` dtype astype(str) above is a no-op — those
+                # values arrive here as float NaN. Sorting a str/float mix raises
+                # TypeError, which aborted the entire mining run over a log line.
+                # Count the missing ones separately instead of naming them.
+                bad_values = currency_series[unconvertible].tolist()
+                named = [str(v).strip() for v in bad_values
+                         if not pd.isna(v) and str(v).strip()]
+                bad_currencies = sorted(set(named))
+                unnamed = len(bad_values) - len(named)
+                if unnamed:
+                    bad_currencies.append(f"(no currency recorded on {unnamed} row(s))")
                 logger.warning(
                     "opportunity_miner: excluding %d row(s) from *_gbp columns — cannot "
                     "honestly convert currencies %s to GBP (missing exchange_rate_to_usd "
