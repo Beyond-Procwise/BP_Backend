@@ -21,7 +21,7 @@ from services.model_selector import RAGPipeline
 from services.opportunity_service import record_opportunity_feedback
 from services.email_dispatch_service import EmailDispatchService
 from services.backend_scheduler import BackendScheduler
-from repositories import draft_rfq_emails_repo
+from repositories import draft_rfq_emails_repo, workflow_email_tracking_repo
 from agents.email_drafting_agent import EmailDraftingAgent
 
 # Ensure GPU-related environment variables are set
@@ -1162,6 +1162,15 @@ class EmailPrepareRequest(BaseModel):
     )
     subject: str = Field(..., description="Email subject line.")
     body: str = Field(..., description="Email body (HTML or plain text).")
+    reply_to_unique_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The draft this is a REPLY to (its unique_id). When given, the new draft "
+            "inherits that thread's supplier, workflow, In-Reply-To/References headers "
+            "and attachment records, so the reply lands in the supplier's existing "
+            "conversation instead of starting a new one."
+        ),
+    )
 
     @field_validator("subject", "body", mode="before")
     @classmethod
@@ -1179,11 +1188,126 @@ class EmailPrepareRequest(BaseModel):
 
 
 class EmailPrepareResponse(BaseModel):
-    """Identifier the panel should send to ``POST /workflows/email``."""
+    """Identifier the panel should send to ``POST /workflows/email``.
+
+    The three ``reply_to_unique_id`` fields are reported rather than assumed: a caller
+    that asked for a threaded reply must be able to see whether the thread headers and
+    the attachments actually made it onto the new draft, and refuse to send if they did
+    not. Silence would let a reply arrive as a new conversation, or without the files the
+    human attached, with nothing on screen saying so.
+    """
 
     unique_id: str
     workflow_id: str
     status: str = "prepared"
+    # None when no reply_to_unique_id was given, or when the thread carried no
+    # message id to reply to (in which case threading is genuinely unavailable).
+    in_reply_to: Optional[str] = None
+    thread_headers_carried: bool = False
+    attachments_carried: int = 0
+
+
+def _draft_payload(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The draft row's ``payload`` column as a dict, tolerating a JSON string."""
+    raw = (draft or {}).get("payload")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _reply_thread_headers(
+    *, source_draft: Dict[str, Any], source_payload: Dict[str, Any]
+) -> Dict[str, List[str]]:
+    """``In-Reply-To``/``References`` that put a reply in the supplier's own thread.
+
+    Where the values come from, in the order they matter:
+
+      * ``proc.workflow_email_tracking.response_message_id`` -- the Message-ID of the
+        SUPPLIER'S reply, which is the message we are answering, so it is the correct
+        ``In-Reply-To``. Written by the watcher when it matched the reply.
+      * ``...message_id`` -- the Message-ID of OUR outbound RFQ. Used as ``In-Reply-To``
+        only when the supplier's own is not recorded (an older row), and always folded
+        into ``References`` so the chain is complete.
+      * any ``References`` already recorded against the thread, kept in front.
+
+    Nothing is fabricated. A thread with no recorded message ids returns ``{}`` and the
+    caller reports that, rather than sending a reply that looks like a new conversation
+    while claiming otherwise.
+    """
+    tracked = None
+    workflow_id = source_draft.get("workflow_id")
+    unique_id = source_draft.get("unique_id")
+    if workflow_id and unique_id:
+        try:
+            tracked = workflow_email_tracking_repo.lookup_dispatch_row(
+                workflow_id=str(workflow_id), unique_id=str(unique_id)
+            )
+        except Exception:  # noqa: BLE001 - absence of threading is reported, not raised
+            logger.exception(
+                "could not read the dispatch row for unique_id=%s while preparing a reply",
+                unique_id,
+            )
+
+    # Whatever the thread already recorded, from the tracking row or the draft itself.
+    prior: Dict[str, Any] = {}
+    for candidate in (
+        getattr(tracked, "thread_headers", None),
+        source_draft.get("thread_headers"),
+        source_payload.get("thread_headers"),
+        (source_payload.get("metadata") or {}).get("thread_headers")
+        if isinstance(source_payload.get("metadata"), dict) else None,
+    ):
+        if isinstance(candidate, dict) and candidate:
+            prior = candidate
+            break
+
+    def _as_list(value: Any) -> List[str]:
+        """Message ids in one canonical ``<id>`` form.
+
+        The two sources disagree on form and both end up in ``References``:
+        ``workflow_email_tracking._parse_thread_headers`` strips ``<>`` off everything it
+        reads back, while the ``message_id``/``response_message_id`` columns come back
+        verbatim with their brackets. RFC 5322 requires every msg-id in ``In-Reply-To``/
+        ``References`` to be bracketed, so a bare one makes the header malformed; and
+        without a single form, the same message listed both ways survives the dedupe
+        twice. A ``References`` string may also carry several space-separated ids.
+        """
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            tokens = [str(v) for v in value]
+        else:
+            tokens = [str(value)]
+
+        ids: List[str] = []
+        for token in tokens:
+            for part in token.split():
+                bare = part.strip().strip("<>").strip()
+                if bare:
+                    ids.append(f"<{bare}>")
+        return ids
+
+    our_outbound = _as_list(getattr(tracked, "message_id", None) or prior.get("Message-ID"))
+    their_reply = _as_list(getattr(tracked, "response_message_id", None))
+
+    # The message we are actually answering. Their reply if we recorded it; our own
+    # outbound otherwise -- which still lands in the right conversation, one hop up.
+    in_reply_to = (their_reply or our_outbound)[:1]
+    if not in_reply_to:
+        return {}
+
+    references: List[str] = []
+    for item in _as_list(prior.get("References")) + our_outbound + their_reply:
+        if item not in references:
+            references.append(item)
+
+    headers: Dict[str, List[str]] = {"In-Reply-To": in_reply_to}
+    if references:
+        headers["References"] = references
+    return headers
 
 
 @router.post(
@@ -1205,6 +1329,24 @@ def prepare_email_draft(
     caller (report panel) should follow up with
     ``POST /workflows/email {"unique_id": <returned unique_id>, ...}`` to
     actually send.
+
+    ``reply_to_unique_id`` makes this the REPLY path used by the Action Centre's
+    supplier-reply panel. A reply is a new message and needs its own draft row: the
+    escalation's own ``subject_id`` is the outbound RFQ the supplier already answered,
+    and dispatching THAT id short-circuits in
+    ``EmailDispatchService._maybe_return_existing_dispatch`` (already sent) and puts
+    nothing on the wire. Preparing a fresh draft is what makes the send real -- and the
+    two things a fresh draft would otherwise LOSE are carried explicitly here:
+
+      * the thread (``In-Reply-To``/``References``, from the tracking row), so the reply
+        arrives inside the supplier's conversation rather than starting a new one;
+      * the attachments, whose records live on the ORIGINAL draft row because that is the
+        id the panel uploaded them against.
+
+    A new ``unique_id`` is minted per draft (``generate_unique_email_id`` mixes in
+    ``secrets.token_hex``), so reusing the source thread's ``workflow_id`` cannot collide
+    with the source row on ``ON CONFLICT (workflow_id, unique_id)`` -- the reply is a new
+    row in the same workflow, and the original sent record is left untouched.
     """
 
     recipients = [str(addr).strip() for addr in payload.to if str(addr).strip()]
@@ -1213,9 +1355,24 @@ def prepare_email_draft(
             status_code=400, detail="At least one recipient email is required"
         )
 
-    # ``_store_draft`` requires a truthy supplier_id; this draft isn't tied to
-    # a supplier so derive a stable, harmless scoping value from the deal.
-    supplier_id = (
+    source_draft: Optional[Dict[str, Any]] = None
+    if payload.reply_to_unique_id:
+        source_draft = draft_rfq_emails_repo.load_by_unique_id(
+            str(payload.reply_to_unique_id).strip()
+        )
+        if not source_draft:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "The thread this reply belongs to could not be found, so nothing "
+                    "was prepared and nothing was sent."
+                ),
+            )
+
+    # ``_store_draft`` requires a truthy supplier_id. On the reply path it is the real
+    # supplier off the thread, so the reply is attributable; otherwise this draft isn't
+    # tied to a supplier and a stable, harmless scoping value is derived from the deal.
+    supplier_id = (source_draft or {}).get("supplier_id") or (
         f"report-panel:{payload.deal_id}"
         if payload.deal_id
         else f"report-panel:{uuid.uuid4().hex[:12]}"
@@ -1232,6 +1389,28 @@ def prepare_email_draft(
             "deal_id": payload.deal_id,
         },
     }
+
+    thread_headers: Dict[str, List[str]] = {}
+    if source_draft:
+        source_payload = _draft_payload(source_draft)
+        draft["metadata"]["source"] = "action_centre_reply_panel"
+        draft["metadata"]["reply_to_unique_id"] = source_draft.get("unique_id")
+        draft["supplier_name"] = source_draft.get("supplier_name")
+        # Same workflow as the thread being answered, so the reply is tracked with it
+        # rather than as an orphan run.
+        if source_draft.get("workflow_id"):
+            draft["workflow_id"] = str(source_draft["workflow_id"])
+        thread_headers = _reply_thread_headers(
+            source_draft=source_draft, source_payload=source_payload
+        )
+        if thread_headers:
+            # TOP-LEVEL on purpose. ``_resolve_initial_thread_headers`` reads
+            # ``draft["thread_headers"]`` FIRST and ``draft["headers"]`` second, and
+            # ``_store_draft`` always fills ``headers`` with the X-ProcWise tracking
+            # headers -- so a copy under ``metadata`` alone would lose to those and never
+            # reach the wire. Recorded under metadata too, for the audit trail.
+            draft["thread_headers"] = thread_headers
+            draft["metadata"]["thread_headers"] = thread_headers
 
     drafting_agent = EmailDraftingAgent(agent_nick)
     try:
@@ -1256,7 +1435,40 @@ def prepare_email_draft(
     if not unique_id or not workflow_id or record_id is None:
         raise HTTPException(status_code=500, detail="Draft was not persisted")
 
-    return EmailPrepareResponse(unique_id=str(unique_id), workflow_id=str(workflow_id))
+    # The human's attachments were uploaded against the ORIGINAL draft's unique_id --
+    # that is the only id the panel had. Their records are COPIED onto the new draft
+    # (the S3 objects are not moved, so the source thread's record stays intact and
+    # both rows point at the same bytes); ``_load_attachments`` at dispatch time reads
+    # them by ``s3_key``, so the files reach the sent message. A failure here is raised,
+    # not logged: sending a reply the user believes carries their contract, without it,
+    # is worse than not sending.
+    attachments_carried = 0
+    if source_draft:
+        source_attachments = _load_draft_attachments(source_draft)
+        if source_attachments:
+            try:
+                _persist_draft_attachments(agent_nick, str(unique_id), source_attachments)
+            except Exception:
+                logger.exception(
+                    "could not carry attachments from %s onto reply draft %s",
+                    source_draft.get("unique_id"), unique_id,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "The reply was prepared but its attachments could not be carried "
+                        "onto it, so nothing was sent. Nothing has gone to the supplier."
+                    ),
+                )
+            attachments_carried = len(source_attachments)
+
+    return EmailPrepareResponse(
+        unique_id=str(unique_id),
+        workflow_id=str(workflow_id),
+        in_reply_to=(thread_headers.get("In-Reply-To") or [None])[0],
+        thread_headers_carried=bool(thread_headers),
+        attachments_carried=attachments_carried,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -224,3 +224,200 @@ def test_prepare_email_draft_rejects_empty_recipients():
         mod.prepare_email_draft(payload, agent_nick=agent_nick)
     assert exc_info.value.status_code == 400
     assert conn.calls == []
+
+
+# ---------------------------------------------------------------------------
+# The REPLY path (reply_to_unique_id) -- Action Centre supplier-reply panel.
+#
+# The panel used to dispatch the escalation's own subject_id, which IS the outbound RFQ
+# the supplier already replied to. send_draft resolves that to the same already-sent draft
+# row and _maybe_return_existing_dispatch returns duplicate:true / dispatched_now:false
+# without putting anything on the wire -- and every escalation refers to an already-sent
+# thread by construction, so that was the only case in production. A reply is a NEW
+# message and needs its own draft; these tests pin the two things a new draft would
+# otherwise LOSE.
+# ---------------------------------------------------------------------------
+_SOURCE_UID = "PROC-WF-AAAAAAAAAAAA"
+
+_SOURCE_DRAFT = {
+    "id": 68,
+    "rfq_id": _SOURCE_UID,
+    "unique_id": _SOURCE_UID,
+    "workflow_id": "WF-THREAD-1",
+    "supplier_id": "PeopleFirst HR Solutions Ltd",
+    "supplier_name": "PeopleFirst HR Solutions Ltd",
+    "subject": "Negotiation",
+    "body": "our offer",
+    "sent": True,           # the whole point: the source thread is already sent
+    "sender": "buyer@example.com",
+    "payload": json.dumps({"unique_id": _SOURCE_UID, "metadata": {"round": 1}}),
+    "attachments": [
+        {"filename": "terms.pdf", "s3_key": f"email-attachments/{_SOURCE_UID}/terms.pdf",
+         "bytes": 12, "content_type": "application/pdf"},
+    ],
+}
+
+_TRACKED = SimpleNamespace(
+    workflow_id="WF-THREAD-1",
+    unique_id=_SOURCE_UID,
+    message_id="<our-rfq@ses>",
+    response_message_id="<their-reply@supplier>",
+    thread_headers={"References": ["<older@ses>"]},
+)
+
+
+def _wire_reply_path(monkeypatch, *, tracked=_TRACKED, source=None):
+    """Source draft + tracking row, and a recorder for the attachment copy."""
+    persisted = {}
+    monkeypatch.setattr(
+        mod.draft_rfq_emails_repo, "load_by_unique_id",
+        lambda uid: (source if source is not None else dict(_SOURCE_DRAFT))
+        if uid == _SOURCE_UID else None,
+    )
+    monkeypatch.setattr(
+        mod.workflow_email_tracking_repo, "lookup_dispatch_row",
+        lambda **kw: tracked,
+    )
+    monkeypatch.setattr(
+        mod, "_persist_draft_attachments",
+        lambda agent_nick, uid, records: persisted.update({"uid": uid, "records": records}),
+    )
+    return persisted
+
+
+def _reply_payload():
+    return mod.EmailPrepareRequest(
+        to=["billing@peoplefirst.example.com"],
+        subject="RE: Negotiation",
+        body="Thanks -- we accept.",
+        reply_to_unique_id=_SOURCE_UID,
+    )
+
+
+def test_a_reply_gets_its_own_draft_and_never_reuses_the_sent_one(monkeypatch):
+    conn = _FakeConn()
+    _wire_reply_path(monkeypatch)
+
+    response = mod.prepare_email_draft(_reply_payload(), agent_nick=_make_agent_nick(conn))
+
+    assert response.unique_id != _SOURCE_UID, (
+        "dispatching the source id is what _maybe_return_existing_dispatch short-circuits"
+    )
+    _, params = _insert_call(conn)
+    # sent = False on the new row, so the duplicate guard cannot fire on it.
+    assert params[6] is False
+    # Same workflow as the thread it answers -- a new row in it, not an orphan run.
+    assert params[12] == "WF-THREAD-1"
+    assert response.workflow_id == "WF-THREAD-1"
+    # Attributed to the real supplier off the thread, not a report-panel placeholder.
+    assert params[2] == "PeopleFirst HR Solutions Ltd"
+
+
+def test_a_reply_carries_the_thread_headers_so_it_lands_in_the_conversation(monkeypatch):
+    conn = _FakeConn()
+    _wire_reply_path(monkeypatch)
+
+    response = mod.prepare_email_draft(_reply_payload(), agent_nick=_make_agent_nick(conn))
+
+    assert response.thread_headers_carried is True
+    # In-Reply-To is the SUPPLIER'S message -- the one being answered.
+    assert response.in_reply_to == "<their-reply@supplier>"
+
+    _, params = _insert_call(conn)
+    persisted = json.loads(params[11])
+    # TOP-LEVEL: _resolve_initial_thread_headers reads draft["thread_headers"] first and
+    # draft["headers"] second, and _store_draft always fills `headers` with the
+    # X-ProcWise tracking headers -- so a metadata-only copy would never reach the wire.
+    assert persisted["thread_headers"]["In-Reply-To"] == ["<their-reply@supplier>"]
+    refs = persisted["thread_headers"]["References"]
+    assert refs == ["<older@ses>", "<our-rfq@ses>", "<their-reply@supplier>"], refs
+    assert persisted["metadata"]["reply_to_unique_id"] == _SOURCE_UID
+
+
+def test_a_thread_with_no_recorded_message_id_reports_no_threading(monkeypatch):
+    """Honest absence, not a fabricated header. The panel refuses to send on this."""
+    conn = _FakeConn()
+    _wire_reply_path(monkeypatch, tracked=None)
+
+    response = mod.prepare_email_draft(_reply_payload(), agent_nick=_make_agent_nick(conn))
+
+    assert response.thread_headers_carried is False
+    assert response.in_reply_to is None
+    persisted = json.loads(_insert_call(conn)[1][11])
+    assert "thread_headers" not in persisted
+
+
+def test_a_replys_attachments_are_carried_onto_the_new_draft(monkeypatch):
+    """The human uploaded them against the ORIGINAL draft -- the only id the panel had."""
+    conn = _FakeConn()
+    persisted = _wire_reply_path(monkeypatch)
+
+    response = mod.prepare_email_draft(_reply_payload(), agent_nick=_make_agent_nick(conn))
+
+    assert response.attachments_carried == 1
+    assert persisted["uid"] == response.unique_id, "onto the NEW draft, not the source"
+    assert persisted["records"][0]["s3_key"] == (
+        f"email-attachments/{_SOURCE_UID}/terms.pdf"
+    ), "the records are copied; the S3 objects are not moved, so the source stays intact"
+
+
+def test_a_failed_attachment_copy_fails_the_prepare_rather_than_sending_without_them(
+    monkeypatch,
+):
+    conn = _FakeConn()
+    _wire_reply_path(monkeypatch)
+
+    def _boom(agent_nick, uid, records):
+        raise RuntimeError("attachments column update failed")
+
+    monkeypatch.setattr(mod, "_persist_draft_attachments", _boom)
+
+    with pytest.raises(HTTPException) as exc_info:
+        mod.prepare_email_draft(_reply_payload(), agent_nick=_make_agent_nick(conn))
+    assert exc_info.value.status_code == 500
+    assert "nothing was sent" in str(exc_info.value.detail)
+
+
+def test_references_are_bracketed_and_deduped_across_both_stored_forms(monkeypatch):
+    """The two sources of message ids disagree on form, and both reach ``References``.
+
+    ``workflow_email_tracking._parse_thread_headers`` strips ``<>`` off every id it reads
+    back (and returns tuples), while the ``message_id``/``response_message_id`` COLUMNS
+    are returned verbatim, brackets intact. Folding them together naively produces a
+    ``References`` header that is malformed under RFC 5322 -- every msg-id there must be
+    bracketed -- and that dedupes by raw string, so one message listed in both forms
+    survives twice. This pins the canonical form on the way out.
+    """
+    conn = _FakeConn()
+    _wire_reply_path(
+        monkeypatch,
+        tracked=SimpleNamespace(
+            workflow_id="WF-THREAD-1",
+            unique_id=_SOURCE_UID,
+            message_id="<our-rfq@ses>",
+            # exactly what the repo hands back: bare ids, in a tuple, and here naming
+            # the very message the ``message_id`` column already gave us bracketed.
+            thread_headers={"References": ("older@ses", "our-rfq@ses")},
+            response_message_id="<their-reply@supplier>",
+        ),
+    )
+
+    response = mod.prepare_email_draft(_reply_payload(), agent_nick=_make_agent_nick(conn))
+
+    assert response.in_reply_to == "<their-reply@supplier>"
+    refs = json.loads(_insert_call(conn)[1][11])["thread_headers"]["References"]
+    assert refs == ["<older@ses>", "<our-rfq@ses>", "<their-reply@supplier>"], refs
+
+
+def test_an_unknown_thread_404s_rather_than_preparing_an_unthreaded_reply(monkeypatch):
+    conn = _FakeConn()
+    _wire_reply_path(monkeypatch)
+
+    payload = mod.EmailPrepareRequest(
+        to=["someone@example.com"], subject="RE: x", body="y",
+        reply_to_unique_id="PROC-WF-DOESNOTEXIST",
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        mod.prepare_email_draft(payload, agent_nick=_make_agent_nick(conn))
+    assert exc_info.value.status_code == 404
+    assert conn.calls == []
