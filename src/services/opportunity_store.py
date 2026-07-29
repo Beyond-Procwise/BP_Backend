@@ -22,10 +22,20 @@ _STAGES = ("identified", "negotiation", "agreed", "realised", "closed", "rejecte
 
 def upsert_opportunity(cur, rec: dict) -> None:
     """Insert/update one mined finding. Preserves the existing stage unless the
-    finding is rejected (is_rejected) — never demotes a progressed opportunity."""
+    finding is rejected (is_rejected) — never demotes a progressed opportunity.
+
+    Keyed on opportunity_ref_id, the content-derived identity
+    (policy_detector_sourcehash_supplier_item). opportunity_id is a per-run counter
+    the miner assigns while walking candidates, so it changes for the SAME finding
+    between runs — keying on it meant every run inserted duplicates instead of
+    updating, and a colliding id could overwrite an unrelated finding and inherit
+    its lifecycle stage.
+    """
     calc = rec.get("calculation_details") or {}
     item_desc = rec.get("item_description") or calc.get("item_description") or rec.get("item_id")
     stage = "rejected" if rec.get("is_rejected") else "identified"
+    # Pre-ref_id rows fall back to their own id so the identity is never blank.
+    ref_id = str(rec.get("opportunity_ref_id") or rec.get("opportunity_id"))
     cur.execute(
         """
         insert into proc.bp_opportunity
@@ -34,9 +44,10 @@ def upsert_opportunity(cur, rec: dict) -> None:
            stage, ml_priority_score, weightage, calculation_details, source_records,
            detected_on, quote_id, po_id)
         values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        on conflict (opportunity_id) do update set
-          opportunity_ref_id=excluded.opportunity_ref_id,
+        on conflict (opportunity_ref_id) do update set
           detector_type=excluded.detector_type, policy_id=excluded.policy_id,
+          -- Re-detected: it is live again, whatever a previous run concluded.
+          retired_at=null,
           supplier_id=excluded.supplier_id, supplier_name=excluded.supplier_name,
           category_id=excluded.category_id, item_id=excluded.item_id,
           item_description=excluded.item_description,
@@ -51,7 +62,7 @@ def upsert_opportunity(cur, rec: dict) -> None:
           updated_at=now()
         """,
         (
-            str(rec.get("opportunity_id")), rec.get("opportunity_ref_id"),
+            str(rec.get("opportunity_id")), ref_id,
             rec.get("detector_type"), rec.get("policy_id"), rec.get("supplier_id"),
             rec.get("supplier_name"), rec.get("category_id"), rec.get("item_id"),
             item_desc, rec.get("financial_impact_gbp"), stage,
@@ -62,6 +73,57 @@ def upsert_opportunity(cur, rec: dict) -> None:
             rec.get("po_id") or calc.get("po_id"),
         ),
     )
+
+
+def retire_missing(cur, seen_ref_ids: Any, detector_types: Any,
+                   min_impact: float = 0.0) -> int:
+    """Close findings a full mining run no longer detects. Returns rows retired.
+
+    Deliberately narrow, because this removes things from the user's screen with
+    no human in the loop:
+
+    * only rows still at ``identified`` — anything a human has progressed,
+      realised, rejected or closed is never touched;
+    * only detector types that produced findings in THIS run. A detector that
+      returned nothing is indistinguishable from a detector that is broken (this
+      corpus has no ``proc.contracts`` table at all, so the contract detectors
+      always return empty), and clearing real findings because a detector failed
+      would be worse than leaving a stale one;
+    * only rows at or above this run's ``min_impact``. The threshold filters the
+      run's own output, so a finding below it was never a candidate to be
+      re-detected — retiring it would delete a live finding merely because
+      someone ran an ad-hoc high-threshold scan;
+    * never called at all unless the run covered the whole corpus — see
+      ``_run_covers_whole_corpus`` in the miner.
+
+    ``retired_at`` records that this was automatic. ``stage`` is set to ``closed``
+    alongside it so every existing reader, which already excludes closed rows from
+    open counts, needs no change.
+    """
+    detectors = [d for d in (detector_types or []) if d]
+    if not detectors:
+        return 0
+    seen = [str(r) for r in (seen_ref_ids or []) if r]
+    # `<> ALL(empty)` is true for every row, so an empty seen-list correctly
+    # retires every identified finding for the detectors that ran and found none
+    # of their previous ones — but `detectors` being non-empty means at least one
+    # finding WAS produced, so this can never fire on a run that found nothing.
+    cur.execute(
+        """
+        update proc.bp_opportunity
+           set stage='closed', retired_at=now(), stage_updated_at=now(), updated_at=now()
+         where stage='identified'
+           and retired_at is null
+           and detector_type = ANY(%s)
+           and coalesce(financial_impact_gbp, 0) >= %s
+           and opportunity_ref_id <> ALL(%s)
+        """,
+        (detectors, float(min_impact or 0.0), seen),
+    )
+    retired = cur.rowcount or 0
+    if retired:
+        log.info("retired %d opportunity finding(s) no longer detected", retired)
+    return retired
 
 
 def set_stage(opportunity_id: str, stage: str, realised_savings: Optional[float] = None,

@@ -29,6 +29,28 @@ logger = logging.getLogger(__name__)
 _CATALOG_MATCH_THRESHOLD = 0.45
 
 
+def _run_covers_whole_corpus(input_data: Any) -> bool:
+    """True when this run looked at everything, so its absences are meaningful.
+
+    Retiring findings a run did not re-detect is only sound if the run actually
+    examined the whole corpus. A run scoped to one supplier, item or policy never
+    looked at the rest, so its silence says nothing about them. The scheduled
+    sweep passes ``{"workflow": "all", "conditions": {}}``; anything narrower is
+    treated as scoped and retires nothing.
+    """
+    if not isinstance(input_data, dict):
+        return False
+    if str(input_data.get("workflow") or "").strip().lower() != "all":
+        return False
+    conditions = input_data.get("conditions")
+    if conditions:                       # any condition at all narrows the run
+        return False
+    for key in ("supplier_id", "item_id", "category_id", "deal_id", "policy_id"):
+        if input_data.get(key):
+            return False
+    return True
+
+
 def _output_path(filename: str) -> str:
     """Where the miner's file outputs go.
 
@@ -2173,7 +2195,9 @@ class OpportunityMinerAgent(BaseAgent):
 
             self._output_excel(filtered)
             self._output_feed(filtered)
-            self._output_db(filtered)
+            # Only a run that examined the whole corpus may retire findings it did
+            # not re-detect — a scoped run never looked at the rest.
+            self._output_db(filtered, may_retire=_run_covers_whole_corpus(input_data))
 
 
             data = {
@@ -7402,26 +7426,46 @@ class OpportunityMinerAgent(BaseAgent):
             json.dump([f.as_dict() for f in findings], f, ensure_ascii=False, indent=2)
         logger.info("Wrote %d findings to %s", len(findings), path)
 
-    def _output_db(self, findings: List[Finding]) -> None:
+    def _output_db(self, findings: List[Finding], *, may_retire: bool = False) -> None:
         """Persist findings into proc.bp_opportunity so the Opportunities-page
         dashboard reflects them immediately (no JSON sync step needed).
-        Best-effort: a DB hiccup must never break mining."""
+
+        When the run covered the whole corpus, findings it no longer detects are
+        retired in the same transaction — otherwise a superseded figure sits on the
+        screen beside the corrected one indefinitely, which is what the FX fix
+        exposed. Best-effort: a DB hiccup must never break mining.
+        """
         if not findings:
             return
         try:
             from src.services.db import get_conn
-            from src.services.opportunity_store import upsert_opportunity
+            from src.services.opportunity_store import upsert_opportunity, retire_missing
             with get_conn() as conn:
                 conn.autocommit = False
                 cur = conn.cursor()
                 try:
+                    seen_refs = []
+                    detectors = set()
                     for finding in findings:
-                        upsert_opportunity(cur, finding.as_dict())
+                        rec = finding.as_dict()
+                        upsert_opportunity(cur, rec)
+                        seen_refs.append(str(rec.get("opportunity_ref_id")
+                                             or rec.get("opportunity_id")))
+                        if rec.get("detector_type"):
+                            detectors.add(rec["detector_type"])
+                    retired = (retire_missing(cur, seen_refs, sorted(detectors),
+                                              min_impact=self.min_financial_impact)
+                               if may_retire else 0)
                     conn.commit()
                 except Exception:
                     conn.rollback()
                     raise
-            logger.info("Upserted %d findings into proc.bp_opportunity", len(findings))
+            logger.info(
+                "Upserted %d findings into proc.bp_opportunity%s",
+                len(findings),
+                f"; retired {retired} no longer detected" if may_retire else
+                " (scoped run — nothing retired)",
+            )
         except Exception:  # noqa: BLE001 - persistence is best-effort
             logger.exception("bp_opportunity upsert skipped (non-fatal)")
 
