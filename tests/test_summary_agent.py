@@ -107,6 +107,82 @@ def test_build_persona_prompt_includes_framing_rules_and_facts():
     assert '"invoices": 2' in prompt
 
 
+# --- portfolio facts must survive into the prompt -------------------------
+# Regression: the persona prompt was built through deal_summary._summary_facts,
+# which reads only `documents` and `discrepancies`. Portfolio context has
+# neither, so every real figure was dropped and the model was handed
+# {"document_count": 0, "documents": [], "discrepancies": []} under an
+# instruction to use ONLY those facts. All 26 stored portfolio summaries read
+# "Not available" while their own data_snapshot held the real numbers.
+
+_PORTFOLIO_CTX = {
+    "scope": "portfolio",
+    "totals": {"invoices": 412, "purchase_orders": 388, "quotes": 501,
+               "invoice_spend_usd": 323467.17, "po_value_usd": 298001.02},
+    "top_suppliers": [{"supplier_id": "SUP-1", "invoice_usd": 88120.5}],
+    "currency_mix": {"GBP": 300, "EUR": 80},
+    "sources": {"invoices": 412, "discrepancies": 24, "actions": 1801},
+}
+
+
+def test_portfolio_facts_reach_the_prompt():
+    prompt = sa._build_persona_prompt("You are a procurement data analyst.",
+                                      _PORTFOLIO_CTX)
+    for expected in ["323467.17", "412", "SUP-1", "top_suppliers",
+                     "currency_mix", "88120.5"]:
+        assert expected in prompt, f"{expected!r} missing from portfolio prompt"
+
+
+def test_portfolio_prompt_is_not_deal_shaped():
+    prompt = sa._build_persona_prompt("You are a procurement data analyst.",
+                                      _PORTFOLIO_CTX)
+    low = prompt.lower()
+    # It must not order a summary "of the deal" for a portfolio, nor claim the
+    # portfolio has no documents.
+    assert "summary of the deal" not in low
+    assert '"document_count": 0' not in prompt
+    assert '"documents": []' not in prompt
+
+
+def test_persona_prompt_allows_next_steps_and_key_points():
+    # The old base format mandated only Key Outcomes + Conclusion, so a persona
+    # asking for levers, concessions or next steps could not express them.
+    prompt = sa._build_persona_prompt(
+        "You are a procurement negotiation strategist. Emphasize leverage "
+        "points and concession opportunities.",
+        _PORTFOLIO_CTX,
+    )
+    assert "Next Steps" in prompt
+    assert "Key Points" in prompt
+    # the persona's own emphasis survives
+    assert "leverage points and concession opportunities" in prompt.lower()
+    # and the format no longer forbids anything outside a fixed three sections
+    assert "EXACTLY this format" not in prompt
+
+
+def test_persona_prompt_forbids_inventing_next_steps():
+    prompt = sa._build_persona_prompt("You are an auditor.", _PORTFOLIO_CTX)
+    low = prompt.lower()
+    assert "do not fabricate" in low
+    # an empty section must be dropped rather than filled with plausible filler
+    assert "omit" in low
+
+
+def test_deal_scope_persona_prompt_still_carries_deal_facts():
+    deal_ctx = {
+        "deal_id": "D-9", "deal_name": "Acme Deal",
+        "documents": {"invoices": [{"invoice_number": "INV-1",
+                                    "invoice_amount": 100, "currency": "GBP"}],
+                      "purchase_orders": [], "quotes": []},
+        "discrepancies": [], "actions": [], "sources": {},
+    }
+    prompt = sa._build_persona_prompt("You are an auditor.", deal_ctx)
+    assert "Acme Deal" in prompt
+    # _doc_facts carries type/supplier/currency/total, not the document number
+    assert '"currency": "GBP"' in prompt
+    assert '"total_amount": 100' in prompt
+
+
 def test_store_summary_flips_current_and_inserts():
     rec = []
     conn = _FakeConn({}, recorder=rec)
@@ -146,7 +222,7 @@ def test_store_summary_as_of_does_not_flip_current():
 
 
 def test_generate_summary_portfolio(monkeypatch):
-    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "PORTFOLIO SUMMARY")
+    monkeypatch.setattr(sa, "ollama_generate", lambda *a, **k: "PORTFOLIO SUMMARY")
     monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "bp_prompt"))
     monkeypatch.setattr(sa, "gather_portfolio_context", lambda conn: {"scope": "portfolio", "sources": {"invoices": 2}})
     rec = []
@@ -159,7 +235,7 @@ def test_generate_summary_portfolio(monkeypatch):
 
 
 def test_generate_summary_deal(monkeypatch):
-    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "DEAL SUMMARY")
+    monkeypatch.setattr(sa, "ollama_generate", lambda *a, **k: "DEAL SUMMARY")
     monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "raw"))
     monkeypatch.setattr(sa, "gather_deal_context", lambda deal_id, conn=None: {"deal_id": deal_id, "sources": {"invoices": 1}})
     conn = _FakeConn({})
@@ -176,7 +252,7 @@ def test_generate_summary_no_data_returns_none(monkeypatch):
 
 
 def test_generate_summary_empty_llm_raises(monkeypatch):
-    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "")
+    monkeypatch.setattr(sa, "ollama_generate", lambda *a, **k: "")
     monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "bp_prompt"))
     monkeypatch.setattr(sa, "gather_deal_context", lambda deal_id, conn=None: {"deal_id": deal_id, "sources": {}})
     import pytest
@@ -185,7 +261,7 @@ def test_generate_summary_empty_llm_raises(monkeypatch):
 
 
 def test_generate_summary_as_of_uses_snapshot(monkeypatch):
-    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "HISTORICAL")
+    monkeypatch.setattr(sa, "ollama_generate", lambda *a, **k: "HISTORICAL")
     monkeypatch.setattr(sa, "resolve_persona", lambda persona, conn: ("FRAME", "bp_prompt"))
     conn = _FakeConn({
         "SELECT data_snapshot FROM proc.bp_summary": (["data_snapshot"], [({"scope": "deal", "old": True},)]),

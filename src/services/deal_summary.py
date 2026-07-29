@@ -135,6 +135,28 @@ def _doc_facts(typ: str, d: dict) -> dict:
     }
 
 
+def _portfolio_facts(ctx: dict) -> dict:
+    """Pass a portfolio aggregate through intact.
+
+    The deal curator below reads only ``documents`` and ``discrepancies``.
+    Portfolio context (summary_agent.gather_portfolio_context) has neither key,
+    so routing it through the deal curator silently discarded every figure —
+    totals, top suppliers, currency mix — and handed the model an empty fact
+    sheet under an instruction to use ONLY those facts. The result was 26 stored
+    portfolio summaries reading "Not available" while their own data_snapshot
+    held the real numbers.
+
+    Amounts here are deliberately USD-converted aggregates (``*_usd``), unlike
+    the native-currency deal sheet; the portfolio currency rule says so.
+    """
+    facts: dict = {"scope": "portfolio"}
+    for key in ("totals", "top_suppliers", "currency_mix", "sources"):
+        value = ctx.get(key)
+        if value:
+            facts[key] = value
+    return facts
+
+
 def _summary_facts(ctx: dict) -> dict:
     """Curate a small, native-currency fact sheet for the LLM.
 
@@ -143,7 +165,11 @@ def _summary_facts(ctx: dict) -> dict:
     figures in USD and sometimes describe the JSON instead of the deal. We feed
     only the fields a deal summary needs, in native currency, and drop the
     audit-log noise entirely.
+
+    Portfolio-scoped context takes the pass-through above instead.
     """
+    if str(ctx.get("scope") or "").strip().lower() == "portfolio":
+        return _portfolio_facts(ctx)
     docs = []
     for key, typ in _DOC_SINGULAR.items():
         for d in ctx.get("documents", {}).get(key, []):
@@ -158,14 +184,30 @@ def _summary_facts(ctx: dict) -> dict:
     }
 
 
+# Shared so both summary paths ground identically. summary_agent composes its
+# own persona prompt from these rather than borrowing the deal format below,
+# which is deal-shaped and fixed-section by design.
+GROUNDING_RULE = (
+    "Do not fabricate or infer values that are not present; if something is "
+    "absent, leave it out."
+)
+NATIVE_CURRENCY_RULE = (
+    "Report every monetary value in the deal's native currency (the `currency` "
+    "and `total_amount`/`invoice_amount` fields); never convert currencies."
+)
+PORTFOLIO_CURRENCY_RULE = (
+    "Amounts whose field name ends in `_usd` are USD-converted aggregates: "
+    "report them as USD and say so. Never present a `_usd` figure with a "
+    "pound or euro sign."
+)
+
+
 def _build_prompt(ctx: dict) -> str:
     facts = json.dumps(_summary_facts(ctx), indent=2, default=str)
     return (
         "You are a procurement analyst. Using ONLY the JSON facts below, write a "
-        "SHORT, precise summary of the deal. Do not fabricate or infer values that "
-        "are not present; if something is absent, leave it out. Report every "
-        "monetary value in the deal's native currency (the `currency` and "
-        "`total_amount`/`invoice_amount` fields); never convert currencies.\n\n"
+        f"SHORT, precise summary of the deal. {GROUNDING_RULE} "
+        f"{NATIVE_CURRENCY_RULE}\n\n"
         "Respond in EXACTLY this format and keep it tight:\n"
         "<one or two plain-English sentences: supplier, buyer, the documents "
         "involved (quote/PO/invoice), and total value with currency>\n"

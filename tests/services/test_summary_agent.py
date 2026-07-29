@@ -24,7 +24,7 @@ def test_blank_as_of_uses_current_generation(monkeypatch, blank):
     monkeypatch.setattr(sa, "resolve_persona", lambda p, c: ("framing", "raw"))
     monkeypatch.setattr(sa, "gather_deal_context",
                         lambda deal_id, conn=None: calls.__setitem__("gather", calls["gather"] + 1) or {"sources": {}})
-    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "a summary")
+    monkeypatch.setattr(sa, "ollama_generate", lambda *a, **k: "a summary")
     monkeypatch.setattr(sa, "_store_summary", lambda *a, **k: {"summary": "a summary"})
 
     out = sa.generate_summary("analysis", deal_id="D1", as_of=blank, conn=_Conn())
@@ -34,7 +34,7 @@ def test_blank_as_of_uses_current_generation(monkeypatch, blank):
 
 def test_real_as_of_uses_snapshot_branch(monkeypatch):
     monkeypatch.setattr(sa, "resolve_persona", lambda p, c: ("framing", "raw"))
-    monkeypatch.setattr(sa, "ollama_cloud_generate", lambda *a, **k: "a summary")
+    monkeypatch.setattr(sa, "ollama_generate", lambda *a, **k: "a summary")
     monkeypatch.setattr(sa, "_store_summary", lambda *a, **k: {"summary": "a summary"})
 
     seen = {"snapshot_sql": False}

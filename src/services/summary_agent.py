@@ -16,7 +16,13 @@ from typing import Any, Optional
 
 from src.services.db import get_conn
 from src.services.ollama_client import ollama_generate
-from src.services.deal_summary import gather_deal_context, _build_prompt
+from src.services.deal_summary import (
+    GROUNDING_RULE,
+    NATIVE_CURRENCY_RULE,
+    PORTFOLIO_CURRENCY_RULE,
+    gather_deal_context,
+    _summary_facts,
+)
 
 log = logging.getLogger(__name__)
 
@@ -126,14 +132,48 @@ def gather_portfolio_context(conn: Any) -> Optional[dict]:
     }
 
 
-def _build_persona_prompt(framing: str, facts: dict) -> str:
-    """Persona framing + the grounded base rules + the fact JSON.
+_PERSONA_FORMAT = (
+    "Structure your answer as:\n"
+    "<one or two plain-English sentences covering what you are summarising>\n"
+    "Key Points:\n"
+    "• <label>: <finding>\n"
+    "(3-6 bullets, reflecting the emphasis you were given above.)\n"
+    "Next Steps:\n"
+    "• <a specific action supported by the facts>\n"
+    "(2-4 bullets. Omit this whole section if the facts support no action — "
+    "never invent one to fill it.)\n"
+    "Conclusion:\n"
+    "<one short sentence>"
+)
 
-    Reuses ``deal_summary._build_prompt`` for the no-fabrication base so the
-    grounding rules stay identical across both summary paths.
+
+def _build_persona_prompt(framing: str, facts: dict) -> str:
+    """Persona framing + shared grounding rules + a persona-shaped format.
+
+    This used to delegate wholesale to ``deal_summary._build_prompt``, which
+    orders a "summary of the deal" in EXACTLY three fixed sections (sentences,
+    Key Outcomes, Conclusion). Two consequences: a portfolio summary was told it
+    was summarising a deal, and a persona asking for leverage points, concession
+    opportunities or next steps had nowhere to put them — the format instruction
+    came after the persona text and won. The grounding rules are still shared
+    verbatim with the deal path; only the format and the subject differ.
     """
-    base = _build_prompt(facts)
-    return f"{framing.strip()}\n\n{base}"
+    is_portfolio = str(facts.get("scope") or "").strip().lower() == "portfolio"
+    subject = (
+        "the procurement portfolio described below"
+        if is_portfolio
+        else "the deal described below"
+    )
+    currency_rule = PORTFOLIO_CURRENCY_RULE if is_portfolio else NATIVE_CURRENCY_RULE
+    fact_json = json.dumps(_summary_facts(facts), indent=2, default=str)
+    label = "Portfolio facts (JSON)" if is_portfolio else "Deal facts (JSON)"
+    return (
+        f"{framing.strip()}\n\n"
+        f"Using ONLY the JSON facts below, write a precise summary of {subject}. "
+        f"{GROUNDING_RULE} {currency_rule}\n\n"
+        f"{_PERSONA_FORMAT}\n\n"
+        f"{label}:\n{fact_json}\n"
+    )
 
 
 def _store_summary(
