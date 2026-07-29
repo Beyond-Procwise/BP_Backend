@@ -58,6 +58,16 @@ class DummyNick:
             ses_default_sender="noreply@example.com",
             enable_learning=False,
             hitl_enabled=True,
+            # Same reason, and the same values, as tests/test_negotiation_agent.py: without
+            # these the agent reads its production wait budgets and polls a fake DB for
+            # fifteen minutes. Zero for the dispatch wait (where None, not zero, means "no
+            # deadline"); one second for the round wait (where zero is falsy and would mean
+            # never time out at all).
+            email_response_timeout_seconds=0,
+            email_response_poll_seconds=0,
+            negotiation_round_base_timeout=1,
+            negotiation_per_supplier_timeout=0,
+            negotiation_max_round_timeout=1,
         )
         self.action_logs: List[Dict[str, Any]] = []
 
