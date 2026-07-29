@@ -89,6 +89,12 @@ class RequirementsAgent(BaseAgent):
             .replace("{missing}", ", ".join(missing))
             .replace("{message}", user_text)
         )
+        # Seeded before the try: the "no field updates" warning below reads both,
+        # and a transport failure (Ollama down/timeout) never reaches the
+        # assignments. Leaving them unbound turned every LLM blip into an
+        # UnboundLocalError that failed the whole turn.
+        raw = None
+        result = None
         try:
             # think=False is required: AgentNick is a reasoning model and returns
             # an empty `response` without it (see Model Routing Policy).

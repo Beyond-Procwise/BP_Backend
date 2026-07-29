@@ -159,3 +159,28 @@ def test_malformed_llm_json_does_not_crash(monkeypatch):
     out = agent.run(_ctx({"message": "hello"}))
     assert out.status == AgentStatus.SUCCESS
     assert out.data["complete"] is False  # nothing filled, still gathering
+
+
+def test_llm_transport_failure_keeps_the_turn_alive(monkeypatch):
+    # Regression: `raw`/`result` were bound only inside the try block, but the
+    # "no field updates" warning after it read them. So any transport failure
+    # (Ollama down, timeout, model not loaded) raised UnboundLocalError instead
+    # of logging, and the whole turn came back FAILED. The turn must survive and
+    # keep asking, so the buyer's session is not destroyed by one LLM blip.
+    agent = _make_agent(monkeypatch, llm_payloads=[], redis=_FakeRedis())
+
+    def _boom(**kw):
+        raise ConnectionError("ollama is not reachable")
+
+    agent.call_ollama = _boom
+    persisted = []
+    monkeypatch.setattr(ra_mod.requirement_service, "persist", lambda rec: persisted.append(rec))
+
+    out = agent.run(_ctx({"message": "I need 40 monitors", "created_by": "alice"}))
+
+    assert out.status == AgentStatus.SUCCESS
+    assert out.data["complete"] is False
+    assert out.data["next_question"] == ""
+    assert "title" in out.data["missing_fields"]
+    # The durable gathering row is still written, so the next turn can resume.
+    assert persisted and persisted[-1]["status"] == "gathering"

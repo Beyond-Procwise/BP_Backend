@@ -3061,15 +3061,14 @@ class SupplierInteractionAgent(BaseAgent):
 
         unique_filter: Optional[Set[str]] = {unique_key} if unique_key else None
 
+        # Seeded from the caller's unique_id only. Earlier revisions also read
+        # `draft_match`/`draft_context`/`watch_candidates` here, but those are
+        # locals of run() — in this scope they were undefined names, so a call
+        # without a unique_id raised NameError instead of waiting. With no seed,
+        # _await_dispatch_ready discovers the workflow's unique IDs itself.
         dispatch_unique_ids: List[Optional[str]] = []
         if unique_filter:
             dispatch_unique_ids.extend(unique_filter)
-        elif draft_match:
-            dispatch_unique_ids.append(draft_context.get("unique_id"))
-        elif watch_candidates:
-            for candidate in watch_candidates:
-                if isinstance(candidate, dict):
-                    dispatch_unique_ids.append(candidate.get("unique_id"))
 
         expected_unique_total = len(
             [uid for uid in dispatch_unique_ids if self._coerce_text(uid)]
