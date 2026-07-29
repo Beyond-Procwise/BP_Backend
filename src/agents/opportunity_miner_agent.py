@@ -2747,14 +2747,32 @@ class OpportunityMinerAgent(BaseAgent):
         never assumed 1:1.
         """
 
+        # The whole latest batch, not just GBP: `rate` is units of that currency per
+        # 1 USD, so a row's own currency can be converted straight off this table.
+        # That matters because the line tables (bp_po_line_items_trgt,
+        # bp_quote_line_items_trgt) have no exchange_rate_to_usd column at all and
+        # the header tables have it on a handful of rows — converting only off that
+        # column excluded every non-GBP row from the *_gbp figures the detectors
+        # measure on.
         gbp_per_usd = None
+        fx_rates: Dict[str, float] = {}
         try:
             from repositories import fx_rate_repo
 
-            gbp_per_usd = fx_rate_repo.get_gbp_per_usd_rate()
+            batch = fx_rate_repo.get_or_refresh_rates()
+            if batch:
+                for ccy, rate in (batch.get("rates") or {}).items():
+                    try:
+                        rate_f = float(rate)
+                    except (TypeError, ValueError):
+                        continue
+                    if rate_f > 0:
+                        fx_rates[str(ccy).strip().upper()] = rate_f
+                gbp_per_usd = fx_rates.get("GBP")
         except Exception:
             logger.exception("opportunity_miner: failed to obtain GBP/USD rate for currency normalisation")
             gbp_per_usd = None
+            fx_rates = {}
         if gbp_per_usd is None:
             logger.warning(
                 "opportunity_miner: no live GBP rate available (bp_fx_rates cache empty and "
@@ -2771,7 +2789,8 @@ class OpportunityMinerAgent(BaseAgent):
             if currency_col is None:
                 return df
             currency_series = df[currency_col].astype(str)
-            is_gbp = currency_series == "GBP"
+            normalised_ccy = currency_series.str.strip().str.upper()
+            is_gbp = normalised_ccy == "GBP"
 
             if "exchange_rate_to_usd" in df.columns:
                 xrate_to_usd = pd.to_numeric(df["exchange_rate_to_usd"], errors="coerce")
@@ -2779,7 +2798,19 @@ class OpportunityMinerAgent(BaseAgent):
                 xrate_to_usd = pd.Series(float("nan"), index=df.index)
 
             if gbp_per_usd is not None:
-                rate_to_gbp = xrate_to_usd * gbp_per_usd
+                # Preferred basis: the row's own currency quoted against USD in the
+                # live table (amount / ccy-per-USD = USD, * GBP-per-USD = GBP). Same
+                # basis as the gateway's spend figures, so a £ here and a £ on the
+                # SpendIQ screens mean the same thing.
+                per_usd = normalised_ccy.map(fx_rates)
+                per_usd = pd.to_numeric(per_usd, errors="coerce").replace(0, float("nan"))
+                rate_to_gbp = gbp_per_usd / per_usd
+                # Fallback for a currency the table does not quote: the row's own
+                # persisted rate (USD per 1 unit) — mirrors the gateway's
+                # COALESCE(fx.rate, 1.0 / exchange_rate_to_usd).
+                rate_to_gbp = rate_to_gbp.where(
+                    rate_to_gbp.notna(), xrate_to_usd * gbp_per_usd
+                )
             else:
                 rate_to_gbp = pd.Series(float("nan"), index=df.index)
             # GBP rows need no conversion — 1.0 regardless of USD rate availability.
@@ -2812,6 +2843,31 @@ class OpportunityMinerAgent(BaseAgent):
                     df[f"{col}_gbp"] = numeric_col.fillna(0.0) * rate_to_gbp
             return df
 
+        def _with_parent_currency(child: pd.DataFrame, parent: pd.DataFrame,
+                                  key: str) -> pd.DataFrame:
+            """Carry the parent document's currency down onto its lines.
+
+            proc.bp_invoice_line_items_trgt has no currency column of its own — the
+            currency belongs to the invoice. Without this, convert() bailed out on
+            the whole table and the detectors fell back to the native amount,
+            comparing (say) an INR line price against a GBP one as though they were
+            the same unit.
+            """
+            if (not isinstance(child, pd.DataFrame) or not isinstance(parent, pd.DataFrame)
+                    or child.empty or parent.empty):
+                return child
+            if "currency" in child.columns or "default_currency" in child.columns:
+                return child   # the line already states its own currency
+            if key not in child.columns or key not in parent.columns:
+                return child
+            if "currency" not in parent.columns:
+                return child
+            carry = [key, "currency"]
+            if "exchange_rate_to_usd" in parent.columns:
+                carry.append("exchange_rate_to_usd")
+            lookup = parent[carry].drop_duplicates(subset=[key])
+            return child.merge(lookup, on=key, how="left")
+
         tables["purchase_orders"] = convert(
             tables.get("purchase_orders", pd.DataFrame()), ["total_amount"]
         )
@@ -2830,7 +2886,11 @@ class OpportunityMinerAgent(BaseAgent):
             tables.get("invoices", pd.DataFrame()), ["invoice_amount", "invoice_total_incl_tax"]
         )
         tables["invoice_lines"] = convert(
-            tables.get("invoice_lines", pd.DataFrame()),
+            _with_parent_currency(
+                tables.get("invoice_lines", pd.DataFrame()),
+                tables.get("invoices", pd.DataFrame()),
+                "invoice_id",
+            ),
             ["unit_price", "line_amount", "tax_amount", "total_amount_incl_tax"],
         )
         tables["contracts"] = convert(tables.get("contracts", pd.DataFrame()), ["total_contract_value"])

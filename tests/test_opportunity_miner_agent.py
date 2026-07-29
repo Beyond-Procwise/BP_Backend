@@ -301,7 +301,24 @@ def test_normalise_numeric_dataframe_converts_decimals():
     assert normalised["line_number"].iloc[1] == pytest.approx(2.0)
 
 
-def test_normalise_currency_handles_decimal_sources():
+def _stub_fx(monkeypatch, rates: Dict[str, float]) -> None:
+    """Pin the live rate table so currency assertions don't move with the market."""
+    from repositories import fx_rate_repo
+
+    monkeypatch.setattr(
+        fx_rate_repo, "get_or_refresh_rates",
+        lambda *a, **k: {
+            "fetched_at": datetime.now(timezone.utc),
+            "base_currency": "USD",
+            "rates": dict(rates),
+            "stale": False,
+        },
+    )
+
+
+def test_normalise_currency_handles_decimal_sources(monkeypatch):
+    _stub_fx(monkeypatch, {"GBP": 0.80, "USD": 1.0})
+
     nick = DummyNick()
     nick.query_engine = None
     agent = OpportunityMinerAgent(nick)
@@ -316,19 +333,17 @@ def test_normalise_currency_handles_decimal_sources():
                 }
             ]
         ),
-        "indices": pd.DataFrame([
-            {"currency": "USD", "value": Decimal("0.80")}
-        ]),
     }
 
     normalised = agent._normalise_currency(tables)
     purchase_orders = normalised["purchase_orders"]
 
+    # Decimal amounts survive the conversion: 100 USD at 0.80 GBP per USD.
     assert "total_amount_gbp" in purchase_orders.columns
     assert pytest.approx(80.0) == purchase_orders.loc[0, "total_amount_gbp"]
 
 
-def test_normalise_currency_survives_rows_with_no_currency():
+def test_normalise_currency_survives_rows_with_no_currency(monkeypatch):
     """A line with no currency recorded must not abort the whole mining run.
 
     proc.bp_po_line_items_trgt legitimately carries NULL currency on some lines.
@@ -336,6 +351,8 @@ def test_normalise_currency_survives_rows_with_no_currency():
     a no-op, so the unconvertible-currency diagnostic used to sort a set mixing
     str and float and raise TypeError — killing opportunity mining entirely.
     """
+    _stub_fx(monkeypatch, {"GBP": 0.75, "USD": 1.0})
+
     nick = DummyNick()
     nick.query_engine = None
     agent = OpportunityMinerAgent(nick)
@@ -345,7 +362,7 @@ def test_normalise_currency_survives_rows_with_no_currency():
             [
                 {"po_id": "PO-1", "currency": "GBP", "line_total": Decimal("10.00")},
                 {"po_id": "PO-2", "currency": None, "line_total": Decimal("20.00")},
-                {"po_id": "PO-3", "currency": "USD", "line_total": Decimal("30.00")},
+                {"po_id": "PO-3", "currency": "USD", "line_total": Decimal("40.00")},
             ]
         ),
     }
@@ -353,11 +370,115 @@ def test_normalise_currency_survives_rows_with_no_currency():
     normalised = agent._normalise_currency(tables)
     lines = normalised["purchase_order_lines"]
 
-    # GBP needs no conversion; the other two cannot be converted honestly, so
-    # they are excluded from the *_gbp column rather than assumed 1:1.
     assert pytest.approx(10.0) == lines.loc[0, "line_total_gbp"]
+    # No currency recorded -> still excluded, never assumed 1:1.
     assert pd.isna(lines.loc[1, "line_total_gbp"])
-    assert pd.isna(lines.loc[2, "line_total_gbp"])
+    assert pytest.approx(30.0) == lines.loc[2, "line_total_gbp"]
+
+
+def test_normalise_currency_uses_live_rate_table_when_row_has_no_rate(monkeypatch):
+    """Line tables carry no exchange_rate_to_usd, so they must convert off bp_fx_rates.
+
+    proc.bp_po_line_items_trgt / bp_quote_line_items_trgt have no
+    exchange_rate_to_usd column at all, and the header tables have it populated on
+    a handful of rows. Converting only off that column excluded every non-GBP row
+    from the *_gbp columns — the figures opportunity detection is measured on.
+    bp_fx_rates already holds a live rate for each of those currencies; use it,
+    same basis as the gateway's spend figures.
+    """
+    # rate = units of `currency` per 1 USD
+    _stub_fx(monkeypatch, {"GBP": 0.75, "EUR": 0.90, "USD": 1.0})
+
+    nick = DummyNick()
+    nick.query_engine = None
+    agent = OpportunityMinerAgent(nick)
+
+    tables = {
+        "purchase_order_lines": pd.DataFrame(
+            [
+                {"po_id": "PO-1", "currency": "GBP", "line_total": Decimal("100.00")},
+                {"po_id": "PO-2", "currency": "USD", "line_total": Decimal("100.00")},
+                {"po_id": "PO-3", "currency": "EUR", "line_total": Decimal("90.00")},
+                {"po_id": "PO-4", "currency": "ZWL", "line_total": Decimal("100.00")},
+                {"po_id": "PO-5", "currency": None, "line_total": Decimal("100.00")},
+            ]
+        ),
+    }
+
+    lines = agent._normalise_currency(tables)["purchase_order_lines"]
+
+    assert pytest.approx(100.0) == lines.loc[0, "line_total_gbp"]   # GBP is 1:1
+    assert pytest.approx(75.0) == lines.loc[1, "line_total_gbp"]    # 100 USD * 0.75
+    assert pytest.approx(75.0) == lines.loc[2, "line_total_gbp"]    # 90 EUR / 0.90 * 0.75
+    # Still never invented: a currency absent from the rate table, and a row with
+    # no currency at all, stay excluded rather than assumed 1:1.
+    assert pd.isna(lines.loc[3, "line_total_gbp"])
+    assert pd.isna(lines.loc[4, "line_total_gbp"])
+
+
+def test_normalise_currency_prefers_rate_table_over_row_rate(monkeypatch):
+    """One basis across the product: the live table wins, the row's own rate is
+    the fallback for a currency the table doesn't quote (mirrors the gateway's
+    COALESCE(fx.rate, 1.0 / exchange_rate_to_usd))."""
+    _stub_fx(monkeypatch, {"GBP": 0.75, "USD": 1.0})
+
+    nick = DummyNick()
+    nick.query_engine = None
+    agent = OpportunityMinerAgent(nick)
+
+    tables = {
+        "purchase_orders": pd.DataFrame(
+            [
+                # Table quotes USD, so the stale row rate (2.0 USD per USD) is ignored.
+                {"po_id": "PO-1", "currency": "USD", "total_amount": Decimal("100.00"),
+                 "exchange_rate_to_usd": Decimal("2.0")},
+                # ZWL is not in the table above -> fall back to the row's own rate:
+                # 100 * 0.5 USD/ZWL = 50 USD, * 0.75 = 37.5 GBP.
+                {"po_id": "PO-2", "currency": "ZWL", "total_amount": Decimal("100.00"),
+                 "exchange_rate_to_usd": Decimal("0.5")},
+            ]
+        ),
+    }
+
+    pos = agent._normalise_currency(tables)["purchase_orders"]
+
+    assert pytest.approx(75.0) == pos.loc[0, "total_amount_gbp"]
+    assert pytest.approx(37.5) == pos.loc[1, "total_amount_gbp"]
+
+
+def test_normalise_currency_gives_invoice_lines_their_parent_currency(monkeypatch):
+    """Invoice lines have no currency column — it belongs to the parent invoice.
+
+    proc.bp_invoice_line_items_trgt has no `currency`, so convert() bailed out and
+    invoice lines got no *_gbp columns at all. The detectors then fell back to the
+    native `line_amount`, comparing INR against GBP as if they were the same unit.
+    """
+    _stub_fx(monkeypatch, {"GBP": 0.75, "USD": 1.0})
+
+    nick = DummyNick()
+    nick.query_engine = None
+    agent = OpportunityMinerAgent(nick)
+
+    tables = {
+        "invoices": pd.DataFrame(
+            [
+                {"invoice_id": "INV-1", "currency": "USD", "invoice_amount": Decimal("100.00")},
+                {"invoice_id": "INV-2", "currency": "GBP", "invoice_amount": Decimal("100.00")},
+            ]
+        ),
+        "invoice_lines": pd.DataFrame(
+            [
+                {"invoice_id": "INV-1", "line_amount": Decimal("100.00")},
+                {"invoice_id": "INV-2", "line_amount": Decimal("100.00")},
+            ]
+        ),
+    }
+
+    lines = agent._normalise_currency(tables)["invoice_lines"]
+
+    assert "line_amount_gbp" in lines.columns
+    assert pytest.approx(75.0) == lines.loc[0, "line_amount_gbp"]   # USD line
+    assert pytest.approx(100.0) == lines.loc[1, "line_amount_gbp"]  # GBP line
 
 
 def _sample_tables() -> Dict[str, Any]:
