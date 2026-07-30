@@ -76,6 +76,10 @@ def test_opportunity_tiering():
         assert False, "unknown stage must raise"
     except ValueError:
         pass
+    # finding-dict contract: no "currency" key on any finding leaving this
+    # module (build_value_summary strips it from discrepancy findings after
+    # FX conversion; opportunity findings must never have carried one)
+    assert "currency" not in classify_opportunity(_opp())
 
 
 def test_dedupe_precedence_and_supersede_flag():
@@ -110,6 +114,31 @@ def test_summarise_totals():
     assert t["finding_count"] == 3
     assert t["by_supplier"][0] == {"supplier_name": "Techworld",
                                    "verified_found_gbp": 1050.0, "finding_count": 2}
+
+
+def test_unconvertible_currency_is_excluded_not_zeroed():
+    """A foreign-currency discrepancy with no available FX rate must report an
+    honest 'unknown' amount_gbp (None), never a silent £0.00 -- and summarise()
+    must not crash and must not count it towards any GBP total."""
+    import src.services.value_summary_service as vss
+
+    f = classify_discrepancy(_disc(currency="JPY"))
+    assert f["amount_gbp"] == 950.0    # native, pre-conversion
+
+    out = vss._apply_discrepancy_fx(f, rates=None)   # FX unavailable
+    assert out["amount_gbp"] is None
+    assert out["converted_from"] == {"currency": "JPY", "amount": 950.0, "rate_date": None}
+    assert "currency" not in out       # internal staging key must be stripped
+
+    # Mixed with a normal GBP finding: totals must reflect only the known amount.
+    gbp_finding = classify_discrepancy(_disc(discrepancy_id=2, doc_pk_candidate="INV-2"))
+    t = summarise([out, gbp_finding])
+    assert t["verified_found_gbp"] == 950.0    # only the GBP finding counted
+    assert t["finding_count"] == 2             # the unconvertible one still counts as found
+    supplier_row = t["by_supplier"][0]
+    assert supplier_row["supplier_name"] == "Techworld"
+    assert supplier_row["finding_count"] == 2
+    assert supplier_row["verified_found_gbp"] == 950.0
 
 
 class _FakeCursor:

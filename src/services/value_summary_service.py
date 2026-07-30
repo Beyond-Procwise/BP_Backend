@@ -125,7 +125,6 @@ def classify_opportunity(row: dict) -> Optional[dict]:
         "amount_gbp": amount,          # financial_impact_gbp is already native GBP
         "recovered_gbp": recovered,
         "converted_from": None,
-        "currency": "GBP",
         "title": f"Opportunity: {row.get('item_description') or row.get('supplier_name') or 'unnamed'}",
         "supplier_name": row.get("supplier_name"),
         "deal_id": row.get("deal_id"),
@@ -164,6 +163,11 @@ def dedupe(findings: list[dict]) -> list[dict]:
 
 
 def summarise(findings: list[dict]) -> dict:
+    # amount_gbp can be None on a live finding whose native currency couldn't
+    # be converted (unknown currency, or FX rates unavailable) -- that's an
+    # honest "we don't know the GBP figure", never a fabricated 0.0. Such a
+    # finding still counts (it's real, and stays in finding_count / its
+    # supplier's finding_count) but contributes nothing to any GBP total.
     live = [f for f in findings if f.get("superseded_by") is None]
     verified = [f for f in live if f["tier"] == "verified"]
     by_supplier: dict[str, dict] = {}
@@ -171,12 +175,14 @@ def summarise(findings: list[dict]) -> dict:
         name = f.get("supplier_name") or "Unknown supplier"
         g = by_supplier.setdefault(name, {"supplier_name": name, "verified_found_gbp": 0.0,
                                           "finding_count": 0})
-        g["verified_found_gbp"] = round(g["verified_found_gbp"] + f["amount_gbp"], 2)
+        if f["amount_gbp"] is not None:
+            g["verified_found_gbp"] = round(g["verified_found_gbp"] + f["amount_gbp"], 2)
         g["finding_count"] += 1
     return {
-        "verified_found_gbp": round(sum(f["amount_gbp"] for f in verified), 2),
+        "verified_found_gbp": round(sum(f["amount_gbp"] for f in verified if f["amount_gbp"] is not None), 2),
         "recovered_gbp": round(sum(f["recovered_gbp"] or 0.0 for f in live), 2),
-        "potential_gbp": round(sum(f["amount_gbp"] for f in live if f["tier"] == "potential"), 2),
+        "potential_gbp": round(sum(f["amount_gbp"] for f in live
+                                   if f["tier"] == "potential" and f["amount_gbp"] is not None), 2),
         "finding_count": len(live),
         "by_supplier": sorted(by_supplier.values(),
                               key=lambda g: -g["verified_found_gbp"]),
@@ -276,7 +282,12 @@ def _get_rates() -> Optional[dict]:
 def _apply_discrepancy_fx(finding: dict, rates: Optional[dict]) -> dict:
     currency = finding.pop("currency", None)
     amount_gbp, converted_from = _to_gbp(finding["amount_gbp"], currency, rates)
-    finding["amount_gbp"] = amount_gbp if amount_gbp is not None else 0.0
+    # Honest None, never a silent zero: an unconvertible foreign amount is
+    # real and non-zero, just not GBP-denominated yet. summarise() treats
+    # None as excluded from every sum instead of rendering a fabricated
+    # "£0.00"; converted_from still carries the native amount/currency so the
+    # UI can show that instead.
+    finding["amount_gbp"] = amount_gbp
     finding["converted_from"] = converted_from
     if finding.get("recovered_gbp") is not None:
         recovered_gbp, _ = _to_gbp(finding["recovered_gbp"], currency, rates)
