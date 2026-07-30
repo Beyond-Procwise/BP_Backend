@@ -599,6 +599,58 @@
           "prompt": "What do you need? Describe the requirement."
         }
       ]
+    },
+    {
+      "agentId": 15,
+      "agentType": "NegotiationAdvisorAgent",
+      "slug": "negotiation_advisor",
+      "class_path": "agents.negotiation_advisor_agent.NegotiationAdvisorAgent",
+      "description": "Gives a buyer ranked, evidence-grounded negotiation advice for a deal: suggested supplier quadrant and style with reasons, plays marked ready or groundwork, and a conversation to override the framing or add facts the data lacks.",
+      "role": "advise",
+      "capabilities": [
+        "negotiation_advice"
+      ],
+      "required_inputs": [
+        "deal_id"
+      ],
+      "output_fields": [
+        "quadrant",
+        "style",
+        "plays"
+      ],
+      "dependencies": [
+        "db_client",
+        "ollama_client"
+      ],
+      "inputs": {
+        "required": [
+          "deal_id"
+        ],
+        "optional": [
+          "action",
+          "lever",
+          "style",
+          "quadrant",
+          "fact_key",
+          "fact_value",
+          "created_by"
+        ]
+      },
+      "outputs": [
+        "quadrant",
+        "style",
+        "plays"
+      ],
+      "version": "1.0.0",
+      "elicit": [
+        {
+          "any_of": [
+            "deal_id"
+          ],
+          "type": "text",
+          "prompt": "Which deal do you want negotiation advice for?"
+        }
+      ]
     }
   ]
 }
