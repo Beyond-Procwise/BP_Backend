@@ -406,8 +406,13 @@ def dispatch_document(
                 "quantity", "unit_price", "line_amount", "line_total",
                 "total_amount", "total_amount_incl_tax",
             }
+            from src.services.extraction.three_way_match import is_non_charge_line
             for li_idx, li in enumerate(line_items):
                 if not any(li.get(k) not in (None, "", 0) for k in numeric_keys):
+                    # Terms/footer furniture legitimately has no numbers —
+                    # warning on it buried the real findings 201-deep.
+                    if is_non_charge_line(li.get("item_description")):
+                        continue
                     discrepancies.append(Discrepancy(
                         field_name=f"line_items[{li_idx}]",
                         issue_type="line_missing_numbers",

@@ -138,6 +138,30 @@ def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
     return header, lines
 
 
+# Document furniture that table extraction captures as "line items": the
+# commercial-terms block, validity, and the confidentiality footer. Exact
+# whole-description matches only (a real charge like "Payment processing fee"
+# must never match), plus the two structural footer signatures.
+_NON_CHARGE_DESCRIPTIONS = {
+    "commercial terms", "payment terms", "terms", "term", "uplift", "payment",
+    "price validity", "validity", "currency", "delivery", "date", "notes",
+    "rfq reference", "quote ref", "quote reference",
+}
+_FOOTER_RE = re.compile(r"·.*·|commercial-in-confidence", re.IGNORECASE)
+
+
+def is_non_charge_line(description: Any) -> bool:
+    """True when a captured line is document furniture (terms block, footer),
+    not a charge. Used to keep line-quality warnings and three-way-match
+    findings honest; the extracted row itself is never deleted."""
+    s = str(description or "").strip().lower()
+    if not s:
+        return False
+    if s in _NON_CHARGE_DESCRIPTIONS:
+        return True
+    return bool(_FOOTER_RE.search(s))
+
+
 def _po_uploaded_but_unpromoted(po_id: str) -> bool:
     """True when the cited PO exists in the raw tier or as an uploaded file,
     i.e. it reached the system but has not been promoted to _stg/_trgt yet
@@ -255,6 +279,11 @@ def check_against_po(
         if po_line is not None:
             matched_po_lines.add(id(po_line))
         if po_line is None:
+            # "Charged but not on the PO" requires a charge: a row with no
+            # money is furniture or an extraction gap (both surfaced
+            # elsewhere), and terms/footer rows are never charges at all.
+            if amt is None or is_non_charge_line(desc):
+                continue
             out.append(Discrepancy(
                 field_name=f"line_items[{idx}]",
                 issue_type="line_not_on_po",

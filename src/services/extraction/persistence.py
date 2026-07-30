@@ -290,12 +290,28 @@ def write_discrepancies(
     doc_pk_candidate: str | None,
     discrepancies: Iterable[Discrepancy],
 ) -> int:
-    """INSERT discrepancy rows. Returns count written."""
+    """UPSERT discrepancy rows. Returns count written.
+
+    Re-processing a document (new raw_id, same findings) must REFRESH its open
+    findings, not stack duplicates — the Test Data_300726 re-extraction left
+    identical warnings 7-deep. The open-findings identity is
+    (doc_type, doc_pk_candidate, issue_type, field_name), enforced by the
+    partial unique index ix_bp_extraction_discrepancy_open_key (deploy/sql/
+    2026-07-30_discrepancy_dedup.sql); on conflict the row's evidence is
+    refreshed from the latest run while created_at/status survive. Resolved
+    rows sit outside the partial index, so a finding that recurs after being
+    resolved is a NEW row — resolution history is never overwritten.
+    """
     # Materialize: `discrepancies` may be a one-shot generator that we iterate
     # twice (rows build below + action_rows comprehension).
     discrepancies = list(discrepancies)
-    rows = []
+    # In-batch collapse (latest wins): Postgres rejects ON CONFLICT affecting
+    # the same row twice within one statement.
+    by_key: dict = {}
     for d in discrepancies:
+        by_key[(d.issue_type, d.field_name or "")] = d
+    rows = []
+    for d in by_key.values():
         rows.append((
             doc_type, raw_id, source_file, doc_pk_candidate,
             d.field_name, d.raw_value, d.expected_value, d.computed_value,
@@ -309,7 +325,22 @@ def write_discrepancies(
               field_name, raw_value, expected_value, computed_value,
               issue_type, severity, blocks_promotion,
               evidence_page, evidence_bbox, evidence_text, notes)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             ON CONFLICT (doc_type, coalesce(doc_pk_candidate, ''),
+                          issue_type, coalesce(field_name, ''))
+             WHERE coalesce(status, 'open') <> 'resolved'
+             DO UPDATE SET
+               raw_id = EXCLUDED.raw_id,
+               source_file = EXCLUDED.source_file,
+               raw_value = EXCLUDED.raw_value,
+               expected_value = EXCLUDED.expected_value,
+               computed_value = EXCLUDED.computed_value,
+               severity = EXCLUDED.severity,
+               blocks_promotion = EXCLUDED.blocks_promotion,
+               evidence_page = EXCLUDED.evidence_page,
+               evidence_bbox = EXCLUDED.evidence_bbox,
+               evidence_text = EXCLUDED.evidence_text,
+               notes = EXCLUDED.notes"""
     with get_conn() as conn:
         conn.autocommit = False
         cur = conn.cursor()
@@ -333,7 +364,7 @@ def write_discrepancies(
                         "computed_value": d.computed_value,
                     },
                 }
-                for d in discrepancies
+                for d in by_key.values()
             ]
             bulk_record(action_rows, conn=conn)
             conn.commit()
