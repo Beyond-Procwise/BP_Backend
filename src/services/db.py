@@ -577,6 +577,28 @@ class _FakeCursor:
             self.description = [_ColumnDescriptor(c) for c in col_names]
             return
 
+        # Style-engine lookups: no mailbox binding, no compiled style profile.
+        # An in-memory store genuinely has neither, and the style resolver already
+        # treats "no rows" as "fall back to the baseline style" — it logs exactly
+        # that. Raising instead propagated out of the resolver and failed the whole
+        # agent run, so a negotiation with no input data came back FAILED rather
+        # than the clarify round it should produce. Zero rows is the honest answer
+        # here; unknown queries still raise, which is what keeps this a tripwire.
+        # The same holds for the dispatch-history lookups the agents use to resolve a
+        # canonical workflow from a unique_id: nothing has been dispatched in an
+        # in-memory store, so there is no tracking row and no supplier response.
+        if upper_stmt.startswith("SELECT") and (
+            "FROM PROC.BP_MAILBOX_BINDING" in upper_stmt
+            or "FROM PROC.BP_STYLE_PROFILE" in upper_stmt
+            or "FROM PROC.WORKFLOW_EMAIL_TRACKING" in upper_stmt
+            or "FROM PROC.SUPPLIER_RESPONSE" in upper_stmt
+        ):
+            select_part = statement.split("SELECT", 1)[1].split("FROM", 1)[0]
+            col_names = [c.strip() for c in select_part.split(",")]
+            self._results = []
+            self.description = [_ColumnDescriptor(c) for c in col_names]
+            return
+
         raise NotImplementedError(f"Unsupported fake query: {statement}")
 
 

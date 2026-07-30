@@ -6121,7 +6121,7 @@ class NegotiationAgent(BaseAgent):
             session_reference,
         )
 
-        return self._with_plan(
+        output = self._with_plan(
             context,
             AgentOutput(
                 status=AgentStatus.SUCCESS,
@@ -6130,6 +6130,19 @@ class NegotiationAgent(BaseAgent):
                 next_agents=next_agents,
             ),
         )
+        # Record the round's email-draft action. Every other path that drafts already does
+        # this — the batch path calls the same helper per entry, and the stop path queues
+        # through _queue_email_draft_action — but the counter path, which is the main flow,
+        # never did. So a single counter round produced an email with no audit row saying
+        # WHY: the intent, the decision and the context snapshot behind it. (The child
+        # EmailDraftingAgent logs its own generic entry from BaseAgent.execute; this is the
+        # negotiation's own record, and the two are deliberately distinct.)
+        self._queue_round_action_for_immediate_drafts(
+            context=context,
+            payload=context.input_data if isinstance(context.input_data, dict) else {},
+            result=output,
+        )
+        return output
 
     # ------------------------------------------------------------------
     # NEW: Intelligence helpers
@@ -9989,26 +10002,19 @@ class NegotiationAgent(BaseAgent):
                 )
             return
 
-        repository = getattr(self.agent_nick, "learning_repository", None)
-        if not repository:
-            return
-        try:
-            repository.record_negotiation_learning(
-                workflow_id=workflow_id,
-                rfq_id=rfq_id,
-                supplier_id=supplier,
-                decision=decision or {},
-                state=state or {},
-                awaiting_response=awaiting_response,
-                supplier_reply_registered=supplier_reply_registered,
-            )
-        except Exception:  # pragma: no cover - defensive logging
-            logger.debug(
-                "Failed to record negotiation learning for workflow=%s supplier=%s",
-                workflow_id,
-                supplier,
-                exc_info=True,
-            )
+        # Enqueue-only, deliberately. There is ONE path from a negotiation snapshot to
+        # the learning store: this agent enqueues a `negotiation_snapshot` event and the
+        # orchestrator drains it (orchestrator.py, `elif category == "negotiation_snapshot"`)
+        # into repository.record_negotiation_learning with the same fields. This method
+        # used to ALSO write to that repository directly whenever agent_nick exposed one,
+        # so a run with both a memory queue and a repository recorded the same snapshot
+        # twice — duplicate rows in the corpus that model_training_service then trains on.
+        # The three learning-snapshot tests have asserted this no-op since the repository's
+        # initial import; the write was simply never removed when the drain path landed.
+        logger.debug(
+            "negotiation snapshot not enqueued (memory disabled or no workflow_id); "
+            "not writing directly to the learning repository — the orchestrator owns that write"
+        )
 
     def _collect_recipient_candidates(self, context: AgentContext) -> List[str]:
         seen: Set[str] = set()

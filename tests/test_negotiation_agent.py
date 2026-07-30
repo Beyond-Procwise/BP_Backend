@@ -104,11 +104,18 @@ class DummyNick:
                         def execute(self, query=None, params=None, *args, **kwargs):
                             self._results = []
                             if query and "information_schema.columns" in str(query).lower():
-                                # Return standard negotiation columns
+                                # Standard negotiation columns, as (column_name,
+                                # is_nullable) pairs. The agent selects BOTH columns and
+                                # unpacks two values per row; a one-tuple raises ValueError
+                                # inside its best-effort try, so the metadata came back
+                                # empty and the agent concluded workflow_id did not exist —
+                                # it then refused to load or persist session state, and the
+                                # email action under test was never produced.
                                 self._results = [
-                                    ("workflow_id",), ("supplier_id",),
-                                    ("current_round",), ("status",),
-                                    ("awaiting_response",), ("supplier_reply_count",),
+                                    ("workflow_id", "NO"), ("supplier_id", "NO"),
+                                    ("current_round", "YES"), ("status", "YES"),
+                                    ("awaiting_response", "YES"),
+                                    ("supplier_reply_count", "YES"),
                                 ]
                             elif query and "to_regclass" in str(query).lower():
                                 self._results = [(None,)]
@@ -801,7 +808,12 @@ def test_negotiation_agent_runs_batch_in_parallel(monkeypatch):
     assert output.data["negotiation_batch"] is True
     assert len(output.data["results"]) == 2
     assert sorted(processed) == ["S1", "S2"]
-    assert len(output.data["drafts"]) == 2
+    # A batch splits its output in two: "drafts" carries the bundles the dispatch path
+    # consumes (email_dispatch_agent reads input_data["drafts"]), and "draft_records"
+    # carries the raw per-entry drafts each single negotiation produced. This asserts the
+    # latter — the stubbed negotiations return draft records, not bundles, so asserting
+    # bundles here was asserting that the email bundler ran, which the stub bypasses.
+    assert len(output.data["draft_records"]) == 2
     assert output.data["results_by_supplier"]["S1"]["output"]["rfq_id"] == "RFQ-1"
     assert output.data["successful_suppliers"] == ["S1", "S2"]
     assert output.data["failed_suppliers"] == []
@@ -872,7 +884,8 @@ def test_negotiation_agent_batch_records_failures(monkeypatch):
     assert failures[0]["supplier_id"] == "S2"
     assert output.data["failed_suppliers"]
     assert output.data["successful_suppliers"] == ["S1"]
-    assert len(output.data["drafts"]) == 1
+    # Per-entry drafts, not dispatch bundles — see the note in the parallel-batch test.
+    assert len(output.data["draft_records"]) == 1
     summaries = output.data.get("round_summaries")
     assert summaries and set(summaries[0]["suppliers"]) == {"S1", "S2"}
     email_actions = [entry for entry in nick.action_logs if entry.get("agent_type") == "EmailDraftingAgent"]
