@@ -227,6 +227,13 @@ def _time_per_round(cur, d: dict) -> str:
 # ---------------------------------------------------------------------------
 # 5. negotiation strategy  (deterministic, driven by deal context)
 # ---------------------------------------------------------------------------
+def _advice_plays(deal_id: str) -> list[dict]:
+    """Ranked, grounded plays. Imported lazily to avoid an import cycle."""
+    from src.services.negotiation_advice import build_advice
+    advice = build_advice(deal_id)
+    return list((advice or {}).get("plays") or [])
+
+
 def negotiation_strategy(cur, deal_id: str, d: Optional[dict] = None) -> list[dict]:
     d = d or _deal(cur, deal_id)
     if not d:
@@ -257,14 +264,23 @@ def negotiation_strategy(cur, deal_id: str, d: Optional[dict] = None) -> list[di
         our_aim = max(0, supplier_rate - 3)
         walk_away = supplier_rate
     persona, key_driver, recommendation = _supplier_insights(cur, d)
+    # leveragePoints and counterStrategy were two fixed strings shown to every
+    # buyer on every deal — "Cost justification and benchmark variance" regardless
+    # of whether this deal had a benchmark. They are replaced by plays the advisor
+    # ranked for THIS deal, each carrying its state and the evidence behind it.
+    # An advice failure costs the plays, not the dashboard: the rest of this
+    # payload is computed independently.
+    try:
+        plays = _advice_plays(deal_id)
+    except Exception:
+        log.exception("advice plays unavailable for %s", deal_id)
+        plays = []
     return [{
         "highLevelSummary": high,
         "currentStandpoint": {"supplierRate": supplier_rate, "ourAim": our_aim, "walkAway": walk_away},
         "preferredOutcome": {"optimalPrice": our_aim, "targetRange": f"{our_aim}-{supplier_rate}",
                              "walkAway": walk_away},
-        "leveragePoints": {"rationale": "Cost justification and benchmark variance",
-                           "approach": "Volume commitment and term levers"},
-        "counterStrategy": {"action": "Request a detailed cost breakdown for leverage"},
+        "plays": plays,
         "supplierInsights": {"persona": persona, "keyDriver": key_driver,
                              "recommendation": recommendation},
     }]
