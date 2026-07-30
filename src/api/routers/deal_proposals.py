@@ -31,6 +31,26 @@ class MembersBody(BaseModel):
     remove: list[list[str]] = []
 
 
+class RejectBody(BaseModel):
+    rejected_by: str
+
+
+def _attach_rfq_refs(cur, quotes: list[dict]) -> None:
+    """Enrich each quote with the RFQ reference its parsed text cites (tier-1
+    linked identifier for rivalry clustering). Reads the raw tier's stored
+    parser snapshot — no re-parse, deterministic regex only."""
+    from src.services.deal_clustering import extract_rfq_reference
+    if not quotes:
+        return
+    cur.execute(
+        "select quote_id, parser_snapshot->>'full_text' from proc.bp_quote_raw "
+        "where quote_id = any(%s) order by raw_id",
+        ([q["quote_id"] for q in quotes],))
+    texts = {qid: txt for qid, txt in cur.fetchall()}  # later raws win
+    for q in quotes:
+        q["rfq_reference"] = extract_rfq_reference(texts.get(q["quote_id"]) or "")
+
+
 def _fetch_batch(cur, batch_deal_id: str) -> dict:
     """Read the batch's extracted rows for clustering. Uses process_monitor.deal_id as the
     batch label (see upload-path change, Task 13). Returns the cluster_batch kwargs."""
@@ -40,6 +60,7 @@ def _fetch_batch(cur, batch_deal_id: str) -> dict:
         "select q.* from proc.bp_quote_stg q join proc.bp_quote_raw r on r.quote_id=q.quote_id "
         "join proc.process_monitor pm on pm.id=r.process_monitor_id where pm.deal_id=%s",
         (batch_deal_id,))
+    _attach_rfq_refs(cur, quotes)
     quote_lines: dict = {}
     for q in quotes:
         quote_lines[q["quote_id"]] = _rows(cur,
@@ -134,6 +155,19 @@ def confirm(proposal_id: int, body: ConfirmBody) -> dict[str, Any]:
         return _confirm(proposal_id, body.confirmed_by, body.expected_member_pks)
     except proposal_store.StaleProposalError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/proposals/{proposal_id}/reject", summary="Reject a proposal — never re-proposed")
+def reject(proposal_id: int, body: RejectBody) -> dict[str, Any]:
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            proposal_store.reject_proposal(conn.cursor(), proposal_id, body.rejected_by)
+            conn.commit()
+            return {"status": "rejected", "proposal_id": proposal_id}
+        except Exception:
+            conn.rollback()
+            raise
 
 
 @router.patch("/proposals/{proposal_id}/members", summary="Move/remove documents pre-confirm")

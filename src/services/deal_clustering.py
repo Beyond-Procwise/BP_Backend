@@ -104,6 +104,53 @@ def _norm_ref(v) -> Optional[str]:
     return s or None
 
 
+_RFQ_TOKEN_RE = re.compile(r"\b(?:[A-Z0-9]+-)*RFQ-[A-Z0-9]+(?:-[A-Z0-9]+)*\b")
+
+
+def _canon_rfq(ref: str) -> str:
+    """Canonical RFQ id, anchored on the RFQ stem so a full reference
+    (PROC-2025-RFQ-FRT-021) and a layout-detached bare token (RFQ-FRT-021)
+    identify the same competition."""
+    s = re.sub(r"[^a-z0-9]", "", str(ref).lower())
+    idx = s.find("rfq")
+    return s[idx:] if idx >= 0 else s
+
+
+def extract_rfq_reference(text: str) -> Optional[str]:
+    """The RFQ reference a document cites, from its parsed text. Deterministic
+    token scan (L1 regex, per the extraction direction): any hyphenated token
+    containing the RFQ stem. Multiple DISTINCT references -> None (ambiguous;
+    never guess). Absent -> None."""
+    if not text:
+        return None
+    tokens = _RFQ_TOKEN_RE.findall(text)
+    if not tokens:
+        return None
+    canons = {_canon_rfq(t) for t in tokens}
+    if len(canons) != 1:
+        return None
+    return max(tokens, key=len)  # prefer the fullest form seen
+
+
+def apply_rfq_linkage(bids: list[dict], matrix: dict) -> None:
+    """Tier-1 linked identifier: two bids citing the SAME RFQ are rivals in the
+    same sourcing event by declaration of the documents themselves — decisive
+    where present (spec §Data flow: "linked identifiers ... decisive where
+    present"). Their pair correlation is floored at 0.95 so complete linkage
+    cannot reject them on fuzzy-text grounds; the shared reference is recorded
+    on the pair evidence. Different or absent references change nothing —
+    absence of the identifier is not evidence against rivalry. Runs BEFORE the
+    award-exclusivity veto, which still outranks it."""
+    by_id = {b["quote_id"]: b for b in bids}
+    for key, res in matrix.items():
+        qa, qb = tuple(key)
+        ra = by_id.get(qa, {}).get("rfq_reference")
+        rb = by_id.get(qb, {}).get("rfq_reference")
+        if ra and rb and _canon_rfq(ra) == _canon_rfq(rb):
+            res["correlation"] = max(res["correlation"], 0.95)
+            res["rfq_shared"] = max((ra, rb), key=len)
+
+
 def _explicit_award(bid: dict, pos: list[dict], po_lines: dict) -> Optional[str]:
     """The PO that cites this bid as the quote it was raised against — a tier-1
     LINKED identifier, decisive where present and checked before any score-based
@@ -151,6 +198,10 @@ def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, d
     bids = [b for b in bids_all if b["quote_id"] not in declared_pks]
 
     matrix = pairwise_matrix(bids, quote_lines)
+
+    # Tier-1 linked identifier: a shared RFQ reference is decisive rivalry
+    # linkage; applied before the award veto so structure still outranks it.
+    apply_rfq_linkage(bids, matrix)
 
     # Award map: an explicit LINKED identifier (PO line's quote_number == this bid's
     # base_reference) is decisive and checked first; only fall back to continuity
@@ -229,8 +280,12 @@ def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, d
         if po_id:
             members.append({"doc_type": "po", "doc_pk": po_id, "base_reference": None,
                             "role": "po", "match_score": None, "match_evidence": None})
+            # Dedupe: re-extraction leaves multiple raw rows per document, so the
+            # batch fetch can supply the same invoice twice; each attaches once.
+            seen_invoices: set = set()
             for inv in invoices:
-                if inv.get("po_id") == po_id:
+                if inv.get("po_id") == po_id and inv["invoice_id"] not in seen_invoices:
+                    seen_invoices.add(inv["invoice_id"])
                     members.append({"doc_type": "invoice", "doc_pk": inv["invoice_id"],
                                     "base_reference": None, "role": "invoice",
                                     "match_score": None, "match_evidence": None})
