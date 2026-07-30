@@ -53,6 +53,59 @@ def load_thresholds(conn) -> dict:
     return default_thresholds()
 
 
+_WHY_RULES = (
+    "Explain in ONE short sentence why this negotiation play suits this "
+    "supplier, using ONLY the facts given. Do not invent figures, terms, "
+    "dates or supplier behaviour. Do not suggest a different play."
+)
+
+
+def explain_play(play: dict, signals: dict, *, generate=None) -> str:
+    """One grounded sentence on why this play fits, else the fixed rationale.
+
+    The model phrases the reason; it never selects or reorders plays — those stay
+    deterministic so the advice is auditable. A failure degrades to the
+    deterministic rationale: the advice is useful without prose.
+    """
+    fallback = str(play.get("rationale") or "")
+    evidence = "; ".join(
+        f"{e.get('label')}: {e.get('value')}" for e in (play.get("evidence") or [])
+    )
+    prompt = (
+        f"{_WHY_RULES}\n\n"
+        f"Supplier: {signals.get('supplier_name') or 'unknown'}\n"
+        f"Lever: {play.get('lever')}\n"
+        f"Play: {play.get('play')}\n"
+        f"Evidence: {evidence or 'none'}\n"
+        f"Deal value: {signals.get('deal_value')} "
+        f"{signals.get('currency') or ''}\n"
+    )
+    try:
+        if generate is None:
+            from src.services.deal_summary import _SUMMARY_MODEL
+            from src.services.ollama_client import ollama_generate
+
+            def generate(**kw):
+                return ollama_generate(kw.pop("prompt"), **kw)
+
+            # think=False is mandatory: AgentNick is a reasoning model and
+            # returns an empty `response` without it.
+            text = generate(prompt=prompt, model=_SUMMARY_MODEL,
+                            temperature=0.0, num_predict=120, timeout=60,
+                            retries=1, think=False)
+        else:
+            text = generate(prompt=prompt, model=None, temperature=0.0,
+                            num_predict=120, timeout=60, retries=1,
+                            think=False)
+    except Exception:
+        log.debug("play explanation failed; using deterministic rationale",
+                  exc_info=True)
+        return fallback
+    if not text or not str(text).strip():
+        return fallback
+    return str(text).strip()
+
+
 def build_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
                  overrides: Optional[dict] = None,
                  stated: Optional[dict] = None,
@@ -100,6 +153,8 @@ def build_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
             limit=limit,
         )
         plays = apply_states(ranked.get("plays") or [], effective)
+        for p in plays:
+            p["why"] = explain_play(p, effective)
 
     saved = save_advice(
         conn, deal_id=deal_id, supplier_id=measured.get("supplier_id"),
