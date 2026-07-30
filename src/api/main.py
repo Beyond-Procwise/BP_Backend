@@ -60,6 +60,9 @@ from api.routers import supplier_research as supplier_research_router
 from api.routers import governance as governance_router
 from api.routers import obligations as obligations_router
 from api.routers import benchmark as benchmark_router
+# The requirements router existed but was never mounted, so POST
+# /requirements/message 404'd and no UI could reach the agent at all.
+from api.routers import requirements as requirements_router
 from api.routers import fx as fx_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
@@ -416,6 +419,7 @@ app.include_router(summary.router)
 app.include_router(session.router)
 app.include_router(obligations_router.router)
 app.include_router(benchmark_router.router)
+app.include_router(requirements_router.router)
 app.include_router(fx_router.router)
 import src.services.requirement_similarity  # noqa: F401 — registers the quote_rival profile at startup
 

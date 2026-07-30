@@ -1,6 +1,8 @@
 """Procurement requirements gathering API.
 
-POST /requirements/message            — one elicitation turn (next question or completed requirement)
+POST /requirements/message            — one scoping turn: a proposed scope when the buyer
+                                        asks what the requirements should be, otherwise the
+                                        next elicitation question (or the completed requirement)
 POST /requirements/run-workflow       — start the requirements->sourcing workflow (async, returns job_id)
 GET  /requirements/workflow/{job_id}  — poll an async workflow job's status/result
 GET  /requirements/{id}               — fetch a persisted requirement
@@ -112,13 +114,28 @@ def _launch_workflow(app_state: Any, payload: Dict[str, Any], job_id: str) -> No
 
 def _events_for(result: Dict[str, Any]) -> List[Dict[str, str]]:
     """Build SSE-style progress events describing the turn for a live chat UI."""
-    events: List[Dict[str, str]] = [{"event": "thinking", "message": "Reviewing requirement"}]
+    mode = result.get("mode") or "elicitation"
+    opening = ("Drafting a scope" if mode in ("proposed_scope", "scope_accepted")
+               else "Reviewing requirement")
+    events: List[Dict[str, str]] = [{"event": "thinking", "message": opening}]
+    # A proposed scope is the substance of the turn, so it gets its own event
+    # ahead of the question — a client that renders only `question` would show
+    # the confirm prompt and hide the scope it refers to.
+    scope = result.get("scope") or {}
+    if scope.get("areas"):
+        events.append({
+            "event": "scope",
+            "message": f"Proposed {len(scope['areas'])} requirement areas "
+                       f"({scope.get('family_label', 'general')})",
+        })
     if result.get("complete"):
         events.append({"event": "complete",
                        "message": result.get("summary", "Requirement captured.")})
-    else:
-        events.append({"event": "question",
-                       "message": result.get("next_question", "")})
+    # Not `elif`: a turn can both complete the required fields AND propose a scope
+    # that still needs confirming. Dropping the question there left the buyer
+    # looking at a scope with nothing asked of them.
+    if result.get("next_question"):
+        events.append({"event": "question", "message": result["next_question"]})
     return events
 
 
