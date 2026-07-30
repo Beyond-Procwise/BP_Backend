@@ -68,7 +68,7 @@ benchmark price-history deltas  ─┘         (BP_Backend)              │
 | Tier | Source | Rule |
 |---|---|---|
 | **Verified** (headline) | Discrepancies | Findings with `issue_type IN ('amount_over_po', 'line_amount_over_po', 'duplicate_invoice')` — in **any** status except resolved-`false_positive`. (Historical rows resolved before the outcome column existed have outcome null: they stay in *verified found* but never count as *recovered*.) |
-| **Verified** (headline) | Opportunities | `financial_impact_gbp` where `stage = 'agreed'` — a human has confirmed it. |
+| **Verified** (headline) | Opportunities | `financial_impact_gbp` where `stage IN ('negotiation', 'agreed')` — a human has engaged or confirmed it. (Live lifecycle verified 2026-07-30: `identified → negotiation → agreed → realised`, plus `closed`/`rejected`.) |
 | **Recovered** (companion) | Opportunities | `realised_savings_gbp` where `stage = 'realised'`. |
 | **Recovered** (companion) | Discrepancies | Findings resolved with outcome `recovered`; amount = the recorded recovered amount, defaulting to the finding's delta. |
 | **Potential** (quiet) | Opportunities | `financial_impact_gbp` where `stage = 'identified'` — mined but not yet human-confirmed. Excludes `rejected` and `closed`. |
@@ -164,11 +164,15 @@ list flagged `superseded_by`, so the drawer can explain rather than mysteriously
 
 ## Schema change
 
-`bp_extraction_discrepancy` gains two nullable columns:
+`bp_extraction_discrepancy` gains three nullable columns:
 
-* `resolution_outcome text` — `recovered | accepted | false_positive`
-* `recovered_amount numeric` — optional; defaults to the finding's delta when outcome is
-  `recovered`
+* `resolution_outcome text` — `recovered | accepted` (set only when resolving to
+  `resolved`; a false positive needs no new value — the existing `dismiss` verb already
+  sets `status = 'ignored'`, which all tiers exclude)
+* `recovered_amount numeric` — optional; the reader falls back to the finding's delta
+  when outcome is `recovered` and this is null
+* `query_sent_at timestamptz` — Phase 3's "query sent" stamp (a column, not a status:
+  the finding stays `open` until the human resolves it)
 
 The gateway's `POST /spendiq/discrepancies/resolve` accepts the two new optional fields
 and writes them. Existing resolved rows (outcome null) count toward *verified found* but
@@ -201,15 +205,16 @@ The distance from *found* to *recovered*, collapsed to one click. Scope is delib
 narrow: over-billing (`amount_over_po`, `line_amount_over_po`) and `duplicate_invoice`
 findings only — the cases where the evidence is contractual and suppliers rarely argue.
 
-* **Flow:** drawer button → the existing email-drafting engine composes a supplier query
-  citing invoice ref, PO ref, and the delta (grounded in the finding's stored values —
-  the draft must not restate figures the model generated itself) → existing approval
-  gate (HITL) → send via the existing email path → the finding is stamped `query_sent`.
+* **Flow:** drawer button → a governed template (stored in `bp_prompt`, interpolated in
+  code so every figure is byte-equal to the finding's stored values — no model restating
+  of numbers in v1; style-engine polish is a later option) → the human reviews and edits
+  the draft in a modal (that review IS the approval gate) → send via the existing email
+  path → the finding is stamped `query_sent_at`; it stays `open` until resolved.
 * **Close:** when a reply arrives (EmailWatcher) or manually, the user resolves the
   finding with outcome `recovered` (amount editable) or `accepted`. No auto-resolution
   from reply parsing in this phase — that is W2's job later.
-* **State:** `query_sent` is a note/status on the discrepancy row, not a new workflow
-  table. One new email template in the style engine, governed via `bp_prompt`.
+* **State:** the `query_sent_at` column on the discrepancy row, not a new workflow
+  table. One new email template, governed via `bp_prompt`.
 * **Guard rails:** action is per-finding (no bulk send), only for findings with a
   resolvable supplier email, and every send lands in `bp_agent_actions`.
 
