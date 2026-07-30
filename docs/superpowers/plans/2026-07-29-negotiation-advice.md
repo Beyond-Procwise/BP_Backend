@@ -276,20 +276,53 @@ def supplier_performance_dict(signals: dict) -> dict:
     return out
 
 
+RISK_ELEVATED = 60.0        # risk_score is a 0-100 scale here, median 49.57
+THIN_MARKET_ALTERNATIVES = 93   # the per-deal median; below it the market is thin
+
+
 def market_context_dict(signals: dict) -> dict:
     """Only keys _score_market_context reads, and only when known.
 
     An uncomputable signal is omitted: the scorer returns (0.0, []) on an empty
     dict, which is the honest "no signal" outcome. Defaulting would invent a nudge.
+
+    Both thresholds are on measured scales. `risk_score` is stored as VARCHAR on
+    a 0-100 scale (min 5.00, median 49.57, max 94.94) — comparing it against 0.6
+    matches 5000 of 5000 suppliers, i.e. always. `alternative_supplier_count` is
+    a per-deal union whose median is 93, so a "thin market" test of <= 2 would
+    never fire.
+
+    The scorer treats "high", "elevated" and "tight" identically, so there is one
+    tier and one string rather than a false distinction.
     """
     out: dict = {}
     alt = signals.get("alternative_supplier_count")
     risk = signals.get("risk_score")
-    if alt is not None and alt <= 2:
-        out["supply_risk"] = "high"
-    elif risk is not None and risk >= 0.6:
+    if alt is not None and alt < THIN_MARKET_ALTERNATIVES:
+        out["supply_risk"] = "elevated"
+    elif risk is not None and risk >= RISK_ELEVATED:
         out["supply_risk"] = "elevated"
     return out
+```
+
+Add two tests for the scales, since both bugs are silent:
+
+```python
+def test_risk_threshold_is_on_the_0_to_100_scale():
+    # 0.8 is a low risk on a 0-100 scale and must NOT flag
+    assert "supply_risk" not in sg.market_context_dict(
+        {"alternative_supplier_count": 200, "risk_score": 0.8})
+    # 80 is genuinely high and must flag
+    assert sg.market_context_dict(
+        {"alternative_supplier_count": 200, "risk_score": 80.0})["supply_risk"]
+
+
+def test_thin_market_uses_the_per_deal_scale():
+    # 200 alternatives is a contested market, not a thin one
+    assert "supply_risk" not in sg.market_context_dict(
+        {"alternative_supplier_count": 200, "risk_score": 10.0})
+    assert sg.market_context_dict(
+        {"alternative_supplier_count": 40, "risk_score": 10.0})["supply_risk"]
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -339,7 +372,7 @@ git commit -m "feat(negotiation-advice): grounded deal signals and scorer dicts"
 - Produces:
   - `THRESHOLD_POLICY_SLUG = "negotiation_advice_thresholds"`
   - `classify(signals: dict, thresholds: dict | None = None) -> dict` returning `{"quadrant": str|None, "quadrant_reasons": list[str], "quadrant_confidence": float, "style": str|None, "style_reasons": list[str], "indeterminate": bool}`
-  - `default_thresholds() -> dict` → `{"high_spend": 98175.0, "many_alternatives": 23}`
+  - `default_thresholds() -> dict` → `{"high_spend": 98175.0, "many_alternatives": 93}`
   - `_style_for(quadrant: str, signals: dict) -> tuple[str, list[str]]` — Task 6 imports this to recompute the style when a buyer overrides the quadrant, so keep it importable.
   - `QUADRANTS`, `STYLES` tuples for validation.
 
@@ -354,9 +387,25 @@ Kraljic mapping: high spend + many alternatives → `Leverage`; high spend + few
 
 Thresholds come from `proc.bp_policy` at runtime (Task 6 wires that). This module
 takes them as a parameter and falls back to `default_thresholds()`, so it stays
-pure and unit-testable. The seed values are the live p90 deal value (£98,175;
-median is £4,180) and the median suppliers-per-item (23). They are
-testdata-derived on purpose — that is why they are data, not constants.
+pure and unit-testable.
+
+Seed values, both measured live:
+
+- `high_spend = 98175.0` — the deal-value p90 (median is £4,180).
+- `many_alternatives = 93` — the **per-deal** median from `gather_signals` over
+  80 randomly sampled deals: min 38, p25 65, median 93, p75 126, max 232, with a
+  signal for 80/80.
+
+**Do not use 23 here.** An earlier draft took 23 from the suppliers-per-*item*
+distribution, but `alternative_supplier_count` is a per-*deal* union across all
+of the deal's item descriptions, which is a different and much larger
+distribution. At 23 every real deal is "many alternatives" and nothing can ever
+classify as `Strategic` or `Bottleneck`. Both seeds are testdata-derived, which is
+why they are governed data rather than constants.
+
+`risk_score` is stored as **VARCHAR on a 0-100 scale** (min 5.00, median 49.57,
+max 94.94) — not 0-1. Any risk comparison uses 60, not 0.6; at 0.6 the condition
+matches 5000 of 5000 suppliers.
 
 **When spend or alternatives is `None`, do not guess.** Return
 `quadrant=None, indeterminate=True` so the caller asks the buyer. A wrong
@@ -368,42 +417,55 @@ quadrant misdirects every downstream play.
 # tests/services/negotiation_advice/test_classification.py
 from src.services.negotiation_advice import classification as cl
 
+# Spend either side of the 98,175 bar; alternatives either side of the 93 bar.
+# 93 is the measured per-DEAL median (min 38, p75 126, max 232) — not the
+# per-item median, which is far lower and would make every deal "many".
 HIGH = 200_000.0
 LOW = 1_000.0
+MANY = 120
+FEW = 30
 
 
-def _sig(value, alt, risk=0.2, preferred=False, variance=None):
+def _sig(value, alt, risk=50.0, preferred=False, variance=None):
+    # risk_score is a 0-100 scale in this database, median 49.57.
     return {"deal_value": value, "alternative_supplier_count": alt,
             "risk_score": risk, "is_preferred": preferred,
             "price_variance_pct": variance}
 
 
 def test_high_spend_many_alternatives_is_leverage():
-    out = cl.classify(_sig(HIGH, 30))
+    out = cl.classify(_sig(HIGH, MANY))
     assert out["quadrant"] == "Leverage"
     assert out["indeterminate"] is False
 
 
 def test_high_spend_few_alternatives_is_strategic():
-    assert cl.classify(_sig(HIGH, 2))["quadrant"] == "Strategic"
+    assert cl.classify(_sig(HIGH, FEW))["quadrant"] == "Strategic"
 
 
 def test_low_spend_many_alternatives_is_transactional():
-    assert cl.classify(_sig(LOW, 30))["quadrant"] == "Transactional"
+    assert cl.classify(_sig(LOW, MANY))["quadrant"] == "Transactional"
 
 
 def test_low_spend_few_alternatives_is_bottleneck():
-    assert cl.classify(_sig(LOW, 2))["quadrant"] == "Bottleneck"
+    assert cl.classify(_sig(LOW, FEW))["quadrant"] == "Bottleneck"
+
+
+def test_a_typical_deal_is_not_forced_into_one_quadrant():
+    # Regression guard on the seed: at the wrong threshold (23) every real deal
+    # reads as "many alternatives" and Strategic/Bottleneck become unreachable.
+    assert cl.classify(_sig(HIGH, 65))["quadrant"] == "Strategic"
+    assert cl.classify(_sig(HIGH, 126))["quadrant"] == "Leverage"
 
 
 def test_quadrant_is_one_of_the_playbook_keys():
     valid = {"Transactional", "Leverage", "Strategic", "Bottleneck"}
-    for value, alt in [(HIGH, 30), (HIGH, 2), (LOW, 30), (LOW, 2)]:
+    for value, alt in [(HIGH, MANY), (HIGH, FEW), (LOW, MANY), (LOW, FEW)]:
         assert cl.classify(_sig(value, alt))["quadrant"] in valid
 
 
 def test_missing_spend_is_indeterminate_not_guessed():
-    out = cl.classify(_sig(None, 30))
+    out = cl.classify(_sig(None, MANY))
     assert out["quadrant"] is None
     assert out["indeterminate"] is True
 
@@ -415,35 +477,35 @@ def test_missing_alternatives_is_indeterminate_not_guessed():
 
 
 def test_reasons_cite_the_actual_numbers():
-    reasons = " ".join(cl.classify(_sig(HIGH, 30))["quadrant_reasons"])
+    reasons = " ".join(cl.classify(_sig(HIGH, MANY))["quadrant_reasons"])
     assert "200,000" in reasons or "200000" in reasons
-    assert "30" in reasons
+    assert "120" in reasons
 
 
 def test_thresholds_are_overridable():
     # with a very high spend bar, 200k is now "low"
-    out = cl.classify(_sig(HIGH, 30), thresholds={"high_spend": 10_000_000.0,
-                                                  "many_alternatives": 23})
+    out = cl.classify(_sig(HIGH, MANY), thresholds={"high_spend": 10_000_000.0,
+                                                    "many_alternatives": 93})
     assert out["quadrant"] == "Transactional"
 
 
 def test_style_follows_quadrant_and_evidence():
-    assert cl.classify(_sig(HIGH, 30, variance=8.4))["style"] == "Competitive"
-    assert cl.classify(_sig(HIGH, 2, preferred=True))["style"] == "Collaborative"
-    assert cl.classify(_sig(LOW, 2))["style"] == "Principled"
-    assert cl.classify(_sig(LOW, 30))["style"] == "Competitive"
+    assert cl.classify(_sig(HIGH, MANY, variance=8.4))["style"] == "Competitive"
+    assert cl.classify(_sig(HIGH, FEW, preferred=True))["style"] == "Collaborative"
+    assert cl.classify(_sig(LOW, FEW))["style"] == "Principled"
+    assert cl.classify(_sig(LOW, MANY))["style"] == "Competitive"
 
 
 def test_style_is_one_of_the_playbook_styles():
     valid = {"Competitive", "Collaborative", "Principled", "Accommodating",
              "Compromising"}
-    for value, alt in [(HIGH, 30), (HIGH, 2), (LOW, 30), (LOW, 2)]:
+    for value, alt in [(HIGH, MANY), (HIGH, FEW), (LOW, MANY), (LOW, FEW)]:
         assert cl.classify(_sig(value, alt))["style"] in valid
 
 
 def test_confidence_is_lower_near_a_threshold():
-    near = cl.classify(_sig(98_200.0, 23))["quadrant_confidence"]
-    clear = cl.classify(_sig(1_000_000.0, 40))["quadrant_confidence"]
+    near = cl.classify(_sig(98_200.0, 93))["quadrant_confidence"]
+    clear = cl.classify(_sig(1_000_000.0, 300))["quadrant_confidence"]
     assert near < clear
 ```
 
@@ -476,9 +538,12 @@ STYLES = ("Competitive", "Collaborative", "Principled", "Accommodating",
 
 
 def default_thresholds() -> dict:
-    """Seeded from the live distribution: deal-value p90, suppliers-per-item
-    median. Testdata-derived, hence governed data rather than constants."""
-    return {"high_spend": 98175.0, "many_alternatives": 23}
+    """Seeded from the live distribution: deal-value p90 (98,175; median 4,180)
+    and the per-DEAL median alternative-supplier count (93; min 38, p75 126,
+    max 232 over 80 sampled deals). NOT the per-item median, which is far lower
+    and would make every deal read as "many alternatives". Testdata-derived,
+    hence governed data rather than constants."""
+    return {"high_spend": 98175.0, "many_alternatives": 93}
 
 
 def _confidence(value: float, bar: float) -> float:
@@ -767,6 +832,21 @@ know about): `_normalise_supplier_type` (8170-8186),
 (8221-8273), `_resolve_lever_priorities` (7430-7460), `_ensure_list`
 (10851-10856).
 
+**This is a MOVE, not a copy. Delete each moved body from
+`negotiation_agent.py` in the same commit.** Leaving both copies is duplicated
+logic that will drift, and a reviewer will rightly flag it. Verified caller
+counts before deleting — the four scorers and `_compose_play_rationale` have
+exactly one caller each (inside `_resolve_playbook_context`), so they delete
+cleanly. Three symbols do **not**:
+
+| Symbol | Why it cannot simply be deleted | What to do |
+|---|---|---|
+| `TRADE_OFF_HINTS` | also used at line **7479**, inside `_append_playbook_recommendations`, which stays on the agent | canonical copy in `ranking.py`; agent does `from src.services.negotiation_advice.ranking import TRADE_OFF_HINTS` and its own definition at 118-124 is deleted |
+| `_normalise_lever_category` | **6 call sites**, four of them in code that stays (`_resolve_lever_priorities` 7439/7447, `_extract_policy_guidance` 8233/8255/8264) | canonical implementation in `ranking.py` as `normalise_lever_category`; the agent's method becomes a one-line delegate `return normalise_lever_category(value)` so all six call sites keep working with no duplicated logic |
+| `_load_playbook` | `tests/test_negotiation_skills.py:920` asserts `hasattr(agent, "_load_playbook") or hasattr(agent, "_resolve_playbook_context")` | the `or` is satisfied by `_resolve_playbook_context`, which stays — so the agent's `_load_playbook` may be deleted; have `_resolve_playbook_context` call `ranking.load_playbook()` instead. Re-run that test to confirm |
+
+After the deletions, `grep -n "_score_policy_alignment\|_score_supplier_performance\|_score_market_context\|_compose_play_rationale" src/agents/negotiation_agent.py` must return nothing.
+
 Then:
 
 ```python
@@ -824,18 +904,39 @@ missing-`supplier_type` gate, and delegate:
 
 ```bash
 set -a && . ./.env; set +a
-# re-run the identical baseline script into a second file
 PYTHONPATH=src:. .venv/bin/python - <<'EOF' > /tmp/playbook_after.json
-# ... same script as Step 3 ...
+import json
+from agents.negotiation_agent import NegotiationAgent
+from agents.base_agent import AgentContext
+a = NegotiationAgent.__new__(NegotiationAgent); a._playbook_cache = None
+out = []
+for st in ("Transactional", "Leverage", "Strategic", "Bottleneck"):
+    for sy in ("Competitive", "Collaborative", "Principled", "Accommodating",
+               "Compromising"):
+        ctx = AgentContext(workflow_id="w", agent_id="negotiation", user_id="u",
+                           input_data={"supplier_type": st,
+                                       "negotiation_style": sy})
+        out.append(a._resolve_playbook_context(ctx, {}))
+print(json.dumps(out, sort_keys=True, indent=2))
 EOF
 diff /tmp/playbook_before.json /tmp/playbook_after.json \
   && echo "PLAYBOOK OUTPUT IDENTICAL" || echo "*** BEHAVIOUR CHANGED — STOP ***"
-.venv/bin/python -m pytest tests/test_negotiation_agent.py -q -p no:cacheprovider
+
+# the move left no duplicate bodies behind
+grep -n "_score_policy_alignment\|_score_supplier_performance\|_score_market_context\|_compose_play_rationale" \
+     src/agents/negotiation_agent.py && echo "*** DUPLICATE LEFT BEHIND ***" \
+  || echo "no duplicates remain"
+
+.venv/bin/python -m pytest tests/test_negotiation_agent.py \
+    tests/test_negotiation_skills.py -q -p no:cacheprovider
 ```
-Expected: `PLAYBOOK OUTPUT IDENTICAL`, and `tests/test_negotiation_agent.py` with
-no new failures versus before the change. If the diff is non-empty, the
-extraction was not faithful — revert and redo it rather than adjusting the
-baseline.
+Expected: `PLAYBOOK OUTPUT IDENTICAL`, `no duplicates remain`, and both
+negotiation suites with no new failures versus before the change. If the diff is
+non-empty the extraction was not faithful — revert and redo it rather than
+adjusting the baseline.
+
+Note `test_negotiation_skills.py` is included because line 920 asserts on
+`_load_playbook`'s presence.
 
 - [ ] **Step 6: Run the new tests**
 
@@ -1270,11 +1371,13 @@ CREATE INDEX IF NOT EXISTS ix_bp_negotiation_advice_fact_advice_id
     ON proc.bp_negotiation_advice_fact (advice_id);
 
 -- Governed thresholds. Seeded from the live distribution: deal-value p90
--- (98175; median 4180) and median suppliers-per-item (23). Testdata-derived —
+-- (98175; median 4180) and the per-DEAL median alternative-supplier count (93,
+-- measured over 80 sampled deals; the per-item median is far lower and would
+-- make every deal "many alternatives"). Testdata-derived —
 -- retune against real spend, which is why these are data and not constants.
 INSERT INTO proc.bp_policy (policy_type, policy_name, policy_details, policy_status)
 SELECT 'negotiation', 'negotiation_advice_thresholds',
-       '{"high_spend": 98175.0, "many_alternatives": 23}'::jsonb, 1
+       '{"high_spend": 98175.0, "many_alternatives": 93}'::jsonb, 1
 WHERE NOT EXISTS (
     SELECT 1 FROM proc.bp_policy
     WHERE policy_name = 'negotiation_advice_thresholds'
@@ -1475,7 +1578,7 @@ def _stub(monkeypatch):
     monkeypatch.setattr(ad, "gather_signals", lambda cur, deal_id:
                         dict(_SIGNALS) if deal_id == "D-1" else None)
     monkeypatch.setattr(ad, "load_thresholds", lambda conn:
-                        {"high_spend": 98175.0, "many_alternatives": 23})
+                        {"high_spend": 98175.0, "many_alternatives": 93})
     monkeypatch.setattr(ad, "save_advice", lambda conn, **kw:
                         {"advice_id": "A-1", **kw})
     monkeypatch.setattr(ad, "active_facts", lambda conn, advice_id: {})
