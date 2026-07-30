@@ -544,9 +544,15 @@ def test_negotiation_agent_waits_for_supplier_timeout(monkeypatch):
 
     output = agent.run(context)
 
-    assert output.status == AgentStatus.FAILED
-    assert output.error == "supplier response timeout"
+    # A supplier who has not replied yet leaves the round AWAITING, not failed. Ending a
+    # negotiation in FAILED because a supplier was merely slow threw away the counter the
+    # agent had just drafted and reported a working negotiation as broken.
+    assert output.status == AgentStatus.SUCCESS
+    assert output.data["awaiting_response"] is True
+    assert "timeout" in output.data["awaiting_reason"].lower()
     assert output.data["rfq_id"] == "RFQ-321"
+    # The round's own work survives the wait.
+    assert output.data["decision"]["strategy"]
 
 
 def test_negotiation_agent_stays_active_while_waiting(monkeypatch):

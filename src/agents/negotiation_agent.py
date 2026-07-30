@@ -3935,6 +3935,61 @@ class NegotiationAgent(BaseAgent):
         )
         return state, round_status
 
+    def _awaiting_supplier_response_output(
+        self,
+        context: AgentContext,
+        *,
+        data: Dict[str, Any],
+        pass_fields: Dict[str, Any],
+        next_agents: Sequence[str],
+        state: Dict[str, Any],
+        supplier: Optional[str],
+        workflow_id: Optional[str],
+        watch_unique_ids: Optional[Sequence[str]],
+        reason: str,
+    ) -> AgentOutput:
+        """A round whose supplier has not replied yet is open, not broken.
+
+        Both waiting paths used to end in AgentStatus.FAILED with "supplier
+        response missing", so a supplier who was merely slow — or who was never
+        actually contacted, which is what happens when the agent runs with no
+        input — turned the whole negotiation into a failure and lost the round's
+        own decision and message with it. The round is simply still awaiting:
+        state stays ACTIVE, the watch fields keep SupplierInteractionAgent
+        looking, and the counter that was drafted survives for the caller.
+        """
+        awaiting_data = dict(data)
+        awaiting_data["awaiting_response"] = True
+        awaiting_data["awaiting_reason"] = reason
+        if watch_unique_ids:
+            awaiting_data["unique_ids"] = list(watch_unique_ids)
+
+        state["awaiting_response"] = True
+        state["status"] = "ACTIVE"
+        try:
+            self._save_session_state(workflow_id, supplier, state)
+        except Exception:  # pragma: no cover - best effort; the round is still awaiting
+            logger.debug(
+                "Could not persist awaiting state for supplier=%s", supplier, exc_info=True
+            )
+
+        logger.info(
+            "Negotiation round awaiting supplier response (workflow_id=%s supplier=%s unique_ids=%s): %s",
+            workflow_id,
+            supplier,
+            list(watch_unique_ids or []) or None,
+            reason,
+        )
+        return self._with_plan(
+            context,
+            AgentOutput(
+                status=AgentStatus.SUCCESS,
+                data=awaiting_data,
+                pass_fields=dict(pass_fields),
+                next_agents=list(next_agents),
+            ),
+        )
+
     def _wait_for_round_responses(
         self,
         context: AgentContext,
@@ -5932,24 +5987,16 @@ class NegotiationAgent(BaseAgent):
                         supplier,
                         watch_unique_ids or None,
                     )
-                    error_payload = {
-                        "supplier": supplier,
-                        "rfq_id": rfq_value,
-                        "workflow_id": workflow_id,
-                        "session_reference": session_reference,
-                        "unique_id": session_reference,
-                        "round": round_no,
-                        "decision": decision,
-                        "message": "Supplier response not received before timeout.",
-                        "unique_ids": watch_unique_ids,
-                    }
-                    return self._with_plan(
+                    return self._awaiting_supplier_response_output(
                         context,
-                        AgentOutput(
-                            status=AgentStatus.FAILED,
-                            data=error_payload,
-                            error="supplier response timeout",
-                        ),
+                        data=data,
+                        pass_fields=pass_fields,
+                        next_agents=next_agents,
+                        state=state,
+                        supplier=supplier,
+                        workflow_id=workflow_id,
+                        watch_unique_ids=watch_unique_ids,
+                        reason="Supplier response not received before the wait timeout.",
                     )
                 wait_thread_headers: Optional[Dict[str, Any]] = None
                 if isinstance(wait_results, dict):
@@ -5976,30 +6023,16 @@ class NegotiationAgent(BaseAgent):
                             thread_state.update_after_receive(wait_message_id)
                 supplier_responses = [res for res in wait_results if isinstance(res, dict)]
                 if not supplier_responses:
-                    logger.error(
-                        "No supplier responses received while waiting (workflow_id=%s supplier=%s unique_ids=%s)",
-                        workflow_id,
-                        supplier,
-                        watch_unique_ids or None,
-                    )
-                    error_payload = {
-                        "supplier": supplier,
-                        "rfq_id": rfq_value,
-                        "workflow_id": workflow_id,
-                        "session_reference": session_reference,
-                        "unique_id": session_reference,
-                        "round": round_no,
-                        "decision": decision,
-                        "message": "Missing supplier responses after wait.",
-                        "unique_ids": watch_unique_ids,
-                    }
-                    return self._with_plan(
+                    return self._awaiting_supplier_response_output(
                         context,
-                        AgentOutput(
-                            status=AgentStatus.FAILED,
-                            data=error_payload,
-                            error="supplier response missing",
-                        ),
+                        data=data,
+                        pass_fields=pass_fields,
+                        next_agents=next_agents,
+                        state=state,
+                        supplier=supplier,
+                        workflow_id=workflow_id,
+                        watch_unique_ids=watch_unique_ids,
+                        reason="No supplier responses received yet.",
                     )
                 known_ids: Set[str] = set()
                 current_message = self._coerce_text(context.input_data.get("message_id"))
