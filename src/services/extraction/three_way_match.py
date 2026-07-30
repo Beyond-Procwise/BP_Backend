@@ -138,6 +138,38 @@ def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
     return header, lines
 
 
+def _po_uploaded_but_unpromoted(po_id: str) -> bool:
+    """True when the cited PO exists in the raw tier or as an uploaded file,
+    i.e. it reached the system but has not been promoted to _stg/_trgt yet
+    (typically held in Discrepancy_Review). Distinguishes "the PO is stuck
+    two rows away" from "the supplier cited a PO nobody has ever seen"."""
+    canonical = _norm_po(po_id)
+    cond = _PO_NORM_SQL.format(col="doc_pk_candidate")
+    with get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            if canonical:
+                cur.execute(
+                    f"SELECT 1 FROM proc.bp_purchase_order_raw WHERE {cond} = %s LIMIT 1",
+                    (canonical,),
+                )
+                if cur.fetchone():
+                    return True
+        except Exception:  # noqa: BLE001 - raw table may not exist in some envs
+            conn.rollback()
+        try:
+            cur.execute(
+                "SELECT 1 FROM proc.process_monitor "
+                "WHERE file_path ILIKE %s LIMIT 1",
+                (f"%{po_id}%",),
+            )
+            if cur.fetchone():
+                return True
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+    return False
+
+
 def check_against_po(
     doc_type: str,
     columns: dict[str, Any],
@@ -161,6 +193,19 @@ def check_against_po(
 
     po, po_lines = _load_po(str(po_id).strip())
     if po is None:
+        if _po_uploaded_but_unpromoted(str(po_id).strip()):
+            return [Discrepancy(
+                field_name="po_id",
+                issue_type="po_pending_review",
+                severity="warning",
+                blocks_promotion=False,
+                raw_value=str(po_id),
+                notes=(
+                    f"cites purchase order {po_id}, which was uploaded but is still "
+                    f"held in extraction review — the match will be re-checked once "
+                    f"that purchase order promotes"
+                ),
+            )]
         # The single highest-value finding in the set: the supplier has quoted a PO number
         # that does not exist, so nothing downstream can match it to anything.
         return [Discrepancy(

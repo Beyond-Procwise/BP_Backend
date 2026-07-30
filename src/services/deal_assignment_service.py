@@ -31,12 +31,16 @@ QUOTE_ANCHOR_MIN_SCORE = float(os.getenv("QUOTE_ANCHOR_MIN_SCORE",
 
 
 def is_established_deal(cur, deal_id: Optional[str]) -> bool:
-    """True when deal_id is a REAL deal (a bp_deal row or a confirmed proposal's deal),
-    not merely an un-confirmed upload batch label. Batch labels enter clustering, not
-    the authoritative look-forward stamp (spec §Upload path change)."""
+    """True when deal_id is a REAL deal (a TRACKED bp_deal row or a confirmed
+    proposal's deal), not merely an un-confirmed upload batch label. Batch labels
+    enter clustering, not the authoritative look-forward stamp (spec §Upload path
+    change). The gateway inserts a DRAFT bp_deal row (is_tracked=false) at upload
+    time for every batch label, so mere bp_deal existence proves nothing — only
+    is_tracked or a confirmed proposal does."""
     if not deal_id:
         return False
-    cur.execute("select deal_id from proc.bp_deal where deal_id=%s limit 1", (deal_id,))
+    cur.execute("select deal_id from proc.bp_deal where deal_id=%s and is_tracked limit 1",
+                (deal_id,))
     if cur.fetchall():
         return True
     cur.execute("select deal_id from proc.bp_deal_proposal "

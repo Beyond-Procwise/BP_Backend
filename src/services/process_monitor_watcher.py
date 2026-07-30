@@ -931,6 +931,19 @@ class ProcessMonitorWatcher:
                         "Fast deal-linking failed for session %s — the scheduled sweep "
                         "will pick it up", session_id,
                     )
+                try:
+                    from src.services.session_postprocess import postprocess_session
+                    started = time.monotonic()
+                    post = postprocess_session(session_id)
+                    logger.info(
+                        "Session %s post-processed in %.2fs: %s",
+                        session_id, time.monotonic() - started, post,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Session post-processing failed for %s — proposals can be "
+                        "regenerated via POST /deals/proposals/generate", session_id,
+                    )
                 if not self._finish_promotion(session_id):
                     return
 

@@ -502,6 +502,8 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
     assert result == {"forward_linked": 2, "backward_linked": 1, "reconciled": 3,
                       "propagated": 6, "conflicts_flagged": 7, "metadata_filled": 5,
                       "deal_dates_set": 8, "tiers_mirrored": 10, "map_pruned": 9,
-                      "status_reconciled": 4}
+                      "status_reconciled": 4,
+                      "summaries": {"deal_ids": [], "failed": 0,
+                                    "processed": 0, "skipped": 0}}
     assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "dates",
                      "mirror", "prune", "status"]

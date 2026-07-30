@@ -474,6 +474,29 @@ def _check_tax_total_consistency(
     return n_logged
 
 
+def _carry_pm_deal(cur, raw_data: dict[str, Any]) -> None:
+    """Mirror process_monitor.deal_id onto the staged row — but only for
+    ESTABLISHED deals (tracked bp_deal or confirmed proposal). Un-confirmed
+    upload batch labels must not leak into _stg: they enter the clustering /
+    proposal pipeline instead (spec §Upload path change). Best-effort, never
+    blocks promotion."""
+    pm_id = raw_data.get("process_monitor_id")
+    if pm_id is None or raw_data.get("deal_id"):
+        return
+    try:
+        cur.execute(
+            "SELECT deal_id, deal_name FROM proc.process_monitor WHERE id = %s",
+            (pm_id,))
+        pm = cur.fetchone()
+        if pm and pm[0]:
+            from src.services.deal_assignment_service import is_established_deal
+            if is_established_deal(cur, pm[0]):
+                raw_data["deal_id"] = pm[0]
+                raw_data["deal_name"] = pm[1]
+    except Exception:  # noqa: BLE001
+        log.debug("process_monitor deal carry skipped", exc_info=True)
+
+
 def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
     """Copy _raw flat columns into _stg, delete _raw, update audit cols.
 
@@ -678,18 +701,7 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             # process_monitor onto the staged row, so deal-tagged docs are
             # self-describing in _stg. The authoritative grouping still lives on
             # process_monitor; this just mirrors it. Best-effort, never blocks.
-            pm_id = raw_data.get("process_monitor_id")
-            if pm_id is not None and not raw_data.get("deal_id"):
-                try:
-                    cur.execute(
-                        "SELECT deal_id, deal_name FROM proc.process_monitor WHERE id = %s",
-                        (pm_id,))
-                    pm = cur.fetchone()
-                    if pm and pm[0]:
-                        raw_data["deal_id"] = pm[0]
-                        raw_data["deal_name"] = pm[1]
-                except Exception:  # noqa: BLE001
-                    log.debug("process_monitor deal carry skipped", exc_info=True)
+            _carry_pm_deal(cur, raw_data)
 
             # 2. Intersect with _stg columns
             stg_cols = _stg_columns(cur, stg_t)
