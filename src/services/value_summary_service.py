@@ -128,7 +128,13 @@ def classify_opportunity(row: dict) -> Optional[dict]:
         "title": f"Opportunity: {row.get('item_description') or row.get('supplier_name') or 'unnamed'}",
         "supplier_name": row.get("supplier_name"),
         "deal_id": row.get("deal_id"),
-        "doc_pk": row.get("doc_pk") or row.get("po_id") or row.get("quote_id"),
+        # invoice_id first: an opportunity anchored to ONE invoice shares its document
+        # with the discrepancy that found it, and dedupe() keys on (deal_id, doc_pk) — so
+        # a duplicate-invoice recovery counts its money once, in the discrepancy, rather
+        # than a second time as potential. Sourcing opportunities have no invoice_id and
+        # fall through to po_id/quote_id exactly as before.
+        "doc_pk": (row.get("doc_pk") or row.get("invoice_id")
+                   or row.get("po_id") or row.get("quote_id")),
         "found_at": row.get("created_at").isoformat() if isinstance(row.get("created_at"), datetime) else None,
         "age_days": _age_days(row.get("created_at")),
         "link": {"screen": "opportunities", "id": row.get("opportunity_id")},
@@ -219,7 +225,7 @@ SELECT e.discrepancy_id, e.doc_type, e.doc_pk_candidate, e.field_name, e.raw_val
 
 _OPPORTUNITY_SQL = """
 SELECT opportunity_id, stage, financial_impact_gbp, realised_savings_gbp,
-       supplier_name, deal_id, po_id, quote_id, item_description, created_at
+       supplier_name, deal_id, po_id, quote_id, invoice_id, item_description, created_at
   FROM proc.bp_opportunity
 """
 

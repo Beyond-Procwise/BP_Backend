@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from src.services import linking_engine as _le
@@ -268,12 +268,16 @@ def find_duplicates(invoices: list[dict], min_score: float = RAISE_BAND) -> list
 _LOAD_SQL = """
     SELECT i.invoice_id,
            i.po_id,
+           i.supplier_id,
            COALESCE(s.supplier_name, i.supplier_id) AS supplier_name,
            COALESCE(i.invoice_total_incl_tax, i.invoice_amount) AS total_amount,
            i.invoice_date,
            i.currency,
            i.country,
-           i.region
+           i.region,
+           i.invoice_status,
+           i.invoice_paid_date,
+           NULLIF(i.deal_id, '') AS deal_id
       FROM proc.bp_invoice_trgt i
       LEFT JOIN proc.bp_supplier s ON s.supplier_id = i.supplier_id
      WHERE i.invoice_id IS NOT NULL
@@ -295,11 +299,15 @@ def load_invoices(cur) -> list[dict]:
     """
     cur.execute(_LOAD_SQL)
     rows = {}
-    for invoice_id, po_id, supplier_name, total, when, currency, country, region in cur.fetchall():
+    for (invoice_id, po_id, supplier_id, supplier_name, total, when, currency,
+         country, region, status, paid_date, deal_id) in cur.fetchall():
         rows[invoice_id] = {"invoice_id": invoice_id, "po_id": po_id,
+                            "supplier_id": supplier_id,
                             "supplier_name": supplier_name, "total_amount": total,
                             "invoice_date": when, "currency": currency,
                             "country": country, "region": region,
+                            "invoice_status": status, "invoice_paid_date": paid_date,
+                            "deal_id": deal_id,
                             "invoice_ref": invoice_id, "lines": []}
     cur.execute(_LINES_SQL)
     for invoice_id, item_id, desc, qty, unit_price, amount in cur.fetchall():
@@ -361,11 +369,87 @@ def _note(dup: dict) -> str:
             f"{dup['score']:.1f}/100 ({dup['band']}), agreeing on {_supporting(link)}")
 
 
+DETECTOR_TYPE = "Duplicate Invoice Recovery"
+
+
+def payment_evidence(inv: dict) -> tuple[bool, str]:
+    """What the corpus actually knows about whether this invoice was paid.
+
+    Returns (paid_is_known, phrase). It matters because the two cases call for opposite
+    actions: an unpaid duplicate is a payment to STOP, a paid one is money to GET BACK. The
+    whole live corpus has invoice_status and invoice_paid_date NULL on all 12,408 rows, so
+    the honest phrase is "if it was paid" — the opportunity is real either way (the money is
+    at risk either way), but we never assert a payment we cannot see.
+    """
+    paid_date = _as_date(inv.get("invoice_paid_date"))
+    status = str(inv.get("invoice_status") or "").strip().lower()
+    if paid_date is not None:
+        return True, f"paid on {paid_date:%Y-%m-%d} — recover from the supplier"
+    if status in ("paid", "settled"):
+        return True, f"marked {status} — recover from the supplier"
+    if status:
+        return False, f"status {status} — stop the payment if it has not gone out"
+    return False, ("payment status not recorded on either invoice — recover if it was paid, "
+                   "stop the payment if it has not gone out")
+
+
+def _opportunity_record(dup: dict) -> dict:
+    """The duplicate as something to ACT on.
+
+    Finding the duplicate and recovering the money are two different jobs. The discrepancy
+    is the finding — it belongs to the document and lives in Data Validation & Actions. This
+    is the recovery: it goes on the Opportunities pipeline with a financial impact and a
+    stage, so somebody chases it and realised_savings_gbp records what actually came back.
+
+    Anchored to the duplicate invoice via invoice_id, which is the SAME document the
+    discrepancy names. value_summary_service.dedupe() keys on (deal_id, doc_pk), so the two
+    collapse to one entry and the money is counted once — as verified (we found it), with
+    the opportunity carrying the recovery rather than a second, potential-tier figure.
+    """
+    later, earlier, link = dup["later"], dup["earlier"], dup["link"]
+    paid_known, phrase = payment_evidence(later)
+    when = _as_date(earlier.get("invoice_date"))
+    return {
+        "opportunity_id": f"dupinv:{later['invoice_id']}",
+        "opportunity_ref_id": f"duplicate_invoice_{earlier['invoice_id']}_{later['invoice_id']}",
+        "detector_type": DETECTOR_TYPE,
+        "supplier_id": later.get("supplier_id"),
+        "supplier_name": later.get("supplier_name"),
+        "item_id": str(later["invoice_id"]),
+        "item_description": (
+            f"Recover {dup['amount']:,.2f} — {later['invoice_id']} duplicates "
+            f"{earlier['invoice_id']}{f' ({when:%Y-%m-%d})' if when else ''}; {phrase}"
+        ),
+        "financial_impact_gbp": dup["amount"],
+        "invoice_id": str(later["invoice_id"]),
+        "po_id": later.get("po_id"),
+        "deal_id": later.get("deal_id"),
+        "detected_on": datetime.now(timezone.utc),
+        "source_records": [str(earlier["invoice_id"]), str(later["invoice_id"])]
+                          + ([str(later["po_id"])] if later.get("po_id") else []),
+        "calculation_details": {
+            "duplicate_of": str(earlier["invoice_id"]),
+            "relationship_score": dup["score"],
+            "band": dup["band"],
+            "signals": {s["id"]: s["status"] for s in link.get("signals", [])},
+            "amount": dup["amount"],
+            "payment_confirmed": paid_known,
+            "payment_note": phrase,
+        },
+    }
+
+
 def run_detector(conn=None) -> int:
     """Find duplicates and record the ones not already recorded. Returns rows written.
 
+    Each duplicate produces two things, because finding money and getting it back are two
+    different jobs: a discrepancy on the document (the finding) and an opportunity on the
+    pipeline (the recovery). They share the invoice as their key so the money counts once.
+
     Idempotent: a document that already carries a duplicate_invoice finding is skipped, so
-    the scheduler can call this on every promotion event without stacking findings.
+    the scheduler can call this on every promotion event without stacking findings. The
+    opportunity upsert is keyed on the pair's content, so re-running never duplicates it
+    and never demotes a recovery someone has already progressed.
     """
     if conn is not None:
         return _run(conn)
@@ -375,11 +459,18 @@ def run_detector(conn=None) -> int:
 
 
 def _run(conn) -> int:
+    from src.services.opportunity_store import upsert_opportunity
+
     cur = conn.cursor()
     dups = find_duplicates(load_invoices(cur))
-    written = 0
+    written = opportunities = 0
     for dup in dups:
         doc_pk = str(dup["later"]["invoice_id"])
+        # The opportunity is upserted even when the finding already exists: it is keyed on
+        # the pair and never demotes a progressed stage, so this simply keeps the recovery
+        # in step with the evidence.
+        upsert_opportunity(cur, _opportunity_record(dup))
+        opportunities += 1
         if _already_raised(cur, doc_pk):
             continue
         raw_id, source_file = _source_of(cur, doc_pk)
@@ -395,6 +486,6 @@ def _run(conn) -> int:
         ))
         written += 1
     conn.commit()
-    logger.info("duplicate-invoice detector: %s candidate(s), %s new finding(s)",
-                len(dups), written)
+    logger.info("duplicate-invoice detector: %s candidate(s), %s new finding(s), "
+                "%s recovery opportunit(y/ies)", len(dups), written, opportunities)
     return written

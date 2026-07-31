@@ -2,9 +2,14 @@
 
 The scheduler only sees invoices promoted after it was wired in, so this catches up
 everything already in proc.bp_invoice_trgt. Dry-run by default: it prints every pair it
-would raise, with both documents' references, dates and amounts, so each one can be checked
-against the actual documents BEFORE any finding is written. A duplicate-invoice finding
-accuses a supplier of double-billing — it should never be created unreviewed.
+would raise, with both documents' references, dates and amounts, the relationship score and
+how each signal read, so each one can be checked against the actual documents BEFORE
+anything is written. A duplicate-invoice finding accuses a supplier of double-billing — it
+should never be created unreviewed.
+
+Each applied duplicate writes TWO rows: the discrepancy on the document (the finding) and a
+"Duplicate Invoice Recovery" opportunity on the pipeline (the money to get back). They are
+anchored to the same invoice, so the value-summary counts it once.
 
     set -a; . ./.env; set +a
     ./venv/bin/python scripts/backfill_duplicate_invoices.py            # dry run
@@ -15,7 +20,7 @@ from __future__ import annotations
 import argparse
 
 from src.services.duplicate_invoice_detector import (
-    _already_raised, find_duplicates, load_invoices, run_detector,
+    _already_raised, find_duplicates, load_invoices, payment_evidence, run_detector,
 )
 from src.services.extraction.persistence import get_conn
 
@@ -50,7 +55,8 @@ def main() -> int:
             print(f"  later    : {_fmt(d['later'])}   <- would be flagged")
             print(f"  amount   : {d['amount']:,.2f}")
             print(f"  score    : {d['score']:.1f}/100 ({d['band']})")
-            print(f"  signals  : {_signals(d['link'])}\n")
+            print(f"  signals  : {_signals(d['link'])}")
+            print(f"  recovery : {payment_evidence(d['later'])[1]}\n")
 
         if not args.apply:
             print("dry run — nothing written. Re-run with --apply once every pair above "

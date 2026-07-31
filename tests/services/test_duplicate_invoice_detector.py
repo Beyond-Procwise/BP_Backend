@@ -200,3 +200,56 @@ def test_scales_past_a_pairwise_scan():
     dups = find_duplicates(rows)
     assert [d["later"]["invoice_id"] for d in dups] == ["INV-DUP"]
     assert dups[0]["earlier"]["invoice_id"] == "INV-7"
+
+
+# ---- the recovery half ---------------------------------------------------
+# Finding the money and getting it back are two different jobs. The discrepancy is the
+# finding; the opportunity is the recovery, on the pipeline where somebody chases it.
+
+def test_a_duplicate_becomes_a_recovery_opportunity():
+    from src.services.duplicate_invoice_detector import DETECTOR_TYPE, _opportunity_record
+    dup = find_duplicates([_inv("INV-9", total=2500.0),
+                           _inv("INV-9A", ref="INV-9", total=2500.0)])[0]
+    rec = _opportunity_record(dup)
+    assert rec["detector_type"] == DETECTOR_TYPE
+    assert rec["financial_impact_gbp"] == 2500.0
+    assert rec["invoice_id"] == "INV-9A"          # the invoice that should not have been paid
+    assert rec["calculation_details"]["duplicate_of"] == "INV-9"
+    assert "INV-9" in rec["source_records"] and "INV-9A" in rec["source_records"]
+
+
+def test_the_opportunity_is_anchored_to_the_same_document_as_the_finding():
+    # value_summary_service.dedupe() keys on (deal_id, doc_pk). The opportunity carries the
+    # invoice the discrepancy names, so the pair collapses to one entry and the money is
+    # counted once — never as verified AND potential.
+    from src.services.duplicate_invoice_detector import _opportunity_record
+    dup = find_duplicates([_inv("INV-9"), _inv("INV-9A", ref="INV-9")])[0]
+    rec = _opportunity_record(dup)
+    assert rec["invoice_id"] == str(dup["later"]["invoice_id"])
+
+
+def test_the_opportunity_never_claims_a_payment_it_cannot_see():
+    # invoice_status and invoice_paid_date are NULL on all 12,408 live rows. The money is at
+    # risk either way, so the opportunity is still raised — but it says "if it was paid".
+    from src.services.duplicate_invoice_detector import _opportunity_record, payment_evidence
+    later = _inv("INV-9A", ref="INV-9")
+    known, phrase = payment_evidence(later)
+    assert known is False
+    assert "if it was paid" in phrase
+
+    rec = _opportunity_record(find_duplicates([_inv("INV-9"), later])[0])
+    assert rec["calculation_details"]["payment_confirmed"] is False
+    assert "recover" in rec["item_description"].lower()
+
+
+def test_a_confirmed_payment_makes_it_a_recovery_outright():
+    from src.services.duplicate_invoice_detector import payment_evidence
+    from datetime import date as _date
+    known, phrase = payment_evidence({"invoice_paid_date": _date(2025, 4, 2)})
+    assert known is True
+    assert "2025-04-02" in phrase and "recover" in phrase
+    assert payment_evidence({"invoice_status": "Paid"})[0] is True
+    # Not yet paid is the opposite action: stop it going out.
+    known, phrase = payment_evidence({"invoice_status": "approved"})
+    assert known is False
+    assert "stop the payment" in phrase
