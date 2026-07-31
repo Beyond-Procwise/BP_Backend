@@ -34,6 +34,9 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from src.services import linking_engine as _le
+# One FX implementation, shared with the reader: the same rates, the same GBP, the same
+# refusal to convert what it cannot.
+from src.services.value_summary_service import _get_rates, _to_gbp
 
 logger = logging.getLogger(__name__)
 
@@ -393,7 +396,7 @@ def payment_evidence(inv: dict) -> tuple[bool, str]:
                    "stop the payment if it has not gone out")
 
 
-def _opportunity_record(dup: dict) -> dict:
+def _opportunity_record(dup: dict, rates: Optional[dict] = None) -> dict:
     """The duplicate as something to ACT on.
 
     Finding the duplicate and recovering the money are two different jobs. The discrepancy
@@ -409,6 +412,15 @@ def _opportunity_record(dup: dict) -> dict:
     later, earlier, link = dup["later"], dup["earlier"], dup["link"]
     paid_known, phrase = payment_evidence(later)
     when = _as_date(earlier.get("invoice_date"))
+    # financial_impact_gbp means GBP. The corpus bills in INR, USD, AED, GBP and EUR, so the
+    # native total has to be converted before it goes in that column — stamping EUR 147,783
+    # there renders as "£147.8K", a number nobody was ever billed. Unconvertible (no rate,
+    # unknown currency) means NULL, never the native figure in disguise: the opportunity
+    # still exists to be worked, it just has no GBP claim attached.
+    currency = (later.get("currency") or "").upper() or None
+    impact_gbp, _from = _to_gbp(dup["amount"], currency, rates)
+    money = (f"{impact_gbp:,.2f} GBP" if impact_gbp is not None
+             else f"{dup['amount']:,.2f} {currency or 'unknown currency'}")
     return {
         "opportunity_id": f"dupinv:{later['invoice_id']}",
         "opportunity_ref_id": f"duplicate_invoice_{earlier['invoice_id']}_{later['invoice_id']}",
@@ -417,10 +429,10 @@ def _opportunity_record(dup: dict) -> dict:
         "supplier_name": later.get("supplier_name"),
         "item_id": str(later["invoice_id"]),
         "item_description": (
-            f"Recover {dup['amount']:,.2f} — {later['invoice_id']} duplicates "
+            f"Recover {money} — {later['invoice_id']} duplicates "
             f"{earlier['invoice_id']}{f' ({when:%Y-%m-%d})' if when else ''}; {phrase}"
         ),
-        "financial_impact_gbp": dup["amount"],
+        "financial_impact_gbp": impact_gbp,
         "invoice_id": str(later["invoice_id"]),
         "po_id": later.get("po_id"),
         "deal_id": later.get("deal_id"),
@@ -432,7 +444,9 @@ def _opportunity_record(dup: dict) -> dict:
             "relationship_score": dup["score"],
             "band": dup["band"],
             "signals": {s["id"]: s["status"] for s in link.get("signals", [])},
-            "amount": dup["amount"],
+            "amount_native": dup["amount"],
+            "currency": currency,
+            "amount_gbp": impact_gbp,
             "payment_confirmed": paid_known,
             "payment_note": phrase,
         },
@@ -463,13 +477,14 @@ def _run(conn) -> int:
 
     cur = conn.cursor()
     dups = find_duplicates(load_invoices(cur))
+    rates = _get_rates()
     written = opportunities = 0
     for dup in dups:
         doc_pk = str(dup["later"]["invoice_id"])
         # The opportunity is upserted even when the finding already exists: it is keyed on
         # the pair and never demotes a progressed stage, so this simply keeps the recovery
         # in step with the evidence.
-        upsert_opportunity(cur, _opportunity_record(dup))
+        upsert_opportunity(cur, _opportunity_record(dup, rates))
         opportunities += 1
         if _already_raised(cur, doc_pk):
             continue

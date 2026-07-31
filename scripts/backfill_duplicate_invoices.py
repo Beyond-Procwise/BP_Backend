@@ -12,8 +12,11 @@ Each applied duplicate writes TWO rows: the discrepancy on the document (the fin
 anchored to the same invoice, so the value-summary counts it once.
 
     set -a; . ./.env; set +a
-    ./venv/bin/python scripts/backfill_duplicate_invoices.py            # dry run
-    ./venv/bin/python scripts/backfill_duplicate_invoices.py --apply    # write findings
+    PYTHONPATH=.:src ./venv/bin/python scripts/backfill_duplicate_invoices.py          # dry run
+    PYTHONPATH=.:src ./venv/bin/python scripts/backfill_duplicate_invoices.py --apply  # write
+
+PYTHONPATH must include src: the FX repository lives there, and without it every non-GBP
+recovery is written with a NULL amount (honest, but useless) instead of a converted one.
 """
 from __future__ import annotations
 
@@ -26,9 +29,12 @@ from src.services.extraction.persistence import get_conn
 
 
 def _fmt(row: dict) -> str:
+    # The currency is printed because these amounts are NATIVE, not GBP: the live corpus
+    # bills in INR, USD, AED, GBP and EUR, and adding them up as one number overstates the
+    # total by an order of magnitude. /spendiq/value-summary converts; this listing does not.
     total = row.get("total_amount")
     return (f"{row.get('invoice_id')} | {row.get('invoice_date')} | "
-            f"{float(total):,.2f} | PO {row.get('po_id') or '—'}")
+            f"{float(total):,.2f} {row.get('currency') or ''} | PO {row.get('po_id') or '—'}")
 
 
 def _signals(link: dict) -> str:
@@ -48,7 +54,9 @@ def main() -> int:
         dups = find_duplicates(load_invoices(cur))
         fresh = [d for d in dups if not _already_raised(cur, str(d["later"]["invoice_id"]))]
 
-        print(f"{len(dups)} duplicate candidate(s); {len(fresh)} not already recorded\n")
+        print(f"{len(dups)} duplicate candidate(s); {len(fresh)} not already recorded")
+        print("amounts below are in each invoice's OWN currency — do not sum them; "
+              "GET /spendiq/value-summary reports the converted GBP total\n")
         for d in fresh:
             print(f"  supplier : {d['later'].get('supplier_name')}")
             print(f"  earlier  : {_fmt(d['earlier'])}")

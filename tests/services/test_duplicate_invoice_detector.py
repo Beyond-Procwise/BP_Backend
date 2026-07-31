@@ -253,3 +253,33 @@ def test_a_confirmed_payment_makes_it_a_recovery_outright():
     known, phrase = payment_evidence({"invoice_status": "approved"})
     assert known is False
     assert "stop the payment" in phrase
+
+
+def test_the_recovery_amount_is_real_gbp_not_the_native_figure():
+    # financial_impact_gbp means GBP. The live corpus bills in INR, USD, AED, GBP and EUR,
+    # and stamping a EUR 147,783.11 total into that column rendered as "£147.8K" — a figure
+    # nobody was ever billed, sitting next to the correctly-converted £110.0K discrepancy
+    # for the same pair.
+    from src.services.duplicate_invoice_detector import _opportunity_record
+    rates = {"USD": 1.0, "GBP": 0.8, "EUR": 0.9}
+    pair = [_inv("INV-9", total=1000.0), _inv("INV-9A", ref="INV-9", total=1000.0)]
+    for row in pair:
+        row["currency"] = "EUR"
+    rec = _opportunity_record(find_duplicates(pair)[0], rates)
+    assert rec["financial_impact_gbp"] == round(1000.0 / 0.9 * 0.8, 2)   # 888.89
+    assert rec["calculation_details"]["amount_native"] == 1000.0
+    assert rec["calculation_details"]["currency"] == "EUR"
+    assert "888.89 GBP" in rec["item_description"]
+
+
+def test_an_unconvertible_amount_is_null_not_the_native_number():
+    # No rate for the currency -> no GBP claim. The opportunity still exists to be worked;
+    # it just does not pretend to know what it is worth in pounds.
+    from src.services.duplicate_invoice_detector import _opportunity_record
+    pair = [_inv("INV-9", total=1000.0), _inv("INV-9A", ref="INV-9", total=1000.0)]
+    for row in pair:
+        row["currency"] = "ZWL"
+    rec = _opportunity_record(find_duplicates(pair)[0], {"USD": 1.0, "GBP": 0.8})
+    assert rec["financial_impact_gbp"] is None
+    assert rec["calculation_details"]["amount_gbp"] is None
+    assert "1,000.00 ZWL" in rec["item_description"]
