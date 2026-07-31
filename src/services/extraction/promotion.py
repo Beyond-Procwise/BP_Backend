@@ -13,7 +13,7 @@ import re
 import select
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import psycopg2
 
@@ -497,7 +497,8 @@ def _carry_pm_deal(cur, raw_data: dict[str, Any]) -> None:
         log.debug("process_monitor deal carry skipped", exc_info=True)
 
 
-def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
+def promote(raw_id: int, doc_type: str, *,
+            hitl_fields: Optional[Iterable[str]] = None) -> dict[str, Any]:
     """Copy _raw flat columns into _stg, delete _raw, update audit cols.
 
     Resolves supplier_name → supplier_id via the existing
@@ -511,6 +512,16 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
     We no longer re-call synthesize() here; that would burn a second LLM
     pass and risk drift. HITL-applied fixes (apply_hitl_fixes_and_promote)
     are honoured because they patch _raw columns BEFORE this function runs.
+
+    ``hitl_fields`` — field names a human just corrected via
+    apply_hitl_fixes_and_promote, so field-provenance below can attribute them
+    to the human rather than to whatever produced the pre-correction value.
+
+    This is the single funnel every promotion path goes through (the inline
+    call from dispatch.dispatch_document, the HITL NOTIFY listener via
+    apply_hitl_fixes_and_promote, and the promote_pending catch-up sweep), so
+    field-provenance is recorded here — once, after the _stg write commits —
+    rather than at each caller.
     """
     from src.services.extraction_v3.supplier_resolver import resolve_or_create_supplier
 
@@ -527,6 +538,12 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                 return {"ok": False, "reason": "raw_row_missing"}
             col_names = [d.name for d in cur.description]
             raw_data = dict(zip(col_names, row))
+            # Captured before any mutation below: was this raw_id already promoted
+            # once? A normal call always sees 'pending' (or 'discrepancy') here —
+            # 'promoted' only happens if promote() is somehow re-run for the same
+            # raw_id (e.g. a replayed NOTIFY). Used below to tag provenance rows
+            # with the correct attempt rather than silently duplicating attempt=1.
+            _already_promoted = raw_data.get("promotion_status") == "promoted"
 
             # Safety net: guarantee COMPUTABLE columns (exchange_rate_to_usd,
             # converted_amount_usd, tax_amount, *_total_incl_tax) are populated
@@ -570,11 +587,15 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             # supplier_id even when the doc clearly names the supplier.
             ps = raw_data.get("parser_snapshot")
             full_text = ""
+            _field_provenance: dict[str, Any] = {}
             if isinstance(ps, dict):
                 full_text = (ps.get("full_text") or "")
+                _field_provenance = ps.get("_field_provenance") or {}
             elif isinstance(ps, str):
                 try:
-                    full_text = (json.loads(ps).get("full_text") or "")
+                    _ps_parsed = json.loads(ps)
+                    full_text = (_ps_parsed.get("full_text") or "")
+                    _field_provenance = _ps_parsed.get("_field_provenance") or {}
                 except Exception:  # noqa: BLE001
                     full_text = ""
 
@@ -807,6 +828,32 @@ def promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                 )
 
             conn.commit()
+
+            # Record who produced each persisted value. Best-effort by
+            # construction: provenance is evidence about the extraction, not
+            # part of the document, and must never fail a promotion — the _stg
+            # write above already committed by the time this runs, on its own
+            # connection, wrapped so any failure here is swallowed and logged.
+            # `_already_promoted` distinguishes a genuine re-run of this same
+            # raw_id (attempt 2+) from its normal first pass (attempt 1), so a
+            # replayed NOTIFY tags a second row rather than silently duplicating
+            # the first — see the `attempt` column.
+            try:
+                from src.services.extraction import provenance as _prov
+                _prov_columns = {c: raw_data.get(c) for c in target_cols}
+                _prov_pk = raw_data.get(pk_col_for_check) or raw_data.get("doc_pk_candidate")
+                with get_conn() as _pconn:
+                    _pcur = _pconn.cursor()
+                    _n = _prov.record(
+                        _pcur, parent_table=stg_t, parent_pk=str(_prov_pk or ""),
+                        columns=_prov_columns, snapshot=_field_provenance,
+                        hitl_fields=hitl_fields, attempt=2 if _already_promoted else 1,
+                    )
+                    _pconn.commit()
+                log.info("promote: recorded provenance for %d field(s) on %s", _n, _prov_pk)
+            except Exception:
+                log.exception("promote: provenance write failed (non-fatal)")
+
             # AgentNick audit trail — one structured INFO line per row, so
             # the operator can grep journalctl for the agent's activity.
             log.info(
@@ -898,6 +945,12 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             # This prevents SQL-injection via a crafted field_name in the
             # discrepancy table (e.g. "x = NULL, promotion_status").
             allowed_cols = set(_table_columns(cur, raw_t))
+            # Fields a human actually changed here — threaded through to promote()
+            # so provenance attributes them to the correction, not to whatever
+            # produced the pre-fix value (a stale dispatch-time snapshot would
+            # otherwise still say "regex" or "context_layer" for a value a human
+            # just overrode).
+            hitl_fields: set[str] = set()
             for field_name, resolved_value, action in fixes:
                 if field_name not in allowed_cols:
                     log.error(
@@ -911,12 +964,16 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                         f"UPDATE {raw_t} SET {field_name} = %s WHERE raw_id=%s",
                         (resolved_value, raw_id),
                     )
+                    hitl_fields.add(field_name)
                 elif action == "keep_null":
                     cur.execute(
                         f"UPDATE {raw_t} SET {field_name} = NULL WHERE raw_id=%s",
                         (raw_id,),
                     )
-                # 'dismiss' does nothing to _raw
+                    hitl_fields.add(field_name)
+                # 'dismiss' does nothing to _raw and is not attributed to a human
+                # correction — keep_null clears the field, so it never shows up
+                # as a non-null persisted column for record() to attribute anyway.
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -924,7 +981,7 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             return {"ok": False, "reason": str(exc)}
 
     # Now promote
-    return promote(raw_id, doc_type)
+    return promote(raw_id, doc_type, hitl_fields=hitl_fields)
 
 
 def promote_pending(doc_types=("invoice", "quote", "purchase_order", "contract"),

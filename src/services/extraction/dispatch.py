@@ -576,6 +576,22 @@ def dispatch_document(
     # internally — since context_layer now writes the authoritative
     # identifier into that schema column (e.g. columns["invoice_id"]),
     # nothing extra is needed here.
+    #
+    # Freeze who produced each column value NOW, while `candidates` is still in
+    # memory, and thread it through parser_snapshot. promotion.promote() — the one
+    # funnel every promotion path (this inline call, HITL-triggered promotion, the
+    # pending catch-up sweep) goes through — runs long after this and only ever
+    # sees the persisted _raw row, never the original Candidate objects. Without
+    # this, promote() would have nothing to attribute a value to and every field
+    # on every path would fall back to "context_layer" regardless of what actually
+    # produced it.
+    _parser_snapshot = _serialize_parsed(parsed)
+    try:
+        from src.services.extraction import provenance as _prov
+        _parser_snapshot["_field_provenance"] = _prov.snapshot(columns, candidates)
+    except Exception:
+        log.exception("dispatch: provenance snapshot failed (non-fatal)")
+
     raw_id = persistence.write_raw(
         doc_type=doc_type,
         file_path=file_path,
@@ -583,7 +599,7 @@ def dispatch_document(
         trace_id=trace_id,
         pipeline_version=pipeline_version,
         columns=columns,
-        parser_snapshot=_serialize_parsed(parsed),
+        parser_snapshot=_parser_snapshot,
         promotion_status=promotion_status,
     )
     record_action(
@@ -628,26 +644,17 @@ def dispatch_document(
 
     # Auto-promote when clean (no blocking discrepancy) and we have a doc_pk.
     # Discrepancy rows wait for HITL → trigger → listener.
+    #
+    # NOTE: field-provenance recording lives inside promotion.promote() itself,
+    # not here — it is the one seam every promotion path (this inline call, the
+    # HITL NOTIFY listener's apply_hitl_fixes_and_promote, and the promote_pending
+    # catch-up sweep) runs through, so writing it there is the only way a
+    # HITL-resolved document ends up with provenance too.
     final_status = promotion_status
     if not blocking and doc_pk:
         prom = promotion.promote(raw_id, doc_type)
         if prom.get("ok"):
             final_status = "promoted"
-            # Record who produced each value. Best-effort by construction: provenance is
-            # evidence about the extraction, not part of the document, and must never fail
-            # a promotion.
-            try:
-                from src.services.extraction import provenance as _prov
-                from src.services.db import get_conn as _get_conn
-                with _get_conn() as _pconn:
-                    _pcur = _pconn.cursor()
-                    _n = _prov.record(_pcur, parent_table=f"proc.bp_{doc_type}_stg",
-                                      parent_pk=str(doc_pk or ""), columns=columns,
-                                      candidates=candidates)
-                    _pconn.commit()
-                log.info("dispatch: recorded provenance for %d field(s) on %s", _n, doc_pk)
-            except Exception:
-                log.exception("dispatch: provenance write failed (non-fatal)")
         else:
             log.warning("inline promote failed: %s", prom.get("reason"))
             final_status = "pending"  # _raw kept; manual retry possible
