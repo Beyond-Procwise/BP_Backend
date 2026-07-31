@@ -152,6 +152,34 @@ def _compute_confidence_score(
     return Decimal(f"{pct:.2f}")
 
 
+def _compute_accuracy_score(
+    doc_type: str, columns: dict[str, Any], candidates: list, accuracy: dict,
+) -> Decimal | None:
+    """0-100: how often the readers that produced THIS document have been right.
+
+    Distinct from _compute_confidence_score, which measures completeness — how many fields
+    are filled. A document can be entirely complete and entirely wrong, and until now
+    nothing could tell the difference.
+
+    None when no reader here has enough verdicts to have a rate. That is the honest answer,
+    and it is what every document will say until the feedback loop has been running a while.
+    A zero would read as "we know this is wrong", which is a different claim.
+    """
+    from src.services.extraction.provenance import producer_of
+
+    rates = []
+    for field, value in (columns or {}).items():
+        if value is None or value == "":
+            continue
+        _source, pattern_name, _conf = producer_of(field, value, candidates)
+        rate = accuracy.get((doc_type, field, pattern_name or _source))
+        if rate is not None:
+            rates.append(rate)
+    if not rates:
+        return None
+    return Decimal(f"{(sum(rates) / len(rates)) * 100:.2f}")
+
+
 # Field triples per doc_type used for tax/total reconciliation:
 # (subtotal_field, tax_field, total_incl_tax_field). The relation we
 # enforce is: subtotal + tax_amount ≈ total_incl_tax (rounding ≤ 0.50).
@@ -717,6 +745,56 @@ def promote(raw_id: int, doc_type: str, *,
             raw_data["confidence_score"] = _compute_confidence_score(
                 doc_type, raw_data, _required,
             )
+
+            # 1e-bis. Accuracy score: how often the READERS that produced this
+            # document's fields have historically been right, as opposed to how
+            # complete it is (that's confidence_score, above — do not conflate).
+            #
+            # _compute_accuracy_score() wants live Candidate objects, but promote()
+            # never has them — it only ever sees the persisted _raw row (see
+            # provenance.py's module docstring). Task 1 solved exactly this problem
+            # for provenance.record() by freezing producer_of() results into
+            # parser_snapshot->'_field_provenance' at dispatch time (loaded above as
+            # `_field_provenance`); reuse that snapshot here instead of re-deriving
+            # candidates or reading proc.bp_extraction_provenance back for this pk.
+            #
+            # A field a human corrected (in `hitl_fields`) is shimmed with
+            # source='hitl' — that is what proc.bp_extraction_provenance's
+            # source='hitl' row says the CURRENT value's producer is (see the "two
+            # rows" read contract in provenance.py), not the rejected reader the
+            # snapshot recorded pre-correction. 'hitl' carries no measured rate in
+            # `accuracy` (that dict scores readers against human verdicts, not the
+            # human), so a HITL-corrected field simply contributes nothing rather
+            # than being misattributed to whoever it replaced.
+            try:
+                from src.services.extraction.provenance import HITL_SOURCE
+                from src.services.extraction.types import Candidate
+                from src.services.extraction_feedback.accuracy import load_accuracy
+
+                _hitl = set(hitl_fields or ())
+                _shim_candidates: list[Any] = []
+                for _f, _v in raw_data.items():
+                    if _v is None or _v == "":
+                        continue
+                    if _f in _hitl:
+                        _shim_candidates.append(Candidate(
+                            field=_f, value=_v, span=None,
+                            source=HITL_SOURCE, pattern_name=None, confidence=None,
+                        ))
+                    else:
+                        _entry = _field_provenance.get(_f)
+                        if _entry:
+                            _shim_candidates.append(Candidate(
+                                field=_f, value=_v, span=None,
+                                source=_entry.get("source"),
+                                pattern_name=_entry.get("pattern_name"),
+                                confidence=_entry.get("confidence"),
+                            ))
+                raw_data["accuracy_score"] = _compute_accuracy_score(
+                    doc_type, raw_data, _shim_candidates, load_accuracy(),
+                )
+            except Exception:
+                log.exception("promotion: accuracy score unavailable (non-fatal)")
 
             # 1f. Carry the look-forward deal (deal_id/deal_name) from
             # process_monitor onto the staged row, so deal-tagged docs are
