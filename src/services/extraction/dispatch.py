@@ -74,6 +74,127 @@ def _cached_learned_currency(cur) -> dict:
     return _LEARNED_CCY_CACHE
 
 
+def _resolve_bare_dollar_currency_hint(columns: dict) -> None:
+    """Populate columns["supplier_default_currency"], the last-resort hint
+    resolve_dollar_currency consults, from a supplier already on file.
+
+    `columns` has no "supplier_id" at this point in the pipeline — supplier_name only
+    resolves to a canonical supplier_id later, in promotion.promote() (supplier_resolver),
+    after _raw is even written — so re-running that full resolver here (fuzzy match,
+    auto-create) would duplicate its side effects (review-queue rows, possibly a new
+    supplier row) before a doc_pk even exists. This instead recognises only a supplier
+    already on file EXACTLY by name or by a human-confirmed alias: cheap, indexed, creates
+    nothing.
+
+    A name that matches more than one supplier row is deliberately treated as no match at
+    all — bp_supplier has no uniqueness constraint on supplier_name/trading_name, so
+    picking LIMIT 1 of an ambiguous pair would silently carry the WRONG company's currency
+    through to columns["currency"]. Same principle this whole area already applies: when
+    the evidence does not settle the question, fall through to "unresolved" and let the
+    existing ambiguity discrepancy stop the document for a human, rather than guess.
+
+    Non-fatal: any failure here (a name matching nothing, a name matching more than one
+    supplier, or a DB error) just leaves the hint unset, exactly as if this function did
+    not run — resolve_dollar_currency's other two resorts (an explicit code or country the
+    document itself states) are unaffected either way.
+    """
+    try:
+        from src.services.extraction_feedback.supplier_currency import default_for
+        from src.services.db import get_conn as _sc_conn
+        _sup_name = str(columns.get("supplier_name") or "").strip()
+        if not _sup_name:
+            return
+        with _sc_conn() as _c:
+            _cur = _c.cursor()
+            _cur.execute(
+                "SELECT supplier_id FROM proc.bp_supplier_alias "
+                "WHERE LOWER(alias_name) = LOWER(%s) LIMIT 1",
+                (_sup_name,),
+            )
+            _sup_row = _cur.fetchone()
+            if not _sup_row:
+                _cur.execute(
+                    "SELECT supplier_id FROM proc.bp_supplier "
+                    "WHERE LOWER(supplier_name) = LOWER(%s) "
+                    "   OR LOWER(trading_name) = LOWER(%s) LIMIT 2",
+                    (_sup_name, _sup_name),
+                )
+                _sup_rows = _cur.fetchall()
+                # Exactly one match required — a name shared by two real suppliers must
+                # NOT silently inherit either one's currency.
+                _sup_row = _sup_rows[0] if len(_sup_rows) == 1 else None
+            if _sup_row:
+                columns["supplier_default_currency"] = default_for(
+                    _cur, _sup_row[0], learned=_cached_learned_currency(_cur),
+                )
+    except Exception:
+        log.exception("dispatch: supplier currency lookup failed (non-fatal)")
+
+
+def _apply_currency_resolution(columns: dict, full_text: str, registry, discrepancies: list) -> None:
+    """Resolve/validate columns["currency"] in place; append a blocking Discrepancy to
+    ``discrepancies`` when it can't be settled.
+
+    The number on a line is extracted whether or not a symbol sits beside it; the currency
+    is the part that can be silently wrong, and a wrong currency rescales every figure
+    derived from it. Neither rule below guesses: each either resolves the currency from
+    something the document actually states, or raises a blocking discrepancy so the
+    document waits on the Action page for a person instead of being promoted on a guess.
+
+    Extracted out of dispatch_document as its own function so the guarantee below is
+    directly testable without driving the full pipeline.
+
+    supplier_default_currency is a hint for resolve_dollar_currency, not a column — the
+    try/finally guarantees it is gone from ``columns`` before persistence on every exit
+    from this function, including an exception raised anywhere inside it (Task 2's review
+    found exactly this class of bug live: a stray key reaching an INSERT and taking down a
+    whole promotion with "column ... does not exist").
+    """
+    from src.services.extraction import context_layer as _ccy_rules
+    _ccy_col = "currency"
+    try:
+        if _ccy_col not in {f.db_column for f in registry.schema.fields}:
+            return
+        _conflict = _ccy_rules.currency_conflict(columns, full_text)
+        if _conflict:
+            discrepancies.append(Discrepancy(
+                field_name=_ccy_col,
+                issue_type="currency_ambiguous",
+                severity="critical",
+                blocks_promotion=True,
+                raw_value=str(columns.get(_ccy_col) or ""),
+                computed_value=",".join(_conflict["symbols"]),
+                evidence_text=_conflict["evidence"] or None,
+                notes=_conflict["detail"] + " — confirm which currency the totals are in.",
+            ))
+        elif "$" in (full_text or ""):
+            # A bare "$" is not necessarily USD: the schema stores CAD, AUD, SGD, HKD and
+            # NZD too, and every one of them prints the same symbol.
+            _resolve_bare_dollar_currency_hint(columns)
+
+            _resolved = _ccy_rules.resolve_dollar_currency(columns, full_text)
+            if _resolved:
+                _code, _why = _resolved
+                if columns.get(_ccy_col) != _code:
+                    log.info("dispatch: currency %r → %r (%s)",
+                             columns.get(_ccy_col), _code, _why)
+                    columns[_ccy_col] = _code
+            elif not re.search(r"\b(?:GBP|EUR|JPY|INR|CHF)\b", full_text or ""):
+                discrepancies.append(Discrepancy(
+                    field_name=_ccy_col,
+                    issue_type="currency_ambiguous",
+                    severity="critical",
+                    blocks_promotion=True,
+                    raw_value=str(columns.get(_ccy_col) or ""),
+                    computed_value=",".join(sorted(_ccy_rules.DOLLAR_CURRENCIES)),
+                    notes=("the document prices in '$' but never says which dollar, and "
+                           "nothing on it or in the supplier record settles it — confirm "
+                           "the currency rather than assume USD."),
+                ))
+    finally:
+        columns.pop("supplier_default_currency", None)
+
+
 # Leading quote-identifier prefix ("QUT136586", "QUOTE-2025-051", ...). Stripped
 # only when an identifier (something containing a digit) remains, so a quote
 # referenced bare in a sibling PO doc and the same quote extracted from its own
@@ -424,91 +545,7 @@ def dispatch_document(
     # derived from it. Neither rule below guesses: each either resolves the currency from
     # something the document actually states, or raises a blocking discrepancy so the
     # document waits on the Action page for a person instead of being promoted on a guess.
-    from src.services.extraction import context_layer as _ccy_rules
-    _ccy_col = "currency"
-    try:
-        if _ccy_col in {f.db_column for f in registry.schema.fields}:
-            _conflict = _ccy_rules.currency_conflict(columns, full_text)
-            if _conflict:
-                discrepancies.append(Discrepancy(
-                    field_name=_ccy_col,
-                    issue_type="currency_ambiguous",
-                    severity="critical",
-                    blocks_promotion=True,
-                    raw_value=str(columns.get(_ccy_col) or ""),
-                    computed_value=",".join(_conflict["symbols"]),
-                    evidence_text=_conflict["evidence"] or None,
-                    notes=_conflict["detail"] + " — confirm which currency the totals are in.",
-                ))
-            elif "$" in (full_text or ""):
-                # A bare "$" is not necessarily USD: the schema stores CAD, AUD, SGD, HKD and
-                # NZD too, and every one of them prints the same symbol.
-                #
-                # resolve_dollar_currency consults columns["supplier_default_currency"] as its
-                # LAST resort, after anything the document itself states. Nothing populated
-                # that key until now, so the branch was dead. `columns` has no "supplier_id"
-                # at this point — supplier_name only resolves to a canonical supplier_id later,
-                # in promotion.promote() (supplier_resolver), after _raw is even written — so
-                # re-running that full resolver here (fuzzy match, auto-create) would duplicate
-                # its side effects (review-queue rows, possibly a new supplier row) before a
-                # doc_pk even exists. This instead recognises only a supplier already on file
-                # EXACTLY by name or by a human-confirmed alias: cheap, indexed, creates
-                # nothing. A supplier not yet on file simply gets no hint here, same as before.
-                try:
-                    from src.services.extraction_feedback.supplier_currency import default_for
-                    from src.services.db import get_conn as _sc_conn
-                    _sup_name = str(columns.get("supplier_name") or "").strip()
-                    if _sup_name:
-                        with _sc_conn() as _c:
-                            _cur = _c.cursor()
-                            _cur.execute(
-                                "SELECT supplier_id FROM proc.bp_supplier_alias "
-                                "WHERE LOWER(alias_name) = LOWER(%s) LIMIT 1",
-                                (_sup_name,),
-                            )
-                            _sup_row = _cur.fetchone()
-                            if not _sup_row:
-                                _cur.execute(
-                                    "SELECT supplier_id FROM proc.bp_supplier "
-                                    "WHERE LOWER(supplier_name) = LOWER(%s) "
-                                    "   OR LOWER(trading_name) = LOWER(%s) LIMIT 1",
-                                    (_sup_name, _sup_name),
-                                )
-                                _sup_row = _cur.fetchone()
-                            if _sup_row:
-                                columns["supplier_default_currency"] = default_for(
-                                    _cur, _sup_row[0],
-                                    learned=_cached_learned_currency(_cur),
-                                )
-                except Exception:
-                    log.exception("dispatch: supplier currency lookup failed (non-fatal)")
-
-                _resolved = _ccy_rules.resolve_dollar_currency(columns, full_text)
-                if _resolved:
-                    _code, _why = _resolved
-                    if columns.get(_ccy_col) != _code:
-                        log.info("dispatch: currency %r → %r (%s)",
-                                 columns.get(_ccy_col), _code, _why)
-                        columns[_ccy_col] = _code
-                elif not re.search(r"\b(?:GBP|EUR|JPY|INR|CHF)\b", full_text or ""):
-                    discrepancies.append(Discrepancy(
-                        field_name=_ccy_col,
-                        issue_type="currency_ambiguous",
-                        severity="critical",
-                        blocks_promotion=True,
-                        raw_value=str(columns.get(_ccy_col) or ""),
-                        computed_value=",".join(sorted(_ccy_rules.DOLLAR_CURRENCIES)),
-                        notes=("the document prices in '$' but never says which dollar, and "
-                               "nothing on it or in the supplier record settles it — confirm "
-                               "the currency rather than assume USD."),
-                    ))
-    finally:
-        # supplier_default_currency is a hint for resolve_dollar_currency, not a column —
-        # guaranteed gone before persistence on every exit from this block, including an
-        # exception raised anywhere above (Task 2's review found exactly this class of bug
-        # live: a stray key reaching an INSERT and taking down a whole promotion with
-        # "column ... does not exist").
-        columns.pop("supplier_default_currency", None)
+    _apply_currency_resolution(columns, full_text, registry, discrepancies)
 
     # Invariants
     try:
