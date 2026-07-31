@@ -6,7 +6,7 @@ pattern_extractor.run_pattern_extractor.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 from src.services.extraction_v3.yaml_schema.loader import DocSchema, FieldSpec, load_doc_schema
@@ -100,6 +100,33 @@ class PatternRegistry:
 
     def threshold(self, field: str) -> float:
         return self._meta[field].threshold
+
+    def apply_observed(self, accuracy: dict) -> int:
+        """Replace hand-set priors with measured agreement rates. Returns patterns changed.
+
+        A prior is somebody's opening guess at how much a rule deserves to be believed. Once
+        there is a measurement — how often a human let this reader's answer stand — the
+        measurement is simply better information.
+
+        It may only ever lower trust. Raising a reader above the prior a human set would let
+        learning promote documents that used to stop for review, which is the one failure
+        mode this must not have: the pipeline may become more cautious on its own, never
+        bolder.
+        """
+        if not accuracy:
+            return 0
+        changed = 0
+        for field, patterns in self._by_field.items():
+            for i, pat in enumerate(patterns):
+                rate = accuracy.get((self.doc_type, field, pat.name))
+                if rate is None or rate >= pat.prior_confidence:
+                    continue
+                patterns[i] = replace(pat, prior_confidence=float(rate))
+                changed += 1
+            # Order is the preference between readers — the extractor tries the highest
+            # prior first — so a demoted reader has to actually move.
+            patterns.sort(key=lambda cp: cp.prior_confidence, reverse=True)
+        return changed
 
     def is_required(self, field: str) -> bool:
         return self._meta[field].required

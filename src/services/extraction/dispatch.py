@@ -28,6 +28,26 @@ from src.services.extraction_v3.binding.invariants_runner import run_invariants
 log = logging.getLogger(__name__)
 
 
+# What we have learned about each reader, refreshed at most every 15 minutes. A rate
+# computed over a 180-day window does not move minute to minute, and a DB round trip
+# per document would otherwise be paid on every upload.
+_ACCURACY_CACHE: dict = {}
+_ACCURACY_CACHED_AT: float = 0.0
+_ACCURACY_TTL_SECONDS = 900
+
+
+def _cached_accuracy() -> dict:
+    """Measured accuracy, refreshed at most every 15 minutes."""
+    global _ACCURACY_CACHE, _ACCURACY_CACHED_AT
+    import time
+    from src.services.extraction_feedback.accuracy import load_accuracy
+    now = time.monotonic()
+    if now - _ACCURACY_CACHED_AT > _ACCURACY_TTL_SECONDS:
+        _ACCURACY_CACHE = load_accuracy()
+        _ACCURACY_CACHED_AT = now
+    return _ACCURACY_CACHE
+
+
 # Leading quote-identifier prefix ("QUT136586", "QUOTE-2025-051", ...). Stripped
 # only when an identifier (something containing a digit) remains, so a quote
 # referenced bare in a sibling PO doc and the same quote extracted from its own
@@ -127,6 +147,14 @@ def dispatch_document(
     # L2 — engineered fallbacks for NER-typed fields the L1 regex missed.
     # Only fires for fields with judge.ner_type_check != 'none'.
     registry = get_registry(doc_type)
+    # Apply what we have learned about each reader before extracting anything further.
+    # A learning-lookup failure must never fail extraction — fall back to static priors.
+    try:
+        _n = registry.apply_observed(_cached_accuracy())
+        if _n:
+            log.info("dispatch: %d pattern prior(s) replaced by measured accuracy", _n)
+    except Exception:
+        log.exception("dispatch: could not apply learned accuracy (using static priors)")
     l1_fields = {c.field for c in candidates}
     try:
         ner_candidates = fill_ner_gaps(
