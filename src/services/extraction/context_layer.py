@@ -1579,19 +1579,121 @@ def _reconcile_money(row: dict[str, Any], full_text: str, doc_type: str) -> dict
     # A '$' document is not GBP. Currency scales converted_amount_usd, so a wrong code
     # silently rescales the money. Only correct when the document uses exactly one symbol
     # and carries no explicit ISO code that might legitimately disagree.
-    symbols = {"$": "USD", "£": "GBP", "€": "EUR"}
-    seen = {code for sym, code in symbols.items() if sym in full_text}
+    #
+    # More than one symbol is NOT corrected here — it cannot be, because there is no single
+    # right answer. currency_conflict() below detects it and dispatch routes the document to
+    # a human instead of picking one.
+    seen = _symbols_in(full_text)
     current = row.get("currency")
     if len(seen) == 1 and current:
-        only = seen.pop()
+        only = next(iter(seen))
         if current != only and not re.search(rf"\b{re.escape(current)}\b", full_text):
             log.info(
                 "context_layer: currency %r → %r (the document only uses '%s' and never says %r)",
-                current, only, [s for s, c in symbols.items() if c == only][0], current,
+                current, only, _SYMBOL_FOR[only], current,
             )
             row["currency"] = only
 
     return row
+
+
+# ---------------------------------------------------------------------------
+# Which currency is this money in?
+# ---------------------------------------------------------------------------
+#
+# The number on a line is extracted fine with or without a symbol beside it. The currency is
+# the part that can be silently wrong, and a wrong currency rescales every figure that
+# depends on it — converted_amount_usd, portfolio spend, the value-found headline, the
+# amount we ask a supplier to credit. So both rules below end at a HUMAN rather than a
+# guess: they either resolve the currency from something the document actually says, or
+# they decline and let dispatch route the document to the Action page.
+
+CURRENCY_SYMBOLS = {"$": "USD", "£": "GBP", "€": "EUR"}
+_SYMBOL_FOR = {code: sym for sym, code in CURRENCY_SYMBOLS.items()}
+
+# A payment block listing what a supplier accepts is not the invoice's money. Symbols that
+# appear ONLY inside a sentence like this are ignored when looking for a conflict.
+_ACCEPTS_RE = re.compile(
+    r"(?i)\b(?:we\s+)?(?:accept|accepted|payable\s+in|payment\s+in|remit\s+in)\b[^\n]{0,120}"
+)
+
+
+def _symbols_in(text: str) -> set[str]:
+    """The currency codes whose symbol is printed on this document, ignoring any that only
+    ever appear inside an "we accept £ / $ / €" sentence."""
+    body = _ACCEPTS_RE.sub(" ", text or "")
+    return {code for sym, code in CURRENCY_SYMBOLS.items() if sym in body}
+
+
+def currency_conflict(row: dict[str, Any], full_text: str) -> dict[str, Any] | None:
+    """More than one currency symbol on one document — return what was seen, else None.
+
+    Every line inherits ONE header currency (invoice lines have no currency of their own),
+    so whichever code is chosen here, some of the money on the page is recorded in the wrong
+    one. There is no safe automatic answer, and the failure is silent: nothing downstream
+    can tell that a figure was rescaled. It stops for a person.
+    """
+    seen = _symbols_in(full_text)
+    if len(seen) < 2:
+        return None
+    ordered = sorted(seen)
+    evidence = [line.strip() for line in (full_text or "").splitlines()
+                if any(_SYMBOL_FOR[c] in line for c in ordered)][:4]
+    return {
+        "symbols": ordered,
+        "header": row.get("currency"),
+        "detail": ("the document prints amounts in more than one currency ("
+                   + ", ".join(f"{_SYMBOL_FOR[c]} {c}" for c in ordered)
+                   + f"), so a single header currency of {row.get('currency') or 'unknown'} "
+                     "cannot be right for all of them"),
+        "evidence": "\n".join(evidence),
+    }
+
+
+# The dollar currencies the invoice schema will actually store. A bare "$" could be any of
+# them, so it is never resolved by assumption — only from what the document (or, last,
+# the supplier master) states.
+DOLLAR_CURRENCIES = {
+    "USD": "United States", "CAD": "Canada", "AUD": "Australia",
+    "SGD": "Singapore", "HKD": "Hong Kong", "NZD": "New Zealand",
+}
+_COUNTRY_TO_DOLLAR = {v.lower(): k for k, v in DOLLAR_CURRENCIES.items()}
+_COUNTRY_ALIASES = {
+    "usa": "USD", "us": "USD", "united states of america": "USD",
+    "hong kong sar": "HKD", "singapore (sg)": "SGD",
+}
+
+
+def resolve_dollar_currency(row: dict[str, Any], full_text: str) -> tuple[str, str] | None:
+    """Which dollar a bare "$" means — (code, why) — or None when the document does not say.
+
+    Order matters and is deliberate: what the document SPELLS OUT beats where it says it is
+    from (a Canadian entity can invoice in USD and say so), and both beat what the supplier
+    master remembers about this vendor, which is the weakest evidence because it describes
+    the supplier rather than this document.
+
+    None means unresolved. The caller must route it to a human — defaulting to USD is how a
+    CAD invoice quietly becomes a different number.
+    """
+    text = full_text or ""
+    if "$" not in text:
+        return None
+
+    for code in DOLLAR_CURRENCIES:
+        if re.search(rf"\b{code}\b", text):
+            return code, f"the document states {code}"
+
+    country = str(row.get("country") or "").strip().lower()
+    if country:
+        code = _COUNTRY_TO_DOLLAR.get(country) or _COUNTRY_ALIASES.get(country)
+        if code:
+            return code, f"the document states country {row.get('country')!r}"
+
+    default = str(row.get("supplier_default_currency") or "").strip().upper()
+    if default in DOLLAR_CURRENCIES:
+        return default, f"the supplier master records {default} as this supplier's currency"
+
+    return None
 
 
 # ---------------------------------------------------------------------------

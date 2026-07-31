@@ -358,6 +358,51 @@ def dispatch_document(
                 notes="context_layer (AgentNick) could not ground a value in the document",
             ))
 
+    # Which currency is this money in?
+    #
+    # The number on a line is extracted whether or not a symbol sits beside it; the currency
+    # is the part that can be silently wrong, and a wrong currency rescales every figure
+    # derived from it. Neither rule below guesses: each either resolves the currency from
+    # something the document actually states, or raises a blocking discrepancy so the
+    # document waits on the Action page for a person instead of being promoted on a guess.
+    from src.services.extraction import context_layer as _ccy_rules
+    _ccy_col = "currency"
+    if _ccy_col in {f.db_column for f in registry.schema.fields}:
+        _conflict = _ccy_rules.currency_conflict(columns, full_text)
+        if _conflict:
+            discrepancies.append(Discrepancy(
+                field_name=_ccy_col,
+                issue_type="currency_ambiguous",
+                severity="critical",
+                blocks_promotion=True,
+                raw_value=str(columns.get(_ccy_col) or ""),
+                computed_value=",".join(_conflict["symbols"]),
+                evidence_text=_conflict["evidence"] or None,
+                notes=_conflict["detail"] + " — confirm which currency the totals are in.",
+            ))
+        elif "$" in (full_text or ""):
+            # A bare "$" is not necessarily USD: the schema stores CAD, AUD, SGD, HKD and
+            # NZD too, and every one of them prints the same symbol.
+            _resolved = _ccy_rules.resolve_dollar_currency(columns, full_text)
+            if _resolved:
+                _code, _why = _resolved
+                if columns.get(_ccy_col) != _code:
+                    log.info("dispatch: currency %r → %r (%s)",
+                             columns.get(_ccy_col), _code, _why)
+                    columns[_ccy_col] = _code
+            elif not re.search(r"\b(?:GBP|EUR|JPY|INR|CHF)\b", full_text or ""):
+                discrepancies.append(Discrepancy(
+                    field_name=_ccy_col,
+                    issue_type="currency_ambiguous",
+                    severity="critical",
+                    blocks_promotion=True,
+                    raw_value=str(columns.get(_ccy_col) or ""),
+                    computed_value=",".join(sorted(_ccy_rules.DOLLAR_CURRENCIES)),
+                    notes=("the document prices in '$' but never says which dollar, and "
+                           "nothing on it or in the supplier record settles it — confirm "
+                           "the currency rather than assume USD."),
+                ))
+
     # Invariants
     try:
         invariant_results = run_invariants(
