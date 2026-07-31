@@ -934,7 +934,7 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
         cur = conn.cursor()
         try:
             cur.execute("""
-                SELECT field_name, resolved_value, resolution_action
+                SELECT field_name, resolved_value, resolution_action, raw_value, resolved_by
                   FROM proc.bp_extraction_discrepancy
                  WHERE raw_id=%s AND status='resolved'
                    AND blocks_promotion=TRUE
@@ -951,7 +951,7 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             # otherwise still say "regex" or "context_layer" for a value a human
             # just overrode).
             hitl_fields: set[str] = set()
-            for field_name, resolved_value, action in fixes:
+            for field_name, resolved_value, action, extracted_value, resolved_by in fixes:
                 if field_name not in allowed_cols:
                     log.error(
                         "HITL fix: rejected unknown/invalid column name %r for %s "
@@ -974,6 +974,49 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                 # 'dismiss' does nothing to _raw and is not attributed to a human
                 # correction — keep_null clears the field, so it never shows up
                 # as a non-null persisted column for record() to attribute anyway.
+
+            # Learn from it. The human has just told us what the value should have been —
+            # the single most valuable signal the pipeline can receive, and until now it
+            # was written to the discrepancy row and never read again. Recorded in the
+            # same transaction as the _raw fixes above so it rolls back with them.
+            #
+            # doc_pk: _RAW_TO_STG[doc_type] is (raw_table, stg_table) — NOT a pk column —
+            # so the pk column name comes from _STG_PK instead, read off the just-updated
+            # _raw row the same way promote() itself resolves it (pk column first, falling
+            # back to doc_pk_candidate for any doc_type _STG_PK doesn't cover).
+            try:
+                from src.services.extraction_feedback.verdict import record_verdict
+                pk_col = _STG_PK.get(doc_type)
+                if pk_col:
+                    cur.execute(
+                        f"SELECT {pk_col}, doc_pk_candidate FROM {raw_t} WHERE raw_id=%s",
+                        (raw_id,),
+                    )
+                else:
+                    cur.execute(
+                        f"SELECT doc_pk_candidate FROM {raw_t} WHERE raw_id=%s", (raw_id,),
+                    )
+                _pk_row = cur.fetchone()
+                _doc_pk = None
+                if _pk_row:
+                    _doc_pk = (_pk_row[0] if pk_col else None) or _pk_row[-1]
+                if _doc_pk:
+                    for field_name, resolved_value, action, extracted_value, resolved_by in fixes:
+                        record_verdict(cur, doc_type=doc_type, doc_pk=_doc_pk,
+                                       field_name=field_name, action=action,
+                                       resolved_value=resolved_value,
+                                       extracted_value=extracted_value,
+                                       resolved_by=resolved_by)
+                else:
+                    log.warning(
+                        "apply_hitl_fixes_and_promote: no doc_pk for raw_id=%s "
+                        "(doc_type=%s) — verdicts not recorded", raw_id, doc_type,
+                    )
+            except Exception:
+                log.exception(
+                    "apply_hitl_fixes_and_promote: verdict capture failed (non-fatal)"
+                )
+
             conn.commit()
         except Exception as exc:
             conn.rollback()
