@@ -114,6 +114,49 @@ def test_draft_figures_are_byte_equal_to_stored_values(conn):
     assert "Techworld" in draft["body"]
 
 
+class _FakeAgent:
+    """An agent that answers with whatever it was handed."""
+
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def call_ollama(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"message": {"content": self.reply}}
+
+
+def test_the_default_tone_is_the_template_and_asks_no_model(conn):
+    agent = _FakeAgent("something else")
+    draft = vq.build_draft("disc:80", conn=conn, tone="formal", agent_nick=agent)
+    assert draft["tone"] == "formal"
+    assert draft["tone_applied"] is False
+    assert agent.calls == [], "formal IS the stored template's voice"
+    assert "950.00 GBP" in draft["body"]
+
+
+def test_a_tone_rewrites_the_wording_and_keeps_every_figure(conn):
+    rewritten = ("Hi Techworld Ltd,\n\nQuick one — INV-1042 looks 950.00 GBP over PO-2210. "
+                 "Could you take a look?\n\nThanks")
+    draft = vq.build_draft("disc:80", conn=conn, tone="direct",
+                           agent_nick=_FakeAgent(rewritten))
+    assert draft["tone_applied"] is True
+    assert draft["body"] == rewritten
+    # The subject and the figures are NOT the model's to change.
+    assert draft["subject"] == vq.build_draft("disc:80", conn=conn)["subject"]
+    assert draft["figures"]["delta"] == "950.00 GBP"
+
+
+def test_a_tone_that_moves_the_money_is_thrown_away_and_admitted(conn):
+    poisoned = "Hi Techworld Ltd, INV-1042 is 950.00 GBP over PO-2210, plus 190.00 GBP VAT."
+    draft = vq.build_draft("disc:80", conn=conn, tone="warm",
+                           agent_nick=_FakeAgent(poisoned))
+    assert draft["tone_applied"] is False
+    # The buyer gets the grounded draft, and is TOLD the tone did not take -- otherwise
+    # they send a formal email believing it was warmed up.
+    assert "950.00 GBP" in draft["body"] and "190.00" not in draft["body"]
+    assert draft["tone_note"] and "190.00" in draft["tone_note"]
+
+
 def test_the_template_is_interpolated_not_written_by_a_model():
     # Grounding by construction: every figure slot is a placeholder the service fills from
     # the row. If this ever became a generated body, these placeholders would disappear.
@@ -259,18 +302,18 @@ def test_the_router_maps_refusals_and_delivery_failures_apart(monkeypatch):
     from fastapi import HTTPException
     from src.api.routers import value_summary as router
 
-    monkeypatch.setattr(router.value_query_service, "build_draft",
-                        lambda fid: (_ for _ in ()).throw(ValueError("not open")))
-    with pytest.raises(HTTPException) as exc:
-        router.get_query_draft("disc:80")
-    assert exc.value.status_code == 409
-
     class _App:
         class state:
             agent_nick = object()
 
     class _Req:
         app = _App()
+
+    monkeypatch.setattr(router.value_query_service, "build_draft",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("not open")))
+    with pytest.raises(HTTPException) as exc:
+        router.get_query_draft("disc:80", _Req())
+    assert exc.value.status_code == 409
 
     payload = router.QuerySend(to="a@b.example", subject="S", body="B")
 

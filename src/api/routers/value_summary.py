@@ -37,9 +37,13 @@ def get_value_summary() -> dict:
 
 @router.get("/value-summary/findings/{finding_id}/query-draft",
             summary="Draft a supplier query for one finding (never sends)")
-def get_query_draft(finding_id: str) -> dict:
+def get_query_draft(finding_id: str, request: Request, tone: str = "formal") -> dict:
+    # The agent is optional HERE, unlike on the send path: `formal` needs no model at all,
+    # and a re-tone with no agent to ask degrades to the grounded template with a note
+    # rather than failing a buyer's draft outright.
+    agent_nick = getattr(request.app.state, "agent_nick", None)
     try:
-        return value_query_service.build_draft(finding_id)
+        return value_query_service.build_draft(finding_id, tone=tone, agent_nick=agent_nick)
     except ValueError as exc:
         # Not queryable: resolved, wrong issue type, an opportunity id, or unknown. 409
         # rather than 404 — the finding may well exist, it just cannot be queried.

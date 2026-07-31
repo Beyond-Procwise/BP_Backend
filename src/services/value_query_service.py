@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from src.services import agent_actions
+from src.services import agent_actions, grounded_retone
 from src.services.value_summary_service import DISCREPANCY_VALUE_TYPES, parse_amount
 
 logger = logging.getLogger(__name__)
@@ -180,37 +180,66 @@ def figures(row: dict) -> dict:
     return out
 
 
-def build_draft(finding_id: str, conn=None) -> dict:
+def build_draft(finding_id: str, conn=None, *, tone: str = "formal", agent_nick=None) -> dict:
     """The email a human is about to review. Never sends, never stamps anything.
 
     A supplier with no email on file still gets a draft — it is useful to a buyer who will
     look the address up — but `to` is None and the send endpoint refuses it.
+
+    `tone` re-words the body and NOTHING else: the subject, the recipient and every figure
+    are still the stored ones. See `grounded_retone` for what stops the model moving the
+    money — a rewrite that invents or drops a figure is discarded and the template stands,
+    with `tone_applied: false` and a sentence saying why.
     """
     if conn is not None:
-        return _build_draft(conn, finding_id)
+        return _build_draft(conn, finding_id, tone=tone, agent_nick=agent_nick)
     from src.services.db import get_conn
     with get_conn() as own:
-        return _build_draft(own, finding_id)
+        return _build_draft(own, finding_id, tone=tone, agent_nick=agent_nick)
 
 
-def _build_draft(conn, finding_id: str) -> dict:
+def _build_draft(conn, finding_id: str, *, tone: str = "formal", agent_nick=None) -> dict:
     row = _load(conn.cursor(), _discrepancy_id(finding_id))
     _require_queryable(row)
     fig = figures(row)
-    slots = {**fig, "supplier_name": row.get("supplier_name") or "Supplier"}
+    supplier_name = row.get("supplier_name") or "Supplier"
+    slots = {**fig, "supplier_name": supplier_name}
     template = (_governed_template()
                 or (DUPLICATE_TEMPLATE if row.get("issue_type") == "duplicate_invoice"
                                           and "duplicate_of" in fig
                     else DEFAULT_TEMPLATE))
+    body = _fill(template["body"], slots)
+
+    retoned = grounded_retone.retone(
+        body, tone=tone, agent_nick=agent_nick, must_keep=_must_keep(row, fig))
     return {
         "finding_id": f"disc:{row['discrepancy_id']}",
         "to": (row.get("supplier_email") or None),
         "subject": _fill(template["subject"], slots),
-        "body": _fill(template["body"], slots),
+        "body": retoned.body,
+        "tone": str(tone or "formal").lower(),
+        "tone_applied": retoned.applied,
+        "tone_note": retoned.note,
         "figures": fig,
         "supplier_name": row.get("supplier_name"),
         "query_sent_at": _iso(row.get("query_sent_at")),
     }
+
+
+def _must_keep(row: dict, fig: dict) -> list:
+    """The strings a re-worded draft may not lose.
+
+    Only REAL identifiers. `figures()` falls back to the phrase "the purchase order" when
+    the invoice carries no po_id, and demanding that exact phrase survive would reject a
+    perfectly good rewrite for saying "the PO" — a wording change, which is the entire
+    point of the control. Same for the placeholder supplier name.
+    """
+    keep = [fig.get("delta"), fig.get("doc_ref"), fig.get("duplicate_of")]
+    if row.get("po_id"):
+        keep.append(fig.get("po_ref"))
+    if row.get("supplier_name"):
+        keep.append(row["supplier_name"])
+    return [k for k in keep if k]
 
 
 def _fill(template: str, slots: dict) -> str:
