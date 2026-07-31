@@ -82,15 +82,38 @@ def numbers(text: str) -> set:
     return {m.group(0).replace(",", "") for m in _NUM_RE.finditer(str(text or ""))}
 
 
-def violations(original: str, rewritten: str, *, must_keep: Iterable[str]) -> list:
+def _still_names(text: str, name: str) -> bool:
+    """Does `text` still say who this is about?
+
+    Looser than the byte-exact rule the FIGURES get, and deliberately so. A supplier name
+    appears in the greeting, where re-wording it is the point of the control — and this
+    corpus names suppliers with a trailing counter ("Ashcroft Logistics 14"). Held to the
+    letter, a model writing the perfectly correct "Hello Ashcroft Logistics," had its
+    rewrite binned for "dropping" the 14, so the tone control fell back on nearly every
+    supplier while every figure in the message was untouched.
+
+    Only a trailing number is forgiven. "Ashcroft Logistics" still names the same company;
+    "Ashcroft Freight" does not, and is still a violation. Nothing here can change WHO the
+    email reaches — that is the `to` field, which no model writes.
+    """
+    if name in text:
+        return True
+    core = re.sub(r"[\s,\-]*\d+$", "", name).strip()
+    return bool(core) and core != name and core in text
+
+
+def violations(original: str, rewritten: str, *, must_keep: Iterable[str],
+               must_name: Optional[str] = None) -> list:
     """Everything wrong with `rewritten`, in plain English. Empty means it is safe.
 
-    Two independent checks, because they catch different failures:
+    Three checks, because they catch different failures:
       * nothing invented — the rewrite's numbers must be a subset of the draft's. This is
         what stops a model helpfully adding "plus 12,500.00 VAT" to a credit-note request;
       * nothing dropped — each string in `must_keep` THAT THE DRAFT ACTUALLY CONTAINED must
         survive. Scoped to the draft on purpose: a finding with no PO reference must not
-        have its rewrite rejected for "dropping" a string that was never there.
+        have its rewrite rejected for "dropping" a string that was never there;
+      * still named — `must_name` (the supplier) must still be recognisable, by the looser
+        rule in `_still_names`. It is a salutation, not a figure.
     """
     problems = []
 
@@ -104,11 +127,15 @@ def violations(original: str, rewritten: str, *, must_keep: Iterable[str]) -> li
         if value and value in original and value not in rewritten:
             problems.append(f"it drops {value!r}, which the claim rests on")
 
+    name = str(must_name or "").strip()
+    if name and name in original and not _still_names(rewritten, name):
+        problems.append(f"it no longer names {name!r}")
+
     return problems
 
 
 def retone(body: str, *, tone: str, must_keep: Iterable[str], agent_nick: Any,
-           model: Optional[str] = None) -> Retone:
+           must_name: Optional[str] = None, model: Optional[str] = None) -> Retone:
     """Re-word `body` in `tone`, or say why it still reads as it did.
 
     Never raises and never returns an unchecked rewrite: every path out of here yields a
@@ -148,7 +175,7 @@ def retone(body: str, *, tone: str, must_keep: Iterable[str], agent_nick: Any,
         return Retone(original, False,
                       "The drafting agent returned nothing, so the wording is unchanged.")
 
-    problems = violations(original, rewritten, must_keep=must_keep)
+    problems = violations(original, rewritten, must_keep=must_keep, must_name=must_name)
     if problems:
         # Logged with the offending text: this is the signal that the tone prompt needs
         # work, and it is invisible if only the buyer-facing sentence survives.

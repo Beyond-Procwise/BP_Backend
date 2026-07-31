@@ -211,7 +211,8 @@ def _build_draft(conn, finding_id: str, *, tone: str = "formal", agent_nick=None
     body = _fill(template["body"], slots)
 
     retoned = grounded_retone.retone(
-        body, tone=tone, agent_nick=agent_nick, must_keep=_must_keep(row, fig))
+        body, tone=tone, agent_nick=agent_nick, must_keep=_must_keep(row, fig),
+        must_name=row.get("supplier_name"))
     return {
         "finding_id": f"disc:{row['discrepancy_id']}",
         "to": (row.get("supplier_email") or None),
@@ -227,18 +228,20 @@ def _build_draft(conn, finding_id: str, *, tone: str = "formal", agent_nick=None
 
 
 def _must_keep(row: dict, fig: dict) -> list:
-    """The strings a re-worded draft may not lose.
+    """The strings a re-worded draft may not lose, character for character.
 
-    Only REAL identifiers. `figures()` falls back to the phrase "the purchase order" when
-    the invoice carries no po_id, and demanding that exact phrase survive would reject a
-    perfectly good rewrite for saying "the PO" — a wording change, which is the entire
-    point of the control. Same for the placeholder supplier name.
+    The money and the document references — nothing else. `figures()` falls back to the
+    phrase "the purchase order" when the invoice carries no po_id, and demanding that exact
+    phrase survive would reject a perfectly good rewrite for saying "the PO", which is a
+    wording change and therefore the entire point of the control.
+
+    The supplier name is deliberately NOT here: it goes to `must_name`, which holds it to a
+    looser rule. It is a salutation rather than a figure, and this corpus names suppliers
+    with a trailing counter ("Ashcroft Logistics 14") that a model reasonably drops.
     """
     keep = [fig.get("delta"), fig.get("doc_ref"), fig.get("duplicate_of")]
     if row.get("po_id"):
         keep.append(fig.get("po_ref"))
-    if row.get("supplier_name"):
-        keep.append(row["supplier_name"])
     return [k for k in keep if k]
 
 

@@ -32,8 +32,10 @@ ORIGINAL = (
     "147,783.11 USD against purchase order PO-9912.\n\n"
     "Many thanks,\nAccounts Payable"
 )
-MUST_KEEP = ["147,783.11 USD", "INV000047-1A", "INV000047-1", "PO-9912",
-             "Northfield Laboratory Supplies Ltd"]
+NAME = "Northfield Laboratory Supplies Ltd"
+# The money and the references only. The supplier name goes to must_name -- see the
+# salutation tests below for why it is not held byte-exact.
+MUST_KEEP = ["147,783.11 USD", "INV000047-1A", "INV000047-1", "PO-9912"]
 
 
 # --------------------------------------------------------------------------- numbers
@@ -80,7 +82,33 @@ def test_a_dropped_reference_is_a_violation():
 
 def test_a_dropped_supplier_name_is_a_violation():
     rewritten = ORIGINAL.replace("Northfield Laboratory Supplies Ltd", "there")
-    assert gr.violations(ORIGINAL, rewritten, must_keep=MUST_KEEP)
+    assert gr.violations(ORIGINAL, rewritten, must_keep=[], must_name=NAME)
+
+
+# The supplier name is a salutation, not a figure, so it is held to a looser rule than the
+# money. Found live: this corpus names suppliers with a trailing counter, and the byte-exact
+# rule binned a flawless rewrite on nearly every one of them.
+
+def test_a_trailing_counter_may_be_dropped_from_the_name():
+    original = "Hello Ashcroft Logistics 14,\n\nInvoice INV-1 is 10.00 GBP over.\n\nThanks"
+    rewritten = "Hi Ashcroft Logistics - INV-1 looks 10.00 GBP over. Thanks"
+    assert gr.violations(original, rewritten, must_keep=["10.00 GBP", "INV-1"],
+                         must_name="Ashcroft Logistics 14") == []
+
+
+def test_renaming_the_company_is_still_a_violation():
+    original = "Hello Ashcroft Logistics 14,\n\nInvoice INV-1 is 10.00 GBP over.\n\nThanks"
+    rewritten = "Hi Ashcroft Freight - INV-1 looks 10.00 GBP over. Thanks"
+    problems = gr.violations(original, rewritten, must_keep=[],
+                             must_name="Ashcroft Logistics 14")
+    assert problems and "no longer names" in problems[0]
+
+
+def test_the_looser_name_rule_does_not_reach_the_figures():
+    # A rewrite that drops the trailing digits of an INVOICE number is not a salutation
+    # tidy-up. must_keep stays byte-exact.
+    rewritten = ORIGINAL.replace("INV000047-1A", "INV000047")
+    assert gr.violations(ORIGINAL, rewritten, must_keep=MUST_KEEP, must_name=NAME)
 
 
 def test_must_keep_only_covers_what_the_draft_actually_said():
@@ -95,7 +123,7 @@ def test_must_keep_only_covers_what_the_draft_actually_said():
 
 def test_formal_is_the_template_and_never_calls_a_model():
     agent = FakeAgent(reply="something else entirely")
-    out = gr.retone(ORIGINAL, tone="formal", must_keep=MUST_KEEP, agent_nick=agent)
+    out = gr.retone(ORIGINAL, tone="formal", must_keep=MUST_KEEP, must_name=NAME, agent_nick=agent)
     assert out.body == ORIGINAL
     assert out.applied is False
     assert agent.calls == [], "the template IS the formal voice; there is nothing to ask"
@@ -103,14 +131,14 @@ def test_formal_is_the_template_and_never_calls_a_model():
 
 def test_an_unknown_tone_is_refused_without_calling_a_model():
     agent = FakeAgent(reply="whatever")
-    out = gr.retone(ORIGINAL, tone="shouty", must_keep=MUST_KEEP, agent_nick=agent)
+    out = gr.retone(ORIGINAL, tone="shouty", must_keep=MUST_KEEP, must_name=NAME, agent_nick=agent)
     assert out.body == ORIGINAL and out.applied is False and agent.calls == []
 
 
 def test_a_clean_rewrite_is_applied():
     rewritten = ("Hi Northfield Laboratory Supplies Ltd,\n\nQuick one — INV000047-1A looks "
                  "like a duplicate of INV000047-1, both 147,783.11 USD on PO-9912.\n\nThanks")
-    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP,
+    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, must_name=NAME,
                     agent_nick=FakeAgent(reply=rewritten))
     assert out.applied is True
     assert out.body == rewritten
@@ -119,7 +147,7 @@ def test_a_clean_rewrite_is_applied():
 
 def test_a_rewrite_that_moves_the_money_is_thrown_away():
     poisoned = ORIGINAL.replace("147,783.11", "247,783.11")
-    out = gr.retone(ORIGINAL, tone="warm", must_keep=MUST_KEEP,
+    out = gr.retone(ORIGINAL, tone="warm", must_keep=MUST_KEEP, must_name=NAME,
                     agent_nick=FakeAgent(reply=poisoned))
     assert out.applied is False
     assert out.body == ORIGINAL, "the grounded draft is what survives, always"
@@ -127,20 +155,20 @@ def test_a_rewrite_that_moves_the_money_is_thrown_away():
 
 
 def test_a_failed_rewrite_says_so_rather_than_pretending():
-    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP,
+    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, must_name=NAME,
                     agent_nick=FakeAgent(raises=True))
     assert out.applied is False and out.body == ORIGINAL
     assert out.note, "silence would read as 'the tone was applied'"
 
 
 def test_an_empty_answer_is_not_a_rewrite():
-    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP,
+    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, must_name=NAME,
                     agent_nick=FakeAgent(reply="   "))
     assert out.applied is False and out.body == ORIGINAL and out.note
 
 
 def test_no_agent_at_all_degrades_to_the_template():
-    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, agent_nick=None)
+    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, must_name=NAME, agent_nick=None)
     assert out.applied is False and out.body == ORIGINAL and out.note
 
 
@@ -176,7 +204,7 @@ def test_the_resolved_caller_is_the_one_actually_asked():
     class BareAgentNick:
         agents = {"email_drafting_agent": registered}
 
-    gr.retone(ORIGINAL, tone="warm", must_keep=MUST_KEEP, agent_nick=BareAgentNick())
+    gr.retone(ORIGINAL, tone="warm", must_keep=MUST_KEEP, must_name=NAME, agent_nick=BareAgentNick())
     assert len(registered.calls) == 1
 
 
@@ -204,7 +232,7 @@ def test_an_ollama_response_OBJECT_is_read_the_same_as_a_dict():
         def call_ollama(self, **kwargs):
             return ChatResponse()
 
-    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, agent_nick=ObjectAgent())
+    out = gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, must_name=NAME, agent_nick=ObjectAgent())
     assert out.applied is True, out.note
     assert out.body == clean
 
@@ -219,7 +247,7 @@ def test_the_generate_shape_is_read_too():
         def call_ollama(self, **kwargs):
             return GenerateResponse()
 
-    out = gr.retone(ORIGINAL, tone="warm", must_keep=MUST_KEEP, agent_nick=ObjectAgent())
+    out = gr.retone(ORIGINAL, tone="warm", must_keep=MUST_KEEP, must_name=NAME, agent_nick=ObjectAgent())
     assert out.applied is True, out.note
 
 
@@ -228,7 +256,7 @@ def test_the_model_is_asked_at_temperature_zero_with_thinking_off():
     # empty response with think on, and temperature must sit inside options or the client
     # raises TypeError.
     agent = FakeAgent(reply=ORIGINAL)
-    gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, agent_nick=agent)
+    gr.retone(ORIGINAL, tone="direct", must_keep=MUST_KEEP, must_name=NAME, agent_nick=agent)
     kwargs = agent.calls[0]
     assert kwargs["think"] is False
     assert kwargs["options"]["temperature"] == 0
