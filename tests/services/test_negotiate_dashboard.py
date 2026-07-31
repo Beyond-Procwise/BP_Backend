@@ -79,9 +79,18 @@ def test_cost_over_time_is_cumulative_and_sorted():
     ])
     series = nd.cost_over_time(cur, "D1")
     assert [p["time"] for p in series] == ["2024-01-01", "2024-02-01", "2024-03-01"]
-    assert series[0]["Overall"] == 1000.0
-    assert series[-1]["Overall"] == 2850.0   # 1000 + 900 + 950 cumulative
-    assert series[-1]["PO"] == 900.0 and series[-1]["Invoice"] == 950.0
+    # Each stream is cumulative in its own right.
+    assert series[-1]["Quote"] == 1000.0
+    assert series[-1]["PO"] == 900.0
+    assert series[-1]["Invoice"] == 950.0
+    # "Overall" is NOT their sum: quote, PO and invoice describe the SAME spend
+    # on a three-way-matched deal, so adding them triple-counts it. It follows
+    # the most concrete stream available — invoiced, else committed, else
+    # proposed — which is why it starts on the quote and ends on the invoice.
+    assert series[0]["Overall"] == 1000.0    # quote only, nothing committed yet
+    assert series[1]["Overall"] == 900.0     # PO supersedes the quote
+    assert series[-1]["Overall"] == 950.0    # invoiced supersedes both
+    assert series[-1]["Overall"] != 2850.0   # the old triple-counting total
 
 
 def test_proposal_summary_baseline_vs_current_diff():
