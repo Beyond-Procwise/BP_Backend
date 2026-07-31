@@ -95,6 +95,9 @@ def classify_discrepancy(row: dict) -> Optional[dict]:
         "age_days": _age_days(row.get("created_at")),
         "link": {"screen": "actions", "id": row.get("discrepancy_id")},
         "status": row.get("status"),
+        # When the finding was closed. The weekly digest needs it to answer "what did we
+        # recover THIS week" — found_at slices what we found, this slices what came back.
+        "resolved_at": row.get("resolved_at").isoformat() if isinstance(row.get("resolved_at"), datetime) else None,
         "queryable": row.get("status") == "open" and bool(row.get("supplier_name")),
         "query_sent_at": row.get("query_sent_at").isoformat() if isinstance(row.get("query_sent_at"), datetime) else None,
         "superseded_by": None,
@@ -102,9 +105,15 @@ def classify_discrepancy(row: dict) -> Optional[dict]:
 
 
 def _disc_title(row: dict, delta: float) -> str:
+    """The delta here is the amount as BILLED, in the document's own currency — the row's
+    amount_gbp is the converted figure. Naming the currency keeps the two from reading as
+    two different numbers ("duplicate ... by 147,783.11" beside "£110,043.74"). An
+    unlabelled document's amount stays bare rather than wearing a guessed symbol."""
     kind = {"duplicate_invoice": "appears to duplicate another invoice"}.get(
         row.get("issue_type"), "bills over its purchase order")
-    return f"{row.get('doc_type', 'document').capitalize()} {row.get('doc_pk_candidate')} {kind} by {delta:,.2f}"
+    currency = str(row.get("currency") or "").strip().upper()
+    amount = f"{delta:,.2f}{' ' + currency if currency else ''}"
+    return f"{row.get('doc_type', 'document').capitalize()} {row.get('doc_pk_candidate')} {kind} by {amount}"
 
 
 def classify_opportunity(row: dict) -> Optional[dict]:
@@ -139,6 +148,9 @@ def classify_opportunity(row: dict) -> Optional[dict]:
         "age_days": _age_days(row.get("created_at")),
         "link": {"screen": "opportunities", "id": row.get("opportunity_id")},
         "status": stage,
+        # An opportunity has no resolved_at; the moment it reached its current stage is the
+        # equivalent — that is when a realised one was realised.
+        "resolved_at": row.get("stage_updated_at").isoformat() if isinstance(row.get("stage_updated_at"), datetime) else None,
         "queryable": False,
         "query_sent_at": None,
         "superseded_by": None,
@@ -214,7 +226,7 @@ def _rows(cur, sql, params=()) -> list[dict]:
 _DISCREPANCY_SQL = """
 SELECT e.discrepancy_id, e.doc_type, e.doc_pk_candidate, e.field_name, e.raw_value,
        e.expected_value, e.computed_value, e.issue_type, e.status, e.notes, e.created_at,
-       e.resolution_outcome, e.recovered_amount, e.query_sent_at,
+       e.resolution_outcome, e.recovered_amount, e.query_sent_at, e.resolved_at,
        i.deal_id, s.supplier_name, i.currency
   FROM proc.bp_extraction_discrepancy e
   LEFT JOIN proc.bp_invoice_trgt i
@@ -225,7 +237,8 @@ SELECT e.discrepancy_id, e.doc_type, e.doc_pk_candidate, e.field_name, e.raw_val
 
 _OPPORTUNITY_SQL = """
 SELECT opportunity_id, stage, financial_impact_gbp, realised_savings_gbp,
-       supplier_name, deal_id, po_id, quote_id, invoice_id, item_description, created_at
+       supplier_name, deal_id, po_id, quote_id, invoice_id, item_description, created_at,
+       stage_updated_at
   FROM proc.bp_opportunity
 """
 

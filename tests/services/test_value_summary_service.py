@@ -163,3 +163,16 @@ def test_source_failure_isolation(monkeypatch):
     out = vss.build_value_summary(conn=FakeConn())   # FakeConn: cursor() returns a stub whose execute raises for opportunity SQL too if needed
     assert out["sources"]["discrepancies"] == "unavailable"
     assert out["verified_found_gbp"] == 0.0
+
+
+def test_a_title_names_the_currency_it_is_quoting():
+    # The title quotes the amount as BILLED; amount_gbp is the converted figure. Without a
+    # currency the two read as two different numbers — live, a USD duplicate showed
+    # "by 147,783.11" on a row labelled "£110,043.74".
+    usd = classify_discrepancy(_disc(currency="USD", computed_value="+147783.11"))
+    assert "147,783.11 USD" in usd["title"]
+    gbp = classify_discrepancy(_disc())
+    assert "950.00 GBP" in gbp["title"]
+    # A document that never stated its currency keeps a bare amount, never a guessed one.
+    bare = classify_discrepancy(_disc(currency=None))
+    assert bare["title"].endswith("950.00")

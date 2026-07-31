@@ -393,6 +393,7 @@ class BackendScheduler:
         self._register_deal_assignment_job()
         self._register_extraction_feedback_job()
         self._register_price_outlier_job()
+        self._register_value_digest_job()
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
@@ -627,6 +628,40 @@ class BackendScheduler:
             interval=timedelta(minutes=max(1, minutes)),
             initial_delay=timedelta(minutes=5),
         )
+
+    VALUE_DIGEST_JOB_NAME = "value-digest"
+
+    def _register_value_digest_job(self) -> None:
+        """Email the weekly value digest.
+
+        Registered only when it is switched on, because the alternative is a job that wakes
+        every week to decide it has nothing to do. Both switches are checked again at run
+        time, so turning it off does not require a restart.
+        """
+        from src.services.value_digest import _enabled as digest_enabled, recipients
+        if not digest_enabled() or not recipients():
+            logger.info("value digest job not registered "
+                        "(VALUE_DIGEST_ENABLED / VALUE_DIGEST_RECIPIENTS)")
+            return
+        if self.VALUE_DIGEST_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.VALUE_DIGEST_JOB_NAME,
+            self._run_value_digest,
+            interval=timedelta(days=7),
+            # Not on boot: a restart should not fire an unscheduled digest at whatever hour
+            # it happens to be.
+            initial_delay=timedelta(hours=1),
+        )
+
+    def _run_value_digest(self) -> None:
+        try:
+            from src.services.value_digest import run_weekly_digest
+            run_weekly_digest(agent_nick=self.agent_nick)
+        except Exception:
+            # run_weekly_digest already swallows its own failures; this is the backstop for
+            # anything raised before it gets that far.
+            logger.exception("value digest failed")
 
     def _register_price_outlier_job(self) -> None:
         """Scan for extreme prices and raise them for review."""
