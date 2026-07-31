@@ -90,6 +90,38 @@ def test_fetch_enrichment_attaches_rfq_from_raw_text():
     assert quotes[1]["rfq_reference"] is None
 
 
+# ---- attachment provenance -----------------------------------------------
+
+def test_po_and_invoice_members_carry_link_evidence(monkeypatch):
+    # The engine KNOWS why it attached the PO (it cites the winning bid's
+    # reference) and each invoice (it cites the PO number) — that provenance
+    # must survive into the stored members so the UI can show per-connection
+    # confidence instead of a bare grouping.
+    import src.services.deal_clustering as dc
+    monkeypatch.setattr(dc, "rivalry_score",
+                        lambda a, b, la, lb: {"correlation": 0.1, "F": 10.0})
+    quotes = [
+        {"quote_id": "A-1", "supplier_id": "SUP-A", "quote_date": None,
+         "rfq_reference": "RFQ-X-1"},
+        {"quote_id": "B-1", "supplier_id": "SUP-B", "quote_date": None,
+         "rfq_reference": "RFQ-X-1"},
+    ]
+    pos = [{"po_id": "PO-9", "quote_reference": "A-1"}]
+    invoices = [{"invoice_id": "INV-7", "po_id": "PO-9"}]
+    out = dc.cluster_batch(quotes=quotes, quote_lines={}, purchase_orders=pos,
+                           po_lines={}, invoices=invoices)
+    members = {(m["doc_type"], m["doc_pk"]): m
+               for p in out["proposals"] for m in p["members"]}
+    po_m = members[("po", "PO-9")]
+    assert po_m["match_evidence"]["linked_by"] == "quote_reference"
+    assert po_m["match_evidence"]["cites"] == "A-1"
+    assert po_m["match_score"] == 100.0
+    inv_m = members[("invoice", "INV-7")]
+    assert inv_m["match_evidence"]["linked_by"] == "po_reference"
+    assert inv_m["match_evidence"]["cites"] == "PO-9"
+    assert inv_m["match_score"] == 100.0
+
+
 # ---- end to end through cluster_batch ------------------------------------
 
 def test_cluster_batch_attaches_each_document_once_despite_duplicate_rows(monkeypatch):

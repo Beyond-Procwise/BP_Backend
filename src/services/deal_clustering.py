@@ -70,12 +70,19 @@ def awarded_po(bid: dict, pos: list[dict], po_lines: dict, bid_lines: list,
     exact unit-price match is correct for an award). NOT supplier-name string matching,
     which loses SUP-GomezGoodAndCross vs 'Gomez, Good and Cross Trading Ltd' and any null
     supplier. Returns the best PO's id at/above min_score, else None."""
+    return awarded_po_scored(bid, pos, po_lines, bid_lines, min_score, scorer)[0]
+
+
+def awarded_po_scored(bid: dict, pos: list[dict], po_lines: dict, bid_lines: list,
+                      min_score: float = 80.0, scorer=score_link) -> tuple[Optional[str], float]:
+    """awarded_po, but also handing back the winning continuity score so a caller can
+    SAY how strong the link was. (id, F) — (None, 0.0) when nothing clears min_score."""
     best_id, best_f = None, 0.0
     for po in pos:
         link = scorer(bid, po, "quote_po", bid_lines, po_lines.get(po["po_id"], []))
         if link["F"] >= min_score and link["F"] > best_f:
             best_id, best_f = po["po_id"], link["F"]
-    return best_id
+    return best_id, best_f
 
 
 def award_veto(bid_a: dict, bid_b: dict, awards: dict) -> bool:
@@ -208,11 +215,29 @@ def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, d
     # scoring when no PO carries the reference (spec §declared linkage outranks
     # inference). Batch quotes carry no po_id, so continuity alone tops out ~F=35 —
     # min_score is lowered to 60 as a fallback net, not the primary signal.
-    awards = {}
+    # HOW each award was made is kept (award_how) so the stored po member can say
+    # why it is attached — "the PO cites this bid" vs "continuity score F".
+    awards, award_how = {}, {}
     for b in bids:
         bid_lines = quote_lines.get(b["quote_id"], [])
-        awards[b["quote_id"]] = (_explicit_award(b, purchase_orders, po_lines)
-                                  or awarded_po(b, purchase_orders, po_lines, bid_lines, min_score=60.0))
+        explicit = _explicit_award(b, purchase_orders, po_lines)
+        if explicit:
+            awards[b["quote_id"]] = explicit
+            award_how[b["quote_id"]] = {
+                "linked_by": "quote_reference", "cites": b["quote_id"],
+                "detail": "the purchase order cites this bid's reference",
+                "score": 100.0,
+            }
+            continue
+        best_id, best_f = awarded_po_scored(b, purchase_orders, po_lines, bid_lines,
+                                            min_score=60.0)
+        awards[b["quote_id"]] = best_id
+        if best_id:
+            award_how[b["quote_id"]] = {
+                "linked_by": "continuity", "cites": b["quote_id"],
+                "detail": "same supplier and pricing as this bid (continuity score)",
+                "score": round(best_f, 2),
+            }
 
     # Apply the veto by zeroing correlation on any vetoed pair, so complete linkage cannot
     # merge them (correlation proposes; award structure rules out — spec §Award exclusivity).
@@ -276,10 +301,14 @@ def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, d
 
         # Attach the awarded PO (explicit quote_number, else continuity) + its invoices
         # (deterministic po_id match).
-        po_id = next((awards[b["quote_id"]] for b in cluster if awards.get(b["quote_id"])), None)
+        awarded_bid = next((b["quote_id"] for b in cluster if awards.get(b["quote_id"])), None)
+        po_id = awards.get(awarded_bid) if awarded_bid else None
         if po_id:
+            how = award_how.get(awarded_bid) or {}
             members.append({"doc_type": "po", "doc_pk": po_id, "base_reference": None,
-                            "role": "po", "match_score": None, "match_evidence": None})
+                            "role": "po", "match_score": how.get("score"),
+                            "match_evidence": ({k: v for k, v in how.items() if k != "score"}
+                                               or None)})
             # Dedupe: re-extraction leaves multiple raw rows per document, so the
             # batch fetch can supply the same invoice twice; each attaches once.
             seen_invoices: set = set()
@@ -288,7 +317,11 @@ def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, d
                     seen_invoices.add(inv["invoice_id"])
                     members.append({"doc_type": "invoice", "doc_pk": inv["invoice_id"],
                                     "base_reference": None, "role": "invoice",
-                                    "match_score": None, "match_evidence": None})
+                                    "match_score": 100.0,
+                                    "match_evidence": {
+                                        "linked_by": "po_reference", "cites": po_id,
+                                        "detail": "this invoice cites the purchase order number",
+                                    }})
 
         # Review triggers (spec §Human-in-the-loop). ONLY confidence-below-band or a
         # cross-pair sitting near the clustering threshold demand human review; a
