@@ -11,6 +11,9 @@ responses + a recorder list.
 from __future__ import annotations
 
 import unittest.mock as mock
+
+import pytest
+
 import src.services.extraction.promotion as promotion
 
 
@@ -75,8 +78,11 @@ _REAL_COLUMNS = ["raw_id", "invoice_amount", "tax_amount", "currency", "supplier
 def _table_data_for(discrepancy_rows: list[tuple]) -> dict:
     """Build the canned responses dict for a _FakeCursor.
 
-    discrepancy_rows: list of (field_name, resolved_value, resolution_action)
+    discrepancy_rows: list of (field_name, resolved_value, resolution_action), or the
+    widened (field_name, resolved_value, resolution_action, raw_value, resolved_by) —
+    padded to 5 with None here so existing 3-tuple callers keep working unchanged.
     """
+    padded_rows = [tuple(r) + (None,) * (5 - len(r)) for r in discrepancy_rows]
     return {
         # Allowlist query — information_schema lookup for the _raw table columns.
         "information_schema.columns": (
@@ -85,10 +91,13 @@ def _table_data_for(discrepancy_rows: list[tuple]) -> dict:
         ),
         # Discrepancy query.
         "bp_extraction_discrepancy": (
-            ["field_name", "resolved_value", "resolution_action"],
-            discrepancy_rows,
+            ["field_name", "resolved_value", "resolution_action", "raw_value", "resolved_by"],
+            padded_rows,
         ),
-        # Row-exists check for doc_type verification (SELECT 1 FROM … WHERE raw_id).
+        # Row-exists check for doc_type verification (SELECT 1 FROM … WHERE raw_id),
+        # also matched by the verdict-capture doc_pk lookup (SELECT <pk_col>,
+        # doc_pk_candidate FROM proc.bp_invoice_raw WHERE raw_id=%s) — one canned row
+        # is enough for both, since fetchone() just needs *some* pk value back.
         "bp_invoice_raw": (["exists"], [(1,)]),
     }
 
@@ -251,3 +260,161 @@ class TestHitlAllowlistGuard:
         update_sqls = [sql for sql, _ in rec if "UPDATE" in sql.upper()]
         for sql in update_sqls:
             assert "nonexistent_column" not in sql
+
+
+# ---------------------------------------------------------------------------
+# Tests for the verdict-capture allowlist guard (Task 2 fix-round-1, Minor)
+# ---------------------------------------------------------------------------
+
+class TestVerdictAllowlistGuard:
+    """The verdict-capture loop must skip any field_name the _raw UPDATE loop already
+    rejected as unsafe/unknown — recording a verdict for it would pollute per-reader
+    accuracy stats (the very table this feature exists to build) with a bogus column."""
+
+    def test_rejected_field_name_gets_no_verdict_row(self, monkeypatch):
+        malicious = "invoice_amount = NULL, promotion_status"
+        rec, _ = _wire_fake_conn(monkeypatch, [(malicious, "99.00", "apply_value")])
+
+        promotion.apply_hitl_fixes_and_promote(raw_id=42, doc_type="invoice")
+
+        verdict_sqls = [sql for sql, _ in rec if "INSERT INTO proc.bp_extraction_verdict" in sql]
+        assert verdict_sqls == [], f"expected no verdict row for a rejected field, got {verdict_sqls}"
+
+    def test_unknown_column_gets_no_verdict_row(self, monkeypatch):
+        rec, _ = _wire_fake_conn(monkeypatch, [("nonexistent_column", "value", "apply_value")])
+
+        promotion.apply_hitl_fixes_and_promote(raw_id=42, doc_type="invoice")
+
+        verdict_sqls = [sql for sql, _ in rec if "INSERT INTO proc.bp_extraction_verdict" in sql]
+        assert verdict_sqls == [], f"expected no verdict row for an unknown column, got {verdict_sqls}"
+
+    def test_benign_field_name_gets_a_verdict_row(self, monkeypatch):
+        rec, _ = _wire_fake_conn(monkeypatch, [("invoice_amount", "150.00", "apply_value")])
+
+        promotion.apply_hitl_fixes_and_promote(raw_id=42, doc_type="invoice")
+
+        verdict_sqls = [sql for sql, _ in rec if "INSERT INTO proc.bp_extraction_verdict" in sql]
+        assert verdict_sqls, "expected a verdict row for a benign, allowed field"
+
+
+# ---------------------------------------------------------------------------
+# Tests for SAVEPOINT isolation around verdict capture (Task 2 fix-round-1, Important)
+# ---------------------------------------------------------------------------
+#
+# A bare try/except around the verdict-capture block stops the PYTHON exception from
+# propagating, but does NOT undo what Postgres itself does when a statement in a
+# transaction fails: it marks the *whole transaction* aborted, and every later
+# statement on that connection — including a plain conn.commit() — fails until a
+# ROLLBACK (full, or TO SAVEPOINT) runs. Without a savepoint, a verdict-write failure
+# would silently poison the _raw fix this function exists to commit: log.exception
+# fires, then the unconditional conn.commit() raises "current transaction is
+# aborted", which the OUTER except catches — rolling back and discarding the human's
+# entire HITL fix, not just the verdict rows. This happened in production
+# (procwise.log:343738 — an in-transaction "total_amount_incl_tax does not exist"
+# error lost a whole HITL fix). These tests pin the SAVEPOINT-based fix by simulating
+# that exact abort-propagation behaviour at the fake cursor/connection level.
+
+class _PoisonAwareCursor(_FakeCursor):
+    """Extends _FakeCursor with real-Postgres transaction-abort semantics: once the
+    statement matching ``poison_needle`` "fails", every later statement on the shared
+    connection also fails with "transaction is aborted" — until a ROLLBACK (TO
+    SAVEPOINT, or full) runs, which clears it. This is precisely the behaviour a bare
+    try/except cannot protect against and a SAVEPOINT can.
+    """
+
+    def __init__(self, table_data, recorder, poison_needle, conn):
+        super().__init__(table_data, recorder)
+        self._poison_needle = poison_needle
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        if self._conn.aborted:
+            self._recorder.append((sql, params))
+            if "ROLLBACK" in sql.upper():
+                self._conn.aborted = False
+                return
+            raise Exception(
+                "current transaction is aborted, commands ignored until end of "
+                "transaction block"
+            )
+        if self._poison_needle in sql:
+            self._conn.aborted = True
+            self._recorder.append((sql, params))
+            raise Exception('column "total_amount_incl_tax" does not exist')
+        super().execute(sql, params)
+
+
+class _PoisonAwareConn(_FakeConn):
+    def __init__(self, table_data, recorder, poison_needle):
+        self.aborted = False
+        self._cur = _PoisonAwareCursor(table_data, recorder, poison_needle, self)
+        self.autocommit = False
+        self.committed = False
+        self.rolled_back = False
+
+    def commit(self):
+        if self.aborted:
+            raise Exception(
+                "current transaction is aborted, commands ignored until end of "
+                "transaction block"
+            )
+        self.committed = True
+
+
+def _wire_poisoning_conn(monkeypatch, discrepancy_rows, poison_needle):
+    rec: list = []
+    fake_conn = _PoisonAwareConn(_table_data_for(discrepancy_rows), rec, poison_needle)
+    ctx_mgr = mock.MagicMock()
+    ctx_mgr.__enter__ = mock.MagicMock(return_value=fake_conn)
+    ctx_mgr.__exit__ = mock.MagicMock(return_value=False)
+    monkeypatch.setattr(promotion, "get_conn", lambda: ctx_mgr)
+    monkeypatch.setattr(promotion, "promote", lambda *a, **k: {"ok": True})
+    return rec, fake_conn
+
+
+class TestVerdictSavepointIsolation:
+
+    def test_verdict_write_failure_does_not_lose_the_hitl_fix_or_promotion(self, monkeypatch):
+        rec, fake_conn = _wire_poisoning_conn(
+            monkeypatch,
+            [("invoice_amount", "150.00", "apply_value")],
+            poison_needle="INSERT INTO proc.bp_extraction_verdict",
+        )
+
+        result = promotion.apply_hitl_fixes_and_promote(raw_id=42, doc_type="invoice")
+
+        # The promotion must still succeed — a verdict-write failure is not a reason
+        # to lose the human's correction.
+        assert result == {"ok": True}, result
+        # The HITL fix to _raw must have been applied (and, by reaching a successful
+        # commit below, retained) before the poisoned verdict write ever ran.
+        update_sqls = [sql for sql, _ in rec if "UPDATE" in sql.upper()]
+        assert any("invoice_amount" in sql for sql in update_sqls)
+        # The outer rollback (which would discard the _raw fix entirely) must never
+        # fire, and the transaction must actually commit.
+        assert fake_conn.rolled_back is False
+        assert fake_conn.committed is True
+        # And the savepoint must genuinely have been rolled back to — not merely
+        # logged — or the connection would still be aborted at commit time.
+        rollback_sqls = [sql for sql, _ in rec if "ROLLBACK TO SAVEPOINT" in sql.upper()]
+        assert rollback_sqls, (
+            "expected a ROLLBACK TO SAVEPOINT after the poisoned verdict write"
+        )
+
+    def test_without_a_savepoint_the_failure_would_have_lost_everything(self, monkeypatch):
+        """Sanity check on the fake itself: prove the failure mode is real by showing
+        that skipping straight to conn.commit() after the poison — i.e. what a bare
+        try/except leaves behind — does raise, which is exactly what the outer except
+        in apply_hitl_fixes_and_promote would catch and roll back on."""
+        rec: list = []
+        fake_conn = _PoisonAwareConn(
+            _table_data_for([("invoice_amount", "150.00", "apply_value")]),
+            rec,
+            poison_needle="INSERT INTO proc.bp_extraction_verdict",
+        )
+        cur = fake_conn.cursor()
+        with pytest.raises(Exception):
+            cur.execute("INSERT INTO proc.bp_extraction_verdict (x) VALUES (%s)", (1,))
+        assert fake_conn.aborted is True
+        with pytest.raises(Exception):
+            fake_conn.commit()

@@ -984,34 +984,60 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
             # so the pk column name comes from _STG_PK instead, read off the just-updated
             # _raw row the same way promote() itself resolves it (pk column first, falling
             # back to doc_pk_candidate for any doc_type _STG_PK doesn't cover).
+            #
+            # Wrapped in a SAVEPOINT (agent_actions._write_on_shared_conn — same helper
+            # agent_actions uses for exactly this problem, reused rather than reinvented)
+            # instead of a bare try/except: a plain try/except only stops the Python
+            # exception from propagating, it does NOT undo Postgres's own reaction to a
+            # failed statement, which is to mark the *whole transaction* aborted. Without
+            # a savepoint, any genuine backend error here (e.g. a stale column reference)
+            # would silently poison the _raw fix this function exists to commit — the
+            # log.exception below would fire, but the very next conn.commit() would then
+            # raise "current transaction is aborted", caught by the OUTER except at the
+            # end of this try, which rolls back and discards the human's fix entirely.
+            # This already happened in production (procwise.log:343738 — an in-transaction
+            # "total_amount_incl_tax does not exist" error lost a whole HITL fix). The
+            # savepoint confines a verdict-capture failure to the verdict rows alone.
             try:
+                from src.services.agent_actions import _write_on_shared_conn
                 from src.services.extraction_feedback.verdict import record_verdict
-                pk_col = _STG_PK.get(doc_type)
-                if pk_col:
-                    cur.execute(
-                        f"SELECT {pk_col}, doc_pk_candidate FROM {raw_t} WHERE raw_id=%s",
-                        (raw_id,),
-                    )
-                else:
-                    cur.execute(
-                        f"SELECT doc_pk_candidate FROM {raw_t} WHERE raw_id=%s", (raw_id,),
-                    )
-                _pk_row = cur.fetchone()
-                _doc_pk = None
-                if _pk_row:
-                    _doc_pk = (_pk_row[0] if pk_col else None) or _pk_row[-1]
-                if _doc_pk:
+
+                def _capture_verdicts(vcur) -> None:
+                    pk_col = _STG_PK.get(doc_type)
+                    if pk_col:
+                        vcur.execute(
+                            f"SELECT {pk_col}, doc_pk_candidate FROM {raw_t} WHERE raw_id=%s",
+                            (raw_id,),
+                        )
+                    else:
+                        vcur.execute(
+                            f"SELECT doc_pk_candidate FROM {raw_t} WHERE raw_id=%s",
+                            (raw_id,),
+                        )
+                    pk_row = vcur.fetchone()
+                    doc_pk = None
+                    if pk_row:
+                        doc_pk = (pk_row[0] if pk_col else None) or pk_row[-1]
+                    if not doc_pk:
+                        log.warning(
+                            "apply_hitl_fixes_and_promote: no doc_pk for raw_id=%s "
+                            "(doc_type=%s) — verdicts not recorded", raw_id, doc_type,
+                        )
+                        return
                     for field_name, resolved_value, action, extracted_value, resolved_by in fixes:
-                        record_verdict(cur, doc_type=doc_type, doc_pk=_doc_pk,
+                        # Same allowlist the _raw UPDATE loop above enforces — a
+                        # field_name it rejected as unsafe/unknown must not still get a
+                        # verdict row, or the table this feature exists to build ends up
+                        # with per-reader stats for a column that was never real.
+                        if field_name not in allowed_cols:
+                            continue
+                        record_verdict(vcur, doc_type=doc_type, doc_pk=doc_pk,
                                        field_name=field_name, action=action,
                                        resolved_value=resolved_value,
                                        extracted_value=extracted_value,
                                        resolved_by=resolved_by)
-                else:
-                    log.warning(
-                        "apply_hitl_fixes_and_promote: no doc_pk for raw_id=%s "
-                        "(doc_type=%s) — verdicts not recorded", raw_id, doc_type,
-                    )
+
+                _write_on_shared_conn(conn, _capture_verdicts)
             except Exception:
                 log.exception(
                     "apply_hitl_fixes_and_promote: verdict capture failed (non-fatal)"
