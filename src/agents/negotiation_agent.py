@@ -522,6 +522,10 @@ class NegotiationIdentifier:
     session_reference: str
     supplier_id: str
     round_number: int = 1
+    # True when nothing in the caller's payload named a supplier and the id below
+    # was minted here purely to key the lock and the session. It is not a real
+    # counterparty, and nothing may be sent to it.
+    supplier_synthesised: bool = False
 
     def __post_init__(self) -> None:
         self.workflow_id = self._normalise(self.workflow_id, fallback_prefix="WF")
@@ -1835,8 +1839,14 @@ class NegotiationAgent(BaseAgent):
                     if candidate:
                         supplier_id = candidate
                         break
+        supplier_synthesised = False
         if not supplier_id:
+            # Nothing named a supplier. The id below exists only so the session
+            # lock and the session reference have a key; it names no company.
+            # Record that, because it is about to be written into payload (below)
+            # where it becomes indistinguishable from a supplier the caller chose.
             supplier_id = f"SUP-{uuid.uuid4().hex[:10].upper()}"
+            supplier_synthesised = True
 
         session_reference: Optional[str] = None
         for key in ("session_reference", "unique_id", "conversation_id", "thread_id"):
@@ -1859,6 +1869,7 @@ class NegotiationAgent(BaseAgent):
             session_reference=session_reference,
             supplier_id=supplier_id,
             round_number=round_number,
+            supplier_synthesised=supplier_synthesised,
         )
 
         if isinstance(payload, dict):
@@ -3932,9 +3943,25 @@ class NegotiationAgent(BaseAgent):
                 await asyncio.sleep(0)
 
         state = self._run_async_task(_wait_async())
-        round_status = workflow_round_response_repo.get_round_status(
-            workflow_id=workflow_key, round_number=round_number
-        )
+        # The only unguarded repository call in this method — register_expected,
+        # the coordinator registration and mark_round_failed are all wrapped. A
+        # raise here escaped to the caller's own handler, which abandons the whole
+        # wait and returns no responses at all, discarding replies already on
+        # record. The round status is a refinement of what the coordinator
+        # reported, so losing it degrades the answer; it must not destroy it.
+        round_status = None
+        try:
+            round_status = workflow_round_response_repo.get_round_status(
+                workflow_id=workflow_key, round_number=round_number
+            )
+        except Exception:
+            logger.debug(
+                "Round status lookup failed for workflow=%s round=%s; "
+                "continuing on coordinator state alone",
+                workflow_key,
+                round_number,
+                exc_info=True,
+            )
         return state, round_status
 
     def _awaiting_supplier_response_output(
@@ -4141,9 +4168,43 @@ class NegotiationAgent(BaseAgent):
 
             if coordinator_outcome is not None:
                 state, round_status = coordinator_outcome
-                pending_unique_ids = list(
-                    getattr(state, "pending_unique_ids", []) or []
+
+                # Read the repository BEFORE judging the round. A reply written
+                # straight to supplier_response is a real reply, but the
+                # coordinator only knows about the ones it observed in-process,
+                # so it goes on listing that unique_id as pending. Judging first
+                # marked a round every supplier had answered as failed and logged
+                # each of them ResponseTimeout.
+                repo_responses = self._load_round_supplier_responses(
+                    workflow_id=workflow_id,
+                    unique_ids=list(round_unique_ids),
+                    supplier_ids=list(expected_suppliers),
                 )
+                answered_unique_ids: Set[str] = set()
+                for supplier_id, responses in repo_responses.items():
+                    if not responses:
+                        continue
+                    aggregated[supplier_id].extend(responses)
+                    responded_suppliers.add(supplier_id)
+                    pending_suppliers.discard(supplier_id)
+                    draft = supplier_by_id.get(supplier_id) or {}
+                    tokens = [
+                        self._coerce_text(
+                            draft.get("unique_id") or draft.get("session_reference")
+                        )
+                    ]
+                    tokens.extend(
+                        self._coerce_text(row.get("unique_id"))
+                        for row in responses
+                        if isinstance(row, dict)
+                    )
+                    answered_unique_ids.update(token for token in tokens if token)
+
+                pending_unique_ids = [
+                    uid
+                    for uid in (getattr(state, "pending_unique_ids", []) or [])
+                    if self._coerce_text(uid) not in answered_unique_ids
+                ]
                 if pending_unique_ids and session_workflow_id:
                     try:
                         workflow_round_response_repo.mark_round_failed(
@@ -4159,22 +4220,14 @@ class NegotiationAgent(BaseAgent):
                             exc_info=True,
                         )
 
-                repo_responses = self._load_round_supplier_responses(
-                    workflow_id=workflow_id,
-                    unique_ids=list(round_unique_ids),
-                    supplier_ids=list(expected_suppliers),
-                )
-                for supplier_id, responses in repo_responses.items():
-                    if not responses:
-                        continue
-                    aggregated[supplier_id].extend(responses)
-                    responded_suppliers.add(supplier_id)
-                    pending_suppliers.discard(supplier_id)
-
                 if round_status:
                     pending_suppliers.update(round_status.pending_suppliers())
                     responded_suppliers.update(round_status.completed_suppliers())
                     timed_out_suppliers.update(round_status.failed_suppliers())
+
+                # A supplier the repository has already answered for is not
+                # pending, whatever the coordinator still believes.
+                pending_suppliers.difference_update(responded_suppliers)
 
                 if pending_suppliers:
                     timed_out_suppliers.update(pending_suppliers)
@@ -4200,8 +4253,12 @@ class NegotiationAgent(BaseAgent):
 
                 _persist_session_snapshot()
 
+                # Complete either because the coordinator saw every reply, or
+                # because every supplier this round expected has one on record.
+                # The second clause is what makes a database-observed reply count.
                 all_received_flag = bool(
-                    round_status and round_status.complete and not pending_unique_ids
+                    (round_status and round_status.complete and not pending_unique_ids)
+                    or (expected_suppliers and expected_suppliers <= responded_suppliers)
                 )
 
                 if all_received_flag and not pending_suppliers:
@@ -5686,7 +5743,18 @@ class NegotiationAgent(BaseAgent):
 
         email_output: Optional[AgentOutput] = None
         fallback_payload: Optional[Dict[str, Any]] = None
-        if email_payload and supplier and session_reference:
+        if identifier.supplier_synthesised:
+            # The supplier id was minted by _resolve_negotiation_identifier because
+            # the caller named nobody. Drafting here produced a real email — logged,
+            # audited, addressed to an id no company holds and a recipient list that
+            # was always empty. The round's plan and decision are still worth
+            # returning; the email is not.
+            logger.info(
+                "Skipping negotiation email: no supplier was named, so there is "
+                "no counterparty to write to (workflow_id=%s)",
+                workflow_id,
+            )
+        elif email_payload and supplier and session_reference:
             email_output = self._invoke_email_drafting_agent(context, email_payload)
             fallback_payload = dict(email_payload)
         if email_output and email_output.status == AgentStatus.SUCCESS:
@@ -5734,6 +5802,12 @@ class NegotiationAgent(BaseAgent):
                     draft_records.append(draft_copy)
             else:
                 draft_records.append(dict(draft_stub))
+        elif identifier.supplier_synthesised:
+            # No stub and no hand-off either: queueing EmailDraftingAgent here
+            # would simply move the same unaddressable email one agent along, and
+            # the stub is what _queue_round_action_for_immediate_drafts audits as
+            # a real draft.
+            pass
         else:
             draft_records.append(dict(draft_stub))
             next_agents = ["EmailDraftingAgent"]
