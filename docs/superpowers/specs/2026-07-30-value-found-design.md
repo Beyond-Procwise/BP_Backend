@@ -1,7 +1,36 @@
 # Value Found — the money number (W1)
 
 **Date:** 2026-07-30 (extended same day with quick-payback additions)
-**Status:** Approved design, pending implementation plan
+**Status:** Implemented (Phases 1–4), verified live 2026-07-31
+
+Implementation notes, where live data changed the design:
+
+* **Currency is named everywhere an amount is quoted.** The corpus bills in INR, USD, AED,
+  GBP and EUR. A finding's title states the amount as BILLED while `amount_gbp` is the
+  converted figure, so a USD duplicate read "by 147,783.11" on a row labelled "£110,043.74"
+  until the title carried its currency. The same applies to the query email: "please issue a
+  credit note for 1,321.06" means something different to a supplier who invoices in dollars.
+* **Duplicate detection runs on the existing relationship math** (`linking_engine.score_link`,
+  profile `invoice_duplicate`), not a bespoke rule — the same weighted signals, conflict caps
+  and decision bands that link an invoice to its PO. The bands decide severity: `auto_link`
+  is critical, `auto_link_with_warning` is raised for a human to confirm.
+* **A recovery is a saving, counted once.** A duplicate raises both a discrepancy (the
+  finding) and a "Duplicate Invoice Recovery" opportunity (the recovery), anchored to the
+  same invoice so `dedupe()` collapses them. The gateway's `savingsIdentified` excludes
+  opportunities whose document already carries a value finding — the same rule — so the
+  money appears in *value found*, never twice.
+* **Payment status is unknowable on this corpus.** `invoice_status` and `invoice_paid_date`
+  are NULL on all 12,408 invoices, so a recovery says "recover if it was paid, stop the
+  payment if it has not gone out" rather than asserting a payment. Capturing payment status
+  is the single change that would turn "possible duplicate" into a claimable figure.
+* **The duplicate backfill is not automatic.** `DUPLICATE_INVOICE_DETECTOR_ENABLED` gates
+  the scheduler because the detector scans the whole corpus; the first unattended run would
+  write the entire historical backlog. Same for the digest
+  (`VALUE_DIGEST_ENABLED` + `VALUE_DIGEST_RECIPIENTS`).
+
+Live figures at verification (bp_sqldb, 2026-07-31): **£3,238,074.41 value found · £0
+recovered · £301,996.17 potential · 309 findings**, of which 300 are duplicate-invoice
+findings across 300 distinct documents.
 **Origin:** Product gap review (impact roadmap item W1)
 
 ## What this is, in one sentence
