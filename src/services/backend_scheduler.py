@@ -200,6 +200,26 @@ class BackendScheduler:
         else:
             logger.debug("downstream chain: KG sync throttled (last run %.0fs ago)",
                          now - getattr(self, "_last_kg_sync_at", 0.0))
+        # Duplicate invoices are only visible once the new invoice is in _trgt beside the
+        # older one, so this runs at the tail of the chain. Idempotent (a document already
+        # carrying the finding is skipped), and never allowed to break the chain.
+        #
+        # OFF by default. The detector scans the WHOLE corpus, not just what just arrived,
+        # so the first automatic run would silently write every historical duplicate at
+        # once — on this corpus, 300 critical findings worth £28.4M, reshaping the Value
+        # Found headline with nobody having looked. Review the historical set first
+        # (scripts/backfill_duplicate_invoices.py, dry run by default), then set
+        # DUPLICATE_INVOICE_DETECTOR_ENABLED=1 so new arrivals are flagged as they land.
+        if os.environ.get("DUPLICATE_INVOICE_DETECTOR_ENABLED", "0").strip() in ("1", "true", "True"):
+            try:
+                from src.services.duplicate_invoice_detector import run_detector
+                logger.info("downstream chain: duplicate invoices %s new finding(s)",
+                            run_detector())
+            except Exception:
+                logger.exception("downstream chain: duplicate-invoice detection failed")
+        else:
+            logger.debug("downstream chain: duplicate-invoice detector disabled "
+                         "(DUPLICATE_INVOICE_DETECTOR_ENABLED)")
 
     def _ensure_uicanvas_bridge(self) -> Optional[UicanvasBridge]:
         """Start the uicanvas → bp_sqldb process_monitor bridge.
