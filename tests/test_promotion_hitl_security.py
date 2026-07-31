@@ -75,7 +75,7 @@ class _FakeConn:
 _REAL_COLUMNS = ["raw_id", "invoice_amount", "tax_amount", "currency", "supplier_id"]
 
 
-def _table_data_for(discrepancy_rows: list[tuple]) -> dict:
+def _table_data_for(discrepancy_rows: list[tuple], parser_snapshot=None) -> dict:
     """Build the canned responses dict for a _FakeCursor.
 
     discrepancy_rows: list of (field_name, resolved_value, resolution_action), or the
@@ -94,21 +94,25 @@ def _table_data_for(discrepancy_rows: list[tuple]) -> dict:
             ["field_name", "resolved_value", "resolution_action", "raw_value", "resolved_by"],
             padded_rows,
         ),
-        # Row-exists check for doc_type verification (SELECT 1 FROM … WHERE raw_id),
-        # also matched by the verdict-capture doc_pk lookup (SELECT <pk_col>,
-        # doc_pk_candidate FROM proc.bp_invoice_raw WHERE raw_id=%s) — one canned row
-        # is enough for both, since fetchone() just needs *some* pk value back.
-        "bp_invoice_raw": (["exists"], [(1,)]),
+        # Row-exists check for doc_type verification (SELECT 1 FROM … WHERE raw_id), and
+        # the verdict-capture lookup, which reads
+        #   SELECT invoice_id, doc_pk_candidate, parser_snapshot FROM proc.bp_invoice_raw
+        # in one go — the pk plus the frozen `_field_provenance` map that attributes each
+        # field to the reader that produced it.
+        "bp_invoice_raw": (
+            ["invoice_id", "doc_pk_candidate", "parser_snapshot"],
+            [("INV-1", "INV-1", parser_snapshot)],
+        ),
     }
 
 
-def _wire_fake_conn(monkeypatch, discrepancy_rows: list[tuple]):
+def _wire_fake_conn(monkeypatch, discrepancy_rows: list[tuple], parser_snapshot=None):
     """Patch get_conn so apply_hitl_fixes_and_promote uses a fake connection.
 
     Returns (recorder, fake_conn).
     """
     rec: list = []
-    fake_conn = _FakeConn(_table_data_for(discrepancy_rows), rec)
+    fake_conn = _FakeConn(_table_data_for(discrepancy_rows, parser_snapshot), rec)
 
     ctx_mgr = mock.MagicMock()
     ctx_mgr.__enter__ = mock.MagicMock(return_value=fake_conn)
@@ -295,6 +299,98 @@ class TestVerdictAllowlistGuard:
 
         verdict_sqls = [sql for sql, _ in rec if "INSERT INTO proc.bp_extraction_verdict" in sql]
         assert verdict_sqls, "expected a verdict row for a benign, allowed field"
+
+
+# ---------------------------------------------------------------------------
+# The verdict must carry the reader it is about (final review, Critical 1)
+# ---------------------------------------------------------------------------
+#
+# The whole feature claims: "when a human corrects a value the pipeline produced, the
+# reader that produced it becomes less trusted next time." That only works if the verdict
+# row names the reader.
+#
+# proc.bp_extraction_provenance is written inside promotion.promote(). The documents that
+# produce verdicts are, by construction, documents that were never promoted — a blocking
+# discrepancy sets promotion_status='discrepancy', dispatch skips the inline promote(), and
+# promote_pending only scans 'pending'. So when apply_hitl_fixes_and_promote records a
+# verdict, the provenance table has nothing for that document and the reader would be NULL:
+# apply_observed never matches None (no pattern is ever demoted) and _compute_accuracy_score
+# never matches None (accuracy_score stays NULL forever).
+#
+# These pin the fix: the reader comes off _raw.parser_snapshot->'_field_provenance', which
+# dispatch wrote before the discrepancy was ever raised.
+
+class TestVerdictCarriesTheRealReader:
+
+    _SNAPSHOT = {
+        "_field_provenance": {
+            "currency": {"source": "regex", "pattern_name": "dollar_symbol",
+                         "confidence": 0.58},
+        },
+        "full_text": "Total $1,200.00",
+    }
+
+    def _verdict_params(self, rec):
+        return [p for sql, p in rec if "INSERT INTO proc.bp_extraction_verdict" in sql]
+
+    def test_a_blocked_then_corrected_document_names_the_reader_that_got_it_wrong(
+            self, monkeypatch):
+        rec, _ = _wire_fake_conn(
+            monkeypatch,
+            [("currency", "CAD", "apply_value", "USD", "ap@example.com")],
+            parser_snapshot=self._SNAPSHOT,
+        )
+
+        promotion.apply_hitl_fixes_and_promote(raw_id=42, doc_type="invoice")
+
+        params = self._verdict_params(rec)
+        assert params, "no verdict row was written at all"
+        assert "regex" in params[0], params[0]
+        assert "dollar_symbol" in params[0], params[0]
+        assert "corrected" in params[0], params[0]
+
+    def test_the_snapshot_is_read_even_when_it_arrives_as_a_json_string(self, monkeypatch):
+        # parser_snapshot is jsonb; psycopg2 hands back a dict, but the column is written
+        # as a string on some paths and the fallback must survive both.
+        import json as _json
+        rec, _ = _wire_fake_conn(
+            monkeypatch,
+            [("currency", "CAD", "apply_value", "USD", "ap@example.com")],
+            parser_snapshot=_json.dumps(self._SNAPSHOT),
+        )
+
+        promotion.apply_hitl_fixes_and_promote(raw_id=42, doc_type="invoice")
+
+        params = self._verdict_params(rec)
+        assert params and "dollar_symbol" in params[0], params
+
+    def test_a_document_with_no_snapshot_still_records_the_verdict(self, monkeypatch):
+        # Losing the attribution is bad; losing the human's judgement as well would be
+        # worse. An unattributed verdict is still a verdict.
+        rec, _ = _wire_fake_conn(
+            monkeypatch,
+            [("currency", "CAD", "apply_value", "USD", "ap@example.com")],
+            parser_snapshot=None,
+        )
+
+        promotion.apply_hitl_fixes_and_promote(raw_id=42, doc_type="invoice")
+
+        params = self._verdict_params(rec)
+        assert params, "the verdict was dropped along with its attribution"
+        assert "corrected" in params[0]
+
+    def test_a_machine_written_dismissal_records_nothing(self, monkeypatch):
+        # dedup-migration has 20 blocking resolved/dismiss rows live. Each would otherwise
+        # mint a 'rejected' verdict, which accuracy._AGREES reads as "the reader was right".
+        rec, _ = _wire_fake_conn(
+            monkeypatch,
+            [("currency", None, "dismiss", "USD", "dedup-migration")],
+            parser_snapshot=self._SNAPSHOT,
+        )
+
+        promotion.apply_hitl_fixes_and_promote(raw_id=42, doc_type="invoice")
+
+        assert self._verdict_params(rec) == []
 
 
 # ---------------------------------------------------------------------------

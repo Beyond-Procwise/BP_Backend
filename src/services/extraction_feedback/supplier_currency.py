@@ -57,9 +57,30 @@ def learned_currency(rows: list[dict], *,
 
 
 def default_for(cur, supplier_id: str, *,
-                learned: Optional[dict[str, str]] = None) -> Optional[str]:
-    """The currency to assume for this supplier: what people have taught us, else the
-    supplier master's own default, else nothing.
+                learned: Optional[dict[str, str]] = None,
+                allow_supplier_master: bool = False) -> Optional[str]:
+    """The currency to assume for this supplier — ONLY what people have taught us.
+
+    Returns a code when ``MIN_AGREEMENTS`` humans have corrected this supplier's invoices
+    to the same currency, and ``None`` otherwise. ``None`` is the answer that sends the
+    document to the Action page for a person, which is where an unsettled currency belongs.
+
+    Why the supplier master does not answer this on its own
+    -------------------------------------------------------
+    ``proc.bp_supplier.default_currency`` is populated on 5,000 of 5,027 suppliers, 481 of
+    them with a dollar currency. Letting it resolve a bare "$" would auto-resolve documents
+    that stopped for a human before — a system getting BOLDER on its own, which is the one
+    direction this feature is not allowed to move. It is also not the right kind of
+    evidence: it is a static attribute of the supplier, not confidence earned from anybody
+    agreeing with us. The governing rule for this work is explicit — if we are not certain,
+    the document goes to a human, and confidence changes over time based on what the human
+    says. Three agreeing corrections earn the automatic answer. A row in the supplier master
+    does not.
+
+    ``allow_supplier_master`` keeps that lookup reachable for a caller that wants it as a
+    SUGGESTION (e.g. to show a reviewer what the master says while they decide). It is off
+    by default and the extraction pipeline never turns it on, so the master can never
+    resolve a document by itself.
 
     ``learned`` lets a caller that has already paid for the (full-table-scan) query pass the
     result straight in instead of repeating it — dispatch.py does this with a 15-minute cache
@@ -75,6 +96,8 @@ def default_for(cur, supplier_id: str, *,
         learned = learned_currency([dict(zip(cols, r)) for r in cur.fetchall()])
     if supplier_id in learned:
         return learned[supplier_id]
+    if not allow_supplier_master:
+        return None
     cur.execute("SELECT default_currency FROM proc.bp_supplier WHERE supplier_id = %s",
                 (supplier_id,))
     row = cur.fetchone()

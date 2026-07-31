@@ -84,10 +84,14 @@ def test_a_dollar_document_with_nothing_to_go_on_is_not_resolved():
     assert resolve_dollar_currency({}, "Total $1,200.00") is None
 
 
-def test_the_supplier_master_is_the_last_resort_not_the_first():
+def test_what_people_taught_us_about_the_supplier_is_the_last_resort_not_the_first():
+    # supplier_default_currency is populated (dispatch._resolve_bare_dollar_currency_hint)
+    # ONLY from a currency several humans corrected this supplier's invoices to — never
+    # from proc.bp_supplier.default_currency, which is a static guess about the vendor and
+    # would auto-resolve documents that used to stop for review.
     row = {"supplier_default_currency": "SGD"}
     assert resolve_dollar_currency(row, "Total $1,200.00")[0] == "SGD"
-    # ...but anything the DOCUMENT says beats what the master remembers.
+    # ...but anything the DOCUMENT says beats even that.
     assert resolve_dollar_currency({**row, "country": "Canada"},
                                    "Total $1,200.00")[0] == "CAD"
 

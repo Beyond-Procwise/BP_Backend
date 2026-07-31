@@ -28,24 +28,15 @@ from src.services.extraction_v3.binding.invariants_runner import run_invariants
 log = logging.getLogger(__name__)
 
 
-# What we have learned about each reader, refreshed at most every 15 minutes. A rate
-# computed over a 180-day window does not move minute to minute, and a DB round trip
-# per document would otherwise be paid on every upload.
-_ACCURACY_CACHE: dict = {}
-_ACCURACY_CACHED_AT: float = 0.0
-_ACCURACY_TTL_SECONDS = 900
-
-
 def _cached_accuracy() -> dict:
-    """Measured accuracy, refreshed at most every 15 minutes."""
-    global _ACCURACY_CACHE, _ACCURACY_CACHED_AT
-    import time
-    from src.services.extraction_feedback.accuracy import load_accuracy
-    now = time.monotonic()
-    if now - _ACCURACY_CACHED_AT > _ACCURACY_TTL_SECONDS:
-        _ACCURACY_CACHE = load_accuracy()
-        _ACCURACY_CACHED_AT = now
-    return _ACCURACY_CACHE
+    """Measured accuracy, refreshed at most every 15 minutes.
+
+    The cache itself lives in extraction_feedback.accuracy so that promotion.promote()
+    — the other caller, once per promoted document — shares it rather than keeping a
+    second copy and paying for a second unpooled connection and table scan.
+    """
+    from src.services.extraction_feedback.accuracy import cached_accuracy
+    return cached_accuracy()
 
 
 # What corrections have settled about each supplier's currency, refreshed at most every 15
@@ -76,7 +67,15 @@ def _cached_learned_currency(cur) -> dict:
 
 def _resolve_bare_dollar_currency_hint(columns: dict) -> None:
     """Populate columns["supplier_default_currency"], the last-resort hint
-    resolve_dollar_currency consults, from a supplier already on file.
+    resolve_dollar_currency consults, from what humans have TAUGHT us about a supplier
+    already on file.
+
+    The hint is set only when ``MIN_AGREEMENTS`` people have corrected this supplier's
+    invoices to the same currency (supplier_currency.default_for). It is deliberately NOT
+    set from proc.bp_supplier.default_currency: that would auto-resolve bare-"$" documents
+    that stopped for a human before this branch existed, which is the pipeline getting
+    bolder on its own. Unlearned supplier, no hint, blocking discrepancy, human decides —
+    and their answer is what eventually earns the automatic resolution.
 
     `columns` has no "supplier_id" at this point in the pipeline — supplier_name only
     resolves to a canonical supplier_id later, in promotion.promote() (supplier_resolver),
@@ -124,9 +123,14 @@ def _resolve_bare_dollar_currency_hint(columns: dict) -> None:
                 # NOT silently inherit either one's currency.
                 _sup_row = _sup_rows[0] if len(_sup_rows) == 1 else None
             if _sup_row:
-                columns["supplier_default_currency"] = default_for(
+                _learned = default_for(
                     _cur, _sup_row[0], learned=_cached_learned_currency(_cur),
                 )
+                # Leave the key ABSENT rather than present-and-None when nothing has been
+                # learned: absent is what "we were never here" looks like to every reader
+                # of `columns`, and the resolver's own fall-through is identical either way.
+                if _learned:
+                    columns["supplier_default_currency"] = _learned
     except Exception:
         log.exception("dispatch: supplier currency lookup failed (non-fatal)")
 

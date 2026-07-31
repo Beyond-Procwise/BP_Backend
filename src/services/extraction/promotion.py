@@ -67,6 +67,43 @@ _CONTROL_COLS = {
     "promoted_at", "trace_id", "raw_payload",
 }
 
+# Columns that reach _stg but that no READER ever produced, so they have no provenance to
+# record. Writing a row for them attributes housekeeping to whichever reader the fallback
+# names — live, that is ~5 rows per document all credited to 'context_layer', which both
+# bloats a permanent table and dilutes the very rate this feature measures (a stamp that
+# is always "right" would inflate context_layer's agreement score for free).
+#
+#   - the four audit columns are stamped by promote() itself (agent_principal / NOW());
+#   - confidence_score / accuracy_score are computed here from the other columns;
+#   - the FX pair is deterministic arithmetic in _compute_derived, never read off a page
+#     (unlike tax_amount / *_total_incl_tax, which a document CAN print and a reader CAN
+#     genuinely extract — those keep their provenance);
+#   - deal_id / deal_name are carried across from process_monitor by _carry_pm_deal.
+_PROVENANCE_EXCLUDED_COLS = frozenset({
+    "created_by", "created_date", "last_modified_by", "last_modified_date",
+    "confidence_score", "accuracy_score",
+    "exchange_rate_to_usd", "converted_amount_usd",
+    "deal_id", "deal_name",
+})
+
+
+def _snapshot_parts(ps: Any) -> tuple[str, dict[str, Any]]:
+    """(full_text, _field_provenance) out of a _raw.parser_snapshot value.
+
+    psycopg2 hands a jsonb column back as a dict, but the same column is written as a
+    JSON string on some paths, so both shapes are accepted. Never raises: a snapshot
+    that cannot be read is simply absent, and both consumers degrade honestly.
+    """
+    if isinstance(ps, str):
+        try:
+            ps = json.loads(ps)
+        except Exception:  # noqa: BLE001
+            return "", {}
+    if isinstance(ps, dict):
+        prov = ps.get("_field_provenance")
+        return (ps.get("full_text") or ""), (prov if isinstance(prov, dict) else {})
+    return "", {}
+
 
 def _stg_columns(cur, stg_table: str) -> list[str]:
     schema, table = stg_table.split(".")
@@ -613,19 +650,8 @@ def promote(raw_id: int, doc_type: str, *,
             # the fallback's grounding check always fails and rows like
             # the RUBILOGY/VALUED-MERCHANT quotes land in _stg with NULL
             # supplier_id even when the doc clearly names the supplier.
-            ps = raw_data.get("parser_snapshot")
-            full_text = ""
-            _field_provenance: dict[str, Any] = {}
-            if isinstance(ps, dict):
-                full_text = (ps.get("full_text") or "")
-                _field_provenance = ps.get("_field_provenance") or {}
-            elif isinstance(ps, str):
-                try:
-                    _ps_parsed = json.loads(ps)
-                    full_text = (_ps_parsed.get("full_text") or "")
-                    _field_provenance = _ps_parsed.get("_field_provenance") or {}
-                except Exception:  # noqa: BLE001
-                    full_text = ""
+            full_text, _field_provenance = _snapshot_parts(
+                raw_data.get("parser_snapshot"))
 
             # 2. Supplier resolution. Two cases:
             #    (a) invoice/po: schema has both supplier_name and supplier_id;
@@ -766,10 +792,17 @@ def promote(raw_id: int, doc_type: str, *,
             # `accuracy` (that dict scores readers against human verdicts, not the
             # human), so a HITL-corrected field simply contributes nothing rather
             # than being misattributed to whoever it replaced.
+            #
+            # The rate map itself comes from the shared 15-minute cache and, when it does
+            # need a refresh, rides THIS connection inside a savepoint rather than opening
+            # its own. get_conn() has no pool — every call is a fresh psycopg2.connect —
+            # and _LOAD_SQL filters on an unindexed decided_at, so the uncached version was
+            # a new TCP connection plus a sequential scan of the whole verdict table for
+            # every promoted document.
             try:
                 from src.services.extraction.provenance import HITL_SOURCE
                 from src.services.extraction.types import Candidate
-                from src.services.extraction_feedback.accuracy import load_accuracy
+                from src.services.extraction_feedback.accuracy import cached_accuracy
 
                 _hitl = set(hitl_fields or ())
                 _shim_candidates: list[Any] = []
@@ -791,7 +824,7 @@ def promote(raw_id: int, doc_type: str, *,
                                 confidence=_entry.get("confidence"),
                             ))
                 raw_data["accuracy_score"] = _compute_accuracy_score(
-                    doc_type, raw_data, _shim_candidates, load_accuracy(),
+                    doc_type, raw_data, _shim_candidates, cached_accuracy(conn),
                 )
             except Exception:
                 log.exception("promotion: accuracy score unavailable (non-fatal)")
@@ -918,7 +951,10 @@ def promote(raw_id: int, doc_type: str, *,
             # the first — see the `attempt` column.
             try:
                 from src.services.extraction import provenance as _prov
-                _prov_columns = {c: raw_data.get(c) for c in target_cols}
+                _prov_columns = {
+                    c: raw_data.get(c) for c in target_cols
+                    if c not in _PROVENANCE_EXCLUDED_COLS
+                }
                 _prov_pk = raw_data.get(pk_col_for_check) or raw_data.get("doc_pk_candidate")
                 with get_conn() as _pconn:
                     _pcur = _pconn.cursor()
@@ -1081,21 +1117,32 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                 from src.services.extraction_feedback.verdict import record_verdict
 
                 def _capture_verdicts(vcur) -> None:
+                    # parser_snapshot comes back on the SAME read as the pk. It carries the
+                    # `_field_provenance` map dispatch froze while the Candidate objects
+                    # were still in memory, and it is the ONLY attribution available at
+                    # this moment: this function runs on documents that a blocking
+                    # discrepancy stopped BEFORE promotion, so proc.bp_extraction_provenance
+                    # — which is written inside promote(), thirteen lines below — has no row
+                    # for this document yet. Without it every real verdict records a NULL
+                    # reader and nothing downstream can ever match one.
+                    #
+                    # Read here rather than after promote() deliberately: a promotion that
+                    # fails must still leave the human's judgement recorded.
                     pk_col = _STG_PK.get(doc_type)
-                    if pk_col:
-                        vcur.execute(
-                            f"SELECT {pk_col}, doc_pk_candidate FROM {raw_t} WHERE raw_id=%s",
-                            (raw_id,),
-                        )
-                    else:
-                        vcur.execute(
-                            f"SELECT doc_pk_candidate FROM {raw_t} WHERE raw_id=%s",
-                            (raw_id,),
-                        )
+                    _sel = ([pk_col] if pk_col else []) + [
+                        "doc_pk_candidate", "parser_snapshot"]
+                    vcur.execute(
+                        f"SELECT {', '.join(_sel)} FROM {raw_t} WHERE raw_id=%s",
+                        (raw_id,),
+                    )
                     pk_row = vcur.fetchone()
                     doc_pk = None
-                    if pk_row:
-                        doc_pk = (pk_row[0] if pk_col else None) or pk_row[-1]
+                    _snapshot: dict[str, Any] = {}
+                    if pk_row and len(pk_row) == len(_sel):
+                        doc_pk = (pk_row[0] if pk_col else None) or pk_row[-2]
+                        _snapshot = _snapshot_parts(pk_row[-1])[1]
+                    elif pk_row:
+                        doc_pk = pk_row[0]
                     if not doc_pk:
                         log.warning(
                             "apply_hitl_fixes_and_promote: no doc_pk for raw_id=%s "
@@ -1113,7 +1160,8 @@ def apply_hitl_fixes_and_promote(raw_id: int, doc_type: str) -> dict[str, Any]:
                                        field_name=field_name, action=action,
                                        resolved_value=resolved_value,
                                        extracted_value=extracted_value,
-                                       resolved_by=resolved_by)
+                                       resolved_by=resolved_by,
+                                       snapshot=_snapshot)
 
                 _write_on_shared_conn(conn, _capture_verdicts)
             except Exception:

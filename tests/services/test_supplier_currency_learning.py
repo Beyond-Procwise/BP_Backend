@@ -5,7 +5,7 @@ supplier resolves itself instead of stopping for review, because three people al
 answered the question.
 """
 from src.services.extraction_feedback.supplier_currency import (
-    learned_currency, MIN_AGREEMENTS,
+    default_for, learned_currency, MIN_AGREEMENTS,
 )
 
 
@@ -47,3 +47,53 @@ def test_suppliers_are_learned_independently():
 
 def test_a_blank_correction_teaches_nothing():
     assert learned_currency([_row(value=None)] * MIN_AGREEMENTS) == {}
+
+
+# ---------------------------------------------------------------------------
+# default_for: only human-earned confidence answers
+# ---------------------------------------------------------------------------
+
+class _Cur:
+    """Records every query, and answers the supplier-master lookup with `master`."""
+
+    def __init__(self, master="USD"):
+        self.sqls: list[str] = []
+        self._master = master
+        self.description = [("default_currency",)]
+
+    def execute(self, sql, params=None):
+        self.sqls.append(sql)
+
+    def fetchone(self):
+        return (self._master,)
+
+    def fetchall(self):
+        return []
+
+
+def test_an_unlearned_supplier_gets_no_answer_even_though_the_master_has_one():
+    """proc.bp_supplier.default_currency is set on 5,000 of 5,027 suppliers, 481 of them
+    to a dollar currency. If it answered here, every bare-"$" document from any of those
+    suppliers would auto-resolve instead of stopping for a person — the pipeline getting
+    bolder on its own, off evidence no human ever gave. None sends it to the Action page,
+    which is where an unsettled currency belongs."""
+    cur = _Cur(master="USD")
+    assert default_for(cur, "SUP-A", learned={}) is None
+    assert not any("bp_supplier " in s or "default_currency" in s for s in cur.sqls), (
+        "the supplier master must not even be consulted for a resolution"
+    )
+
+
+def test_a_learned_supplier_gets_the_answer_people_taught_us():
+    assert default_for(_Cur(master="USD"), "SUP-A", learned={"SUP-A": "CAD"}) == "CAD"
+
+
+def test_the_master_lookup_is_still_reachable_for_a_caller_that_asks_for_it():
+    # Kept as a SUGGESTION path (e.g. showing a reviewer what the vendor record says).
+    # It is off by default and the extraction pipeline never turns it on.
+    assert default_for(_Cur(master="SGD"), "SUP-A", learned={},
+                       allow_supplier_master=True) == "SGD"
+
+
+def test_no_supplier_means_no_answer():
+    assert default_for(_Cur(), "", learned={"": "CAD"}) is None

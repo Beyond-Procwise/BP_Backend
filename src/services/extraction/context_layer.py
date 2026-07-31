@@ -1668,9 +1668,15 @@ def resolve_dollar_currency(row: dict[str, Any], full_text: str) -> tuple[str, s
     """Which dollar a bare "$" means — (code, why) — or None when the document does not say.
 
     Order matters and is deliberate: what the document SPELLS OUT beats where it says it is
-    from (a Canadian entity can invoice in USD and say so), and both beat what the supplier
-    master remembers about this vendor, which is the weakest evidence because it describes
+    from (a Canadian entity can invoice in USD and say so), and both beat the
+    ``supplier_default_currency`` hint, which is the weakest evidence because it describes
     the supplier rather than this document.
+
+    That hint is only ever populated (dispatch._resolve_bare_dollar_currency_hint) from a
+    currency several people have CORRECTED this supplier's invoices to. It is not read from
+    proc.bp_supplier.default_currency: a static attribute of a vendor is not confidence
+    earned from anybody, and using it here would auto-resolve documents that used to stop
+    for review.
 
     None means unresolved. The caller must route it to a human — defaulting to USD is how a
     CAD invoice quietly becomes a different number.
@@ -1691,7 +1697,7 @@ def resolve_dollar_currency(row: dict[str, Any], full_text: str) -> tuple[str, s
 
     default = str(row.get("supplier_default_currency") or "").strip().upper()
     if default in DOLLAR_CURRENCIES:
-        return default, f"the supplier master records {default} as this supplier's currency"
+        return default, f"people have settled this supplier's invoices on {default}"
 
     return None
 

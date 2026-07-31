@@ -76,6 +76,43 @@ def test_reapplying_the_same_rate_to_an_already_demoted_pattern_is_a_no_op():
     assert once == twice == 0.20
 
 
+def test_a_reader_whose_rate_recovers_comes_back_up_to_its_hand_set_prior():
+    """Every application is computed against the YAML baseline, not against whatever the
+    last one left behind.
+
+    This registry is a process-wide singleton and the accuracy map behind it is refreshed
+    on a 15-minute timer. Comparing a fresh rate against an already-demoted prior would
+    ratchet: 0.55 is not < 0.20, so a reader knocked down by one bad window could never
+    recover until the process restarted — and two workers started at different times would
+    read the same document differently. It still may never rise ABOVE the prior a human
+    wrote; recovery stops exactly there."""
+    reg = PatternRegistry("invoice")
+    baseline = _priors(reg, "currency")["dollar_symbol"]
+
+    reg.apply_observed({("invoice", "currency", "dollar_symbol"): 0.20})
+    assert _priors(reg, "currency")["dollar_symbol"] == 0.20
+
+    # People stop correcting it; the measured rate climbs back above the prior.
+    changed = reg.apply_observed({("invoice", "currency", "dollar_symbol"): 0.95})
+    assert changed == 1
+    assert _priors(reg, "currency")["dollar_symbol"] == baseline
+
+    # A partial recovery lands on the measurement, still below the prior.
+    reg.apply_observed({("invoice", "currency", "dollar_symbol"): 0.40})
+    assert _priors(reg, "currency")["dollar_symbol"] == 0.40
+
+
+def test_the_measurement_disappearing_restores_the_prior_it_replaced():
+    # A rate falls out of the 180-day window, or drops back below MIN_SAMPLE. "No
+    # measurement" means "use the hand-set prior" — it must not leave the last demotion
+    # frozen in place forever.
+    reg = PatternRegistry("invoice")
+    baseline = _priors(reg, "currency")["dollar_symbol"]
+    reg.apply_observed({("invoice", "currency", "dollar_symbol"): 0.20})
+    assert reg.apply_observed({}) == 1
+    assert _priors(reg, "currency")["dollar_symbol"] == baseline
+
+
 def test_apply_observed_runs_before_run_pattern_extractor_reads_the_registry(monkeypatch):
     """Pins the ORDER, not just the effect.
 

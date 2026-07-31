@@ -21,9 +21,18 @@ _raw.parser_snapshot is needed or supported):
 
   To find "which reader produced the value a human rejected" for (parent_pk, field_name):
       SELECT * FROM proc.bp_extraction_provenance
-       WHERE parent_table=... AND parent_pk=... AND field_name=... AND source != 'hitl';
+       WHERE parent_table=... AND parent_pk=... AND field_name=... AND source != 'hitl'
+       ORDER BY id DESC LIMIT 1;
   To find the field's current, human-confirmed value's provenance: filter source='hitl'.
   A field that was NEVER corrected has exactly one row and both queries agree trivially.
+
+  `attempt`: a document promoted more than once (a replayed NOTIFY, a re-extraction)
+  leaves more than one non-hitl claim per field — one per promotion pass — so a consumer
+  that wants "the claim being judged" must take the LATEST, not any row that matches.
+  Order by `id` (monotonic BIGSERIAL across the whole table) to get it. Do NOT order by
+  `attempt`: it is numbered per raw_id, not per document, so a re-extraction under a new
+  raw_id restarts at attempt=1 and an attempt-ordered query would prefer the older claim.
+  `attempt` is for telling the passes apart after the fact, not for finding the newest.
 """
 from __future__ import annotations
 
@@ -177,12 +186,12 @@ def snapshot(columns: dict, candidates: list) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _write_row(cur, parent_table: str, parent_pk: str, field: str,
-               source: str, pattern_name: str | None, confidence: float | None,
-               attempt: int) -> None:
+def _row_params(parent_table: str, parent_pk: str, field: str,
+                source: str, pattern_name: str | None, confidence: float | None,
+                attempt: int) -> tuple:
     anchor_ref = json.dumps(pattern_name) if pattern_name is not None else None
-    cur.execute(_INSERT, (parent_table, str(parent_pk), field, source,
-                          anchor_ref, confidence, attempt))
+    return (parent_table, str(parent_pk), field, source,
+            anchor_ref, confidence, attempt)
 
 
 def _original_claim(
@@ -219,24 +228,28 @@ def record(cur, *, parent_table: str, parent_pk: str, columns: dict,
     A HITL field with a NULL current value (keep_null: a human explicitly cleared a bad
     value) still gets its rejected-producer + 'hitl' rows — the correction event is real
     even though nothing is left to attribute a "current" producer to.
+
+    All rows go out in a single ``executemany``: this is a dozen-odd inserts per promoted
+    document on a connection with no pool, and a round trip each was the wrong price for
+    evidence that nobody reads synchronously.
     """
     if not parent_pk:
         return 0
     hitl = set(hitl_fields or ())
     cols = columns or {}
     non_null_fields = {f for f, v in cols.items() if not (v is None or v == "")}
-    written = 0
+    params: list[tuple] = []
     for field in non_null_fields | (hitl & set(cols.keys())):
         value = cols.get(field)
         if field in hitl:
             claim = _original_claim(field, value, snapshot, candidates)
             if claim is not None:
-                _write_row(cur, parent_table, parent_pk, field, *claim, attempt)
-                written += 1
-            _write_row(cur, parent_table, parent_pk, field, HITL_SOURCE, None, None, attempt)
-            written += 1
+                params.append(_row_params(parent_table, parent_pk, field, *claim, attempt))
+            params.append(_row_params(parent_table, parent_pk, field,
+                                      HITL_SOURCE, None, None, attempt))
         else:
             claim = _original_claim(field, value, snapshot, candidates) or (AI_SOURCE, None, None)
-            _write_row(cur, parent_table, parent_pk, field, *claim, attempt)
-            written += 1
-    return written
+            params.append(_row_params(parent_table, parent_pk, field, *claim, attempt))
+    if params:
+        cur.executemany(_INSERT, params)
+    return len(params)

@@ -54,6 +54,7 @@ def test_record_writes_one_row_per_non_null_column():
     class _Cur:
         def __init__(self): self.rows = []
         def execute(self, sql, params): self.rows.append(params)
+        def executemany(self, sql, seq): self.rows.extend(seq)
     cur = _Cur()
     n = record(cur, parent_table="proc.bp_invoice_stg", parent_pk="INV-1",
                columns={"currency": "GBP", "invoice_amount": 100, "buyer_id": None},
@@ -67,6 +68,7 @@ def test_record_is_a_no_op_without_a_primary_key():
     class _Cur:
         def __init__(self): self.rows = []
         def execute(self, sql, params): self.rows.append(params)
+        def executemany(self, sql, seq): self.rows.extend(seq)
     cur = _Cur()
     assert record(cur, parent_table="proc.bp_invoice_stg", parent_pk="",
                   columns={"currency": "GBP"}, candidates=[]) == 0
@@ -74,8 +76,12 @@ def test_record_is_a_no_op_without_a_primary_key():
 
 
 class _Cur:
+    # record() batches its inserts into one executemany (a dozen round trips per document
+    # was the wrong price for evidence nobody reads synchronously); execute stays here so
+    # a single-row write would still be seen if the implementation ever went back to it.
     def __init__(self): self.rows = []
     def execute(self, sql, params): self.rows.append(params)
+    def executemany(self, sql, seq): self.rows.extend(seq)
 
 
 def test_snapshot_freezes_producer_of_for_every_non_null_column():

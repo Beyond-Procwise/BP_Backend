@@ -40,6 +40,14 @@ class PatternRegistry:
         self._schema = _schema if _schema is not None else load_doc_schema(doc_type)
         self._by_field: dict[str, list[CompiledPattern]] = {}
         self._meta: dict[str, FieldMeta] = {}
+        # (field, pattern_name) -> the prior_confidence the YAML author wrote. Every
+        # apply_observed() is computed against THIS, never against whatever the last
+        # application left behind — see apply_observed for why that matters.
+        self._baseline: dict[tuple[str, str], float] = {}
+        # (field, pattern_name) currently sitting below their baseline. Only used to tell
+        # a true cold start (nothing measured, nothing to undo) from an empty map that
+        # arrives AFTER a demotion and should restore it.
+        self._demoted: set[tuple[str, str]] = set()
         self._compile()
 
     def _compile(self) -> None:
@@ -64,6 +72,8 @@ class PatternRegistry:
             # but caller iterates all patterns).
             patterns.sort(key=lambda cp: cp.prior_confidence, reverse=True)
             self._by_field[f.name] = patterns
+            for cp in patterns:
+                self._baseline[(f.name, cp.name)] = cp.prior_confidence
 
         # Compile line-item patterns the same way under "line_items[].<field>"
         if self._schema.line_items:
@@ -112,20 +122,38 @@ class PatternRegistry:
         learning promote documents that used to stop for review, which is the one failure
         mode this must not have: the pipeline may become more cautious on its own, never
         bolder.
+
+        Every application starts from the YAML baseline, NOT from whatever the previous
+        application left on the object. This registry is a process-wide singleton
+        (get_registry) and the accuracy map behind it is refreshed on a timer, so comparing
+        a fresh rate against an already-demoted prior would ratchet: a reader knocked down
+        by one bad 15-minute window could never come back up (0.4 is not < 0.4), and two
+        workers started at different times would read the same document with different
+        priors. Against the baseline the result is a pure function of (YAML, measurement) —
+        a reader whose rate recovers returns to exactly the prior a human wrote for it, and
+        never one point above it.
         """
-        if not accuracy:
-            return 0
+        if not accuracy and not self._demoted:
+            return 0                       # true cold start: do not touch _by_field at all
         changed = 0
+        demoted: set[tuple[str, str]] = set()
         for field, patterns in self._by_field.items():
             for i, pat in enumerate(patterns):
+                baseline = self._baseline.get((field, pat.name), pat.prior_confidence)
                 rate = accuracy.get((self.doc_type, field, pat.name))
-                if rate is None or rate >= pat.prior_confidence:
+                if rate is not None and float(rate) < baseline:
+                    target = float(rate)
+                    demoted.add((field, pat.name))
+                else:
+                    target = baseline      # unmeasured, or measured at/above the prior
+                if target == pat.prior_confidence:
                     continue
-                patterns[i] = replace(pat, prior_confidence=float(rate))
+                patterns[i] = replace(pat, prior_confidence=target)
                 changed += 1
             # Order is the preference between readers — the extractor tries the highest
             # prior first — so a demoted reader has to actually move.
             patterns.sort(key=lambda cp: cp.prior_confidence, reverse=True)
+        self._demoted = demoted
         return changed
 
     def is_required(self, field: str) -> bool:
