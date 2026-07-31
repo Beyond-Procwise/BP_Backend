@@ -26,17 +26,38 @@ def save_advice(conn, *, deal_id: str, supplier_id: Optional[str],
     advice_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     cur = conn.cursor()
+    # One advice row per deal, refreshed in place. Every dashboard view rebuilds
+    # advice, so an unconditional INSERT grew the table by a row per page
+    # refresh — and worse, moved the advice_id that a buyer's stated facts hang
+    # off, orphaning them on the next turn. created_at and created_by belong to
+    # the first build and are left alone.
     cur.execute(
         "INSERT INTO proc.bp_negotiation_advice "
         "(advice_id, deal_id, supplier_id, quadrant, quadrant_source, "
         " quadrant_confidence, style, style_source, signals, plays, "
         " created_by, created_at, updated_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (deal_id) DO UPDATE SET "
+        " supplier_id = EXCLUDED.supplier_id, "
+        " quadrant = EXCLUDED.quadrant, "
+        " quadrant_source = EXCLUDED.quadrant_source, "
+        " quadrant_confidence = EXCLUDED.quadrant_confidence, "
+        " style = EXCLUDED.style, "
+        " style_source = EXCLUDED.style_source, "
+        " signals = EXCLUDED.signals, "
+        " plays = EXCLUDED.plays, "
+        " created_by = COALESCE(proc.bp_negotiation_advice.created_by, "
+        "                       EXCLUDED.created_by), "
+        " updated_at = EXCLUDED.updated_at "
+        "RETURNING advice_id",
         (advice_id, deal_id, supplier_id, quadrant, quadrant_source,
          quadrant_confidence, style, style_source,
          json.dumps(signals, default=str), json.dumps(plays, default=str),
          created_by, now, now),
     )
+    row = cur.fetchone()
+    if row:
+        advice_id = row[0]
     conn.commit()
     return {"advice_id": advice_id, "deal_id": deal_id,
             "supplier_id": supplier_id, "quadrant": quadrant,

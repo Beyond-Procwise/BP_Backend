@@ -193,6 +193,15 @@ def apply_turn(deal_id: str, message: dict, *, conn=None,
     existing = load_advice(conn, deal_id)
     advice_id = (existing or {}).get("advice_id")
 
+    if advice_id is None and action in ("state_fact", "withdraw_fact"):
+        # Nothing says the buyer viewed the deal before correcting it. Without a
+        # row there is no advice_id to attach the fact to and the turn used to
+        # drop it in silence, so build the advice this fact belongs to first.
+        seed = build_advice(deal_id, conn=conn, created_by=created_by)
+        if seed is None:
+            return None
+        advice_id = seed.get("advice_id")
+
     if action == "state_fact" and advice_id:
         state_fact(conn, advice_id=advice_id,
                    fact_key=message.get("fact_key"),

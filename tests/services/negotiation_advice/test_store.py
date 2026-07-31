@@ -52,6 +52,32 @@ def test_save_advice_inserts_and_returns_an_id():
     assert conn.committed
 
 
+def test_save_advice_upserts_on_deal_id_rather_than_inserting_a_row_per_call():
+    # The dashboard rebuilds advice on every view. Without the upsert each view
+    # left a new row, and the advice_id the buyer's stated facts hang off moved
+    # underneath them.
+    conn = _Conn()
+    st.save_advice(conn, deal_id="D-1", supplier_id="SUP-1",
+                   quadrant="Leverage", quadrant_source="computed",
+                   quadrant_confidence=0.8, style="Competitive",
+                   style_source="computed", signals={}, plays=[],
+                   created_by=None)
+    sql = " ".join(s for s, _ in conn.rec)
+    assert "ON CONFLICT (deal_id) DO UPDATE" in sql
+    assert "RETURNING advice_id" in sql
+
+
+def test_save_advice_keeps_the_existing_id_when_the_deal_already_has_advice():
+    conn = _Conn({"INSERT INTO proc.bp_negotiation_advice ":
+                  (["advice_id"], [("A-EXISTING",)])})
+    out = st.save_advice(conn, deal_id="D-1", supplier_id="SUP-1",
+                         quadrant="Leverage", quadrant_source="computed",
+                         quadrant_confidence=0.8, style="Competitive",
+                         style_source="computed", signals={}, plays=[],
+                         created_by=None)
+    assert out["advice_id"] == "A-EXISTING"
+
+
 def test_state_fact_records_provenance():
     conn = _Conn()
     st.state_fact(conn, advice_id="A-1", fact_key="alternative_supplier_count",

@@ -124,6 +124,27 @@ def test_turn_override_flows_through():
     assert out["style_source"] == "buyer"
 
 
+def test_stating_a_fact_on_a_deal_with_no_advice_yet_still_records_it(monkeypatch):
+    # Nothing guarantees the buyer viewed the deal before stating a fact. With no
+    # advice row there was no advice_id to hang the fact off, and the turn
+    # silently dropped it.
+    monkeypatch.setattr(ad, "load_advice", lambda conn, deal_id: None)
+    stated = []
+    monkeypatch.setattr(ad, "state_fact",
+                        lambda conn, **kw: stated.append(kw))
+    out = ad.apply_turn("D-1", {"action": "state_fact",
+                                "fact_key": "alternative_supplier_count",
+                                "fact_value": "2"}, conn=_Conn())
+    assert stated and stated[0]["advice_id"] == "A-1"
+    assert out is not None
+
+
+def test_stating_a_fact_on_an_unknown_deal_is_not_fatal(monkeypatch):
+    monkeypatch.setattr(ad, "load_advice", lambda conn, deal_id: None)
+    assert ad.apply_turn("NOPE", {"action": "state_fact", "fact_key": "k",
+                                  "fact_value": "1"}, conn=_Conn()) is None
+
+
 def test_unknown_action_is_ignored_not_fatal():
     out = ad.apply_turn("D-1", {"action": "nonsense"}, conn=_Conn())
     assert out["quadrant"] == "Leverage"
