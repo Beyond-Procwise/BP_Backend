@@ -103,6 +103,28 @@ def test_offer_history_empty_when_supplier_response_absent():
     assert nd.offer_version_history(cur, "D1") == []
 
 
+def _insights_for(risk_score):
+    cur = _FakeCur(script=[("from proc.bp_supplier",
+                            [{"is_preferred_supplier": False,
+                              "risk_score": risk_score}])])
+    return nd._supplier_insights(cur, {"supplier_id": "SUP-1"})
+
+
+def test_supplier_risk_is_judged_on_the_0_to_100_scale():
+    # risk_score is VARCHAR on a 0-100 scale (min 5, median 49.57, max 94.94).
+    # A median supplier is NOT elevated risk; testing against 0.6 made all 5000
+    # of them elevated, so every deal got the same "de-risk" recommendation.
+    _, key_driver, recommendation = _insights_for("49.57")
+    assert key_driver == "Revenue growth"
+    assert "De-risk" not in recommendation
+
+
+def test_supplier_risk_above_the_bar_still_reads_as_elevated():
+    _, key_driver, recommendation = _insights_for("94.94")
+    assert key_driver == "Risk and stability"
+    assert "De-risk" in recommendation
+
+
 def test_build_returns_none_for_unknown_deal():
     cur = _FakeCur(script=[("from proc.bp_deal_overview", [])])
 

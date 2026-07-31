@@ -297,8 +297,12 @@ def _supplier_insights(cur, d: dict):
         if rows:
             if rows[0].get("is_preferred_supplier"):
                 persona = "Relationship-oriented partner"
+            # risk_score is VARCHAR on a 0-100 scale (median 49.57), not 0-1.
+            # The old `>= 0.6` matched 5000 of 5000 suppliers, so every deal
+            # carried the same de-risking advice. Same bar the advice engine uses.
+            from src.services.negotiation_advice.signals import RISK_ELEVATED
             risk = _f(rows[0].get("risk_score"))
-            if risk is not None and risk >= 0.6:
+            if risk is not None and risk >= RISK_ELEVATED:
                 key_driver = "Risk and stability"
                 recommendation = "De-risk with phased commitments and clear SLAs"
     except Exception:
