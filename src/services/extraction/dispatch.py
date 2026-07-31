@@ -633,6 +633,21 @@ def dispatch_document(
         prom = promotion.promote(raw_id, doc_type)
         if prom.get("ok"):
             final_status = "promoted"
+            # Record who produced each value. Best-effort by construction: provenance is
+            # evidence about the extraction, not part of the document, and must never fail
+            # a promotion.
+            try:
+                from src.services.extraction import provenance as _prov
+                from src.services.db import get_conn as _get_conn
+                with _get_conn() as _pconn:
+                    _pcur = _pconn.cursor()
+                    _n = _prov.record(_pcur, parent_table=f"proc.bp_{doc_type}_stg",
+                                      parent_pk=str(doc_pk or ""), columns=columns,
+                                      candidates=candidates)
+                    _pconn.commit()
+                log.info("dispatch: recorded provenance for %d field(s) on %s", _n, doc_pk)
+            except Exception:
+                log.exception("dispatch: provenance write failed (non-fatal)")
         else:
             log.warning("inline promote failed: %s", prom.get("reason"))
             final_status = "pending"  # _raw kept; manual retry possible
