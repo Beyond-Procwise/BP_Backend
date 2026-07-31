@@ -141,20 +141,25 @@ def dispatch_document(
     # L0
     parsed = parse_document(file_path)
 
-    # L1
-    candidates = run_pattern_extractor(parsed, doc_type)
-
-    # L2 — engineered fallbacks for NER-typed fields the L1 regex missed.
-    # Only fires for fields with judge.ner_type_check != 'none'.
+    # get_registry(doc_type) is a process-wide singleton — run_pattern_extractor (L1,
+    # next) resolves this SAME instance internally and reads registry.patterns_for(field)
+    # to decide which reader wins per field. Learning must be applied here, BEFORE that
+    # first read, or the demotion has no effect on the document in front of us: it would
+    # only take hold for the *next* document processed after this one. A learning-lookup
+    # failure must never fail extraction — fall back to the static priors.
     registry = get_registry(doc_type)
-    # Apply what we have learned about each reader before extracting anything further.
-    # A learning-lookup failure must never fail extraction — fall back to static priors.
     try:
         _n = registry.apply_observed(_cached_accuracy())
         if _n:
             log.info("dispatch: %d pattern prior(s) replaced by measured accuracy", _n)
     except Exception:
         log.exception("dispatch: could not apply learned accuracy (using static priors)")
+
+    # L1
+    candidates = run_pattern_extractor(parsed, doc_type)
+
+    # L2 — engineered fallbacks for NER-typed fields the L1 regex missed.
+    # Only fires for fields with judge.ner_type_check != 'none'.
     l1_fields = {c.field for c in candidates}
     try:
         ner_candidates = fill_ner_gaps(
