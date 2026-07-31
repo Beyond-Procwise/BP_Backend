@@ -8,8 +8,15 @@ addition: promote() — the one funnel every promotion path (dispatch's inline c
 HITL NOTIFY listener, promote_pending) goes through — never has the live `candidates`
 list in scope, only a snapshot of producer_of() frozen at dispatch time and threaded
 through parser_snapshot, plus (on the HITL path) the set of fields a human just fixed.
+
+The tests from `test_hitl_correction_writes_both_the_rejected_reader_and_the_hitl_row`
+onward cover fix-round-2: a HITL-corrected field must leave the reader that got it wrong
+VISIBLE in bp_extraction_provenance itself (no join to _raw required — see the provenance.py
+module docstring for the exact read contract), plus two Minor findings in the same code:
+_comparable() crashing on a bool, and date columns never matching a differently-formatted
+date candidate string.
 """
-from src.services.extraction.provenance import producer_of, record, snapshot
+from src.services.extraction.provenance import producer_of, record, snapshot, _comparable
 from src.services.extraction.types import Candidate
 
 
@@ -98,17 +105,94 @@ def test_record_attributes_from_a_frozen_snapshot_not_live_candidates():
     assert by_field["invoice_amount"][3] == "context_layer"  # absent from snapshot
 
 
-def test_hitl_fields_override_the_snapshot():
-    # A human just corrected `currency` — attribute it to them, not to the regex that
-    # produced the value BEFORE the correction. This is exactly the population the
-    # per-reader accuracy loop (tasks 2-4) needs to see honestly.
+def test_hitl_correction_writes_both_the_rejected_reader_and_the_hitl_row():
+    # A human just corrected `currency`. The reader that got it wrong (regex /
+    # anchored_currency_iso) must stay VISIBLE in this table — that's the whole point,
+    # per the module docstring's read contract — alongside a source='hitl' row for what
+    # is actually stored now (the human's USD, not the regex's wrong claim).
     cur = _Cur()
     snap = {"currency": {"source": "regex", "pattern_name": "anchored_currency_iso",
                           "confidence": 0.92}}
-    record(cur, parent_table="proc.bp_invoice_stg", parent_pk="INV-1",
-           columns={"currency": "USD"}, snapshot=snap, hitl_fields={"currency"})
+    n = record(cur, parent_table="proc.bp_invoice_stg", parent_pk="INV-1",
+               columns={"currency": "USD"}, snapshot=snap, hitl_fields={"currency"})
+    assert n == 2
+    by_source = {p[3]: p for p in cur.rows}
+    assert set(by_source) == {"regex", "hitl"}
+    rejected = by_source["regex"]
+    assert rejected[2] == "currency" and rejected[4] == '"anchored_currency_iso"'
+    assert rejected[5] == 0.92
+    hitl_row = by_source["hitl"]
+    assert hitl_row[2] == "currency" and hitl_row[4] is None and hitl_row[5] is None
+    # A straight filter answers "which reader produced the value a human rejected" with
+    # no join to _raw.parser_snapshot — exactly the contract the module docstring states.
+    assert [p for p in cur.rows if p[3] != "hitl"][0][3] == "regex"
+
+
+def test_hitl_correction_with_no_prior_claim_writes_only_the_hitl_row():
+    # A human FILLED A GAP (the field was NULL pre-correction) rather than fixing a
+    # wrong value — there is no reader to blame, so no rejected-producer row is invented.
+    cur = _Cur()
+    n = record(cur, parent_table="proc.bp_invoice_stg", parent_pk="INV-1",
+               columns={"currency": "USD"}, snapshot={}, hitl_fields={"currency"})
+    assert n == 1
     assert cur.rows[0][3] == "hitl"
-    assert cur.rows[0][4] is None                      # no pattern_name for a human fix
+
+
+def test_hitl_keep_null_still_records_the_rejected_reader_and_the_correction():
+    # keep_null clears a noisy value to NULL — the column is absent from `columns` here
+    # exactly as promote() would pass it (raw_data[field] is None post-fix), but the
+    # correction event and what it rejected are still real and must not vanish silently.
+    cur = _Cur()
+    snap = {"currency": {"source": "regex", "pattern_name": "dollar_symbol", "confidence": 0.58}}
+    n = record(cur, parent_table="proc.bp_invoice_stg", parent_pk="INV-1",
+               columns={"currency": None}, snapshot=snap, hitl_fields={"currency"})
+    assert n == 2
+    sources = {p[3] for p in cur.rows}
+    assert sources == {"regex", "hitl"}
+
+
+def test_a_field_never_touched_by_hitl_still_gets_exactly_one_row():
+    # Sanity check that the hitl-field sweep doesn't leak into ordinary fields.
+    cur = _Cur()
+    n = record(cur, parent_table="proc.bp_invoice_stg", parent_pk="INV-1",
+               columns={"currency": "GBP", "invoice_amount": 100}, snapshot={},
+               hitl_fields={"currency"})
+    # currency: gap-fill hitl (no snapshot entry) -> 1 row. invoice_amount: ordinary -> 1 row.
+    assert n == 2
+    by_field = {}
+    for p in cur.rows:
+        by_field.setdefault(p[2], []).append(p[3])
+    assert by_field["currency"] == ["hitl"]
+    assert by_field["invoice_amount"] == ["context_layer"]
+
+
+def test_comparable_does_not_crash_on_a_bool():
+    # bool is a subclass of int — isinstance(True, (int, float, Decimal)) is True — so
+    # the numeric branch must not be allowed to swallow it (Decimal(str(True)) raises).
+    assert _comparable(True) == "true"
+    assert _comparable(False) == "false"
+
+
+def test_comparable_normalises_a_python_date_and_a_month_name_candidate_string():
+    # The column holds a real date/datetime (post type-binder); the candidate holds
+    # whatever text the regex captured. "15 January 2024" is unambiguous (a name can't
+    # be a day-of-month) so it's a real match, not a guess.
+    import datetime as dt
+    assert _comparable(dt.date(2024, 1, 15)) == "2024-01-15"
+    assert _comparable(dt.datetime(2024, 1, 15, 9, 30)) == "2024-01-15"
+    assert _comparable("15 January 2024") == "2024-01-15"
+    assert _comparable("Jan 15, 2024") == "2024-01-15"
+    cands = [_cand("invoice_date", "15 January 2024", pattern_name="date_full_month")]
+    assert producer_of("invoice_date", dt.date(2024, 1, 15), cands)[1] == "date_full_month"
+
+
+def test_comparable_normalises_an_unambiguous_numeric_date_but_not_an_ambiguous_one():
+    import datetime as dt
+    # 25 cannot be a month -> unambiguous D/M/Y.
+    assert _comparable("25/01/2024") == _comparable(dt.date(2024, 1, 25))
+    # Both parts <= 12 -> genuinely ambiguous (2 Jan vs 1 Feb) -> left unmatched, not guessed.
+    assert _comparable("01/02/2024") != _comparable(dt.date(2024, 2, 1))
+    assert _comparable("01/02/2024") != _comparable(dt.date(2024, 1, 2))
 
 
 def test_record_still_works_with_neither_snapshot_nor_candidates():
