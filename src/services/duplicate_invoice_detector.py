@@ -1,49 +1,48 @@
-"""Duplicate-invoice detector (Value Found, Phase 2).
+"""Duplicate-invoice detection (Value Found, Phase 2).
 
-Paying the same invoice twice is money already out of the door, and unlike a benchmark
-opportunity it is *recoverable* — which is why a duplicate lands in the verified tier of
+Paying the same invoice twice is money already out of the door and, unlike a benchmark
+opportunity, it is *recoverable* — which is why a duplicate lands in the verified tier of
 GET /spendiq/value-summary alongside over-billing.
 
-The cost of a false positive here is high: accusing a supplier of double-billing a recurring
-monthly charge damages a relationship over nothing. So the rule is deliberately conservative
-and demands agreement on every axis at once:
+This does NOT invent its own matching rule. The codebase already has the deterministic
+relationship math that decides whether two documents are the same thing — weighted signals
+with tiers and conflict caps, a log-odds fusion to an F score, and decision bands
+(auto_link / auto_link_with_warning / review / weak_relation / block_or_exception). It is
+what links an invoice to its PO and what clusters rival quotes, and it is extensible exactly
+the way requirement_similarity registers `quote_rival`. So duplication is one more profile
+on that engine — `invoice_duplicate` — and every finding carries the same auditable signal
+breakdown as every other link in the product.
 
-    same supplier (normalised)
-    AND the same total, to the penny
-    AND a positive total (a credit note is money coming back, never a double payment)
-    AND either the same purchase order OR two references one character apart
-    AND both dated inside a 90-day window
-    AND two genuinely different invoice_ids
+Two signals are new, because invoice-to-invoice asks a question PO linkage never does:
 
-A recurring charge fails the fourth test (different PO, unrelated references) and is left
-alone. Findings are written to proc.bp_extraction_discrepancy with
-issue_type='duplicate_invoice', which value_summary_service already reads — no further
-wiring.
+  ref_prox   what the two invoice references say about each other. The same reference, or
+             the same reference with a re-issue marker appended ("INV-100" / "INV-100A"),
+             is the strongest evidence there is; different trailing numbers are evidence
+             the other way — the documents number themselves as different members of a set.
+  date_prox  how close the two invoice dates are. Same day is a re-issue; months apart is
+             a repeat purchase.
+
+Everything else — supplier, purchase order, amount, currency, line set — reuses the
+engine's own comparators unchanged.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any, Optional
+
+from src.services import linking_engine as _le
 
 logger = logging.getLogger(__name__)
 
-# Two invoices further apart than this are a repeat purchase, not a double payment.
-WINDOW_DAYS = 90
-
 
 # ---------------------------------------------------------------------------
-# Normalisation
+# The two invoice-to-invoice signals
 # ---------------------------------------------------------------------------
 
-def _norm_supplier(name: Any) -> str:
-    """'Techworld Ltd.' and '  TECHWORLD  LTD ' are one company billing twice."""
-    if name is None:
-        return ""
-    cleaned = re.sub(r"[^a-z0-9]+", " ", str(name).lower())
-    return " ".join(cleaned.split())
+_SEQUENCE_SUFFIX = re.compile(r"^(?P<stem>.*?)[-_/ ]?(?P<seq>\d+)$")
 
 
 def _norm_ref(ref: Any) -> str:
@@ -52,17 +51,113 @@ def _norm_ref(ref: Any) -> str:
     return re.sub(r"\s+", "", str(ref).strip().lower())
 
 
-def _pence(amount: Any) -> Optional[int]:
-    """The billed amount in whole pence, or None when there is no amount. Comparing pence
-    rather than floats is what makes 'the same total' mean to the penny and not
-    approximately."""
-    if amount is None:
-        return None
-    try:
-        return int(round(float(amount) * 100))
-    except (TypeError, ValueError):
-        return None
+def _one_edit_apart(x: str, y: str) -> bool:
+    """One INSERTED or DELETED character — the appended marker of a re-issue. Not a
+    substitution: 'INV-100' and 'INV-200' differ by one character but name two different
+    invoices."""
+    if abs(len(x) - len(y)) != 1:
+        return False
+    longer, shorter = (x, y) if len(x) > len(y) else (y, x)
+    return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
 
+
+def _sequence_pair(x: str, y: str) -> bool:
+    """Two consecutive members of one numbered series — 'INV000469-1' / 'INV000469-2':
+    the same stem, different trailing sequence numbers."""
+    mx, my = _SEQUENCE_SUFFIX.match(x), _SEQUENCE_SUFFIX.match(y)
+    if not mx or not my:
+        return False
+    return (mx.group("stem") == my.group("stem") != ""
+            and mx.group("seq") != my.group("seq"))
+
+
+def cmp_ref_prox(a: Any, b: Any) -> tuple[float, str]:
+    """Reference proximity between two invoices.
+
+    Identical reference is the strongest duplicate evidence there is. One inserted or
+    deleted character is a re-issue of the same reference. A numbered series is the
+    ordinary shape of several invoices against one purchase order — the documents number
+    themselves as different members of a set, which is evidence against, not for.
+    Unrelated references say nothing either way.
+    """
+    x, y = _norm_ref(a), _norm_ref(b)
+    if not x or not y:
+        return 0.5, "MISSING"
+    if x == y:
+        return 1.0, "OK"
+    # Checked BEFORE the one-edit rule: two references ending in different digit runs are
+    # two invoice numbers ("INV-100" / "INV-1000"), not one reference re-keyed. Only a
+    # NON-numeric edit — the appended "A" or "-DUP" of a re-issue — reads as the same
+    # reference again.
+    if _sequence_pair(x, y):
+        # A sequence number is positive evidence AGAINST duplication: the documents
+        # number themselves as different members of one set. It is a Tier-1 conflict, so
+        # the engine's own cap holds the pair down (F <= 60) however perfectly supplier,
+        # amount, line set and purchase order agree — which on this corpus they do, the
+        # seeder having made every series member byte-identical apart from its number.
+        return 0.0, "CONFLICT"
+    if _one_edit_apart(x, y):
+        return 0.9, "OK"
+    return 0.5, "MISSING"
+
+
+def cmp_date_prox(a: Any, b: Any) -> tuple[float, str]:
+    """Invoice-date proximity. Same day is a re-issue; a quarter apart is a repeat
+    purchase, not a double payment."""
+    da, db = _as_date(a), _as_date(b)
+    if da is None or db is None:
+        return 0.5, "MISSING"
+    days = abs((da - db).days)
+    if days == 0:
+        return 1.0, "OK"
+    if days <= 7:
+        return 0.85, "OK"
+    if days <= 30:
+        return 0.6, "WEAK"
+    if days <= 90:
+        return 0.35, "WEAK"
+    return 0.0, "CONFLICT"
+
+
+_le.register_signal("ref_prox", lambda s, t, sl, tl: cmp_ref_prox(s.get("invoice_ref"),
+                                                                  t.get("invoice_ref")))
+_le.register_signal("date_prox", lambda s, t, sl, tl: cmp_date_prox(s.get("invoice_date"),
+                                                                    t.get("invoice_date")))
+
+# Weights mirror what the evidence is actually worth for THIS question. The reference and
+# the line set carry the most: two invoices billing identical lines under the same reference
+# are the same bill. Supplier and PO are necessary but cheap — thousands of invoices share
+# them. Date proximity is a strong discriminator between a re-issue and a repeat purchase,
+# so it carries a real conflict cap: dates far apart hold the score down however well
+# everything else agrees.
+_DUPLICATE_SIGNALS = [
+    {"id": "ref_prox",    "cluster": "reference",  "tier": 1, "weight": 5, "appl": 1.0, "cap": 0.60, "kind": "ref_prox"},
+    {"id": "supplier_id", "cluster": "identity",   "tier": 1, "weight": 4, "appl": 1.0, "cap": 0.45, "kind": "supplier_id"},
+    {"id": "amount",      "cluster": "commercial", "tier": 1, "weight": 5, "appl": 1.0, "cap": 0.45, "kind": "amount"},
+    {"id": "line_set",    "cluster": "line",       "tier": 2, "weight": 5, "appl": 1.0, "cap": 0.70, "kind": "line_set"},
+    # Tier 1: for "was this bill paid twice", the date is not context — two invoices a
+    # quarter apart are a repeat purchase, and only a Tier-1 conflict cap can hold that
+    # down when every other signal agrees.
+    {"id": "date_prox",   "cluster": "temporal",   "tier": 1, "weight": 4, "appl": 1.0, "cap": 0.55, "kind": "date_prox"},
+    {"id": "po_ref",      "cluster": "reference",  "tier": 2, "weight": 2, "appl": 1.0, "cap": 0.80, "kind": "po_ref"},
+    {"id": "currency",    "cluster": "commercial", "tier": 3, "weight": 1, "appl": 1.0, "cap": 0.90, "kind": "currency"},
+]
+
+_le.register_profile("invoice_duplicate", {
+    "p0": 0.02, "alpha": 0.40, "floor": 0.55,
+    "signals": _DUPLICATE_SIGNALS, "date_field": "invoice_date",
+})
+
+# The engine's own bands decide, rather than a threshold invented here. At/above auto_link
+# the pair is a duplicate; between warn and auto it is raised for a human to confirm; below
+# that nothing is said at all.
+RAISE_BAND = _le._BAND_WARN      # 80.0 — the floor for saying anything
+CERTAIN_BAND = _le._BAND_AUTO    # 92.0 — the floor for calling it critical
+
+
+# ---------------------------------------------------------------------------
+# Row shaping
+# ---------------------------------------------------------------------------
 
 def _as_date(value: Any) -> Optional[date]:
     if isinstance(value, datetime):
@@ -72,105 +167,95 @@ def _as_date(value: Any) -> Optional[date]:
     return None
 
 
-def _refs_near(a: Any, b: Any) -> bool:
-    """True when two references are the same reference, possibly re-keyed.
+def _pence(amount: Any) -> Optional[int]:
+    if amount is None:
+        return None
+    try:
+        return int(round(float(amount) * 100))
+    except (TypeError, ValueError):
+        return None
 
-    Identical after normalisation, or differing by exactly one INSERTED/DELETED character
-    ('INV-100' vs 'INV-100A' — the same document re-issued). A substituted character is NOT
-    near: 'INV-100' and 'INV-200' are two different invoices that happen to look alike, and
-    treating them as one is precisely the false positive this detector must not make. (This
-    is narrower than a plain Levenshtein<=1, which would call those two a match.)
 
-    Two absent references agree on nothing, so an empty ref is never near anything.
+def _norm_supplier(name: Any) -> str:
+    if name is None:
+        return ""
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(name).lower()).split())
+
+
+def _engine_row(inv: dict) -> dict:
+    """The detector's row shape -> the row shape score_link's comparators read.
+
+    supplier_id carries the normalised supplier (cmp_supplier compares resolved ids, and a
+    normalised name IS the resolved identity here); converted_amount_usd carries the billed
+    total, which is the comparable basis when both sides are invoices in one currency.
     """
-    x, y = _norm_ref(a), _norm_ref(b)
-    if not x or not y:
-        return False
-    if x == y:
-        return True
-    if abs(len(x) - len(y)) != 1:
-        return False
-    longer, shorter = (x, y) if len(x) > len(y) else (y, x)
-    return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
+    return {
+        "invoice_id": inv.get("invoice_id"),
+        "invoice_ref": inv.get("invoice_ref") or inv.get("invoice_id"),
+        "invoice_date": inv.get("invoice_date"),
+        "po_id": inv.get("po_id"),
+        "supplier_id": _norm_supplier(inv.get("supplier_name")) or inv.get("supplier_id"),
+        "converted_amount_usd": inv.get("total_amount"),
+        "currency": inv.get("currency"),
+        "country": inv.get("country"),
+        "region": inv.get("region"),
+    }
 
 
-_SEQUENCE_SUFFIX = re.compile(r"^(?P<stem>.*?)[-_/ ]?(?P<seq>\d{1,3})$")
-
-
-def _sequence_pair(a: Any, b: Any) -> bool:
-    """True when two references are consecutive members of ONE numbered series —
-    'INV000469-1' and 'INV000469-2': the same stem, different trailing sequence numbers.
-
-    This is the normal shape of several invoices billed against one purchase order, and it
-    is emphatically NOT a duplicate. It has to be checked because the same-PO branch below
-    cannot tell a series apart from a double bill on its own: measured against the live
-    corpus (2026-07-31), same-supplier + same-total + same-PO alone flagged 4,974 of 12,408
-    invoices — every one of them a member of an -1/-2/-3 series, none of them a duplicate.
-    """
-    ma, mb = _SEQUENCE_SUFFIX.match(_norm_ref(a)), _SEQUENCE_SUFFIX.match(_norm_ref(b))
-    if not ma or not mb:
-        return False
-    return (ma.group("stem") == mb.group("stem")
-            and ma.group("stem") != ""
-            and ma.group("seq") != mb.group("seq"))
-
-
-def _paper_trail_agrees(earlier: dict, later: dict) -> bool:
-    """The evidence that these are the same bill and not two similar ones."""
-    ref_a, ref_b = earlier.get("invoice_ref"), later.get("invoice_ref")
-    # A numbered series is never a duplicate, however well everything else lines up.
-    if _sequence_pair(ref_a, ref_b):
-        return False
-    po_a, po_b = _norm_ref(earlier.get("po_id")), _norm_ref(later.get("po_id"))
-    if po_a and po_b and po_a == po_b:
-        return True
-    return _refs_near(ref_a, ref_b)
+def score_pair(earlier: dict, later: dict) -> dict:
+    """The relationship math for one candidate pair — score_link's full auditable result."""
+    return _le.score_link(_engine_row(later), _engine_row(earlier), "invoice_duplicate",
+                          later.get("lines") or [], earlier.get("lines") or [])
 
 
 # ---------------------------------------------------------------------------
-# The rule
+# The scan
 # ---------------------------------------------------------------------------
 
-def find_duplicates(invoices: list[dict]) -> list[dict]:
-    """Pure. Each result is {'later': row, 'earlier': row, 'amount': float} — the LATER
-    invoice is the one flagged, because it is the one that should not have been paid, and
-    `amount` is its full total (the whole payment is at risk, not a difference).
+def find_duplicates(invoices: list[dict], min_score: float = RAISE_BAND) -> list[dict]:
+    """Score every plausible pair and return the ones the engine puts at or above
+    ``min_score``. Each result is {'later', 'earlier', 'amount', 'score', 'band', 'link'} —
+    the LATER invoice is flagged, because it is the one that should not have been paid, and
+    ``amount`` is its full total (the whole payment is at risk, not a difference).
 
-    Bucketed on (supplier, total): both are mandatory conjuncts of the rule, so grouping by
-    them changes nothing about the answer and keeps 12,000 live invoices from becoming 72
-    million comparisons.
+    Candidates are bucketed on (supplier, total to the penny) before scoring. Both are
+    prerequisites of any duplicate — a different amount is a different bill — so bucketing
+    changes no answer, and it keeps 12,408 live invoices from becoming 77M scored pairs.
     """
     buckets: dict[tuple[str, int], list[dict]] = {}
     for inv in invoices or []:
-        supplier = _norm_supplier(inv.get("supplier_name"))
+        supplier = _norm_supplier(inv.get("supplier_name")) or str(inv.get("supplier_id") or "")
         pence = _pence(inv.get("total_amount"))
         when = _as_date(inv.get("invoice_date"))
-        iid = inv.get("invoice_id")
-        # Absent data is not agreement — a row missing any of these is simply not compared.
-        # A non-positive total is a credit note or a nil bill: nothing was paid twice.
-        if not supplier or pence is None or pence <= 0 or when is None or not iid:
+        # Absent data is not agreement. A non-positive total is a credit note or a nil
+        # bill: nothing was paid twice.
+        if not supplier or pence is None or pence <= 0 or when is None or not inv.get("invoice_id"):
             continue
         buckets.setdefault((supplier, pence), []).append(inv)
 
-    window = timedelta(days=WINDOW_DAYS)
     out: list[dict] = []
     for rows in buckets.values():
         if len(rows) < 2:
             continue
         rows = sorted(rows, key=lambda r: (_as_date(r["invoice_date"]), str(r["invoice_id"])))
         for i, later in enumerate(rows):
+            best = None
             for earlier in rows[:i]:
                 if str(earlier["invoice_id"]) == str(later["invoice_id"]):
                     continue
-                if _as_date(later["invoice_date"]) - _as_date(earlier["invoice_date"]) > window:
+                link = score_pair(earlier, later)
+                if link["F"] < min_score:
                     continue
-                if not _paper_trail_agrees(earlier, later):
-                    continue
-                out.append({"later": later, "earlier": earlier,
-                            "amount": round(float(later["total_amount"]), 2)})
-                # One finding per document, against the earliest invoice it duplicates —
-                # three identical invoices raise two findings, not three overlapping pairs.
-                break
+                if best is None or link["F"] > best[0]["F"]:
+                    best = (link, earlier)
+            if best is None:
+                continue
+            link, earlier = best
+            # One finding per document, against the invoice it most strongly duplicates —
+            # three identical invoices raise two findings, not three overlapping pairs.
+            out.append({"later": later, "earlier": earlier,
+                        "amount": round(float(later["total_amount"]), 2),
+                        "score": link["F"], "band": link["decision"], "link": link})
     return out
 
 
@@ -185,23 +270,45 @@ _LOAD_SQL = """
            i.po_id,
            COALESCE(s.supplier_name, i.supplier_id) AS supplier_name,
            COALESCE(i.invoice_total_incl_tax, i.invoice_amount) AS total_amount,
-           i.invoice_date
+           i.invoice_date,
+           i.currency,
+           i.country,
+           i.region
       FROM proc.bp_invoice_trgt i
       LEFT JOIN proc.bp_supplier s ON s.supplier_id = i.supplier_id
      WHERE i.invoice_id IS NOT NULL
 """
 
+_LINES_SQL = """
+    SELECT invoice_id, item_id, item_description, quantity, unit_price, line_amount
+      FROM proc.bp_invoice_line_items_trgt
+     WHERE invoice_id IS NOT NULL
+"""
+
 
 def load_invoices(cur) -> list[dict]:
-    """The invoices the rule runs over. invoice_ref IS invoice_id here — bp_invoice_trgt
-    has no separate reference column, and the id is the reference printed on the document."""
+    """The invoices the engine scores, each with its line items attached — the line set is
+    one of the heaviest signals, so loading without it would quietly weaken every score.
+
+    invoice_ref IS invoice_id here: bp_invoice_trgt has no separate reference column, and
+    the id is the reference printed on the document.
+    """
     cur.execute(_LOAD_SQL)
-    rows = []
-    for invoice_id, po_id, supplier_name, total_amount, invoice_date in cur.fetchall():
-        rows.append({"invoice_id": invoice_id, "po_id": po_id,
-                     "supplier_name": supplier_name, "total_amount": total_amount,
-                     "invoice_date": invoice_date, "invoice_ref": invoice_id})
-    return rows
+    rows = {}
+    for invoice_id, po_id, supplier_name, total, when, currency, country, region in cur.fetchall():
+        rows[invoice_id] = {"invoice_id": invoice_id, "po_id": po_id,
+                            "supplier_name": supplier_name, "total_amount": total,
+                            "invoice_date": when, "currency": currency,
+                            "country": country, "region": region,
+                            "invoice_ref": invoice_id, "lines": []}
+    cur.execute(_LINES_SQL)
+    for invoice_id, item_id, desc, qty, unit_price, amount in cur.fetchall():
+        row = rows.get(invoice_id)
+        if row is not None:
+            row["lines"].append({"item_id": item_id, "item_description": desc,
+                                 "quantity": qty, "unit_price": unit_price,
+                                 "line_amount": amount})
+    return list(rows.values())
 
 
 def _already_raised(cur, doc_pk: str) -> bool:
@@ -232,16 +339,26 @@ _INSERT_SQL = """
         (doc_type, raw_id, source_file, doc_pk_candidate, field_name,
          issue_type, severity, raw_value, computed_value, blocks_promotion, status, notes)
     VALUES ('invoice', %s, %s, %s, 'invoice_ref',
-            'duplicate_invoice', 'critical', %s, %s, false, 'open', %s)
+            'duplicate_invoice', %s, %s, %s, false, 'open', %s)
 """
 
 
+def _supporting(link: dict) -> str:
+    """The signals that carried the score, named — so the note says what was compared and
+    not merely that a number came out high."""
+    label = {"ref_prox": "reference", "supplier_id": "supplier", "amount": "amount",
+             "line_set": "line items", "date_prox": "date", "po_ref": "purchase order",
+             "currency": "currency"}
+    return ", ".join(label.get(s["id"], s["id"]) for s in link.get("signals", [])
+                     if s.get("status") == "OK") or "no single signal"
+
+
 def _note(dup: dict) -> str:
-    earlier = dup["earlier"]
+    earlier, link = dup["earlier"], dup["link"]
     when = _as_date(earlier.get("invoice_date"))
     return (f"possible duplicate of {earlier['invoice_id']}"
-            f"{f' ({when:%Y-%m-%d})' if when else ''}: same supplier and amount, "
-            f"matching reference")
+            f"{f' ({when:%Y-%m-%d})' if when else ''}: relationship score "
+            f"{dup['score']:.1f}/100 ({dup['band']}), agreeing on {_supporting(link)}")
 
 
 def run_detector(conn=None) -> int:
@@ -262,13 +379,15 @@ def _run(conn) -> int:
     dups = find_duplicates(load_invoices(cur))
     written = 0
     for dup in dups:
-        later = dup["later"]
-        doc_pk = str(later["invoice_id"])
+        doc_pk = str(dup["later"]["invoice_id"])
         if _already_raised(cur, doc_pk):
             continue
         raw_id, source_file = _source_of(cur, doc_pk)
+        # A pair the engine is certain about is critical; one it puts in the warning band
+        # is raised for a human to confirm, not asserted.
+        severity = "critical" if dup["score"] >= CERTAIN_BAND else "warning"
         cur.execute(_INSERT_SQL, (
-            raw_id, source_file, doc_pk,
+            raw_id, source_file, doc_pk, severity,
             f"{dup['amount']:.2f}",
             # Task 2's convention: a signed computed_value IS the delta.
             f"+{dup['amount']:.2f}",

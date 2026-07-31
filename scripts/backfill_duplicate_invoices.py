@@ -26,6 +26,12 @@ def _fmt(row: dict) -> str:
             f"{float(total):,.2f} | PO {row.get('po_id') or '—'}")
 
 
+def _signals(link: dict) -> str:
+    """Every signal and how it read, so a pair can be judged on the evidence rather than
+    on the score alone."""
+    return "  ".join(f"{s['id']}={s['status']}" for s in link.get("signals", []))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true",
@@ -42,7 +48,9 @@ def main() -> int:
             print(f"  supplier : {d['later'].get('supplier_name')}")
             print(f"  earlier  : {_fmt(d['earlier'])}")
             print(f"  later    : {_fmt(d['later'])}   <- would be flagged")
-            print(f"  amount   : {d['amount']:,.2f}\n")
+            print(f"  amount   : {d['amount']:,.2f}")
+            print(f"  score    : {d['score']:.1f}/100 ({d['band']})")
+            print(f"  signals  : {_signals(d['link'])}\n")
 
         if not args.apply:
             print("dry run — nothing written. Re-run with --apply once every pair above "
