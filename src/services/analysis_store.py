@@ -198,13 +198,18 @@ def _link_deals(cur: Any, analysis_id: Any, deal_ids: list) -> int:
 
 def freeze(session_id: str, *, findings: Optional[dict] = None,
            document_count: Optional[int] = None, value_found: Any = None,
-           currency: Optional[str] = None,
+           currency: Optional[str] = None, completed_at: Optional[Any] = None,
            conn: Optional[Any] = None) -> Optional[str]:
     """Freeze the running analysis for a resolved upload session.
 
     Returns the analysis_id, or None when there is nothing in 'running' for
     this session — which is the normal outcome of a second call, and is what
     makes this safe for both the listener and the sweep to invoke.
+
+    completed_at defaults to None, which leaves now() in charge — correct for
+    the listener, where "now" IS when the session resolved. The sweep passes
+    the session's real end timestamp when it closes an event after the fact,
+    so a historical analysis is not stamped as having finished today.
     """
     sid = (session_id or "").strip()
     if not sid:
@@ -251,12 +256,13 @@ def freeze(session_id: str, *, findings: Optional[dict] = None,
         cur.execute(
             """
             UPDATE proc.bp_analysis
-               SET status = 'complete', completed_at = now(),
+               SET status = 'complete', completed_at = COALESCE(%s, now()),
                    findings = %s, document_count = %s,
                    value_found = %s, currency = %s
              WHERE analysis_id = %s
             """,
-            (json.dumps(findings, default=_json_default) if findings is not None else None,
+            (completed_at,
+             json.dumps(findings, default=_json_default) if findings is not None else None,
              document_count, value_found, currency, analysis_id),
         )
         return str(analysis_id)
@@ -284,7 +290,26 @@ def _freeze_one(session_id: str) -> Optional[str]:
 _SWEEP_SAVEPOINT = "sp_analysis_sweep_create"
 
 
-def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
+def _close_as_history(session_id: str, resolved_at: Any, conn: Any) -> Optional[str]:
+    """Close a session that resolved long before this event was created.
+
+    Its findings were never captured, and they cannot be reconstructed: running
+    a capture now would read TODAY's data and file it as what that analysis
+    found back then. That is fabrication, so findings and value_found stay
+    NULL and the UI says plainly that they were not captured.
+
+    The document count is NOT invented — session_document_outcome is a durable
+    record of what was really uploaded in that session — and the close is dated
+    by when the session actually ended.
+    """
+    return freeze(session_id, findings=None,
+                  document_count=document_count_for_session(session_id, conn=conn),
+                  value_found=None, currency=None,
+                  completed_at=resolved_at, conn=conn)
+
+
+def sweep(*, stale_minutes: int = 60, history_after_minutes: int = 60,
+          conn: Optional[Any] = None) -> dict:
     """Safety net for everything the listener path can miss.
 
     Three passes:
@@ -293,6 +318,13 @@ def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
       2. analyses still 'running' whose session HAS resolved (the listener died
          mid-session)
       3. analyses 'running' past the stale cap whose session never resolved
+
+    Pass 1 splits its rows in two. A session that resolved moments ago is a
+    live catch: it is left 'running' so pass 2 freezes it with real findings.
+    A session that resolved more than history_after_minutes ago is HISTORY —
+    every session that predates this feature is in that bucket — and is closed
+    immediately with findings NULL rather than handed to pass 2, which would
+    capture today's data and present it as what that analysis found.
 
     stale_minutes defaults to 60 - deliberately far beyond the UI's 6-minute
     patience cap, because a large upload legitimately takes minutes and must
@@ -309,7 +341,7 @@ def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
     _freeze_one() opens its own connection, so a failure there cannot poison
     this transaction in the first place.
     """
-    result = {"created": 0, "frozen": 0, "failed": 0}
+    result = {"created": 0, "historical": 0, "frozen": 0, "failed": 0}
     with _txn(conn) as c:
         cur = c.cursor()
 
@@ -321,7 +353,11 @@ def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
                        MIN(pm.start_ts AT TIME ZONE 'UTC'),
                        MIN(pm.created_date AT TIME ZONE 'UTC'),
                        MIN(sdo.created_at)
-                   ) AS true_started_at
+                   ) AS true_started_at,
+                   MAX(pm.end_ts AT TIME ZONE 'UTC') AS resolved_at,
+                   (bool_and(pm.action_status IS NOT NULL)
+                    AND MAX(pm.end_ts AT TIME ZONE 'UTC')
+                        < now() - (%s || ' minutes')::interval) AS is_history
               FROM proc.process_monitor pm
               JOIN proc.session_document_outcome sdo
                 ON sdo.session_id = pm.session_id
@@ -329,13 +365,20 @@ def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
                AND NOT EXISTS (SELECT 1 FROM proc.bp_analysis a
                                 WHERE a.session_id = pm.session_id)
              GROUP BY pm.session_id
-            """
+            """,
+            (str(int(history_after_minutes)),),
         )
-        for session_id, deal_name, true_started_at in (cur.fetchall() or []):
+        for (session_id, deal_name, true_started_at,
+             resolved_at, is_history) in (cur.fetchall() or []):
             try:
                 cur.execute(f"SAVEPOINT {_SWEEP_SAVEPOINT}")
                 start(session_id=session_id, name=deal_name,
                       started_at=true_started_at, conn=c)
+                # Closed here rather than left for pass 2, which would capture
+                # today's data and file it as this analysis's findings.
+                if is_history:
+                    _close_as_history(session_id, resolved_at, c)
+                    result["historical"] += 1
                 cur.execute(f"RELEASE SAVEPOINT {_SWEEP_SAVEPOINT}")
                 result["created"] += 1
             except Exception:

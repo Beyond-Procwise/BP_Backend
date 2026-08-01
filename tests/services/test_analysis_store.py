@@ -258,12 +258,118 @@ def test_freeze_marks_the_analysis_complete_with_its_headline_figures():
     assert 4 in final[0][1] and "GBP" in final[0][1]
 
 
+def test_freeze_dates_the_close_by_an_explicit_completed_at_when_given():
+    """A session that resolved days ago must be closed with the timestamp it
+    really ended at, not the moment the sweep got round to noticing."""
+    aid = uuid.uuid4()
+    ended = datetime(2026, 7, 30, 20, 55, 39, tzinfo=timezone.utc)
+    conn = FakeConn(results=[(aid,), []])
+
+    analysis_store.freeze("ses-1", document_count=35, completed_at=ended,
+                          conn=conn)
+
+    final = [(s, p) for s, p in conn.cur.calls
+             if "UPDATE proc.bp_analysis" in s and "status = 'complete'" in s]
+    assert len(final) == 1
+    sql, params = final[0]
+    assert "COALESCE(%s, now())" in sql, "an explicit end must be honoured"
+    assert ended in params
+
+
+def test_freeze_still_defaults_the_close_to_now():
+    """The live listener path passes no completed_at and must keep now()."""
+    aid = uuid.uuid4()
+    conn = FakeConn(results=[(aid,), []])
+
+    analysis_store.freeze("ses-1", findings={"a": 1}, conn=conn)
+
+    final = [(s, p) for s, p in conn.cur.calls
+             if "UPDATE proc.bp_analysis" in s and "status = 'complete'" in s]
+    assert None in final[0][1]
+
+
+def test_sweep_pass1_asks_whether_the_session_is_already_history(monkeypatch):
+    """Pass 1 must be able to tell a session that resolved seconds ago (whose
+    findings pass 2 can still capture truthfully) from one that resolved days
+    ago (whose findings were never captured and cannot be reconstructed)."""
+    conn = FakeConn(results=[[], [], []])
+
+    analysis_store.sweep(conn=conn)
+
+    pass1_sql, params = conn.cur.calls[0]
+    assert "MAX(pm.end_ts AT TIME ZONE 'UTC')" in pass1_sql
+    assert "bool_and(pm.action_status IS NOT NULL)" in pass1_sql
+    assert "minutes" in pass1_sql
+    assert params == ("60",), "the history cut-off must be a bound parameter"
+
+
+def test_sweep_closes_a_historical_session_without_inventing_findings(monkeypatch):
+    """THE honesty rule. A session that resolved long before this event
+    existed never had its findings captured. Reading today's data and
+    presenting it as what that analysis found would be fabrication, so the
+    event is closed with findings NULL and the UI says they were not captured.
+
+    Its document count IS kept: session_document_outcome is a durable record
+    of what was really uploaded then, not a reconstruction.
+    """
+    ended = datetime(2026, 7, 30, 20, 55, 39, tzinfo=timezone.utc)
+    started = datetime(2026, 7, 30, 18, 23, 42, tzinfo=timezone.utc)
+    conn = FakeConn(results=[
+        [("ses-old", "Test Data", started, ended, True)],
+        [],
+        [],
+    ])
+    monkeypatch.setattr(analysis_store, "start", lambda **kw: "aid-old")
+    monkeypatch.setattr(analysis_store, "document_count_for_session",
+                        lambda sid, **kw: 35)
+    froze = []
+    monkeypatch.setattr(analysis_store, "freeze",
+                        lambda sid, **kw: froze.append((sid, kw)) or "aid-old")
+    monkeypatch.setattr(analysis_store, "_freeze_one",
+                        lambda sid: pytest.fail(
+                            "_freeze_one captures TODAY's findings — it must "
+                            "never run for a historical session"))
+
+    got = analysis_store.sweep(conn=conn)
+
+    assert len(froze) == 1
+    sid, kw = froze[0]
+    assert sid == "ses-old"
+    assert kw["findings"] is None
+    assert kw["value_found"] is None
+    assert kw["document_count"] == 35
+    assert kw["completed_at"] == ended
+    assert got["created"] == 1
+    assert got["historical"] == 1
+
+
+def test_sweep_leaves_a_just_resolved_session_for_pass_2(monkeypatch):
+    """The mirror of the rule above: a session that resolved moments ago is a
+    live catch, not history. It stays 'running' so pass 2 freezes it with real
+    findings — closing it as 'not captured' would throw away a real result."""
+    conn = FakeConn(results=[
+        [("ses-fresh", "Live deal", None, None, False)],
+        [],
+        [],
+    ])
+    monkeypatch.setattr(analysis_store, "start", lambda **kw: "aid-fresh")
+    monkeypatch.setattr(analysis_store, "freeze",
+                        lambda sid, **kw: pytest.fail(
+                            "a freshly resolved session must be left for pass 2"))
+
+    got = analysis_store.sweep(conn=conn)
+
+    assert got["created"] == 1
+    assert got["historical"] == 0
+
+
 def test_sweep_creates_events_for_sessions_that_never_got_one(monkeypatch):
     """The UI's POST is an optimisation. If the browser closed before it fired,
     the sweep must still produce the event — just without the chosen name."""
     true_start = datetime(2026, 7, 29, 10, 10, 28, tzinfo=timezone.utc)
     conn = FakeConn(results=[
-        [("ses-9", "Renewal deal", true_start)],  # sessions with no bp_analysis row
+        # session_id, deal_name, true_started_at, resolved_at, is_history
+        [("ses-9", "Renewal deal", true_start, None, False)],
         [],                            # sessions running but resolved
         [],                            # sessions running past the stale cap
     ])
@@ -285,7 +391,7 @@ def test_sweep_pass1_uses_the_true_session_start_not_now(monkeypatch):
     when the sweep happened to notice it."""
     true_start = datetime(2026, 7, 30, 18, 23, 42, tzinfo=timezone.utc)
     conn = FakeConn(results=[
-        [("ses-9", "Renewal deal", true_start)],
+        [("ses-9", "Renewal deal", true_start, None, False)],
         [],
         [],
     ])
@@ -307,7 +413,8 @@ def test_sweep_pass1_one_failure_does_not_block_the_rest(monkeypatch):
     the Python exception does not un-abort it) - it must be contained to a
     SAVEPOINT so the other sessions still get created."""
     conn = FakeConn(results=[
-        [("ses-bad", "Bad", None), ("ses-good", "Good", None)],
+        [("ses-bad", "Bad", None, None, False),
+         ("ses-good", "Good", None, None, False)],
         [],
         [],
     ])
@@ -449,5 +556,7 @@ def test_freeze_serialises_decimal_findings_without_crashing():
     final = [(s, p) for s, p in conn.cur.calls
              if "UPDATE proc.bp_analysis" in s and "status = 'complete'" in s]
     assert len(final) == 1
-    findings_json = final[0][1][0]
+    # Found by shape, not by position — the parameter order is an implementation
+    # detail and this test is about the encoder, not about argument layout.
+    findings_json = next(p for p in final[0][1] if isinstance(p, str))
     assert json.loads(findings_json)["deals"][0]["quote_total"] == "950.00"
