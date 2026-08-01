@@ -2836,4 +2836,85 @@ git commit -m "docs(analysis): live verification results"
 
 ## Verification results
 
-_(Filled in during Task 13.)_
+Run 2026-08-01 against live `bp_sqldb` and the local BP_Backend on :8000.
+
+### Task 8 — superseded, but its honesty rule was not
+
+The standalone backfill script was never written: `sweep()` pass 1 already does
+exactly what it specified — same `NOT EXISTS` idempotence, same
+`start_ts → created_date → sdo.created_at` date recovery, no date bound — so a
+second implementation would have been a duplicate.
+
+**What did NOT carry over was Task 8's central rule.** Pass 1 left those old
+sessions `'running'`, and pass 2 then froze them by calling
+`analysis_findings.capture()` *that day* — reading today's data and filing it as
+what a 29/30 July analysis found. Precisely the fabrication Task 8 refused.
+
+Fixed in `cc8ced4`. Pass 1 now splits its rows: a session that resolved moments
+ago is a live catch and still goes to pass 2 for real findings; one that
+resolved more than `history_after_minutes` ago is history and is closed
+immediately with `findings` NULL, dated by its true end. `freeze()` gained an
+optional `completed_at` so a historical close is not stamped as finishing today.
+
+`scripts/repair_backfilled_analysis_findings.py` repaired the rows already
+written the old way — 2 analyses, findings nulled, `completed_at` re-dated to
+2026-07-29 14:46:36 and 2026-07-30 18:25:30, document counts (12, 35) kept
+because `session_document_outcome` is a durable record. Second run reports 0.
+
+**Live round-trip proof of the new path:** deleted the `ses-20260729-BPTF`
+event and re-ran the sweep. Result `{'created': 1, 'historical': 1, ...}`, and
+status / findings-null / document_count / `started_at` / `completed_at` / all 12
+documents / the `TESTRUN2026072913 v1 is_latest` link all came back identical to
+the snapshot taken beforehand.
+
+### Step 2 — the endpoints answer
+
+`GET /analysis` returns all three events. `GET /analysis/by-deal/TESTRUN2026072913`
+returns one version, `v1`, `delta: null`, `document_count: 12`. As specified.
+
+### Steps 7 and 8 — the honest states, rendered from live data
+
+The browser extension was not connected, so these were verified by executing the
+real `dealAnalysisPanel()` and `reportOverview()` from `engine.js` over data
+fetched live from :8000 — the functions themselves, not fixtures:
+
+| case | renders |
+|---|---|
+| deal with history (`TESTRUN2026072913`) | `v1 · Testrun [Latest] · 2026-07-29 · 12 documents` |
+| deal with history (`TESTDATA_3007262026073025`) | `v1 · Test Data_300726 [Latest] · 2026-07-30 · 35 documents` |
+| bulk-ingested deal, never analysed | `No analysis has been run on this deal.` |
+| the fetch itself fails | `Couldn't load the analysis history. Retry` |
+| not loaded yet | `Loading analysis history…` |
+
+A repaired analysis returns `status: complete, findings: null` with its 35
+documents and deal link intact, which is exactly the input the report's
+"Findings were not captured for this analysis" branch keys on.
+
+### A real defect this found — fixed
+
+The third record (`ses-20260729-Z8P4`) is `failed` with no deal, and opening it
+was broken two ways. It still carries a `session_id`, so the report subscribed
+to a WebSocket for a session that resolved days earlier, never got a terminal
+frame, and span *"Reading your documents…"* forever. And `reportOverview`'s
+honest-empty branch was gated on `reportFrozen`, which is only set for
+`'complete'` — so a failed analysis fell through to the KPI row and rendered
+every count as a fabricated zero.
+
+Fixed in spendiq-ui `51252c1`. Against the live record it now renders: *"This
+analysis did not complete — It stopped with: session did not resolve. Nothing
+was captured, so there is nothing to show for it. It produced no deal."*
+
+### NOT verified — needs a real upload
+
+**Steps 3, 4, 5 and 6 were not run.** Each requires uploading documents through
+the UI (new analysis → v1, amend → v2 with a delta, promotion, and a bulk upload
+forming no deal), which needs the browser extension that is not connected, and
+would write new rows to live `bp_sqldb`. The paths they cover are unit- and
+contract-tested, and the amend route they exercise (`/analyse?deal=`) already
+existed and is unchanged — but the end-to-end journey itself remains unproven
+and should be walked manually before this is called done.
+
+Note for whoever runs them: the uvicorn on :8000 was started before `cc8ced4`
+and has no `--reload`, so it is still serving the pre-fix `analysis_store`. The
+read endpoints are unaffected (unchanged, and they read repaired data correctly),
+but the sweep needs a restart to pick the new rule up.
