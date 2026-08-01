@@ -66,6 +66,7 @@ from api.routers import benchmark as benchmark_router
 from api.routers import requirements as requirements_router
 from api.routers import fx as fx_router
 from api.routers import value_summary as value_summary_router
+from api.routers import analysis as analysis_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -427,6 +428,7 @@ app.include_router(benchmark_router.router)
 app.include_router(requirements_router.router)
 app.include_router(fx_router.router)
 app.include_router(value_summary_router.router)
+app.include_router(analysis_router.router)
 import src.services.requirement_similarity  # noqa: F401 — registers the quote_rival profile at startup
 
 
