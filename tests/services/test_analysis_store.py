@@ -198,12 +198,30 @@ def test_freeze_clears_is_latest_on_the_deals_previous_versions():
 
 
 def test_freeze_is_a_noop_when_nothing_is_running():
-    """Idempotent: freezing an already-complete analysis must not touch it."""
+    """Idempotent: freezing an already-complete analysis must not touch it.
+
+    Nothing beyond the initial lookup may run - no document copy, no deal
+    link, no completion update - because a second freeze() call landing on
+    the same session (the live listener and the scheduled sweep can both
+    call freeze()) must be a true no-op, not merely "returns None"."""
     conn = FakeConn(results=[None])
 
     assert analysis_store.freeze("ses-1", findings={}, conn=conn) is None
-    assert not any("INSERT INTO proc.bp_analysis_deal" in s
-                   for s, _ in conn.cur.calls)
+
+    # Exactly one statement: the SELECT ... FOR UPDATE lookup. Nothing else.
+    assert len(conn.cur.calls) == 1, (
+        f"expected exactly 1 statement, got {len(conn.cur.calls)}: "
+        f"{[s for s, _ in conn.cur.calls]}"
+    )
+    sql, _ = conn.cur.calls[0]
+    assert "SELECT analysis_id FROM proc.bp_analysis" in sql
+    assert "FOR UPDATE" in sql
+
+    sqls = [s for s, _ in conn.cur.calls]
+    assert not any("INSERT INTO proc.bp_analysis_document" in s for s in sqls)
+    assert not any("INSERT INTO proc.bp_analysis_deal" in s for s in sqls)
+    assert not any("UPDATE proc.bp_analysis" in s and "status = 'complete'" in s
+                   for s in sqls)
 
 
 def test_freeze_marks_the_analysis_complete_with_its_headline_figures():

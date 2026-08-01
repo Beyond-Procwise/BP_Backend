@@ -111,6 +111,105 @@ def test_start_is_idempotent_preserves_chosen_name():
             conn.close()
 
 
+def test_link_deals_allocates_version_per_deal_not_globally():
+    """Prove the per-deal versioning property against the real database.
+
+    A unit test with a fake cursor can't distinguish "version scoped to
+    deal_id" from "a global counter that happens to be fed 3 then 1 in
+    order" - the fake just replays queued results positionally regardless
+    of the WHERE clause. This test sets up real asymmetric history (deal A
+    already has a prior version, deal B has none) and links ONE analysis to
+    both, so a regression that deleted `_allocate_version`'s
+    `WHERE deal_id = %s` (turning it into a global counter) would make this
+    test fail even though the unit tests would still pass.
+    """
+    deal_a = f"pytest-deal-{uuid.uuid4().hex[:12]}"
+    deal_b = f"pytest-deal-{uuid.uuid4().hex[:12]}"
+    session_prior = f"pytest-{uuid.uuid4().hex[:12]}"
+    session_current = f"pytest-{uuid.uuid4().hex[:12]}"
+
+    conn = get_db_conn()
+    try:
+        cur = conn.cursor()
+
+        # Deal A already has one prior analysis linked - its next version
+        # must NOT be 1.
+        prior_analysis_id = analysis_store.start(
+            session_id=session_prior, name="prior", conn=conn
+        )
+        analysis_store._link_deals(cur, prior_analysis_id, [deal_a])
+        conn.commit()
+
+        # Deal B has no history at all - its next version must be 1.
+
+        # One new analysis run links to BOTH deals in the same call.
+        current_analysis_id = analysis_store.start(
+            session_id=session_current, name="current", conn=conn
+        )
+        analysis_store._link_deals(cur, current_analysis_id, [deal_a, deal_b])
+        conn.commit()
+
+        cur.execute(
+            "SELECT deal_id, version, is_latest FROM proc.bp_analysis_deal "
+            "WHERE analysis_id = %s ORDER BY deal_id",
+            (current_analysis_id,),
+        )
+        rows = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+
+        assert deal_a in rows and deal_b in rows, f"expected links for both deals, got {rows}"
+
+        version_a, is_latest_a = rows[deal_a]
+        version_b, is_latest_b = rows[deal_b]
+
+        assert version_a == 2, (
+            f"deal A had one prior version, so this link should continue "
+            f"its own sequence at v2, got v{version_a}"
+        )
+        assert version_b == 1, (
+            f"deal B has no history, so this link should start at v1, "
+            f"got v{version_b}"
+        )
+        assert version_a != version_b, (
+            "version must be allocated per deal_id, not from a shared/"
+            "global counter - a regression here would silently renumber "
+            "every deal's history"
+        )
+        assert is_latest_a is True
+        assert is_latest_b is True
+
+        # The prior link for deal A must have been superseded.
+        cur.execute(
+            "SELECT is_latest FROM proc.bp_analysis_deal "
+            "WHERE analysis_id = %s AND deal_id = %s",
+            (prior_analysis_id, deal_a),
+        )
+        prior_row = cur.fetchone()
+        assert prior_row is not None, "prior link for deal A should still exist"
+        assert prior_row[0] is False, (
+            "the deal's previous version must no longer be is_latest once "
+            "a newer one is linked"
+        )
+
+    finally:
+        # Always clean up: child rows before parent rows, tight predicates
+        # on the unique ids generated for this run only.
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM proc.bp_analysis_deal WHERE deal_id IN (%s, %s)",
+                (deal_a, deal_b),
+            )
+            cur.execute(
+                "DELETE FROM proc.bp_analysis WHERE session_id IN (%s, %s)",
+                (session_prior, session_current),
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"Cleanup failed for deals {deal_a}, {deal_b}: {e}")
+        finally:
+            conn.close()
+
+
 def test_start_writes_all_columns():
     """Verify that all input columns are written to the database."""
     session_id = f"pytest-{uuid.uuid4().hex[:12]}"
