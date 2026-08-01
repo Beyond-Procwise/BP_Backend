@@ -43,6 +43,54 @@ def _txn(conn: Optional[Any]) -> Iterator[Any]:
             raise
 
 
+def deal_ids_for_session(session_id: str, *, conn: Optional[Any] = None) -> list:
+    """Which deals this session's documents landed on.
+
+    process_monitor already carries deal_id, so this is a direct lookup rather
+    than a walk through the _trgt tables.
+    """
+    with _txn(conn) as c:
+        cur = c.cursor()
+        cur.execute(
+            "SELECT DISTINCT deal_id FROM proc.process_monitor "
+            "WHERE session_id = %s AND deal_id IS NOT NULL",
+            (session_id,),
+        )
+        return [r[0] for r in (cur.fetchall() or [])]
+
+
+def document_count_for_session(session_id: str, *, conn: Optional[Any] = None) -> Optional[int]:
+    """How many documents this analysis read. None on failure or zero — zero
+    would read as 'it read nothing' when the truth is 'we don't know'."""
+    try:
+        with _txn(conn) as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM proc.session_document_outcome "
+                "WHERE session_id = %s",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] else None
+    except Exception:
+        log.exception("document count failed for session=%s", session_id)
+        return None
+
+
+def file_paths_for_session(session_id: str, *, conn: Optional[Any] = None) -> list:
+    """The file paths this session's documents were read from — discrepancies
+    are scoped by file path, not deal_id (bp_extraction_discrepancy has no
+    deal_id column)."""
+    with _txn(conn) as c:
+        cur = c.cursor()
+        cur.execute(
+            "SELECT file_path FROM proc.session_document_outcome "
+            "WHERE session_id = %s",
+            (session_id,),
+        )
+        return [r[0] for r in (cur.fetchall() or [])]
+
+
 def start(*, session_id: str, name: Optional[str] = None, mode: str = "new",
           created_by: Optional[str] = None, conn: Optional[Any] = None) -> str:
     """Create (or return) the analysis event for an upload session.

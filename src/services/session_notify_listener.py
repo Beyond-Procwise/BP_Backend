@@ -184,12 +184,13 @@ class SessionNotifyListener:
         ).start()
 
     def _link_then_broadcast(self, session_id: str, payload: dict) -> None:
-        """Link, then broadcast — and broadcast even if linking fails.
+        """Link, freeze, then broadcast — and broadcast whatever happens.
 
-        Fail-open is deliberate: a linking error must never strand the page on a
-        spinner. The client is told the session resolved either way; a failure
-        shows up as a report with no documents, which is what it would have shown
-        before this existed.
+        Fail-open is deliberate: a linking or freezing error must never strand
+        the page on a spinner. The client is told the session resolved either
+        way; a failure shows up as a report with no documents or no findings,
+        which is what it would have shown before this existed. A freeze that
+        did not happen is picked up by the scheduled sweep.
         """
         try:
             self._link_session(session_id)
@@ -199,7 +200,36 @@ class SessionNotifyListener:
                 "the scheduled sweep will pick it up",
                 session_id,
             )
+        try:
+            self._freeze_analysis(session_id)
+        except Exception:
+            log.exception(
+                "Freezing the analysis for session %s failed — broadcasting "
+                "anyway; the scheduled sweep will retry it",
+                session_id,
+            )
         self._broadcast(session_id, payload)
+
+    def _freeze_analysis(self, session_id: str) -> None:
+        """Turn the running analysis for this session into a frozen record.
+
+        Runs after linking (the deals only exist once linking has happened)
+        and before broadcasting — see the fail-open contract on
+        ``_link_then_broadcast``.
+        """
+        from src.services import analysis_findings, analysis_store  # noqa: PLC0415
+
+        deal_ids = analysis_store.deal_ids_for_session(session_id)
+        file_paths = analysis_store.file_paths_for_session(session_id)
+        findings = analysis_findings.capture(deal_ids, file_paths=file_paths)
+        value_found, currency = analysis_findings.headline(findings)
+        analysis_store.freeze(
+            session_id,
+            findings=findings,
+            document_count=analysis_store.document_count_for_session(session_id),
+            value_found=value_found,
+            currency=currency,
+        )
 
     def _link_session(self, session_id: str) -> None:
         """Run the sub-second linking passes for the documents that just landed.
