@@ -126,13 +126,27 @@ def capture(deal_ids: list, *, file_paths: Optional[list] = None,
                 log.exception("findings capture failed for source=discrepancies")
                 out["sources"]["discrepancies"] = "error"
 
+        # Unlike the single-query sources above, this is N independent calls
+        # (one per deal). A failure partway through must not leave the
+        # deals that DID succeed sitting in out["benchmarks"] under an
+        # "error" status - a consumer sees a non-empty list and has no way
+        # to know it is incomplete, which is exactly the fabrication the
+        # error/empty distinction exists to prevent. So: any failure wipes
+        # the whole list, same as every other source.
+        bench_rows: list = []
+        bench_failed = False
         for deal_id in ids:
             try:
-                out["benchmarks"].append(
+                bench_rows.append(
                     {"deal_id": deal_id, "benchmark": _benchmark_for_deal(deal_id)})
             except Exception:
                 log.exception("benchmark capture failed for deal=%s", deal_id)
-                out["sources"]["benchmarks"] = "error"
+                bench_failed = True
+        if bench_failed:
+            out["sources"]["benchmarks"] = "error"
+            out["benchmarks"] = []
+        else:
+            out["benchmarks"] = bench_rows
 
     if conn is not None:
         _run(conn)
