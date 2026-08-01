@@ -379,6 +379,7 @@ class BackendScheduler:
     EXTRACTION_FEEDBACK_JOB_NAME = "extraction-feedback"
     STYLE_STAGING_SWEEP_JOB_NAME = "style-staging-sweep"
     PRICE_OUTLIER_JOB_NAME = "price-outlier-scan"
+    ANALYSIS_SWEEP_JOB_NAME = "analysis-sweep"
 
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
@@ -391,6 +392,7 @@ class BackendScheduler:
         self._register_summary_precompute_job()
         self._register_trgt_promotion_job()
         self._register_deal_assignment_job()
+        self._register_analysis_sweep_job()
         self._register_extraction_feedback_job()
         self._register_price_outlier_job()
         self._register_value_digest_job()
@@ -628,6 +630,38 @@ class BackendScheduler:
             interval=timedelta(minutes=max(1, minutes)),
             initial_delay=timedelta(minutes=5),
         )
+
+    def _register_analysis_sweep_job(self) -> None:
+        """Safety net for analysis events the listener path missed. Toggle
+        ANALYSIS_SWEEP_ENABLED (default on), interval
+        ANALYSIS_SWEEP_INTERVAL_MINUTES (default 15)."""
+        import os
+        if os.environ.get("ANALYSIS_SWEEP_ENABLED", "1").strip() not in ("1", "true", "True"):
+            logger.info("analysis sweep job disabled by ANALYSIS_SWEEP_ENABLED")
+            return
+        if self.ANALYSIS_SWEEP_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("ANALYSIS_SWEEP_INTERVAL_MINUTES", "15"))
+        except ValueError:
+            minutes = 15
+        self.register_job(
+            self.ANALYSIS_SWEEP_JOB_NAME,
+            self._run_analysis_sweep,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_analysis_sweep(self) -> None:
+        """Run the three-pass sweep. Logged only when something actually
+        happened, so a quiet system stays quiet in the logs."""
+        try:
+            from src.services import analysis_store  # noqa: PLC0415
+            result = analysis_store.sweep()
+            if any(result.values()):
+                logger.info("analysis sweep: %s", result)
+        except Exception:
+            logger.exception("analysis sweep job failed")
 
     VALUE_DIGEST_JOB_NAME = "value-digest"
 

@@ -221,7 +221,95 @@ def freeze(session_id: str, *, findings: Optional[dict] = None,
                    value_found = %s, currency = %s
              WHERE analysis_id = %s
             """,
-            (json.dumps(findings) if findings is not None else None,
+            # default=str: findings carries raw DB rows straight through
+            # analysis_findings.capture(), and NUMERIC columns (quote_total,
+            # financial_impact_gbp, ...) come back as Decimal, which the
+            # stdlib encoder cannot serialise. str() preserves the exact
+            # value (no float rounding); this is a live bug the sweep's
+            # first real run surfaced (session ses-20260730-UJF3 with money
+            # figures could never freeze).
+            (json.dumps(findings, default=str) if findings is not None else None,
              document_count, value_found, currency, analysis_id),
         )
         return str(analysis_id)
+
+
+def _freeze_one(session_id: str) -> None:
+    """Freeze one session exactly the way the live listener does, findings and all."""
+    from src.services import analysis_findings  # noqa: PLC0415
+
+    deal_ids = deal_ids_for_session(session_id)
+    file_paths = file_paths_for_session(session_id)
+    findings = analysis_findings.capture(deal_ids, file_paths=file_paths)
+    value_found, currency = analysis_findings.headline(findings)
+    freeze(session_id, findings=findings,
+           document_count=document_count_for_session(session_id),
+           value_found=value_found, currency=currency)
+
+
+def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
+    """Safety net for everything the listener path can miss.
+
+    Three passes:
+      1. sessions with documents but no analysis event at all (the browser
+         closed before the UI's POST fired)
+      2. analyses still 'running' whose session HAS resolved (the listener died
+         mid-session)
+      3. analyses 'running' past the stale cap whose session never resolved
+
+    stale_minutes defaults to 60 - deliberately far beyond the UI's 6-minute
+    patience cap, because a large upload legitimately takes minutes and must
+    never be declared failed while it is still working.
+    """
+    result = {"created": 0, "frozen": 0, "failed": 0}
+    with _txn(conn) as c:
+        cur = c.cursor()
+
+        cur.execute(
+            """
+            SELECT DISTINCT pm.session_id, MAX(pm.deal_name)
+              FROM proc.process_monitor pm
+             WHERE pm.session_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM proc.session_document_outcome sdo
+                            WHERE sdo.session_id = pm.session_id)
+               AND NOT EXISTS (SELECT 1 FROM proc.bp_analysis a
+                                WHERE a.session_id = pm.session_id)
+             GROUP BY pm.session_id
+            """
+        )
+        for session_id, deal_name in (cur.fetchall() or []):
+            try:
+                start(session_id=session_id, name=deal_name, conn=c)
+                result["created"] += 1
+            except Exception:
+                log.exception("sweep could not create event for %s", session_id)
+
+        cur.execute(
+            """
+            SELECT a.session_id FROM proc.bp_analysis a
+             WHERE a.status = 'running'
+               AND EXISTS (SELECT 1 FROM proc.process_monitor pm
+                            WHERE pm.session_id = a.session_id
+                              AND pm.action_status IS NOT NULL)
+            """
+        )
+        for (session_id,) in (cur.fetchall() or []):
+            try:
+                _freeze_one(session_id)
+                result["frozen"] += 1
+            except Exception:
+                log.exception("sweep could not freeze %s", session_id)
+
+        cur.execute(
+            """
+            UPDATE proc.bp_analysis
+               SET status = 'failed', completed_at = now(),
+                   failure_reason = %s
+             WHERE status = 'running'
+               AND started_at < now() - (%s || ' minutes')::interval
+             RETURNING session_id
+            """,
+            ("session did not resolve", str(int(stale_minutes))),
+        )
+        result["failed"] = len(cur.fetchall() or [])
+    return result

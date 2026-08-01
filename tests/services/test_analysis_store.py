@@ -235,3 +235,83 @@ def test_freeze_marks_the_analysis_complete_with_its_headline_figures():
              if "UPDATE proc.bp_analysis" in s and "status = 'complete'" in s]
     assert len(final) == 1
     assert 4 in final[0][1] and "GBP" in final[0][1]
+
+
+def test_sweep_creates_events_for_sessions_that_never_got_one(monkeypatch):
+    """The UI's POST is an optimisation. If the browser closed before it fired,
+    the sweep must still produce the event — just without the chosen name."""
+    conn = FakeConn(results=[
+        [("ses-9", "Renewal deal")],   # sessions with no bp_analysis row
+        [],                            # sessions running but resolved
+        [],                            # sessions running past the stale cap
+    ])
+    started = []
+    monkeypatch.setattr(analysis_store, "start",
+                        lambda **kw: started.append(kw) or "aid")
+
+    got = analysis_store.sweep(conn=conn)
+
+    assert got["created"] == 1
+    assert started[0]["session_id"] == "ses-9"
+    assert started[0]["name"] == "Renewal deal"
+
+
+def test_sweep_freezes_a_resolved_but_stuck_analysis(monkeypatch):
+    conn = FakeConn(results=[[], [("ses-9",)], []])
+    frozen = []
+    monkeypatch.setattr(analysis_store, "_freeze_one",
+                        lambda sid: frozen.append(sid))
+
+    got = analysis_store.sweep(conn=conn)
+
+    assert got["frozen"] == 1 and frozen == ["ses-9"]
+
+
+def test_sweep_fails_an_analysis_whose_session_never_resolved():
+    conn = FakeConn(results=[[], [], [("ses-9",)]])
+
+    got = analysis_store.sweep(conn=conn)
+
+    assert got["failed"] == 1
+    sqls = [s for s, _ in conn.cur.calls]
+    assert any("status = 'failed'" in s for s in sqls)
+    assert any("session did not resolve" in str(p) for _, p in conn.cur.calls)
+
+
+def test_sweep_stale_cap_defaults_to_sixty_minutes():
+    """The UI gives up narrating after 6 minutes (REPORT_WAIT_CAP_MS). Failing
+    an analysis at that point would kill slow-but-working large uploads."""
+    import inspect
+    sig = inspect.signature(analysis_store.sweep)
+    assert sig.parameters["stale_minutes"].default == 60
+
+
+def test_freeze_one_scopes_discrepancies_by_file_path(monkeypatch):
+    """_freeze_one must pass file_paths through to capture(), or every swept
+    analysis silently freezes with zero discrepancies (bp_extraction_discrepancy
+    has no deal_id column)."""
+    from src.services import analysis_findings
+
+    captured = {}
+
+    def fake_capture(deal_ids, *, file_paths=None, conn=None):
+        captured["deal_ids"] = deal_ids
+        captured["file_paths"] = file_paths
+        return {}
+
+    monkeypatch.setattr(analysis_store, "deal_ids_for_session",
+                        lambda sid: ["D-1"])
+    monkeypatch.setattr(analysis_store, "file_paths_for_session",
+                        lambda sid: ["documents/invoice/x.xlsx"])
+    monkeypatch.setattr(analysis_store, "document_count_for_session",
+                        lambda sid: 1)
+    monkeypatch.setattr(analysis_findings, "capture", fake_capture)
+    monkeypatch.setattr(analysis_findings, "headline", lambda findings: (None, None))
+    frozen = {}
+    monkeypatch.setattr(analysis_store, "freeze",
+                        lambda sid, **kw: frozen.update(kw))
+
+    analysis_store._freeze_one("ses-9")
+
+    assert captured["deal_ids"] == ["D-1"]
+    assert captured["file_paths"] == ["documents/invoice/x.xlsx"]
