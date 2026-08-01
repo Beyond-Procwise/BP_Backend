@@ -23,6 +23,31 @@ log = logging.getLogger(__name__)
 MODES = ("new", "amend", "bulk")
 
 
+def _json_default(obj: Any) -> Any:
+    """Encoder fallback for json.dumps(findings).
+
+    findings carries raw DB rows straight through analysis_findings.capture(),
+    so two non-JSON-native types show up: Decimal (NUMERIC columns like
+    quote_total, financial_impact_gbp) and datetime/date (deal_date,
+    detected_on, ...).
+
+    Decimal -> str() preserves the exact monetary value; this is a frozen
+    audit snapshot, and a float would risk silent precision drift.
+    datetime/date -> .isoformat(), NOT str(): str() on a tz-aware datetime
+    gives a space-separated, non-canonical form ("2026-07-29 14:46:22.691203
+    +00:00") that not every JavaScript Date implementation parses reliably.
+    isoformat() is the canonical, universally-parseable form.
+    """
+    import datetime as _dt
+    import decimal as _decimal
+
+    if isinstance(obj, (_dt.datetime, _dt.date)):
+        return obj.isoformat()
+    if isinstance(obj, _decimal.Decimal):
+        return str(obj)
+    return str(obj)
+
+
 @contextmanager
 def _txn(conn: Optional[Any]) -> Iterator[Any]:
     """Run inside the caller's connection, or own one and commit/rollback.
@@ -92,12 +117,22 @@ def file_paths_for_session(session_id: str, *, conn: Optional[Any] = None) -> li
 
 
 def start(*, session_id: str, name: Optional[str] = None, mode: str = "new",
-          created_by: Optional[str] = None, conn: Optional[Any] = None) -> str:
+          created_by: Optional[str] = None, started_at: Optional[Any] = None,
+          conn: Optional[Any] = None) -> str:
     """Create (or return) the analysis event for an upload session.
 
     Idempotent on session_id. A second call NEVER overwrites a name that is
     already set — the UI's call carries the user's chosen name, the sweep's
     fallback call does not, and whichever lands second must not win.
+
+    started_at defaults to None, which leaves the column's own DEFAULT now()
+    in charge — correct for the live listener path, where "now" IS the true
+    start. The sweep passes an explicit historical timestamp (recovered from
+    process_monitor / session_document_outcome) when it creates an event
+    after the fact, so a browser-closed session is dated by when the upload
+    actually happened, not by when the sweep noticed it. Once set, started_at
+    is never overwritten on conflict, same principle as name — it is simply
+    left out of the UPDATE's SET clause.
     """
     sid = (session_id or "").strip()
     if not sid:
@@ -109,13 +144,13 @@ def start(*, session_id: str, name: Optional[str] = None, mode: str = "new",
         cur = c.cursor()
         cur.execute(
             """
-            INSERT INTO proc.bp_analysis (session_id, name, mode, created_by)
-            VALUES (%s, NULLIF(%s, ''), %s, %s)
+            INSERT INTO proc.bp_analysis (session_id, name, mode, created_by, started_at)
+            VALUES (%s, NULLIF(%s, ''), %s, %s, COALESCE(%s, now()))
             ON CONFLICT (session_id) DO UPDATE
                SET name = COALESCE(proc.bp_analysis.name, EXCLUDED.name)
             RETURNING analysis_id
             """,
-            (sid, (name or "").strip(), mode, created_by),
+            (sid, (name or "").strip(), mode, created_by, started_at),
         )
         return str(cur.fetchone()[0])
 
@@ -221,30 +256,32 @@ def freeze(session_id: str, *, findings: Optional[dict] = None,
                    value_found = %s, currency = %s
              WHERE analysis_id = %s
             """,
-            # default=str: findings carries raw DB rows straight through
-            # analysis_findings.capture(), and NUMERIC columns (quote_total,
-            # financial_impact_gbp, ...) come back as Decimal, which the
-            # stdlib encoder cannot serialise. str() preserves the exact
-            # value (no float rounding); this is a live bug the sweep's
-            # first real run surfaced (session ses-20260730-UJF3 with money
-            # figures could never freeze).
-            (json.dumps(findings, default=str) if findings is not None else None,
+            (json.dumps(findings, default=_json_default) if findings is not None else None,
              document_count, value_found, currency, analysis_id),
         )
         return str(analysis_id)
 
 
-def _freeze_one(session_id: str) -> None:
-    """Freeze one session exactly the way the live listener does, findings and all."""
+def _freeze_one(session_id: str) -> Optional[str]:
+    """Freeze one session exactly the way the live listener does, findings and all.
+
+    Returns whatever freeze() returned: the analysis_id if something was
+    actually frozen, or None when there was nothing 'running' for this
+    session. The caller (sweep) must not count this as a freeze unless the
+    result is not None.
+    """
     from src.services import analysis_findings  # noqa: PLC0415
 
     deal_ids = deal_ids_for_session(session_id)
     file_paths = file_paths_for_session(session_id)
     findings = analysis_findings.capture(deal_ids, file_paths=file_paths)
     value_found, currency = analysis_findings.headline(findings)
-    freeze(session_id, findings=findings,
-           document_count=document_count_for_session(session_id),
-           value_found=value_found, currency=currency)
+    return freeze(session_id, findings=findings,
+                  document_count=document_count_for_session(session_id),
+                  value_found=value_found, currency=currency)
+
+
+_SWEEP_SAVEPOINT = "sp_analysis_sweep_create"
 
 
 def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
@@ -260,6 +297,17 @@ def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
     stale_minutes defaults to 60 - deliberately far beyond the UI's 6-minute
     patience cap, because a large upload legitimately takes minutes and must
     never be declared failed while it is still working.
+
+    Pass 1 runs start() on the SAME transaction/cursor as the rest of the
+    sweep (it needs to, so a session created in this run is visible to a
+    same-run freeze). That means a SQL-level error in one iteration would
+    otherwise poison the whole Postgres transaction — catching the Python
+    exception does not un-abort it, so every other pass-1 row and all of
+    passes 2 and 3 would be silently discarded when _txn rolls back. Each
+    pass-1 iteration therefore runs inside its own SAVEPOINT, so one bad
+    session is skipped without harming the rest. Pass 2 does not need this:
+    _freeze_one() opens its own connection, so a failure there cannot poison
+    this transaction in the first place.
     """
     result = {"created": 0, "frozen": 0, "failed": 0}
     with _txn(conn) as c:
@@ -267,22 +315,32 @@ def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
 
         cur.execute(
             """
-            SELECT DISTINCT pm.session_id, MAX(pm.deal_name)
+            SELECT pm.session_id,
+                   MAX(pm.deal_name),
+                   COALESCE(
+                       MIN(pm.start_ts AT TIME ZONE 'UTC'),
+                       MIN(pm.created_date AT TIME ZONE 'UTC'),
+                       MIN(sdo.created_at)
+                   ) AS true_started_at
               FROM proc.process_monitor pm
+              JOIN proc.session_document_outcome sdo
+                ON sdo.session_id = pm.session_id
              WHERE pm.session_id IS NOT NULL
-               AND EXISTS (SELECT 1 FROM proc.session_document_outcome sdo
-                            WHERE sdo.session_id = pm.session_id)
                AND NOT EXISTS (SELECT 1 FROM proc.bp_analysis a
                                 WHERE a.session_id = pm.session_id)
              GROUP BY pm.session_id
             """
         )
-        for session_id, deal_name in (cur.fetchall() or []):
+        for session_id, deal_name, true_started_at in (cur.fetchall() or []):
             try:
-                start(session_id=session_id, name=deal_name, conn=c)
+                cur.execute(f"SAVEPOINT {_SWEEP_SAVEPOINT}")
+                start(session_id=session_id, name=deal_name,
+                      started_at=true_started_at, conn=c)
+                cur.execute(f"RELEASE SAVEPOINT {_SWEEP_SAVEPOINT}")
                 result["created"] += 1
             except Exception:
                 log.exception("sweep could not create event for %s", session_id)
+                cur.execute(f"ROLLBACK TO SAVEPOINT {_SWEEP_SAVEPOINT}")
 
         cur.execute(
             """
@@ -295,8 +353,8 @@ def sweep(*, stale_minutes: int = 60, conn: Optional[Any] = None) -> dict:
         )
         for (session_id,) in (cur.fetchall() or []):
             try:
-                _freeze_one(session_id)
-                result["frozen"] += 1
+                if _freeze_one(session_id) is not None:
+                    result["frozen"] += 1
             except Exception:
                 log.exception("sweep could not freeze %s", session_id)
 

@@ -1,6 +1,9 @@
 """analysis_store writes. Every test drives a fake psycopg2 connection so the
 suite never needs a database."""
+import json
 import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -62,9 +65,27 @@ def test_start_returns_the_new_analysis_id():
                                mode="new", created_by="user@example.com", conn=conn)
 
     assert got == str(new_id)
-    # Verify params reach the SQL
+    # Verify params reach the SQL. Last param is started_at (None here - not
+    # supplied - which leaves the column's DEFAULT now() in charge).
     sql, params = conn.cur.calls[0]
-    assert params == ("ses-1", "Q3 renewal", "new", "user@example.com")
+    assert params == ("ses-1", "Q3 renewal", "new", "user@example.com", None)
+
+
+def test_start_accepts_an_explicit_started_at_and_never_overwrites_it_on_conflict():
+    """The sweep passes a recovered historical timestamp so a browser-closed
+    session is dated by when the upload actually happened, not by when the
+    sweep noticed it. A second call must never touch started_at once it is
+    set - same principle as name."""
+    new_id = uuid.uuid4()
+    conn = FakeConn(results=[(new_id,)])
+    true_start = datetime(2026, 7, 29, 10, 10, 28, tzinfo=timezone.utc)
+
+    analysis_store.start(session_id="ses-1", started_at=true_start, conn=conn)
+
+    sql, params = conn.cur.calls[0]
+    assert params[-1] == true_start
+    set_clause = sql.split("DO UPDATE", 1)[1]
+    assert "started_at" not in set_clause
 
 
 def test_start_is_idempotent_on_session_id():
@@ -240,8 +261,9 @@ def test_freeze_marks_the_analysis_complete_with_its_headline_figures():
 def test_sweep_creates_events_for_sessions_that_never_got_one(monkeypatch):
     """The UI's POST is an optimisation. If the browser closed before it fired,
     the sweep must still produce the event — just without the chosen name."""
+    true_start = datetime(2026, 7, 29, 10, 10, 28, tzinfo=timezone.utc)
     conn = FakeConn(results=[
-        [("ses-9", "Renewal deal")],   # sessions with no bp_analysis row
+        [("ses-9", "Renewal deal", true_start)],  # sessions with no bp_analysis row
         [],                            # sessions running but resolved
         [],                            # sessions running past the stale cap
     ])
@@ -254,17 +276,78 @@ def test_sweep_creates_events_for_sessions_that_never_got_one(monkeypatch):
     assert got["created"] == 1
     assert started[0]["session_id"] == "ses-9"
     assert started[0]["name"] == "Renewal deal"
+    assert started[0]["started_at"] == true_start
+
+
+def test_sweep_pass1_uses_the_true_session_start_not_now(monkeypatch):
+    """started_at must be dated by when the upload actually happened
+    (recovered from process_monitor / session_document_outcome), never by
+    when the sweep happened to notice it."""
+    true_start = datetime(2026, 7, 30, 18, 23, 42, tzinfo=timezone.utc)
+    conn = FakeConn(results=[
+        [("ses-9", "Renewal deal", true_start)],
+        [],
+        [],
+    ])
+
+    analysis_store.sweep(conn=conn)
+
+    pass1_sql, _ = conn.cur.calls[0]
+    assert "start_ts" in pass1_sql and "created_date" in pass1_sql
+    assert "AT TIME ZONE 'UTC'" in pass1_sql
+    insert_calls = [(s, p) for s, p in conn.cur.calls
+                    if "INSERT INTO proc.bp_analysis" in s]
+    assert len(insert_calls) == 1
+    assert insert_calls[0][1][-1] == true_start
+
+
+def test_sweep_pass1_one_failure_does_not_block_the_rest(monkeypatch):
+    """A SQL-level error creating one session's event must not poison the
+    whole sweep transaction (Postgres aborts on any SQL error and catching
+    the Python exception does not un-abort it) - it must be contained to a
+    SAVEPOINT so the other sessions still get created."""
+    conn = FakeConn(results=[
+        [("ses-bad", "Bad", None), ("ses-good", "Good", None)],
+        [],
+        [],
+    ])
+
+    def fake_start(**kw):
+        if kw["session_id"] == "ses-bad":
+            raise RuntimeError("constraint violation")
+        return "aid"
+
+    monkeypatch.setattr(analysis_store, "start", fake_start)
+
+    got = analysis_store.sweep(conn=conn)
+
+    assert got["created"] == 1
+    sqls = [s for s, _ in conn.cur.calls]
+    assert any("ROLLBACK TO SAVEPOINT" in s for s in sqls)
+    assert any("RELEASE SAVEPOINT" in s for s in sqls)
 
 
 def test_sweep_freezes_a_resolved_but_stuck_analysis(monkeypatch):
     conn = FakeConn(results=[[], [("ses-9",)], []])
     frozen = []
     monkeypatch.setattr(analysis_store, "_freeze_one",
-                        lambda sid: frozen.append(sid))
+                        lambda sid: frozen.append(sid) or "aid-123")
 
     got = analysis_store.sweep(conn=conn)
 
     assert got["frozen"] == 1 and frozen == ["ses-9"]
+
+
+def test_sweep_does_not_count_a_freeze_that_did_nothing(monkeypatch):
+    """_freeze_one can return without raising yet freeze() found nothing
+    running (e.g. a same-run visibility race with pass 1, or a second
+    concurrent sweep). That must not inflate the frozen counter."""
+    conn = FakeConn(results=[[], [("ses-9",)], []])
+    monkeypatch.setattr(analysis_store, "_freeze_one", lambda sid: None)
+
+    got = analysis_store.sweep(conn=conn)
+
+    assert got["frozen"] == 0
 
 
 def test_sweep_fails_an_analysis_whose_session_never_resolved():
@@ -315,3 +398,56 @@ def test_freeze_one_scopes_discrepancies_by_file_path(monkeypatch):
 
     assert captured["deal_ids"] == ["D-1"]
     assert captured["file_paths"] == ["documents/invoice/x.xlsx"]
+
+
+def test_freeze_one_returns_what_freeze_returns(monkeypatch):
+    """sweep() must be able to tell whether _freeze_one actually froze
+    something. Discarding freeze()'s return value made the frozen counter
+    lie whenever freeze() no-op'd (nothing was 'running' for the session)."""
+    from src.services import analysis_findings
+
+    monkeypatch.setattr(analysis_store, "deal_ids_for_session", lambda sid: [])
+    monkeypatch.setattr(analysis_store, "file_paths_for_session", lambda sid: [])
+    monkeypatch.setattr(analysis_store, "document_count_for_session", lambda sid: None)
+    monkeypatch.setattr(analysis_findings, "capture", lambda *a, **k: {})
+    monkeypatch.setattr(analysis_findings, "headline", lambda f: (None, None))
+
+    monkeypatch.setattr(analysis_store, "freeze", lambda sid, **kw: None)
+    assert analysis_store._freeze_one("ses-9") is None
+
+    monkeypatch.setattr(analysis_store, "freeze", lambda sid, **kw: "aid-123")
+    assert analysis_store._freeze_one("ses-9") == "aid-123"
+
+
+def test_json_default_preserves_decimal_precision_as_a_string():
+    """Money in findings must round-trip exactly - a float could silently
+    drift, and this is a frozen audit snapshot."""
+    assert analysis_store._json_default(Decimal("950.00")) == "950.00"
+
+
+def test_json_default_uses_isoformat_for_datetimes():
+    """str(tz-aware datetime) gives a space-separated, non-canonical form
+    that not every JS Date implementation parses; isoformat() is canonical."""
+    ts = datetime(2026, 7, 29, 14, 46, 22, 691203, tzinfo=timezone.utc)
+    assert analysis_store._json_default(ts) == ts.isoformat()
+    assert "T" in analysis_store._json_default(ts)
+
+
+def test_freeze_serialises_decimal_findings_without_crashing():
+    """End-to-end regression for the live bug: findings straight out of
+    analysis_findings.capture() carry Decimal (NUMERIC columns like
+    quote_total), which the stdlib json encoder cannot serialise unaided."""
+    aid = uuid.uuid4()
+    conn = FakeConn(results=[(aid,), []])
+
+    analysis_store.freeze(
+        "ses-1",
+        findings={"deals": [{"quote_total": Decimal("950.00")}]},
+        conn=conn,
+    )
+
+    final = [(s, p) for s, p in conn.cur.calls
+             if "UPDATE proc.bp_analysis" in s and "status = 'complete'" in s]
+    assert len(final) == 1
+    findings_json = final[0][1][0]
+    assert json.loads(findings_json)["deals"][0]["quote_total"] == "950.00"
