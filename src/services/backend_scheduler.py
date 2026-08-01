@@ -34,6 +34,14 @@ def price_outlier_interval_minutes() -> int:
     return max(1, minutes)
 
 
+# Jobs in the same lane never run at the same time; different lanes run in
+# parallel. The default is deliberately a SHARED lane, so every job keeps the
+# strict one-at-a-time behaviour the old inline loop gave it and concurrency is
+# something a job has to opt into. Put a job in its own lane only when nothing
+# else writes what it writes.
+DEFAULT_JOB_LANE = "pipeline"
+
+
 class _ScheduledJob:
     def __init__(
         self,
@@ -43,6 +51,7 @@ class _ScheduledJob:
         initial_delay: Optional[timedelta] = None,
         *,
         one_shot: bool = False,
+        lane: str = DEFAULT_JOB_LANE,
     ) -> None:
         self.name = name
         self.runner = runner
@@ -51,6 +60,7 @@ class _ScheduledJob:
         self.next_run = datetime.now(timezone.utc) + delay
         self._lock = threading.Lock()
         self.one_shot = one_shot
+        self.lane = lane
 
     def due(self, moment: datetime) -> bool:
         with self._lock:
@@ -77,6 +87,10 @@ class BackendScheduler:
         self.agent_nick = agent_nick
         self._jobs: Dict[str, _ScheduledJob] = {}
         self._lock = threading.Lock()
+        # One worker thread per lane, so a slow lane cannot delay another. Its own
+        # lock, not _lock: _dispatch must never contend with job registration.
+        self._lane_threads: Dict[str, threading.Thread] = {}
+        self._lane_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._relationship_scheduler = self._init_relationship_scheduler()
@@ -343,6 +357,7 @@ class BackendScheduler:
         initial_delay: Optional[timedelta] = None,
         *,
         one_shot: bool = False,
+        lane: str = DEFAULT_JOB_LANE,
     ) -> None:
         job = _ScheduledJob(
             name,
@@ -350,6 +365,7 @@ class BackendScheduler:
             interval,
             initial_delay,
             one_shot=one_shot,
+            lane=lane,
         )
         with self._lock:
             self._jobs[name] = job
@@ -380,6 +396,7 @@ class BackendScheduler:
     STYLE_STAGING_SWEEP_JOB_NAME = "style-staging-sweep"
     PRICE_OUTLIER_JOB_NAME = "price-outlier-scan"
     ANALYSIS_SWEEP_JOB_NAME = "analysis-sweep"
+    ANALYSIS_SWEEP_LANE = "analysis"
 
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
@@ -650,6 +667,15 @@ class BackendScheduler:
             self._run_analysis_sweep,
             interval=timedelta(minutes=max(1, minutes)),
             initial_delay=timedelta(minutes=5),
+            # Its own lane. It shares deal-assignment's 5-minute initial delay and
+            # 15-minute interval, so on the shared lane it came due at the same
+            # instant and always lost the tie — observed live on 2026-08-01 waiting
+            # 4m20s behind a deal-assignment run that did no work at all. Safe to
+            # take off the shared lane because bp_analysis* is written only by
+            # analysis_store, whose start() is idempotent (ON CONFLICT) and whose
+            # freeze() takes FOR UPDATE — it is already built to run alongside the
+            # live session listener.
+            lane=self.ANALYSIS_SWEEP_LANE,
         )
 
     def _run_analysis_sweep(self) -> None:
@@ -942,14 +968,46 @@ class BackendScheduler:
 
     def _run_loop(self) -> None:
         while not self._stop_event.wait(self._poll_seconds):
-            now = datetime.now(timezone.utc)
-            jobs_snapshot = None
-            with self._lock:
-                jobs_snapshot = list(self._jobs.values())
-            for job in jobs_snapshot:
-                if not job.due(now):
-                    continue
-                self._execute_job(job)
+            self._dispatch_due(datetime.now(timezone.utc))
+
+    def _lane_busy(self, lane: str) -> bool:
+        thread = self._lane_threads.get(lane)
+        return bool(thread and thread.is_alive())
+
+    def _dispatch_due(self, now: datetime) -> None:
+        """Hand every due job to its lane's worker.
+
+        This used to run each job inline, which meant one slow job delayed every
+        job after it and stalled this loop entirely — nothing else was even
+        evaluated as due while it ran. Dispatching keeps the loop free, so a job
+        is late only if its OWN lane is busy.
+        """
+        with self._lock:
+            jobs_snapshot = list(self._jobs.values())
+        for job in jobs_snapshot:
+            if not job.due(now):
+                continue
+            self._dispatch(job)
+
+    def _dispatch(self, job: _ScheduledJob) -> bool:
+        """Start ``job`` unless its lane is already working.
+
+        A job whose lane is busy is SKIPPED, not dropped: next_run is untouched,
+        so it stays due and the next poll picks it up. Marking it executed here
+        would silently swallow a run.
+        """
+        with self._lane_lock:
+            if self._lane_busy(job.lane):
+                return False
+            thread = threading.Thread(
+                target=self._execute_job,
+                args=(job,),
+                name=f"procwise-job-{job.lane}",
+                daemon=True,
+            )
+            self._lane_threads[job.lane] = thread
+        thread.start()
+        return True
 
     def _deregister_job(self, name: str) -> None:
         with self._lock:

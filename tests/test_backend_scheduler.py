@@ -256,3 +256,131 @@ def test_training_scheduler_reconfigures_on_ensure(monkeypatch):
     scheduler.stop()
     backend_scheduler.BackendScheduler._instance = None
 
+
+
+# --- job lanes -------------------------------------------------------------
+# The scheduler used to execute every due job inline, one after another, on the
+# single polling thread. A slow job therefore delayed every job registered after
+# it AND stalled the poll loop itself, so nothing else was even evaluated as due.
+# Observed live 2026-08-01: deal-assignment ran 18:15:22 -> 18:19:42 doing no work
+# at all (every counter zero) and the analysis sweep, registered directly after it,
+# could not start until 18:19:42.
+#
+# Lanes fix that WITHOUT weakening the mutual exclusion the old design implied:
+# jobs sharing a lane still never overlap, and the default lane is shared, so a job
+# has to opt in to concurrency.
+
+def _job_scheduler(monkeypatch):
+    return _prepare_scheduler(monkeypatch, SimpleNamespace())
+
+
+def test_a_slow_job_does_not_delay_a_job_in_another_lane(monkeypatch):
+    import threading
+    from datetime import datetime, timezone
+
+    scheduler = _job_scheduler(monkeypatch)
+    hold, slow_started, fast_ran = threading.Event(), threading.Event(), threading.Event()
+
+    def slow():
+        slow_started.set()
+        hold.wait(5)
+
+    scheduler.register_job("slow", slow, interval=timedelta(minutes=15))
+    scheduler.register_job("fast", fast_ran.set, interval=timedelta(minutes=15),
+                           lane="analysis")
+
+    scheduler._dispatch_due(datetime.now(timezone.utc))
+
+    assert slow_started.wait(5), "the slow job should have started"
+    # THE POINT: this must not wait on the slow job in the other lane.
+    assert fast_ran.wait(5), "a job in its own lane must not queue behind a slow one"
+    hold.set()
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None
+
+
+def test_jobs_sharing_a_lane_never_run_at_the_same_time(monkeypatch):
+    """The guarantee the old sequential loop gave implicitly, kept explicitly.
+    trgt-promotion and deal-assignment both write the _trgt tables and must not
+    overlap, so the default lane stays strictly one-at-a-time."""
+    import threading
+    from datetime import datetime, timezone
+
+    scheduler = _job_scheduler(monkeypatch)
+    hold, first_started, second_ran = threading.Event(), threading.Event(), threading.Event()
+
+    def first():
+        first_started.set()
+        hold.wait(5)
+
+    scheduler.register_job("first", first, interval=timedelta(minutes=15))
+    scheduler.register_job("second", second_ran.set, interval=timedelta(minutes=15))
+
+    scheduler._dispatch_due(datetime.now(timezone.utc))
+    assert first_started.wait(5)
+
+    assert not second_ran.wait(0.3), "same-lane jobs must never overlap"
+    hold.set()
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None
+
+
+def test_a_job_held_off_by_a_busy_lane_is_not_lost(monkeypatch):
+    """Skipping is not dropping: the job stays due and runs on a later poll,
+    and its next_run is NOT advanced as though it had run."""
+    import threading
+    from datetime import datetime, timezone
+
+    scheduler = _job_scheduler(monkeypatch)
+    hold, first_started, second_ran = threading.Event(), threading.Event(), threading.Event()
+
+    def first():
+        first_started.set()
+        hold.wait(5)
+
+    scheduler.register_job("first", first, interval=timedelta(minutes=15))
+    scheduler.register_job("second", second_ran.set, interval=timedelta(minutes=15))
+    second = scheduler._jobs["second"]
+    due_at = second.next_run
+
+    scheduler._dispatch_due(datetime.now(timezone.utc))
+    assert first_started.wait(5)
+    assert second.next_run == due_at, "a skipped job must stay due"
+
+    hold.set()
+    for _ in range(50):                       # let the lane drain
+        if not scheduler._lane_busy("pipeline"):
+            break
+        threading.Event().wait(0.1)
+
+    scheduler._dispatch_due(datetime.now(timezone.utc))
+    assert second_ran.wait(5), "the held-off job must run on a later poll"
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None
+
+
+def test_the_analysis_sweep_gets_a_lane_of_its_own(monkeypatch):
+    """bp_analysis* is written only by analysis_store, whose start() is idempotent
+    (ON CONFLICT) and whose freeze() takes FOR UPDATE — it is already safe against
+    the live session listener, so it is safe off the shared pipeline lane."""
+    scheduler = _job_scheduler(monkeypatch)
+    scheduler._register_analysis_sweep_job()
+
+    sweep = scheduler._jobs[scheduler.ANALYSIS_SWEEP_JOB_NAME]
+    scheduler.register_job("anything", lambda: None, interval=timedelta(minutes=15))
+
+    assert sweep.lane != scheduler._jobs["anything"].lane
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None
+
+
+def test_the_default_lane_is_shared_so_concurrency_is_opt_in(monkeypatch):
+    """Regression guard: a job added later must not become concurrent with the
+    data-pipeline jobs merely by being registered."""
+    scheduler = _job_scheduler(monkeypatch)
+    scheduler.register_job("a", lambda: None, interval=timedelta(minutes=15))
+    scheduler.register_job("b", lambda: None, interval=timedelta(minutes=15))
+
+    assert scheduler._jobs["a"].lane == scheduler._jobs["b"].lane
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None
