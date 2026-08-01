@@ -151,3 +151,69 @@ class FakeCursorThatRaises:
     """A cursor that raises an exception on execute()."""
     def execute(self, sql, params=None):
         raise RuntimeError("Database error")
+
+
+def test_freeze_copies_session_documents_onto_the_analysis():
+    aid = uuid.uuid4()
+    conn = FakeConn(results=[
+        (aid,),          # SELECT the running analysis
+        # (the documents INSERT has no RETURNING, so it never fetches)
+        [("D-1",)],      # SELECT DISTINCT deal_id
+        (2,),            # _allocate_version -> next version for D-1
+    ])
+
+    analysis_store.freeze("ses-1", findings={"deal": {}}, conn=conn)
+
+    sqls = [s for s, _ in conn.cur.calls]
+    assert any("INSERT INTO proc.bp_analysis_document" in s for s in sqls)
+    assert any("proc.session_document_outcome" in s for s in sqls)
+
+
+def test_freeze_allocates_version_per_deal_not_globally():
+    """The same run may be v3 for one deal and v1 for another."""
+    aid = uuid.uuid4()
+    conn = FakeConn(results=[
+        (aid,),
+        [("D-1",), ("D-2",)],
+        (3,),            # D-1 already had two analyses
+        (1,),            # D-2 has none
+    ])
+
+    analysis_store.freeze("ses-1", findings={}, conn=conn)
+
+    link_params = [p for s, p in conn.cur.calls
+                   if "INSERT INTO proc.bp_analysis_deal" in s]
+    assert [(p[1], p[2]) for p in link_params] == [("D-1", 3), ("D-2", 1)]
+
+
+def test_freeze_clears_is_latest_on_the_deals_previous_versions():
+    aid = uuid.uuid4()
+    conn = FakeConn(results=[(aid,), [("D-1",)], (2,)])
+
+    analysis_store.freeze("ses-1", findings={}, conn=conn)
+
+    sqls = [s for s, _ in conn.cur.calls]
+    assert any("SET is_latest = false" in s and "deal_id = %s" in s
+               for s in sqls)
+
+
+def test_freeze_is_a_noop_when_nothing_is_running():
+    """Idempotent: freezing an already-complete analysis must not touch it."""
+    conn = FakeConn(results=[None])
+
+    assert analysis_store.freeze("ses-1", findings={}, conn=conn) is None
+    assert not any("INSERT INTO proc.bp_analysis_deal" in s
+                   for s, _ in conn.cur.calls)
+
+
+def test_freeze_marks_the_analysis_complete_with_its_headline_figures():
+    aid = uuid.uuid4()
+    conn = FakeConn(results=[(aid,), []])
+
+    analysis_store.freeze("ses-1", findings={"a": 1}, document_count=4,
+                          value_found=12400, currency="GBP", conn=conn)
+
+    final = [(s, p) for s, p in conn.cur.calls
+             if "UPDATE proc.bp_analysis" in s and "status = 'complete'" in s]
+    assert len(final) == 1
+    assert 4 in final[0][1] and "GBP" in final[0][1]
