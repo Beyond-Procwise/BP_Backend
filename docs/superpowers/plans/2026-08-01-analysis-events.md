@@ -1689,14 +1689,22 @@ class FakeConn:
         pass
 
 
-def test_backfill_uses_created_date_not_start_ts():
-    """process_monitor_watcher sets start_ts = NULL on rows it reaps
-    (process_monitor_watcher.py:1046), so start_ts is not a durable timestamp."""
+def test_backfill_dates_from_the_sessions_true_start():
+    """CORRECTED 2026-08-01 against the live database.
+
+    This test previously asserted `"start_ts" not in sql`, on the reasoning that
+    process_monitor_watcher.py:1046 nulls start_ts on rows it reaps. Sound in the
+    abstract, wrong for the rows that exist: created_date is NULL on all 59 session
+    rows, while start_ts holds the true historical timestamps. Dating from
+    created_date alone produced analyses stamped with today's date.
+    """
     conn = FakeConn([[]])
     mod.backfill(conn=conn)
     sql = conn.cur.calls[0][0]
-    assert "MIN(pm.created_date)" in sql
-    assert "start_ts" not in sql
+    assert "MIN(pm.start_ts)" in sql
+    assert "MIN(pm.created_date)" in sql        # retained as a fallback
+    assert "MIN(sdo.created_at)" in sql         # last resort; the only NOT NULL one
+    assert "AT TIME ZONE 'UTC'" in sql          # naive source -> timestamptz target
 
 
 def test_backfill_leaves_findings_null(monkeypatch):
@@ -1763,20 +1771,35 @@ from src.services.db import get_conn
 
 log = logging.getLogger(__name__)
 
-# created_date, NOT start_ts: the watcher's stale-row cleanup sets start_ts to
-# NULL on rows it reaps (src/services/process_monitor_watcher.py:1046), so it is
-# not a durable record of when the upload happened.
+# When did this analysis actually happen?
+#
+# CORRECTED 2026-08-01 against the live database. This originally read
+# "created_date, NOT start_ts", reasoning that the watcher's stale-row cleanup
+# nulls start_ts (src/services/process_monitor_watcher.py:1046). Sound in the
+# abstract, wrong for the rows that exist: created_date is NULL on ALL 59 session
+# rows, while start_ts holds the true timestamps. Dating from created_date alone
+# stamped every historical analysis with today's date.
+#
+# Fallback order: start_ts is written earliest (true processing start);
+# created_date stays in case it is ever populated; sdo.created_at is the last
+# resort and is the only one of the three that is NOT NULL DEFAULT now().
+#
+# start_ts/created_date are `timestamp WITHOUT time zone` but bp_analysis.started_at
+# is timestamptz, so AT TIME ZONE 'UTC' is explicit rather than trusting the
+# connection's TimeZone. The naive values were cross-checked against the tz-aware
+# sdo.created_at (~0.5s later for the same session) and are empirically UTC.
 _SESSIONS = """
 SELECT pm.session_id, MAX(pm.deal_name) AS deal_name,
-       MIN(pm.created_date) AS created_date
+       COALESCE(MIN(pm.start_ts), MIN(pm.created_date),
+                MIN(sdo.created_at) AT TIME ZONE 'UTC')
+           AT TIME ZONE 'UTC' AS started_at
   FROM proc.process_monitor pm
+  JOIN proc.session_document_outcome sdo ON sdo.session_id = pm.session_id
  WHERE pm.session_id IS NOT NULL
-   AND EXISTS (SELECT 1 FROM proc.session_document_outcome sdo
-                WHERE sdo.session_id = pm.session_id)
    AND NOT EXISTS (SELECT 1 FROM proc.bp_analysis a
                     WHERE a.session_id = pm.session_id)
  GROUP BY pm.session_id
- ORDER BY MIN(pm.created_date)
+ ORDER BY 3
 """
 
 
@@ -1887,7 +1910,8 @@ Run it a **second** time. Expected: `{'sessions': 0, 'created': 0, ...}` — pro
 git add scripts/backfill_analysis_events.py tests/services/test_backfill_analysis_events.py
 git commit -m "feat(analysis): backfill events from the 3 existing upload sessions
 
-Uses created_date, not start_ts — the watcher nulls start_ts on rows it reaps.
+Dates each analysis from COALESCE(start_ts, created_date, sdo.created_at) — created_date is
+NULL on every session row, so the plan's original "use created_date, not start_ts" was backwards.
 findings stays NULL: the historical findings were never captured, and reading
 live data now and calling it 'what we found then' would be fabrication."
 ```
