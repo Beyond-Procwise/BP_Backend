@@ -6,6 +6,37 @@ demands a single-entry acyclic DAG, which almost no selection is.
 import pytest
 from fastapi.testclient import TestClient
 
+# Every group this test suite creates uses one of these names, so teardown can
+# find and permanently remove them by name -- including a row orphaned by a
+# test that raised before reaching its own client.delete() call. proc.bp_agent_group
+# lives in the LIVE bp_sqldb, and the router's DELETE endpoint only soft-deletes
+# (is_active=false) -- the row stays in the table forever otherwise. This suite
+# hard-deletes by name itself, the same way tests/api/test_agent_workflows_router.py
+# hard-deletes proc.bp_agent_workflow rows by name.
+_TEST_NAMES = ("Quote triage", "Quote triage (put)")
+
+
+def _sweep_namespace():
+    from services.db import get_conn
+
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM proc.bp_agent_group WHERE name = ANY(%s)",
+            (list(_TEST_NAMES),),
+        )
+        cur.close()
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_test_rows():
+    """Hard-delete every row this suite's namespace could contain, on success
+    AND on failure -- the post-yield block runs even when the test body
+    raises, so a live-DB row can never survive a failed assertion. Scoped to
+    _TEST_NAMES only, so this can never touch a real user's group."""
+    yield
+    _sweep_namespace()
+
 
 @pytest.fixture
 def client():
@@ -69,6 +100,40 @@ def test_rejects_a_link_pointing_outside_the_group(client):
     body["links"] = [{"from_index": 0, "to_index": 7}]
     res = client.post("/agent-groups", json=body)
     assert res.status_code == 400
+
+
+def test_put_with_only_links_is_accepted_against_current_members(client):
+    """A PUT that supplies only `links` must not be forced to also resend
+    `members` -- and its links are bounds-checked against the group's
+    CURRENTLY STORED members, not against an empty list (which the naive
+    `body.members or []` implementation rejected unconditionally with
+    "A group needs at least one agent.")."""
+    body = _group()
+    body["name"] = "Quote triage (put)"
+    gid = client.post("/agent-groups", json=body).json()["group_id"]
+
+    res = client.put(f"/agent-groups/{gid}", json={"links": []})
+    assert res.status_code == 200, res.text
+
+    got = next(g for g in client.get("/agent-groups").json()["groups"] if g["group_id"] == gid)
+    assert got["links"] == []
+    assert [m["agent_slug"] for m in got["members"]] == ["data_extraction", "supplier_ranking"]
+
+    client.delete(f"/agent-groups/{gid}")
+
+
+def test_put_with_only_links_out_of_bounds_is_still_rejected(client):
+    """The links-only PUT above must not have achieved leniency by skipping
+    bounds-checking altogether -- it still validates against the group's
+    stored member count (2 members: valid indices are 0 and 1)."""
+    body = _group()
+    body["name"] = "Quote triage (put)"
+    gid = client.post("/agent-groups", json=body).json()["group_id"]
+
+    res = client.put(f"/agent-groups/{gid}", json={"links": [{"from_index": 0, "to_index": 7}]})
+    assert res.status_code == 400
+
+    client.delete(f"/agent-groups/{gid}")
 
 
 def test_never_compiles_a_group(monkeypatch):

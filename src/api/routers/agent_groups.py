@@ -13,7 +13,16 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from orchestration.workflow_compiler import _known_agents
+# The public catalogue loader, not orchestration.workflow_compiler._known_agents.
+# That underscore-prefixed helper is workflow_compiler's own private convenience
+# wrapper around this same function; importing it from here would make this
+# router's slug validation depend on an implementation detail of a module it
+# otherwise has nothing to do with (a group is never compiled — see this
+# module's docstring). A rename of _known_agents would fail loudly at import,
+# but a return-type change (e.g. dict-keyed-by-slug -> list) would silently
+# break _validate_slugs here instead of there. Going straight to the public
+# agents.definitions.load_agent_definitions() removes that coupling entirely.
+from agents.definitions import load_agent_definitions
 from repositories import agent_group_repo as repo
 
 logger = logging.getLogger(__name__)
@@ -45,23 +54,36 @@ class GroupPatch(BaseModel):
     links: Optional[List[Link]] = None
 
 
+def _validate_slugs(members: List[Member]) -> None:
+    """Every member's agent_slug must exist in the live agent catalogue."""
+    known = {defn["slug"] for defn in load_agent_definitions()}
+    for m in members:
+        if m.agent_slug not in known:
+            raise HTTPException(status_code=400, detail=f"unknown agent: {m.agent_slug!r}")
+
+
+def _validate_links(links: List[Link], member_count: int) -> None:
+    """Every link must reference two members that are actually IN the group.
+
+    ``member_count`` is the count links are being checked against -- on a
+    links-only PUT that is the group's CURRENTLY STORED member count, not an
+    empty list, since no new members were supplied to replace them."""
+    for e in links:
+        if not (0 <= e.from_index < member_count and 0 <= e.to_index < member_count):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Link {e.from_index} -> {e.to_index} points outside the group.",
+            )
+
+
 def _validate(members: List[Member], links: List[Link]) -> None:
     """Fail here, at save time, with a reason. Note what is NOT checked: entry nodes,
     cycles and connectivity. A group is not a flow — a selection of two agents from
     different branches is a perfectly good group and would be a rejected workflow."""
     if not members:
         raise HTTPException(status_code=400, detail="A group needs at least one agent.")
-    known = _known_agents()
-    for m in members:
-        if m.agent_slug not in known:
-            raise HTTPException(status_code=400, detail=f"unknown agent: {m.agent_slug!r}")
-    n = len(members)
-    for e in links:
-        if not (0 <= e.from_index < n and 0 <= e.to_index < n):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Link {e.from_index} -> {e.to_index} points outside the group.",
-            )
+    _validate_slugs(members)
+    _validate_links(links, len(members))
 
 
 @router.get("")
@@ -82,10 +104,29 @@ def create_group(body: GroupBody) -> Dict[str, Any]:
 
 @router.put("/{group_id}")
 def update_group(group_id: int, body: GroupPatch) -> Dict[str, Any]:
-    if repo.get(group_id) is None:
+    """A partial update validates only what was actually supplied.
+
+    A PUT touching only ``links`` must still work -- it does not re-supply
+    ``members``, so there is nothing wrong to reject there, and its links are
+    bounds-checked against the group's CURRENTLY STORED members (fetched
+    below), not against an empty list, which every links-only PUT would
+    otherwise fail against unconditionally.
+    """
+    current = repo.get(group_id)
+    if current is None:
         raise HTTPException(status_code=404, detail="No such group.")
-    if body.members is not None or body.links is not None:
-        _validate(body.members or [], body.links or [])
+
+    if body.members is not None:
+        if not body.members:
+            raise HTTPException(status_code=400, detail="A group needs at least one agent.")
+        _validate_slugs(body.members)
+        member_count = len(body.members)
+    else:
+        member_count = len(current["members"])
+
+    if body.links is not None:
+        _validate_links(body.links, member_count)
+
     repo.update(
         group_id,
         name=body.name,
