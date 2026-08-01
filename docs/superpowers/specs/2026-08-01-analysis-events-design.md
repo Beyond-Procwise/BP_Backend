@@ -199,16 +199,36 @@ several analyses over time (the version history).
 
 ### Why `findings` is one JSONB column
 
-The report assembles itself from six separate live sources today
-(`spendiq-ui/src/modules/SpendIQ/data/endpoints.js:35` plus the Benchmark tab): deal detail,
-discrepancies, compliance, opportunities, the deal summary, and `/benchmark/by-deal/:id`. Freezing
-means capturing what those returned. Normalising all six into columns would be a large schema
-surface that is only ever read back as a whole. One snapshot column — written once, read once — is
-honest about what it is.
+The report assembles itself from seven separate live sources today
+(`engine.js:5384-5401` plus the Benchmark tab). Freezing means capturing what those returned.
+Normalising them into columns would be a large schema surface that is only ever read back as a
+whole. One snapshot column — written once, read once — is honest about what it is.
 
-The seventh thing the report fetches, the unconnected-documents review queue
-(`/promotion/review-queue`, `engine.js:5665`), is deliberately **not** snapshotted. It is a queue of
-work to do, not a finding — live state that belongs to the deal. A frozen analysis does not show it.
+**What gets frozen — five sources, all computed inside BP_Backend from `proc.*` directly** (no
+HTTP call out to the gateway, which the listener thread cannot rely on reaching):
+
+| Source | Frozen from |
+|---|---|
+| Deal header, counts, totals | `proc.bp_deal_overview` |
+| Discrepancies | `proc.bp_extraction_discrepancy`, scoped by `source_file` to the FILE PATHS this analysis read — that table has no `deal_id` column. Verified during implementation: `source_file` and `session_document_outcome.file_path` share the identical S3-key format and join exactly. This is also the truer meaning — a frozen analysis reports problems in *its own* documents, and it still works for a one-off analysis that formed no deal |
+| Opportunities | `proc.bp_opportunity WHERE deal_id` |
+| Deal summary | `proc.bp_analysis_summary WHERE is_current` |
+| Price benchmark | the existing deterministic engine behind `GET /benchmark/by-deal/:id`. Note it must be called with `min_points=3, method="weighted"` passed explicitly: it is a FastAPI route handler whose defaults are `fastapi.params.Query` sentinels, so calling it bare — outside FastAPI's dependency injection — always fails. Any route handler reused as a library function in this repo carries the same trap |
+
+**What is deliberately not frozen:**
+
+- **The portfolio compliance measures.** The Compliance tab is served by the gateway's
+  `getComplianceData` (`beyond-procwaise-Api/.../compliance/compliance.service.ts`), which computes
+  workspace-wide percentages — on-contract rate, PO coverage, invoice matching — across the whole
+  corpus. Those are portfolio metrics, not findings about *these* documents, and they change for
+  reasons that have nothing to do with this analysis. Freezing them would mean porting a large
+  gateway service into Python to snapshot numbers that were never about this upload. A frozen
+  analysis shows its **deal-scoped compliance issues** (which come from the frozen discrepancies
+  above); the portfolio measures continue to render live, labelled as current rather than as at the
+  analysis date.
+- **The unconnected-documents review queue** (`/promotion/review-queue`, `engine.js:5665`). A queue
+  of work to do, not a finding — live state belonging to the deal. A frozen analysis does not
+  show it.
 
 The headline figures (`document_count`, `value_found`, `currency`) are lifted out as real columns
 because the list view sorts on them and the version delta compares them.
@@ -252,7 +272,7 @@ Inside `SessionNotifyListener._link_then_broadcast()`, after `_link_session()` a
    schema). Insert `bp_analysis_deal` rows, allocating
    `version = COALESCE(MAX(version), 0) + 1` per `deal_id` and clearing `is_latest` on that deal's
    previous rows.
-3. Fetch the six finding sources listed in §5 for those deals and store the result in `findings`.
+3. Fetch the five finding sources listed in §5 for those deals and store the result in `findings`.
 4. Compute `document_count`, `value_found`, `currency`.
 5. Set `status = 'complete'`, `completed_at = now()`.
 
