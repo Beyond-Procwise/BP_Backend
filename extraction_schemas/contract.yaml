@@ -422,6 +422,189 @@ fields:
       ner_type_check: "none"
     invariants: []
 
+  - name: amendment_ref
+    type: string
+    required: false
+    db_column: amendment_ref
+    canonical_labels:
+      - "Amendment No"
+      - "Amendment Number"
+      - "Variation No"
+      - "Addendum No"
+      - "Change Order No"
+    patterns:
+      - name: anchored_amendment_no
+        anchor: '(?i)\b(?:amendment|addendum|variation|change\s+order)\s*(?:number|no\.?|#)\s*[:\-]?\s*'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{1,12}[A-Z0-9\-\/\.]{0,20})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.90
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: document_version
+    type: string
+    required: false
+    db_column: document_version
+    canonical_labels:
+      - "Version"
+      - "Document Version"
+      - "Revision"
+      - "Rev"
+    patterns:
+      - name: anchored_version
+        anchor: '(?i)\b(?:document\s+)?(?:version|revision|rev\.?)\s*[:\-]?\s*'
+        value: '(v?\d+(?:\.\d+){0,3})'
+        max_span_after_anchor_chars: 24
+        prior_confidence: 0.86
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: term_months
+    type: decimal
+    required: false
+    db_column: term_months
+    canonical_labels:
+      - "Initial Term"
+      - "Term"
+      - "Contract Term"
+      - "Minimum Term"
+    patterns:
+      # Captures ONLY a term the document states in months. A term stated in
+      # years is deliberately left NULL — converting it is arithmetic, and the
+      # derived value belongs in Phase 1b with its own basis and provenance.
+      - name: term_in_months
+        anchor: '(?i)\b(?:initial\s+term|minimum\s+term|contract\s+term|term)\s*(?:of|is|:|\-)\s*'
+        value: '(\d{1,3})\s*(?:months|month|mths|mos\.?)\b'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.90
+      - name: period_of_months
+        anchor: '(?i)\bfor\s+a\s+period\s+of\s+'
+        value: '(\d{1,3})\s*(?:months|month|mths|mos\.?)\b'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.84
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: billing_frequency
+    type: string
+    required: false
+    db_column: billing_frequency
+    canonical_labels:
+      - "Billing Frequency"
+      - "Invoicing Frequency"
+      - "Payment Frequency"
+      - "Billed"
+    patterns:
+      - name: anchored_billing_frequency
+        anchor: '(?i)\b(?:billing|invoicing|payment)\s+frequency\s*[:\-]\s*'
+        value: '\b(monthly|quarterly|annually|annual|yearly|semi-annually|bi-annually|weekly)\b'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.92
+      - name: invoiced_cadence
+        anchor: '(?i)\b(?:shall\s+be\s+)?(?:invoiced|billed|payable)\s+'
+        value: '\b(monthly|quarterly|annually|annual|yearly|semi-annually|bi-annually|weekly)\b'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.84
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: escalator_pct
+    type: decimal
+    required: false
+    db_column: escalator_pct
+    canonical_labels:
+      - "Annual Increase"
+      - "Price Escalation"
+      - "Escalation"
+      - "Uplift"
+      - "Indexation"
+    patterns:
+      # group(1) is the bare number. parse_amount('3.5%') is None and the
+      # decimal fallback float('3.5%') raises, so capturing the '%' would
+      # discard the value as a type_bind_error.
+      - name: anchored_escalation
+        anchor: '(?i)\b(?:annual\s+)?(?:price\s+)?(?:escalation|escalator|uplift|increase|indexation)\s*(?:of|is|:|\-|shall\s+be)?\s*'
+        value: '(\d{1,2}(?:\.\d{1,4})?)\s*(?:%|per\s*cent)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      - name: shall_increase_by
+        anchor: '(?i)\b(?:charges|prices|fees|rates)\s+shall\s+(?:be\s+)?increase[d]?\s+by\s+'
+        value: '(\d{1,2}(?:\.\d{1,4})?)\s*(?:%|per\s*cent)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.86
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: escalator_cap_pct
+    type: decimal
+    required: false
+    db_column: escalator_cap_pct
+    canonical_labels:
+      - "Cap"
+      - "Capped At"
+      - "Maximum Increase"
+      - "Not to Exceed"
+    patterns:
+      - name: capped_at
+        anchor: '(?i)\b(?:capped\s+at|cap\s+of|subject\s+to\s+a\s+cap\s+of|shall\s+not\s+exceed|not\s+to\s+exceed|maximum\s+(?:of\s+)?increase\s+of)\s*'
+        value: '(\d{1,2}(?:\.\d{1,4})?)\s*(?:%|per\s*cent)'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.90
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: escalator_basis
+    type: string
+    required: false
+    db_column: escalator_basis
+    canonical_labels:
+      - "Index"
+      - "Indexed To"
+      - "Index Basis"
+      - "CPI"
+      - "RPI"
+    patterns:
+      - name: indexed_to
+        anchor: '(?i)\b(?:indexed\s+to|linked\s+to|by\s+reference\s+to|index\s*[:\-])\s*(?:the\s+)?'
+        value: '\b(CPIH|CPI-U|CPI|RPIX|RPI|HICP)\b'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.92
+      - name: fixed_basis
+        anchor: '(?i)\b(?:fixed|flat)\s+(?:annual\s+)?(?:increase|escalation|uplift)\b'
+        value: '\b(fixed|flat)\b'
+        max_span_after_anchor_chars: 30
+        prior_confidence: 0.80
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
 line_items: null
 
 document_invariants:
