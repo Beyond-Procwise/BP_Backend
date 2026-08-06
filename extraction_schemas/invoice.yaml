@@ -632,6 +632,37 @@ fields:
       ner_type_check: "none"
     invariants: []
 
+  - name: contract_id
+    type: string
+    required: false
+    db_column: contract_id
+    canonical_labels:
+      - "Contract No"
+      - "Contract Number"
+      - "Contract Reference"
+      - "Agreement No"
+      - "Agreement Number"
+      - "Master Agreement"
+      - "MSA No"
+      - "Framework Agreement"
+    confidence_threshold: 0.75
+    patterns:
+      - name: anchored_contract_no
+        anchor: '(?i)\b(?:contract|agreement|msa|framework(?:\s+agreement)?)\s*(?:number|no\.?|reference|ref\.?|#)\s*[:\-]?\s*'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      - name: under_agreement
+        anchor: '(?i)\b(?:issued\s+)?under\s+(?:master\s+)?(?:agreement|contract)\s*[:\-]?\s*'
+        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.82
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
 line_items:
   primary_extractor: qwen_vlm
   fields:
