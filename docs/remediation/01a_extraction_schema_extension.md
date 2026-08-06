@@ -32,7 +32,12 @@ Both migrations are additive (`ADD COLUMN IF NOT EXISTS`) and were verified with
 | Quote | `contract_id` (header) — `unit_of_measure` already existed on quote line items |
 | Contract | `contract_id` patterns (field existed, had never had a pattern to recognise it), `parent_contract_id`, `cost_centre_id`, `is_amendment`, `amendment_ref`, `document_version`, `term_months`, `billing_frequency`, `escalator_pct`, `escalator_basis`, `escalator_cap_pct` |
 
-Every new field carries `required: false` and `confidence_threshold: 0.75`, matching the codebase's existing convention.
+Every new field carries `required: false`. **Two corrections to what an earlier draft of this record claimed:**
+
+- `confidence_threshold: 0.75` is carried by the eleven fields written from scratch for this phase (`contract_id` *patterns*, `parent_contract_id`, `cost_centre_id`, `is_amendment`, `amendment_ref`, `document_version`, `term_months`, `billing_frequency`, `escalator_pct`, `escalator_basis`, `escalator_cap_pct`, plus `contract_id` on the three transaction schemas). It is **not** universal. `unit_of_measure` on `invoice.yaml` and `purchase_order.yaml` declares **no** `confidence_threshold` (so it takes the loader's default of `0.70`) and declares **`grounded_last_resort: true`, not `false`**. That block was copied verbatim from `quote.yaml`, which is exactly what the plan prescribed — the point of the copy was that the three line-item schemas stay identical. It is left as it is.
+- `contract.yaml`'s `contract_id` is a **pre-existing** field, `required: true` with `confidence_threshold: 0.70` and `grounded_last_resort: true`. This phase added only its `patterns:` block; it did not create the field and did not change its judge settings.
+
+See §4.1 for why neither setting is doing the work this record originally implied.
 
 ---
 
@@ -63,11 +68,43 @@ No file under `src/` was touched in this phase. Every change is a YAML file, a S
 
 Each of these was a conscious decision to leave a field empty rather than guess, convert, or interpret. They are refusals, not gaps.
 
-### 4.1 `grounded_last_resort: false` on every new field
+### 4.1 `grounded_last_resort: false` — a declaration of intent, **not** the safety mechanism
 
-Every new field's `judge:` block sets `grounded_last_resort: false`. This forbids the AI judge — the last-resort layer that runs when the deterministic pattern-matching (regex) layer finds nothing — from inventing a value for these fields.
+Every field written from scratch for this phase sets `grounded_last_resort: false` in its `judge:` block, alongside `confidence_threshold: 0.75`. The intent is to forbid the AI judge — the last-resort layer that runs when the deterministic pattern-matching (regex) layer finds nothing — from inventing a value for these fields.
 
-**Why this matters:** a guessed `contract_id` does not fail loudly. It silently attaches an invoice or purchase order to a contract that may not actually govern it. Every later comparison — is this rate consistent with what the contract promised, has this line item breached the contract's cap — would then run against the wrong agreement, and nothing downstream would know to distrust the number. An absent value is visibly absent and can be handled as such. A guessed value looks exactly like a real one. Absent is correct; guessed is not.
+**Why the intent matters:** a guessed `contract_id` does not fail loudly. It silently attaches an invoice or purchase order to a contract that may not actually govern it. Every later comparison — is this rate consistent with what the contract promised, has this line item breached the contract's cap — would then run against the wrong agreement, and nothing downstream would know to distrust the number. An absent value is visibly absent and can be handled as such. A guessed value looks exactly like a real one. Absent is correct; guessed is not.
+
+#### But read this before relying on it
+
+**Neither `grounded_last_resort` nor `confidence_threshold` does anything for these fields in the live path today.** An earlier draft of this record presented them as *the* safety guarantee. They are not. Verified against the code:
+
+- `src/services/extraction/judge_gate.py:78-84` is the only place in the live pipeline that reads either setting:
+  ```python
+  for f in registry.schema.fields:
+      if not f.required:
+          continue
+      judge_spec = getattr(f, "judge", None)
+      if judge_spec is None or not getattr(judge_spec, "grounded_last_resort", False):
+          continue
+      threshold = float(getattr(f, "confidence_threshold", 0.0) or 0.0)
+  ```
+  `required: false` short-circuits before `grounded_last_resort` or `confidence_threshold` is ever consulted. Every field this phase *added* is `required: false`, so for all of them both settings are inert.
+- The v3 judge orchestrator (`src/services/extraction_v3/judge/orchestrator.py:87`) gates on `field_spec.required` in the same way.
+- `PatternRegistry.threshold()` / `FieldMeta.threshold` (`pattern_registry.py:57, 112`) have **no** consumer anywhere in `src/`.
+- `unit_of_measure` is a *line-item* field; `judge_gate` iterates `registry.schema.fields`, which is header fields only. Its `grounded_last_resort: true` is inert for a second, independent reason.
+
+The settings are correct and harmless as declarations of intent — they document what the field is allowed to become, and they take effect the moment a field is promoted to `required: true`. But they are not what is protecting the pipeline right now.
+
+**What actually protects it is two things:** `required: false` (which keeps the AI judge out of these fields entirely), and **the specificity of the regexes themselves.** The second one is the load-bearing part, and it is the part that failed review. Four defects were found after every per-task review had passed, all of them the same shape — a regex validated against the single fixture that motivated it, and wrong on the next document:
+
+| Defect | What the regex did |
+|---|---|
+| `contract_id` matched inside "Parent Contract Number:" and "Master Agreement No:" | An amendment resolved to its **master's** identifier. `contract_id` is the `ON CONFLICT` key for `bp_contracts` (`promotion.py:56-60, 857-860`), so this would not error — it would silently overwrite the master row's dates, value and escalator terms. |
+| The identifier value regex accepted `N/A`, `TBC`, `SEE`, and swallowed trailing punctuation | `'MSA-9921.'` is not `'MSA-9921'`, so the later join to `bp_contracts` breaks with no error. `'N/A'` becomes a primary key colliding with every other document that also said "N/A". |
+| `escalator_pct` captured the **cap** rather than the rate | "shall not exceed 4%" recorded a 4% uplift the document never granted. The original test passed only because the fixture stated the rate before the cap. |
+| `term_months` captured a **renewal** term | A 60-month contract with 12-month renewals recorded as a 12-month contract. |
+
+All four are fixed (see §10). The lesson is not that the judge settings were wrong — it is that they were never the guarantee, and the thing that *was* the guarantee had not been adversarially tested. Phase 1b must not read `grounded_last_resort: false` as a safety net.
 
 ### 4.2 No years-to-months conversion on `term_months`
 
@@ -147,6 +184,24 @@ None of this required a new database table, a new promotion path, or a new extra
 - **B2 — resolved, not applicable here.** `tenant_id` scoping applies to new tables only, and is first applied in Phase 1b. Phase 1a created no new tables (only new columns on existing tables), so B2 did not apply to any of this phase's work.
 
 ---
+
+## 10. Whole-branch review — defects found after every task had passed its own review
+
+Per-task review could not see these: each task's regexes had been validated only against the one fixture that motivated them, and a fixture cannot show you the document it was not written for. A single fix wave (commits listed at the bottom) closed all of them. **Every fix was written test-first and observed red before the regex changed.**
+
+| # | Fix |
+|---|---|
+| 1 | `contract.yaml` `contract_id`'s two anchors now carry stacked negative lookbehinds — `parent`, `master`, `principal`, `amends`, `amendment to`, `supplements`, `varies` — one for every qualifier `parent_contract_id`'s own anchors claim. `parent_contract_id` still reads "Parent Contract:" and "Master Agreement No:". |
+| 2 | The identifier value regex on all ten contract-reference patterns (both `contract.yaml` fields, and `contract_id` on the three transaction schemas) is now pinned to the start of the post-anchor window (`\A`), must end on an alphanumeric, and refuses `N/A`, `NA`, `TBC`, `TBD`, `NONE`, `SEE` via a negative lookahead. The label connector is mandatory in all four schemas — with `.` accepted as a connector so "Agreement No. AGR-4471" still reads. `under_agreement`'s connector stays optional (its prose form legitimately has none) but it gets the value-regex fixes. |
+| 3 | `escalator_pct`'s connector is mandatory and its value pinned to `\A`. The `increase` alternative is **kept** — "Annual Increase" is one of the field's own canonical labels — because the mandatory connector plus `\A` already refuses "increase shall not exceed 4%", "increase shall be capped at 5%" and "shall increase by CPI, capped at 5%". `escalator_cap_pct` still captures all three caps. |
+| 4 | `term_months`'s bare `term` alternative is guarded by `(?<!renewal )(?<!extension )(?<!renewed )`, and its value pinned to `\A`. "Initial Term: 36 months" and "for a period of 24 months" still read; a term stated in years still yields nothing. |
+| 5 | `tests/extraction/test_schema_db_consistency.py` now asserts every declared `db_column` exists on `_raw` and `_trgt`, not only on the declared `db_table` — `persistence.write_raw` (`persistence.py:170, 188-196`) INSERTs into `_raw` with no column filter, so a `_stg`-only column would pass schema load and then raise `UndefinedColumn` on the next INSERT. Contract's missing `_stg`/`_trgt` layer is skipped rather than failed. The whole file is parametrised over **both** `bp_sqldb` and `bp_testdb`, selected by overriding `DB_NAME` in the environment — no committed config touched. Proven red on both databases by temporarily declaring a `_stg`-only column. |
+| 6 | Both rollback scripts now state, at the top, that the corresponding YAML commit must be reverted **before** the script runs — otherwise `load_all_schemas()` raises `SchemaDriftError` in the API lifespan and the API will not start. Comment only; no SQL changed. |
+| 8 | `escalator_cap_pct` no longer carries `total_contract_value`'s "Not to Exceed" label, which would have bound a money value into `numeric(9,4)` and overflowed it if the label-driven extractors were re-enabled. |
+| 9 | `test_parent_contract_is_not_confused_with_contract_id` asserted only that the two values *differ* — which is true on any fixture where the failure cannot occur, and is why the defect survived eight reviews. It now asserts both exact values, and 46 adversarial cases were added across `test_contract_l1_parity.py` and `test_contract_link_schema.py`. |
+| 10 | `.gitignore`'s line-1 `/docs/` hid 54 tracked files from `git add`, which had already cost a real miss. `docs/remediation/` and `docs/superpowers/` are now negated; the other ignored files under `docs/` stay ignored. |
+
+**What is still not covered:** all of this is still synthetic-fixture validation (§7, blocker B1). The lookbehind guard is fixed-width, so phrasings like "amends **the** Contract No: X" are not blocked by it — they fall to `parent_contract_id`'s own higher-prior claim on the same text, but they are not proven by test. And the value regex now requires the identifier to sit immediately after the label; a document that puts anything between them yields nothing rather than something wrong, which is the intended direction of failure.
 
 ## Regression status
 

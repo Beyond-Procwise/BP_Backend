@@ -1,4 +1,16 @@
-/docs/
+# docs/ is ignored wholesale, EXCEPT docs/remediation/ — the remediation
+# programme's decision records must stay visible to `git add`. They were
+# silently invisible under the old blanket `/docs/` rule, and that already cost
+# a real miss: a document was written, never staged, and nobody noticed.
+#
+# Only remediation/ is negated. Everything else under docs/ — including
+# docs/superpowers/plans and specs, which are managed by explicit `git add -f`
+# — stays ignored, so `git add` is not flooded with ~50 unrelated documents.
+#
+# A directory cannot be re-included while its parent is excluded, so the parent
+# is excluded one level down (/docs/*) rather than wholesale (/docs/).
+/docs/*
+!/docs/remediation/
 /venv/
 __pycache__/
 *.pyc
