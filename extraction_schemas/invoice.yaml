@@ -679,6 +679,7 @@ line_items:
         - "Rate"
         - "Price Each"
         - "Unit Cost"
+        - "Price per Unit"
       extractors:
       - qwen_vlm
       judge:
@@ -749,6 +750,24 @@ line_items:
         - "Amount Incl. Tax"
       extractors:
       - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_of_measure
+      type: string
+      required: false
+      db_column: unit_of_measure
+      canonical_labels:
+        - UOM
+        - Unit
+        - Unit of Measure
+        - U/M
+        - Measure
+      extractors:
+        - qwen_vlm
       judge:
         tiebreaker: true
         grounded_last_resort: true
