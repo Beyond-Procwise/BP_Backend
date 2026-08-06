@@ -65,3 +65,32 @@ def test_contract_id_patterns_do_not_fire_on_boilerplate(doc_type):
     noise = "This contract is subject to our standard terms and conditions."
     got = _hits(doc_type, "contract_id", noise)
     assert not got, f"{doc_type}: patterns fired on boilerplate: {got}"
+
+
+@pytest.mark.parametrize("doc_type", DOC_TYPES)
+@pytest.mark.parametrize("text,expected", [
+    ("Issued under Master Agreement MSA-9921.", "MSA-9921"),
+    ("Contract No: MSA-2024-0087.", "MSA-2024-0087"),
+    ("Contract Reference: CTR/2025/119,", "CTR/2025/119"),
+])
+def test_trailing_punctuation_is_not_part_of_the_identifier(doc_type, text, expected):
+    """'MSA-9921.' != 'MSA-9921' silently breaks the join to bp_contracts —
+    the transaction is left orphaned with no error anywhere."""
+    got = _hits(doc_type, "contract_id", text)
+    assert got, f"{doc_type}: nothing extracted from {text!r}"
+    assert all(g == expected for g in got), f"{doc_type}: got {got}, expected {expected!r}"
+
+
+@pytest.mark.parametrize("doc_type", DOC_TYPES)
+@pytest.mark.parametrize("placeholder", ["N/A", "NA", "TBC", "TBD", "NONE"])
+def test_placeholder_tokens_are_not_captured_as_a_contract_link(doc_type, placeholder):
+    got = _hits(doc_type, "contract_id", f"Contract No: {placeholder}")
+    assert not got, f"{doc_type}: captured placeholder {got}"
+
+
+@pytest.mark.parametrize("doc_type", DOC_TYPES)
+def test_prose_label_lookalike_does_not_fire(doc_type):
+    """'Contract Notes:' contains 'No'. An optional connector let the label
+    matcher walk into the middle of an unrelated word and take the next token."""
+    got = _hits(doc_type, "contract_id", "Contract Notes: SEE ATTACHED SCHEDULE")
+    assert not got, f"{doc_type}: fired on a label lookalike: {got}"

@@ -647,14 +647,26 @@ fields:
       - "Framework Agreement"
     confidence_threshold: 0.75
     patterns:
+      # The connector is MANDATORY. With it optional, 'no' inside 'Contract
+      # Notes:' satisfied the label alternation and the value regex then took
+      # the next token ('SEE'). '.' is one of the accepted connectors so
+      # 'Agreement No. AGR-4471' still reads.
+      #
+      # The value regex is pinned to the start of the post-anchor window (\A),
+      # must end on an alphanumeric (so 'MSA-9921.' does not become a distinct
+      # identifier from 'MSA-9921' and silently orphan the join to
+      # bp_contracts), and refuses the placeholder tokens a document writes
+      # when it has no contract to name.
       - name: anchored_contract_no
-        anchor: '(?i)\b(?:contract|agreement|msa|framework(?:\s+agreement)?)\s*(?:number|no\.?|reference|ref\.?|#)\s*[:\-]?\s*'
-        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
+        anchor: '(?i)\b(?:contract|agreement|msa|framework(?:\s+agreement)?)\s*(?:number|no\.?|reference|ref\.?|#)\s*[:\-\.]\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.90
+      # Prose form — 'Issued under Master Agreement MSA-9921' legitimately has
+      # no connector, so this pattern's own connector stays optional.
       - name: under_agreement
         anchor: '(?i)\b(?:issued\s+)?under\s+(?:master\s+)?(?:agreement|contract)\s*[:\-]?\s*'
-        value: '([A-Z][A-Z0-9\-\/\.]{2,30}|\d{4,12}[A-Z0-9\-\/\.]{0,20})'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.82
     judge:
