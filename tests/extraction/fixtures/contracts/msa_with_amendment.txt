@@ -1,0 +1,25 @@
+AMENDMENT No. AMD-2025-004
+
+to the MASTER SERVICES AGREEMENT
+
+Contract Number: MSA-2024-0087
+Parent Contract: MSA-2024-0001
+Document Version: v3.2
+
+Supplier: Northwind Technology Services Limited
+Buyer: Assurity Group Holdings plc
+
+Cost Centre: CC-4471
+Business Unit: Group Technology
+
+Commencement Date: 01 April 2025
+Expiry Date: 31 March 2028
+Initial Term: 36 months
+
+Charges shall be invoiced quarterly in advance.
+
+Annual price escalation: 3.5% per annum, indexed to CPI.
+Any increase under this clause shall be capped at 5% in any contract year.
+
+Payment Terms: Net 45 days
+Governing Law: England and Wales

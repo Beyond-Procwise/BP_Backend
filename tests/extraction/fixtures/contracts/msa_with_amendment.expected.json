@@ -1,0 +1,13 @@
+{
+  "contract_id": "MSA-2024-0087",
+  "parent_contract_id": "MSA-2024-0001",
+  "cost_centre_id": "CC-4471",
+  "is_amendment": "AMENDMENT",
+  "amendment_ref": "AMD-2025-004",
+  "document_version": "v3.2",
+  "term_months": "36",
+  "billing_frequency": "quarterly",
+  "escalator_pct": "3.5",
+  "escalator_basis": "CPI",
+  "escalator_cap_pct": "5"
+}
