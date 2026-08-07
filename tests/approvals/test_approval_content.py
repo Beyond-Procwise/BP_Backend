@@ -63,6 +63,23 @@ def test_it_hashes_the_recipients_the_send_path_will_use():
     assert content_hash(from_singular) == content_hash(_draft())
 
 
-def test_a_draft_with_no_content_still_hashes():
-    """Never raise into a caller -- an unhashable draft must not crash a send."""
-    assert isinstance(content_hash({}), str)
+import pytest
+
+
+@pytest.mark.parametrize("bad", [None, "a string", ["a", "b"], 42])
+def test_a_draft_that_is_not_a_mapping_still_hashes(bad):
+    """The send path calls this. Crashing here turns a refusal into an outage."""
+    assert isinstance(content_hash(bad), str)
+
+
+def test_a_failure_inside_recipient_resolution_still_hashes(monkeypatch):
+    """Force the guarded branch -- nothing else in the suite reaches it."""
+    import src.services.approval_content as mod
+
+    def explode(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "src.services.email_dispatch_guard.resolve_recipients", explode
+    )
+    assert isinstance(content_hash({"subject": "s", "body": "b"}), str)

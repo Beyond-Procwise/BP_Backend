@@ -10,12 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import Any, Dict
+from collections.abc import Mapping
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def _attachment_identities(draft: Dict[str, Any]) -> list:
+def _attachment_identities(draft: Mapping[str, Any]) -> list:
     """Attachment names, sorted. Content is not hashed -- the identity of what
     was attached is what an approver actually reviewed."""
 
@@ -30,10 +31,16 @@ def _attachment_identities(draft: Dict[str, Any]) -> list:
             text = str(name or "").strip()
             if text:
                 out.append(text)
+    elif raw is not None:
+        # Attachments present but not in expected shape
+        logger.warning(
+            "approval_content: attachments is %s, not list; treating as empty",
+            type(raw).__name__,
+        )
     return sorted(out)
 
 
-def content_hash(draft: Dict[str, Any]) -> str:
+def content_hash(draft: Any) -> str:
     """A stable digest of the recipients, subject, body and attachments.
 
     Recipients come from ``resolve_recipients``, which is what the send path
@@ -41,23 +48,37 @@ def content_hash(draft: Dict[str, Any]) -> str:
     (singular) plus a payload blob, so reading a column directly would let the
     approved set and the sent set diverge.
 
-    Never raises: an unhashable draft yields a digest of what could be read,
-    and the comparison then simply fails to match, which denies.
+    Never raises. A draft that cannot be read hashes as empty, so the
+    comparison fails to match and the send is denied. Crashing here would
+    take down a send that should merely have been refused.
     """
+
+    if not isinstance(draft, Mapping):
+        logger.error(
+            "approval_content: draft is %s, not a mapping; hashing as empty",
+            type(draft).__name__,
+        )
+        draft = {}
 
     try:
         from src.services.email_dispatch_guard import resolve_recipients
 
         recipients = sorted(r.casefold() for r in resolve_recipients(draft, None))
+        subject = str(draft.get("subject") or "").strip()
+        body = str(draft.get("body") or "").strip()
+        attachments = _attachment_identities(draft)
     except Exception as exc:  # noqa: BLE001 - a hash that cannot be computed must not crash a send
-        logger.error("approval_content: recipient resolution failed: %s", exc)
+        logger.error("approval_content: hashing failed: %s", exc)
         recipients = []
+        subject = ""
+        body = ""
+        attachments = []
 
     payload = {
         "recipients": recipients,
-        "subject": str(draft.get("subject") or "").strip(),
-        "body": str(draft.get("body") or "").strip(),
-        "attachments": _attachment_identities(draft),
+        "subject": subject,
+        "body": body,
+        "attachments": attachments,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
