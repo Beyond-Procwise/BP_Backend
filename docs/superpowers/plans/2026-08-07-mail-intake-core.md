@@ -6918,6 +6918,14 @@ there is nothing to grant.
   attempts to read a mailbox it should *not* be able to reach. If that attempt
   succeeds, the connection is refused and reported as over-scoped rather than
   being used. The result of that check is recorded with a timestamp.
+- **A connection cannot be switched on without that proof.** This is enforced
+  by the database, not by process: a mailbox connection may only be marked
+  active if it carries a recorded scope-verification timestamp. Nobody can
+  enable one by skipping the check, including us.
+- **Credentials are never held by this system.** What is stored is a reference
+  to an entry in your organisation's secret store, and the database will only
+  accept a value in that form — a pasted password or key is rejected outright
+  rather than stored.
 
 ### 3. IMAP
 
@@ -6974,8 +6982,32 @@ invoices are unaffected.
 Nothing in a document can change an approval, a supplier's standing, a risk
 rating, or how anything is scored. Those decisions are made by rules applied to
 checked data, never by text inside a file. The part of the system that reads
-documents has no access to email, no access to the network, and no ability to
-change how a document arrived or who sent it.
+documents cannot reach a mailbox, and cannot change how a document arrived or
+who sent it — sender, timestamps and authentication results are recorded before
+it runs and it has no route to alter them.
+
+## Where the separation is enforced, and where it is not
+
+We would rather state this precisely than let a reviewer infer more than is
+true.
+
+**Enforced for email attachments.** The document reader is never given a
+storage location it could vary. It receives the file itself, written to a
+temporary location we control and deleted immediately afterwards, so there is
+no address it could substitute and no way for it to reach material it was not
+handed — including the quarantine area holding rejected files.
+
+**Not enforced in general.** The document reader is also used by other parts of
+the product that do pass it a storage location, and it can fetch from storage
+when they do. So it is not, today, a component that is *incapable* of network
+access — it is one that is never *given* the means to misuse it on this path.
+An automated check records the one place this happens and fails the build if a
+new one appears, so the gap cannot widen quietly.
+
+Closing it completely means running the document reader as a separate process
+with no network route and a read-only database role. That is a deployment
+change rather than a code change, and it is not part of this work. If your
+review requires the stronger property, that is the piece to ask for.
 ```
 
 - [ ] **Step 4: Run the complete suite**
