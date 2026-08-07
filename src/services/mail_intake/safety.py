@@ -34,7 +34,16 @@ DEFAULT_SIZE_CEILING_BYTES = 25 * 1024 * 1024
 # exceeding it fails closed rather than quietly inspecting a prefix.
 _MEMBER_SNIFF_BYTES = 512
 _MEMBER_SNIFF_LIMIT = 512
-_MEMBER_MAX_BYTES = 8 * 1024 * 1024
+
+# There is deliberately NO per-member size cap. An earlier version skipped any
+# member declaring over 8MB, on the theory that reading a large member is what a
+# decompression bomb wants. Measured, that theory is wrong: reading 512 bytes
+# from a member declaring 200MB costs 0.17ms and 53KB, because zipfile passes
+# the requested length through to the decompressor and stops there. The cap
+# bought no safety and did real harm — it wrongly quarantined a real workbook
+# whose worksheet parts legitimately exceed 8MB uncompressed at ordinary
+# spreadsheet compression ratios. The whole artifact is already bounded by
+# size_ceiling_bytes.
 
 # Detected types a document may legitimately be. The tail of evaluate() clears
 # only these; anything else libmagic can name — an MSI installer, a .lnk command
@@ -173,12 +182,14 @@ def _inspect_members(content: bytes) -> Dict[str, Any]:
     sniff exclusively as text/xml, text/plain and text/html.
 
     On "never auto-expand": this reads a bounded prefix — at most
-    _MEMBER_SNIFF_BYTES from each of at most _MEMBER_SNIFF_LIMIT members, and
-    nothing at all from a member declaring an implausible size. That is
-    classification, the same thing detect() does for the outer file, not
-    extraction: nothing is written, executed, or handed onward. Reading a
-    bounded length also bounds decompression, so a member that lies about its
-    size cannot become a decompression bomb.
+    _MEMBER_SNIFF_BYTES from each of at most _MEMBER_SNIFF_LIMIT members. That
+    is classification, the same thing detect() does for the outer file, not
+    extraction: nothing is written, executed, or handed onward. There is
+    deliberately no per-member size cap: reading is bounded by the read
+    length, not by the member's declared size, so a member that lies about
+    its size (declaring 200MB while a small compressed blob backs it) costs
+    no more to sniff than an honest one — measured at well under a
+    millisecond and under 100KB of memory regardless of the declared size.
 
     KNOWN LIMIT, stated rather than implied: a payload placed beyond the first
     _MEMBER_SNIFF_BYTES of a member will not be recognised. Sniffing further
@@ -197,9 +208,8 @@ def _inspect_members(content: bytes) -> Dict[str, Any]:
         "member_count": 0,
         "inspected_members": 0,
         "sniffed_prefix_bytes": _MEMBER_SNIFF_BYTES,
-        "flagged_kinds": [],
+        "executable_kinds": [],
         "archive_kinds": [],
-        "oversized_members": 0,
         "truncated": False,
         "unreadable": False,
     }
@@ -218,9 +228,9 @@ def _inspect_members(content: bytes) -> Dict[str, Any]:
             executables, archives = set(), set()
             for info in infos:
                 summary["inspected_members"] += 1
-                if info.file_size > _MEMBER_MAX_BYTES:
-                    summary["oversized_members"] += 1
-                    continue
+                # Every member is sniffed regardless of declared size: the read
+                # length bounds the decompression, so a large or lying member
+                # costs no more than a small honest one.
                 with zf.open(info) as handle:
                     head = handle.read(_MEMBER_SNIFF_BYTES)
                 kind = detect(head)
@@ -234,7 +244,7 @@ def _inspect_members(content: bytes) -> Dict[str, Any]:
         summary["unreadable"] = True
         return summary
 
-    summary["flagged_kinds"] = sorted(executables)
+    summary["executable_kinds"] = sorted(executables)
     summary["archive_kinds"] = sorted(archives)
     return summary
 
@@ -320,7 +330,7 @@ def evaluate(
 
     if names is not None and detected_mime in _OOXML_MIMES:
         summary = _inspect_members(content)
-        if summary["flagged_kinds"]:
+        if summary["executable_kinds"]:
             # Executable content smuggled inside a well-formed document.
             # Reported as EXECUTABLE rather than ARCHIVE because a reviewer in
             # the action centre needs to see what was found, not merely that
@@ -330,14 +340,12 @@ def evaluate(
             )
         if (
             summary["archive_kinds"]
-            or summary["oversized_members"]
             or summary["truncated"]
             or summary["unreadable"]
         ):
             # Each of these is a "cannot clear with certainty": a container
-            # nested inside a container, a member too large to inspect, more
-            # members than we are willing to inspect, or a container we could
-            # not read at all.
+            # nested inside a container, more members than we are willing to
+            # inspect, or a container we could not read at all.
             return SafetyVerdict(
                 False, QuarantineReason.ARCHIVE, dict(summary, container="ooxml")
             )

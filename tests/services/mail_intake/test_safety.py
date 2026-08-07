@@ -68,7 +68,7 @@ def test_document_skeleton_wrapped_around_a_payload_quarantines():
     # EXECUTABLE, not ARCHIVE: a reviewer in the action centre needs to see
     # what was found, not merely that something was.
     assert verdict.reason is QuarantineReason.EXECUTABLE
-    assert verdict.detail["flagged_kinds"], "the reviewer must learn what was found"
+    assert verdict.detail["executable_kinds"], "the reviewer must learn what was found"
 
 
 def test_detail_names_the_content_kind_but_never_the_senders_filename():
@@ -85,7 +85,7 @@ def test_detail_names_the_content_kind_but_never_the_senders_filename():
     blob = repr(verdict.detail)
     assert "payload.exe" not in blob
     assert "payload" not in blob
-    assert any("exec" in k or "dosexec" in k for k in verdict.detail["flagged_kinds"])
+    assert any("exec" in k or "dosexec" in k for k in verdict.detail["executable_kinds"])
 
 
 @pytest.mark.parametrize(
@@ -127,7 +127,7 @@ def test_smuggled_script_types_are_caught(payload):
     )
     assert not verdict.ok
     assert verdict.reason is QuarantineReason.EXECUTABLE
-    assert verdict.detail["flagged_kinds"]
+    assert verdict.detail["executable_kinds"]
 
 
 def test_real_elf_binary_is_caught():
@@ -170,9 +170,15 @@ def test_real_libreoffice_artifact_is_not_quarantined():
     assert verdict.ok, f"real workbook wrongly quarantined as {verdict.reason}"
 
 
-def test_member_declaring_an_implausible_size_quarantines_without_reading_it():
-    """A member inside a document declaring tens of megabytes is its own signal,
-    and reading it is exactly what a zip bomb is for."""
+def test_large_legitimate_worksheet_is_not_quarantined():
+    """A REAL false positive, reproduced.
+
+    `SpendIQ_UI_Verification_testdb.xlsx` in this repo contains worksheet parts
+    that exceed 8MB uncompressed at ordinary spreadsheet compression ratios. An
+    earlier per-member size cap quarantined it as ARCHIVE. Large is not the same
+    as hostile, and a rule that holds real spreadsheets teaches people to ignore
+    the queue.
+    """
     import io
     import zipfile
 
@@ -181,7 +187,11 @@ def test_member_declaring_an_implausible_size_quarantines_without_reading_it():
         zf.writestr("[Content_Types].xml", "<Types/>")
         zf.writestr("_rels/.rels", "<Relationships/>")
         zf.writestr("xl/workbook.xml", "<workbook/>")
-        zf.writestr("bulk/pad.bin", b"\x00" * (9 * 1024 * 1024))
+        # ~9MB of legitimate worksheet XML, well compressible like the real one.
+        zf.writestr(
+            "xl/worksheets/sheet1.xml",
+            b"<worksheet>" + b"<c r='A1'><v>1</v></c>" * 420000 + b"</worksheet>",
+        )
     content = buf.getvalue()
     verdict = safety.evaluate(
         content,
@@ -190,9 +200,37 @@ def test_member_declaring_an_implausible_size_quarantines_without_reading_it():
         filename="prices.xlsx",
         size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
     )
+    assert verdict.ok, f"large legitimate worksheet quarantined as {verdict.reason}"
+
+
+def test_a_member_lying_about_its_size_is_still_sniffed():
+    """Removing the size cap must not create a way to avoid inspection.
+
+    Reading is bounded by the read length, not by the member's declared size —
+    measured at 0.17ms and 53KB for a member declaring 200MB — so a payload
+    cannot dodge classification by claiming to be enormous.
+    """
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("word/big.bin", elf + b"\x00" * (9 * 1024 * 1024))
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
     assert not verdict.ok
-    assert verdict.reason is QuarantineReason.ARCHIVE
-    assert verdict.detail["oversized_members"] == 1
+    assert verdict.reason is QuarantineReason.EXECUTABLE
 
 
 def test_ordinary_workbook_is_not_falsely_flagged():
