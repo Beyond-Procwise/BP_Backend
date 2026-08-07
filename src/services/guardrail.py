@@ -12,6 +12,14 @@ Evaluation order, and the reasoning behind it:
 
 Any exception is converted to a denial with the error recorded as evidence.
 The gate never raises into its caller and never fails open.
+
+This function decides role and policy applicability only. An ``allowed=True``
+Decision means the caller's role is permitted the action class and no
+applicable policy denies it -- it does NOT mean any policy-specific
+precondition (an approval on file, a recipient allow-list, content
+sensitivity, and so on) has been checked. Those preconditions are the
+caller's to enforce before acting; see e.g. Task 7's email_dispatch_guard for
+one such caller-side check that authorize() deliberately does not duplicate.
 """
 
 from __future__ import annotations
@@ -56,9 +64,15 @@ def authorize(
     context: Optional[Dict[str, Any]] = None,
     policy_engine: Optional[Any] = None,
 ) -> Decision:
-    """Decide whether ``principal`` may perform ``action``."""
+    """Decide whether ``principal`` may perform ``action``.
 
-    context = dict(context or {})
+    ``context`` is accepted for interface symmetry with callers that carry
+    request-scoped data, but is not read by this function today. It is
+    intentionally left uncoerced: a coercion that is never used can only
+    ever turn a caller's type error into a silently swallowed denial,
+    hiding a bug in the caller rather than surfacing it.
+    """
+
     try:
         # Resolve the engine once and thread that same instance through every
         # downstream call. Otherwise the default (no engine passed) path
@@ -109,15 +123,39 @@ def authorize(
             rules = details.get("rules") or {}
 
             required_role = details.get("required_role")
-            if required_role and rbac.role_rank(
-                role, policy_engine=engine
-            ) < rbac.role_rank(required_role, policy_engine=engine):
-                return _deny(
-                    f"{policy.get('policyName')} requires role {required_role}; "
-                    f"caller is {role}",
-                    action=action,
-                    role=role,
-                )
+            if required_role:
+                required_rank = rbac.role_rank(required_role, policy_engine=engine)
+                if required_rank <= 0:
+                    # An unresolvable required_role (typo'd, renamed, blank)
+                    # means the policy cannot be enforced as written.
+                    # role_rank returns 0 for any role it does not
+                    # recognise, and every real role ranks >= 1, so treating
+                    # this as "no cap" would silently delete the
+                    # restriction instead of denying it. An unenforceable
+                    # restriction denies rather than evaporating.
+                    return Decision(
+                        allowed=False,
+                        reason=(
+                            f"{policy.get('policyName')} requires role "
+                            f"{required_role!r}, which no policy defines"
+                        ),
+                        policy_id=policy.get("policyId"),
+                        policy_name=policy.get("policyName"),
+                        policy_version=_version_of(policy),
+                        evidence={"action": action, "role": role},
+                    )
+                if rbac.role_rank(role, policy_engine=engine) < required_rank:
+                    return Decision(
+                        allowed=False,
+                        reason=(
+                            f"{policy.get('policyName')} requires role "
+                            f"{required_role}; caller is {role}"
+                        ),
+                        policy_id=policy.get("policyId"),
+                        policy_name=policy.get("policyName"),
+                        policy_version=_version_of(policy),
+                        evidence={"action": action, "role": role},
+                    )
 
             if str(rules.get("effect") or "").lower() == "deny":
                 return Decision(
@@ -149,7 +187,18 @@ def authorize(
 
         return Decision(
             allowed=True,
-            reason=f"permitted by {allowing.get('policyName')}",
+            # State only what this function actually evaluated: role and
+            # policy applicability. Do not claim or imply that a
+            # policy-specific precondition -- an approval on file, a
+            # recipient allow-list, content sensitivity -- was checked here;
+            # that is the caller's job, and wording this as "approved" would
+            # let a future reader of an audit row mistake applicability for
+            # full clearance.
+            reason=(
+                f"{allowing.get('policyName')} permits {action} for role "
+                f"{role}; policy-specific preconditions are enforced by the "
+                "caller"
+            ),
             policy_id=allowing.get("policyId"),
             policy_name=allowing.get("policyName"),
             policy_version=_version_of(allowing),

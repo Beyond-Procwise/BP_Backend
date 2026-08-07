@@ -233,3 +233,34 @@ def test_a_real_decision_carries_the_policy_version():
         "policy_version is None against the live database -- the loader is not "
         "selecting bp_policy.version, so every audit row would record no version"
     )
+
+
+@pytest.mark.parametrize("bad_context", ["oops", 42, ["a", "b"], object()])
+def test_a_malformed_context_never_escapes_as_an_exception(bad_context):
+    """A gate that raises is a gate the caller reads as 'no denial'."""
+    decision = guardrail.authorize(
+        "email.send", "communicate", approver(), bad_context,
+        policy_engine=engine_with(ALLOW_SEND),
+    )
+    assert isinstance(decision, guardrail.Decision)
+
+
+@pytest.mark.parametrize("bad_role", ["Admiin", "admin", "SuperAdmin", "  "])
+def test_an_unresolvable_required_role_denies(bad_role):
+    """A typo in a policy row must not silently remove its own restriction."""
+    policy = {
+        "policyId": "email_admin_only",
+        "policyName": "EmailAdminOnlyPolicy",
+        "details": {
+            "policy_identifier": "email_admin_only",
+            "required_role": bad_role,
+            "applies_to": ["email.send"],
+            "rules": {},
+        },
+        "raw_row": {"version": 1},
+    }
+    decision = guardrail.authorize(
+        "email.send", "communicate", approver(), {}, policy_engine=engine_with(policy)
+    )
+    assert decision.allowed is False
+    assert "no policy defines" in decision.reason
