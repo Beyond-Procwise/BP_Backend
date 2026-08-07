@@ -157,7 +157,7 @@ def test_mark_duplicate_validates_the_state_it_is_given():
 
 def test_mark_duplicate_guards_against_a_concurrent_transition():
     cur = FakeCursor()
-    repo.mark_duplicate(cur, "ART-1", "ART-2")
+    repo.mark_duplicate(cur, "ART-1", "ART-2", current=ArtifactState.STORED)
     sql, params = cur.calls[0]
     assert "AND state = %s" in sql
     assert ArtifactState.STORED.value in params

@@ -209,15 +209,20 @@ def transition_artifact(cur, artifact_id: str, current: ArtifactState,
 
 
 def mark_duplicate(cur, artifact_id: str, duplicate_of: str,
-                   current: ArtifactState = ArtifactState.STORED) -> bool:
+                   current: ArtifactState) -> bool:
     """Mark an artifact as a duplicate of another.
 
-    `current` is a parameter, not a literal. An earlier version called
-    assert_transition(STORED, DUPLICATE) with two hardcoded constants — which
-    can never raise whatever state the row is actually in, so it validated
-    nothing while looking exactly like the sibling functions that do. It also
-    omitted their `AND state = %s` guard, so a concurrent transition could
-    overwrite silently.
+    `current` is a required parameter, not a literal and not defaulted. An
+    earlier version called assert_transition(STORED, DUPLICATE) with two
+    hardcoded constants — which can never raise whatever state the row is
+    actually in, so it validated nothing while looking exactly like the
+    sibling functions that do. It also omitted their `AND state = %s` guard,
+    so a concurrent transition could overwrite silently. A later fix added
+    `current` as a parameter but defaulted it to STORED — the exact value the
+    original tautology hardcoded — so any caller that omitted it silently
+    reproduced the assumption the fix was meant to remove. There is no safe
+    default for "what state do you believe this row is in"; the caller must
+    say.
     """
     assert_transition(current, ArtifactState.DUPLICATE)
     cur.execute(
