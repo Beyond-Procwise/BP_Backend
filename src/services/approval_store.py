@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 _STATUS_APPROVED = "approved"
 
+# ApprovalsAgent's verdict vocabulary for the `decision` column (see
+# deploy/sql/2026-07-13_bp_approval.sql): approve | require_approval |
+# escalate | deny. This is a *different* vocabulary from `status`, which is
+# governed separately by policy (Task 1's accepted_status: ["approved"]).
+_DECISION_APPROVE = "approve"
+
 
 def _dict_cursor(conn: Any):
     return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -68,7 +74,13 @@ def record_approval(
         supplier_id,
         amount,
         currency,
-        _STATUS_APPROVED,
+        # decision uses ApprovalsAgent's verdict vocabulary (approve |
+        # require_approval | escalate | deny, see
+        # deploy/sql/2026-07-13_bp_approval.sql), which is deliberately NOT the
+        # same string as status. status='approved' is the governed value
+        # Task 1's policy checks (accepted_status: ["approved"]). Do not
+        # collapse these back to one value.
+        _DECISION_APPROVE,
         _STATUS_APPROVED,
         signer,
         policy_id,
@@ -107,6 +119,13 @@ def find_dispatch_approval(
     Matched on rfq_id AND workflow_id. A draft carrying a unique_id but no
     rfq_id matches on workflow_id plus the unique_id recorded in grounding.
     Anything matching neither is absent, not approved.
+
+    bp_approval is append-only: a revocation arrives as a NEW row rather than
+    an update to the original. So the newest row for the key is selected
+    first, regardless of status, and *that* row is then required to be
+    approved and signed. Filtering the candidate set by status before taking
+    the newest would let the lookup step over a later revocation and return
+    the superseded approval.
     """
 
     workflow = str(workflow_id or "").strip()
@@ -118,18 +137,24 @@ def find_dispatch_approval(
 
     if rfq:
         sql = (
-            "SELECT * FROM proc.bp_approval "
-            "WHERE rfq_id = %s AND workflow_id = %s "
-            "AND status = %s AND actioned_by IS NOT NULL "
-            "ORDER BY approval_id DESC LIMIT 1"
+            "SELECT * FROM ("
+            "  SELECT * FROM proc.bp_approval"
+            "   WHERE rfq_id = %s AND workflow_id = %s"
+            "   ORDER BY approval_id DESC"
+            "   LIMIT 1"
+            ") latest "
+            "WHERE status = %s AND actioned_by IS NOT NULL"
         )
         params: tuple = (rfq, workflow, _STATUS_APPROVED)
     elif unique:
         sql = (
-            "SELECT * FROM proc.bp_approval "
-            "WHERE workflow_id = %s AND grounding->>'unique_id' = %s "
-            "AND status = %s AND actioned_by IS NOT NULL "
-            "ORDER BY approval_id DESC LIMIT 1"
+            "SELECT * FROM ("
+            "  SELECT * FROM proc.bp_approval"
+            "   WHERE workflow_id = %s AND grounding->>'unique_id' = %s"
+            "   ORDER BY approval_id DESC"
+            "   LIMIT 1"
+            ") latest "
+            "WHERE status = %s AND actioned_by IS NOT NULL"
         )
         params = (workflow, unique, _STATUS_APPROVED)
     else:
