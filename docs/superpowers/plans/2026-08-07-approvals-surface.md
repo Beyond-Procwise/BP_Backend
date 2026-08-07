@@ -1564,12 +1564,17 @@ from src.services.db import get_conn
 from src.services.governance_tools.authority import resolve_authority
 e = PolicyEngine(connection_factory=get_conn)
 v = resolve_authority(e, ['email_dispatch_agent'])
-print('live authority verdict:', v)
-print('may send unattended:', bool(v.get('email_dispatch_agent',{}).get('may_send')))
+verdict = v.get('email_dispatch_agent', {})
+print('governed:', verdict.get('governed'))
+print('auto_intents:', verdict.get('auto_intents'))
+print('reason:', verdict.get('reason'))
+print('anything autonomous:', bool(verdict.get('governed') and verdict.get('auto_intents')))
 "
 ```
 
-Expected: `may send unattended: False` — `auto_reply_intents` is empty, so nothing is autonomous. Record the actual output.
+Expected: `governed: True`, `auto_intents: []`, and `anything autonomous: False` — the policy is readable but names no autonomous intent, so nothing sends unattended. Record the actual output.
+
+Note this reads `auto_intents`, not a `may_send` field — no such field exists, and a check against it would report `False` for the wrong reason and look like a pass.
 
 - [ ] **Step 7: Commit**
 
