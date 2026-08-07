@@ -4152,20 +4152,55 @@ import pytest
 from src.services.mail_intake import store
 
 
-class FakeS3:
-    """Records puts; refuses to overwrite, the way write-once must behave."""
+def _client_error(code: str, status: int) -> Exception:
+    """A botocore-shaped error, because that is the shape the code branches on.
 
-    def __init__(self):
+    A bare KeyError cannot exercise `_is_not_found` at all — it has no
+    `.response` — so a fake raising one would leave the branch untested while
+    the tests looked complete.
+    """
+    from botocore.exceptions import ClientError
+
+    return ClientError(
+        {
+            "Error": {"Code": code, "Message": code},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        },
+        "HeadObject",
+    )
+
+
+class FakeS3:
+    """Records puts; refuses to overwrite, the way write-once must behave.
+
+    `fail_with` makes the store answer every call with a given error, so the
+    non-404 branch — the one the whole write-once fix exists for — can actually
+    be exercised rather than reasoned about.
+    """
+
+    def __init__(self, fail_with: Optional[Exception] = None):
         self.objects = {}
+        self.fail_with = fail_with
 
     def put_object(self, Bucket, Key, Body, **kwargs):
+        if self.fail_with:
+            raise self.fail_with
         self.objects[(Bucket, Key)] = Body
         return {"ETag": "fake"}
 
     def head_object(self, Bucket, Key):
+        if self.fail_with:
+            raise self.fail_with
         if (Bucket, Key) not in self.objects:
-            raise KeyError(Key)
+            raise _client_error("404", 404)
         return {"ContentLength": len(self.objects[(Bucket, Key)])}
+
+    def get_object(self, Bucket, Key):
+        if self.fail_with:
+            raise self.fail_with
+        if (Bucket, Key) not in self.objects:
+            raise _client_error("NoSuchKey", 404)
+        return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
 
 
 def test_digest_is_stable_and_hex():
@@ -4217,6 +4252,50 @@ def test_reput_of_identical_content_is_a_no_op():
     objects.put_immutable(key, b"a")
     objects.put_immutable(key, b"a")
     assert len(client.objects) == 1
+
+
+@pytest.mark.parametrize(
+    "code,status",
+    [("AccessDenied", 403), ("SlowDown", 503), ("RequestTimeout", 408)],
+)
+def test_a_non_404_failure_is_never_read_as_absent(code, status):
+    """The property the write-once fix exists for, and the one nothing tested.
+
+    An earlier version caught every exception and reported "absent", so a
+    throttle or a permission change let put_immutable overwrite different
+    content under the same key. The fix was correct by inspection but no
+    committed test exercised a realistic non-404 error — only the 404 path was
+    modelled, so the central claim was unproven.
+    """
+    client = FakeS3(fail_with=_client_error(code, status))
+    objects = store.ObjectStore("bucket", client=client)
+    key = store.artifact_key("user-7", store.sha256_hex(b"a"))
+
+    with pytest.raises(store.StorageUnavailable):
+        objects.exists(key)
+
+    # And crucially: the write must not happen.
+    with pytest.raises(store.StorageUnavailable):
+        objects.put_immutable(key, b"a")
+    assert client.objects == {}
+
+
+def test_an_unreadable_existing_object_is_not_called_a_mismatch():
+    """A storage failure and an integrity violation are both refusals, but only
+    one of them is true. Reporting the wrong one sends a reviewer hunting for
+    tampering that never happened."""
+
+    class ExistsButUnreadable(FakeS3):
+        def get_object(self, Bucket, Key):
+            raise _client_error("SlowDown", 503)
+
+    client = ExistsButUnreadable()
+    objects = store.ObjectStore("bucket", client=client)
+    key = store.artifact_key("user-7", store.sha256_hex(b"a"))
+    client.objects[("bucket", key)] = b"a"
+
+    with pytest.raises(store.StorageUnavailable):
+        objects.put_immutable(key, b"a")
 ```
 
 ```python
@@ -4755,7 +4834,7 @@ def test_mark_duplicate_validates_the_state_it_is_given():
 
 def test_mark_duplicate_guards_against_a_concurrent_transition():
     cur = FakeCursor()
-    repo.mark_duplicate(cur, "ART-1", "ART-2")
+    repo.mark_duplicate(cur, "ART-1", "ART-2", current=ArtifactState.STORED)
     sql, params = cur.calls[0]
     assert "AND state = %s" in sql
     assert ArtifactState.STORED.value in params
@@ -5022,7 +5101,7 @@ def transition_artifact(cur, artifact_id: str, current: ArtifactState,
 
 
 def mark_duplicate(cur, artifact_id: str, duplicate_of: str,
-                   current: ArtifactState = ArtifactState.STORED) -> bool:
+                   current: ArtifactState) -> bool:
     """Mark an artifact as a duplicate of another.
 
     `current` is a parameter, not a literal. An earlier version called
@@ -5997,7 +6076,9 @@ class IngestPipeline:
 
         existing = repo.find_existing_artifact(cur, owner_ref, digest, None)
         if existing and existing != artifact_id:
-            repo.mark_duplicate(cur, artifact_id, existing)
+            repo.mark_duplicate(
+                cur, artifact_id, existing, current=ArtifactState.STORED
+            )
             repo.record_arrival(cur, existing, bundle_id)
             return artifact_id, None, existing
 
