@@ -11,9 +11,27 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
+
+
+def _normalised(draft: Mapping) -> Dict[str, Any]:
+    """Bridge the stored column names to what resolve_recipients reads.
+
+    proc.draft_rfq_emails stores recipient_email (singular); resolve_recipients
+    reads recipients/receiver. Every caller hashing a raw database row would
+    otherwise resolve to an empty recipient set -- and since the approval and
+    the send hash in different places, a mapping applied at only some call
+    sites makes the two disagree silently. It belongs here, once.
+    """
+
+    out = dict(draft)
+    if not out.get("recipients") and not out.get("receiver"):
+        single = out.get("recipient_email")
+        if single:
+            out["receiver"] = single
+    return out
 
 
 def _attachment_identities(draft: Mapping[str, Any]) -> list:
@@ -59,6 +77,8 @@ def content_hash(draft: Any) -> str:
             type(draft).__name__,
         )
         draft = {}
+
+    draft = _normalised(draft)
 
     try:
         from src.services.email_dispatch_guard import resolve_recipients

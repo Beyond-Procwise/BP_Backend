@@ -83,3 +83,34 @@ def test_a_failure_inside_recipient_resolution_still_hashes(monkeypatch):
         "src.services.email_dispatch_guard.resolve_recipients", explode
     )
     assert isinstance(content_hash({"subject": "s", "body": "b"}), str)
+
+
+def test_a_raw_database_row_hashes_against_its_real_recipient():
+    """draft_rfq_emails stores recipient_email; resolve_recipients reads
+    recipients/receiver. Callers hashing a raw row must not silently resolve
+    to nobody."""
+    raw = {
+        "unique_id": "PROC-WF-1",
+        "recipient_email": "buyer@supplier-b.com",
+        "subject": "RFQ",
+        "body": "Please quote.",
+    }
+    mapped = dict(raw, receiver="buyer@supplier-b.com")
+    assert content_hash(raw) == content_hash(mapped)
+
+
+def test_an_already_resolved_recipient_list_wins():
+    """A caller that resolved recipients itself must not be overridden."""
+    raw = {
+        "recipient_email": "stale@supplier-b.com",
+        "recipients": ["current@supplier-b.com"],
+        "subject": "RFQ",
+        "body": "Please quote.",
+    }
+    assert content_hash(raw) == content_hash(
+        {
+            "recipients": ["current@supplier-b.com"],
+            "subject": "RFQ",
+            "body": "Please quote.",
+        }
+    )

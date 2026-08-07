@@ -280,13 +280,6 @@ def list_pending_dispatch_approvals(
             )
             if existing:
                 continue
-            # draft_rfq_emails stores recipient_email (singular); content_hash
-            # (via resolve_recipients) looks for "recipients" or "receiver" --
-            # the same keys email_dispatch_service hydrates onto a draft row
-            # before hashing/sending (see its _hydrate-style mapping). Map it
-            # here too, or the hash would silently cover an empty recipient
-            # set instead of who the draft actually goes to.
-            draft.setdefault("receiver", draft.get("recipient_email"))
             out.append(
                 {
                     "unique_id": draft.get("unique_id"),
