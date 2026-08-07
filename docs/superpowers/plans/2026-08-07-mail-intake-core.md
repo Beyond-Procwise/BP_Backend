@@ -4623,8 +4623,23 @@ class FakeCursor:
         return self._results.pop(0) if self._results else None
 
     def fetchall(self):
-        out, self._results = list(self._results), []
-        return out
+        """Rows for the CURRENT query, matching psycopg2 — not the whole queue.
+
+        An earlier version drained everything queued, which is not what a real
+        cursor does. Across a function issuing several queries, the first
+        fetchall swallowed every later query's rows and handed them back nested.
+        That pushed a workaround into production code — `metrics.collect` grew a
+        branch unwrapping a nested list, with a comment explaining it existed
+        for the test double. Shaping shipped code around a fake is backwards:
+        the fake is the thing that was wrong.
+
+        Semantics: pop one queued entry. A list is a row set and is returned as
+        is; anything else is a single row and is wrapped.
+        """
+        if not self._results:
+            return []
+        entry = self._results.pop(0)
+        return list(entry) if isinstance(entry, list) else [entry]
 
     # -- test helpers --
     def queue(self, *rows):
@@ -5244,7 +5259,7 @@ git commit -m "feat(mail-intake): repository layer with validated transitions an
 
 **Interfaces:**
 - Consumes: `store.ObjectStore`
-- Produces: `RawMessage` (frozen dataclass: `raw: bytes`, `provider_message_id: str`, `received_at: datetime|None`, `source_ref: str`); `MailSource` (Protocol with `iter_messages(binding, since) -> Iterator[RawMessage]`); `RelayMailSource(bucket, prefix, object_store=None, client=None)`
+- Produces: `RawMessage` (frozen dataclass: `raw: bytes`, `provider_message_id: str`, `received_at: datetime|None`, `source_ref: str`); `MailSource` (Protocol with `iter_messages(binding, since) -> Iterator[RawMessage]`); `RelayMailSource(bucket, prefix, client=None)` — note there is deliberately no `object_store` parameter; the adapter yields raw bytes and stores nothing
 
 - [ ] **Step 1: Write the failing test**
 
@@ -6768,7 +6783,10 @@ Follow both patterns rather than introducing a third.
 **Files:**
 - Create: `src/services/mail_intake/metrics.py`
 - Test: `tests/services/mail_intake/test_metrics.py`
-- Modify: `src/services/mail_intake/pipeline.py` (alert hooks)
+(No pipeline change. An earlier version of this list claimed `pipeline.py`
+would gain alert hooks, but no step here writes any and the commit step never
+staged it — a stale entry pointing at a module Task 12 has not created yet.
+`metrics.py` is standalone; the scheduler wiring that calls it is Plan 2.)
 
 **Interfaces:**
 - Consumes: `states.ArtifactState`, `states.BundleState`, and `FakeCursor` from
@@ -6908,6 +6926,9 @@ def collect(cur: Any, *, window_hours: int = 24) -> Dict[str, Any]:
         "GROUP BY quarantine_reason",
         window,
     )
+    # Plain fetchall, deliberately. This previously carried an unwrap branch
+    # that existed only because the test double drained its whole queue —
+    # production code contorted to fit a fake. The fake was fixed instead.
     by_reason = {str(r[0]): int(r[1]) for r in (cur.fetchall() or [])}
 
     duplicates = _scalar(
