@@ -13,12 +13,9 @@ Spec §9.
 """
 from __future__ import annotations
 
-import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from src.services.mail_intake.states import ArtifactState, BundleState
-
-log = logging.getLogger(__name__)
 
 ALERT_ADAPTER_FAILURE = "mail_intake.adapter_failure"
 ALERT_QUARANTINE_RATE = "mail_intake.quarantine_rate"
@@ -135,11 +132,16 @@ def check_alerts(
                  "total": total, "quarantined": quarantined},
             )
 
+    # The interval comes from the constant, not a literal. Declaring
+    # STALE_BINDING_SECONDS and then hardcoding '1 hour' means editing the
+    # constant changes nothing — a trap for whoever tunes it next.
     cur.execute(
         "SELECT binding_id, EXTRACT(EPOCH FROM (now() - last_sync_at))::int "
         "  FROM proc.bp_mailbox_binding "
         " WHERE is_active AND role = 'intake' "
-        "   AND (last_sync_at IS NULL OR last_sync_at < now() - interval '1 hour')"
+        "   AND (last_sync_at IS NULL "
+        "        OR last_sync_at < now() - (%s || ' seconds')::interval)",
+        (STALE_BINDING_SECONDS,),
     )
     stale = list(cur.fetchall() or [])
     if stale:

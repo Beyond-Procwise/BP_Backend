@@ -35,19 +35,32 @@ class FakeCursor:
 
         An earlier version drained everything queued, which is not what a real
         cursor does. Across a function issuing several queries, the first
-        fetchall swallowed every later query's rows and handed them back nested.
-        That pushed a workaround into production code — `metrics.collect` grew a
-        branch unwrapping a nested list, with a comment explaining it existed
-        for the test double. Shaping shipped code around a fake is backwards:
-        the fake is the thing that was wrong.
+        fetchall swallowed every later query's rows. That pushed a workaround
+        into production code — `metrics.collect` grew a branch unwrapping a
+        nested list, with a comment saying it existed for the test double.
+        Shaping shipped code around a fake is backwards; the fake was wrong.
 
-        Semantics: pop one queued entry. A list is a row set and is returned as
-        is; anything else is a single row and is wrapped.
+        **A fetchall result must be queued as a LIST of rows, always.** The
+        replacement for that first fix wrapped any non-list entry as a single
+        row, which was quietly worse: a test written in the flat style used
+        everywhere else here — `FakeCursor([("S1", "a"), ("S2", "b")])` —
+        returned only the first row AND left the second in the queue to corrupt
+        the next call, with no exception and no signal. A fake that is wrong in
+        a new way is worse than one wrong in a known way, so the ambiguous case
+        now raises and says what to write instead.
         """
         if not self._results:
             return []
         entry = self._results.pop(0)
-        return list(entry) if isinstance(entry, list) else [entry]
+        if not isinstance(entry, list):
+            raise TypeError(
+                "FakeCursor.fetchall() expects the queued entry to be a LIST of "
+                f"rows, got {type(entry).__name__}. Queue a row set explicitly: "
+                "FakeCursor([[row1, row2]]) — or FakeCursor([[row]]) for one "
+                "row. A bare tuple or dict is treated as a fetchone result, and "
+                "silently returning it here would hide the rest of the queue."
+            )
+        return list(entry)
 
     # -- test helpers --
     def queue(self, *rows):

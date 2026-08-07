@@ -108,7 +108,8 @@ def test_quarantine_transition_records_its_reason():
 
 
 def test_claim_ready_artifacts_selects_only_ready_rows():
-    cur = FakeCursor([{"artifact_id": "ART-1"}])
+    # Row sets are queued as a list, always — see FakeCursor.fetchall.
+    cur = FakeCursor([[{"artifact_id": "ART-1"}]])
     rows = repo.claim_ready_artifacts(cur, limit=10)
     sql, params = cur.calls[0]
     # Assert the FILTER, not merely that the value was bound. Checking only the
@@ -161,6 +162,18 @@ def test_mark_duplicate_guards_against_a_concurrent_transition():
     sql, params = cur.calls[0]
     assert "AND state = %s" in sql
     assert ArtifactState.STORED.value in params
+
+
+def test_a_flat_multi_row_queue_is_rejected_rather_than_silently_truncated():
+    """The footgun the previous fake had.
+
+    Written flat — the style used everywhere else in this suite — a multi-row
+    fetchall returned only the first row and left the rest to corrupt the next
+    call, silently. Raising costs nothing and the message says what to write.
+    """
+    cur = FakeCursor([("S1", "acme.test"), ("S2", "other.test")])
+    with pytest.raises(TypeError, match="LIST of rows"):
+        cur.fetchall()
 
 
 def test_a_transition_that_matched_no_row_is_reported_not_silent(caplog):
