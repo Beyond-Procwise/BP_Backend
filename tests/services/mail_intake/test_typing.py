@@ -176,12 +176,27 @@ def test_package_libmagic_calls_octet_stream_is_still_recognised():
 def test_widening_the_trigger_does_not_widen_what_earns_a_document_verdict():
     """Inspection now runs on any zip, so confirm strictness still decides.
 
-    A malformed package must still come back as an archive even though it now
-    reaches the inspector by a different route.
+    The fixture is built so libmagic itself returns `application/octet-stream` —
+    asserted below, because an earlier version of this test used a fixture that
+    libmagic already recognised as a Word document. That meant the OLD trigger
+    routed it too, so the test passed identically before and after the fix and
+    proved nothing about the structural route it is named for. The assertion on
+    the magic verdict is what keeps this test honest if libmagic's heuristics
+    change.
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("[trash]/0000.dat", b"\x00" * 64)  # magic sees octet-stream
+        # Enough leading padding that libmagic's OOXML heuristic does not fire.
+        for i in range(6):
+            zf.writestr(f"[trash]/{i:04d}.dat", b"\xff\xff\xff\xff" + b"\x00" * 512)
         zf.writestr("[Content_Types].xml", "<Types/>")
         zf.writestr("word/document.xml", "<document/>")  # no _rels/.rels
-    assert typing_.detect(buf.getvalue()) == "application/zip"
+    content = buf.getvalue()
+
+    import magic as _magic
+
+    assert _magic.from_buffer(content, mime=True) == "application/octet-stream", (
+        "fixture no longer exercises the structural trigger — libmagic now "
+        "recognises it, so the old trigger would have routed it anyway"
+    )
+    assert typing_.detect(content) == "application/zip"
