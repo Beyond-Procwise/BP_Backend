@@ -134,6 +134,7 @@ class EmailDispatchService:
         workflow_dispatch_context: Optional[Dict[str, Any]] = None,
         notify_watcher: bool = True,
         principal: Optional[Any] = None,
+        run_count: int = 0,
     ) -> Dict[str, Any]:
         """Send the latest draft for ``identifier`` (unique_id preferred).
 
@@ -142,6 +143,15 @@ class EmailDispatchService:
         that free-form dict is dispatch metadata, not who is asking, and
         burying identity in it is how it went missing from the guard in the
         first place.
+
+        ``run_count`` is likewise explicit rather than a key inside
+        ``workflow_dispatch_context``: the same free-form dict that lost
+        ``principal`` once is not where a volume counter belongs either.
+        Nothing populated it there, which is exactly how the volume cap went
+        dead -- every call read 0 forever. Callers that loop over several
+        drafts in one invocation (``EmailDispatchAgent.run``, the batch and
+        dispatch-all endpoints) must pass the count of sends already
+        attempted so far in that loop.
         """
 
         identifier = (identifier or "").strip()
@@ -214,7 +224,8 @@ class EmailDispatchService:
                 body=body_text,
                 attachments=attachments,
                 principal=principal,
-                run_count=(workflow_dispatch_context or {}).get("run_count", 0),
+                sender=sender_email,
+                run_count=run_count,
                 internal_domains=self._internal_domains(),
             )
             record_action_or_fail(

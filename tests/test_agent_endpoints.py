@@ -589,3 +589,72 @@ def test_dispatch_all_refuses_without_a_principal(monkeypatch):
     assert "no authenticated principal" in body["results"][0]["error"]
 
 
+def test_email_batch_dispatch_stops_at_the_volume_cap(monkeypatch):
+    """Fix round 2 (C2): nothing ever set `run_count`, so the guard's
+    max_per_run check was structurally dead -- always comparing 0 against the
+    cap. This drives three drafts through /email/batch against a stub that
+    enforces a cap of 2 exactly like the real guard's check 5, and proves the
+    router itself increments run_count once per real send attempt -- not by
+    injecting run_count directly into check_dispatch (that arithmetic has its
+    own proof in tests/guardrails/test_send_path_gate.py::test_check_5_run_cap_denies).
+    """
+    app = FastAPI()
+    app.include_router(workflows_router)
+    _authorize_as_approver(app)
+    orchestrator = DummyOrchestrator()
+    app.state.orchestrator = orchestrator
+    app.state.agent_nick = orchestrator.agent_nick
+    client = TestClient(app)
+
+    MAX_PER_RUN = 2
+    run_counts_seen = []
+
+    class StubDispatch:
+        def __init__(self, agent_nick):
+            pass
+
+        def send_draft(self, identifier, **kwargs):
+            run_count = kwargs.get("run_count", _MISSING)
+            run_counts_seen.append(run_count)
+            if run_count is _MISSING:
+                raise AssertionError("send_draft must always receive run_count")
+            if run_count >= MAX_PER_RUN:
+                raise PermissionError(
+                    f"volume cap reached: {run_count}/{MAX_PER_RUN} for this run"
+                )
+            return {
+                "unique_id": identifier,
+                "sent": True,
+                "recipients": ["r@example.com"],
+                "sender": "s@example.com",
+                "subject": "s",
+            }
+
+    monkeypatch.setattr("api.routers.workflows.EmailDispatchService", StubDispatch)
+
+    resp = client.post(
+        "/workflows/email/batch",
+        json={
+            "drafts": [
+                {"unique_id": "PROC-WF-VOL-1", "supplier_id": "SUP-1"},
+                {"unique_id": "PROC-WF-VOL-2", "supplier_id": "SUP-2"},
+                {"unique_id": "PROC-WF-VOL-3", "supplier_id": "SUP-3"},
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # The router incremented run_count once per real attempt: 0, 1, 2 --
+    # never injected, never left at a constant 0.
+    assert run_counts_seen == [0, 1, 2]
+
+    assert body["sent"] == 2
+    assert body["failed"] == 1
+    assert body["results"][0]["sent"] is True
+    assert body["results"][1]["sent"] is True
+    assert body["results"][2]["sent"] is False
+    assert "volume cap" in body["results"][2]["error"]
+
+

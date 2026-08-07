@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from src.services import approval_store, email_sensitivity, guardrail
+from src.services import approval_store, email_sensitivity, guardrail, rbac
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,43 @@ def _peer_prices(
         return []
 
 
+def _daily_send_count(conn: Any, principal_subject: Optional[str]) -> Optional[int]:
+    """Sends already allowed for this principal in the last 24 hours.
+
+    ``None`` means the count could not be determined -- no principal to
+    count against, or the lookup itself failed -- and the caller must treat
+    that as a denial. An unenforceable cap is not an absent cap.
+    """
+
+    if not principal_subject:
+        return None
+    if hasattr(conn, "lookup_daily_send_count"):
+        try:
+            count = conn.lookup_daily_send_count(principal_subject)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "daily send count lookup failed for %s: %s", principal_subject, exc
+            )
+            return None
+        return int(count) if count is not None else None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM proc.bp_agent_actions "
+            "WHERE action_type = 'email.send' AND status = 'allowed' "
+            "AND details ->> 'principal' = %s "
+            "AND created_at >= NOW() - INTERVAL '24 hours'",
+            (principal_subject,),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "daily send count lookup failed for %s: %s", principal_subject, exc
+        )
+        return None
+
+
 def _normalise(values: Optional[Iterable[Any]]) -> List[str]:
     out: List[str] = []
     for value in values or []:
@@ -130,10 +167,18 @@ def resolve_recipients(
 
 
 def _rules(policy_engine: Optional[Any], slug: str) -> Dict[str, Any]:
-    if policy_engine is None:
+    # None means "resolve the real thing", not "no rules exist" -- exactly
+    # like rbac.authorize and email_sensitivity.classify already do for the
+    # same argument. `check_dispatch` never receives a policy_engine from any
+    # production caller, so treating None as empty here made the volume cap
+    # (both max_per_run and max_per_user_per_day) permanently unenforceable:
+    # every send_draft call would read {} and skip the cap regardless of what
+    # bp_policy actually declares.
+    engine = policy_engine if policy_engine is not None else rbac.policy_engine()
+    if engine is None:
         return {}
     try:
-        policy = policy_engine.get_policy(slug)
+        policy = engine.get_policy(slug)
     except Exception:  # noqa: BLE001
         return {}
     if not isinstance(policy, dict):
@@ -154,6 +199,7 @@ def check_dispatch(
     body: Optional[str],
     attachments: Optional[Iterable[Any]],
     principal: Optional[Any],
+    sender: Optional[str] = None,
     run_count: int = 0,
     policy_engine: Optional[Any] = None,
     approval_lookup: Optional[Callable[..., Optional[Dict[str, Any]]]] = None,
@@ -219,6 +265,7 @@ def check_dispatch(
             recipient_supplier_id=supplier_id,
             peer_prices=resolved_peers,
             internal_domains=internal_domains or [],
+            sender=sender,
             policy_engine=policy_engine,
         )
         if not email_sensitivity.clearance_permits(
@@ -264,6 +311,33 @@ def check_dispatch(
                 reason=f"volume cap reached: {run_count}/{max_per_run} for this run",
                 policy_name="EmailVolumePolicy",
             )
+
+        try:
+            max_per_day = int(volume.get("max_per_user_per_day"))
+        except (TypeError, ValueError):
+            max_per_day = None
+        if max_per_day is not None:
+            principal_subject = getattr(principal, "subject", None)
+            daily_count = _daily_send_count(conn, principal_subject)
+            if daily_count is None:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=(
+                        "could not determine this user's daily send count; "
+                        "denying rather than sending unmetered"
+                    ),
+                    policy_name="EmailVolumePolicy",
+                )
+            if daily_count >= max_per_day:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=(
+                        f"daily volume cap reached: {daily_count}/{max_per_day} "
+                        "for this user"
+                    ),
+                    policy_name="EmailVolumePolicy",
+                    evidence={"principal": principal_subject},
+                )
 
         return guardrail.Decision(
             allowed=True,

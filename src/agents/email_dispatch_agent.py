@@ -141,6 +141,7 @@ class EmailDispatchAgent(BaseAgent):
         workflow_id: Optional[str],
         round_number: Optional[int],
         principal: Optional[Any] = None,
+        run_count: int = 0,
     ) -> Dict[str, Any]:
         unique_id = self._coerce_text(draft.get("unique_id"))
         supplier_id = self._coerce_text(draft.get("supplier_id"))
@@ -171,6 +172,7 @@ class EmailDispatchAgent(BaseAgent):
             attachments=attachments,
             workflow_dispatch_context=dispatch_context,
             principal=principal,
+            run_count=run_count,
         )
 
         dispatched_at_dt = datetime.now(timezone.utc)
@@ -258,6 +260,10 @@ class EmailDispatchAgent(BaseAgent):
 
         dispatch_records: List[Dict[str, Any]] = []
         failures: List[Dict[str, Any]] = []
+        # Sends actually attempted in this invocation so far -- not the loop
+        # index, which would also count drafts skipped as already-dispatched
+        # below. This is what the guard's volume cap (check 5) counts against.
+        send_attempts = 0
 
         for draft in drafts:
             unique_id = self._coerce_text(draft.get("unique_id"))
@@ -266,7 +272,14 @@ class EmailDispatchAgent(BaseAgent):
                 dispatch_records.append(already)
                 continue
 
-            record = self._send_draft(draft, workflow_id, round_number, principal=principal)
+            record = self._send_draft(
+                draft,
+                workflow_id,
+                round_number,
+                principal=principal,
+                run_count=send_attempts,
+            )
+            send_attempts += 1
             dispatch_records.append(record)
             if record.get("status") != "sent":
                 failures.append(record)

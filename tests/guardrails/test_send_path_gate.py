@@ -80,17 +80,26 @@ def approver():
 
 
 class FakeConn:
-    """Answers only the two lookups the guard makes against the database."""
+    """Answers the lookups the guard makes against the database."""
 
-    def __init__(self, allowlist=("buyer@supplier-b.com",), clearance="internal"):
+    def __init__(
+        self,
+        allowlist=("buyer@supplier-b.com",),
+        clearance="internal",
+        daily_send_count=0,
+    ):
         self.allowlist = {a.casefold() for a in allowlist}
         self.clearance = clearance
+        self.daily_send_count = daily_send_count
 
     def lookup_supplier_emails(self, supplier_id):
         return set(self.allowlist)
 
     def lookup_supplier_clearance(self, supplier_id):
         return self.clearance
+
+    def lookup_daily_send_count(self, principal_subject):
+        return self.daily_send_count
 
 
 def base_kwargs(**overrides):
@@ -229,3 +238,67 @@ def test_peer_prices_come_from_the_approval_not_the_draft():
     )
     assert decision.allowed is False
     assert "clearance" in decision.reason.lower()
+
+
+SIGNATURE_BODY = (
+    "Please quote for 100 units.\n\n"
+    "Kind regards,\n"
+    "Jane Doe\n"
+    "Procurement Manager\n"
+    "jane.doe@ourcompany.com"
+)
+
+
+def test_the_senders_own_signature_does_not_block_the_send():
+    """The guard must hand classify() the sender, or every signed email is
+    read as leaking an internal contact and refused to every supplier."""
+    decision = guard.check_dispatch(
+        **base_kwargs(
+            body=SIGNATURE_BODY,
+            sender="jane.doe@ourcompany.com",
+            internal_domains=["ourcompany.com"],
+        )
+    )
+    assert decision.allowed is True, decision.reason
+
+
+def test_a_colleagues_address_still_blocks_the_send():
+    decision = guard.check_dispatch(
+        **base_kwargs(
+            body=SIGNATURE_BODY,
+            sender="someone.else@ourcompany.com",
+            internal_domains=["ourcompany.com"],
+        )
+    )
+    assert decision.allowed is False
+    assert "clearance" in decision.reason.lower()
+
+
+def test_check_5_daily_cap_denies_when_the_lookup_is_at_or_over_the_limit():
+    """max_per_user_per_day is declared by VOLUME_POLICY (50) and must be
+    enforced, not merely read. A lookup returning >= the limit denies."""
+    decision = guard.check_dispatch(
+        **base_kwargs(conn=FakeConn(daily_send_count=50))
+    )
+    assert decision.allowed is False
+    assert "daily" in decision.reason.lower()
+
+
+def test_check_5_daily_cap_allows_comfortably_under_the_limit():
+    decision = guard.check_dispatch(
+        **base_kwargs(conn=FakeConn(daily_send_count=1))
+    )
+    assert decision.allowed is True, decision.reason
+
+
+def test_check_5_a_failed_daily_count_lookup_denies_rather_than_passes():
+    """An unenforceable cap is not an absent cap: a broken lookup must deny,
+    not silently let the send through unmetered."""
+
+    class ExplodingDailyCount(FakeConn):
+        def lookup_daily_send_count(self, principal_subject):
+            raise RuntimeError("bp_agent_actions is unreachable")
+
+    decision = guard.check_dispatch(**base_kwargs(conn=ExplodingDailyCount()))
+    assert decision.allowed is False
+    assert "daily" in decision.reason.lower() or "denying" in decision.reason.lower()
