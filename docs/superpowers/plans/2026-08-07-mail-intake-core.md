@@ -335,32 +335,79 @@ EXPECTED_TABLES = (
 )
 
 
+def _table_block(name: str) -> str:
+    """The CREATE TABLE body for `name`.
+
+    Assertions run against one table's body rather than the whole file, so a
+    constraint on a different table can never satisfy them by accident.
+    """
+    match = re.search(
+        r"CREATE TABLE IF NOT EXISTS proc\." + name + r"\s*\((.*?)\n\);", SQL, re.S
+    )
+    assert match, f"{name} must be created"
+    return match.group(1)
+
+
+def _check_values(block: str, column: str) -> set:
+    """The exact value set of `column`'s CHECK (... IN (...)) within one table."""
+    match = re.search(
+        r"\n\s*" + column + r"\b.*?CHECK\s*\(.*?IN\s*\((.*?)\)\)", block, re.S
+    )
+    assert match, f"{column} must carry a CHECK constraint"
+    return set(re.findall(r"'([a-z_]+)'", match.group(1)))
+
+
 @pytest.mark.parametrize("table", EXPECTED_TABLES)
 def test_table_is_created_idempotently(table):
     assert f"CREATE TABLE IF NOT EXISTS {table}" in SQL
 
 
-def test_every_bundle_state_appears_in_its_check_constraint():
-    clause = re.search(r"state\s+TEXT NOT NULL.*?CHECK \(state IN \((.*?)\)\)", SQL, re.S)
-    assert clause, "bp_ingest_bundle.state must carry a CHECK constraint"
-    listed = set(re.findall(r"'([a-z_]+)'", clause.group(1)))
-    assert {s.value for s in BundleState} <= listed
+def test_bundle_state_check_matches_the_enum_exactly():
+    # Equality, not subset. A CHECK listing a state the code cannot produce is
+    # as much a defect as one missing a state the code does produce: the first
+    # silently permits an unreachable value, the second rejects a legitimate one
+    # at runtime. A subset assertion only ever catches the second.
+    assert _check_values(_table_block("bp_ingest_bundle"), "state") == {
+        s.value for s in BundleState
+    }
 
 
-def test_every_quarantine_reason_appears_in_the_ddl():
-    for reason in QuarantineReason:
-        assert f"'{reason.value}'" in SQL, f"{reason.value} missing from CHECK constraint"
+def test_artifact_state_check_matches_the_enum_exactly():
+    assert _check_values(_table_block("bp_ingest_artifact"), "state") == {
+        s.value for s in ArtifactState
+    }
 
 
-def test_every_artifact_state_appears_in_the_ddl():
-    for state in ArtifactState:
-        assert f"'{state.value}'" in SQL, f"{state.value} missing from CHECK constraint"
+@pytest.mark.parametrize("table", ["bp_ingest_bundle", "bp_ingest_artifact"])
+def test_quarantine_reason_check_matches_the_enum_exactly(table):
+    assert _check_values(_table_block(table), "quarantine_reason") == {
+        r.value for r in QuarantineReason
+    }
 
 
 def test_content_hash_is_unique_within_the_dedup_scope():
-    # Spec §5.3: dedup scope is the binding owner, not the binding.
-    assert "ix_bp_ingest_artifact_owner_sha" in SQL
-    assert "UNIQUE" in SQL
+    # Spec §5.3: dedup scope is the binding OWNER, not the binding. Asserted as
+    # one match so a UNIQUE keyword elsewhere in the file cannot satisfy it.
+    match = re.search(
+        r"CREATE UNIQUE INDEX IF NOT EXISTS ix_bp_ingest_artifact_owner_sha\s+"
+        r"ON proc\.bp_ingest_artifact\s*\(([^)]*)\)",
+        SQL,
+    )
+    assert match, "the dedup index must exist and must be UNIQUE"
+    assert [c.strip() for c in match.group(1).split(",")] == ["owner_ref", "sha256"]
+
+
+@pytest.mark.parametrize("table", ["bp_ingest_bundle", "bp_ingest_artifact"])
+def test_binding_id_is_bigint_and_references_the_binding_table(table):
+    # proc.bp_mailbox_binding.binding_id is BIGINT GENERATED ALWAYS AS IDENTITY
+    # and is that table's primary key. TEXT here would need an explicit cast on
+    # every join, and without the FK a bundle could name a binding that does
+    # not exist — which is exactly the audit-spine break the design forbids.
+    block = _table_block(table)
+    match = re.search(r"\n\s*binding_id\s+(\w+)[^,]*?REFERENCES\s+(\S+)\s*\(binding_id\)", block)
+    assert match, f"{table}.binding_id must be a typed FK to the binding table"
+    assert match.group(1) == "BIGINT"
+    assert match.group(2) == "proc.bp_mailbox_binding"
 
 
 def test_derivation_table_has_no_update_path():
@@ -411,7 +458,12 @@ ALTER TABLE proc.bp_mailbox_binding
 
 CREATE TABLE IF NOT EXISTS proc.bp_ingest_bundle (
     bundle_id           UUID PRIMARY KEY,
-    binding_id          TEXT NOT NULL,
+    -- BIGINT, not TEXT: proc.bp_mailbox_binding.binding_id is
+    -- BIGINT GENERATED ALWAYS AS IDENTITY and is that table's primary key.
+    -- TEXT here would make every join need an explicit cast (Postgres has no
+    -- implicit text = bigint operator) and would let a bundle name a binding
+    -- that does not exist -- which breaks the audit spine the FK now enforces.
+    binding_id          BIGINT NOT NULL REFERENCES proc.bp_mailbox_binding (binding_id),
     owner_ref           TEXT NOT NULL,
     provider_message_id TEXT,
     rfc_message_id      TEXT,
@@ -450,7 +502,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_bp_ingest_bundle_binding_provider_msg
 CREATE TABLE IF NOT EXISTS proc.bp_ingest_artifact (
     artifact_id             UUID PRIMARY KEY,
     bundle_id               UUID NOT NULL REFERENCES proc.bp_ingest_bundle (bundle_id),
-    binding_id              TEXT NOT NULL,
+    binding_id              BIGINT NOT NULL REFERENCES proc.bp_mailbox_binding (binding_id),
     owner_ref               TEXT NOT NULL,
     declared_filename       TEXT,
     declared_mime           TEXT,
@@ -531,7 +583,7 @@ CREATE INDEX IF NOT EXISTS ix_bp_artifact_derivation_artifact_id
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/sql/test_mail_intake_sql.py -v`
-Expected: PASS, 12 tests
+Expected: PASS, 16 tests
 
 - [ ] **Step 5: Apply the migration to bp_sqldb and confirm**
 
@@ -2982,7 +3034,7 @@ def test_insert_bundle_writes_received_state_and_returns_an_id():
     cur = FakeCursor()
     bundle_id = repo.insert_bundle(
         cur,
-        binding_id="BND-1",
+        binding_id=1,
         owner_ref="user-7",
         provider_message_id="prov-1",
         rfc_message_id="<a@b.test>",
@@ -3450,7 +3502,7 @@ class FakeS3:
 
 
 def _binding(**kwargs):
-    base = {"binding_id": "BND-1", "owner_ref": "user-7", "folder_scope": "emails/"}
+    base = {"binding_id": 1, "owner_ref": "user-7", "folder_scope": "emails/"}
     base.update(kwargs)
     return base
 
@@ -3686,7 +3738,7 @@ def _message(fixture):
 
 
 def _binding():
-    return {"binding_id": "BND-1", "owner_ref": "user-7", "folder_scope": "emails/"}
+    return {"binding_id": 1, "owner_ref": "user-7", "folder_scope": "emails/"}
 
 
 def _pipeline(store=None, bus=None):
@@ -4499,7 +4551,7 @@ def _run(raw: bytes, provider_id="emails/x.eml"):
     cur, store = FakeCursor(), FakeStore()
     outcome = IngestPipeline(object_store=store, bucket="procwisemvp").ingest(
         cur,
-        {"binding_id": "BND-1", "owner_ref": "user-7", "folder_scope": "emails/"},
+        {"binding_id": 1, "owner_ref": "user-7", "folder_scope": "emails/"},
         RawMessage(raw, provider_id, datetime(2026, 8, 5, tzinfo=timezone.utc), "ref"),
     )
     return outcome, cur, store
@@ -4743,8 +4795,21 @@ c = psycopg2.connect(host=os.getenv("DB_HOST"), port=os.getenv("DB_PORT", 5432),
                      password=os.getenv("DB_PASSWORD"))
 c.autocommit = False
 with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    # bp_ingest_bundle.binding_id is a real FK to bp_mailbox_binding, so the
+    # probe has to create a binding before it can create a bundle. That the FK
+    # forces this is the point: a bundle cannot name a binding that does not
+    # exist. Everything here is rolled back.
+    cur.execute(
+        "INSERT INTO proc.bp_mailbox_binding "
+        "(user_ref, provider, mailbox_address, role, credential_ref, is_active) "
+        "VALUES ('live-check', 'relay', 'probe@example.invalid', 'intake', "
+        "'secret-ref-probe', false) RETURNING binding_id"
+    )
+    binding_id = cur.fetchone()["binding_id"]
+    print("probe binding:", binding_id)
+
     bundle_id = repo.insert_bundle(
-        cur, binding_id="BND-live-check", owner_ref="live-check",
+        cur, binding_id=binding_id, owner_ref="live-check",
         provider_message_id=f"probe-{uuid.uuid4()}", rfc_message_id="<probe@test>",
         thread_id=None, sender_address="probe@copperleaf.test",
         sender_display_name="Probe", sender_domain="copperleaf.test",
@@ -4849,7 +4914,7 @@ def test_quarantine_rate_alert_ignores_tiny_samples():
 
 
 def test_stale_binding_raises_the_adapter_failure_alert():
-    cur = FakeCursor([(100,), (1,), [("BND-1", 9000)]])
+    cur = FakeCursor([(100,), (1,), [(1, 9000)]])
     alerts = metrics.check_alerts(cur, alert=lambda *a: None)
     assert metrics.ALERT_ADAPTER_FAILURE in alerts
 ```
