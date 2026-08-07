@@ -4325,6 +4325,29 @@ def raw_mime_key(owner_ref: str, bundle_id: str) -> str:
     return f"{RAW_MIME_PREFIX}{owner_ref}/{bundle_id}.eml"
 
 
+def _is_not_found(exc: Exception) -> bool:
+    """True only for "this key does not exist", never for any other failure.
+
+    The distinction is the whole write-once guarantee. An earlier version caught
+    every exception and reported "absent", so a throttle, a timeout or a
+    permission change made exists() return False and put_immutable overwrote
+    genuinely different content under the same key — silently defeating the one
+    property this class exists to provide. Not knowing whether an object exists
+    is not the same as knowing it does not.
+    """
+    code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+    if code in ("404", "NoSuchKey", "NotFound"):
+        return True
+    status = getattr(exc, "response", {}).get(
+        "ResponseMetadata", {}
+    ).get("HTTPStatusCode")
+    return status == 404
+
+
+class StorageUnavailable(RuntimeError):
+    """The store could not answer. Never silently treated as "absent"."""
+
+
 class ObjectStore:
     """Thin write-once wrapper. Holds no parsing or interpretation logic."""
 
@@ -4340,11 +4363,16 @@ class ObjectStore:
         return self._client
 
     def exists(self, key: str) -> bool:
+        """True, False, or raise. Never "probably not"."""
         try:
             self._resolve_client().head_object(Bucket=self._bucket, Key=key)
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            if _is_not_found(exc):
+                return False
+            raise StorageUnavailable(
+                f"could not determine whether {key} exists"
+            ) from exc
 
     def get(self, key: str) -> Optional[bytes]:
         try:
@@ -4352,20 +4380,32 @@ class ObjectStore:
                 Bucket=self._bucket, Key=key
             )
             return response["Body"].read()
-        except Exception:
-            return None
+        except Exception as exc:
+            if _is_not_found(exc):
+                return None
+            raise StorageUnavailable(f"could not read {key}") from exc
 
     def put_immutable(self, key: str, content: bytes) -> str:
-        """Write content once. Identical re-writes are no-ops; different ones raise."""
+        """Write content once. Identical re-writes are no-ops; different ones raise.
+
+        Every branch below either proves the write is safe or refuses. In
+        particular, an existing key whose content cannot be read is NOT treated
+        as a mismatch — it is a storage failure, and calling it a mismatch would
+        report a fabricated integrity violation. Both are refusals; only one of
+        them is true.
+        """
         client = self._resolve_client()
-        if self.exists(key):
-            existing = self.get(key)
-            if existing is not None and existing != content:
-                raise ImmutabilityViolation(key)
-            if existing == content:
-                return key
+        if not self.exists(key):
+            client.put_object(Bucket=self._bucket, Key=key, Body=content)
+            return key
+
+        existing = self.get(key)
+        if existing is None:
+            raise StorageUnavailable(
+                f"{key} exists but its content could not be read; refusing to write"
+            )
+        if existing != content:
             raise ImmutabilityViolation(key)
-        client.put_object(Bucket=self._bucket, Key=key, Body=content)
         return key
 ```
 
@@ -4491,6 +4531,10 @@ class FakeCursor:
     def __init__(self, results=()):
         self._results = list(results)
         self.calls = []
+        # Mirrors psycopg2: rows affected by the last statement. Defaults to 1
+        # so ordinary tests read as "the update applied"; set it to 0 to model
+        # a guarded UPDATE that lost a race.
+        self.rowcount = 1
 
     # -- cursor API --
     def execute(self, sql, params=None):
@@ -4665,6 +4709,11 @@ def test_claim_ready_artifacts_selects_only_ready_rows():
     cur = FakeCursor([{"artifact_id": "ART-1"}])
     rows = repo.claim_ready_artifacts(cur, limit=10)
     sql, params = cur.calls[0]
+    # Assert the FILTER, not merely that the value was bound. Checking only the
+    # parameter would keep passing if a future edit dropped `WHERE state = %s`
+    # from the SQL and left the value as a stray binding — which is precisely
+    # the regression this test exists to catch.
+    assert "WHERE state = %s" in sql
     assert ArtifactState.READY_FOR_EXTRACTION.value in params
     assert rows == [{"artifact_id": "ART-1"}]
 
@@ -4681,8 +4730,48 @@ def test_derivation_is_append_only():
 def test_find_existing_artifact_scopes_to_the_owner():
     cur = FakeCursor([("ART-7",)])
     assert repo.find_existing_artifact(cur, "user-7", "abc", None) == "ART-7"
-    _, params = cur.calls[0]
+    sql, params = cur.calls[0]
+    # The owner predicate must be IN THE SQL. Asserting only the bound value
+    # would pass even if the scoping clause were removed — and losing it means
+    # one customer's content hash matching another's, which is the worst
+    # failure this function can have.
+    assert "WHERE owner_ref = %s" in sql
     assert "user-7" in params
+
+
+def test_mark_duplicate_validates_the_state_it_is_given():
+    """The transition check must consult the artifact's actual state.
+
+    An earlier version passed two hardcoded literals to assert_transition, so
+    it could never raise whatever state the row was really in — it looked
+    exactly like the sibling functions that do validate, while validating
+    nothing.
+    """
+    cur = FakeCursor()
+    with pytest.raises(IllegalTransition):
+        repo.mark_duplicate(cur, "ART-1", "ART-2", current=ArtifactState.TYPED)
+    assert cur.calls == []
+
+
+def test_mark_duplicate_guards_against_a_concurrent_transition():
+    cur = FakeCursor()
+    repo.mark_duplicate(cur, "ART-1", "ART-2")
+    sql, params = cur.calls[0]
+    assert "AND state = %s" in sql
+    assert ArtifactState.STORED.value in params
+
+
+def test_a_transition_that_matched_no_row_is_reported_not_silent(caplog):
+    """A guarded UPDATE matching zero rows means another writer moved the row
+    first. Returning None made that indistinguishable from success."""
+    cur = FakeCursor()
+    cur.rowcount = 0
+    with caplog.at_level("WARNING"):
+        applied = repo.transition_artifact(
+            cur, "ART-1", ArtifactState.GATED, ArtifactState.STORED
+        )
+    assert applied is False
+    assert any("transition_skipped" in r.getMessage() for r in caplog.records)
 
 
 def test_safe_log_fields_drops_content_and_keeps_correlation_keys():
@@ -4784,6 +4873,26 @@ def safe_log_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _applied(cur, what: str, row_id: str, current, target) -> bool:
+    """Did the guarded UPDATE actually move the row?
+
+    Every transition here carries `AND state = %s`, which correctly stops a
+    stale writer clobbering a row that has since moved on. But a guarded UPDATE
+    matching zero rows is indistinguishable from a successful one to a caller
+    that ignores rowcount — so a lost race looked exactly like a completed
+    transition. Surfacing it costs one branch and turns a silent no-op into a
+    visible event.
+    """
+    applied = getattr(cur, "rowcount", 1) != 0
+    if not applied:
+        log.warning(
+            "mail_intake.transition_skipped op=%s id=%s expected_state=%s target=%s",
+            what, row_id, getattr(current, "value", current),
+            getattr(target, "value", target),
+        )
+    return applied
+
+
 def insert_bundle(cur, **fields: Any) -> Optional[str]:
     """Insert a bundle, or return None if this message was already ingested.
 
@@ -4845,7 +4954,7 @@ def insert_bundle(cur, **fields: Any) -> Optional[str]:
 
 def transition_bundle(cur, bundle_id: str, current: BundleState,
                       target: BundleState,
-                      reason: Optional[QuarantineReason] = None) -> None:
+                      reason: Optional[QuarantineReason] = None) -> bool:
     assert_transition(current, target)
     cur.execute(
         """
@@ -4855,6 +4964,7 @@ def transition_bundle(cur, bundle_id: str, current: BundleState,
         """,
         (target.value, reason.value if reason else None, bundle_id, current.value),
     )
+    return _applied(cur, "transition_bundle", bundle_id, current, target)
 
 
 def insert_artifact(cur, **fields: Any) -> str:
@@ -4891,7 +5001,7 @@ def insert_artifact(cur, **fields: Any) -> str:
 def transition_artifact(cur, artifact_id: str, current: ArtifactState,
                         target: ArtifactState,
                         reason: Optional[QuarantineReason] = None,
-                        detail: Optional[Dict[str, Any]] = None) -> None:
+                        detail: Optional[Dict[str, Any]] = None) -> bool:
     assert_transition(current, target)
     cur.execute(
         """
@@ -4908,18 +5018,31 @@ def transition_artifact(cur, artifact_id: str, current: ArtifactState,
             current.value,
         ),
     )
+    return _applied(cur, "transition_artifact", artifact_id, current, target)
 
 
-def mark_duplicate(cur, artifact_id: str, duplicate_of: str) -> None:
-    assert_transition(ArtifactState.STORED, ArtifactState.DUPLICATE)
+def mark_duplicate(cur, artifact_id: str, duplicate_of: str,
+                   current: ArtifactState = ArtifactState.STORED) -> bool:
+    """Mark an artifact as a duplicate of another.
+
+    `current` is a parameter, not a literal. An earlier version called
+    assert_transition(STORED, DUPLICATE) with two hardcoded constants — which
+    can never raise whatever state the row is actually in, so it validated
+    nothing while looking exactly like the sibling functions that do. It also
+    omitted their `AND state = %s` guard, so a concurrent transition could
+    overwrite silently.
+    """
+    assert_transition(current, ArtifactState.DUPLICATE)
     cur.execute(
         """
         UPDATE proc.bp_ingest_artifact
            SET state = %s, duplicate_of_artifact_id = %s, updated_at = now()
-         WHERE artifact_id = %s
+         WHERE artifact_id = %s AND state = %s
         """,
-        (ArtifactState.DUPLICATE.value, duplicate_of, artifact_id),
+        (ArtifactState.DUPLICATE.value, duplicate_of, artifact_id, current.value),
     )
+    return _applied(cur, "mark_duplicate", artifact_id, current,
+                    ArtifactState.DUPLICATE)
 
 
 def insert_sender_auth(cur, bundle_id: str, auth: Any, bind_result: Any) -> None:
