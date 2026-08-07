@@ -780,11 +780,15 @@ def dispatch_document(
         )
 
     # Provenance (only when we have a doc_pk — required by the table's NOT NULL)
+    # Header AND line-item evidence. Line values were previously written to the
+    # _trgt tables with no provenance at all, which left every unit price and
+    # quantity — the numbers the commercial analysis is built on —
+    # indistinguishable from a figure the pipeline had supplied itself.
     persistence.write_provenance(
         doc_type=doc_type,
         doc_pk=columns.get(persistence._DOC_PK_FIELD[doc_type]),
         pipeline_version=pipeline_version,
-        picked=picked,
+        picked={**picked, **persistence.pick_line_candidates(grounded, registry)},
         registry=registry,
     )
 

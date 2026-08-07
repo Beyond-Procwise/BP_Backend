@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 from uuid import UUID
@@ -240,6 +241,83 @@ def write_line_items_raw(
     return written
 
 
+_LINE_FIELD_RE = re.compile(r"line_items\[(\d+)\]\.(\w+)$")
+
+
+def _meta_for(registry: PatternRegistry, field_name: str):
+    """Resolve field metadata for a header OR an indexed line-item field.
+
+    The registry keys line fields as ``line_items.<field>`` while candidates
+    carry ``line_items[<idx>].<field>``, so the index must be stripped before
+    the lookup. A direct lookup raises KeyError on any line candidate, which is
+    almost certainly why they were excluded from provenance in the first place.
+    Returns None when the schema declares no such field.
+    """
+    m = _LINE_FIELD_RE.match(field_name)
+    key = f"line_items.{m.group(2)}" if m else field_name
+    try:
+        return registry.meta(key)
+    except KeyError:
+        return None
+
+
+def pick_line_candidates(
+    candidates: Iterable[Candidate],
+    registry: PatternRegistry,
+) -> dict[str, Candidate]:
+    """Highest-confidence candidate per ``line_items[i].field``.
+
+    The mirror of build_header_record's pick, kept separate so the two record
+    types never blur: the header record builds one row of columns, whereas
+    line candidates keep their index because that is what identifies the line
+    the evidence belongs to.
+
+    Only fields the schema declares AND binds to a column are returned — a
+    provenance row naming a field no schema defines would be the start of a
+    shadow vocabulary.
+    """
+    best: dict[str, Candidate] = {}
+    for c in candidates:
+        if not _LINE_FIELD_RE.match(c.field):
+            continue
+        meta = _meta_for(registry, c.field)
+        if meta is None or meta.db_column is None:
+            continue
+        if c.field not in best or c.confidence > best[c.field].confidence:
+            best[c.field] = c
+    return best
+
+
+def build_provenance_rows(
+    *,
+    doc_type: str,
+    doc_pk: str,
+    pipeline_version: str,
+    picked: Mapping[str, Candidate],
+    registry: PatternRegistry,
+) -> list[tuple]:
+    """The INSERT tuples for ``bp_extraction_provenance_v3``.
+
+    Split out from write_provenance so the row shape can be asserted without a
+    database. The field_path written here is the key the Phase 1b fact
+    assembler looks provenance up by, so its shape is a contract between the
+    two halves: an indexed, 0-based ``line_items[i].field``.
+    """
+    rows: list[tuple] = []
+    for field_name, cand in picked.items():
+        meta = _meta_for(registry, field_name)
+        if meta is None or meta.db_column is None:
+            continue
+        rows.append((
+            doc_type, str(doc_pk), field_name, cand.value,
+            cand.span.page, cand.span.bbox[0], cand.span.bbox[1],
+            cand.span.bbox[2], cand.span.bbox[3],
+            cand.span.text, cand.source, cand.confidence,
+            json.dumps([]), cand.confidence, pipeline_version,
+        ))
+    return rows
+
+
 def write_provenance(
     *,
     doc_type: str,
@@ -251,18 +329,10 @@ def write_provenance(
     """INSERT one provenance row per picked candidate. Skips fields without a doc_pk."""
     if not doc_pk:
         return  # provenance is keyed by doc_pk; nothing to write yet
-    rows = []
-    for field_name, cand in picked.items():
-        meta = registry.meta(field_name)
-        if meta.db_column is None:
-            continue
-        rows.append((
-            doc_type, str(doc_pk), field_name, cand.value,
-            cand.span.page, cand.span.bbox[0], cand.span.bbox[1],
-            cand.span.bbox[2], cand.span.bbox[3],
-            cand.span.text, cand.source, cand.confidence,
-            json.dumps([]), cand.confidence, pipeline_version,
-        ))
+    rows = build_provenance_rows(
+        doc_type=doc_type, doc_pk=doc_pk, pipeline_version=pipeline_version,
+        picked=picked, registry=registry,
+    )
     if not rows:
         return
     sql = """INSERT INTO proc.bp_extraction_provenance_v3
