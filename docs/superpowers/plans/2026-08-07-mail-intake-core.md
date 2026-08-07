@@ -3086,6 +3086,49 @@ def test_a_speck_of_an_image_cannot_launder_injected_text():
     assert any(h.technique == "invisible_render" for h in hits)
 
 
+def test_a_large_filler_graphic_cannot_qualify_a_speck_under_the_injection():
+    """The gap the first union redesign introduced, caught in re-review.
+
+    Qualifying the page's images as a block meant that once ANY combination of
+    imagery cleared the bar, every image on the page counted as scan backing —
+    including a small one placed directly under the injected text. So a large
+    decorative graphic elsewhere on the page laundered the speck.
+
+    Measured on that construction: page union 0.519, span fully covered, no
+    hit. Asking whether the PAGE is a scan (0.85) separates it — a genuine scan
+    reads 1.000, this reads 0.519.
+    """
+    import fitz
+
+    doc = fitz.open()
+    page_rect = doc.new_page().rect
+    doc.close()
+
+    content = _pdf_with_invisible_text(
+        [
+            # A large filler graphic, well away from the injected span.
+            (
+                fitz.Rect(
+                    page_rect.x0,
+                    page_rect.y0 + page_rect.height / 2,
+                    page_rect.x1,
+                    page_rect.y1,
+                ),
+                220,
+            ),
+            # A speck sized to cover the span itself.
+            (fitz.Rect(180, 385, 460, 415), 200),
+        ],
+        text_x=200,
+    )
+
+    hits = hidden_text.scan(content, "application/pdf")
+    assert any(h.technique == "invisible_render" for h in hits), (
+        "a large graphic elsewhere on the page laundered the image under the "
+        "injected text"
+    )
+
+
 @pytest.mark.parametrize("tile_count", [2, 3, 5])
 def test_a_scan_split_into_tiles_still_reads_as_a_scan(tile_count):
     """The false positive the first version produced.
@@ -3268,27 +3311,33 @@ LIGHT_LUMINANCE = 0.90
 # read as an OCR layer rather than free-floating injected text.
 OCR_OVERLAP_THRESHOLD = 0.60
 
-# Fraction of the PAGE an image must cover before it counts as scan backing.
+# Fraction of the PAGE that must be imagery before invisible text on it can be
+# read as an OCR layer.
 #
-# This exists because overlap alone is defeatable. An earlier version asked only
-# whether some image covered the span; an attacker authoring the PDF — precisely
-# the threat model here — could place a 10x10 pixel graphic under the injected
-# text and the detection vanished entirely. Demonstrated, not theorised.
-# Requiring the backing image to cover a substantial share of the page means
-# concealment now costs a large visible graphic the reader would notice, rather
-# than an invisible speck.
+# The question this asks is "is this page a scan?", NOT "is some image on it
+# large?". Two earlier versions asked the weaker question and both were broken:
 #
-# Measured against the union of a page's images, so tile count does not matter:
-# one-, two-, three- and five-tile scans all read as ~100%, while a letterhead
-# logo reads as ~2%.
+#   1. "Does some image overlap the span?" — an attacker authoring the PDF, which
+#      is exactly the threat model, placed a logo-sized graphic under the
+#      injected text and detection vanished.
+#   2. "Does the page's imagery total 50%?" — that qualified EVERY image on the
+#      page as backing, so a large filler graphic anywhere (say the bottom half)
+#      laundered a tiny image sitting under the injection. Measured: page union
+#      0.519, span fully covered, no hit. That regression was introduced by the
+#      fix for (1) and caught in re-review.
+#
+# A scanned page is essentially entirely imagery. Measured: full-page, two-,
+# three- and five-tile scans all read 1.000, while the filler-plus-speck attack
+# reads 0.519 and a letterhead logo 0.019. Setting the bar high enough to
+# require the page to BE a scan separates those by a wide margin, and the
+# attacker's cost becomes a full-page graphic the reader plainly sees.
 #
 # CALIBRATION NOTE, stated because the number reads more authoritative than it
 # is: none of the 260 real PDFs in this repo carries an invisible OCR layer, so
-# there was no corpus data to tune against. 0.50 passes a full-page scan with
-# wide margin and rejects the logo-sized case; a hybrid document whose scanned
-# region covers less than half a page would be flagged, which is the safer
-# direction to err. Revisit once real inbound mail provides examples.
-OCR_PAGE_COVERAGE_MIN = 0.50
+# there was no corpus data to tune against. A hybrid page whose scanned region
+# covers less than 85% would be flagged — the safer direction to err. Revisit
+# once real inbound mail provides examples.
+OCR_PAGE_COVERAGE_MIN = 0.85
 
 _WORD_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -3363,18 +3412,18 @@ def _union_fraction(rects, box, cols: int = 48, rows: int = 24) -> float:
 
 
 def _scan_backings(image_rects, page_box) -> List[Any]:
-    """The page's images, but only if together they plausibly ARE a page scan.
+    """The page's images, but only if the PAGE is essentially a scan.
 
-    Qualification is on the UNION, not per image. Judging each image on its own
-    breaks on tiled scans, which are ordinary for large or multi-column
-    originals: measured here, a two-tile scan puts each tile at exactly 50.000%
-    of an A4 page — precisely on the threshold, decided by float comparison —
-    and a three-tile scan puts each at 33%, so none qualifies and a wholly
-    legitimate scanned document gets flagged. On the union all of those read as
-    100% and pass, while a letterhead logo reads as 2% and does not.
+    Qualification is on the union of all imagery against the whole page, and
+    the bar is deliberately high — see OCR_PAGE_COVERAGE_MIN for why both
+    weaker formulations of this test were defeated.
 
-    A letterhead logo is not scan backing. This filter is what stops a
-    speck-sized graphic from laundering injected text.
+    Judging each image on its own breaks on tiled scans, which are ordinary for
+    large or multi-column originals: a two-tile scan puts each tile at exactly
+    50.000% of an A4 page, and a three-tile scan at 33%. Judging the union
+    against a LOW bar breaks differently: it lets one large filler graphic
+    qualify every other image on the page, including a speck placed under the
+    injection. Asking whether the page itself is a scan avoids both.
     """
     rects = [tuple(rect) for rect in image_rects]
     if not rects:
