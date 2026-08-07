@@ -1685,6 +1685,7 @@ async def send_email(
 async def dispatch_batch_emails(
     request: EmailBatchDispatchRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     if not request.drafts:
         raise HTTPException(
@@ -1726,6 +1727,7 @@ async def dispatch_batch_emails(
                 subject_override=draft.resolved_subject(),
                 body_override=draft.resolved_body(),
                 notify_watcher=False,
+                principal=principal,
             )
             results.append(
                 {
@@ -1947,6 +1949,7 @@ def remove_email_attachment(
 async def dispatch_workflow_drafts(
     workflow_id: str,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     try:
         with agent_nick.get_db_connection() as conn:
@@ -1984,6 +1987,7 @@ async def dispatch_workflow_drafts(
                     identifier=unique_id,
                     subject_override=subject,
                     notify_watcher=False,
+                    principal=principal,
                 )
                 results.append(
                     {
