@@ -2014,10 +2014,144 @@ def test_benign_mislabel_passes():
     assert verdict.ok
 
 
-def test_detail_never_carries_document_content():
-    verdict = _verdict("encrypted.pdf", "application/pdf")
-    blob = repr(verdict.detail).lower()
-    assert "confidential" not in blob
+def test_detail_never_carries_sender_controlled_text():
+    """Aimed at a DATA-DEPENDENT detail path, deliberately.
+
+    An earlier version of this test asserted against the encrypted-PDF path,
+    whose detail is the hardcoded literal {"container": "pdf"} — an assertion
+    that could never fail whatever the gate did, and which therefore missed a
+    real leak. The detail is persisted to quarantine_detail and interpolated
+    into a log line, so anything sender-controlled reaching it lands in the
+    record a human reads.
+    """
+    content = (FIXTURES / "clean.pdf").read_bytes()
+    marker = "MARKER-INJECTED-BY-SENDER"
+    verdict = safety.evaluate(
+        content,
+        declared_mime=f'application/{marker}"><img src=x onerror=y>',
+        detected_mime=typing_.detect(content),
+        filename=f"{marker}.pdf",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok  # declared/detected disagree, so this quarantines
+    assert marker not in repr(verdict.detail)
+    assert "onerror" not in repr(verdict.detail)
+
+
+def test_payload_under_an_office_prefix_is_still_caught():
+    """The Critical finding: naming decided whether classification happened.
+
+    An earlier version selected candidates by top-level path segment, so a
+    payload placed under `word/` or `xl/` was never sniffed at all — renaming
+    one path segment defeated the whole control.
+    """
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    for location in ("word/payload.exe", "xl/media/payload.exe", "docProps/x.exe"):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("[Content_Types].xml", "<Types/>")
+            zf.writestr("_rels/.rels", "<Relationships/>")
+            zf.writestr("word/document.xml", "<document/>")
+            zf.writestr(location, elf)
+        content = buf.getvalue()
+        verdict = safety.evaluate(
+            content,
+            declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            detected_mime=typing_.detect(content),
+            filename="quote.docx",
+            size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+        )
+        assert not verdict.ok, location
+        assert verdict.reason is QuarantineReason.EXECUTABLE, location
+
+
+def test_padding_past_the_inspection_limit_fails_closed():
+    """Exceeding the inspection limit must quarantine, not report silence.
+
+    An earlier version truncated the member list and recorded nothing, so
+    padding a container with decoys and putting the payload last produced a
+    clean verdict.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        for i in range(safety._MEMBER_SNIFF_LIMIT + 1):
+            zf.writestr(f"pad/{i:04d}.dat", b"inert")
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+    assert verdict.detail["truncated"] is True
+
+
+def test_archive_nested_inside_a_document_is_caught():
+    """"Archives go to a human" must not be defeated by wrapping."""
+    import io
+    import zipfile
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("evil.txt", "payload")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("word/inner.zip", inner.getvalue())
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+    assert verdict.detail["archive_kinds"]
+
+
+@pytest.mark.parametrize(
+    "mime",
+    [
+        "application/x-msi",
+        "application/vnd.ms-cab-compressed",
+        "application/x-ms-shortcut",
+        "application/x-iso9660-image",
+    ],
+)
+def test_named_but_unexpected_types_do_not_clear(mime):
+    """The tail allow-lists. Dodging every named hazard is not being a document.
+
+    An MSI is an installer and a .lnk is a command launcher; both were cleared
+    by the previous default-allow tail whenever the sender declared the true
+    type, because neither appears in the hazard lists.
+    """
+    verdict = safety.evaluate(
+        b"arbitrary bytes",
+        declared_mime=mime,
+        detected_mime=mime,
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.UNKNOWN_TYPE
 ```
 
 - [ ] **Step 4: Run test to verify it fails**
@@ -2058,12 +2192,41 @@ from src.services.mail_intake.typing_ import UNKNOWN, detect, is_permitted_alias
 
 DEFAULT_SIZE_CEILING_BYTES = 25 * 1024 * 1024
 
-# Bounds on foreign-member classification. Deliberately small: this is a sniff,
-# not a read, and every one of these numbers is a cap on what hostile input can
-# make us do.
-_FOREIGN_SNIFF_BYTES = 512
-_FOREIGN_SNIFF_LIMIT = 32
-_FOREIGN_MEMBER_MAX_BYTES = 8 * 1024 * 1024
+# Bounds on member classification. Every number here caps what hostile input can
+# make us do. The member limit sits well above the largest real workbook measured
+# in this repo (42 members), so legitimate files are never truncated — and
+# exceeding it fails closed rather than quietly inspecting a prefix.
+_MEMBER_SNIFF_BYTES = 512
+_MEMBER_SNIFF_LIMIT = 512
+_MEMBER_MAX_BYTES = 8 * 1024 * 1024
+
+# Detected types a document may legitimately be. The tail of evaluate() clears
+# only these; anything else libmagic can name — an MSI installer, a .lnk command
+# launcher, a CAB, a disk image — quarantines. Allow-listing is the difference
+# between "not known to be dangerous" and "known to be acceptable", and only the
+# second is a safe basis for handing bytes onward.
+_PERMITTED_DOCUMENT_MIMES = frozenset(
+    {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/rtf",
+        "text/csv",
+        "text/plain",
+        "text/html",
+        "text/xml",
+        "image/png",
+        "image/jpeg",
+        "image/tiff",
+        "image/gif",
+        "image/bmp",
+        "image/webp",
+    }
+)
 
 # Determined by running libmagic against real samples, not from memory. Two
 # entries in an earlier version of this set were simply wrong — `text/x-python`
@@ -2180,72 +2343,87 @@ def _has_ooxml_macro(names: list) -> bool:
     )
 
 
-def _foreign_member_names(names: list) -> list:
-    """Members outside the known Office namespaces. Candidates, not verdicts."""
-    foreign = []
-    for name in names:
-        top = name.split("/", 1)[0].strip().lower()
-        if top and top not in _OOXML_TOP_LEVEL and not name.endswith("/"):
-            foreign.append(name)
-    return foreign
+def _inspect_members(content: bytes) -> Dict[str, Any]:
+    """Classify EVERY member of a container by what it is. Names decide nothing.
 
+    Two earlier versions of this check were defeated by the same mistake in
+    different clothes. The first quarantined on the mere presence of a member
+    outside the known Office namespaces, and wrongly held a real spreadsheet
+    carrying LibreOffice's inert `[trash]/*.dat` padding. The second sniffed
+    content — but still used the member's top-level NAME to decide which
+    members were worth sniffing, so a payload at `word/payload.exe` was never
+    examined at all. Renaming one path segment defeated the entire control.
 
-def _inspect_foreign_members(content: bytes, names: list) -> Dict[str, Any]:
-    """Classify unexpected container members by what they ARE, not what they are named.
-
-    An earlier version quarantined on the mere presence of a member outside the
-    known Office namespaces. Run against the twelve real workbooks in this repo,
-    it wrongly quarantined one of them: a genuine spreadsheet carrying
-    `[trash]/0000.dat`, a few hundred bytes of inert padding written by
-    LibreOffice. A rule that fails one real file in twelve fills the review
-    queue with noise, and a queue people stop reading protects nobody.
-
-    So the question asked here is whether a foreign member is *dangerous*, not
-    whether it is *tidy*. Each candidate's leading bytes are sniffed and
-    classified; only executable or script content quarantines.
+    So no name is consulted here. Every member is sniffed, wherever it sits.
+    Legitimate Office parts are XML, text and images; none of those are
+    executables or archives, so inspecting all of them costs no false
+    positives — measured across every real workbook in this repo, whose members
+    sniff exclusively as text/xml, text/plain and text/html.
 
     On "never auto-expand": this reads a bounded prefix — at most
-    _FOREIGN_SNIFF_BYTES from at most _FOREIGN_SNIFF_LIMIT members, and nothing
-    at all from a member whose declared uncompressed size is implausible. That
-    is classification, the same thing detect() does for the outer file, not
-    extraction: nothing is written, executed, or handed onward.
+    _MEMBER_SNIFF_BYTES from each of at most _MEMBER_SNIFF_LIMIT members, and
+    nothing at all from a member declaring an implausible size. That is
+    classification, the same thing detect() does for the outer file, not
+    extraction: nothing is written, executed, or handed onward. Reading a
+    bounded length also bounds decompression, so a member that lies about its
+    size cannot become a decompression bomb.
+
+    KNOWN LIMIT, stated rather than implied: a payload placed beyond the first
+    _MEMBER_SNIFF_BYTES of a member will not be recognised. Sniffing further
+    only moves the boundary, since a payload can sit at any offset. The detail
+    therefore records how much was examined, so a reviewer can tell a
+    fully-classified member from a partially-classified one rather than reading
+    silence as safety. What makes the residue tolerable is that such a payload
+    cannot execute here — extraction parses the container as a document and
+    ignores foreign parts — and the bytes are retained for audit either way.
 
     Returns a summary safe to persist and log: counts and byte-derived content
-    kinds. Member NAMES are never returned — they are sender-controlled text
-    and would carry attacker-chosen strings into the audit record.
+    kinds. Member NAMES never appear — they are sender-controlled strings and
+    would carry attacker-chosen text into the record a human reads.
     """
     summary: Dict[str, Any] = {
-        "foreign_member_count": len(names),
-        "flagged_kinds": [],
+        "member_count": 0,
+        "inspected_members": 0,
+        "sniffed_prefix_bytes": _MEMBER_SNIFF_BYTES,
+        "executable_kinds": [],
+        "archive_kinds": [],
         "oversized_members": 0,
+        "truncated": False,
+        "unreadable": False,
     }
-    if not names:
-        return summary
 
-    kinds = set()
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            for name in names[:_FOREIGN_SNIFF_LIMIT]:
-                try:
-                    info = zf.getinfo(name)
-                except KeyError:
-                    continue
-                if info.file_size > _FOREIGN_MEMBER_MAX_BYTES:
-                    # A member inside a "document" declaring tens of megabytes
-                    # is its own signal, and reading it is what a zip bomb wants.
+            infos = [i for i in zf.infolist() if not i.is_dir()]
+            summary["member_count"] = len(infos)
+            if len(infos) > _MEMBER_SNIFF_LIMIT:
+                # More members than we are willing to inspect is precisely the
+                # "cannot clear with certainty" condition, so it fails closed
+                # rather than inspecting a prefix and reporting silence.
+                summary["truncated"] = True
+                return summary
+
+            executables, archives = set(), set()
+            for info in infos:
+                summary["inspected_members"] += 1
+                if info.file_size > _MEMBER_MAX_BYTES:
                     summary["oversized_members"] += 1
                     continue
-                with zf.open(name) as handle:
-                    head = handle.read(_FOREIGN_SNIFF_BYTES)
+                with zf.open(info) as handle:
+                    head = handle.read(_MEMBER_SNIFF_BYTES)
                 kind = detect(head)
                 if kind in _EXECUTABLE_MIMES:
-                    kinds.add(kind)
+                    executables.add(kind)
+                elif kind in _ARCHIVE_MIMES:
+                    # A container nested inside a container is still unknown
+                    # content, and unknown content goes to a person.
+                    archives.add(kind)
     except Exception:
-        # Cannot classify means cannot clear.
-        summary["flagged_kinds"] = ["unreadable"]
+        summary["unreadable"] = True
         return summary
 
-    summary["flagged_kinds"] = sorted(kinds)
+    summary["executable_kinds"] = sorted(executables)
+    summary["archive_kinds"] = sorted(archives)
     return summary
 
 
@@ -2296,18 +2474,26 @@ def evaluate(
             {"size_bytes": size, "ceiling_bytes": size_ceiling_bytes},
         )
 
+    # `declared_mime` is the sender's Content-Type header and never appears in
+    # a detail dict. The header survives MIME parsing largely intact — a value
+    # like `application/"><img src=x onerror=y>` comes through — and the detail
+    # is persisted to quarantine_detail AND interpolated into a log line, so
+    # recording it verbatim would carry attacker-chosen text straight into the
+    # record a human reads. What a reviewer actually needs is the derived fact.
+    declared_agrees = is_permitted_alias(declared_mime, detected_mime, filename)
+
     if detected_mime in _EXECUTABLE_MIMES:
         return SafetyVerdict(
             False,
             QuarantineReason.EXECUTABLE,
-            {"detected_mime": detected_mime, "declared_mime": declared_mime},
+            {"detected_mime": detected_mime, "declared_agrees": declared_agrees},
         )
 
     if detected_mime == UNKNOWN:
         return SafetyVerdict(
             False,
             QuarantineReason.UNKNOWN_TYPE,
-            {"declared_mime": declared_mime},
+            {"declared_agrees": declared_agrees},
         )
 
     names = _zip_names(content) if detected_mime.startswith("application/") else None
@@ -2321,24 +2507,28 @@ def evaluate(
         )
 
     if names is not None and detected_mime in _OOXML_MIMES:
-        foreign = _foreign_member_names(names)
-        if foreign:
-            summary = _inspect_foreign_members(content, foreign)
-            if summary["flagged_kinds"]:
-                # Executable content smuggled inside a well-formed document.
-                # Reported as EXECUTABLE rather than ARCHIVE because that is
-                # what a reviewer needs to see in the action centre.
-                return SafetyVerdict(
-                    False,
-                    QuarantineReason.EXECUTABLE,
-                    dict(summary, container="ooxml"),
-                )
-            if summary["oversized_members"]:
-                return SafetyVerdict(
-                    False,
-                    QuarantineReason.ARCHIVE,
-                    dict(summary, container="ooxml"),
-                )
+        summary = _inspect_members(content)
+        if summary["executable_kinds"]:
+            # Executable content smuggled inside a well-formed document.
+            # Reported as EXECUTABLE rather than ARCHIVE because a reviewer in
+            # the action centre needs to see what was found, not merely that
+            # something was.
+            return SafetyVerdict(
+                False, QuarantineReason.EXECUTABLE, dict(summary, container="ooxml")
+            )
+        if (
+            summary["archive_kinds"]
+            or summary["oversized_members"]
+            or summary["truncated"]
+            or summary["unreadable"]
+        ):
+            # Each of these is a "cannot clear with certainty": a container
+            # nested inside a container, a member too large to inspect, more
+            # members than we are willing to inspect, or a container we could
+            # not read at all.
+            return SafetyVerdict(
+                False, QuarantineReason.ARCHIVE, dict(summary, container="ooxml")
+            )
 
     if _is_encrypted_ooxml(content):
         return SafetyVerdict(
@@ -2349,11 +2539,11 @@ def evaluate(
             False, QuarantineReason.ENCRYPTED, {"container": "pdf"}
         )
 
-    if not is_permitted_alias(declared_mime, detected_mime, filename):
+    if not declared_agrees:
         return SafetyVerdict(
             False,
             QuarantineReason.TYPE_MISMATCH,
-            {"declared_mime": declared_mime, "detected_mime": detected_mime},
+            {"detected_mime": detected_mime, "declared_agrees": False},
         )
 
     if detected_mime in _ARCHIVE_MIMES:
@@ -2362,14 +2552,29 @@ def evaluate(
             False, QuarantineReason.ARCHIVE, {"detected_mime": detected_mime}
         )
 
+    # The tail allow-lists rather than default-allows. Reaching here having
+    # merely dodged every named hazard is not the same as being a document:
+    # an MSI installer, a .lnk command launcher, a CAB or a disk image are all
+    # types libmagic names happily, none appear in the hazard lists above, and
+    # each would previously have cleared whenever the sender declared its true
+    # type. "Not known to be dangerous" is not a safe basis for handing bytes
+    # to the extractor; "known to be acceptable" is.
+    if detected_mime not in _PERMITTED_DOCUMENT_MIMES:
+        return SafetyVerdict(
+            False,
+            QuarantineReason.UNKNOWN_TYPE,
+            {"detected_mime": detected_mime, "reason_detail": "not_a_permitted_document"},
+        )
+
     return SafetyVerdict(True, None, {"detected_mime": detected_mime})
 ```
 
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_safety.py -v`
-Expected: PASS, 24 tests (17 plus the 6 parametrised script cases and the real
-ELF case)
+Expected: PASS, 32 tests. Because several of these were added after a defect
+that shipped green, run the whole file and read the names — a count alone will
+not tell you the right ones ran.
 
 - [ ] **Step 7: Prove the gate actually fails**
 
