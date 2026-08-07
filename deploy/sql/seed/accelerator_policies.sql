@@ -60,4 +60,23 @@ VALUES
  '', 1, 1, 'accelerator_seed', now()
 );
 
+-- 4. Revoke scope: who may cancel whose approval is a policy decision too,
+-- not a hardcoded rule in the router. own_or_higher_rank is the sensible
+-- default -- you can undo your own decision, and anyone who strictly
+-- outranks the role required to approve at all can undo someone else's.
+-- any_approver keeps today's behaviour for a small team; own_only is the
+-- strictest. An absent or unrecognised value falls back to
+-- own_or_higher_rank, never to any_approver -- see
+-- src/api/routers/approvals.py:_revoke_scope. jsonb_set (not a fresh INSERT)
+-- so this lands whether item 3 above just created the row in this same run
+-- or the row already existed from an earlier deploy.
+UPDATE proc.bp_policy
+   SET policy_details = jsonb_set(
+           policy_details, '{rules,revoke_scope}', '"own_or_higher_rank"'::jsonb, true),
+       version = version + 1,
+       last_modified_by = 'accelerator_seed',
+       last_modified_date = now()
+ WHERE policy_status = 1
+   AND policy_details->>'policy_identifier' = 'email_approval_capability';
+
 COMMIT;

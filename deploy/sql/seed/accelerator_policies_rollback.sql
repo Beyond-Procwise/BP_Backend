@@ -1,5 +1,9 @@
 BEGIN;
 
+-- Removes the whole email_approval_capability row, which also reverses
+-- item 4 of accelerator_policies.sql (the revoke_scope key added to this
+-- same row's rules) -- there is no separate row or key left behind to clean
+-- up once this DELETE has run.
 DELETE FROM proc.bp_policy
  WHERE policy_details->>'policy_identifier' = 'email_approval_capability';
 

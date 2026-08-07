@@ -298,6 +298,31 @@ def list_pending_dispatch_approvals(
         return _run(own)
 
 
+def get_approval(*, approval_id: int, conn: Any = None) -> Optional[Dict[str, Any]]:
+    """The single row for ``approval_id``, or ``None``.
+
+    Added for revoke's ownership check: knowing who originally recorded an
+    approval, before writing anything, is what lets a caller be refused for
+    trying to revoke someone else's. ``revoke_approval`` keeps its own
+    internal fetch rather than being refactored to call this -- it runs
+    inside one transaction and needs the row locked/read there, not handed
+    in from a separate connection.
+    """
+
+    def _run(connection: Any) -> Optional[Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(
+            "SELECT * FROM proc.bp_approval WHERE approval_id = %s", (int(approval_id),)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
 def revoke_approval(
     *,
     approval_id: int,
