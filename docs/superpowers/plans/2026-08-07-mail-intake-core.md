@@ -1364,15 +1364,30 @@ def test_package_libmagic_calls_octet_stream_is_still_recognised():
 def test_widening_the_trigger_does_not_widen_what_earns_a_document_verdict():
     """Inspection now runs on any zip, so confirm strictness still decides.
 
-    A malformed package must still come back as an archive even though it now
-    reaches the inspector by a different route.
+    The fixture is built so libmagic itself returns `application/octet-stream` —
+    asserted below, because an earlier version of this test used a fixture that
+    libmagic already recognised as a Word document. That meant the OLD trigger
+    routed it too, so the test passed identically before and after the fix and
+    proved nothing about the structural route it is named for. The assertion on
+    the magic verdict is what keeps this test honest if libmagic's heuristics
+    change.
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("[trash]/0000.dat", b"\x00" * 64)  # magic sees octet-stream
+        # Enough leading padding that libmagic's OOXML heuristic does not fire.
+        for i in range(6):
+            zf.writestr(f"[trash]/{i:04d}.dat", b"\xff\xff\xff\xff" + b"\x00" * 512)
         zf.writestr("[Content_Types].xml", "<Types/>")
         zf.writestr("word/document.xml", "<document/>")  # no _rels/.rels
-    assert typing_.detect(buf.getvalue()) == "application/zip"
+    content = buf.getvalue()
+
+    import magic as _magic
+
+    assert _magic.from_buffer(content, mime=True) == "application/octet-stream", (
+        "fixture no longer exercises the structural trigger — libmagic now "
+        "recognises it, so the old trigger would have routed it anyway"
+    )
+    assert typing_.detect(content) == "application/zip"
 
 
 def test_octet_stream_alias_never_excuses_an_archive():
@@ -1954,6 +1969,35 @@ def test_real_libreoffice_artifact_is_not_quarantined():
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     assert verdict.ok, f"real workbook wrongly quarantined as {verdict.reason}"
+
+
+def test_honestly_labelled_non_office_zip_reports_archive_not_deception():
+    """An EPUB sent as an EPUB is not a mismatch.
+
+    Type detection collapses every zip-family format it will not vouch for to
+    application/zip, so an honest sender would otherwise be reported as
+    TYPE_MISMATCH — which reads to a reviewer as deception that did not happen.
+    Both outcomes quarantine; only one of them is true.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+        zf.writestr("META-INF/container.xml", "<container/>")
+        zf.writestr("OEBPS/content.opf", "<package/>")
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/epub+zip",
+        detected_mime=typing_.detect(content),
+        filename="catalogue.epub",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
 
 
 def test_large_legitimate_worksheet_is_not_quarantined():
@@ -2643,17 +2687,26 @@ def evaluate(
             False, QuarantineReason.ENCRYPTED, {"container": "pdf"}
         )
 
+    # Archive BEFORE mismatch, deliberately. Type detection collapses every
+    # zip-family format it will not vouch for — .odt, .epub, .jar and the rest —
+    # to application/zip, so a sender who labelled their EPUB honestly would
+    # otherwise be reported as TYPE_MISMATCH, which reads to a human reviewer as
+    # deception that did not occur. "This is an archive, and archives go to a
+    # person" is both true and more useful. A genuine mismatch that is not an
+    # archive still reports TYPE_MISMATCH below.
+    if detected_mime in _ARCHIVE_MIMES:
+        # Queued for a human decision. Never expanded.
+        return SafetyVerdict(
+            False,
+            QuarantineReason.ARCHIVE,
+            {"detected_mime": detected_mime, "declared_agrees": declared_agrees},
+        )
+
     if not declared_agrees:
         return SafetyVerdict(
             False,
             QuarantineReason.TYPE_MISMATCH,
             {"detected_mime": detected_mime, "declared_agrees": False},
-        )
-
-    if detected_mime in _ARCHIVE_MIMES:
-        # Queued for a human decision. Never expanded.
-        return SafetyVerdict(
-            False, QuarantineReason.ARCHIVE, {"detected_mime": detected_mime}
         )
 
     # The tail allow-lists rather than default-allows. Reaching here having
