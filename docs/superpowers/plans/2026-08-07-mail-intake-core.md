@@ -2966,6 +2966,7 @@ FIXTURES = pathlib.Path("tests/fixtures/mail_intake")
 WORD_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
+EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _scan(name, mime):
@@ -3159,6 +3160,17 @@ def test_a_scan_split_into_tiles_still_reads_as_a_scan(tile_count):
     page_rect = doc.new_page().rect
     doc.close()
 
+    # Measure the span's rendered width with a text-only probe, so the
+    # seam-straddling position below is DERIVED rather than guessed. A fixed
+    # literal was tried and was calibrated only for the 2-tile case: at 3 tiles
+    # it left 87.6% of the span inside one tile, failing this test's own
+    # precondition. Deriving it makes every tile count straddle by construction.
+    probe = _pdf_with_invisible_text([], text_x=0)
+    probe_doc = fitz.open(stream=probe, filetype="pdf")
+    probe_span = next(s for s in probe_doc[0].get_texttrace() if s["type"] == 3)
+    span_width = probe_span["bbox"][2] - probe_span["bbox"][0]
+    probe_doc.close()
+
     width = page_rect.width / tile_count
     tiles = [
         (
@@ -3172,7 +3184,8 @@ def test_a_scan_split_into_tiles_still_reads_as_a_scan(tile_count):
         )
         for k in range(tile_count)
     ]
-    content = _pdf_with_invisible_text(tiles, text_x=200)
+    # Centre the span on the first internal seam.
+    content = _pdf_with_invisible_text(tiles, text_x=width - span_width / 2)
 
     # Precondition: NO single tile may cover the span by itself, or this test
     # would pass against the very code it exists to guard against.
@@ -3241,17 +3254,25 @@ def test_white_font_is_detected_whatever_the_attribute_order():
     assert any(h.technique == "office_hidden" for h in hits)
 
 
-def test_document_claiming_word_but_carrying_no_document_part_fails_closed():
-    """A valid zip with no `word/document.xml` is corrupt or a decoy. Returning
-    no hits would clear it; cannot inspect means cannot clear."""
+@pytest.mark.parametrize(
+    "mime_name",
+    ["WORD_MIME", "EXCEL_MIME"],
+)
+def test_package_claiming_a_type_but_carrying_no_content_part_fails_closed(mime_name):
+    """A valid zip with no document or workbook part is corrupt or a decoy.
+    Returning no hits would clear it; cannot inspect means cannot clear.
+
+    Parametrised over both formats — an earlier version covered Word only, so
+    the Excel branch was written but never exercised."""
     import io
     import zipfile
 
+    mime = {"WORD_MIME": WORD_MIME, "EXCEL_MIME": EXCEL_MIME}[mime_name]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("[Content_Types].xml", "<Types/>")
         zf.writestr("decoy/readme.txt", "nothing to see")
-    hits = hidden_text.scan(buf.getvalue(), WORD_MIME)
+    hits = hidden_text.scan(buf.getvalue(), mime)
     assert any(h.technique == "unreadable" for h in hits)
 ```
 
