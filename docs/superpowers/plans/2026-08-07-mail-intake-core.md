@@ -4627,19 +4627,32 @@ class FakeCursor:
 
         An earlier version drained everything queued, which is not what a real
         cursor does. Across a function issuing several queries, the first
-        fetchall swallowed every later query's rows and handed them back nested.
-        That pushed a workaround into production code — `metrics.collect` grew a
-        branch unwrapping a nested list, with a comment explaining it existed
-        for the test double. Shaping shipped code around a fake is backwards:
-        the fake is the thing that was wrong.
+        fetchall swallowed every later query's rows. That pushed a workaround
+        into production code — `metrics.collect` grew a branch unwrapping a
+        nested list, with a comment saying it existed for the test double.
+        Shaping shipped code around a fake is backwards; the fake was wrong.
 
-        Semantics: pop one queued entry. A list is a row set and is returned as
-        is; anything else is a single row and is wrapped.
+        **A fetchall result must be queued as a LIST of rows, always.** The
+        replacement for that first fix wrapped any non-list entry as a single
+        row, which was quietly worse: a test written in the flat style used
+        everywhere else here — `FakeCursor([("S1", "a"), ("S2", "b")])` —
+        returned only the first row AND left the second in the queue to corrupt
+        the next call, with no exception and no signal. A fake that is wrong in
+        a new way is worse than one wrong in a known way, so the ambiguous case
+        now raises and says what to write instead.
         """
         if not self._results:
             return []
         entry = self._results.pop(0)
-        return list(entry) if isinstance(entry, list) else [entry]
+        if not isinstance(entry, list):
+            raise TypeError(
+                "FakeCursor.fetchall() expects the queued entry to be a LIST of "
+                f"rows, got {type(entry).__name__}. Queue a row set explicitly: "
+                "FakeCursor([[row1, row2]]) — or FakeCursor([[row]]) for one "
+                "row. A bare tuple or dict is treated as a fetchone result, and "
+                "silently returning it here would hide the rest of the queue."
+            )
+        return list(entry)
 
     # -- test helpers --
     def queue(self, *rows):
@@ -4800,7 +4813,8 @@ def test_quarantine_transition_records_its_reason():
 
 
 def test_claim_ready_artifacts_selects_only_ready_rows():
-    cur = FakeCursor([{"artifact_id": "ART-1"}])
+    # Row sets are queued as a list, always — see FakeCursor.fetchall.
+    cur = FakeCursor([[{"artifact_id": "ART-1"}]])
     rows = repo.claim_ready_artifacts(cur, limit=10)
     sql, params = cur.calls[0]
     # Assert the FILTER, not merely that the value was bound. Checking only the
@@ -4853,6 +4867,18 @@ def test_mark_duplicate_guards_against_a_concurrent_transition():
     sql, params = cur.calls[0]
     assert "AND state = %s" in sql
     assert ArtifactState.STORED.value in params
+
+
+def test_a_flat_multi_row_queue_is_rejected_rather_than_silently_truncated():
+    """The footgun the previous fake had.
+
+    Written flat — the style used everywhere else in this suite — a multi-row
+    fetchall returned only the first row and left the rest to corrupt the next
+    call, silently. Raising costs nothing and the message says what to write.
+    """
+    cur = FakeCursor([("S1", "acme.test"), ("S2", "other.test")])
+    with pytest.raises(TypeError, match="LIST of rows"):
+        cur.fetchall()
 
 
 def test_a_transition_that_matched_no_row_is_reported_not_silent(caplog):
@@ -7259,11 +7285,16 @@ def check_alerts(
                  "total": total, "quarantined": quarantined},
             )
 
+    # The interval comes from the constant, not a literal. Declaring
+    # STALE_BINDING_SECONDS and then hardcoding '1 hour' means editing the
+    # constant changes nothing — a trap for whoever tunes it next.
     cur.execute(
         "SELECT binding_id, EXTRACT(EPOCH FROM (now() - last_sync_at))::int "
         "  FROM proc.bp_mailbox_binding "
         " WHERE is_active AND role = 'intake' "
-        "   AND (last_sync_at IS NULL OR last_sync_at < now() - interval '1 hour')"
+        "   AND (last_sync_at IS NULL "
+        "        OR last_sync_at < now() - (%s || ' seconds')::interval)",
+        (STALE_BINDING_SECONDS,),
     )
     stale = list(cur.fetchall() or [])
     if stale:
