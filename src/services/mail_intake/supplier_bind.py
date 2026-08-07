@@ -13,8 +13,11 @@ Spec §6 stage 4, §7.3.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence, Tuple
+
+log = logging.getLogger(__name__)
 
 MATCHED = "matched"
 UNMATCHED = "unmatched"
@@ -40,8 +43,14 @@ def bind(sender_domain: Optional[str], candidate_lookup: CandidateLookup) -> Bin
     try:
         rows = list(candidate_lookup(domain) or ())
     except Exception:
-        # A lookup failure is not evidence of a match. Fail to unmatched and
-        # let the caller's Finding record that provenance is incomplete.
+        # A lookup failure is not evidence of a match, so the state is
+        # unmatched — but it is NOT the same event as "this domain has no
+        # supplier", and the two produce identical BindResults. Without this
+        # log a database outage would masquerade as a run of unmatched senders
+        # indefinitely, and the unmatched-domain rate would read as a security
+        # signal when it is an infrastructure failure. Logged at exception
+        # level so it is greppable and carries the traceback.
+        log.exception("supplier lookup failed for domain=%s; treating as unmatched", domain)
         return BindResult(UNMATCHED, None, ())
 
     supplier_ids = tuple(dict.fromkeys(str(row[0]) for row in rows))

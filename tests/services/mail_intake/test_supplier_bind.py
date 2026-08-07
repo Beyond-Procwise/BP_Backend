@@ -42,9 +42,20 @@ def test_missing_domain_is_unmatched():
     assert result.state == "unmatched"
 
 
-def test_lookup_failure_is_unmatched_not_a_crash():
+def test_lookup_failure_is_unmatched_but_is_logged(caplog):
+    """An outage and a genuinely unknown domain produce identical results.
+
+    That is correct for the verdict — a failed lookup is not evidence of a
+    match — but without a log the two are indistinguishable, and a database
+    outage would masquerade as a run of unmatched senders. The unmatched-domain
+    rate is watched as a security signal, so an infrastructure failure quietly
+    inflating it is worse than a visible error.
+    """
     def broken(_domain):
         raise RuntimeError("db down")
 
-    result = bind("copperleaf.test", broken)
+    with caplog.at_level("ERROR"):
+        result = bind("copperleaf.test", broken)
+
     assert result.state == "unmatched"
+    assert any("supplier lookup failed" in r.getMessage() for r in caplog.records)
