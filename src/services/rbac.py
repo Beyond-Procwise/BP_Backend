@@ -12,6 +12,7 @@ become an accidental grant.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -21,15 +22,35 @@ ROLE_UNKNOWN = "Viewer"
 _ROLE_DEFINITION_SLUG = "role_definition"
 _ROLE_ASSIGNMENT_SLUG = "role_assignment"
 
+_ENGINE_CACHE: Optional[Any] = None
+_ENGINE_CACHED_AT: float = 0.0
+_ENGINE_TTL_SECONDS = 60.0
+
+
+def reset_policy_cache() -> None:
+    """Drop the cached engine. For tests and for an explicit reload."""
+
+    global _ENGINE_CACHE, _ENGINE_CACHED_AT
+    _ENGINE_CACHE, _ENGINE_CACHED_AT = None, 0.0
+
 
 def _engine(policy_engine: Optional[Any]) -> Optional[Any]:
     if policy_engine is not None:
         return policy_engine
+
+    global _ENGINE_CACHE, _ENGINE_CACHED_AT
+    now = time.time()
+    if _ENGINE_CACHE is not None and (now - _ENGINE_CACHED_AT) < _ENGINE_TTL_SECONDS:
+        return _ENGINE_CACHE
+
     try:
         from src.engines.policy_engine import PolicyEngine
         from src.services.db import get_conn
 
-        return PolicyEngine(connection_factory=get_conn)
+        engine = PolicyEngine(connection_factory=get_conn)
+        _ENGINE_CACHE = engine
+        _ENGINE_CACHED_AT = now
+        return engine
     except Exception as exc:  # noqa: BLE001 - resolved to deny by the callers
         logger.error("rbac: could not construct a PolicyEngine: %s", exc)
         return None
@@ -120,7 +141,8 @@ def effective_role(
     if str(rules.get("multiple_groups") or "highest_rank") == "highest_rank":
         best = max(roles, key=lambda r: role_rank(r, policy_engine=policy_engine))
         return best if role_rank(best, policy_engine=policy_engine) else fallback
-    return roles[0]
+    candidate = roles[0]
+    return candidate if role_rank(candidate, policy_engine=policy_engine) else fallback
 
 
 def may(
@@ -138,24 +160,25 @@ def may(
 
 
 def is_irreversible(action_class: str, policy_engine: Optional[Any] = None) -> bool:
-    """True when the action class is one policy marks irreversible.
+    """True when the action class needs the stricter, default-deny handling.
 
-    An action class the policy does not list at all is treated as
-    irreversible. Anything unclassified gets the stricter handling, not the
-    looser one.
+    Policy names both sets explicitly. A class in neither is treated as
+    irreversible: an action nobody has classified is not thereby safe, and a
+    class that drifts out of the irreversible list during a policy edit must
+    fail closed rather than silently become permissible.
     """
 
     rules = _rules(_ROLE_DEFINITION_SLUG, policy_engine)
+    if not rules:
+        return True
+
     listed = rules.get("irreversible_classes")
     if not isinstance(listed, (list, tuple, set)):
         return True
-
-    irreversible = {str(c) for c in listed}
-    if str(action_class) in irreversible:
+    if str(action_class) in {str(c) for c in listed}:
         return True
 
-    known = set()
-    for entry in _roles_table(policy_engine).values():
-        if isinstance(entry, dict) and isinstance(entry.get("allow"), (list, tuple, set)):
-            known.update(str(a) for a in entry["allow"])
-    return str(action_class) not in known
+    reversible = rules.get("reversible_classes")
+    if not isinstance(reversible, (list, tuple, set)):
+        return True
+    return str(action_class) not in {str(c) for c in reversible}

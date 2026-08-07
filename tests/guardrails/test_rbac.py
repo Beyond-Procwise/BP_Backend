@@ -50,6 +50,7 @@ ROLE_DEFINITION = {
             "irreversible_classes": [
                 "communicate", "transact", "share", "configure", "delegate",
             ],
+            "reversible_classes": ["read", "compute", "write"],
             "on_missing_role": "deny",
         },
     },
@@ -141,3 +142,59 @@ def test_unknown_role_may_do_nothing(engine):
 def test_unknown_action_class_is_treated_as_irreversible(engine):
     """An action class nobody classified must not slip through as safe."""
     assert rbac.is_irreversible("teleport", policy_engine=engine) is True
+
+
+def test_granted_but_unlisted_action_is_still_irreversible():
+    """A class dropped from irreversible_classes must not become 'safe'.
+
+    A role must be granted a dangerous action for it to be useful, so
+    inferring safety from a grant gets every real case backwards.
+    """
+    drifted = {
+        "policyId": "role_definition",
+        "details": {
+            "rules": {
+                "roles": {"Admin": {"rank": 4, "allow": ["read", "delegate"]}},
+                "irreversible_classes": ["communicate", "transact", "share", "configure"],
+                "reversible_classes": ["read", "compute", "write"],
+            }
+        },
+    }
+    engine = FakePolicyEngine({"role_definition": drifted})
+    assert rbac.is_irreversible("delegate", policy_engine=engine) is True
+
+
+def test_reversible_class_is_not_irreversible(engine):
+    """A class in reversible_classes must not be marked irreversible."""
+    assert rbac.is_irreversible("read", policy_engine=engine) is False
+
+
+def test_mapping_to_undefined_role_falls_back_to_viewer(engine):
+    """A group mapping to an undefined role must resolve to Viewer."""
+    undefined_mapping = {
+        "policyId": "role_assignment",
+        "details": {
+            "rules": {
+                "claim": "cognito:groups",
+                "group_to_role": {"bp-superadmins": "SuperAdmin"},  # not defined
+                "no_principal_role": "Viewer",
+                "unmapped_group_role": "Viewer",
+                "multiple_groups": "highest_rank",
+            },
+        },
+    }
+    role_def = {
+        "policyId": "role_definition",
+        "details": {
+            "rules": {
+                "roles": {"Viewer": {"rank": 1, "allow": ["read"]}},
+                "irreversible_classes": [],
+                "reversible_classes": ["read"],
+            }
+        },
+    }
+    restricted_engine = FakePolicyEngine(
+        {"role_definition": role_def, "role_assignment": undefined_mapping}
+    )
+    principal = FakePrincipal("sub-x", {"cognito:groups": ["bp-superadmins"]})
+    assert rbac.effective_role(principal, policy_engine=restricted_engine) == "Viewer"
