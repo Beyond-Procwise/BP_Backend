@@ -61,6 +61,7 @@ def classify(engine, **kwargs):
         recipient_supplier_id="SUP-1",
         peer_prices=None,
         internal_domains=["ourcompany.com"],
+        sender=None,
     )
     defaults.update(kwargs)
     return sens.classify(policy_engine=engine, **defaults)
@@ -90,6 +91,59 @@ def test_own_price_does_not_fire_the_peer_detector(engine):
         peer_prices=[{"supplier_id": "SUP-1", "amount": "12450.00"}],
     )
     assert "third_party_price" not in result.detectors_fired
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "PO-991245000-A",
+        "Part no 4512450008812",
+        "We need 5000 units by Friday.",
+        "We need 12 pallets, 450 units total",
+    ],
+)
+def test_unrelated_digit_runs_do_not_fire_third_party_price(engine, body):
+    """A digit substring of a PO number, part number, or quantity is not a price.
+
+    Flattening the whole message into one digit string and substring-matching
+    destroys every number boundary -- a reference code or a quantity can
+    contain the same digits as an unrelated peer amount by pure coincidence.
+    """
+    result = classify(
+        engine,
+        body=body,
+        peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
+    )
+    assert "third_party_price" not in result.detectors_fired
+
+
+def test_join_across_subject_and_body_does_not_fabricate_a_price(engine):
+    """Digits must not glue across the subject/body join into a false match."""
+    result = classify(
+        engine,
+        subject="RE: PO 12",
+        body="Invoice 450.00 due",
+        peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
+    )
+    assert "third_party_price" not in result.detectors_fired
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Their price was 12,450.00",
+        "Their bid was 12450 net.",
+        "Quote came in at 12,450",
+    ],
+)
+def test_verbatim_competitor_totals_still_fire(engine, body):
+    """The fix for false positives must not be satisfied by never matching."""
+    result = classify(
+        engine,
+        body=body,
+        peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
+    )
+    assert "third_party_price" in result.detectors_fired
 
 
 def test_contract_prose_raises_to_commercial_confidential(engine):
@@ -122,6 +176,40 @@ def test_ordinary_quote_text_is_not_contract_prose(engine, text):
     assert result.content_class == "internal"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "6.2 Limitation of Liability. Neither party shall be liable for indirect loss.",
+        "7.1 Governing Law. This Agreement is governed by English law.",
+        "12.4 Payment Terms. Net 30 days from invoice date.",
+    ],
+)
+def test_contract_headings_still_fire_without_the_clause_number_pattern(engine, text):
+    """Real clauses must still fire on their headings alone."""
+    result = classify(engine, body=text)
+    assert "contract_prose" in result.detectors_fired
+    assert result.content_class == "commercial_confidential"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "3.5 Weeks Delivery Included.",
+        "3.2 Revised Quote Attached.",
+        "Please see quote below:\n3.5 Weeks Delivery Included.",
+    ],
+)
+def test_numbered_lead_times_are_not_contract_prose(engine, text):
+    """A numbered-clause pattern is inherently ambiguous with quantities.
+
+    Precision beats recall here: an unusual clause slipping through means
+    routine mail flows; a false positive blocks every supplier.
+    """
+    result = classify(engine, body=text)
+    assert "contract_prose" not in result.detectors_fired
+    assert result.content_class == "internal"
+
+
 def test_internal_staff_contact_raises_to_personal(engine):
     result = classify(
         engine, body="Call Jane on +44 20 7946 0812 or jane.doe@ourcompany.com."
@@ -133,6 +221,27 @@ def test_internal_staff_contact_raises_to_personal(engine):
 def test_supplier_own_address_is_not_internal_staff_contact(engine):
     result = classify(engine, body="Reply to sales@supplier-b.com.")
     assert "internal_staff_contact" not in result.detectors_fired
+
+
+SIGNATURE_BLOCK = "Kind regards,\nJane Doe\nProcurement Manager\njane.doe@ourcompany.com"
+
+
+def test_own_signature_is_not_internal_staff_contact(engine):
+    """A supplier must be able to reply; the sign-off is the point of the message."""
+    result = classify(
+        engine, body=SIGNATURE_BLOCK, sender="jane.doe@ourcompany.com"
+    )
+    assert "internal_staff_contact" not in result.detectors_fired
+    assert result.content_class == "internal"
+
+
+def test_a_colleagues_address_in_the_body_is_internal_staff_contact(engine):
+    """Excluding the sender must not blind the detector to a third colleague."""
+    result = classify(
+        engine, body=SIGNATURE_BLOCK, sender="buyer@ourcompany.com"
+    )
+    assert "internal_staff_contact" in result.detectors_fired
+    assert result.content_class == "personal"
 
 
 def test_attached_source_document_raises_to_commercial_confidential(engine):
@@ -208,6 +317,23 @@ def test_missing_policy_yields_undetermined(engine):
         policy_engine=empty,
     )
     assert result.content_class == sens.CLASS_UNDETERMINED
+
+
+def test_a_detector_that_raises_yields_undetermined(engine, monkeypatch):
+    """A classifier that cannot decide must never read as 'safe'."""
+    monkeypatch.setattr(
+        sens,
+        "_detect_contract_prose",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    result = classify(engine, body="anything")
+    assert result.content_class == sens.CLASS_UNDETERMINED
+    assert (
+        sens.clearance_permits(
+            result.content_class, "personal", policy_engine=engine
+        )
+        is False
+    )
 
 
 def test_clearance_comparison(engine):

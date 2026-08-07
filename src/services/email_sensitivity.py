@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -22,20 +23,23 @@ CLASS_UNDETERMINED = "undetermined"
 
 _SLUG = "email_sensitivity"
 
-# A clause number followed by a contract-style heading, or the stock phrases
-# that only appear in contractual prose.
+# The stock phrases that only appear in contractual prose.
 #
-# The clause-number pattern is anchored to the start of a line: a numbered
-# contract clause always opens its own line, while an ordinary decimal in
-# prose (e.g. "Delivery is 3.5 Working Days.") sits mid-sentence. Without the
-# anchor, the pattern fires on routine quote text and would block it to every
-# internal-clearance supplier.
+# A numbered-clause pattern ("6.2 Limitation of Liability.") was tried and
+# dropped: a numbered clause is inherently ambiguous with an ordinary
+# quantity or lead time ("3.5 Weeks Delivery Included.", "3.2 Revised Quote
+# Attached."), even when anchored to the start of a line. Precision beats
+# recall here -- an unusual clause slipping through means routine mail still
+# flows, whereas a false positive on this detector blocks every supplier,
+# because every supplier today sits at "internal" clearance. The phrase list
+# alone still catches real clauses via their headings.
 _CONTRACT_PATTERNS = (
-    re.compile(r"^\s*\d+\.\d+\s+[A-Z][A-Za-z ]{3,40}\.", re.MULTILINE),
     re.compile(
-        r"\b(limitation of liability|indemnif(y|ication)|termination for convenience"
-        r"|governing law|confidentiality obligations|force majeure"
-        r"|consequential loss|this agreement)\b",
+        r"\b(limitation of liability|indemnif(y|ication|ies)"
+        r"|termination for convenience|governing law|confidentiality obligations"
+        r"|force majeure|consequential loss|this agreement|dispute resolution"
+        r"|intellectual property rights|warranty period|payment terms"
+        r"|liquidated damages|assignment and novation|entire agreement)\b",
         re.IGNORECASE,
     ),
 )
@@ -94,25 +98,63 @@ def _order(rules: Dict[str, Any]) -> Dict[str, int]:
     return out
 
 
-def _digits(value: Any) -> str:
-    return re.sub(r"[^0-9]", "", str(value or ""))
+# A number as a human writes one: thousands-separated, decimal, or a bare
+# integer -- each bounded so it cannot be a fragment of a longer code. A
+# whole-message digit substring match (the original approach) reads a PO
+# number, a part number, or "12 pallets, 450 units" as if it were one price;
+# these boundaries stop a number from being assembled out of unrelated digits.
+_AMOUNT_TOKEN = re.compile(
+    r"(?<![\w.])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\w])"
+    r"|(?<![\w.])\d+\.\d{2}(?![\w])"
+    r"|(?<![\w.,])\d+(?![\w.,])"
+)
+
+# Below this, a "price" collides with quantities, dates and reference numbers
+# often enough that a match carries no signal.
+_MIN_PEER_AMOUNT = Decimal("100")
+
+
+def _as_amount(value: Any) -> Optional[Decimal]:
+    try:
+        return Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, AttributeError, ValueError, TypeError):
+        return None
+
+
+def _amounts_in(text: str) -> set:
+    found = set()
+    for match in _AMOUNT_TOKEN.finditer(text or ""):
+        value = _as_amount(match.group(0))
+        if value is not None:
+            found.add(value)
+    return found
 
 
 def _detect_third_party_price(
     text: str, recipient_supplier_id: Optional[str], peer_prices: Iterable[Dict[str, Any]]
 ) -> Optional[str]:
-    """Fires when a figure belonging to another supplier appears in the text."""
+    """A figure belonging to another supplier, appearing as a number in its own right.
+
+    Numbers are tokenised with boundaries and compared as values rather than
+    matched as a digit substring of the whole message, so a PO number, a part
+    number, or a join across unrelated quantities cannot be mistaken for a
+    price.
+    """
 
     recipient = str(recipient_supplier_id or "").strip()
-    haystack = _digits(text)
+    present = _amounts_in(text)
+    if not present:
+        return None
     for entry in peer_prices or []:
         if not isinstance(entry, dict):
             continue
         owner = str(entry.get("supplier_id") or "").strip()
         if owner and owner == recipient:
             continue
-        amount = _digits(entry.get("amount"))
-        if len(amount) >= 3 and amount in haystack:
+        value = _as_amount(entry.get("amount"))
+        if value is None or value < _MIN_PEER_AMOUNT:
+            continue
+        if value in present:
             return f"{owner or 'another supplier'}:{entry.get('amount')}"
     return None
 
@@ -126,16 +168,25 @@ def _detect_contract_prose(text: str) -> Optional[str]:
 
 
 def _detect_internal_staff_contact(
-    text: str, internal_domains: Iterable[str]
+    text: str, internal_domains: Iterable[str], sender: Optional[str] = None
 ) -> Optional[str]:
-    """An address on one of our own domains appearing in outbound content."""
+    """An internal colleague's address appearing in outbound content.
+
+    The sender's own address is excluded: a supplier must be able to reply,
+    so the sign-off is the purpose of the message, not a leak. What this
+    guards against is a *third* colleague's details travelling out with it.
+    """
 
     domains = {str(d).strip().lower() for d in (internal_domains or []) if str(d).strip()}
     if not domains:
         return None
+    own = str(sender or "").strip().lower()
     for match in _EMAIL_RE.finditer(text or ""):
-        if match.group(1).lower() in domains:
-            return match.group(0)
+        if match.group(1).lower() not in domains:
+            continue
+        if own and match.group(0).strip().lower() == own:
+            continue
+        return match.group(0)
     return None
 
 
@@ -155,6 +206,7 @@ def classify(
     recipient_supplier_id: Optional[str],
     peer_prices: Optional[Iterable[Dict[str, Any]]] = None,
     internal_domains: Optional[Iterable[str]] = None,
+    sender: Optional[str] = None,
     policy_engine: Optional[Any] = None,
 ) -> ClassificationResult:
     """Classify a message. Returns ``undetermined`` rather than guessing."""
@@ -182,7 +234,7 @@ def classify(
         ),
         "contract_prose": lambda: _detect_contract_prose(text),
         "internal_staff_contact": lambda: _detect_internal_staff_contact(
-            text, internal_domains or []
+            text, internal_domains or [], sender
         ),
         "source_document_attached": lambda: _detect_source_document_attached(attachments),
     }
