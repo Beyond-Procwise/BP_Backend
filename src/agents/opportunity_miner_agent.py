@@ -18,6 +18,7 @@ import pandas as pd
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 from models.opportunity_priority_model import OpportunityPriorityModel
 from services.data_flow_manager import DataFlowManager
+from services.facts.deprecation import read_calculation_detail
 from services.opportunity_service import load_opportunity_feedback
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources, normalize_instruction_key
@@ -2004,10 +2005,13 @@ class OpportunityMinerAgent(BaseAgent):
             self._load_supplier_risk_map()
             for f in filtered:
                 candidate_item = f.item_reference or f.item_id
-                if not candidate_item and isinstance(f.calculation_details, dict):
+                if not candidate_item:
+                    # Reads go through the shim so the JSONB fallback is
+                    # measurable; calculation_details is no longer the system
+                    # of record, only a one-release safety net.
                     candidate_item = (
-                        f.calculation_details.get("item_reference")
-                        or f.calculation_details.get("item_id")
+                        read_calculation_detail(f, "item_reference")
+                        or read_calculation_detail(f, "item_id")
                     )
                 f.candidate_suppliers = self._find_candidate_suppliers(
                     candidate_item, f.supplier_id, f.source_records
