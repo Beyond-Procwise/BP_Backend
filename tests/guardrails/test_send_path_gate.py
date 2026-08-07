@@ -8,6 +8,7 @@ happy path still passes so the guard is not simply always-deny.
 import pytest
 
 from src.services import email_dispatch_guard as guard
+from src.services.approval_content import content_hash
 from tests.guardrails.test_email_sensitivity import SENSITIVITY_POLICY
 from tests.guardrails.test_guardrail_gate import GateEngine
 from tests.guardrails.test_rbac import (
@@ -102,16 +103,27 @@ class FakeConn:
         return self.daily_send_count
 
 
+BASE_DRAFT = {
+    "unique_id": "PROC-WF-1",
+    "rfq_id": "RFQ-1",
+    "workflow_id": "WF-1",
+    "supplier_id": "SUP-1",
+    "recipients": ["buyer@supplier-b.com"],
+}
+
+# The approval hash is bound to BASE_DRAFT, not to the `body`/`subject`/
+# `recipients` kwargs individual tests below pass to check_dispatch --
+# content_hash reads them off the draft mapping itself, which none of these
+# tests mutate (test_check_1_input_payload_claiming_approval_is_ignored is
+# the one exception, and it supplies its own approval_lookup returning None,
+# so it never reaches the hash check).
+BASE_APPROVED_HASH = content_hash(BASE_DRAFT)
+
+
 def base_kwargs(**overrides):
     kwargs = dict(
         conn=FakeConn(),
-        draft={
-            "unique_id": "PROC-WF-1",
-            "rfq_id": "RFQ-1",
-            "workflow_id": "WF-1",
-            "supplier_id": "SUP-1",
-            "recipients": ["buyer@supplier-b.com"],
-        },
+        draft=dict(BASE_DRAFT),
         recipients=["buyer@supplier-b.com"],
         subject="Request for quotation",
         body="Please quote for 100 units.",
@@ -123,6 +135,7 @@ def base_kwargs(**overrides):
             "approval_id": 1,
             "status": "approved",
             "actioned_by": "buyer@ourcompany.com",
+            "grounding": {"content_hash": BASE_APPROVED_HASH},
         },
         internal_domains=["ourcompany.com"],
         peer_prices=[],
@@ -233,6 +246,7 @@ def test_peer_prices_come_from_the_approval_not_the_draft():
                 "status": "approved",
                 "actioned_by": "buyer@ourcompany.com",
                 "deal_id": "DEAL-9",
+                "grounding": {"content_hash": BASE_APPROVED_HASH},
             },
         )
     )
@@ -307,6 +321,7 @@ def test_check_3_a_failed_peer_price_lookup_denies_rather_than_passes():
                 "status": "approved",
                 "actioned_by": "buyer@ourcompany.com",
                 "deal_id": "DEAL-9",
+                "grounding": {"content_hash": BASE_APPROVED_HASH},
             },
         )
     )

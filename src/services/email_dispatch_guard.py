@@ -365,6 +365,37 @@ def check_dispatch(
                 unique_id=draft.get("unique_id"),
             )
 
+        # --- 1b. The approval covers the email that was approved -----------
+        # Without this an approval is standing permission on a mutable object:
+        # approve a routine RFQ, edit the body to carry a competitor's price,
+        # and the original approval still releases it.
+        from src.services.approval_content import content_hash
+
+        grounding = approval.get("grounding")
+        approved_hash = (
+            grounding.get("content_hash") if isinstance(grounding, dict) else None
+        )
+        mismatch_mode = str(
+            (_rules(policy_engine, "email_dispatch_approval") or {}).get(
+                "on_content_mismatch"
+            )
+            or "deny"
+        ).lower()
+        current_hash = content_hash(draft)
+        if approved_hash != current_hash and mismatch_mode != "warn":
+            return guardrail.Decision(
+                allowed=False,
+                reason=(
+                    "the draft changed since it was approved; it must be "
+                    "approved again"
+                ),
+                policy_name="EmailDispatchApprovalPolicy",
+                evidence={
+                    "approved_content_hash": approved_hash,
+                    "current_content_hash": current_hash,
+                },
+            )
+
         # The draft has no deal_id; the approval does. Check 1 has already
         # fetched it by the time the classifier needs it.
         deal_id = approval.get("deal_id")
