@@ -2363,6 +2363,47 @@ class DispatchDenied(PermissionError):
         self.decision = decision
 
 
+def _supplier_emails(conn: Any, supplier_id: Optional[str]) -> List[str]:
+    """Addresses on the supplier master for this supplier.
+
+    A test connection may answer directly; a real one is queried.
+    """
+
+    if hasattr(conn, "lookup_supplier_emails"):
+        return list(conn.lookup_supplier_emails(supplier_id) or [])
+    if not supplier_id:
+        return []
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT contact_email_1, contact_email_2 FROM proc.bp_supplier "
+        "WHERE supplier_id = %s",
+        (supplier_id,),
+    )
+    out: List[str] = []
+    for row in cur.fetchall():
+        for value in row:
+            text = str(value or "").strip()
+            if text:
+                out.append(text)
+    return out
+
+
+def _supplier_clearance(conn: Any, supplier_id: Optional[str]) -> Optional[str]:
+    """This supplier's clearance level, or None to use the policy default."""
+
+    if hasattr(conn, "lookup_supplier_clearance"):
+        return conn.lookup_supplier_clearance(supplier_id)
+    if not supplier_id:
+        return None
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT clearance_level FROM proc.bp_supplier WHERE supplier_id = %s",
+        (supplier_id,),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 def _normalise(values: Optional[Iterable[Any]]) -> List[str]:
     out: List[str] = []
     for value in values or []:
@@ -2446,7 +2487,9 @@ def check_dispatch(
                 reason="no recipient survived allow-list resolution",
                 policy_name="EmailRecipientAllowlistPolicy",
             )
-        known = {str(a).casefold() for a in (conn.lookup_supplier_emails(supplier_id) or [])}
+        known = {
+            str(a).casefold() for a in (_supplier_emails(conn, supplier_id) or [])
+        }
         unknown = [r for r in recipient_list if r.casefold() not in known]
         if unknown:
             return guardrail.Decision(
@@ -2457,7 +2500,7 @@ def check_dispatch(
             )
 
         # --- 3. Sensitivity versus supplier clearance --------------------
-        clearance = conn.lookup_supplier_clearance(supplier_id)
+        clearance = _supplier_clearance(conn, supplier_id)
         classification = email_sensitivity.classify(
             subject=subject,
             body=body,
@@ -2656,61 +2699,7 @@ Finally add the two helpers to the class, immediately before `send_draft`:
             return []
 ```
 
-The guard calls `conn.lookup_supplier_emails` and `conn.lookup_supplier_clearance`. Add them as module-level helpers in `email_dispatch_guard.py`, replacing the two `conn.*` calls in `check_dispatch` with:
-
-```python
-        known = {
-            str(a).casefold() for a in (_supplier_emails(conn, supplier_id) or [])
-        }
-```
-and
-```python
-        clearance = _supplier_clearance(conn, supplier_id)
-```
-
-with these helpers added above `check_dispatch`:
-
-```python
-def _supplier_emails(conn: Any, supplier_id: Optional[str]) -> List[str]:
-    """Addresses on the supplier master for this supplier.
-
-    A test connection may answer directly; a real one is queried.
-    """
-
-    if hasattr(conn, "lookup_supplier_emails"):
-        return list(conn.lookup_supplier_emails(supplier_id) or [])
-    if not supplier_id:
-        return []
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT contact_email_1, contact_email_2 FROM proc.bp_supplier "
-        "WHERE supplier_id = %s",
-        (supplier_id,),
-    )
-    out: List[str] = []
-    for row in cur.fetchall():
-        for value in row:
-            text = str(value or "").strip()
-            if text:
-                out.append(text)
-    return out
-
-
-def _supplier_clearance(conn: Any, supplier_id: Optional[str]) -> Optional[str]:
-    """This supplier's clearance level, or None to use the policy default."""
-
-    if hasattr(conn, "lookup_supplier_clearance"):
-        return conn.lookup_supplier_clearance(supplier_id)
-    if not supplier_id:
-        return None
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT clearance_level FROM proc.bp_supplier WHERE supplier_id = %s",
-        (supplier_id,),
-    )
-    row = cur.fetchone()
-    return row[0] if row else None
-```
+Note: `_supplier_emails` and `_supplier_clearance` are already defined in the module from Step 3 — the guard reads the supplier master through them, and a test connection may answer directly by exposing `lookup_supplier_emails` / `lookup_supplier_clearance`.
 
 - [ ] **Step 6: Re-run the guard tests and the dispatch tests**
 
