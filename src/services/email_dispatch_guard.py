@@ -342,6 +342,9 @@ def check_dispatch(
     approval_lookup: Optional[Callable[..., Optional[Dict[str, Any]]]] = None,
     internal_domains: Optional[Iterable[str]] = None,
     peer_prices: Optional[Iterable[Dict[str, Any]]] = None,
+    agent_name: Optional[str] = None,
+    intent: Optional[str] = None,
+    authority_lookup: Optional[Callable[[str], Dict[str, Any]]] = None,
 ) -> guardrail.Decision:
     """Run the five checks. Returns a Decision; never raises."""
 
@@ -358,12 +361,116 @@ def check_dispatch(
             conn=conn,
         )
         if not approval:
-            return guardrail.deny_from_policy(
-                "no recorded human approval for this draft",
-                _policy(policy_engine, "email_dispatch_approval"),
-                policy_name="EmailDispatchApprovalPolicy",
-                unique_id=draft.get("unique_id"),
+            # No human approved this, so it is agent-initiated. That question
+            # is already governed by EmailReplyAutonomyPolicy via
+            # resolve_authority, which the orchestrator and decision engine
+            # consult -- use it rather than adding a third mechanism.
+            if not agent_name:
+                return guardrail.deny_from_policy(
+                    "no recorded human approval for this draft",
+                    _policy(policy_engine, "email_dispatch_approval"),
+                    policy_name="EmailDispatchApprovalPolicy",
+                    unique_id=draft.get("unique_id"),
+                )
+            try:
+                if authority_lookup is not None:
+                    verdict = authority_lookup(agent_name)
+                else:
+                    from src.services.governance_tools.authority import (
+                        resolve_authority,
+                    )
+
+                    engine = policy_engine or rbac.policy_engine()
+                    verdict = (resolve_authority(engine, [agent_name]) or {}).get(
+                        agent_name
+                    ) or {}
+            except Exception as exc:  # noqa: BLE001 - unresolvable authority denies
+                logger.error("authority lookup failed for %s: %s", agent_name, exc)
+                return guardrail.Decision(
+                    allowed=False,
+                    reason="agent send authority could not be resolved; denying",
+                    evidence={"error": str(exc)},
+                )
+
+            # governed=False means escalate. Otherwise autonomy exists only
+            # for a named intent in auto_intents -- which is empty on the
+            # live policy, so nothing is autonomous today. A plain dispatch
+            # carries no intent and therefore never matches, which is the
+            # wanted outcome: an agent must not send unprompted outbound
+            # mail.
+            auto_intents = {str(i) for i in (verdict.get("auto_intents") or [])}
+            permitted = bool(
+                verdict.get("governed") and intent and str(intent) in auto_intents
             )
+            if not permitted:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=(
+                        "no human approval, and policy does not grant this "
+                        "agent autonomy to send"
+                    ),
+                    policy_name="EmailReplyAutonomyPolicy",
+                    evidence={
+                        "agent": agent_name,
+                        "intent": intent,
+                        "governed": verdict.get("governed"),
+                        "auto_intents": sorted(auto_intents),
+                        "reason": verdict.get("reason"),
+                    },
+                )
+            # Autonomy granted: there is no approval to bind to, so the
+            # content-hash check below must be skipped rather than compared
+            # against nothing.
+            approval = {"autonomous": True, "agent": agent_name}
+
+        # --- 1b. The approval covers the email that was approved -----------
+        # Without this an approval is standing permission on a mutable object:
+        # approve a routine RFQ, edit the body to carry a competitor's price,
+        # and the original approval still releases it.
+        #
+        # Skipped when autonomy was granted above: there is no approval row,
+        # and therefore no approved hash to compare the current draft against.
+        if not approval.get("autonomous"):
+            from src.services.approval_content import content_hash
+
+            grounding = approval.get("grounding")
+            approved_hash = (
+                grounding.get("content_hash") if isinstance(grounding, dict) else None
+            )
+            mismatch_mode = str(
+                (_rules(policy_engine, "email_dispatch_approval") or {}).get(
+                    "on_content_mismatch"
+                )
+                or "deny"
+            ).lower()
+            # Hash what is actually about to be transmitted -- recipient_list,
+            # subject, body and attachments are this call's own resolved
+            # values, already reflecting any subject_override/body_override
+            # the caller supplied. Hashing `draft` (the stored row) instead,
+            # as this used to, let an override sail through unchecked: the
+            # stored row never changed, so its approved hash still matched.
+            # That was verbatim the attack this check exists to prevent.
+            current_hash = content_hash(
+                {
+                    "recipients": recipient_list,
+                    "subject": subject,
+                    "body": body,
+                    "attachments": attachments,
+                }
+            )
+            if approved_hash != current_hash and mismatch_mode != "warn":
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=(
+                        "the draft changed since it was approved; it must be "
+                        "approved again"
+                    ),
+                    policy_name="EmailDispatchApprovalPolicy",
+                    evidence={
+                        "approved_content_hash": approved_hash,
+                        "current_content_hash": current_hash,
+                    },
+                )
 
         # The draft has no deal_id; the approval does. Check 1 has already
         # fetched it by the time the classifier needs it.

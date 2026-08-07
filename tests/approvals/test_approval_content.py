@@ -1,0 +1,132 @@
+"""What was approved must be what gets sent.
+
+Without this, an approval is standing permission on a mutable object: approve
+a routine RFQ, someone edits the body to carry a competitor's price, and the
+original approval still releases it.
+"""
+
+from src.services.approval_content import content_hash
+
+
+def _draft(**over):
+    base = {
+        "unique_id": "PROC-WF-1",
+        "recipients": ["buyer@supplier-b.com"],
+        "subject": "Request for quotation",
+        "body": "Please quote for 100 units.",
+        "attachments": [{"filename": "spec.pdf"}],
+    }
+    base.update(over)
+    return base
+
+
+def test_the_same_draft_hashes_the_same_way():
+    assert content_hash(_draft()) == content_hash(_draft())
+
+
+def test_editing_the_body_changes_the_hash():
+    assert content_hash(_draft()) != content_hash(
+        _draft(body="Supplier B quoted 12,450.00.")
+    )
+
+
+def test_changing_a_recipient_changes_the_hash():
+    assert content_hash(_draft()) != content_hash(
+        _draft(recipients=["someone.else@elsewhere.com"])
+    )
+
+
+def test_changing_the_subject_changes_the_hash():
+    assert content_hash(_draft()) != content_hash(_draft(subject="Revised"))
+
+
+def test_adding_an_attachment_changes_the_hash():
+    assert content_hash(_draft()) != content_hash(
+        _draft(attachments=[{"filename": "spec.pdf"}, {"filename": "po.pdf"}])
+    )
+
+
+def test_recipient_order_does_not_change_the_hash():
+    """Two recipients in a different order are the same set of recipients."""
+    a = _draft(recipients=["a@supplier-b.com", "b@supplier-b.com"])
+    b = _draft(recipients=["b@supplier-b.com", "a@supplier-b.com"])
+    assert content_hash(a) == content_hash(b)
+
+
+def test_it_hashes_the_recipients_the_send_path_will_use():
+    """draft_rfq_emails has recipient_email, not recipients.
+
+    Hashing a raw column instead of the resolved list would let the approved
+    set and the sent set diverge.
+    """
+    from_singular = _draft(recipients=None, receiver="buyer@supplier-b.com")
+    assert content_hash(from_singular) == content_hash(_draft())
+
+
+import pytest
+
+
+@pytest.mark.parametrize("bad", [None, "a string", ["a", "b"], 42])
+def test_a_draft_that_is_not_a_mapping_still_hashes(bad):
+    """The send path calls this. Crashing here turns a refusal into an outage."""
+    assert isinstance(content_hash(bad), str)
+
+
+def test_a_failure_inside_recipient_resolution_still_hashes(monkeypatch):
+    """Force the guarded branch -- nothing else in the suite reaches it."""
+    import src.services.approval_content as mod
+
+    def explode(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "src.services.email_dispatch_guard.resolve_recipients", explode
+    )
+    assert isinstance(content_hash({"subject": "s", "body": "b"}), str)
+
+
+def test_a_raw_database_row_hashes_against_its_real_recipient():
+    """draft_rfq_emails stores recipient_email; resolve_recipients reads
+    recipients/receiver. Callers hashing a raw row must not silently resolve
+    to nobody."""
+    raw = {
+        "unique_id": "PROC-WF-1",
+        "recipient_email": "buyer@supplier-b.com",
+        "subject": "RFQ",
+        "body": "Please quote.",
+    }
+    mapped = dict(raw, receiver="buyer@supplier-b.com")
+    assert content_hash(raw) == content_hash(mapped)
+
+
+def test_an_already_resolved_recipient_list_wins():
+    """Non-empty resolved recipients take precedence over stale column.
+
+    This covers resolve_recipients' own preference for recipients over receiver;
+    _normalised's guard is tested separately by test_a_resolved_but_empty_recipient_list_is_not_overridden.
+    """
+    raw = {
+        "recipient_email": "stale@supplier-b.com",
+        "recipients": ["current@supplier-b.com"],
+        "subject": "RFQ",
+        "body": "Please quote.",
+    }
+    assert content_hash(raw) == content_hash(
+        {
+            "recipients": ["current@supplier-b.com"],
+            "subject": "RFQ",
+            "body": "Please quote.",
+        }
+    )
+
+
+def test_a_resolved_but_empty_recipient_list_is_not_overridden():
+    """recipients=[] is an answer, not an absence.
+
+    A caller that resolved recipients and got none must not have a stale
+    recipient_email column injected over the top -- the approval would then
+    hash against someone the send path never writes to.
+    """
+    resolved_empty = {"recipients": [], "subject": "RFQ", "body": "Please quote."}
+    with_stale_column = dict(resolved_empty, recipient_email="stale@supplier-b.com")
+    assert content_hash(resolved_empty) == content_hash(with_stale_column)

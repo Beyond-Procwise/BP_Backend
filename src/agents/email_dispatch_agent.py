@@ -181,6 +181,12 @@ class EmailDispatchAgent(BaseAgent):
             workflow_dispatch_context=dispatch_context,
             principal=principal,
             run_count=run_count,
+            # No principal means this send is agent-initiated, not a human
+            # clicking send on an approved draft. The guard uses this slug to
+            # ask EmailReplyAutonomyPolicy (via resolve_authority) whether
+            # this agent may send unattended; without it, an unapproved send
+            # is refused outright.
+            agent_name=self._governance_slug(),
         )
 
         dispatched_at_dt = datetime.now(timezone.utc)

@@ -17,11 +17,12 @@ passed here directly.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import psycopg2.extras
 
 from src.services.db import get_conn
+from src.services.draft_hydration import DRAFT_COLUMNS, hydrate_draft, resolve_effective_content
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,53 @@ def find_dispatch_approval(
         return _run(own)
 
 
+def negotiation_workflow_exists(*, workflow_id: Optional[str], conn: Any = None) -> bool:
+    """Whether ``workflow_id`` corresponds to a real negotiation.
+
+    Without this, ``approve_round`` recorded an approval for any
+    workflow_id/round_num a caller named, with no lookup at all -- a Buyer
+    could pre-approve round 7 of a negotiation that had not happened.
+
+    Checked against both tables that record negotiation state:
+    ``proc.negotiation_session_state`` (the one actively written --
+    live counts at the time this was added: 7 rows there vs 1 in
+    ``negotiation_sessions``, the latter having been effectively dead code
+    until recently, see negotiation_agent.py's own comment on
+    ``_ensure_sessions_schema``) and ``negotiation_sessions`` itself, since a
+    round can still land there directly. Either matching is sufficient.
+
+    A test double may implement ``lookup_negotiation_workflow_exists``
+    directly, in the same style ``email_dispatch_guard`` uses for its own
+    lookups, so this stays unit-testable without a database.
+    """
+
+    if hasattr(conn, "lookup_negotiation_workflow_exists"):
+        return bool(conn.lookup_negotiation_workflow_exists(workflow_id))
+
+    workflow = str(workflow_id or "").strip()
+    if not workflow:
+        return False
+
+    sql = (
+        "SELECT EXISTS ("
+        "  SELECT 1 FROM proc.negotiation_session_state WHERE workflow_id = %s"
+        "  UNION ALL "
+        "  SELECT 1 FROM proc.negotiation_sessions WHERE workflow_id = %s"
+        ")"
+    )
+
+    def _run(connection: Any) -> bool:
+        cur = connection.cursor()
+        cur.execute(sql, (workflow, workflow))
+        row = cur.fetchone()
+        return bool(row[0]) if row else False
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
 def find_round_approval(
     *,
     workflow_id: Optional[str],
@@ -239,3 +287,154 @@ def find_round_approval(
         return _run(conn)
     with get_conn() as own:
         return _run(own)
+
+
+def list_pending_dispatch_approvals(
+    *, limit: int = 50, conn: Any = None
+) -> List[Dict[str, Any]]:
+    """Unsent drafts that have no current approval.
+
+    Without this an approver has nothing to act on. The content hash of each
+    is included so a caller approves a specific version of the draft rather
+    than the draft as a moving target.
+    """
+
+    sql = (
+        "SELECT " + ", ".join(DRAFT_COLUMNS) + " "
+        "  FROM proc.draft_rfq_emails "
+        " WHERE sent IS NOT TRUE "
+        "   AND unique_id IS NOT NULL "
+        " ORDER BY created_on DESC "
+        " LIMIT %s"
+    )
+
+    def _run(connection: Any) -> List[Dict[str, Any]]:
+        from src.services.approval_content import content_hash
+
+        cur = _dict_cursor(connection)
+        cur.execute(sql, (int(limit),))
+        # Hydrated the same way the approval endpoint and the send path both
+        # do -- reading the raw columns directly here (as this used to) is
+        # exactly the C2 bug: payload wins on the send side, so a draft
+        # edited via payload would list a subject/body here that the send
+        # path would never actually transmit.
+        drafts = [hydrate_draft(dict(r)) for r in cur.fetchall()]
+        out: List[Dict[str, Any]] = []
+        for draft in drafts:
+            # find_dispatch_approval per row: acceptable at today's backlog
+            # size, but a query per row does not scale to a large backlog.
+            # Flagged, not silently fixed -- see task-3 report.
+            existing = find_dispatch_approval(
+                rfq_id=draft.get("rfq_id"),
+                workflow_id=draft.get("workflow_id"),
+                unique_id=draft.get("unique_id"),
+                conn=connection,
+            )
+            if existing:
+                continue
+            out.append(
+                {
+                    "unique_id": draft.get("unique_id"),
+                    "rfq_id": draft.get("rfq_id"),
+                    "workflow_id": draft.get("workflow_id"),
+                    "supplier_id": draft.get("supplier_id"),
+                    "subject": draft.get("subject"),
+                    # No overrides: this is "what would be sent right now",
+                    # which is what an approver approves.
+                    "content_hash": content_hash(resolve_effective_content(draft)),
+                }
+            )
+        return out
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
+def get_approval(*, approval_id: int, conn: Any = None) -> Optional[Dict[str, Any]]:
+    """The single row for ``approval_id``, or ``None``.
+
+    Added for revoke's ownership check: knowing who originally recorded an
+    approval, before writing anything, is what lets a caller be refused for
+    trying to revoke someone else's. ``revoke_approval`` keeps its own
+    internal fetch rather than being refactored to call this -- it runs
+    inside one transaction and needs the row locked/read there, not handed
+    in from a separate connection.
+    """
+
+    def _run(connection: Any) -> Optional[Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(
+            "SELECT * FROM proc.bp_approval WHERE approval_id = %s", (int(approval_id),)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
+def revoke_approval(
+    *,
+    approval_id: int,
+    actioned_by: str,
+    reason: Optional[str] = None,
+    conn: Any = None,
+) -> int:
+    """Withdraw an approval by writing a later revoking row. Returns its id.
+
+    bp_approval is append-only, and both lookups take the newest row for a key
+    regardless of status before requiring it to be approved and signed -- so a
+    later revoked row shadows the original without mutating history.
+    """
+
+    signer = str(actioned_by or "").strip()
+    if not signer:
+        raise ValueError("actioned_by is required: a revocation must name a person")
+
+    def _run(connection: Any) -> int:
+        cur = _dict_cursor(connection)
+        cur.execute(
+            "SELECT * FROM proc.bp_approval WHERE approval_id = %s", (int(approval_id),)
+        )
+        original = cur.fetchone()
+        if original is None:
+            raise ValueError(f"no approval with id {approval_id}")
+        original = dict(original)
+
+        write = connection.cursor()
+        write.execute(
+            "INSERT INTO proc.bp_approval "
+            "(deal_id, rfq_id, supplier_id, decision, decision_reason, status, "
+            " actioned_by, actioned_at, grounding, workflow_id, created_by, created_date) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s,%s,%s, now()) "
+            "RETURNING approval_id",
+            (
+                original.get("deal_id"),
+                original.get("rfq_id"),
+                original.get("supplier_id"),
+                "deny",
+                reason,
+                "revoked",
+                signer,
+                psycopg2.extras.Json(original.get("grounding") or {}),
+                original.get("workflow_id"),
+                signer,
+            ),
+        )
+        return int(write.fetchone()[0])
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        own.autocommit = False
+        try:
+            new_id = _run(own)
+            own.commit()
+            return new_id
+        except Exception:
+            own.rollback()
+            raise
