@@ -4993,6 +4993,37 @@ def safe_log_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def update_bundle_from_parse(cur, bundle_id: str, **fields: Any) -> None:
+    """Fill in what parsing learned, after the row already exists.
+
+    The bundle is inserted before the message is parsed, so that raw MIME is
+    safely stored and the idempotency check has already run before anything can
+    fail. The parsed headers and bodies therefore arrive as an update rather
+    than as part of the insert.
+    """
+    cur.execute(
+        """
+        UPDATE proc.bp_ingest_bundle
+           SET rfc_message_id = %s, thread_id = %s, sender_address = %s,
+               sender_display_name = %s, sender_domain = %s, recipients = %s,
+               subject = %s, body_text = %s, body_html = %s, updated_at = now()
+         WHERE bundle_id = %s
+        """,
+        (
+            fields.get("rfc_message_id"),
+            fields.get("thread_id"),
+            fields.get("sender_address"),
+            fields.get("sender_display_name"),
+            fields.get("sender_domain"),
+            json.dumps(fields.get("recipients") or []),
+            fields.get("subject"),
+            fields.get("body_text"),
+            fields.get("body_html"),
+            bundle_id,
+        ),
+    )
+
+
 def _applied(cur, what: str, row_id: str, current, target) -> bool:
     """Did the guarded UPDATE actually move the row?
 
@@ -5202,15 +5233,27 @@ def record_arrival(cur, artifact_id: str, bundle_id: str) -> None:
 
 
 def find_existing_artifact(cur, owner_ref: str, digest: str,
-                           logical: Optional[str]) -> Optional[str]:
-    """Content-hash lookup within the dedup scope (spec §5.3: the binding owner)."""
+                           logical: Optional[str],
+                           exclude_artifact_id: Optional[str] = None) -> Optional[str]:
+    """Content-hash lookup within the dedup scope (spec §5.3: the binding owner).
+
+    `exclude_artifact_id` keeps the caller from finding itself. The pipeline
+    inserts the artifact row before this runs, so without the exclusion the
+    query could return the row just written — there is no ORDER BY and Postgres
+    may return either match — and the artifact would compare equal to itself,
+    fail the duplicate check, and proceed to extraction. The bug appears only
+    when a prior identical artifact exists, and then only sometimes, which is
+    the worst shape for one to have.
+    """
     cur.execute(
         """
         SELECT artifact_id FROM proc.bp_ingest_artifact
          WHERE owner_ref = %s AND sha256 = %s AND duplicate_of_artifact_id IS NULL
+           AND (%s::uuid IS NULL OR artifact_id <> %s::uuid)
+         ORDER BY created_at
          LIMIT 1
         """,
-        (owner_ref, digest),
+        (owner_ref, digest, exclude_artifact_id, exclude_artifact_id),
     )
     row = cur.fetchone()
     if not row:
@@ -5619,7 +5662,7 @@ def _pipeline(store=None, bus=None):
 
 
 def test_simple_message_produces_one_artifact_with_provenance():
-    cur, store = FakeCursor(), FakeStore()
+    cur, store = _seeded_cursor(), FakeStore()
     outcome = _pipeline(store).ingest(cur, _binding(), _message("simple_pdf.eml"))
 
     assert len(outcome.artifact_ids) == 1
@@ -5632,7 +5675,7 @@ def test_simple_message_produces_one_artifact_with_provenance():
 
 
 def test_raw_mime_is_stored_even_when_parsing_fails():
-    cur, store = FakeCursor(), FakeStore()
+    cur, store = _seeded_cursor(), FakeStore()
     outcome = _pipeline(store).ingest(cur, _binding(), _message("malformed.eml"))
 
     assert outcome.artifact_ids == ()
@@ -5644,7 +5687,7 @@ def test_raw_mime_is_stored_even_when_parsing_fails():
 
 
 def test_nested_quote_is_ingested_with_its_depth():
-    cur = FakeCursor()
+    cur = _seeded_cursor()
     outcome = _pipeline().ingest(cur, _binding(), _message("forwarded_two_levels.eml"))
     assert len(outcome.artifact_ids) == 1
     inserts = cur.statements("INSERT INTO proc.bp_ingest_artifact")
@@ -5652,13 +5695,17 @@ def test_nested_quote_is_ingested_with_its_depth():
 
 
 def test_cid_logo_never_becomes_an_artifact():
-    cur = FakeCursor()
+    cur = _seeded_cursor()
     outcome = _pipeline().ingest(cur, _binding(), _message("cid_signature_logo.eml"))
     assert outcome.artifact_ids == ()
+    # Dropped, not quarantined. An empty artifact_ids alone would also be
+    # satisfied by a logo that reached the gate and was held there.
+    assert outcome.quarantined == ()
+    assert not cur.statements("INSERT INTO proc.bp_ingest_artifact")
 
 
 def test_non_cid_inline_document_is_ingested():
-    cur = FakeCursor()
+    cur = _seeded_cursor()
     outcome = _pipeline().ingest(
         cur, _binding(), _message("inline_non_cid_document.eml")
     )
@@ -5666,7 +5713,7 @@ def test_non_cid_inline_document_is_ingested():
 
 
 def test_body_and_attachment_land_in_one_bundle():
-    cur = FakeCursor()
+    cur = _seeded_cursor()
     _pipeline().ingest(cur, _binding(), _message("body_validity_window.eml"))
     inserts = cur.statements("INSERT INTO proc.bp_ingest_bundle")
     params = inserts[0][1]
@@ -5676,7 +5723,7 @@ def test_body_and_attachment_land_in_one_bundle():
 
 
 def test_gate_rejection_never_reaches_ready_for_extraction():
-    cur, store = FakeCursor(), FakeStore()
+    cur, store = _seeded_cursor(), FakeStore()
     # Build a message whose attachment is a macro workbook.
     from email.message import EmailMessage
 
@@ -5723,7 +5770,7 @@ def test_hidden_text_quarantines_the_artifact():
         subtype="pdf",
         filename="quote.pdf",
     )
-    cur = FakeCursor()
+    cur = _seeded_cursor()
     outcome = _pipeline().ingest(
         cur, _binding(), RawMessage(msg.as_bytes(), "emails/inject.eml", None, "ref")
     )
@@ -5746,7 +5793,7 @@ def test_scanned_ocr_document_is_not_quarantined():
         subtype="pdf",
         filename="invoice.pdf",
     )
-    cur = FakeCursor()
+    cur = _seeded_cursor()
     outcome = _pipeline().ingest(
         cur, _binding(), RawMessage(msg.as_bytes(), "emails/scan.eml", None, "ref")
     )
@@ -5803,7 +5850,71 @@ def test_redelivered_message_is_a_no_op():
     assert store.objects == {}
 
 
-def test_sweep_publishes_and_advances_ready_artifacts():
+def test_a_message_that_cannot_be_parsed_still_leaves_its_bytes_and_a_record():
+    """The failure the store-before-parse ordering exists to prevent.
+
+    A body part declaring an unknown charset raises LookupError out of the
+    stdlib — ordinary in real mail, and not MalformedMime. An earlier ordering
+    parsed first and let that escape, destroying the message: no bytes stored,
+    no bundle row, no quarantine record, nothing anyone could investigate.
+    """
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["From"] = "Sales <quotes@copperleaf.test>"
+    msg["To"] = "intake@acme.procureiq.io"
+    msg["Subject"] = "Quote"
+    msg["Message-ID"] = "<charset@copperleaf.test>"
+    msg.set_content("body")
+    raw = msg.as_bytes().replace(
+        b'charset="utf-8"', b'charset="totally-not-a-charset"'
+    )
+
+    cur, store_ = _seeded_cursor(), FakeStore()
+    outcome = _pipeline(store_).ingest(
+        cur, _binding(), RawMessage(raw, "emails/charset.eml", None, "ref")
+    )
+
+    assert outcome.artifact_ids == ()
+    # The bytes survive, which is the whole point.
+    assert any(k.startswith("mail-intake/raw/") for k in store_.objects)
+    assert any("INSERT INTO proc.bp_ingest_bundle" in sql for sql, _ in cur.calls)
+    assert any(
+        QuarantineReason.MALFORMED_MIME.value in (p or ())
+        for p in cur.states_written()
+    )
+
+
+def test_the_sweep_announces_without_writing_anything():
+    """A safety net that writes on every pass is a leak, not a net.
+
+    The sweep re-announces a ready artifact until a consumer moves it, so it
+    runs against the same rows repeatedly by design. An earlier version appended
+    a derivation row each pass — one a minute per artifact, unbounded, while no
+    consumer existed. A derivation records that an extraction RUN happened, and
+    this function does not run extraction.
+    """
+    cur, bus = FakeCursor(), FakeBus()
+    cur.queue(
+        [
+            {
+                "artifact_id": "ART-1",
+                "bundle_id": "B-1",
+                "object_key": "mail-intake/artifacts/user-7/ab/cd/abcd",
+                "detected_mime": "application/pdf",
+                "owner_ref": "user-7",
+            }
+        ]
+    )
+    pipeline_module.sweep_ready_artifacts(cur, event_bus=bus)
+
+    assert not [
+        sql for sql, _ in cur.calls
+        if sql.strip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+    ], "the sweep must announce, not write"
+
+
+def test_sweep_publishes_ready_artifacts():
     cur, bus = FakeCursor(), FakeBus()
     cur.queue(
         {
@@ -5931,27 +6042,19 @@ class IngestPipeline:
         owner_ref = binding["owner_ref"]
         binding_id = binding["binding_id"]
 
-        parsed: Optional[mime_walk.ParsedBundle] = None
-        parse_error: Optional[str] = None
-        try:
-            parsed = mime_walk.parse(message.raw)
-        except mime_walk.MalformedMime as exc:
-            parse_error = str(exc)
-
-        header_from = None
-        sender_domain = None
-        if parsed is not None:
-            auth_preview = sender_auth.evaluate(parsed)
-            header_from = auth_preview.header_from
-            sender_domain = (
-                header_from.rsplit("@", 1)[1].lower()
-                if header_from and "@" in header_from
-                else None
-            )
-
-        # The bundle id is generated here, not inside the repo, because the raw
-        # MIME key is derived from it and the column is NOT NULL — the insert
-        # has to carry a real key, not a placeholder patched up afterwards.
+        # ORDER: idempotency check, then raw MIME, then parse. Each step earns
+        # its position.
+        #
+        # The insert comes first so a re-delivered message does no work at all.
+        # The raw store comes before the parse because a message that cannot be
+        # parsed is precisely the one someone will need to look at, and an
+        # earlier version had these the other way round: `parse` ran first, and
+        # anything it raised other than MalformedMime escaped the handler
+        # entirely. A body part declaring an unknown charset raises LookupError
+        # straight out of the stdlib — ordinary in real mail — and destroyed the
+        # message: no bytes stored, no bundle row, no quarantine record, nothing
+        # to investigate. The ordering exists to prevent exactly that, and did
+        # not.
         bundle_id = str(uuid.uuid4())
         raw_key = store.raw_mime_key(owner_ref, bundle_id)
 
@@ -5961,28 +6064,49 @@ class IngestPipeline:
             binding_id=binding_id,
             owner_ref=owner_ref,
             provider_message_id=message.provider_message_id,
-            rfc_message_id=(parsed.headers.get("message-id", [None])[0] if parsed else None),
-            thread_id=(parsed.headers.get("thread-index", [None])[0] if parsed else None),
-            sender_address=header_from,
-            sender_display_name=(parsed.headers.get("from", [None])[0] if parsed else None),
-            sender_domain=sender_domain,
-            recipients=(parsed.headers.get("to", []) if parsed else []),
-            subject=(parsed.headers.get("subject", [None])[0] if parsed else None),
             received_at=message.received_at,
-            body_text=(parsed.body_text if parsed else None),
-            body_html=(parsed.body_html if parsed else None),
             raw_mime_key=raw_key,
         )
-
         if inserted is None:
             # Already ingested: a re-delivered provider event or an IMAP
-            # re-poll. Stopping here is what makes re-reading safe — carrying
-            # on would write a second set of artifacts for the same message.
+            # re-poll. Stopping here is what makes re-reading safe.
             return IngestOutcome(bundle_id, (), (), ())
 
-        # Raw MIME immediately: everything downstream is reconstructible from it,
-        # including the messages that fail to parse a line later.
         self._store.put_immutable(raw_key, message.raw)
+
+        parsed: Optional[mime_walk.ParsedBundle] = None
+        parse_error: Optional[str] = None
+        try:
+            parsed = mime_walk.parse(message.raw)
+        except Exception as exc:
+            # Deliberately broad. MalformedMime is the expected failure, but the
+            # stdlib parser raises its own exceptions for hostile or merely
+            # sloppy input, and any of them means the same thing operationally:
+            # we could not read this message, so it is quarantined with the raw
+            # bytes already safe on disk.
+            parse_error = f"{type(exc).__name__}: {exc}"
+
+        if parsed is not None:
+            auth_preview = sender_auth.evaluate(parsed)
+            header_from = auth_preview.header_from
+            sender_domain = (
+                header_from.rsplit("@", 1)[1].lower()
+                if header_from and "@" in header_from
+                else None
+            )
+            repo.update_bundle_from_parse(
+                cur,
+                bundle_id,
+                rfc_message_id=parsed.headers.get("message-id", [None])[0],
+                thread_id=parsed.headers.get("thread-index", [None])[0],
+                sender_address=header_from,
+                sender_display_name=parsed.headers.get("from", [None])[0],
+                sender_domain=sender_domain,
+                recipients=parsed.headers.get("to", []),
+                subject=parsed.headers.get("subject", [None])[0],
+                body_text=parsed.body_text,
+                body_html=parsed.body_html,
+            )
 
         if parsed is None:
             repo.transition_bundle(
@@ -6115,7 +6239,9 @@ class IngestPipeline:
         )
         repo.record_arrival(cur, artifact_id, bundle_id)
 
-        existing = repo.find_existing_artifact(cur, owner_ref, digest, None)
+        existing = repo.find_existing_artifact(
+            cur, owner_ref, digest, None, exclude_artifact_id=artifact_id
+        )
         if existing and existing != artifact_id:
             repo.mark_duplicate(
                 cur, artifact_id, existing, current=ArtifactState.STORED
@@ -6168,11 +6294,21 @@ class IngestPipeline:
 
 def sweep_ready_artifacts(cur: Any, event_bus: Optional[Any] = None,
                           limit: int = 50) -> int:
-    """Stage 10. Publish DocumentIngested for artifacts sitting in the queue.
+    """Stage 10. Announce artifacts sitting in the queue. Announce only.
 
-    The durable row is the contract; this is the notification. Re-running is
-    safe because the transition to EXTRACTION_COMPLETE is what removes a row
-    from the queue, and that only happens once extraction has actually run.
+    The durable row is the contract; this is the notification. An artifact
+    stays in READY_FOR_EXTRACTION until a consumer moves it, so this sweep
+    re-announces the same artifact every time it runs until one does — which is
+    the intended behaviour for a safety net, and is why the notification must
+    be cheap and repeatable.
+
+    It therefore writes NOTHING. An earlier version appended a derivation row
+    per artifact per pass, which on a 60-second job meant one row a minute per
+    ready artifact, forever, growing without bound while no consumer existed.
+    A derivation records that an extraction RUN happened; this function does not
+    run extraction, so it has no business claiming one did. The consumer that
+    performs the extraction appends the derivation and transitions the artifact
+    out of the queue.
     """
     rows = repo.claim_ready_artifacts(cur, limit=limit)
     published = 0
@@ -6184,7 +6320,6 @@ def sweep_ready_artifacts(cur: Any, event_bus: Optional[Any] = None,
             "detected_mime": row["detected_mime"],
             "owner_ref": row["owner_ref"],
         }
-        repo.append_derivation(cur, row["artifact_id"], PIPELINE_VERSION, None)
         if event_bus is not None:
             event_bus.publish(DOCUMENT_INGESTED, payload)
         published += 1
