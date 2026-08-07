@@ -20,7 +20,12 @@ ALTER TABLE proc.bp_mailbox_binding
 
 CREATE TABLE IF NOT EXISTS proc.bp_ingest_bundle (
     bundle_id           UUID PRIMARY KEY,
-    binding_id          TEXT NOT NULL,
+    -- BIGINT, not TEXT: proc.bp_mailbox_binding.binding_id is
+    -- BIGINT GENERATED ALWAYS AS IDENTITY and is that table's primary key.
+    -- TEXT here would make every join need an explicit cast (Postgres has no
+    -- implicit text = bigint operator) and would let a bundle name a binding
+    -- that does not exist -- which breaks the audit spine the FK now enforces.
+    binding_id          BIGINT NOT NULL REFERENCES proc.bp_mailbox_binding (binding_id),
     owner_ref           TEXT NOT NULL,
     provider_message_id TEXT,
     rfc_message_id      TEXT,
@@ -59,7 +64,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_bp_ingest_bundle_binding_provider_msg
 CREATE TABLE IF NOT EXISTS proc.bp_ingest_artifact (
     artifact_id             UUID PRIMARY KEY,
     bundle_id               UUID NOT NULL REFERENCES proc.bp_ingest_bundle (bundle_id),
-    binding_id              TEXT NOT NULL,
+    binding_id              BIGINT NOT NULL REFERENCES proc.bp_mailbox_binding (binding_id),
     owner_ref               TEXT NOT NULL,
     declared_filename       TEXT,
     declared_mime           TEXT,
