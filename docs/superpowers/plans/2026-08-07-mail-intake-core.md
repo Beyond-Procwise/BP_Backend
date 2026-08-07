@@ -1469,6 +1469,38 @@ def _macro_workbook() -> bytes:
     return buf.getvalue()
 
 
+def _encrypted_ooxml() -> bytes:
+    """A password-protected Office file, as a byte signature.
+
+    A genuinely encrypted workbook cannot be produced here — neither
+    msoffcrypto nor oletools is installed. That is acceptable because the
+    detector is itself a byte-signature check: an encrypted OOXML file is an
+    OLE container carrying a stream named "EncryptedPackage". This fixture
+    reproduces exactly the structure the detector inspects, and the companion
+    fixture below proves an ordinary workbook does not trip it.
+    """
+    ole_signature = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    return (
+        ole_signature
+        + b"\x00" * 512
+        + "EncryptedPackage".encode("utf-16-le")
+        + b"\x00" * 64
+    )
+
+
+def _clean_workbook() -> bytes:
+    """An ordinary .xlsx: no macros, no encryption. Must pass the gate."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+        zf.writestr("xl/worksheets/sheet1.xml", "<worksheet/>")
+    return buf.getvalue()
+
+
 def _zip_wearing_a_pdf_name() -> bytes:
     """Acceptance test 6: ZIP payload, .pdf extension."""
     import io
@@ -1491,7 +1523,9 @@ def _clean_pdf() -> bytes:
 
 BINARY_FIXTURES = {
     "encrypted.pdf": _encrypted_pdf,
+    "encrypted_workbook.xlsx": _encrypted_ooxml,
     "macro_workbook.xlsm": _macro_workbook,
+    "clean_workbook.xlsx": _clean_workbook,
     "zip_named_quote.pdf": _zip_wearing_a_pdf_name,
     "clean.pdf": _clean_pdf,
 }
@@ -1563,6 +1597,29 @@ def test_macro_workbook_quarantines():
     )
     assert not verdict.ok
     assert verdict.reason is QuarantineReason.MACRO
+
+
+def test_password_protected_workbook_quarantines():
+    verdict = _verdict(
+        "encrypted_workbook.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ENCRYPTED
+
+
+def test_ordinary_workbook_is_not_falsely_flagged():
+    """The false-positive guard for both Office heuristics.
+
+    A macro or encryption detector that fires on ordinary workbooks would fill
+    the review queue with legitimate price lists, and a queue of false
+    positives is one people stop reading.
+    """
+    verdict = _verdict(
+        "clean_workbook.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert verdict.ok, f"clean workbook wrongly quarantined as {verdict.reason}"
 
 
 def test_zip_wearing_a_pdf_name_quarantines_on_mismatch():
@@ -1720,6 +1777,13 @@ _OLE_MACRO_MARKERS = (b"VBA", b"_VBA_PROJECT", b"Macros")
 
 _OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
+# An encrypted Office file is an OLE container holding a stream named
+# "EncryptedPackage". OLE stores stream names as UTF-16LE, so the name is
+# derived rather than hand-typed — a hand-written \x00-interleaved literal is
+# easy to get subtly wrong (one missing trailing byte still matches as a prefix,
+# so the mistake reads as correct and never fails a test).
+_ENCRYPTED_PACKAGE = "EncryptedPackage".encode("utf-16-le")
+
 
 @dataclass(frozen=True)
 class SafetyVerdict:
@@ -1746,11 +1810,11 @@ def _has_ooxml_macro(names: list) -> bool:
 def _is_encrypted_ooxml(content: bytes) -> bool:
     """An encrypted Office file is an OLE container holding EncryptedPackage.
 
-    Detected by signature and marker, without decrypting anything.
+    Detected by signature and stream name, without decrypting anything.
     """
     if not content.startswith(_OLE_SIGNATURE):
         return False
-    return b"E\x00n\x00c\x00r\x00y\x00p\x00t\x00e\x00d\x00P\x00a\x00c\x00k\x00a\x00g\x00e" in content[:8192]
+    return _ENCRYPTED_PACKAGE in content[:8192]
 
 
 def _is_encrypted_pdf(content: bytes) -> bool:
@@ -1842,7 +1906,7 @@ def evaluate(
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_safety.py -v`
-Expected: PASS, 11 tests
+Expected: PASS, 13 tests
 
 - [ ] **Step 7: Prove the gate actually fails**
 
