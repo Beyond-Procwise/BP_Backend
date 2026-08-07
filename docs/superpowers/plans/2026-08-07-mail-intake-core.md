@@ -3254,25 +3254,28 @@ def test_white_font_is_detected_whatever_the_attribute_order():
     assert any(h.technique == "office_hidden" for h in hits)
 
 
-@pytest.mark.parametrize(
-    "mime_name",
-    ["WORD_MIME", "EXCEL_MIME"],
-)
-def test_package_claiming_a_type_but_carrying_no_content_part_fails_closed(mime_name):
-    """A valid zip with no document or workbook part is corrupt or a decoy.
-    Returning no hits would clear it; cannot inspect means cannot clear.
-
-    Parametrised over both formats — an earlier version covered Word only, so
-    the Excel branch was written but never exercised."""
+def _decoy_package() -> bytes:
+    """A valid zip with no content part — corrupt, or a deliberate decoy."""
     import io
     import zipfile
 
-    mime = {"WORD_MIME": WORD_MIME, "EXCEL_MIME": EXCEL_MIME}[mime_name]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("[Content_Types].xml", "<Types/>")
         zf.writestr("decoy/readme.txt", "nothing to see")
-    hits = hidden_text.scan(buf.getvalue(), mime)
+    return buf.getvalue()
+
+
+def test_document_claiming_word_but_carrying_no_document_part_fails_closed():
+    """Returning no hits would clear it; cannot inspect means cannot clear."""
+    hits = hidden_text.scan(_decoy_package(), WORD_MIME)
+    assert any(h.technique == "unreadable" for h in hits)
+
+
+def test_workbook_claiming_excel_but_carrying_no_workbook_part_fails_closed():
+    """The Excel counterpart. An earlier version covered Word only, so this
+    branch was written but never exercised."""
+    hits = hidden_text.scan(_decoy_package(), EXCEL_MIME)
     assert any(h.technique == "unreadable" for h in hits)
 ```
 
@@ -3350,8 +3353,18 @@ OCR_OVERLAP_THRESHOLD = 0.60
 # A scanned page is essentially entirely imagery. Measured: full-page, two-,
 # three- and five-tile scans all read 1.000, while the filler-plus-speck attack
 # reads 0.519 and a letterhead logo 0.019. Setting the bar high enough to
-# require the page to BE a scan separates those by a wide margin, and the
-# attacker's cost becomes a full-page graphic the reader plainly sees.
+# require the page to BE a scan separates those by a wide margin.
+#
+# KNOWN RESIDUAL BYPASS, stated plainly because an earlier version of this
+# comment claimed the attacker's cost was "a full-page graphic the reader
+# plainly sees" — which is FALSE, and a false claim in a security comment is
+# worse than a documented gap. This is a GEOMETRIC test: it measures where
+# images are placed, never whether they render as anything. A fully transparent
+# or near-white image covering 85% of the page satisfies it at no visual cost
+# and re-enables the speck-under-the-span bypass. Closing that needs alpha and
+# pixel-content inspection, which is out of scope here alongside z-order
+# occlusion analysis. What this threshold buys is a higher bar for an
+# unsophisticated attacker, not closure of the class — do not read it as more.
 #
 # CALIBRATION NOTE, stated because the number reads more authoritative than it
 # is: none of the 260 real PDFs in this repo carries an invisible OCR layer, so
