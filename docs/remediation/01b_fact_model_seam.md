@@ -545,9 +545,32 @@ reference data; the live database holds almost none of it.
 This explains the previously recorded "no category dimension" corpus gap: the
 dimension exists, in another database, unwired.
 
-Both databases are on the same cluster (`10.100.10.180`), and `postgres_fdw`
-and `dblink` are available though not installed — so a read-only bridge is
-feasible without copying.
+**Resolved 2026-08-07 (`d345b1f`): a read-only `postgres_fdw` bridge, not a copy.**
+The owner confirmed `uicanvas` is authoritative and chose an FDW view, so there
+is exactly one place the canonical data lives — a copy or a scheduled sync
+would immediately raise the question of which side is right when they diverge,
+and that question has a cost every time anyone asks it.
+
+Exposed on both databases as `proc.bp_category_master`, `bp_product_master`,
+`bp_category_product_map`, `bp_supplier_master`, `bp_contract_master`, over
+foreign tables in a `canonical` schema. Three properties, each verified rather
+than asserted:
+
+- **Read-only is enforced by the wrapper**, not by convention: the server
+  carries `updatable 'false'`, so `UPDATE`/`INSERT`/`DELETE` through the views
+  are refused (`foreign table … does not allow updates`). A write reaching
+  `uicanvas` from here would corrupt the authoritative copy for every system
+  that reads it.
+- **`proc.bp_category` is deliberately untouched.** It is a different, flat
+  `(item_description, category)` table, and silently replacing it would break
+  whatever still reads it.
+- **No credentials in the repository** — host, port, user and password are
+  passed as psql variables at apply time.
+
+Rollback verified: views and server removed, re-applied, idempotent on a second
+run. Guarded by `tests/services/test_canonical_masters.py` (11 live-only tests),
+because the failure mode is silent — if the link disappears, queries do not fail
+loudly, they quietly find a local empty table with a similar name instead.
 
 ### 14.3 B3 must be revised: a coded standard does exist
 
@@ -561,10 +584,21 @@ The revised position:
 - **For field names, B3 holds.** `concept_code` derives from the extraction
   schemas, 66 names, drift structurally impossible. Nothing changes.
 - **For values, B3 does not hold.** `uicanvas.proc.bp_products` carries a
-  `unit_of_measure` on 81 of 186 products across 18 distinct values, including
-  `set`, `service`, `programme`, `quarter`, `module`, `audit`, `retainer`,
-  `roll`, `sheet`, `pen` and `Monthly` — **all of which `uom.py` returns
-  `UOM_UNMAPPED` for.**
+  `unit_of_measure` on 81 of 186 products across 18 distinct values. Measured
+  through the new bridge, `uom.py` covers **63 of 81 products (78%) but only 7
+  of 18 distinct values (39%)**:
+
+  | | Values |
+  |---|---|
+  | mapped | `month` `hour` `unit` `each` `licence` `Unit` `Month` |
+  | **rejected** | `set` `pen` `service` `programme` `quarter` `Monthly` `retainer` `module` `sheet` `roll` `audit` |
+
+  The rejections fall into three kinds, and only the first is a plain bug:
+  a casing/spelling gap (`Monthly`); genuine missing units (`set`, `sheet`,
+  `roll`, `pen`, `module`, `quarter`); and **service-engagement bases**
+  (`service`, `programme`, `retainer`, `audit`) which are arguably not units at
+  all but lump-sum engagement types — the `extended_line` case in §4, and a
+  modelling decision rather than a missing map entry.
 
 So the hand-typed unit map in `uom.py` was already drifting from canonical data
 that predates this phase. The `UOM_ABSENT` gap in §13.1 is therefore partly a
