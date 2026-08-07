@@ -56,11 +56,25 @@ def evaluate(bundle, *, trusted_asserter: Optional[str] = None) -> AuthResult:
     verdicts = {"spf": UNKNOWN, "dkim": UNKNOWN, "dmarc": UNKNOWN}
 
     if header:
+        # The authserv-id may carry a CFWS comment — `mx.acme.test (Postfix)` —
+        # so compare on the first token, or a legitimate MTA gets distrusted for
+        # cosmetic reasons.
         asserted_by = header.split(";", 1)[0].strip() or None
+        asserted_id = asserted_by.split()[0] if asserted_by else None
+
         for method, value in _METHOD.findall(header):
             verdicts[method.lower()] = value.lower()
-        if trusted_asserter and asserted_by != trusted_asserter:
-            # Hearsay: recorded, but not treated as a verdict.
+
+        # Default to trusting NOTHING. An earlier version downgraded only when
+        # a trusted_asserter was configured, so omitting it — which the
+        # signature permitted — meant any topmost Authentication-Results header
+        # was recorded as authoritative. Anything upstream of the machine that
+        # wrote that header can forge one, so the effect was a forged pass
+        # accepted by default. For a control whose entire job is detecting
+        # impersonation, the safe default is the opposite one: without a named
+        # asserter we do not know who wrote this, and "do not know" is
+        # `unknown`.
+        if asserted_id != trusted_asserter:
             verdicts = {"spf": UNKNOWN, "dkim": UNKNOWN, "dmarc": UNKNOWN}
 
     header_from = parseaddr(_first(bundle, "from") or "")[1] or None
