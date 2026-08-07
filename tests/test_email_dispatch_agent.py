@@ -141,3 +141,90 @@ def test_email_dispatch_agent_sends_all_drafts(monkeypatch):
         }
     ]
 
+
+def test_a_denied_draft_does_not_abort_the_rest_of_the_batch(monkeypatch):
+    """Must-fix minor: send_draft was called with no try/except, so a
+    DispatchDenied on ANY draft propagated straight out of run() uncaught --
+    one refused draft killed every draft after it in the list, and
+    send_attempts (what the guard's own volume cap counts against) never
+    advanced on the raise either. Prove three drafts still each produce a
+    record when the middle one is denied, and that the attempt counter
+    still advances across the denial.
+    """
+    from src.services import guardrail
+    from src.services.email_dispatch_guard import DispatchDenied
+
+    nick = DummyNick()
+    agent = EmailDispatchAgent(nick)
+
+    run_counts_seen: List[Optional[int]] = []
+
+    def fake_send(identifier: str, **kwargs):
+        run_counts_seen.append(kwargs.get("run_count"))
+        if identifier == "PROC-WF-UID-2":
+            decision = guardrail.Decision(
+                allowed=False,
+                reason="denied for test",
+                policy_name="EmailDispatchApprovalPolicy",
+            )
+            raise DispatchDenied(decision)
+        return {
+            "sent": True,
+            "message_id": f"<{identifier}-msg>",
+            "draft": {
+                "unique_id": identifier,
+                "message_id": f"<{identifier}-msg>",
+                "sent_status": True,
+            },
+        }
+
+    monkeypatch.setattr(agent.dispatch_service, "send_draft", fake_send)
+    monkeypatch.setattr(
+        agent,
+        "_response_coordinator",
+        SimpleNamespace(register_expected_responses=lambda *a, **k: None),
+    )
+
+    drafts = [
+        {
+            "unique_id": f"PROC-WF-UID-{idx}",
+            "supplier_id": f"SUP-{idx}",
+            "recipients": [f"supplier{idx}@example.com"],
+            "sender": "buyer@example.com",
+            "subject": f"RFQ Update {idx}",
+            "body": "<p>Hello</p>",
+        }
+        for idx in range(1, 4)
+    ]
+
+    context = AgentContext(
+        workflow_id="wf-batch-deny",
+        agent_id="email_dispatch",
+        user_id="user",
+        input_data={"drafts": drafts, "round": 1},
+    )
+
+    result = agent.run(context)
+
+    # One draft genuinely failed, so the batch is correctly reported FAILED
+    # overall (pre-existing rule: `status = FAILED if failures else SUCCESS`)
+    # -- what this test exists to prove is that the OTHER two still went out
+    # and are recorded, rather than the whole run aborting on the first
+    # denial.
+    assert result.status == AgentStatus.FAILED
+    records = result.data["dispatch_records"]
+    assert len(records) == 3, "one denial must not abort the rest of the batch"
+    statuses = {r["unique_id"]: r["status"] for r in records}
+    assert statuses == {
+        "PROC-WF-UID-1": "sent",
+        "PROC-WF-UID-2": "failed",
+        "PROC-WF-UID-3": "sent",
+    }
+    denied_record = next(r for r in records if r["unique_id"] == "PROC-WF-UID-2")
+    assert denied_record["error"] == "denied for test"
+    assert result.data["failures"] == [denied_record]
+    # The attempt counter (what the guard's volume cap counts against) still
+    # advanced across the denial -- 0, 1, 2 -- rather than getting stuck
+    # because the raise skipped the increment.
+    assert run_counts_seen == [0, 1, 2]
+

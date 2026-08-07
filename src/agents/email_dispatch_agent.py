@@ -13,6 +13,14 @@ from services.event_bus import get_event_bus
 from services.supplier_response_coordinator import get_supplier_response_coordinator
 from repositories import workflow_email_tracking_repo, workflow_round_response_repo
 
+# Imported the same way `email_dispatch_service.py` raises it
+# (`from src.services import email_dispatch_guard`) rather than the bare
+# `services.email_dispatch_guard` form used elsewhere in this file: the two
+# import roots load the module twice under this project's sys.path setup,
+# producing two distinct exception classes for the same file. Catching the
+# bare-import class here would silently never match what is actually raised.
+from src.services.email_dispatch_guard import DispatchDenied
+
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +148,8 @@ class EmailDispatchAgent(BaseAgent):
         draft: Dict[str, Any],
         workflow_id: Optional[str],
         round_number: Optional[int],
+        principal: Optional[Any] = None,
+        run_count: int = 0,
     ) -> Dict[str, Any]:
         unique_id = self._coerce_text(draft.get("unique_id"))
         supplier_id = self._coerce_text(draft.get("supplier_id"))
@@ -169,6 +179,8 @@ class EmailDispatchAgent(BaseAgent):
             body_override=body,
             attachments=attachments,
             workflow_dispatch_context=dispatch_context,
+            principal=principal,
+            run_count=run_count,
         )
 
         dispatched_at_dt = datetime.now(timezone.utc)
@@ -231,6 +243,10 @@ class EmailDispatchAgent(BaseAgent):
         round_number = self._coerce_int(
             input_data.get("round") or input_data.get("round_number")
         )
+        # AgentContext carries no principal today, so this is None for every
+        # unattended run -- correctly: an unattended scheduler job may not
+        # send mail, and the gate denying it is the intended outcome.
+        principal = getattr(context, "principal", None)
 
         drafts_payload = input_data.get("drafts")
         if drafts_payload is None:
@@ -252,6 +268,10 @@ class EmailDispatchAgent(BaseAgent):
 
         dispatch_records: List[Dict[str, Any]] = []
         failures: List[Dict[str, Any]] = []
+        # Sends actually attempted in this invocation so far -- not the loop
+        # index, which would also count drafts skipped as already-dispatched
+        # below. This is what the guard's volume cap (check 5) counts against.
+        send_attempts = 0
 
         for draft in drafts:
             unique_id = self._coerce_text(draft.get("unique_id"))
@@ -260,7 +280,29 @@ class EmailDispatchAgent(BaseAgent):
                 dispatch_records.append(already)
                 continue
 
-            record = self._send_draft(draft, workflow_id, round_number)
+            try:
+                record = self._send_draft(
+                    draft,
+                    workflow_id,
+                    round_number,
+                    principal=principal,
+                    run_count=send_attempts,
+                )
+            except DispatchDenied as exc:
+                # A denial on one draft must not abort the rest of the batch
+                # -- previously this raised straight out of `run()`
+                # uncaught, so a single refused draft killed every draft
+                # after it in the list, and `send_attempts` never advanced
+                # on that draft either (the volume cap the guard itself
+                # enforces reads this counter).
+                record = {
+                    "unique_id": self._coerce_text(draft.get("unique_id")),
+                    "supplier_id": self._coerce_text(draft.get("supplier_id")),
+                    "status": "failed",
+                    "error": exc.decision.reason,
+                }
+                logger.error(json.dumps({"event": "email_dispatch_denied", **record}))
+            send_attempts += 1
             dispatch_records.append(record)
             if record.get("status") != "sent":
                 failures.append(record)

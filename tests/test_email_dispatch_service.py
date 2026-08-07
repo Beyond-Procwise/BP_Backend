@@ -5,6 +5,8 @@ import types
 from types import SimpleNamespace
 from typing import List
 
+import pytest
+
 os.environ.setdefault("OLLAMA_USE_GPU", "1")
 os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
@@ -42,6 +44,38 @@ from services import email_dispatch_service as _eds_module
 from services.email_service import EmailSendResult
 from repositories import email_dispatch_repo, workflow_email_tracking_repo
 from utils.email_tracking import extract_tracking_metadata, extract_unique_id_from_body
+
+from src.services import email_dispatch_guard as _guard_module
+from src.services import guardrail as _guardrail_module
+
+
+class _FakePrincipal:
+    """A minimal stand-in for api.auth.Principal (subject + claims)."""
+
+    def __init__(self, subject="test-approver", claims=None):
+        self.subject = subject
+        self.claims = claims or {"cognito:groups": ["bp-approvers"]}
+
+
+def _stub_guard_allows(monkeypatch) -> None:
+    """Stand the dispatch guard's five checks aside for these tests.
+
+    This file exercises `EmailDispatchService.send_draft`'s OWN plumbing --
+    tracking annotations, dispatch-chain bookkeeping, idempotency, workflow
+    notification -- not the guard, which has its own dedicated RED/GREEN
+    proof in tests/guardrails/test_send_path_gate.py. Standing in for an
+    already-allowed decision here is the same kind of test double this file
+    already uses for SES (`fake_send`) and the dispatch chain store.
+    """
+
+    monkeypatch.setattr(
+        _guard_module,
+        "check_dispatch",
+        lambda **_: _guardrail_module.Decision(
+            allowed=True,
+            reason="test stub: guard behaviour covered by tests/guardrails/test_send_path_gate.py",
+        ),
+    )
 
 
 _tracking_dispatches: list = []
@@ -127,6 +161,10 @@ class InMemoryDraftStore:
 class InMemoryActionStore:
     def __init__(self):
         self.rows = {}
+        # Every INSERT INTO proc.bp_agent_actions the guard's audit write
+        # (record_action_or_fail) makes, so a test can prove a denial was
+        # audited with the same weight as a send.
+        self.agent_action_rows: List[tuple] = []
 
     def get(self, action_id):
         return self.rows.get(action_id)
@@ -198,13 +236,25 @@ class DummyCursor:
             return
         elif normalized.startswith("INSERT INTO proc.email_dispatch_chains"):
             return
-        elif normalized.startswith("SELECT process_output FROM proc.action"):
+        elif normalized.startswith("SELECT process_output FROM proc.bp_action"):
             action_id = params[0]
             payload = self.action_store.get(action_id)
             self._result = [(payload,)] if payload is not None else []
-        elif normalized.startswith("UPDATE proc.action SET process_output"):
+        elif normalized.startswith("UPDATE proc.bp_action SET process_output"):
             payload_json, action_id = params
             self.action_store.update(action_id, payload_json)
+        elif normalized.startswith("SAVEPOINT"):
+            return
+        elif normalized.startswith("RELEASE SAVEPOINT"):
+            return
+        elif normalized.startswith("ROLLBACK TO SAVEPOINT"):
+            return
+        elif normalized.startswith("INSERT INTO proc.bp_agent_actions"):
+            # The dispatch guard's audit write (record_action_or_fail).
+            # Recorded so a wiring test can prove a deny was audited, not
+            # just that it doesn't explode -- the deep audit-write behaviour
+            # itself is covered by tests/guardrails/test_mandatory_audit.py.
+            self.action_store.agent_action_rows.append(params)
         else:  # pragma: no cover - defensive
             raise AssertionError(f"Unexpected query: {query}")
 
@@ -229,6 +279,17 @@ class DummyConnection:
     def commit(self):
         pass
 
+    # The guard's allow-list check (email_dispatch_guard._supplier_emails /
+    # _supplier_clearance) prefers these when present, rather than querying
+    # proc.bp_supplier -- exactly the seam the guard's own docstring names
+    # for a test double. Every draft in this file addresses
+    # buyer@example.com, so a single fixed allow-list covers them all.
+    def lookup_supplier_emails(self, supplier_id):
+        return {"buyer@example.com"}
+
+    def lookup_supplier_clearance(self, supplier_id):
+        return None
+
 
 class DummyNick:
     def __init__(self, draft_store, action_store):
@@ -243,6 +304,7 @@ class DummyNick:
 def test_email_dispatch_service_sends_and_updates_status(monkeypatch):
     _BackendSchedulerProxy.reset()
     _tracking_dispatches.clear()
+    _stub_guard_allows(monkeypatch)
     monkeypatch.setattr(_eds_module, "record_workflow_dispatch", _fake_record_workflow_dispatch)
     monkeypatch.setattr(workflow_email_tracking_repo, "load_workflow_rows", _fake_load_workflow_rows)
     store = InMemoryDraftStore()
@@ -336,6 +398,7 @@ def test_email_dispatch_service_sends_and_updates_status(monkeypatch):
     result = service.send_draft(
         "RFQ-UNIT",
         workflow_dispatch_context=dispatch_context,
+        principal=_FakePrincipal(),
     )
 
     assert result["sent"] is True
@@ -410,6 +473,7 @@ def test_email_dispatch_service_sends_and_updates_status(monkeypatch):
 
 def test_email_dispatch_service_returns_existing_dispatch(monkeypatch):
     _BackendSchedulerProxy.reset()
+    _stub_guard_allows(monkeypatch)
 
     store = InMemoryDraftStore()
     unique_id = "PROC-WF-IDEMP-001"
@@ -475,6 +539,7 @@ def test_email_dispatch_service_returns_existing_dispatch(monkeypatch):
     result = service.send_draft(
         unique_id,
         workflow_dispatch_context={"workflow_id": workflow_identifier, "unique_id": unique_id},
+        principal=_FakePrincipal(),
     )
 
     assert call_count["send"] == 0
@@ -493,6 +558,7 @@ def test_email_dispatch_service_returns_existing_dispatch(monkeypatch):
 def test_email_dispatch_service_defaults_to_workflow_tracking(monkeypatch):
     _BackendSchedulerProxy.notifications.clear()
     _tracking_dispatches.clear()
+    _stub_guard_allows(monkeypatch)
     monkeypatch.setattr(_eds_module, "record_workflow_dispatch", _fake_record_workflow_dispatch)
     monkeypatch.setattr(workflow_email_tracking_repo, "load_workflow_rows", _fake_load_workflow_rows)
 
@@ -554,7 +620,7 @@ def test_email_dispatch_service_defaults_to_workflow_tracking(monkeypatch):
     )
     monkeypatch.setattr(email_dispatch_repo, "record_dispatch", lambda **_: None)
 
-    result = service.send_draft(unique_id)
+    result = service.send_draft(unique_id, principal=_FakePrincipal())
 
     assert result["sent"] is True
     assert result["workflow_id"] == "wf-auto"
@@ -571,6 +637,7 @@ def test_email_dispatch_service_defaults_to_workflow_tracking(monkeypatch):
 def test_email_dispatch_service_records_workflow_even_when_flag_false(monkeypatch):
     _BackendSchedulerProxy.reset()
     _tracking_dispatches.clear()
+    _stub_guard_allows(monkeypatch)
     monkeypatch.setattr(_eds_module, "record_workflow_dispatch", _fake_record_workflow_dispatch)
     monkeypatch.setattr(workflow_email_tracking_repo, "load_workflow_rows", _fake_load_workflow_rows)
     store = InMemoryDraftStore()
@@ -637,6 +704,7 @@ def test_email_dispatch_service_records_workflow_even_when_flag_false(monkeypatc
             "workflow_id": "wf-no-track",
             "unique_id": unique_id,
         },
+        principal=_FakePrincipal(),
     )
 
     assert result["workflow_email"] is False
@@ -647,3 +715,80 @@ def test_email_dispatch_service_records_workflow_even_when_flag_false(monkeypatc
     )
     assert any(row.unique_id == unique_id for row in stored_rows)
     assert _BackendSchedulerProxy.notifications == ["wf-no-track"]
+
+
+def test_send_draft_wiring_denies_and_audits_when_the_guard_refuses(monkeypatch):
+    """Prove the WIRING, not just the guard: a Decision(allowed=False) from
+    email_dispatch_guard.check_dispatch must stop send_draft before SES is
+    ever touched, and the refusal itself must be audited -- exactly what
+    Task 7 exists to close. The guard's own five checks have their own
+    RED/GREEN proof in tests/guardrails/test_send_path_gate.py; this test
+    is the one that would catch someone deleting the `if not gate.allowed`
+    branch, or the `record_action_or_fail` call, from send_draft itself.
+    """
+
+    store = InMemoryDraftStore()
+    unique_id = "PROC-WF-DENY-001"
+    draft_payload = {
+        "rfq_id": "RFQ-DENY",
+        "subject": DEFAULT_RFQ_SUBJECT,
+        "body": "<p>Should never be sent</p>",
+        "receiver": "buyer@example.com",
+        "recipients": ["buyer@example.com"],
+        "sender": "sender@example.com",
+        "thread_index": 1,
+        "contact_level": 1,
+        "sent_status": False,
+        "workflow_id": "wf-deny",
+        "unique_id": unique_id,
+    }
+    store.add(
+        {
+            "rfq_id": "RFQ-DENY",
+            "supplier_id": "S-DENY",
+            "supplier_name": "Denied Co",
+            "subject": draft_payload["subject"],
+            "body": draft_payload["body"],
+            "sent": False,
+            "recipient_email": None,
+            "contact_level": 0,
+            "thread_index": 1,
+            "sender": "sender@example.com",
+            "payload": json.dumps(draft_payload),
+            "sent_on": None,
+            "workflow_id": "wf-deny",
+            "unique_id": unique_id,
+        }
+    )
+
+    action_store = InMemoryActionStore()
+    nick = DummyNick(store, action_store)
+    service = EmailDispatchService(nick)
+
+    denial = _guardrail_module.Decision(
+        allowed=False,
+        reason="no recorded human approval for this draft",
+        policy_name="EmailDispatchApprovalPolicy",
+    )
+    monkeypatch.setattr(_guard_module, "check_dispatch", lambda **_: denial)
+
+    def fail_send(*args, **kwargs):
+        raise AssertionError("send_email must not be called when the guard denies")
+
+    monkeypatch.setattr(service.email_service, "send_email", fail_send)
+
+    with pytest.raises(_guard_module.DispatchDenied) as excinfo:
+        service.send_draft("RFQ-DENY", principal=_FakePrincipal())
+
+    assert excinfo.value.decision is denial
+
+    # The refusal itself was audited -- a denied send is exactly the event
+    # an auditor needs to see, with the same weight as a real one.
+    assert len(action_store.agent_action_rows) == 1
+    row = action_store.agent_action_rows[0]
+    status, summary = row[10], row[11]
+    assert status == "denied"
+    assert summary == denial.reason
+
+    # And the draft was never marked as sent.
+    assert store.rows[list(store.rows)[0]]["sent"] is False

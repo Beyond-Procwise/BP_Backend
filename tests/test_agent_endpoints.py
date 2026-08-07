@@ -10,8 +10,25 @@ from fastapi.testclient import TestClient
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from api.auth import require_user
 from api.routers.agents import router as agents_router
 from api.routers.workflows import router as workflows_router
+
+
+def _authorize_as_approver(app: FastAPI) -> None:
+    """Stand in for an authenticated caller on ``/workflows/email``.
+
+    Task 7 gated the send path on a real principal (guardrail check 4). These
+    tests stub `EmailDispatchService` itself and exist to prove the router's
+    own orchestration (process/action logging, response shaping) -- not the
+    guard, which has its own dedicated tests in tests/guardrails/. Overriding
+    the auth dependency is the standard FastAPI mechanism for supplying that
+    precondition without touching the guard.
+    """
+
+    app.dependency_overrides[require_user] = lambda: SimpleNamespace(
+        subject="test-approver", claims={"cognito:groups": ["bp-approvers"]}
+    )
 
 
 class DummyPRS:
@@ -116,6 +133,7 @@ def test_workflow_types_endpoint():
 def test_email_workflow_returns_action_id(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -198,6 +216,7 @@ def test_email_workflow_returns_action_id(monkeypatch):
 def test_email_workflow_accepts_list_recipients(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -254,6 +273,7 @@ def test_email_workflow_accepts_list_recipients(monkeypatch):
 def test_email_workflow_marks_failed_dispatch(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -316,6 +336,7 @@ def test_email_workflow_marks_failed_dispatch(monkeypatch):
 def test_email_dispatch_without_workflow_is_rejected(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -344,6 +365,7 @@ def test_email_dispatch_without_workflow_is_rejected(monkeypatch):
 def test_email_dispatch_detects_workflow_mismatch(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -406,5 +428,233 @@ def test_reload_governance_reloads_both_engines():
     assert body["prompts"] == 2
     assert body["policies"] == 1
     assert calls == {"prompts": 1, "policies": 1}
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: the other two send paths must also refuse an unauthenticated
+# caller. /workflows/email/batch and /workflows/{id}/email/dispatch-all call
+# EmailDispatchService.send_draft directly and, before this round, took no
+# principal at all -- the guard would always see principal=None and always
+# deny, but nothing in the router *required* a caller identity in the first
+# place. These two tests assert the send itself never happens without one,
+# not merely that some status code comes back.
+#
+# `_MISSING` matters: `kwargs.get("principal")` returns None both when the
+# router passes `principal=None` (the case being tested) AND when the router
+# never passes the keyword at all (the regression -- e.g. if `principal=`
+# were dropped from the send_draft call again). Without the sentinel, this
+# test would still pass with that keyword deleted, defeating its own point.
+# ---------------------------------------------------------------------------
+
+_MISSING = object()
+
+
+def test_email_batch_dispatch_refuses_without_a_principal(monkeypatch):
+    """No principal reaches send_draft -> the real guard's check 4 would deny
+    (see tests/guardrails/test_send_path_gate.py::test_check_4_no_principal_is_denied
+    and tests/test_email_dispatch_service.py's wiring test for that proof).
+    This test is about the ROUTER: does /email/batch even ask who is calling,
+    and does it thread that answer into every send_draft call in the loop.
+
+    The stub reproduces DispatchDenied's real contract (raise when principal
+    is None) rather than re-deriving the guard's own logic, so a batch of
+    two drafts must show both refused and neither ever reaching SES.
+    """
+    app = FastAPI()
+    app.include_router(workflows_router)
+    # ASK_AUTH_MODE="off" in this environment: require_user returns None
+    # rather than raising. Overriding it here pins that exact, documented
+    # case instead of depending on api.auth's global, test-order-sensitive
+    # `_mode`.
+    app.dependency_overrides[require_user] = lambda: None
+    orchestrator = DummyOrchestrator()
+    app.state.orchestrator = orchestrator
+    app.state.agent_nick = orchestrator.agent_nick
+    client = TestClient(app)
+
+    principals_seen = []
+
+    class StubDispatch:
+        def __init__(self, agent_nick):
+            pass
+
+        def send_draft(self, identifier, **kwargs):
+            principals_seen.append(kwargs.get("principal", _MISSING))
+            if kwargs.get("principal") is None:
+                raise PermissionError(
+                    "no authenticated principal: irreversible actions are refused"
+                )
+            raise AssertionError(  # pragma: no cover - guard path
+                "this test only exercises the unauthenticated case"
+            )
+
+    monkeypatch.setattr("api.routers.workflows.EmailDispatchService", StubDispatch)
+
+    resp = client.post(
+        "/workflows/email/batch",
+        json={
+            "drafts": [
+                {"unique_id": "PROC-WF-BATCH-1", "supplier_id": "SUP-1"},
+                {"unique_id": "PROC-WF-BATCH-2", "supplier_id": "SUP-2"},
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # The router reached send_draft for both drafts (proving the dependency is
+    # wired through the loop) and every single call explicitly carried
+    # principal=None -- not merely omitted the keyword altogether.
+    assert principals_seen == [None, None]
+
+    # And the send itself never happened: zero successes, both refused with
+    # the guard's own reason, not silently swallowed as some other error.
+    assert body["sent"] == 0
+    assert body["failed"] == 2
+    for result in body["results"]:
+        assert result["sent"] is False
+        assert "no authenticated principal" in result["error"]
+
+
+def test_dispatch_all_refuses_without_a_principal(monkeypatch):
+    """Same proof for /workflows/{workflow_id}/email/dispatch-all.
+
+    This endpoint queries proc.draft_rfq_emails directly rather than going
+    through the orchestrator, so the fake agent_nick here answers that query
+    itself instead of using DummyOrchestrator/DummyPRS.
+    """
+
+    class _Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, query, params=None):
+            self._rows = [("PROC-WF-ALL-1", "SUP-1", "subject", False)]
+
+        def fetchall(self):
+            return self._rows
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return _Cursor()
+
+    class _AgentNick:
+        def get_db_connection(self):
+            return _Conn()
+
+    app = FastAPI()
+    app.include_router(workflows_router)
+    app.dependency_overrides[require_user] = lambda: None
+    app.state.agent_nick = _AgentNick()
+    client = TestClient(app)
+
+    principals_seen = []
+
+    class StubDispatch:
+        def __init__(self, agent_nick):
+            pass
+
+        def send_draft(self, identifier, **kwargs):
+            principals_seen.append(kwargs.get("principal", _MISSING))
+            if kwargs.get("principal") is None:
+                raise PermissionError(
+                    "no authenticated principal: irreversible actions are refused"
+                )
+            raise AssertionError(  # pragma: no cover - guard path
+                "this test only exercises the unauthenticated case"
+            )
+
+    monkeypatch.setattr("api.routers.workflows.EmailDispatchService", StubDispatch)
+
+    resp = client.post("/workflows/wf-1/email/dispatch-all")
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Explicitly None, not merely absent -- see the module-level note on
+    # `_MISSING` above.
+    assert principals_seen == [None]
+    assert body["sent"] == 0
+    assert body["failed"] == 1
+    assert "no authenticated principal" in body["results"][0]["error"]
+
+
+def test_email_batch_dispatch_stops_at_the_volume_cap(monkeypatch):
+    """Fix round 2 (C2): nothing ever set `run_count`, so the guard's
+    max_per_run check was structurally dead -- always comparing 0 against the
+    cap. This drives three drafts through /email/batch against a stub that
+    enforces a cap of 2 exactly like the real guard's check 5, and proves the
+    router itself increments run_count once per real send attempt -- not by
+    injecting run_count directly into check_dispatch (that arithmetic has its
+    own proof in tests/guardrails/test_send_path_gate.py::test_check_5_run_cap_denies).
+    """
+    app = FastAPI()
+    app.include_router(workflows_router)
+    _authorize_as_approver(app)
+    orchestrator = DummyOrchestrator()
+    app.state.orchestrator = orchestrator
+    app.state.agent_nick = orchestrator.agent_nick
+    client = TestClient(app)
+
+    MAX_PER_RUN = 2
+    run_counts_seen = []
+
+    class StubDispatch:
+        def __init__(self, agent_nick):
+            pass
+
+        def send_draft(self, identifier, **kwargs):
+            run_count = kwargs.get("run_count", _MISSING)
+            run_counts_seen.append(run_count)
+            if run_count is _MISSING:
+                raise AssertionError("send_draft must always receive run_count")
+            if run_count >= MAX_PER_RUN:
+                raise PermissionError(
+                    f"volume cap reached: {run_count}/{MAX_PER_RUN} for this run"
+                )
+            return {
+                "unique_id": identifier,
+                "sent": True,
+                "recipients": ["r@example.com"],
+                "sender": "s@example.com",
+                "subject": "s",
+            }
+
+    monkeypatch.setattr("api.routers.workflows.EmailDispatchService", StubDispatch)
+
+    resp = client.post(
+        "/workflows/email/batch",
+        json={
+            "drafts": [
+                {"unique_id": "PROC-WF-VOL-1", "supplier_id": "SUP-1"},
+                {"unique_id": "PROC-WF-VOL-2", "supplier_id": "SUP-2"},
+                {"unique_id": "PROC-WF-VOL-3", "supplier_id": "SUP-3"},
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # The router incremented run_count once per real attempt: 0, 1, 2 --
+    # never injected, never left at a constant 0.
+    assert run_counts_seen == [0, 1, 2]
+
+    assert body["sent"] == 2
+    assert body["failed"] == 1
+    assert body["results"][0]["sent"] is True
+    assert body["results"][1]["sent"] is True
+    assert body["results"][2]["sent"] is False
+    assert "volume cap" in body["results"][2]["error"]
 
 

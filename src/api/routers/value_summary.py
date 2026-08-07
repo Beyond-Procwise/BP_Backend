@@ -6,10 +6,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from src.api.auth import require_user
 from src.services import value_query_service, value_summary_service
+from src.services.email_dispatch_guard import DispatchDenied
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +57,24 @@ def get_query_draft(finding_id: str, request: Request, tone: str = "formal") -> 
 
 @router.post("/value-summary/findings/{finding_id}/query-send",
              summary="Send the reviewed query and stamp the finding")
-def post_query_send(finding_id: str, payload: QuerySend, request: Request) -> dict:
+def post_query_send(
+    finding_id: str,
+    payload: QuerySend,
+    request: Request,
+    principal=Depends(require_user),
+) -> dict:
     agent_nick = getattr(request.app.state, "agent_nick", None)
     if agent_nick is None:
         raise HTTPException(status_code=503, detail="AgentNick not available")
     try:
         return value_query_service.send_query(
             finding_id, to=payload.to, subject=payload.subject, body=payload.body,
-            agent_nick=agent_nick)
+            agent_nick=agent_nick, principal=principal)
+    except DispatchDenied as exc:
+        # The guard refused: no approval/allow-list/sensitivity/policy match.
+        # A 403 tells the caller this was a permission refusal, not a
+        # malformed or stale request (409) or a delivery failure (502).
+        raise HTTPException(status_code=403, detail=exc.decision.reason)
     except ValueError as exc:
         # No recipient, already queried, no longer open — the caller's request is the
         # problem, and re-sending unchanged will not help.
