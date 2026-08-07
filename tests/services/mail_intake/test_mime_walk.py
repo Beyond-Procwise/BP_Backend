@@ -72,3 +72,79 @@ def test_headers_are_preserved_for_provenance():
     bundle = parse(_load("simple_pdf.eml"))
     assert bundle.headers["from"] == ["Copperleaf Sales <quotes@copperleaf.test>"]
     assert bundle.headers["message-id"] == ["<quote-qt-4471@copperleaf.test>"]
+
+
+def test_excessive_nesting_is_rejected_before_the_parser_runs():
+    """A depth limit applied after parsing is not a DoS defence.
+
+    BytesParser builds the whole nested tree in one eager call, so the cost is
+    already paid by the time max_depth is consulted. This must be rejected on a
+    raw scan instead — and fast enough that the rejection itself is not the DoS.
+    """
+    import time
+
+    hostile = (
+        b"From: attacker@example.invalid\r\n"
+        b"Subject: Quote\r\n"
+        b'Content-Type: multipart/mixed; boundary="X"\r\n\r\n'
+        + b'--X\r\nContent-Type: message/rfc822\r\n\r\n' * 200
+        + b"--X--\r\n"
+    )
+    started = time.monotonic()
+    with pytest.raises(MalformedMime, match="nested messages"):
+        parse(hostile)
+    assert time.monotonic() - started < 1.0
+
+
+def test_oversize_raw_message_is_rejected():
+    with pytest.raises(MalformedMime, match="exceeds"):
+        parse(b"From: a@b.test\r\n\r\n" + b"x" * (25 * 1024 * 1024 + 1))
+
+
+def test_cosmetic_defect_does_not_reject_recoverable_mail():
+    """A stray mbox 'From ' envelope line is a normal artifact of mailing-list
+    and migration tooling. The mail decodes perfectly; quarantining it would
+    lose a real supplier quote for a blemish that cost nothing."""
+    recoverable = b"From attacker Mon Aug  5 09:00:00 2026\r\n" + _load("simple_pdf.eml")
+    bundle = parse(recoverable)
+    assert [p.filename for p in bundle.parts] == ["quote-QT-4471.pdf"]
+    assert bundle.body_text.startswith("Our quote is attached")
+
+
+def test_structural_corruption_nested_inside_a_forward_is_rejected():
+    """The failure mode a top-level-only defect check misses entirely.
+
+    The outer message is well formed, so its own defect list is empty. Without
+    a recursive check this returns a "successful" bundle holding the covering
+    note and no attachments — silently dropping the quote, which is exactly the
+    partial ingestion the design forbids.
+    """
+    from email import policy as _policy
+    from email.message import EmailMessage
+    from email.parser import BytesParser as _BytesParser
+
+    # Attaching the malformed bytes directly (maintype="message",
+    # subtype="rfc822") routes through the generic binary content manager,
+    # which base64-encodes the payload — that is not how message/rfc822 is
+    # supposed to travel (RFC 2046 §5.2.1 requires 7bit/8bit/binary), and on
+    # reparse it no longer resembles a nested message at all. Parsing the
+    # malformed bytes into an EmailMessage first and attaching *that* routes
+    # through set_message_content, which embeds it as literal 8bit text and
+    # genuinely preserves the corrupted structure one level down.
+    corrupted = _BytesParser(policy=_policy.default).parsebytes(
+        (FIXTURES / "malformed.eml").read_bytes()
+    )
+
+    outer = EmailMessage()
+    outer["From"] = "Buyer <buyer@acme.test>"
+    outer["To"] = "intake@acme.procureiq.io"
+    outer["Subject"] = "Fwd: Quote"
+    outer["Message-ID"] = "<fwd-corrupt@acme.test>"
+    outer.set_content("Passing this on.")
+    outer.add_attachment(
+        corrupted,
+        subtype="rfc822",
+        filename="forwarded.eml",
+    )
+    with pytest.raises(MalformedMime):
+        parse(outer.as_bytes())

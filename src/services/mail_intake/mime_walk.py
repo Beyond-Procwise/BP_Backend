@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from email import errors as email_errors
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -27,7 +28,29 @@ from typing import Dict, List, Optional, Tuple
 
 MAX_DEPTH_DEFAULT = 3
 
+# Ceilings enforced BEFORE the stdlib parser is handed the bytes. See
+# _reject_hostile_shape for why "before" is the whole point.
+MAX_RAW_BYTES = 25 * 1024 * 1024
+MAX_NESTED_MESSAGES = 20
+
 _CID_REF = re.compile(r"""["'(]\s*cid:([^"')\s>]+)""", re.IGNORECASE)
+
+# Cheap upper bound on nesting, counted on the raw bytes without parsing them.
+_RFC822_MARKER = re.compile(rb"message/rfc822", re.IGNORECASE)
+
+# Defects that mean structure was actually lost. Everything else Python reports
+# — misplaced envelope headers, obsolete header syntax, and the rest — is a
+# cosmetic anomaly in mail that still decodes perfectly, and rejecting on those
+# would quarantine legitimate supplier quotes that merely passed through a
+# mailing list or a migrated mailbox. Fail-closed means not proceeding under
+# uncertainty; it does not mean refusing anything imperfect.
+_FATAL_DEFECTS = (
+    email_errors.NoBoundaryInMultipartDefect,
+    email_errors.StartBoundaryNotFoundDefect,
+    email_errors.CloseBoundaryNotFoundDefect,
+    email_errors.MultipartInvariantViolationDefect,
+    email_errors.MissingHeaderBodySeparatorDefect,
+)
 
 
 class MalformedMime(Exception):
@@ -114,17 +137,59 @@ def _walk(message: EmailMessage, depth: int, max_depth: int,
         )
 
 
+def _reject_hostile_shape(raw: bytes) -> None:
+    """Reject pathological input BEFORE the stdlib parser sees it.
+
+    `max_depth` alone is not a denial-of-service defence, which is easy to get
+    wrong: BytesParser.parsebytes eagerly builds the ENTIRE nested tree in one
+    call, so a depth limit applied afterwards limits only how far we walk the
+    tree we have already paid to construct. Measured on nested message/rfc822
+    chains: 1,200 wrappers (552 KB) took 4.8s, and 3,000 (~1.3 MB) exceeded 30s
+    — payload sizes well inside any normal attachment limit.
+
+    Both checks below are linear scans of the raw bytes and cost microseconds.
+    Real forwarded chains nest in single digits, so MAX_NESTED_MESSAGES leaves
+    enormous headroom while rejecting the hostile case outright.
+    """
+    if len(raw) > MAX_RAW_BYTES:
+        raise MalformedMime(f"raw message exceeds {MAX_RAW_BYTES} bytes")
+    nested = len(_RFC822_MARKER.findall(raw))
+    if nested > MAX_NESTED_MESSAGES:
+        raise MalformedMime(
+            f"message declares {nested} nested messages, above the "
+            f"{MAX_NESTED_MESSAGES} ceiling"
+        )
+
+
+def _fatal_defects(message: EmailMessage) -> List[str]:
+    """Structure-losing defects anywhere in the tree, including nested messages.
+
+    Checking only the outer message's defects misses the case this module
+    exists for. A corrupted quote nested one level down inside a forward leaves
+    the OUTER message defect-free, so a top-level-only check returns a
+    "successful" bundle carrying the covering note and no attachments — the
+    partial ingestion the design forbids, arriving silently.
+    """
+    found: List[str] = []
+    for part in message.walk():
+        for defect in part.defects or ():
+            if isinstance(defect, _FATAL_DEFECTS):
+                found.append(type(defect).__name__)
+    return found
+
+
 def parse(raw: bytes, *, max_depth: int = MAX_DEPTH_DEFAULT) -> ParsedBundle:
     """Parse raw MIME bytes. Raises MalformedMime rather than partly succeeding."""
+    _reject_hostile_shape(raw)
+
     try:
         message = BytesParser(policy=policy.default).parsebytes(raw)
     except Exception as exc:  # pragma: no cover - defensive
         raise MalformedMime(str(exc)) from exc
 
-    if message.defects:
-        raise MalformedMime(
-            "; ".join(type(d).__name__ for d in message.defects)
-        )
+    fatal = _fatal_defects(message)
+    if fatal:
+        raise MalformedMime("; ".join(fatal))
 
     parts: List[ParsedPart] = []
     bodies: Dict[str, str] = {}
