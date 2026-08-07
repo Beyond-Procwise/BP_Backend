@@ -197,10 +197,31 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     normalised = posixpath.normpath(prefix).lstrip("/")
     if normalised.startswith(".."):
         raise ValueError("s3_path must not traverse outside its prefix")
+
+    # Descendant: the caller named something inside quarantine.
     if (normalised + "/").startswith(QUARANTINE_PREFIX):
         raise ValueError(
             "s3_path resolves under the mail-intake quarantine prefix, which "
             "holds content the safety gate rejected"
+        )
+
+    # ANCESTOR: the caller named something quarantine sits underneath. This is
+    # the case an earlier version missed entirely. The prefix is passed to
+    # list_objects_v2 as a literal byte prefix, so "mail-intake/" — or just
+    # "mail" — enumerates every quarantined object and the endpoint then
+    # downloads and extracts each one. Every hostile form the earlier tests
+    # covered was a descendant form, so the suite was green while the bypass
+    # stood open.
+    #
+    # Rejecting ancestors here gives a clear error, but note it CANNOT be
+    # complete on its own: "m" is a valid ancestor too. The durable control is
+    # the key-level filter in _list_s3_keys below, which drops quarantine keys
+    # whatever prefix produced them. This check exists so the common case
+    # fails loudly rather than silently returning nothing.
+    if QUARANTINE_PREFIX.startswith(normalised.rstrip("/") + "/"):
+        raise ValueError(
+            "s3_path is an ancestor of the mail-intake quarantine prefix; "
+            "narrow it so quarantined content cannot be enumerated"
         )
 
     return bucket_name, prefix
@@ -208,6 +229,8 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
 
 def _list_s3_keys(client: Any, bucket: str, prefix: str) -> List[str]:
     """List all object keys for the provided prefix."""
+
+    from src.services.mail_intake.store import QUARANTINE_PREFIX
 
     keys: List[str] = []
     continuation: Optional[str] = None
@@ -220,8 +243,19 @@ def _list_s3_keys(client: Any, bucket: str, prefix: str) -> List[str]:
         contents = (response or {}).get("Contents", [])
         for entry in contents:
             key = entry.get("Key") if isinstance(entry, dict) else None
-            if key and not key.endswith("/"):
-                keys.append(key)
+            if not key or key.endswith("/"):
+                continue
+            # Never enumerate quarantined content, whatever prefix was asked
+            # for. The prefix guard in _resolve_s3_path rejects the obvious
+            # ancestors, but a short enough prefix always slips through, so
+            # the decision has to be made per key.
+            if key.startswith(QUARANTINE_PREFIX):
+                logger.warning(
+                    "documents.extract_from_s3 skipped a quarantined key under "
+                    "prefix=%s", prefix,
+                )
+                continue
+            keys.append(key)
 
         if not response or not response.get("IsTruncated"):
             break

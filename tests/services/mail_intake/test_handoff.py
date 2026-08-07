@@ -72,3 +72,42 @@ def test_the_temporary_file_is_not_world_readable():
         dispatch=fake_dispatch,
     )
     assert modes["mode"] & 0o077 == 0, f"mode was {oct(modes['mode'])}"
+
+
+def test_the_temp_file_carries_the_real_extension():
+    """Extraction's parser router dispatches purely on file extension.
+
+    A hardcoded ".bin" suffix made every mail-intake document fail at L0 with
+    "unsupported file format" — the production path could never have worked.
+    That failure also invites exactly the wrong repair: the quickest way to
+    silence it is to hand extraction the S3 key instead, which is the move
+    this module exists to prevent.
+    """
+    seen = {}
+
+    def fake_dispatch(*, process_monitor_id, file_path, doc_type):
+        seen["path"] = file_path
+        return {}
+
+    handoff.deliver_to_extraction(
+        artifact_id="ART-4",
+        content=b"%PDF-1.4\n",
+        doc_type="invoice",
+        filename="quote.PDF",
+        dispatch=fake_dispatch,
+    )
+    assert seen["path"].endswith(".PDF")
+
+
+def test_a_missing_filename_falls_back_to_bin():
+    seen = {}
+
+    def fake_dispatch(*, process_monitor_id, file_path, doc_type):
+        seen["path"] = file_path
+        return {}
+
+    handoff.deliver_to_extraction(
+        artifact_id="ART-5", content=b"x", doc_type="invoice",
+        dispatch=fake_dispatch,
+    )
+    assert seen["path"].endswith(".bin")

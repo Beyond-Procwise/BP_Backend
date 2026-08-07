@@ -39,6 +39,7 @@ def deliver_to_extraction(
     artifact_id: str,
     content: bytes,
     doc_type: str,
+    filename: Optional[str] = None,
     process_monitor_id: Optional[int] = None,
     dispatch: Optional[Callable[..., Any]] = None,
 ) -> Any:
@@ -51,14 +52,28 @@ def deliver_to_extraction(
     if dispatch is None:  # pragma: no cover - exercised in integration only
         from src.services.extraction.dispatch import dispatch_document as dispatch
 
-    # 0o600: these are attachments from arbitrary senders sitting briefly on
-    # local disk, and mkstemp already creates them owner-only. Being explicit
-    # keeps that true if the surrounding code ever changes umask.
-    handle, path = tempfile.mkstemp(prefix=f"mailintake-{artifact_id}-", suffix=".bin")
+    # The suffix must be the real one. Extraction's parser router dispatches
+    # purely on file extension, so a hardcoded ".bin" made every mail-intake
+    # document fail at L0 with "unsupported file format" — the production
+    # path could never have worked. That failure also invites precisely the
+    # wrong repair: the quickest way to make it go away is to hand extraction
+    # the S3 key instead, which is the move this module exists to prevent.
+    suffix = os.path.splitext(filename or "")[1] or ".bin"
+
+    # mkstemp already creates the file owner-only (0o600 before umask, and
+    # umask can only clear bits, never add them). The explicit fchmod is
+    # belt-and-braces on a file holding an arbitrary sender's attachment.
+    handle, path = tempfile.mkstemp(
+        prefix=f"mailintake-{artifact_id}-", suffix=suffix
+    )
     try:
-        os.fchmod(handle, 0o600)
-        with os.fdopen(handle, "wb") as fh:
-            fh.write(content)
+        try:
+            os.fchmod(handle, 0o600)
+            with os.fdopen(handle, "wb") as fh:
+                fh.write(content)
+        except Exception:
+            os.close(handle)  # fdopen never took ownership
+            raise
         return dispatch(
             process_monitor_id=process_monitor_id,
             file_path=path,
@@ -68,7 +83,9 @@ def deliver_to_extraction(
         try:
             os.unlink(path)
         except OSError:
+            # Log the PATH — a warning that omits it leaves attachment bytes
+            # on disk with nothing to identify them for cleanup.
             log.warning(
-                "mail_intake.handoff could not remove temporary file for artifact=%s",
-                artifact_id,
+                "mail_intake.handoff could not remove %s for artifact=%s",
+                path, artifact_id,
             )

@@ -33,7 +33,20 @@ FORBIDDEN_PREFIXES = (
     "boto3",
 )
 
-EXTRACTION_ROOT = pathlib.Path("src/services/extraction")
+# Absolute, derived from this file. A relative path made rglob yield nothing
+# from any other working directory, so three of these tests passed green having
+# scanned zero files — a ratchet that silently no-ops is the exact failure it
+# exists to prevent, and pytest.ini pins no testpaths.
+#
+# All THREE roots, not just `extraction`: dispatch runs through extraction_v3
+# for parsing, invariants and the judge, and through extraction_feedback. Both
+# are clean today, but a new egress import in extraction_v3/parsers/ would not
+# have failed the build while the docstring claimed the plane was covered.
+EXTRACTION_ROOTS = (
+    REPO_ROOT / "src" / "services" / "extraction",
+    REPO_ROOT / "src" / "services" / "extraction_v3",
+    REPO_ROOT / "src" / "services" / "extraction_feedback",
+)
 
 
 def _imports(path: pathlib.Path):
@@ -62,15 +75,23 @@ def test_extraction_gains_no_new_route_out_of_its_plane():
     extraction a key, so the fallback that does the fetching is never reached.
     """
     offences = []
-    for path in sorted(EXTRACTION_ROOT.rglob("*.py")):
-        rel = str(path).split("mail-intake/", 1)[-1]
-        allowed = KNOWN_CROSSINGS.get(rel, set())
-        for name in _imports(path):
-            for forbidden in FORBIDDEN_PREFIXES:
-                if name == forbidden or name.startswith(forbidden + "."):
-                    if name in allowed:
-                        continue
-                    offences.append(f"{rel}: imports {name}")
+    scanned = 0
+    for root in EXTRACTION_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            scanned += 1
+            rel = str(path.relative_to(REPO_ROOT))
+            allowed = KNOWN_CROSSINGS.get(rel, set())
+            for name in _imports(path):
+                for forbidden in FORBIDDEN_PREFIXES:
+                    if name == forbidden or name.startswith(forbidden + "."):
+                        if name in allowed:
+                            continue
+                        offences.append(f"{rel}: imports {name}")
+
+    # A guard that scanned nothing is not a guard. Without this the tests pass
+    # green from any working directory where the globs match no files.
+    assert scanned > 0, "the import guard scanned zero files — check the roots"
+
     assert not offences, (
         "Interpretation Plane gained a NEW route out of its plane:\n"
         + "\n".join(offences)
@@ -104,20 +125,27 @@ def test_mail_intake_contains_no_llm_calls():
     # The Ingestion Plane is deterministic. Spec §2.
     forbidden = ("ollama", "llm_router", "run_tools", "AgentNick", "openai")
     offences = []
-    for path in sorted(pathlib.Path("src/services/mail_intake").rglob("*.py")):
+    scanned = 0
+    for path in sorted((REPO_ROOT / "src" / "services" / "mail_intake").rglob("*.py")):
+        scanned += 1
         body = path.read_text()
         for token in forbidden:
             if token in body:
-                offences.append(f"{path}: mentions {token}")
+                offences.append(f"{path.name}: mentions {token}")
+    assert scanned > 0, "scanned zero mail_intake files — check the root"
     assert not offences, "Ingestion Plane is not deterministic:\n" + "\n".join(offences)
 
 
 def test_extraction_is_never_handed_a_binding_or_credential():
     # It receives an artifact_id and bytes. Nothing else.
     offences = []
-    for path in sorted(EXTRACTION_ROOT.rglob("*.py")):
-        body = path.read_text()
-        for token in ("credential_ref", "binding_id", "mailbox_address"):
-            if token in body:
-                offences.append(f"{path}: references {token}")
+    scanned = 0
+    for root in EXTRACTION_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            scanned += 1
+            body = path.read_text()
+            for token in ("credential_ref", "binding_id", "mailbox_address"):
+                if token in body:
+                    offences.append(f"{path.relative_to(REPO_ROOT)}: references {token}")
+    assert scanned > 0, "scanned zero extraction files — check the roots"
     assert not offences, "\n".join(offences)
