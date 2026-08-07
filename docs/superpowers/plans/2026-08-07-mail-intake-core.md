@@ -1628,6 +1628,30 @@ def _clean_workbook() -> bytes:
     return buf.getvalue()
 
 
+def _libreoffice_trash_workbook() -> bytes:
+    """A REAL false positive, reproduced.
+
+    `Supplier Ranking_Agent.xlsx` in this repo is a genuine spreadsheet that
+    carries `[trash]/0000.dat` and `[trash]/0001.dat` — a few hundred bytes of
+    inert padding written by LibreOffice. The first version of the
+    foreign-member rule quarantined it. This fixture exists so that cannot
+    happen again silently: it must pass the gate.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("docProps/core.xml", "<coreProperties/>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+        # Byte-for-byte the shape of the real artifact: 0xFF sentinel then nulls.
+        zf.writestr("[trash]/0000.dat", b"\xff\xff\xff\xff" + b"\x00" * 308)
+        zf.writestr("[trash]/0001.dat", b"\xff\xff\xff\xff" + b"\x00" * 270)
+    return buf.getvalue()
+
+
 def _smuggling_workbook() -> bytes:
     """A valid document skeleton wrapped around an unrelated payload.
 
@@ -1674,6 +1698,7 @@ BINARY_FIXTURES = {
     "macro_workbook.xlsm": _macro_workbook,
     "clean_workbook.xlsx": _clean_workbook,
     "smuggling_document.docx": _smuggling_workbook,
+    "libreoffice_trash.xlsx": _libreoffice_trash_workbook,
     "zip_named_quote.pdf": _zip_wearing_a_pdf_name,
     "clean.pdf": _clean_pdf,
 }
@@ -1768,9 +1793,66 @@ def test_document_skeleton_wrapped_around_a_payload_quarantines():
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
     assert not verdict.ok
+    # EXECUTABLE, not ARCHIVE: a reviewer in the action centre needs to see
+    # what was found, not merely that something was.
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+    assert verdict.detail["flagged_kinds"], "the reviewer must learn what was found"
+
+
+def test_detail_names_the_content_kind_but_never_the_senders_filename():
+    """The audit record has to be useful AND safe.
+
+    A bare count tells a reviewer nothing actionable. The member's NAME is
+    sender-controlled text and would carry attacker-chosen strings into the
+    record a human reads. Byte-derived content kinds are both.
+    """
+    verdict = _verdict(
+        "smuggling_document.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    blob = repr(verdict.detail)
+    assert "payload.exe" not in blob
+    assert "payload" not in blob
+    assert any("exec" in k or "dosexec" in k for k in verdict.detail["flagged_kinds"])
+
+
+def test_real_libreoffice_artifact_is_not_quarantined():
+    """Regression for a REAL false positive.
+
+    A genuine spreadsheet in this repo carries [trash]/*.dat — inert LibreOffice
+    padding. The first version of this rule quarantined it. One wrongly held
+    file in twelve is enough to make a review queue untrustworthy.
+    """
+    verdict = _verdict(
+        "libreoffice_trash.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert verdict.ok, f"real workbook wrongly quarantined as {verdict.reason}"
+
+
+def test_member_declaring_an_implausible_size_quarantines_without_reading_it():
+    """A member inside a document declaring tens of megabytes is its own signal,
+    and reading it is exactly what a zip bomb is for."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+        zf.writestr("bulk/pad.bin", b"\x00" * (9 * 1024 * 1024))
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        detected_mime=typing_.detect(content),
+        filename="prices.xlsx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
     assert verdict.reason is QuarantineReason.ARCHIVE
-    assert "payload.exe" not in repr(verdict.detail)  # structural facts only
-    assert verdict.detail["foreign_members"]
+    assert verdict.detail["oversized_members"] == 1
 
 
 def test_ordinary_workbook_is_not_falsely_flagged():
@@ -1904,9 +1986,16 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from src.services.mail_intake.states import QuarantineReason
-from src.services.mail_intake.typing_ import UNKNOWN, is_permitted_alias
+from src.services.mail_intake.typing_ import UNKNOWN, detect, is_permitted_alias
 
 DEFAULT_SIZE_CEILING_BYTES = 25 * 1024 * 1024
+
+# Bounds on foreign-member classification. Deliberately small: this is a sniff,
+# not a read, and every one of these numbers is a cap on what hostile input can
+# make us do.
+_FOREIGN_SNIFF_BYTES = 512
+_FOREIGN_SNIFF_LIMIT = 32
+_FOREIGN_MEMBER_MAX_BYTES = 8 * 1024 * 1024
 
 _EXECUTABLE_MIMES = frozenset(
     {
@@ -2005,14 +2094,73 @@ def _has_ooxml_macro(names: list) -> bool:
     )
 
 
-def _foreign_ooxml_members(names: list) -> list:
-    """Members of an OOXML container that no genuine Office file would carry."""
+def _foreign_member_names(names: list) -> list:
+    """Members outside the known Office namespaces. Candidates, not verdicts."""
     foreign = []
     for name in names:
         top = name.split("/", 1)[0].strip().lower()
-        if top and top not in _OOXML_TOP_LEVEL:
-            foreign.append(top)
-    return sorted(set(foreign))
+        if top and top not in _OOXML_TOP_LEVEL and not name.endswith("/"):
+            foreign.append(name)
+    return foreign
+
+
+def _inspect_foreign_members(content: bytes, names: list) -> Dict[str, Any]:
+    """Classify unexpected container members by what they ARE, not what they are named.
+
+    An earlier version quarantined on the mere presence of a member outside the
+    known Office namespaces. Run against the twelve real workbooks in this repo,
+    it wrongly quarantined one of them: a genuine spreadsheet carrying
+    `[trash]/0000.dat`, a few hundred bytes of inert padding written by
+    LibreOffice. A rule that fails one real file in twelve fills the review
+    queue with noise, and a queue people stop reading protects nobody.
+
+    So the question asked here is whether a foreign member is *dangerous*, not
+    whether it is *tidy*. Each candidate's leading bytes are sniffed and
+    classified; only executable or script content quarantines.
+
+    On "never auto-expand": this reads a bounded prefix — at most
+    _FOREIGN_SNIFF_BYTES from at most _FOREIGN_SNIFF_LIMIT members, and nothing
+    at all from a member whose declared uncompressed size is implausible. That
+    is classification, the same thing detect() does for the outer file, not
+    extraction: nothing is written, executed, or handed onward.
+
+    Returns a summary safe to persist and log: counts and byte-derived content
+    kinds. Member NAMES are never returned — they are sender-controlled text
+    and would carry attacker-chosen strings into the audit record.
+    """
+    summary: Dict[str, Any] = {
+        "foreign_member_count": len(names),
+        "flagged_kinds": [],
+        "oversized_members": 0,
+    }
+    if not names:
+        return summary
+
+    kinds = set()
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            for name in names[:_FOREIGN_SNIFF_LIMIT]:
+                try:
+                    info = zf.getinfo(name)
+                except KeyError:
+                    continue
+                if info.file_size > _FOREIGN_MEMBER_MAX_BYTES:
+                    # A member inside a "document" declaring tens of megabytes
+                    # is its own signal, and reading it is what a zip bomb wants.
+                    summary["oversized_members"] += 1
+                    continue
+                with zf.open(name) as handle:
+                    head = handle.read(_FOREIGN_SNIFF_BYTES)
+                kind = detect(head)
+                if kind in _EXECUTABLE_MIMES:
+                    kinds.add(kind)
+    except Exception:
+        # Cannot classify means cannot clear.
+        summary["flagged_kinds"] = ["unreadable"]
+        return summary
+
+    summary["flagged_kinds"] = sorted(kinds)
+    return summary
 
 
 def _is_encrypted_ooxml(content: bytes) -> bool:
@@ -2087,15 +2235,24 @@ def evaluate(
         )
 
     if names is not None and detected_mime in _OOXML_MIMES:
-        foreign = _foreign_ooxml_members(names)
+        foreign = _foreign_member_names(names)
         if foreign:
-            # A document skeleton wrapped around unknown members is still an
-            # archive of unknown content, and archives go to a human.
-            return SafetyVerdict(
-                False,
-                QuarantineReason.ARCHIVE,
-                {"container": "ooxml", "foreign_members": foreign[:10]},
-            )
+            summary = _inspect_foreign_members(content, foreign)
+            if summary["flagged_kinds"]:
+                # Executable content smuggled inside a well-formed document.
+                # Reported as EXECUTABLE rather than ARCHIVE because that is
+                # what a reviewer needs to see in the action centre.
+                return SafetyVerdict(
+                    False,
+                    QuarantineReason.EXECUTABLE,
+                    dict(summary, container="ooxml"),
+                )
+            if summary["oversized_members"]:
+                return SafetyVerdict(
+                    False,
+                    QuarantineReason.ARCHIVE,
+                    dict(summary, container="ooxml"),
+                )
 
     if _is_encrypted_ooxml(content):
         return SafetyVerdict(
@@ -2125,7 +2282,7 @@ def evaluate(
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_safety.py -v`
-Expected: PASS, 14 tests
+Expected: PASS, 17 tests
 
 - [ ] **Step 7: Prove the gate actually fails**
 
@@ -4372,6 +4529,43 @@ def test_scanned_ocr_document_is_not_quarantined():
     assert not outcome.quarantined
 
 
+def test_quarantine_is_logged_so_an_operator_can_find_it(caplog):
+    """A held document is something a person has to act on.
+
+    "What did we block today, and why" must be answerable from the logs alone,
+    without database access. The line carries a stable greppable prefix, the
+    reason, the correlation ids, and the byte-derived detail.
+    """
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["From"] = "Sales <quotes@copperleaf.test>"
+    msg["To"] = "intake@acme.procureiq.io"
+    msg["Subject"] = "Prices"
+    msg["Message-ID"] = "<macro-log@copperleaf.test>"
+    msg.set_content("Attached.")
+    msg.add_attachment(
+        (FIXTURES / "macro_workbook.xlsm").read_bytes(),
+        maintype="application",
+        subtype="vnd.ms-excel.sheet.macroEnabled.12",
+        filename="prices.xlsm",
+    )
+
+    with caplog.at_level("WARNING"):
+        _pipeline().ingest(
+            _seeded_cursor(),
+            _binding(),
+            RawMessage(msg.as_bytes(), "emails/macro-log.eml", None, "ref"),
+        )
+
+    lines = [r.getMessage() for r in caplog.records]
+    quarantine_lines = [line for line in lines if "mail_intake.quarantine" in line]
+    assert quarantine_lines, "a quarantine must be discoverable from the logs"
+    assert "reason=macro" in quarantine_lines[0]
+    # Redaction still applies: no filename, no document bytes.
+    assert "prices.xlsm" not in quarantine_lines[0]
+
+
 def test_redelivered_message_is_a_no_op():
     """Acceptance-relevant: re-delivery must not produce a second set of
     artifacts. The conflict on (binding_id, provider_message_id) is what makes
@@ -4660,7 +4854,7 @@ class IngestPipeline:
             return (
                 artifact_id,
                 self._quarantine(
-                    cur, artifact_id, owner_ref, digest, part.content,
+                    cur, artifact_id, bundle_id, owner_ref, digest, part.content,
                     ArtifactState.TYPED, verdict.reason, verdict.detail,
                 ),
                 None,
@@ -4671,7 +4865,7 @@ class IngestPipeline:
             return (
                 artifact_id,
                 self._quarantine(
-                    cur, artifact_id, owner_ref, digest, part.content,
+                    cur, artifact_id, bundle_id, owner_ref, digest, part.content,
                     ArtifactState.TYPED, QuarantineReason.HIDDEN_TEXT,
                     {
                         "techniques": sorted({h.technique for h in hits}),
@@ -4709,11 +4903,22 @@ class IngestPipeline:
         return artifact_id, None, None
 
     def _quarantine(
-        self, cur: Any, artifact_id: str, owner_ref: str, digest: str,
-        content: bytes, current: ArtifactState,
+        self, cur: Any, artifact_id: str, bundle_id: str, owner_ref: str,
+        digest: str, content: bytes, current: ArtifactState,
         reason: QuarantineReason, detail: Dict[str, Any],
     ) -> QuarantineReason:
-        """Retain the bytes under the quarantine prefix and record why."""
+        """Retain the bytes under the quarantine prefix, record why, and say so.
+
+        Every quarantine is logged at WARNING with a stable, greppable prefix
+        and structured fields. A held document is a thing a person has to act
+        on, so it must be discoverable from the logs alone — the operator
+        answering "what did we block today, and why" should not need database
+        access to get a useful answer.
+
+        The detail dict is byte-derived structural facts only (counts, content
+        kinds). It never carries member names, filenames or document text, so
+        it is safe to log verbatim.
+        """
         key = store.quarantine_key(owner_ref, digest)
         self._store.put_immutable(key, content)
         cur.execute(
@@ -4723,6 +4928,13 @@ class IngestPipeline:
         repo.transition_artifact(
             cur, artifact_id, current, ArtifactState.QUARANTINED,
             reason=reason, detail=detail,
+        )
+        log.warning(
+            "mail_intake.quarantine reason=%s artifact=%s bundle=%s detail=%s",
+            reason.value,
+            artifact_id,
+            bundle_id,
+            detail,
         )
         return reason
 
@@ -5648,3 +5860,4 @@ declared in the **Interfaces** blocks above.
 | Gmail stub | same interface, `NotImplementedError` |
 | Lambda migration | `email_ingest_lambda` RFQ matching re-homed behind a `DocumentIngested` subscriber |
 | Acceptance cases | spec §10 cases 5, 9, 10, 12, 13, 15, 16 |
+| **Action-centre surfacing** | Every quarantine must appear as an item a person can see and act on, not only as a row plus a log line. Plan 1 delivers the durable record (`bp_ingest_artifact.quarantine_reason` + `quarantine_detail`) and a greppable `mail_intake.quarantine` WARNING carrying reason, ids and byte-derived detail. Plan 2 must raise the matching `bp_ingest_finding` so it reaches the action centre. **Note the known constraint:** the Compliance / Action-Centre views were previously found to have no backing API, so Plan 2 needs to confirm what actually renders there before assuming a finding row is sufficient. |
