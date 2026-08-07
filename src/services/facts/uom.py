@@ -16,10 +16,15 @@ Pure functions, no I/O, no database.
 """
 from __future__ import annotations
 
+import logging
 import re
+import threading
+import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, Mapping, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 UOM_UNMAPPED = "UOM_UNMAPPED"
 
@@ -153,7 +158,150 @@ def _key(raw: str) -> str:
     return k[:-1] if k.endswith(".") else k
 
 
-def normalise_uom(raw: Optional[str]) -> UomResult:
+# ---------------------------------------------------------------------------
+# Runtime vocabulary
+#
+# proc.bp_uom_canonical is the source of truth; the maps above are a seed that
+# a test asserts matches it. Loading at runtime means a unit can be added
+# without a deploy.
+#
+# Three properties this must have, each of which is a way it could go wrong:
+#
+#   * A failed or EMPTY load must never blank the vocabulary. A normaliser that
+#     recognises nothing marks every unit UOM_UNMAPPED, and those absences get
+#     written into the fact base as though the documents had stated nothing. A
+#     slightly stale map is enormously preferable to a confident wrong silence.
+#   * No query in the per-value path. normalise_uom is called once per line;
+#     a lookup per call is the N+1 pattern that already cost this codebase an
+#     information_schema query per document.
+#   * Only status='active' loads, filtered in SQL. A 'proposed' unit is an
+#     observation awaiting a human; if it resolved, confirming would be moot.
+# ---------------------------------------------------------------------------
+
+_ACTIVE_SQL = """
+    SELECT uom_code, dimension, aliases, factor_days, factor_convention
+      FROM proc.bp_uom_canonical
+     WHERE status = 'active'
+"""
+
+_DEFAULT_TTL_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class Vocabulary:
+    """A resolved unit vocabulary and where it came from."""
+
+    canonical: Mapping[str, Tuple[str, str, Optional[Decimal]]]
+    aliases: Mapping[str, str]
+    convention_units: FrozenSet[str]
+    source: str
+
+
+SEED_VOCABULARY = Vocabulary(
+    canonical=dict(_CANONICAL),
+    aliases=dict(_ALIASES),
+    convention_units=frozenset(_TIME_CONVENTION_UNITS),
+    source="builtin-seed",
+)
+
+_lock = threading.Lock()
+_active: Vocabulary = SEED_VOCABULARY
+_loaded_at: Optional[float] = None
+
+
+def build_vocabulary(rows: Iterable[Mapping[str, Any]], *, source: str) -> Vocabulary:
+    """Assemble a Vocabulary from bp_uom_canonical rows. Pure."""
+    canonical: Dict[str, Tuple[str, str, Optional[Decimal]]] = {}
+    aliases: Dict[str, str] = {}
+    convention: set[str] = set()
+
+    for row in rows:
+        code = (row.get("uom_code") or "").strip().lower()
+        if not code:
+            continue
+        dimension = row.get("dimension")
+        factor_raw = row.get("factor_days")
+        factor = None
+        if factor_raw is not None:
+            try:
+                # str() first: a float from the driver must not carry binary
+                # rounding into a Decimal.
+                factor = Decimal(str(factor_raw))
+            except Exception:
+                factor = None
+        canonical[code] = (code, dimension, factor)
+        if row.get("factor_convention"):
+            convention.add(code)
+        for alias in row.get("aliases") or ():
+            key = (alias or "").strip().lower()
+            if key and key != code:
+                aliases[key] = code
+
+    return Vocabulary(canonical, aliases, frozenset(convention), source)
+
+
+def active_vocabulary() -> Vocabulary:
+    """The vocabulary currently in force."""
+    return _active
+
+
+def reset_vocabulary() -> None:
+    """Drop back to the built-in seed. For tests and for a forced re-read."""
+    global _active, _loaded_at
+    with _lock:
+        _active = SEED_VOCABULARY
+        _loaded_at = None
+
+
+def ensure_vocabulary(cur, *, ttl_seconds: float = _DEFAULT_TTL_SECONDS) -> Vocabulary:
+    """Load the vocabulary from the database if the cached copy is stale.
+
+    Takes a cursor rather than opening a connection so it can reuse the one the
+    caller already has, and so this module still performs no I/O of its own.
+    Cheap to call repeatedly: within the TTL it does nothing at all.
+
+    Never raises. A failure leaves whatever vocabulary is already in force.
+    """
+    global _active, _loaded_at
+
+    now = time.monotonic()
+    if _loaded_at is not None and (now - _loaded_at) < ttl_seconds:
+        return _active
+
+    try:
+        cur.execute(_ACTIVE_SQL)
+        columns = [d[0] for d in (cur.description or [])]
+        rows = [dict(zip(columns, r)) for r in (cur.fetchall() or [])]
+    except Exception:
+        logger.warning(
+            "could not read proc.bp_uom_canonical; continuing with the %s "
+            "vocabulary (%d units)", _active.source, len(_active.canonical),
+            exc_info=True,
+        )
+        return _active
+
+    vocabulary = build_vocabulary(rows, source=f"bp_uom_canonical@{len(rows)}units")
+
+    # Check the BUILT vocabulary, not the raw row count. Rows that parse to
+    # nothing usable — a changed column list, a cursor answering a different
+    # query — are non-empty yet yield no units, and accepting that would
+    # install an empty vocabulary that marks the entire corpus UOM_UNMAPPED
+    # in silence. Treated as a failed load, NOT as "there are no units".
+    if not vocabulary.canonical:
+        logger.warning(
+            "proc.bp_uom_canonical yielded no usable units from %d row(s); "
+            "keeping the %s vocabulary rather than recognising nothing",
+            len(rows), _active.source,
+        )
+        return _active
+    with _lock:
+        _active = vocabulary
+        _loaded_at = now
+    logger.info("loaded %d active units from proc.bp_uom_canonical", len(rows))
+    return vocabulary
+
+
+def normalise_uom(raw: Optional[str], *, vocabulary: Optional[Vocabulary] = None) -> UomResult:
     """Map ``raw`` onto a canonical unit, or refuse it.
 
     Matching is EXACT on the normalised key. Never substring-match. This is the
@@ -167,6 +315,8 @@ def normalise_uom(raw: Optional[str]) -> UomResult:
     here would bake the guess into the fact base, where nothing downstream can
     tell it apart from a unit the document actually stated.
     """
+    vocab = vocabulary if vocabulary is not None else _active
+
     if raw is None or not isinstance(raw, str):
         return UomResult(None, None, None, (UOM_UNMAPPED,))
 
@@ -174,15 +324,15 @@ def normalise_uom(raw: Optional[str]) -> UomResult:
     if not key:
         return UomResult(None, None, None, (UOM_UNMAPPED,))
 
-    key = _ALIASES.get(key, key)
+    key = vocab.aliases.get(key, key)
 
-    entry = _CANONICAL.get(key)
+    entry = vocab.canonical.get(key)
     if entry is None:
         return UomResult(None, None, None, (UOM_UNMAPPED,))
 
     canonical, dimension, factor = entry
     codes: Tuple[str, ...] = ()
-    if canonical in _TIME_CONVENTION_UNITS:
+    if canonical in vocab.convention_units:
         codes = (CALENDAR_CONVENTION,)
 
     return UomResult(canonical, dimension, factor, codes)

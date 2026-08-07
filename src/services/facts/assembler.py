@@ -45,7 +45,7 @@ from src.services.facts.models import (
     ValidationState,
     ValueBasis,
 )
-from src.services.facts.uom import UOM_UNMAPPED, normalise_uom
+from src.services.facts.uom import UOM_UNMAPPED, ensure_vocabulary, normalise_uom
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +270,12 @@ def assemble_line_facts(cur, doc_type: str, doc_pk: str) -> List[CommercialFact]
             f"unsupported doc_type {doc_type!r}: expected one of "
             f"{sorted(_DOC_CONFIG)}"
         )
+
+    # Refresh the unit vocabulary from proc.bp_uom_canonical, reusing this
+    # cursor. Cached behind a TTL, so this is a no-op on all but the first call
+    # in a run -- normalise_uom is called once per line and must not carry a
+    # query with it.
+    ensure_vocabulary(cur)
 
     field_map = _line_field_map(cfg.schema)
     amount_column = field_map.get("line_amount", "line_amount")

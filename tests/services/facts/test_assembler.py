@@ -71,7 +71,14 @@ class FakeCursor:
     def execute(self, sql, params=None):
         self.executed.append((" ".join(sql.split()), params))
         s = sql.lower()
-        if "bp_extraction_provenance_v3" in s:
+        if "bp_uom_canonical" in s:
+            # The assembler refreshes the unit vocabulary from this cursor.
+            # Answering with no rows leaves the built-in seed in force, which
+            # is what these expectations are written against.
+            self.description = [("uom_code",), ("dimension",), ("aliases",),
+                                ("factor_days",), ("factor_convention",)]
+            self._rows = []
+        elif "bp_extraction_provenance_v3" in s:
             self.description = [(c,) for c in PROV_COLS]
             self._rows = list(self._prov)
         elif "line_items_trgt" in s:
