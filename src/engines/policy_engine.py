@@ -356,6 +356,31 @@ class PolicyEngine:
                 return candidate
         return None
 
+    def policies_for_action(self, action: str) -> List[Dict[str, Any]]:
+        """Every active policy that declares it applies to ``action``.
+
+        A policy opts in by listing the action in ``details.applies_to``. This
+        is the gate's only lookup path, so policies continue to load from
+        exactly one place.
+        """
+
+        wanted = str(action or "").strip()
+        if not wanted:
+            return []
+        matched: List[Dict[str, Any]] = []
+        for policy in self._policies:
+            details = policy.get("details")
+            if not isinstance(details, dict):
+                continue
+            applies = details.get("applies_to")
+            if isinstance(applies, str):
+                applies = [applies]
+            if not isinstance(applies, (list, tuple, set)):
+                continue
+            if wanted in {str(a) for a in applies}:
+                matched.append(policy)
+        return matched
+
     def validate_workflow(self, workflow_name: str, user_id: str, input_data: dict) -> dict:
         """Validate a workflow against policy rules."""
 

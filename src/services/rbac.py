@@ -47,6 +47,18 @@ def _build_engine() -> Optional[Any]:
         return None
 
 
+def policy_engine() -> Optional[Any]:
+    """The shared, TTL-cached PolicyEngine used when no engine is supplied.
+
+    Exists so callers such as ``guardrail.authorize`` can resolve the engine
+    once and thread that same instance through every downstream ``rbac``
+    call, instead of each call resolving (and potentially rebuilding) its
+    own.
+    """
+
+    return _engine(None)
+
+
 def _engine(policy_engine: Optional[Any]) -> Optional[Any]:
     if policy_engine is not None:
         return policy_engine
