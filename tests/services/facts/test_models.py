@@ -176,3 +176,59 @@ def test_an_unknown_concept_code_is_rejected_rather_than_stored():
     """Silently accepting an unknown code is how a shadow vocabulary starts."""
     with pytest.raises(ValidationError):
         _fact(concept_code="not_a_real_field_name")
+
+
+def test_constraint_requires_provenance_like_a_fact():
+    from src.services.facts.models import Constraint
+    with pytest.raises(ValidationError):
+        Constraint(constraint_id="c-1", tenant_id="default",
+                   constraint_type="usage_limit", bound_value=Decimal("500"),
+                   provenance=[])
+
+
+def test_the_fields_that_cannot_be_read_off_the_page_may_be_null():
+    """bound_basis, measurement_period and applies_to_entities are exactly the
+    'limit that needs context' case. They must be null-able with
+    PENDING_CONTEXT — never filled by the extractor's guess. Resolving them is
+    Phase 4's job and the resolution is stored separately."""
+    from src.services.facts.models import Constraint, TestabilityState
+    c = Constraint(constraint_id="c-1", tenant_id="default",
+                   constraint_type="usage_limit", bound_value=Decimal("500"),
+                   bound_uom="named_user", provenance=[_prov()])
+    assert c.bound_basis is None
+    assert c.measurement_period is None
+    assert c.applies_to_entities == []
+    assert c.testability_state == TestabilityState.PENDING_CONTEXT
+
+
+def test_bound_basis_is_a_closed_enum_when_supplied():
+    from src.services.facts.models import BoundBasis, Constraint
+    assert {b.value for b in BoundBasis} == {
+        "named", "concurrent", "peak", "average", "cumulative"}
+    with pytest.raises(ValidationError):
+        Constraint(constraint_id="c-1", tenant_id="default",
+                   constraint_type="usage_limit", bound_value=Decimal("500"),
+                   bound_basis="guessed", provenance=[_prov()])
+
+
+def test_constraint_carries_no_interpretation_field():
+    """Facts and reasoning are separate objects. A rationale field here would
+    be the seam through which an LLM's reading contaminates the fact base."""
+    from src.services.facts.models import Constraint
+    for banned in ("rationale", "interpretation", "reasoning", "justification",
+                   "explanation", "notes"):
+        assert banned not in Constraint.model_fields, (
+            f"Constraint must not carry a {banned!r} field")
+
+
+def test_a_fully_resolved_constraint_is_testable():
+    """PENDING_CONTEXT is not a permanent label: once the basis, period and
+    scope are known the constraint becomes testable. If it never flipped, the
+    state would be decoration rather than a gate."""
+    from src.services.facts.models import BoundBasis, Constraint, TestabilityState
+    c = Constraint(constraint_id="c-2", tenant_id="default",
+                   constraint_type="usage_limit", bound_value=Decimal("500"),
+                   bound_uom="named_user", bound_basis=BoundBasis.NAMED,
+                   measurement_period="month",
+                   applies_to_entities=["SUP-001"], provenance=[_prov()])
+    assert c.testability_state == TestabilityState.TESTABLE

@@ -82,6 +82,44 @@ class ArithmeticState(str, Enum):
     UNTESTABLE_MISSING_INPUT = "untestable_missing_input"
 
 
+class BoundDirection(str, Enum):
+    """Which way the bound cuts."""
+
+    MAXIMUM = "maximum"
+    MINIMUM = "minimum"
+    EXACT = "exact"
+
+
+class BoundBasis(str, Enum):
+    """How the bound is counted.
+
+    "500 users" is not a limit until you know whether it counts named users,
+    concurrent users, the peak, the average or the cumulative total over a
+    period. Five different numbers, five different compliance answers.
+    """
+
+    NAMED = "named"
+    CONCURRENT = "concurrent"
+    PEAK = "peak"
+    AVERAGE = "average"
+    CUMULATIVE = "cumulative"
+
+
+class TestabilityState(str, Enum):
+    """Whether the constraint can actually be evaluated yet.
+
+    PENDING_CONTEXT is the honest state for a bound whose basis, measurement
+    period or scope the document did not state. The extractor must not fill
+    those in with a guess: resolving them is Phase 4's job, and the resolution
+    is stored separately so it never becomes indistinguishable from what the
+    page said.
+    """
+
+    TESTABLE = "testable"
+    PENDING_CONTEXT = "pending_context"
+    UNTESTABLE = "untestable"
+
+
 def _non_blank(value: str, field: str) -> str:
     if value is None or not str(value).strip():
         raise ValueError(f"{field} must be a non-empty string")
@@ -279,3 +317,103 @@ class CommercialFact(BaseModel):
             )
 
         return self
+
+
+class Constraint(BaseModel):
+    """A commercially material limit that is not a price.
+
+    Sibling of ``CommercialFact``: minimum volumes, usage caps, exclusivity
+    windows and service levels all bind money without being money. Provenance
+    is mandatory here for the same reason it is on a fact.
+
+    Deliberately carries no rationale, interpretation, reasoning or notes
+    field. Facts and reasoning are separate objects, and a free-text field here
+    would be the seam through which a model's reading of a clause becomes
+    indistinguishable from the clause itself.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # --- identity -----------------------------------------------------------
+    constraint_id: str
+    tenant_id: str = "default"
+    constraint_type: str
+    concept_code: Optional[str] = None
+
+    # --- the bound ----------------------------------------------------------
+    bound_value: Optional[Decimal] = None
+    bound_uom: Optional[str] = None
+    bound_direction: Optional[BoundDirection] = None
+    bound_currency: Optional[str] = None
+
+    # --- the context the page usually does not state ------------------------
+    # Left NULL rather than guessed. A bound with no basis is not a weaker
+    # constraint, it is an unevaluable one, and PENDING_CONTEXT says so.
+    bound_basis: Optional[BoundBasis] = None
+    measurement_period: Optional[str] = None
+    applies_to_entities: List[str] = Field(default_factory=list)
+    applies_to_documents: List[str] = Field(default_factory=list)
+    testability_state: TestabilityState = TestabilityState.PENDING_CONTEXT
+
+    # --- source -------------------------------------------------------------
+    source_doc_type: Optional[str] = None
+    source_doc_pk: Optional[str] = None
+    document_id: Optional[str] = None
+    contract_id: Optional[str] = None
+    effective_from: Optional[datetime] = None
+    effective_to: Optional[datetime] = None
+
+    # --- integrity ----------------------------------------------------------
+    validation_state: ValidationState = ValidationState.UNVERIFIED
+    reason_codes: List[str] = Field(default_factory=list)
+    confidence: Optional[float] = None
+
+    # --- provenance ---------------------------------------------------------
+    provenance: List[FactProvenance] = Field(...)
+
+    # --- bitemporal ---------------------------------------------------------
+    valid_from: Optional[datetime] = None
+    valid_to: Optional[datetime] = None
+    recorded_at: Optional[datetime] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_testability(cls, data):
+        """A constraint is testable only once basis, period and scope are known.
+
+        Derived rather than defaulted so the state cannot drift away from the
+        fields it describes. An explicit value is respected — a caller may know
+        a constraint is UNTESTABLE for a reason the fields do not capture.
+        """
+        if isinstance(data, dict) and data.get("testability_state") is None:
+            resolved = (
+                data.get("bound_basis") is not None
+                and data.get("measurement_period") is not None
+                and bool(data.get("applies_to_entities"))
+            )
+            data = dict(data)
+            data["testability_state"] = (
+                TestabilityState.TESTABLE if resolved else TestabilityState.PENDING_CONTEXT
+            )
+        return data
+
+    @field_validator("provenance")
+    @classmethod
+    def _provenance_must_be_non_empty(cls, v: List[FactProvenance]) -> List[FactProvenance]:
+        if not v:
+            raise ValueError(
+                "provenance must not be empty: a constraint with no evidence "
+                "behind it cannot be constructed"
+            )
+        return v
+
+    @field_validator("concept_code")
+    @classmethod
+    def _concept_code_must_be_known(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        if not is_known(v):
+            raise ValueError(
+                f"concept_code {v!r} is not a field declared by any extraction schema"
+            )
+        return v
