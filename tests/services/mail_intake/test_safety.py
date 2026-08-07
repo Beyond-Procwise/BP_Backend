@@ -63,9 +63,66 @@ def test_document_skeleton_wrapped_around_a_payload_quarantines():
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
     assert not verdict.ok
+    # EXECUTABLE, not ARCHIVE: a reviewer in the action centre needs to see
+    # what was found, not merely that something was.
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+    assert verdict.detail["flagged_kinds"], "the reviewer must learn what was found"
+
+
+def test_detail_names_the_content_kind_but_never_the_senders_filename():
+    """The audit record has to be useful AND safe.
+
+    A bare count tells a reviewer nothing actionable. The member's NAME is
+    sender-controlled text and would carry attacker-chosen strings into the
+    record a human reads. Byte-derived content kinds are both.
+    """
+    verdict = _verdict(
+        "smuggling_document.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    blob = repr(verdict.detail)
+    assert "payload.exe" not in blob
+    assert "payload" not in blob
+    assert any("exec" in k or "dosexec" in k for k in verdict.detail["flagged_kinds"])
+
+
+def test_real_libreoffice_artifact_is_not_quarantined():
+    """Regression for a REAL false positive.
+
+    A genuine spreadsheet in this repo carries [trash]/*.dat — inert LibreOffice
+    padding. The first version of this rule quarantined it. One wrongly held
+    file in twelve is enough to make a review queue untrustworthy.
+    """
+    verdict = _verdict(
+        "libreoffice_trash.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert verdict.ok, f"real workbook wrongly quarantined as {verdict.reason}"
+
+
+def test_member_declaring_an_implausible_size_quarantines_without_reading_it():
+    """A member inside a document declaring tens of megabytes is its own signal,
+    and reading it is exactly what a zip bomb is for."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+        zf.writestr("bulk/pad.bin", b"\x00" * (9 * 1024 * 1024))
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        detected_mime=typing_.detect(content),
+        filename="prices.xlsx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
     assert verdict.reason is QuarantineReason.ARCHIVE
-    assert "payload.exe" not in repr(verdict.detail)  # structural facts only
-    assert verdict.detail["foreign_members"]
+    assert verdict.detail["oversized_members"] == 1
 
 
 def test_ordinary_workbook_is_not_falsely_flagged():

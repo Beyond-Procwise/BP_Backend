@@ -206,6 +206,30 @@ def _clean_workbook() -> bytes:
     return buf.getvalue()
 
 
+def _libreoffice_trash_workbook() -> bytes:
+    """A REAL false positive, reproduced.
+
+    `Supplier Ranking_Agent.xlsx` in this repo is a genuine spreadsheet that
+    carries `[trash]/0000.dat` and `[trash]/0001.dat` — a few hundred bytes of
+    inert padding written by LibreOffice. The first version of the
+    foreign-member rule quarantined it. This fixture exists so that cannot
+    happen again silently: it must pass the gate.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("docProps/core.xml", "<coreProperties/>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+        # Byte-for-byte the shape of the real artifact: 0xFF sentinel then nulls.
+        zf.writestr("[trash]/0000.dat", b"\xff\xff\xff\xff" + b"\x00" * 308)
+        zf.writestr("[trash]/0001.dat", b"\xff\xff\xff\xff" + b"\x00" * 270)
+    return buf.getvalue()
+
+
 def _smuggling_workbook() -> bytes:
     """A valid document skeleton wrapped around an unrelated payload.
 
@@ -252,6 +276,7 @@ BINARY_FIXTURES = {
     "macro_workbook.xlsm": _macro_workbook,
     "clean_workbook.xlsx": _clean_workbook,
     "smuggling_document.docx": _smuggling_workbook,
+    "libreoffice_trash.xlsx": _libreoffice_trash_workbook,
     "zip_named_quote.pdf": _zip_wearing_a_pdf_name,
     "clean.pdf": _clean_pdf,
 }

@@ -24,9 +24,16 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from src.services.mail_intake.states import QuarantineReason
-from src.services.mail_intake.typing_ import UNKNOWN, is_permitted_alias
+from src.services.mail_intake.typing_ import UNKNOWN, detect, is_permitted_alias
 
 DEFAULT_SIZE_CEILING_BYTES = 25 * 1024 * 1024
+
+# Bounds on foreign-member classification. Deliberately small: this is a sniff,
+# not a read, and every one of these numbers is a cap on what hostile input can
+# make us do.
+_FOREIGN_SNIFF_BYTES = 512
+_FOREIGN_SNIFF_LIMIT = 32
+_FOREIGN_MEMBER_MAX_BYTES = 8 * 1024 * 1024
 
 _EXECUTABLE_MIMES = frozenset(
     {
@@ -125,20 +132,78 @@ def _has_ooxml_macro(names: List[str]) -> bool:
     )
 
 
-def _foreign_ooxml_members(names: List[str]) -> List[str]:
-    """Top-level members of an OOXML container that no genuine Office file
-    would carry.
+def _foreign_member_names(names: List[str]) -> List[str]:
+    """Members outside the known Office namespaces. Candidates, not verdicts.
 
-    Returned only for counting. The literal names are never written to
-    `detail` — a filename chosen by an untrusted sender is exactly the kind
-    of content this module must not persist. See `evaluate`.
+    An earlier version treated presence alone as the verdict — allowlist by
+    name — and that rule quarantined a genuine spreadsheet in this repo whose
+    only "foreign" members were `[trash]/0000.dat` and `[trash]/0001.dat`, a
+    few hundred bytes of inert padding written by LibreOffice. One wrongly
+    held file in twelve makes a review queue untrustworthy, so presence here
+    only produces a candidate list; `_inspect_foreign_members` decides whether
+    any candidate is actually dangerous.
     """
     foreign = []
     for name in names:
         top = name.split("/", 1)[0].strip().lower()
-        if top and top not in _OOXML_TOP_LEVEL:
-            foreign.append(top)
-    return sorted(set(foreign))
+        if top and top not in _OOXML_TOP_LEVEL and not name.endswith("/"):
+            foreign.append(name)
+    return foreign
+
+
+def _inspect_foreign_members(content: bytes, names: List[str]) -> Dict[str, Any]:
+    """Classify unexpected container members by what they ARE, not what they
+    are named.
+
+    The question asked here is whether a foreign member is *dangerous*, not
+    whether it is *tidy*. Each candidate's leading bytes are sniffed and
+    classified with the same `detect()` used on the outer file; only
+    executable or script content quarantines.
+
+    On "never auto-expand": this reads a bounded prefix — at most
+    `_FOREIGN_SNIFF_BYTES` from at most `_FOREIGN_SNIFF_LIMIT` members, and
+    nothing at all from a member whose declared uncompressed size is
+    implausible. That is classification, not extraction: nothing is written,
+    executed, or handed onward.
+
+    Returns a summary safe to persist and log: counts and byte-derived
+    content kinds. Member NAMES are never returned — they are sender-
+    controlled text and would carry attacker-chosen strings into the audit
+    record a human reads.
+    """
+    summary: Dict[str, Any] = {
+        "foreign_member_count": len(names),
+        "flagged_kinds": [],
+        "oversized_members": 0,
+    }
+    if not names:
+        return summary
+
+    kinds = set()
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            for name in names[:_FOREIGN_SNIFF_LIMIT]:
+                try:
+                    info = zf.getinfo(name)
+                except KeyError:
+                    continue
+                if info.file_size > _FOREIGN_MEMBER_MAX_BYTES:
+                    # A member inside a "document" declaring tens of megabytes
+                    # is its own signal, and reading it is what a zip bomb wants.
+                    summary["oversized_members"] += 1
+                    continue
+                with zf.open(name) as handle:
+                    head = handle.read(_FOREIGN_SNIFF_BYTES)
+                kind = detect(head)
+                if kind in _EXECUTABLE_MIMES:
+                    kinds.add(kind)
+    except Exception:
+        # Cannot classify means cannot clear.
+        summary["flagged_kinds"] = ["unreadable"]
+        return summary
+
+    summary["flagged_kinds"] = sorted(kinds)
+    return summary
 
 
 def _is_encrypted_ooxml(content: bytes) -> bool:
@@ -213,17 +278,24 @@ def evaluate(
         )
 
     if names is not None and detected_mime in _OOXML_MIMES:
-        foreign = _foreign_ooxml_members(names)
+        foreign = _foreign_member_names(names)
         if foreign:
-            # A document skeleton wrapped around unknown members is still an
-            # archive of unknown content, and archives go to a human. Only the
-            # count is recorded — the member names themselves are sender-
-            # supplied content and never belong in a database-persisted detail.
-            return SafetyVerdict(
-                False,
-                QuarantineReason.ARCHIVE,
-                {"container": "ooxml", "foreign_members": len(foreign)},
-            )
+            summary = _inspect_foreign_members(content, foreign)
+            if summary["flagged_kinds"]:
+                # Executable content smuggled inside a well-formed document.
+                # Reported as EXECUTABLE rather than ARCHIVE because that is
+                # what a reviewer needs to see in the action centre.
+                return SafetyVerdict(
+                    False,
+                    QuarantineReason.EXECUTABLE,
+                    dict(summary, container="ooxml"),
+                )
+            if summary["oversized_members"]:
+                return SafetyVerdict(
+                    False,
+                    QuarantineReason.ARCHIVE,
+                    dict(summary, container="ooxml"),
+                )
 
     if _is_encrypted_ooxml(content):
         return SafetyVerdict(
