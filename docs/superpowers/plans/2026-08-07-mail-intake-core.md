@@ -1796,7 +1796,7 @@ def test_document_skeleton_wrapped_around_a_payload_quarantines():
     # EXECUTABLE, not ARCHIVE: a reviewer in the action centre needs to see
     # what was found, not merely that something was.
     assert verdict.reason is QuarantineReason.EXECUTABLE
-    assert verdict.detail["flagged_kinds"], "the reviewer must learn what was found"
+    assert verdict.detail["executable_kinds"], "the reviewer must learn what was found"
 
 
 def test_detail_names_the_content_kind_but_never_the_senders_filename():
@@ -1813,7 +1813,7 @@ def test_detail_names_the_content_kind_but_never_the_senders_filename():
     blob = repr(verdict.detail)
     assert "payload.exe" not in blob
     assert "payload" not in blob
-    assert any("exec" in k or "dosexec" in k for k in verdict.detail["flagged_kinds"])
+    assert any("exec" in k or "dosexec" in k for k in verdict.detail["executable_kinds"])
 
 
 @pytest.mark.parametrize(
@@ -1855,7 +1855,7 @@ def test_smuggled_script_types_are_caught(payload):
     )
     assert not verdict.ok
     assert verdict.reason is QuarantineReason.EXECUTABLE
-    assert verdict.detail["flagged_kinds"]
+    assert verdict.detail["executable_kinds"]
 
 
 def test_real_elf_binary_is_caught():
@@ -1898,9 +1898,15 @@ def test_real_libreoffice_artifact_is_not_quarantined():
     assert verdict.ok, f"real workbook wrongly quarantined as {verdict.reason}"
 
 
-def test_member_declaring_an_implausible_size_quarantines_without_reading_it():
-    """A member inside a document declaring tens of megabytes is its own signal,
-    and reading it is exactly what a zip bomb is for."""
+def test_large_legitimate_worksheet_is_not_quarantined():
+    """A REAL false positive, reproduced.
+
+    `SpendIQ_UI_Verification_testdb.xlsx` in this repo contains worksheet parts
+    that exceed 8MB uncompressed at ordinary spreadsheet compression ratios. An
+    earlier per-member size cap quarantined it as ARCHIVE. Large is not the same
+    as hostile, and a rule that holds real spreadsheets teaches people to ignore
+    the queue.
+    """
     import io
     import zipfile
 
@@ -1909,7 +1915,11 @@ def test_member_declaring_an_implausible_size_quarantines_without_reading_it():
         zf.writestr("[Content_Types].xml", "<Types/>")
         zf.writestr("_rels/.rels", "<Relationships/>")
         zf.writestr("xl/workbook.xml", "<workbook/>")
-        zf.writestr("bulk/pad.bin", b"\x00" * (9 * 1024 * 1024))
+        # ~9MB of legitimate worksheet XML, well compressible like the real one.
+        zf.writestr(
+            "xl/worksheets/sheet1.xml",
+            b"<worksheet>" + b"<c r='A1'><v>1</v></c>" * 420000 + b"</worksheet>",
+        )
     content = buf.getvalue()
     verdict = safety.evaluate(
         content,
@@ -1918,9 +1928,37 @@ def test_member_declaring_an_implausible_size_quarantines_without_reading_it():
         filename="prices.xlsx",
         size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
     )
+    assert verdict.ok, f"large legitimate worksheet quarantined as {verdict.reason}"
+
+
+def test_a_member_lying_about_its_size_is_still_sniffed():
+    """Removing the size cap must not create a way to avoid inspection.
+
+    Reading is bounded by the read length, not by the member's declared size —
+    measured at 0.17ms and 53KB for a member declaring 200MB — so a payload
+    cannot dodge classification by claiming to be enormous.
+    """
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("word/big.bin", elf + b"\x00" * (9 * 1024 * 1024))
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
     assert not verdict.ok
-    assert verdict.reason is QuarantineReason.ARCHIVE
-    assert verdict.detail["oversized_members"] == 1
+    assert verdict.reason is QuarantineReason.EXECUTABLE
 
 
 def test_ordinary_workbook_is_not_falsely_flagged():
@@ -2198,7 +2236,16 @@ DEFAULT_SIZE_CEILING_BYTES = 25 * 1024 * 1024
 # exceeding it fails closed rather than quietly inspecting a prefix.
 _MEMBER_SNIFF_BYTES = 512
 _MEMBER_SNIFF_LIMIT = 512
-_MEMBER_MAX_BYTES = 8 * 1024 * 1024
+
+# There is deliberately NO per-member size cap. An earlier version skipped any
+# member declaring over 8MB, on the theory that reading a large member is what a
+# decompression bomb wants. Measured, that theory is wrong: reading 512 bytes
+# from a member declaring 200MB costs 0.17ms and 53KB, because zipfile passes
+# the requested length through to the decompressor and stops there. The cap
+# bought no safety and did real harm — it wrongly quarantined a real workbook
+# whose worksheet parts legitimately exceed 8MB uncompressed at ordinary
+# spreadsheet compression ratios. The whole artifact is already bounded by
+# size_ceiling_bytes.
 
 # Detected types a document may legitimately be. The tail of evaluate() clears
 # only these; anything else libmagic can name — an MSI installer, a .lnk command
@@ -2387,7 +2434,6 @@ def _inspect_members(content: bytes) -> Dict[str, Any]:
         "sniffed_prefix_bytes": _MEMBER_SNIFF_BYTES,
         "executable_kinds": [],
         "archive_kinds": [],
-        "oversized_members": 0,
         "truncated": False,
         "unreadable": False,
     }
@@ -2406,9 +2452,9 @@ def _inspect_members(content: bytes) -> Dict[str, Any]:
             executables, archives = set(), set()
             for info in infos:
                 summary["inspected_members"] += 1
-                if info.file_size > _MEMBER_MAX_BYTES:
-                    summary["oversized_members"] += 1
-                    continue
+                # Every member is sniffed regardless of declared size: the read
+                # length bounds the decompression, so a large or lying member
+                # costs no more than a small honest one.
                 with zf.open(info) as handle:
                     head = handle.read(_MEMBER_SNIFF_BYTES)
                 kind = detect(head)
@@ -2518,14 +2564,12 @@ def evaluate(
             )
         if (
             summary["archive_kinds"]
-            or summary["oversized_members"]
             or summary["truncated"]
             or summary["unreadable"]
         ):
             # Each of these is a "cannot clear with certainty": a container
-            # nested inside a container, a member too large to inspect, more
-            # members than we are willing to inspect, or a container we could
-            # not read at all.
+            # nested inside a container, more members than we are willing to
+            # inspect, or a container we could not read at all.
             return SafetyVerdict(
                 False, QuarantineReason.ARCHIVE, dict(summary, container="ooxml")
             )
@@ -2572,9 +2616,15 @@ def evaluate(
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_safety.py -v`
-Expected: PASS, 32 tests. Because several of these were added after a defect
-that shipped green, run the whole file and read the names — a count alone will
-not tell you the right ones ran.
+Run the whole file and **read the test names**, not just the count. Several of
+these exist because a defect shipped green, so a passing total proves little on
+its own. Do not treat a count in this plan as authoritative — a previous
+revision of it was off by one, and the code is the arbiter.
+
+Then verify against real files, which is what caught two false positives the
+fixtures did not: run the gate over every `.xlsx` under
+`/home/muthu/PycharmProjects/BP_Backend/` (excluding any `venv` path) and
+confirm all 12 pass.
 
 - [ ] **Step 7: Prove the gate actually fails**
 
