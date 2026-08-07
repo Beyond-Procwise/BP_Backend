@@ -161,7 +161,20 @@ class DocumentEmbeddingBatchResponse(BaseModel):
 
 
 def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
-    """Return bucket and prefix for the provided path."""
+    """Return bucket and prefix for the provided path.
+
+    Refuses any path resolving under the mail-intake quarantine prefix. That
+    prefix holds bytes the safety gate rejected — encrypted files, macro
+    workbooks, archives, documents carrying hidden text. This endpoint takes a
+    caller-supplied prefix and extracts every key beneath it, so without this
+    check the gate is bypassable by anyone who can call the endpoint.
+
+    See docs/superpowers/specs/2026-08-07-email-attachment-ingestion-design.md §2.3.
+    """
+
+    import posixpath
+
+    from src.services.mail_intake.store import QUARANTINE_PREFIX
 
     value = s3_path.strip()
     if not value:
@@ -179,6 +192,17 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     prefix = prefix.lstrip("/")
     if not prefix:
         raise ValueError("s3_path must include an object prefix")
+
+    # Normalise before comparing, so "artifacts/../quarantine/" cannot slip past.
+    normalised = posixpath.normpath(prefix).lstrip("/")
+    if normalised.startswith(".."):
+        raise ValueError("s3_path must not traverse outside its prefix")
+    if (normalised + "/").startswith(QUARANTINE_PREFIX):
+        raise ValueError(
+            "s3_path resolves under the mail-intake quarantine prefix, which "
+            "holds content the safety gate rejected"
+        )
+
     return bucket_name, prefix
 
 
