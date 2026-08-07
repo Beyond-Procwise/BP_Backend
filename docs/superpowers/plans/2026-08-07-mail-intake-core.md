@@ -4894,6 +4894,27 @@ def test_a_transition_that_matched_no_row_is_reported_not_silent(caplog):
     assert any("transition_skipped" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([("S1", "acme.test")], id="tuple-cursor"),
+        pytest.param(
+            [{"supplier_id": "S1", "domain": "acme.test"}], id="realdict-cursor"
+        ),
+    ],
+)
+def test_supplier_candidates_reads_either_cursor_shape(rows):
+    """The live path uses a RealDictCursor, and this indexed positionally.
+
+    It raised KeyError: 0 — and `supplier_bind` catches every exception and
+    returns "unmatched", so the failure was invisible: every sender would have
+    silently failed to match a supplier while the unmatched-domain rate, which
+    is watched as a security signal, read as real.
+    """
+    cur = FakeCursor([rows])
+    assert repo.supplier_candidates(cur, "acme.test") == [("S1", "acme.test")]
+
+
 def test_safe_log_fields_drops_content_and_keeps_correlation_keys():
     fields = repo.safe_log_fields(
         {
@@ -5294,6 +5315,22 @@ def append_derivation(cur, artifact_id: str, pipeline_version: str,
     )
 
 
+def _row_values(row) -> tuple:
+    """Row values in column order, whatever cursor factory produced them.
+
+    psycopg2's default cursor yields tuples; RealDictCursor yields dicts. Every
+    other read in this module already copes with both, and this one did not: it
+    indexed positionally and raised KeyError: 0 under a dict cursor. That is
+    worse than a crash, because supplier_bind catches every exception and
+    returns "unmatched" — so with a dict cursor EVERY sender silently failed to
+    match a supplier, and the unmatched-domain rate, which is watched as a
+    security signal, would have been entirely fictional.
+    """
+    if isinstance(row, dict):
+        return tuple(row.values())
+    return tuple(row)
+
+
 def supplier_candidates(cur, domain: str) -> List[Tuple[str, str]]:
     """Supplier records whose website domain matches. See spec §7.3 on ambiguity."""
     cur.execute(
@@ -5306,7 +5343,8 @@ def supplier_candidates(cur, domain: str) -> List[Tuple[str, str]]:
         """,
         (domain,),
     )
-    return [(str(r[0]), str(r[1])) for r in (cur.fetchall() or [])]
+    rows = [_row_values(r) for r in (cur.fetchall() or [])]
+    return [(str(v[0]), str(v[1])) for v in rows]
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
