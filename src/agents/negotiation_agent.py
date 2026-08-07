@@ -2982,8 +2982,15 @@ class NegotiationAgent(BaseAgent):
         shared_context: Dict[str, Any],
         negotiation_state: Dict[str, Any],
         round_num: int,
+        conn: Any = None,
     ) -> Dict[str, Any]:
-        """Determine the HITL decision for the given round."""
+        """Determine the HITL decision for the given round.
+
+        ``conn`` is an optional database connection used only to verify an
+        ``approved`` claim against ``proc.bp_approval`` (see below); it is
+        not required for the pending/rejected paths and callers that do not
+        pass one still work -- the verification opens its own connection.
+        """
 
         if not self._hitl_enforced():
             # hitl_enabled may narrow which rounds need review; it can never
@@ -3046,6 +3053,41 @@ class NegotiationAgent(BaseAgent):
         }
         if reason:
             decision_info["reason"] = reason
+
+        if status == "approved":
+            # A decision carried in the request payload (there is no other
+            # source today -- see _extract_hitl_decisions) is a claim, not
+            # an approval. It is honoured only once it is corroborated by a
+            # signed row in proc.bp_approval. Refusing to proceed on a
+            # rejected claim needs no such authority, so only "approved"
+            # is gated here. Any failure to reach the store is treated the
+            # same as "no corroborating row": fail closed, never approved.
+            approved_row: Optional[Dict[str, Any]] = None
+            try:
+                from src.services import approval_store
+
+                approved_row = approval_store.find_round_approval(
+                    workflow_id=getattr(context, "workflow_id", None),
+                    round_num=round_num,
+                    conn=conn,
+                )
+            except Exception:
+                approved_row = None
+
+            if not approved_row:
+                logger.warning(
+                    "an approval claim for workflow %s round %s has no "
+                    "corroborating proc.bp_approval row; the round stays "
+                    "pending",
+                    getattr(context, "workflow_id", None),
+                    round_num,
+                )
+                return {
+                    "status": "pending",
+                    "source": "awaiting_review",
+                    "unverified_claim": True,
+                }
+
         return decision_info
 
     def _log_hitl_checkpoint(

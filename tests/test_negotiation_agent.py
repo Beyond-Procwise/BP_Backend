@@ -1124,6 +1124,19 @@ def test_multi_round_routes_to_quote_evaluation_after_hitl(monkeypatch):
     nick = DummyNick()
     agent = NegotiationAgent(nick)
 
+    # A payload-supplied hitl_decisions entry is a claim, not an approval
+    # (guardrail-enforcement task 8, round 2): it is only honoured once
+    # corroborated against proc.bp_approval. This test is about multi-round
+    # routing after a *genuine* approval, so the store lookup is stubbed to
+    # confirm one, exactly as the real lookup would for a signed row.
+    from src.services import approval_store as approval_store_module
+
+    monkeypatch.setattr(
+        approval_store_module,
+        "find_round_approval",
+        lambda **_: {"status": "approved", "actioned_by": "buyer@ourcompany.com"},
+    )
+
     def fake_resolve(self, context, payload):
         supplier = payload.get("supplier_id")
         round_no = int(payload.get("round") or 1)
@@ -1258,6 +1271,18 @@ def test_wait_for_round_responses_uses_repository(monkeypatch):
 def test_multi_round_reuses_unique_id_and_max_round(monkeypatch):
     nick = DummyNick()
     agent = NegotiationAgent(nick)
+
+    # See test_multi_round_routes_to_quote_evaluation_after_hitl: a payload
+    # hitl_decisions entry now requires store corroboration, so it is
+    # stubbed here to confirm a genuine approval and keep this test focused
+    # on unique_id/round-count reuse rather than approval verification.
+    from src.services import approval_store as approval_store_module
+
+    monkeypatch.setattr(
+        approval_store_module,
+        "find_round_approval",
+        lambda **_: {"status": "approved", "actioned_by": "buyer@ourcompany.com"},
+    )
 
     def fake_resolve(self, context, payload):
         supplier = payload.get("supplier_id")

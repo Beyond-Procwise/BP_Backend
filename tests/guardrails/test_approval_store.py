@@ -322,3 +322,107 @@ def test_deal_id_is_persisted_for_downstream_lookup(conn, ids):
         conn=conn,
     )
     assert found["deal_id"] == ids["deal_id"]
+
+
+# --- find_round_approval: negotiation rounds have no rfq_id/unique_id of
+# their own, so they are matched on workflow_id plus the round recorded in
+# grounding->>'round'. Nothing writes these rows yet (that is a future
+# task), so these tests insert directly, the same way the revocation tests
+# above do for find_dispatch_approval. ---------------------------------
+
+
+def _insert_round_approval(conn, *, workflow_id, round_num, status, actioned_by):
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO proc.bp_approval "
+        "(workflow_id, supplier_id, decision, status, actioned_by, "
+        " grounding, created_by, created_date) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s, now())",
+        (
+            workflow_id,
+            "SUP-1",
+            "approve" if status == "approved" else "deny",
+            status,
+            actioned_by,
+            psycopg2.extras.Json({"round": round_num}),
+            "test",
+        ),
+    )
+
+
+def test_round_approval_is_found_via_grounding_round(conn, ids):
+    _insert_round_approval(
+        conn,
+        workflow_id=ids["workflow_id"],
+        round_num=1,
+        status="approved",
+        actioned_by="buyer@ourcompany.com",
+    )
+    found = approval_store.find_round_approval(
+        workflow_id=ids["workflow_id"], round_num=1, conn=conn
+    )
+    assert found is not None
+    assert found["status"] == "approved"
+    assert found["actioned_by"] == "buyer@ourcompany.com"
+
+
+def test_nothing_recorded_means_no_round_approval(conn, ids):
+    found = approval_store.find_round_approval(
+        workflow_id=ids["workflow_id"], round_num=1, conn=conn
+    )
+    assert found is None
+
+
+def test_wrong_round_does_not_match(conn, ids):
+    """An approval recorded for round 1 must not authorise round 2 -- each
+    round is its own checkpoint."""
+    _insert_round_approval(
+        conn,
+        workflow_id=ids["workflow_id"],
+        round_num=1,
+        status="approved",
+        actioned_by="buyer@ourcompany.com",
+    )
+    found = approval_store.find_round_approval(
+        workflow_id=ids["workflow_id"], round_num=2, conn=conn
+    )
+    assert found is None
+
+
+def test_round_approval_with_no_actioned_by_does_not_count(conn, ids):
+    _insert_round_approval(
+        conn,
+        workflow_id=ids["workflow_id"],
+        round_num=1,
+        status="approved",
+        actioned_by=None,
+    )
+    found = approval_store.find_round_approval(
+        workflow_id=ids["workflow_id"], round_num=1, conn=conn
+    )
+    assert found is None
+
+
+def test_a_later_revocation_shadows_an_earlier_round_approval(conn, ids):
+    """bp_approval is append-only: a revocation arrives as a NEW row. The
+    newest row for the (workflow_id, round) key must be selected first,
+    regardless of status, so a withdrawn round approval cannot still
+    authorise release."""
+    _insert_round_approval(
+        conn,
+        workflow_id=ids["workflow_id"],
+        round_num=1,
+        status="approved",
+        actioned_by="buyer@ourcompany.com",
+    )
+    _insert_round_approval(
+        conn,
+        workflow_id=ids["workflow_id"],
+        round_num=1,
+        status="revoked",
+        actioned_by="approver@ourcompany.com",
+    )
+    found = approval_store.find_round_approval(
+        workflow_id=ids["workflow_id"], round_num=1, conn=conn
+    )
+    assert found is None, "a withdrawn round approval must not still authorise release"

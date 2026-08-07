@@ -170,3 +170,61 @@ def find_dispatch_approval(
         return _run(conn)
     with get_conn() as own:
         return _run(own)
+
+
+def find_round_approval(
+    *,
+    workflow_id: Optional[str],
+    round_num: Optional[int],
+    conn: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """The approval permitting this negotiation round to be released, or
+    ``None``.
+
+    A negotiation round has no rfq_id/unique_id of its own, so this matches
+    on workflow_id plus the round number recorded in
+    ``grounding->>'round'``. Whoever eventually writes a round approval must
+    store the round there, e.g. ``grounding = {"round": round_num}``.
+
+    Same append-only / newest-row-wins-regardless-of-status shape as
+    ``find_dispatch_approval``: bp_approval is never updated in place, a
+    revocation arrives as a NEW row, so the newest row for the key is
+    selected first and *that* row is then required to be approved and
+    signed. A caller-supplied decision (e.g. ``hitl_decisions: {"1":
+    "approved"}`` in a request payload) is a claim, not an approval, until
+    this lookup corroborates it against a row a human actually signed.
+
+    A test double may pass a ``conn`` implementing ``lookup_round_approval``
+    directly, in the same style ``email_dispatch_guard`` uses for
+    ``lookup_supplier_emails`` etc., so this stays unit-testable without a
+    database.
+    """
+
+    if hasattr(conn, "lookup_round_approval"):
+        return conn.lookup_round_approval(workflow_id=workflow_id, round_num=round_num)
+
+    workflow = str(workflow_id or "").strip()
+    if not workflow or round_num is None:
+        return None
+
+    sql = (
+        "SELECT * FROM ("
+        "  SELECT * FROM proc.bp_approval"
+        "   WHERE workflow_id = %s AND grounding->>'round' = %s"
+        "   ORDER BY approval_id DESC"
+        "   LIMIT 1"
+        ") latest "
+        "WHERE status = %s AND actioned_by IS NOT NULL"
+    )
+    params = (workflow, str(round_num), _STATUS_APPROVED)
+
+    def _run(connection: Any) -> Optional[Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
