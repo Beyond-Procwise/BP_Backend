@@ -6193,15 +6193,212 @@ git commit -m "feat(mail-intake): deterministic pipeline with durable emit queue
 ## Task 13: Plane boundary enforcement
 
 **Files:**
+- Create: `src/services/mail_intake/handoff.py`
+- Create: `tests/services/mail_intake/test_handoff.py`
 - Create: `tests/services/mail_intake/test_plane_boundary.py`
 - Modify: `src/api/routers/documents.py:163-182` (`_resolve_s3_path`)
 - Test: `tests/api/test_documents_quarantine_guard.py`
 
 **Interfaces:**
-- Consumes: `store.QUARANTINE_PREFIX`
-- Produces: no new public interface; `_resolve_s3_path` gains a rejection path
+- Consumes: `store.QUARANTINE_PREFIX`, `store.ARTIFACT_PREFIX`
+- Produces: `handoff.deliver_to_extraction(artifact_id: str, content: bytes, doc_type: str, dispatch=None) -> dict`; `handoff.KNOWN_CROSSINGS: dict[str, set[str]]`
 
-- [ ] **Step 1: Write the failing import-guard test**
+### What this task can and cannot claim
+
+Pre-flighting the guard against the current tree found that the boundary is
+already crossed: `src/services/extraction/parser.py` imports `boto3` and
+downloads documents by key, so extraction has live network egress today and can
+read any key in the bucket — including the quarantine prefix. The spec's claim
+that extraction "is handed an `artifact_id`, never a path it can vary" was not
+true of the code as it stands.
+
+Two things follow, and the honest framing matters more than the code:
+
+1. **For the mail-intake path the boundary holds by construction.** We never
+   hand extraction a key. `deliver_to_extraction` writes the artifact bytes to a
+   private temporary file, passes that path, and deletes it in a `finally`.
+   Extraction's own resolver takes the local-file branch and never reaches S3,
+   so there is no key for it to vary and no route to the quarantine prefix.
+2. **For extraction's other callers it does not hold, and this task does not
+   pretend otherwise.** The guard is a RATCHET: it records the one existing
+   crossing explicitly and fails the build on any new one. The configuration
+   documentation (Task 14) must say this plainly rather than describing a
+   boundary the deployment does not enforce.
+
+A true capability boundary — separate process, no egress, read-only role — is a
+deployment change and remains out of scope, as spec §2.2 already states.
+
+- [ ] **Step 1: Write the failing handoff test**
+
+```python
+# tests/services/mail_intake/test_handoff.py
+"""Handing extraction bytes rather than a key.
+
+Extraction resolves an inbound path by trying the local filesystem first and
+falling back to S3 by key. That fallback is the crossing: given a key, it
+fetches, and it can fetch any key in the bucket. Given a local file it owns
+nothing and reaches nowhere.
+"""
+import os
+
+import pytest
+
+from src.services.mail_intake import handoff
+
+
+def test_extraction_receives_a_real_local_file_never_a_key():
+    seen = {}
+
+    def fake_dispatch(*, process_monitor_id, file_path, doc_type):
+        seen["path"] = file_path
+        seen["exists"] = os.path.isfile(file_path)
+        seen["content"] = open(file_path, "rb").read()
+        seen["doc_type"] = doc_type
+        return {"status": "ok"}
+
+    handoff.deliver_to_extraction(
+        artifact_id="ART-1",
+        content=b"%PDF-1.4\ninvoice bytes\n",
+        doc_type="invoice",
+        dispatch=fake_dispatch,
+    )
+
+    # A real file on disk, so extraction's resolver takes its local branch and
+    # never reaches the S3 fallback.
+    assert seen["exists"] is True
+    assert seen["content"] == b"%PDF-1.4\ninvoice bytes\n"
+    assert seen["doc_type"] == "invoice"
+    # And nothing that could be read as an object key.
+    assert not seen["path"].startswith("mail-intake/")
+    assert "s3://" not in seen["path"]
+
+
+def test_the_temporary_file_is_removed_even_when_extraction_raises():
+    captured = {}
+
+    def exploding_dispatch(*, process_monitor_id, file_path, doc_type):
+        captured["path"] = file_path
+        raise RuntimeError("extraction blew up")
+
+    with pytest.raises(RuntimeError):
+        handoff.deliver_to_extraction(
+            artifact_id="ART-2",
+            content=b"bytes",
+            doc_type="invoice",
+            dispatch=exploding_dispatch,
+        )
+
+    assert not os.path.exists(captured["path"]), (
+        "attachment bytes left on local disk after a failure"
+    )
+
+
+def test_the_temporary_file_is_not_world_readable():
+    """These are attachments from arbitrary senders, briefly on local disk."""
+    modes = {}
+
+    def fake_dispatch(*, process_monitor_id, file_path, doc_type):
+        modes["mode"] = os.stat(file_path).st_mode & 0o777
+        return {}
+
+    handoff.deliver_to_extraction(
+        artifact_id="ART-3", content=b"x", doc_type="invoice",
+        dispatch=fake_dispatch,
+    )
+    assert modes["mode"] & 0o077 == 0, f"mode was {oct(modes['mode'])}"
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_handoff.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'src.services.mail_intake.handoff'`
+
+- [ ] **Step 3: Write the handoff**
+
+```python
+# src/services/mail_intake/handoff.py
+"""The one place mail-intake hands an artifact to the extraction plane.
+
+Extraction resolves an inbound `file_path` by trying the local filesystem and
+then falling back to fetching that string as an S3 key. That fallback is the
+plane crossing: given a key it fetches, and the credentials it uses can read
+any key in the bucket — including the quarantine prefix, where the bytes the
+safety gate rejected are kept.
+
+So mail-intake never gives extraction a key. It writes the artifact's bytes to
+a private temporary file, hands over that path, and removes it afterwards
+whatever happens. Extraction's resolver takes its local-file branch, never
+reaches S3, and has no string to vary. The boundary holds for this path by
+construction rather than by anyone remembering the rule.
+
+This does NOT make extraction incapable of reaching S3 in general — other
+callers still pass keys, and closing that needs a deployment change (spec
+§2.2). The import guard alongside this module is a ratchet over that gap, not
+a cure for it. Say so plainly wherever this is documented.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import tempfile
+from typing import Any, Callable, Dict, Optional
+
+log = logging.getLogger(__name__)
+
+# The crossings that exist today, recorded so the guard can fail on anything
+# NEW while not pretending these are absent. Adding to this set is a decision
+# a human makes deliberately, not a way to quiet a failing build.
+KNOWN_CROSSINGS: Dict[str, set] = {
+    "src/services/extraction/parser.py": {"boto3"},
+}
+
+
+def deliver_to_extraction(
+    *,
+    artifact_id: str,
+    content: bytes,
+    doc_type: str,
+    process_monitor_id: Optional[int] = None,
+    dispatch: Optional[Callable[..., Any]] = None,
+) -> Any:
+    """Give extraction the bytes, on a path it did not choose.
+
+    `dispatch` is injectable so tests need no extraction stack; production
+    resolves the real entry point lazily, which also keeps this module free of
+    an import-time dependency on the extraction package.
+    """
+    if dispatch is None:  # pragma: no cover - exercised in integration only
+        from src.services.extraction.dispatch import dispatch_document as dispatch
+
+    # 0o600: these are attachments from arbitrary senders sitting briefly on
+    # local disk, and mkstemp already creates them owner-only. Being explicit
+    # keeps that true if the surrounding code ever changes umask.
+    handle, path = tempfile.mkstemp(prefix=f"mailintake-{artifact_id}-", suffix=".bin")
+    try:
+        os.fchmod(handle, 0o600)
+        with os.fdopen(handle, "wb") as fh:
+            fh.write(content)
+        return dispatch(
+            process_monitor_id=process_monitor_id,
+            file_path=path,
+            doc_type=doc_type,
+        )
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            log.warning(
+                "mail_intake.handoff could not remove temporary file for artifact=%s",
+                artifact_id,
+            )
+```
+
+- [ ] **Step 4: Run it to verify it passes**
+
+Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_handoff.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Write the failing import-guard test**
 
 ```python
 # tests/services/mail_intake/test_plane_boundary.py
@@ -6218,6 +6415,10 @@ The import is the bug.
 """
 import ast
 import pathlib
+
+from src.services.mail_intake.handoff import KNOWN_CROSSINGS
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 FORBIDDEN_PREFIXES = (
     "services.mail_intake",
@@ -6250,15 +6451,56 @@ def _imports(path: pathlib.Path):
                 yield node.module
 
 
-def test_extraction_cannot_reach_a_mailbox_the_network_or_tool_calling():
+def test_extraction_gains_no_new_route_out_of_its_plane():
+    """A ratchet, not a clean bill of health.
+
+    The boundary is already crossed: parser.py imports boto3 and downloads
+    documents by key, so extraction has live egress today and its credentials
+    can read any key in the bucket — the quarantine prefix included. Asserting
+    zero crossings would simply fail, and asserting nothing would let the next
+    one in unnoticed.
+
+    So the existing crossing is recorded explicitly in handoff.KNOWN_CROSSINGS
+    and anything else fails the build. Mail-intake's own path is protected
+    differently and by construction: handoff.deliver_to_extraction never gives
+    extraction a key, so the fallback that does the fetching is never reached.
+    """
     offences = []
     for path in sorted(EXTRACTION_ROOT.rglob("*.py")):
+        rel = str(path).split("mail-intake/", 1)[-1]
+        allowed = KNOWN_CROSSINGS.get(rel, set())
         for name in _imports(path):
             for forbidden in FORBIDDEN_PREFIXES:
                 if name == forbidden or name.startswith(forbidden + "."):
-                    offences.append(f"{path}: imports {name}")
-    assert not offences, "Interpretation Plane reached the Ingestion Plane:\n" + "\n".join(
-        offences
+                    if name in allowed:
+                        continue
+                    offences.append(f"{rel}: imports {name}")
+    assert not offences, (
+        "Interpretation Plane gained a NEW route out of its plane:\n"
+        + "\n".join(offences)
+        + "\n\nDo not add these to KNOWN_CROSSINGS to make this pass. The "
+        "import is the bug."
+    )
+
+
+def test_the_recorded_crossings_still_exist():
+    """If a recorded crossing is gone, stop recording it.
+
+    An allowlist nobody prunes silently widens over time, and a stale entry
+    would hide a genuine regression at that exact location.
+    """
+    stale = []
+    for rel, names in KNOWN_CROSSINGS.items():
+        path = REPO_ROOT / rel
+        if not path.exists():
+            stale.append(f"{rel} no longer exists")
+            continue
+        found = set(_imports(path))
+        for name in names:
+            if name not in found:
+                stale.append(f"{rel} no longer imports {name}")
+    assert not stale, (
+        "KNOWN_CROSSINGS is out of date — remove these entries:\n" + "\n".join(stale)
     )
 
 
@@ -6295,14 +6537,29 @@ report it before changing anything.
 
 A guard that has only ever been seen green is not a verified guard.
 
+Do BOTH halves — the ratchet has two failure modes and each needs seeing.
+
 ```bash
-# Temporarily add `import boto3` to the top of src/services/extraction/parser.py
+# (a) A NEW crossing must fail. Add `import requests` to a file that has none,
+#     e.g. the top of src/services/extraction/promotion.py:
 ./venv/bin/python -m pytest tests/services/mail_intake/test_plane_boundary.py -v
 ```
 
-Expected: `test_extraction_cannot_reach_a_mailbox_the_network_or_tool_calling`
-FAILS naming `src/services/extraction/parser.py: imports boto3`. Remove the
-import and confirm PASS.
+Expected: `test_extraction_gains_no_new_route_out_of_its_plane` FAILS naming
+`src/services/extraction/promotion.py: imports requests`. Note that it does NOT
+name parser.py's boto3 — that one is recorded. Remove the import, confirm PASS.
+
+```bash
+# (b) A STALE allowlist entry must fail. Add a bogus entry to KNOWN_CROSSINGS
+#     in src/services/mail_intake/handoff.py, e.g.
+#     "src/services/extraction/promotion.py": {"httpx"}
+./venv/bin/python -m pytest tests/services/mail_intake/test_plane_boundary.py -v
+```
+
+Expected: `test_the_recorded_crossings_still_exist` FAILS saying promotion.py no
+longer imports httpx. Remove the bogus entry, confirm PASS. This half matters
+because an allowlist nobody prunes silently widens, and a stale entry would
+mask a genuine regression at that exact location.
 
 - [ ] **Step 4: Write the failing test for the S3 bypass**
 
