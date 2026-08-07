@@ -3225,7 +3225,7 @@ from .conftest import FakeCursor
 
 
 def test_insert_bundle_writes_received_state_and_returns_an_id():
-    cur = FakeCursor()
+    cur = FakeCursor([("11111111-1111-1111-1111-111111111111",)])
     bundle_id = repo.insert_bundle(
         cur,
         binding_id=1,
@@ -3247,6 +3247,35 @@ def test_insert_bundle_writes_received_state_and_returns_an_id():
     sql, params = cur.calls[0]
     assert "INSERT INTO proc.bp_ingest_bundle" in sql
     assert BundleState.RECEIVED.value in params
+
+
+def test_insert_bundle_returns_none_when_the_message_was_already_ingested():
+    """The idempotency contract. ON CONFLICT DO NOTHING returns no row, and the
+    caller must be able to tell that apart from a successful insert — otherwise
+    a re-delivered event proceeds against a bundle_id that has no row behind
+    it, every later UPDATE matches nothing, and the artifact inserts break
+    their foreign key."""
+    cur = FakeCursor()  # no row returned => conflict
+    assert (
+        repo.insert_bundle(
+            cur,
+            binding_id=1,
+            owner_ref="user-7",
+            provider_message_id="prov-1",
+            rfc_message_id="<a@b.test>",
+            thread_id=None,
+            sender_address="quotes@copperleaf.test",
+            sender_display_name="Sales",
+            sender_domain="copperleaf.test",
+            recipients=[],
+            subject="Quote",
+            received_at=None,
+            body_text=None,
+            body_html=None,
+            raw_mime_key="mail-intake/raw/user-7/x.eml",
+        )
+        is None
+    )
 
 
 def test_transition_validates_before_writing():
@@ -3407,7 +3436,16 @@ def safe_log_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def insert_bundle(cur, **fields: Any) -> str:
+def insert_bundle(cur, **fields: Any) -> Optional[str]:
+    """Insert a bundle, or return None if this message was already ingested.
+
+    The None return is the idempotency contract, and it matters: the unique
+    index on (binding_id, provider_message_id) makes a re-delivered provider
+    event or an IMAP re-poll a no-op. Returning the freshly generated UUID on
+    conflict would be worse than useless — no row would exist under it, every
+    later UPDATE would silently match zero rows, and the artifact inserts would
+    fail their foreign key. Callers must treat None as "already done" and stop.
+    """
     # The caller may supply the id: the raw-MIME key is derived from it and the
     # column is NOT NULL, so the pipeline needs the id before the insert.
     bundle_id = fields.get("bundle_id") or str(uuid.uuid4())
@@ -3420,6 +3458,7 @@ def insert_bundle(cur, **fields: Any) -> str:
             raw_mime_key, state
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (binding_id, provider_message_id) DO NOTHING
+        RETURNING bundle_id
         """,
         (
             bundle_id,
@@ -3440,7 +3479,10 @@ def insert_bundle(cur, **fields: Any) -> str:
             BundleState.RECEIVED.value,
         ),
     )
-    return bundle_id
+    row = cur.fetchone()
+    if not row:
+        return None
+    return str(row[0] if isinstance(row, (tuple, list)) else row["bundle_id"])
 
 
 def transition_bundle(cur, bundle_id: str, current: BundleState,
@@ -3886,6 +3928,23 @@ git commit -m "feat(mail-intake): MailSource contract and relay adapter"
 - Consumes: everything from Tasks 1–11, plus `FakeCursor` and `FakeStore` from
   `tests/services/mail_intake/conftest.py` (Task 10). Import them; do not
   redefine them.
+
+**Cursor seeding rule — apply this to every test below, and verify by running them.**
+`repo.insert_bundle` now ends in `RETURNING bundle_id` and returns `None` when
+`ON CONFLICT` fires, which the pipeline treats as "already ingested, stop".
+So a `FakeCursor` with nothing queued models a *re-delivered* message.
+
+- Every test that calls `.ingest()` and expects work to happen must use
+  `_seeded_cursor()` (defined below), whose queued row answers that
+  `RETURNING`. A bare `FakeCursor()` would silently take the no-op path and
+  make the test pass or fail for entirely the wrong reason.
+- `test_redelivered_message_is_a_no_op` is the sole exception: it uses a bare
+  `FakeCursor()` deliberately, because the absent row *is* the condition under
+  test.
+
+The plan author could not run these tests when writing them. If the fetch
+ordering does not work out as described in `_seeded_cursor`'s docstring, fix
+the seeding and say so in your report — do not weaken an assertion.
 - Produces: `IngestPipeline(object_store, bucket, *, size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES, trusted_asserter=None, event_bus=None)`; `IngestPipeline.ingest(cur, binding, message: RawMessage) -> IngestOutcome`; `IngestOutcome` (frozen dataclass: `bundle_id: str`, `artifact_ids: tuple[str, ...]`, `quarantined: tuple[tuple[str, QuarantineReason], ...]`, `duplicates: tuple[str, ...]`); `sweep_ready_artifacts(cur, event_bus=None, limit=50) -> int`; `DOCUMENT_INGESTED = "mail_intake.document_ingested"`
 
 - [ ] **Step 1: Write the failing test**
@@ -3920,6 +3979,21 @@ class FakeBus:
 
     def publish(self, name, payload=None):
         self.published.append((name, payload))
+
+
+BUNDLE_UUID = "11111111-1111-1111-1111-111111111111"
+
+
+def _seeded_cursor():
+    """A cursor whose first fetchone answers the bundle INSERT ... RETURNING.
+
+    Order matters and is worth stating: insert_bundle fetches first (and gets
+    this row), supplier_candidates then fetchall's an empty queue (no supplier
+    match), and each artifact's duplicate lookup fetchone's an empty queue
+    (returns None, i.e. not a duplicate). A bare FakeCursor with nothing queued
+    therefore models the ON CONFLICT case — see the re-delivery test.
+    """
+    return FakeCursor().queue((BUNDLE_UUID,))
 
 
 def _message(fixture):
@@ -4079,6 +4153,18 @@ def test_scanned_ocr_document_is_not_quarantined():
     assert not outcome.quarantined
 
 
+def test_redelivered_message_is_a_no_op():
+    """Acceptance-relevant: re-delivery must not produce a second set of
+    artifacts. The conflict on (binding_id, provider_message_id) is what makes
+    IMAP re-polling and duplicate provider events safe."""
+    cur, store = FakeCursor(), FakeStore()
+    # No row returned from the bundle INSERT => already ingested.
+    outcome = _pipeline(store).ingest(cur, _binding(), _message("simple_pdf.eml"))
+    assert outcome.artifact_ids == ()
+    assert not any("INSERT INTO proc.bp_ingest_artifact" in sql for sql, _ in cur.calls)
+    assert store.objects == {}
+
+
 def test_sweep_publishes_and_advances_ready_artifacts():
     cur, bus = FakeCursor(), FakeBus()
     cur.queue(
@@ -4231,7 +4317,7 @@ class IngestPipeline:
         bundle_id = str(uuid.uuid4())
         raw_key = store.raw_mime_key(owner_ref, bundle_id)
 
-        repo.insert_bundle(
+        inserted = repo.insert_bundle(
             cur,
             bundle_id=bundle_id,
             binding_id=binding_id,
@@ -4249,6 +4335,12 @@ class IngestPipeline:
             body_html=(parsed.body_html if parsed else None),
             raw_mime_key=raw_key,
         )
+
+        if inserted is None:
+            # Already ingested: a re-delivered provider event or an IMAP
+            # re-poll. Stopping here is what makes re-reading safe — carrying
+            # on would write a second set of artifacts for the same message.
+            return IngestOutcome(bundle_id, (), (), ())
 
         # Raw MIME immediately: everything downstream is reconstructible from it,
         # including the messages that fail to parse a line later.
@@ -4742,7 +4834,11 @@ FIXTURES = pathlib.Path("tests/fixtures/mail_intake")
 
 
 def _run(raw: bytes, provider_id="emails/x.eml"):
-    cur, store = FakeCursor(), FakeStore()
+    # The queued row answers the bundle INSERT ... RETURNING. Without it the
+    # pipeline takes the ON CONFLICT path and correctly does nothing, which
+    # would make every assertion below pass or fail for the wrong reason.
+    cur = FakeCursor().queue(("11111111-1111-1111-1111-111111111111",))
+    store = FakeStore()
     outcome = IngestPipeline(object_store=store, bucket="procwisemvp").ingest(
         cur,
         {"binding_id": 1, "owner_ref": "user-7", "folder_scope": "emails/"},
