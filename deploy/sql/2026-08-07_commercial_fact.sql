@@ -191,6 +191,18 @@ CREATE INDEX IF NOT EXISTS ix_bp_fact_provenance_document_id
 CREATE OR REPLACE FUNCTION proc.bp_commercial_fact_require_provenance()
 RETURNS trigger AS $$
 BEGIN
+    -- The row may have been deleted later in the same transaction. Postgres
+    -- does NOT discard an already-queued deferred trigger event when that
+    -- happens, so without this the check fires at COMMIT for a fact that no
+    -- longer exists and rejects a perfectly correct insert-then-delete cycle
+    -- (a test fixture cleaning up after itself is the common case). There is
+    -- no unprovenanced fact to protect against once the fact is gone.
+    IF NOT EXISTS (
+        SELECT 1 FROM proc.bp_commercial_fact f WHERE f.fact_id = NEW.fact_id
+    ) THEN
+        RETURN NULL;
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1 FROM proc.bp_fact_provenance p WHERE p.fact_id = NEW.fact_id
     ) THEN
