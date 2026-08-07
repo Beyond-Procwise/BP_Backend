@@ -397,6 +397,7 @@ class BackendScheduler:
     PRICE_OUTLIER_JOB_NAME = "price-outlier-scan"
     ANALYSIS_SWEEP_JOB_NAME = "analysis-sweep"
     ANALYSIS_SWEEP_LANE = "analysis"
+    MAIL_INTAKE_SWEEP_JOB_NAME = "mail-intake-sweep"
 
     def _register_default_jobs(self) -> None:
         self._sync_training_job()
@@ -416,6 +417,7 @@ class BackendScheduler:
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
+        self._register_mail_intake_sweep_job()
 
     def _register_style_staging_sweep_job(self) -> None:
         """Register the style-staging TTL sweep.
@@ -751,6 +753,38 @@ class BackendScheduler:
                 "price outlier scan: %d findings, %d new", len(findings), written)
         except Exception:
             logger.exception("price outlier scan failed")
+
+    def _register_mail_intake_sweep_job(self) -> None:
+        """Register the mail-intake emit sweep (spec §6 stage 10).
+
+        The artifact's state row is the queue; this sweep is the backstop that
+        publishes DocumentIngested for anything sitting READY_FOR_EXTRACTION,
+        covering a process death mid-handler on the synchronous, non-durable
+        EventBus. Every 60 seconds, matching the brief.
+        """
+        if self.MAIL_INTAKE_SWEEP_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.MAIL_INTAKE_SWEEP_JOB_NAME,
+            self._run_mail_intake_sweep,
+            interval=timedelta(seconds=60),
+            initial_delay=timedelta(seconds=30),
+        )
+
+    def _run_mail_intake_sweep(self) -> None:
+        try:
+            from src.services.db import get_conn
+            from src.services.event_bus import get_event_bus
+            from src.services.mail_intake.pipeline import sweep_ready_artifacts
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    published = sweep_ready_artifacts(cur, event_bus=get_event_bus())
+                conn.commit()
+            if published:
+                logger.info("mail intake sweep: published %d artifacts", published)
+        except Exception:
+            logger.exception("mail intake sweep failed")
 
     # Counts in the assign_deals() result that mean _trgt deals actually changed.
     _DEAL_CHANGE_KEYS = ("forward_linked", "backward_linked", "propagated",
