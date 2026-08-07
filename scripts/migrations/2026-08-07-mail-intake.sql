@@ -18,6 +18,26 @@ ALTER TABLE proc.bp_mailbox_binding
 ALTER TABLE proc.bp_mailbox_binding
     ADD COLUMN IF NOT EXISTS last_sync_at         TIMESTAMPTZ;
 
+-- The existing CHECK constraints do not admit a mail-intake binding at all:
+-- provider allows only graph/gmail/imap, and role only the style engine's
+-- exemplar_source/draft_target/both. Adding the columns above without widening
+-- these would have produced a table that physically cannot store the thing this
+-- subsystem is built to configure — caught by executing an insert against the
+-- live schema rather than by reading the DDL.
+--
+-- Both changes are additive: every value previously accepted is still accepted.
+ALTER TABLE proc.bp_mailbox_binding
+    DROP CONSTRAINT IF EXISTS bp_mailbox_binding_provider_check;
+ALTER TABLE proc.bp_mailbox_binding
+    ADD CONSTRAINT bp_mailbox_binding_provider_check
+    CHECK (provider = ANY (ARRAY['graph', 'gmail', 'imap', 'relay']));
+
+ALTER TABLE proc.bp_mailbox_binding
+    DROP CONSTRAINT IF EXISTS bp_mailbox_binding_role_check;
+ALTER TABLE proc.bp_mailbox_binding
+    ADD CONSTRAINT bp_mailbox_binding_role_check
+    CHECK (role = ANY (ARRAY['exemplar_source', 'draft_target', 'both', 'intake']));
+
 CREATE TABLE IF NOT EXISTS proc.bp_ingest_bundle (
     bundle_id           UUID PRIMARY KEY,
     -- BIGINT, not TEXT: proc.bp_mailbox_binding.binding_id is

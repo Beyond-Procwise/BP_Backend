@@ -111,3 +111,25 @@ def test_raw_mime_key_is_not_nullable():
     # Stage 1 persists raw MIME before parsing; a bundle without it is a bundle
     # whose provenance cannot be reconstructed.
     assert re.search(r"raw_mime_key\s+TEXT NOT NULL", SQL)
+
+
+def test_binding_provider_constraint_includes_relay():
+    # The mail-intake binding uses provider='relay'. The original constraint
+    # (graph/gmail/imap) did not permit this, so the migration widens it.
+    assert re.search(
+        r"ALTER TABLE proc\.bp_mailbox_binding\s+ADD CONSTRAINT bp_mailbox_binding_provider_check\s+"
+        r"CHECK\s*\(\s*provider\s*=\s*ANY\s*\(\s*ARRAY\['graph',\s*'gmail',\s*'imap',\s*'relay'\]\s*\)",
+        SQL,
+        re.S
+    ), "provider constraint must include 'relay'"
+
+
+def test_binding_role_constraint_includes_intake():
+    # The mail-intake binding uses role='intake'. The original constraint
+    # (exemplar_source/draft_target/both) did not permit this, so the migration widens it.
+    assert re.search(
+        r"ALTER TABLE proc\.bp_mailbox_binding\s+ADD CONSTRAINT bp_mailbox_binding_role_check\s+"
+        r"CHECK\s*\(\s*role\s*=\s*ANY\s*\(\s*ARRAY\['exemplar_source',\s*'draft_target',\s*'both',\s*'intake'\]\s*\)",
+        SQL,
+        re.S
+    ), "role constraint must include 'intake'"
