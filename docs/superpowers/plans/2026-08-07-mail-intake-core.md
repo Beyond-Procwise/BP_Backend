@@ -628,7 +628,7 @@ git commit -m "feat(mail-intake): schema for bundles, artifacts, provenance and 
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks
-- Produces: `ParsedPart` (frozen dataclass: `filename: str|None`, `declared_mime: str`, `content: bytes`, `disposition: str`, `content_id: str|None`, `nesting_depth: int`); `ParsedBundle` (frozen dataclass: `headers: dict[str, list[str]]`, `body_text: str|None`, `body_html: str|None`, `parts: tuple[ParsedPart, ...]`); `MalformedMime(Exception)`; `parse(raw: bytes, *, max_depth: int = 3) -> ParsedBundle`; `drop_cid_referenced(bundle: ParsedBundle) -> tuple[ParsedPart, ...]`
+- Produces: `ParsedPart` (frozen dataclass: `filename: str|None`, `declared_mime: str`, `content: bytes`, `disposition: str`, `content_id: str|None`, `nesting_depth: int`); `ParsedBundle` (frozen dataclass: `headers: dict[str, list[str]]`, `body_text: str|None`, `body_html: str|None`, `parts: tuple[ParsedPart, ...]`); `MalformedMime(Exception)`; `parse(raw: bytes, *, max_depth: int = 3) -> ParsedBundle`; `drop_cid_referenced(bundle: ParsedBundle) -> tuple[ParsedPart, ...]`; `MAX_RAW_BYTES: int`; `MAX_NESTED_MESSAGES: int`
 
 - [ ] **Step 1: Write the fixture builder**
 
@@ -872,6 +872,69 @@ def test_headers_are_preserved_for_provenance():
     bundle = parse(_load("simple_pdf.eml"))
     assert bundle.headers["from"] == ["Copperleaf Sales <quotes@copperleaf.test>"]
     assert bundle.headers["message-id"] == ["<quote-qt-4471@copperleaf.test>"]
+
+
+def test_excessive_nesting_is_rejected_before_the_parser_runs():
+    """A depth limit applied after parsing is not a DoS defence.
+
+    BytesParser builds the whole nested tree in one eager call, so the cost is
+    already paid by the time max_depth is consulted. This must be rejected on a
+    raw scan instead — and fast enough that the rejection itself is not the DoS.
+    """
+    import time
+
+    hostile = (
+        b"From: attacker@example.invalid\r\n"
+        b"Subject: Quote\r\n"
+        b'Content-Type: multipart/mixed; boundary="X"\r\n\r\n'
+        + b'--X\r\nContent-Type: message/rfc822\r\n\r\n' * 200
+        + b"--X--\r\n"
+    )
+    started = time.monotonic()
+    with pytest.raises(MalformedMime, match="nested messages"):
+        parse(hostile)
+    assert time.monotonic() - started < 1.0
+
+
+def test_oversize_raw_message_is_rejected():
+    with pytest.raises(MalformedMime, match="exceeds"):
+        parse(b"From: a@b.test\r\n\r\n" + b"x" * (25 * 1024 * 1024 + 1))
+
+
+def test_cosmetic_defect_does_not_reject_recoverable_mail():
+    """A stray mbox 'From ' envelope line is a normal artifact of mailing-list
+    and migration tooling. The mail decodes perfectly; quarantining it would
+    lose a real supplier quote for a blemish that cost nothing."""
+    recoverable = b"From attacker Mon Aug  5 09:00:00 2026\r\n" + _load("simple_pdf.eml")
+    bundle = parse(recoverable)
+    assert [p.filename for p in bundle.parts] == ["quote-QT-4471.pdf"]
+    assert bundle.body_text.startswith("Our quote is attached")
+
+
+def test_structural_corruption_nested_inside_a_forward_is_rejected():
+    """The failure mode a top-level-only defect check misses entirely.
+
+    The outer message is well formed, so its own defect list is empty. Without
+    a recursive check this returns a "successful" bundle holding the covering
+    note and no attachments — silently dropping the quote, which is exactly the
+    partial ingestion the design forbids.
+    """
+    from email.message import EmailMessage
+
+    outer = EmailMessage()
+    outer["From"] = "Buyer <buyer@acme.test>"
+    outer["To"] = "intake@acme.procureiq.io"
+    outer["Subject"] = "Fwd: Quote"
+    outer["Message-ID"] = "<fwd-corrupt@acme.test>"
+    outer.set_content("Passing this on.")
+    outer.add_attachment(
+        (FIXTURES / "malformed.eml").read_bytes(),
+        maintype="message",
+        subtype="rfc822",
+        filename="forwarded.eml",
+    )
+    with pytest.raises(MalformedMime):
+        parse(outer.as_bytes())
 ```
 
 - [ ] **Step 4: Run test to verify it fails**
@@ -905,6 +968,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from email import errors as email_errors
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -912,7 +976,29 @@ from typing import Dict, List, Optional, Tuple
 
 MAX_DEPTH_DEFAULT = 3
 
+# Ceilings enforced BEFORE the stdlib parser is handed the bytes. See
+# _reject_hostile_shape for why "before" is the whole point.
+MAX_RAW_BYTES = 25 * 1024 * 1024
+MAX_NESTED_MESSAGES = 20
+
 _CID_REF = re.compile(r"""["'(]\s*cid:([^"')\s>]+)""", re.IGNORECASE)
+
+# Cheap upper bound on nesting, counted on the raw bytes without parsing them.
+_RFC822_MARKER = re.compile(rb"message/rfc822", re.IGNORECASE)
+
+# Defects that mean structure was actually lost. Everything else Python reports
+# — misplaced envelope headers, obsolete header syntax, and the rest — is a
+# cosmetic anomaly in mail that still decodes perfectly, and rejecting on those
+# would quarantine legitimate supplier quotes that merely passed through a
+# mailing list or a migrated mailbox. Fail-closed means not proceeding under
+# uncertainty; it does not mean refusing anything imperfect.
+_FATAL_DEFECTS = (
+    email_errors.NoBoundaryInMultipartDefect,
+    email_errors.StartBoundaryNotFoundDefect,
+    email_errors.CloseBoundaryNotFoundDefect,
+    email_errors.MultipartInvariantViolationDefect,
+    email_errors.MissingHeaderBodySeparatorDefect,
+)
 
 
 class MalformedMime(Exception):
@@ -999,17 +1085,59 @@ def _walk(message: EmailMessage, depth: int, max_depth: int,
         )
 
 
+def _reject_hostile_shape(raw: bytes) -> None:
+    """Reject pathological input BEFORE the stdlib parser sees it.
+
+    `max_depth` alone is not a denial-of-service defence, which is easy to get
+    wrong: BytesParser.parsebytes eagerly builds the ENTIRE nested tree in one
+    call, so a depth limit applied afterwards limits only how far we walk the
+    tree we have already paid to construct. Measured on nested message/rfc822
+    chains: 1,200 wrappers (552 KB) took 4.8s, and 3,000 (~1.3 MB) exceeded 30s
+    — payload sizes well inside any normal attachment limit.
+
+    Both checks below are linear scans of the raw bytes and cost microseconds.
+    Real forwarded chains nest in single digits, so MAX_NESTED_MESSAGES leaves
+    enormous headroom while rejecting the hostile case outright.
+    """
+    if len(raw) > MAX_RAW_BYTES:
+        raise MalformedMime(f"raw message exceeds {MAX_RAW_BYTES} bytes")
+    nested = len(_RFC822_MARKER.findall(raw))
+    if nested > MAX_NESTED_MESSAGES:
+        raise MalformedMime(
+            f"message declares {nested} nested messages, above the "
+            f"{MAX_NESTED_MESSAGES} ceiling"
+        )
+
+
+def _fatal_defects(message: EmailMessage) -> List[str]:
+    """Structure-losing defects anywhere in the tree, including nested messages.
+
+    Checking only the outer message's defects misses the case this module
+    exists for. A corrupted quote nested one level down inside a forward leaves
+    the OUTER message defect-free, so a top-level-only check returns a
+    "successful" bundle carrying the covering note and no attachments — the
+    partial ingestion the design forbids, arriving silently.
+    """
+    found: List[str] = []
+    for part in message.walk():
+        for defect in part.defects or ():
+            if isinstance(defect, _FATAL_DEFECTS):
+                found.append(type(defect).__name__)
+    return found
+
+
 def parse(raw: bytes, *, max_depth: int = MAX_DEPTH_DEFAULT) -> ParsedBundle:
     """Parse raw MIME bytes. Raises MalformedMime rather than partly succeeding."""
+    _reject_hostile_shape(raw)
+
     try:
         message = BytesParser(policy=policy.default).parsebytes(raw)
     except Exception as exc:  # pragma: no cover - defensive
         raise MalformedMime(str(exc)) from exc
 
-    if message.defects:
-        raise MalformedMime(
-            "; ".join(type(d).__name__ for d in message.defects)
-        )
+    fatal = _fatal_defects(message)
+    if fatal:
+        raise MalformedMime("; ".join(fatal))
 
     parts: List[ParsedPart] = []
     bodies: Dict[str, str] = {}
@@ -1051,7 +1179,7 @@ def drop_cid_referenced(bundle: ParsedBundle) -> Tuple[ParsedPart, ...]:
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_mime_walk.py -v`
-Expected: PASS, 8 tests
+Expected: PASS, 12 tests
 
 - [ ] **Step 7: Commit**
 
