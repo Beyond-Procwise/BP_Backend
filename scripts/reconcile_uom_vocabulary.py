@@ -114,7 +114,14 @@ def scan(cur) -> Tuple[Counter, Dict[str, str]]:
     return unknown, origin
 
 
-def run(apply: bool = False) -> Counter:
+def run(apply: bool = False) -> Tuple[Counter, Counter]:
+    """Returns (awaiting review, already ruled on).
+
+    The split matters. Reporting one undifferentiated total would print the
+    same number every run no matter how much reviewing had been done, which
+    would make a converging queue look like a stuck one — and the point of the
+    queue is that it converges.
+    """
     from src.services.db import get_conn
 
     with get_conn() as conn:
@@ -125,20 +132,22 @@ def run(apply: bool = False) -> Counter:
 
         unknown, origin = scan(cur)
 
-        if apply and unknown:
-            # Skip anything a human already ruled on.
-            cur.execute("SELECT uom_code FROM proc.bp_uom_canonical "
-                        "WHERE status IN ('active', 'rejected')")
-            decided = {r[0] for r in cur.fetchall()}
-            for unit, n in unknown.items():
-                if unit in decided:
-                    continue
+        # Anything a human already ruled on is settled, not outstanding.
+        cur.execute("SELECT uom_code FROM proc.bp_uom_canonical "
+                    "WHERE status IN ('active', 'rejected')")
+        decided = {r[0] for r in cur.fetchall()}
+
+        outstanding = Counter({u: n for u, n in unknown.items() if u not in decided})
+        settled = Counter({u: n for u, n in unknown.items() if u in decided})
+
+        if apply and outstanding:
+            for unit, n in outstanding.items():
                 cur.execute(_UPSERT, (unit, origin.get(unit), n))
             conn.commit()
         else:
             conn.rollback()
 
-    return unknown
+    return outstanding, settled
 
 
 def main() -> int:
@@ -148,13 +157,18 @@ def main() -> int:
                         help="record unrecognised units as 'proposed'")
     args = parser.parse_args()
 
-    unknown = run(apply=args.apply)
-    if not unknown:
-        print("\nno unrecognised units — the vocabulary covers every source")
+    outstanding, settled = run(apply=args.apply)
+
+    if settled:
+        print(f"\nalready ruled on ({len(settled)} distinct) — not re-proposed")
+
+    if not outstanding:
+        print("\nnothing awaiting review — every observed unit is either "
+              "active or already rejected")
         return 0
 
-    print(f"\nunrecognised units ({len(unknown)} distinct):")
-    for unit, n in unknown.most_common():
+    print(f"\nAWAITING REVIEW ({len(outstanding)} distinct):")
+    for unit, n in outstanding.most_common():
         print(f"   {unit!r:34s} x{n}")
     if args.apply:
         print("\nrecorded as 'proposed'. They do NOT normalise until a human "
