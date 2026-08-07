@@ -15,7 +15,8 @@ import logging
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Iterable, List, Optional
+from email.utils import parseaddr
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -98,19 +99,30 @@ def _order(rules: Dict[str, Any]) -> Dict[str, int]:
     return out
 
 
-# A number as a human writes one: thousands-separated, decimal, or a bare
-# integer -- each bounded so it cannot be a fragment of a longer code. A
-# whole-message digit substring match (the original approach) reads a PO
-# number, a part number, or "12 pallets, 450 units" as if it were one price;
-# these boundaries stop a number from being assembled out of unrelated digits.
+# A number as a human writes one: thousands-separated, decimal (one or two
+# places), or a bare integer -- each bounded so it cannot be a fragment of a
+# longer code. A whole-message digit substring match (the original approach)
+# reads a PO number, a part number, or "12 pallets, 450 units" as if it were
+# one price; these boundaries stop a number from being assembled out of
+# unrelated digits.
+#
+# Deliberately not handled: European "12 450,00" / "12.450,00" style figures.
+# Telling a comma decimal apart from a thousands separator needs locale
+# knowledge this module does not have, and a wrong guess reintroduces the
+# false-positive failure mode this detector exists to avoid -- so it is left
+# unrecognised rather than guessed at.
 _AMOUNT_TOKEN = re.compile(
     r"(?<![\w.])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\w])"
-    r"|(?<![\w.])\d+\.\d{2}(?![\w])"
+    r"|(?<![\w.])\d+\.\d{1,2}(?![\w])"
     r"|(?<![\w.,])\d+(?![\w.,])"
 )
 
 # Below this, a "price" collides with quantities, dates and reference numbers
-# often enough that a match carries no signal.
+# often enough that a match carries no signal. This is a deliberate, visible
+# trade-off: a competitor figure under this floor is not detected, but every
+# peer amount skipped for falling below it is recorded in evidence under
+# ``third_party_price_skipped_below_floor`` so the gap is auditable rather
+# than silent.
 _MIN_PEER_AMOUNT = Decimal("100")
 
 
@@ -132,19 +144,23 @@ def _amounts_in(text: str) -> set:
 
 def _detect_third_party_price(
     text: str, recipient_supplier_id: Optional[str], peer_prices: Iterable[Dict[str, Any]]
-) -> Optional[str]:
+) -> Tuple[Optional[str], List[str]]:
     """A figure belonging to another supplier, appearing as a number in its own right.
 
     Numbers are tokenised with boundaries and compared as values rather than
     matched as a digit substring of the whole message, so a PO number, a part
     number, or a join across unrelated quantities cannot be mistaken for a
     price.
+
+    Returns ``(hit, skipped_below_floor)``: ``skipped_below_floor`` lists the
+    peer amounts that were deliberately not compared because they fall below
+    ``_MIN_PEER_AMOUNT``, so the caller can record the gap in evidence.
     """
 
     recipient = str(recipient_supplier_id or "").strip()
     present = _amounts_in(text)
-    if not present:
-        return None
+    hit: Optional[str] = None
+    skipped_below_floor: List[str] = []
     for entry in peer_prices or []:
         if not isinstance(entry, dict):
             continue
@@ -152,11 +168,14 @@ def _detect_third_party_price(
         if owner and owner == recipient:
             continue
         value = _as_amount(entry.get("amount"))
-        if value is None or value < _MIN_PEER_AMOUNT:
+        if value is None:
             continue
-        if value in present:
-            return f"{owner or 'another supplier'}:{entry.get('amount')}"
-    return None
+        if value < _MIN_PEER_AMOUNT:
+            skipped_below_floor.append(str(entry.get("amount")))
+            continue
+        if hit is None and value in present:
+            hit = f"{owner or 'another supplier'}:{entry.get('amount')}"
+    return hit, skipped_below_floor
 
 
 def _detect_contract_prose(text: str) -> Optional[str]:
@@ -165,6 +184,19 @@ def _detect_contract_prose(text: str) -> Optional[str]:
         if match:
             return match.group(0)[:80]
     return None
+
+
+def _bare_address(value: Any) -> str:
+    """The address part of a sender, with or without a display name.
+
+    A raw From: header is often "Name <addr@dom>" or even '"Last, First"
+    <addr@dom>". Comparing that whole string against a bare address would
+    only match the plain form and silently stop excluding the sender's own
+    sign-off for every other shape a header actually arrives in.
+    """
+
+    _, addr = parseaddr(str(value or ""))
+    return addr.strip().lower()
 
 
 def _detect_internal_staff_contact(
@@ -180,7 +212,7 @@ def _detect_internal_staff_contact(
     domains = {str(d).strip().lower() for d in (internal_domains or []) if str(d).strip()}
     if not domains:
         return None
-    own = str(sender or "").strip().lower()
+    own = _bare_address(sender)
     for match in _EMAIL_RE.finditer(text or ""):
         if match.group(1).lower() not in domains:
             continue
@@ -244,7 +276,7 @@ def classify(
         if not isinstance(config, dict) or not config.get("enabled"):
             continue
         try:
-            hit = check()
+            result = check()
         except Exception as exc:  # noqa: BLE001 - cannot decide means deny
             logger.error("email_sensitivity: detector %s failed: %s", name, exc)
             return ClassificationResult(
@@ -252,6 +284,12 @@ def classify(
                 detectors_fired=fired,
                 evidence={"error": f"detector {name} failed: {exc}"},
             )
+        if name == "third_party_price":
+            hit, skipped_below_floor = result
+            if skipped_below_floor:
+                evidence["third_party_price_skipped_below_floor"] = skipped_below_floor
+        else:
+            hit = result
         if not hit:
             continue
         fired.append(name)

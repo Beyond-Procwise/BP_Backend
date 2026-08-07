@@ -98,21 +98,43 @@ def test_own_price_does_not_fire_the_peer_detector(engine):
     [
         "PO-991245000-A",
         "Part no 4512450008812",
-        "We need 5000 units by Friday.",
-        "We need 12 pallets, 450 units total",
     ],
 )
 def test_unrelated_digit_runs_do_not_fire_third_party_price(engine, body):
-    """A digit substring of a PO number, part number, or quantity is not a price.
+    """A digit substring of a PO number or part number is not a price.
 
     Flattening the whole message into one digit string and substring-matching
-    destroys every number boundary -- a reference code or a quantity can
-    contain the same digits as an unrelated peer amount by pure coincidence.
+    destroys every number boundary -- a reference code can contain the same
+    digits as an unrelated peer amount by pure coincidence. With a peer
+    amount of 12450.00, the old substring match fired on these; the new
+    boundary-tokenised comparison does not.
     """
     result = classify(
         engine,
         body=body,
         peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
+    )
+    assert "third_party_price" not in result.detectors_fired
+
+
+@pytest.mark.parametrize(
+    "body, peer_amount",
+    [
+        # The needle (12450.00, 7 digits) is longer than any digit run in
+        # these two bodies, so under the *old* substring match a shorter
+        # peer amount is required to actually distinguish old from new
+        # behaviour -- these two peer amounts are the ones the old code
+        # would have matched by gluing unrelated digits together.
+        ("We need 5000 units by Friday.", "500.00"),
+        ("We need 12 pallets, 450 units total", "124.50"),
+    ],
+)
+def test_unrelated_quantities_do_not_fire_third_party_price(engine, body, peer_amount):
+    """A quantity is not a price, even when its digits could be glued into one."""
+    result = classify(
+        engine,
+        body=body,
+        peer_prices=[{"supplier_id": "SUP-2", "amount": peer_amount}],
     )
     assert "third_party_price" not in result.detectors_fired
 
@@ -131,6 +153,11 @@ def test_join_across_subject_and_body_does_not_fabricate_a_price(engine):
 @pytest.mark.parametrize(
     "body",
     [
+        # This first case fires under both the old and the new code, so it is
+        # a sanity check rather than a regression guard. "12450 net." and
+        # "12,450" are the load-bearing cases: a bare integer and a
+        # thousands-separated figure with no decimal, both of which the
+        # tokeniser must still recognise as the same value as "12450.00".
         "Their price was 12,450.00",
         "Their bid was 12450 net.",
         "Quote came in at 12,450",
@@ -144,6 +171,52 @@ def test_verbatim_competitor_totals_still_fire(engine, body):
         peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
     )
     assert "third_party_price" in result.detectors_fired
+
+
+def test_a_peer_amount_below_the_floor_does_not_fire_but_is_recorded(engine):
+    """A sub-100 competitor price is a deliberate, recorded blind spot.
+
+    Two-digit figures collide with quantities and dates too often to carry
+    signal, so they are not detected -- but that must be visible to an
+    auditor, not silent.
+    """
+    result = classify(
+        engine,
+        body="Their price was 85.00 for the same line.",
+        peer_prices=[{"supplier_id": "SUP-2", "amount": "85.00"}],
+    )
+    assert "third_party_price" not in result.detectors_fired
+    assert result.evidence["third_party_price_skipped_below_floor"] == ["85.00"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["Their bid was 12450.5 net.", "Their bid was 12450.50 net."],
+)
+def test_one_and_two_decimal_amounts_both_fire(engine, body):
+    """A one-decimal-place figure must resolve to the same value as two."""
+    result = classify(
+        engine,
+        body=body,
+        peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.5"}],
+    )
+    assert "third_party_price" in result.detectors_fired
+
+
+def test_small_decimal_in_prose_is_blocked_by_the_floor_not_the_tokeniser(engine):
+    """"12.5 kg" must not misfire against a peer amount of "12.50".
+
+    The tokeniser now recognises one-decimal-place numbers, so without the
+    floor this would fire. Confirms the floor -- not accidental non-matching
+    -- is what keeps this quiet.
+    """
+    result = classify(
+        engine,
+        body="Our ref 12.5 kg per pallet.",
+        peer_prices=[{"supplier_id": "SUP-2", "amount": "12.50"}],
+    )
+    assert "third_party_price" not in result.detectors_fired
+    assert result.evidence["third_party_price_skipped_below_floor"] == ["12.50"]
 
 
 def test_contract_prose_raises_to_commercial_confidential(engine):
@@ -235,8 +308,36 @@ def test_own_signature_is_not_internal_staff_contact(engine):
     assert result.content_class == "internal"
 
 
+@pytest.mark.parametrize(
+    "sender",
+    [
+        "jane.doe@ourcompany.com",
+        "Jane Doe <jane.doe@ourcompany.com>",
+        "  JANE.DOE@OURCOMPANY.COM  ",
+        '"Doe, Jane" <jane.doe@ourcompany.com>',
+    ],
+)
+def test_the_senders_own_signature_is_not_a_leak_in_any_address_form(engine, sender):
+    """A From: header arrives in several shapes; all name the same person.
+
+    Comparing the raw header string against a bare address would only match
+    the plain form and silently re-open the signature-block false positive
+    for every "Name <addr>" sender, which is how a From: header usually
+    looks in practice.
+    """
+    result = classify(engine, body=SIGNATURE_BLOCK, sender=sender)
+    assert "internal_staff_contact" not in result.detectors_fired
+
+
 def test_a_colleagues_address_in_the_body_is_internal_staff_contact(engine):
-    """Excluding the sender must not blind the detector to a third colleague."""
+    """Documents intended behaviour: excluding the sender must not blind the
+    detector to a third colleague's address appearing in the body.
+
+    This does not by itself guard the sender-exclusion fix -- the old code
+    (which fired on any internal address, sender or not) passes this case
+    identically. The guarding tests are the sender-address-form pair above
+    and ``test_own_signature_is_not_internal_staff_contact``.
+    """
     result = classify(
         engine, body=SIGNATURE_BLOCK, sender="buyer@ourcompany.com"
     )
