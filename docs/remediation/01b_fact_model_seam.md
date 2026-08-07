@@ -460,8 +460,8 @@ different `basis_uom` are not treated as comparable.
    hierarchy on `bp_sqldb` (49 rows) but is empty on `bp_testdb`, so any future
    population must fail closed rather than default.
 4. **Provenance coverage is the binding constraint on fact volume** — 16.9% of
-   lines on `bp_sqldb`, 0% on `bp_testdb`. Raising it means re-extracting the
-   corpus, which is explicitly out of scope here.
+   lines on `bp_sqldb`, 0% on `bp_testdb`. See §14: on the live database the
+   cause was not a backlog but a pipeline gap, now fixed.
 5. **`bp_constraint` is written by nothing yet.** The corpus contains zero
    contracts, so there is nothing to populate it with. The model and table
    exist; the producer is Phase 4's.
@@ -480,3 +480,109 @@ different `basis_uom` are not treated as comparable.
 (Phase 2); variance decomposition, baseline integrity and the
 correlation-adjusted rollup (Phase 3); the Interpretation Plane (Phase 4);
 report blocks (Phase 5).
+
+---
+
+## 14. Addendum 2026-08-07 — the live database, and why the phase produced nothing on it
+
+Everything above validates against `bp_sqldb`, per the plan's F2. That was
+correct as instructed and **incomplete as an operational picture**, because
+`.env` sets `DB_NAME="bp_testdb"`: the backend runs against `bp_testdb`, not
+`bp_sqldb`. Three findings follow, all measured.
+
+### 14.1 The live extraction path never wrote line-item provenance
+
+`bp_testdb` held 722 provenance rows across 84 documents, and **not one was a
+`line_items` path** — only header fields (`currency`, `quote_date`, totals).
+`bp_sqldb` has 32,116 line-provenance rows, written by the older
+`v4.0.0-hybrid` pipeline; the live `e9da2f7-renov` path stopped producing them.
+
+The cause is mechanical, not a deliberate decision to discard evidence:
+
+```python
+# build_header_record()
+for c in candidates:
+    if c.field.startswith("line_items["):
+        continue          # excluded -- and write_provenance() is fed this output
+```
+
+The registry keys line fields as `line_items.<field>` while candidates carry
+`line_items[<idx>].<field>`, so `registry.meta()` raises `KeyError` on any line
+candidate. Excluding them made the writer work; it also silently dropped the
+evidence for every unit price and quantity in the system.
+
+**Consequence:** the fact assembler requires line provenance by construction and
+fails closed without it, so Phase 1b produced **zero facts on the live database
+— for every document, past and future.** Not a backlog. A structural gap.
+
+**Fixed** (`919945d`): `pick_line_candidates()` selects the highest-confidence
+candidate per `line_items[i].field` that the schema binds to a column, and
+`write_provenance` now receives header and line picks together. Row-building was
+split into `build_provenance_rows()` so the shape is assertable without a
+database — the `field_path` it emits is a contract with the assembler's lookup,
+and a mismatch there would fail silently.
+
+Verified end to end against a real `bp_testdb` invoice inside a rolled-back
+transaction: **0 facts before, 4 after**, each with 4 evidence spans, roles
+assigned and arithmetic `consistent`. `tests/extraction/` holds at its 6
+pre-existing failures.
+
+### 14.2 The canonical masters are in `uicanvas`, and the live database has none
+
+`uicanvas` is authoritative (confirmed by the owner). It holds the real
+reference data; the live database holds almost none of it.
+
+| | `uicanvas` (authoritative) | `bp_testdb` (live) | `bp_sqldb` |
+|---|---|---|---|
+| Category taxonomy | **246 rows, 5 levels, 100% UNSPSC-coded** | **0** | 49 rows, 2 columns |
+| Product master | **186 rows, incl. `unit_of_measure`** | *table absent* | *table absent* |
+| Category→product map | 21 | *table absent* | *table absent* |
+| Contracts | 3,051 | 0 | 0 |
+
+`bp_sqldb.bp_category` is **not the same table** as `uicanvas.proc.bp_category`
+— it is `(item_description, category)`, flat, with no hierarchy and no UNSPSC.
+
+This explains the previously recorded "no category dimension" corpus gap: the
+dimension exists, in another database, unwired.
+
+Both databases are on the same cluster (`10.100.10.180`), and `postgres_fdw`
+and `dblink` are available though not installed — so a read-only bridge is
+feasible without copying.
+
+### 14.3 B3 must be revised: a coded standard does exist
+
+B3 (§9) concluded *"there is no GPSS dictionary in this project, and there does
+not need to be one."* That reasoning was drawn entirely from `bp_sqldb` and
+`bp_testdb`, where the canonical data is absent. **`uicanvas.proc.bp_category`
+carries a UNSPSC code on all 246 rows** — a genuine external standard.
+
+The revised position:
+
+- **For field names, B3 holds.** `concept_code` derives from the extraction
+  schemas, 66 names, drift structurally impossible. Nothing changes.
+- **For values, B3 does not hold.** `uicanvas.proc.bp_products` carries a
+  `unit_of_measure` on 81 of 186 products across 18 distinct values, including
+  `set`, `service`, `programme`, `quarter`, `module`, `audit`, `retainer`,
+  `roll`, `sheet`, `pen` and `Monthly` — **all of which `uom.py` returns
+  `UOM_UNMAPPED` for.**
+
+So the hand-typed unit map in `uom.py` was already drifting from canonical data
+that predates this phase. The `UOM_ABSENT` gap in §13.1 is therefore partly a
+*wiring* problem, not only an extraction one: a real unit vocabulary and a real
+product master exist and are simply not connected.
+
+Proposed, not built — two tables that **reference** the canonical data rather
+than restate it:
+
+- `bp_uom_canonical` — units as data rather than Python: `uom_code`,
+  `dimension`, `aliases`, `factor_days`, `is_billing_basis`, and a
+  `status` of `proposed`/`active` so a newly observed unit is queued for
+  confirmation instead of silently becoming `UOM_UNMAPPED` forever.
+- `bp_category_basis` — what a category is normally priced per, keyed on the
+  **existing UNSPSC/level id** rather than on category names, with
+  `expected_uom`, `alternate_uoms`, `evidence_n` and a human-gated
+  `proposed`/`confirmed` status mirroring `bp_supplier_review`.
+
+The prerequisite for both is deciding how canonical data reaches the live
+database (FDW view, sync, or repointing). That decision is worth more than
+either table.
