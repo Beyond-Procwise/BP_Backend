@@ -218,3 +218,24 @@ def test_safe_log_fields_redacts_addresses_outside_production(monkeypatch):
     )
     assert fields["sender_address"] != "quotes@copperleaf.test"
     assert "copperleaf.test" in fields["sender_address"]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([("S1", "acme.test")], id="tuple-cursor"),
+        pytest.param(
+            [{"supplier_id": "S1", "domain": "acme.test"}], id="realdict-cursor"
+        ),
+    ],
+)
+def test_supplier_candidates_reads_either_cursor_shape(rows):
+    """The live path uses a RealDictCursor, and this indexed positionally.
+
+    It raised KeyError: 0 — and `supplier_bind` catches every exception and
+    returns "unmatched", so the failure was invisible: every sender would have
+    silently failed to match a supplier while the unmatched-domain rate, which
+    is watched as a security signal, read as real.
+    """
+    cur = FakeCursor([rows])
+    assert repo.supplier_candidates(cur, "acme.test") == [("S1", "acme.test")]
