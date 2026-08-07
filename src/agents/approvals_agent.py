@@ -30,7 +30,6 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional, Tuple
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
-from src.services import approval_store
 from utils.gpu import configure_gpu
 
 logger = logging.getLogger(__name__)
@@ -232,53 +231,42 @@ class ApprovalsAgent(BaseAgent):
     ) -> Optional[int]:
         """Write the decision to ``proc.bp_approval`` and return its approval_id.
 
-        Two different things can produce a row here, and they must not be
-        confused with each other:
+        This is ALWAYS the automated verdict -- a threshold comparison with
+        nobody in the loop -- and it MUST NOT set ``status``/``actioned_by``:
+        doing so would let an unattended comparison satisfy
+        :func:`approval_store.find_dispatch_approval`'s "a human signed
+        this" check, which is exactly the gap this layer exists to close.
 
-        * This agent's own automated verdict -- a threshold comparison with
-          nobody in the loop. It is always written, for traceability, but
-          MUST NOT set ``status``/``actioned_by``: doing so would let an
-          unattended comparison satisfy
-          :func:`approval_store.find_dispatch_approval`'s "a human signed
-          this" check, which is exactly the gap this layer exists to close.
-        * A human actually actioning the request, named explicitly via
-          ``payload["actioned_by"]`` (the decisions surface is expected to
-          set this when a person reviews and approves). Only this path calls
-          :func:`approval_store.record_approval`, which is the one place
-          ``status``/``actioned_by`` are set, and reuses that INSERT rather
-          than duplicating it here.
+        A prior version of this method also accepted ``payload["actioned_by"]``
+        as proof a human had approved, and wrote a genuinely findable
+        approval (via :func:`approval_store.record_approval`) when it was
+        present. That was a forgery hole, not a feature: ``payload`` is
+        ``context.input_data``, the caller-supplied body of
+        ``POST /agent-workflows/{workflow_id}/run`` -- a route with **no
+        auth dependency at all** -- so any unauthenticated caller could name
+        themselves ``actioned_by`` and plant a real, matchable approval row
+        for a ``workflow_id`` an ``email_dispatch`` node elsewhere in the
+        same graph would then find. Worse, that path ignored this agent's
+        OWN verdict: an amount above the governed threshold still yields
+        ``decision=escalate`` from :meth:`run`, and the forged path wrote an
+        ``approved`` row regardless.
+
+        ``AgentContext`` carries no authenticated principal today (no
+        orchestrator path attaches one, and ``context.user_id`` is exactly
+        as caller-suppliable as the removed ``payload["actioned_by"]`` was --
+        see ``RunBody.user_id`` in ``agent_workflows.py``), so there is no
+        trustworthy identity to condition a findable-approval write on from
+        here. Writing no findable approval at all is strictly better than a
+        forgeable one: this method, correctly, cannot ever satisfy
+        ``find_dispatch_approval``. A human approving a dispatch must do so
+        through a surface that authenticates them and records ITS OWN
+        approval -- not through this agent's automated threshold check.
 
         A failure here yields a NULL approval_id that the caller can see,
         rather than being swallowed: the previous version hid a missing
         table behind a bare except and reported success regardless.
         """
         best = payload.get("best_quote") or {}
-        human_actioned_by = str(payload.get("actioned_by") or "").strip()
-
-        if human_actioned_by:
-            try:
-                with self.agent_nick.get_db_connection() as conn:
-                    approval_id = approval_store.record_approval(
-                        rfq_id=payload.get("rfq_id"),
-                        workflow_id=getattr(context, "workflow_id", None),
-                        unique_id=payload.get("unique_id"),
-                        supplier_id=payload.get("supplier_id") or best.get("supplier_id"),
-                        actioned_by=human_actioned_by,
-                        deal_id=payload.get("deal_id"),
-                        policy_id=grounding.get("policy_id"),
-                        policy_name=grounding.get("policy_name"),
-                        amount=amount,
-                        currency=currency,
-                        grounding_extra=grounding,
-                        conn=conn,
-                    )
-                    conn.commit()
-                return approval_id
-            except Exception:
-                logger.exception(
-                    "failed to persist human-actioned approval to proc.bp_approval"
-                )
-                return None
 
         try:
             with self.agent_nick.get_db_connection() as conn:

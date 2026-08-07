@@ -330,19 +330,6 @@ def test_send_refuses_an_empty_recipient(conn, monkeypatch):
 # email_dispatch_guard.check_recipient_and_sensitivity (no `_allow_guard`
 # stub), so they prove the actual wiring, not a double standing in for it.
 
-def test_send_denies_without_an_authenticated_principal(conn, monkeypatch):
-    """No principal reaches the gate -> guardrail.authorize's own
-    fail-closed rule for irreversible actions refuses it, exactly as it
-    does for the RFQ dispatch path."""
-    monkeypatch.setattr(vq, "_send_email", lambda **kw: True)
-    with pytest.raises(vq.DispatchDenied) as excinfo:
-        vq.send_query("disc:80", to="ap@techworld.example", subject="S", body="B",
-                      agent_nick=object(), conn=conn)
-    assert "no authenticated principal" in excinfo.value.decision.reason
-    # Nothing sent, nothing stamped.
-    assert not [s for s, _ in conn.log if "UPDATE" in s]
-
-
 class _AllowlistConn:
     """Wraps a `_FakeConn` and answers the guard's own lookups, so checks 2
     (allow-list) and 3 (sensitivity) pass on real data rather than a stub."""
@@ -388,13 +375,29 @@ def test_send_denies_when_the_finding_has_no_supplier_on_file(conn, monkeypatch)
     assert not [s for s, _ in conn.log if "UPDATE" in s]
 
 
-def test_send_denies_without_an_authenticated_principal(conn, monkeypatch):
+def test_send_denies_without_an_authenticated_principal_even_when_recipient_and_content_are_fine(
+    conn, monkeypatch
+):
     """Recipient and content are both fine (the wrapped conn answers the
     allow-list and clearance lookups, and an explicit policy_engine gives
     email_sensitivity real rules to classify against); the only thing
     missing is a principal, and guardrail.authorize's own fail-closed rule
     for irreversible actions refuses it -- exactly as it does for the RFQ
-    dispatch path, and regardless of what any policy row says."""
+    dispatch path, and regardless of what any policy row says.
+
+    A near-duplicate of this test, sharing this exact name, previously
+    existed a few lines above using the plain (un-wrapped) `conn` fixture
+    with no principal and no allow-list data configured. Python silently
+    let the second definition shadow the first, so the first NEVER RAN --
+    and when un-shadowed and probed, it failed: with no allow-list data at
+    all, the recipient denies on check 2 before the principal is ever
+    checked, so its assertion ("no authenticated principal") did not match
+    what actually happens ("recipient not on the supplier allow-list").
+    That case is exactly the coverage
+    test_send_denies_a_recipient_not_on_the_supplier_allowlist already
+    provides, so the broken duplicate was deleted rather than kept under a
+    new name.
+    """
     from tests.guardrails.test_send_path_gate import engine as _guard_engine
 
     conn.row["supplier_email"] = "ap@techworld.example"
