@@ -49,8 +49,16 @@ def test_approving_an_email_is_not_approving_money(engine):
     assert rbac.may("Approver", "transact", policy_engine=engine) is True
 
 
-def test_approve_email_is_treated_as_irreversible(engine):
-    assert rbac.is_irreversible("approve_email", policy_engine=engine) is True
+def test_approve_email_is_listed_as_irreversible_in_policy(engine):
+    """Assert the policy row directly.
+
+    Going through rbac.is_irreversible proves nothing here: it fail-closes on
+    anything absent from reversible_classes, so it returns True whether or not
+    this migration ever ran. The point of this test is that the capability was
+    explicitly classified, so read the classification.
+    """
+    rules = engine.get_policy("role_definition")["details"]["rules"]
+    assert "approve_email" in rules["irreversible_classes"]
 
 
 def test_the_approval_action_resolves_to_a_policy(engine):
