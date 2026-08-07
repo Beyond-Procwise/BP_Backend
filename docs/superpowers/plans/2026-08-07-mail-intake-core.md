@@ -1816,6 +1816,74 @@ def test_detail_names_the_content_kind_but_never_the_senders_filename():
     assert any("exec" in k or "dosexec" in k for k in verdict.detail["flagged_kinds"])
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"#!/bin/sh\nrm -rf /\n", id="shell"),
+        pytest.param(b"#!/usr/bin/env python3\nimport os\n", id="python"),
+        pytest.param(b"@echo off\r\ndel /f /q C:\\*\r\n", id="batch"),
+        pytest.param(b"#!/usr/bin/perl\nprint 1;\n", id="perl"),
+        pytest.param(b"<?php system($_GET['c']); ?>\n", id="php"),
+        pytest.param(b"MZ\x90\x00" + b"\x00" * 256, id="pe-binary"),
+    ],
+)
+def test_smuggled_script_types_are_caught(payload):
+    """The executable MIME set must match what libmagic actually emits.
+
+    An earlier version listed `text/x-python` and `application/x-bat`. Neither
+    is a string libmagic produces, so a Python script and a batch file both
+    passed while the set looked complete. Each case here is one libmagic
+    verdict, pinned.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("extra/thing", payload)
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+    assert verdict.detail["flagged_kinds"]
+
+
+def test_real_elf_binary_is_caught():
+    """Synthetic stubs can sniff differently from real binaries, so use one."""
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("extra/tool", elf)
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+
+
 def test_real_libreoffice_artifact_is_not_quarantined():
     """Regression for a REAL false positive.
 
@@ -1997,18 +2065,36 @@ _FOREIGN_SNIFF_BYTES = 512
 _FOREIGN_SNIFF_LIMIT = 32
 _FOREIGN_MEMBER_MAX_BYTES = 8 * 1024 * 1024
 
+# Determined by running libmagic against real samples, not from memory. Two
+# entries in an earlier version of this set were simply wrong — `text/x-python`
+# and `application/x-bat` are not strings libmagic emits, so a Python script and
+# a Windows batch file both sailed through while the set looked complete.
+#
+# KNOWN LIMIT, deliberately not papered over: VBScript, PowerShell, and Python
+# without a shebang all sniff as `text/plain`, because that is what they are.
+# Content sniffing cannot separate those from a legitimate text attachment, and
+# adding `text/plain` here would quarantine every covering note. The cases that
+# matter most — real binaries, shell scripts, batch files — are caught. A
+# text-shaped script smuggled inside a container is inert unless someone
+# extracts and runs it, which is a different control from this one.
 _EXECUTABLE_MIMES = frozenset(
     {
+        # Native binaries
         "application/x-executable",
+        "application/x-sharedlib",          # real ELF binaries report this
         "application/x-dosexec",
-        "application/x-sharedlib",
         "application/x-mach-binary",
         "application/x-msdownload",
         "application/vnd.microsoft.portable-executable",
-        "text/x-shellscript",
-        "text/x-python",
+        "application/x-java-applet",        # compiled .class
+        # Scripts
+        "text/x-shellscript",               # sh, bash
+        "text/x-script.python",             # NOT text/x-python
+        "text/x-msdos-batch",               # .bat and .cmd; NOT application/x-bat
         "text/x-perl",
-        "application/x-bat",
+        "text/x-ruby",
+        "text/x-php",
+        "application/javascript",
     }
 )
 
@@ -2282,7 +2368,8 @@ def evaluate(
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_safety.py -v`
-Expected: PASS, 17 tests
+Expected: PASS, 24 tests (17 plus the 6 parametrised script cases and the real
+ELF case)
 
 - [ ] **Step 7: Prove the gate actually fails**
 
