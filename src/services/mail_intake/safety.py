@@ -359,17 +359,26 @@ def evaluate(
             False, QuarantineReason.ENCRYPTED, {"container": "pdf"}
         )
 
+    # Archive BEFORE mismatch, deliberately. Type detection collapses every
+    # zip-family format it will not vouch for — .odt, .epub, .jar and the rest —
+    # to application/zip, so a sender who labelled their EPUB honestly would
+    # otherwise be reported as TYPE_MISMATCH, which reads to a human reviewer as
+    # deception that did not occur. "This is an archive, and archives go to a
+    # person" is both true and more useful. A genuine mismatch that is not an
+    # archive still reports TYPE_MISMATCH below.
+    if detected_mime in _ARCHIVE_MIMES:
+        # Queued for a human decision. Never expanded.
+        return SafetyVerdict(
+            False,
+            QuarantineReason.ARCHIVE,
+            {"detected_mime": detected_mime, "declared_agrees": declared_agrees},
+        )
+
     if not declared_agrees:
         return SafetyVerdict(
             False,
             QuarantineReason.TYPE_MISMATCH,
             {"detected_mime": detected_mime, "declared_agrees": False},
-        )
-
-    if detected_mime in _ARCHIVE_MIMES:
-        # Queued for a human decision. Never expanded.
-        return SafetyVerdict(
-            False, QuarantineReason.ARCHIVE, {"detected_mime": detected_mime}
         )
 
     # The tail allow-lists rather than default-allows. Reaching here having

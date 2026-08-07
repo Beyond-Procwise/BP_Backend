@@ -170,6 +170,35 @@ def test_real_libreoffice_artifact_is_not_quarantined():
     assert verdict.ok, f"real workbook wrongly quarantined as {verdict.reason}"
 
 
+def test_honestly_labelled_non_office_zip_reports_archive_not_deception():
+    """An EPUB sent as an EPUB is not a mismatch.
+
+    Type detection collapses every zip-family format it will not vouch for to
+    application/zip, so an honest sender would otherwise be reported as
+    TYPE_MISMATCH — which reads to a reviewer as deception that did not happen.
+    Both outcomes quarantine; only one of them is true.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+        zf.writestr("META-INF/container.xml", "<container/>")
+        zf.writestr("OEBPS/content.opf", "<package/>")
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/epub+zip",
+        detected_mime=typing_.detect(content),
+        filename="catalogue.epub",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+
+
 def test_large_legitimate_worksheet_is_not_quarantined():
     """A REAL false positive, reproduced.
 
@@ -462,3 +491,58 @@ def test_named_but_unexpected_types_do_not_clear(mime):
     )
     assert not verdict.ok
     assert verdict.reason is QuarantineReason.UNKNOWN_TYPE
+
+
+# -- real-corpus sweep ---------------------------------------------------
+#
+# Fixtures test what the author imagined; real files test what exists. This
+# sweep has now caught three false positives that the fixture suite could not
+# see — a LibreOffice [trash] artifact, an 8MB worksheet part, and a 19%
+# misdetection rate on real Word documents. It belongs in the suite, not in a
+# scratch script.
+import glob
+
+
+def _repo_office_files():
+    root = "/home/muthu/PycharmProjects/BP_Backend"
+    found = []
+    for pattern in ("**/*.xlsx", "**/*.docx"):
+        found.extend(glob.glob(f"{root}/{pattern}", recursive=True))
+    # Exclude the virtualenv and any worktree copies of this repo.
+    return sorted(
+        f for f in set(found) if "/venv/" not in f and "/.claude/worktrees/" not in f
+    )
+
+
+@pytest.mark.integration
+def test_real_office_corpus_passes_the_gate():
+    """Every genuine Office file in this repo must clear the gate.
+
+    Marked `integration` because it depends on files outside the test tree; it
+    is skipped with `-m "not integration"`. Run it whenever the gate changes —
+    a false-positive rate here is the difference between a review queue people
+    use and one they learn to ignore.
+    """
+    files = _repo_office_files()
+    if not files:
+        pytest.skip("no real Office files available in this checkout")
+
+    declared = {
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    held = []
+    for path in files:
+        content = pathlib.Path(path).read_bytes()
+        suffix = pathlib.Path(path).suffix.lower()
+        verdict = safety.evaluate(
+            content,
+            declared_mime=declared[suffix],
+            detected_mime=typing_.detect(content),
+            filename=pathlib.Path(path).name,
+            size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+        )
+        if not verdict.ok:
+            held.append(f"{pathlib.Path(path).name}: {verdict.reason} {verdict.detail}")
+
+    assert not held, "real Office files wrongly quarantined:\n" + "\n".join(held)
