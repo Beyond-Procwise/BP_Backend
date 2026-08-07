@@ -151,3 +151,37 @@ def test_extension_never_influences_the_alias_verdict():
     ) is typing_.is_permitted_alias(
         "application/octet-stream", "application/pdf", "quote.pdf"
     )
+
+
+def test_package_libmagic_calls_octet_stream_is_still_recognised():
+    """Reproduces a real 19% false-positive rate on this repo's Word documents.
+
+    libmagic identifies an OOXML package by looking for recognisable parts near
+    the start of the archive. LibreOffice writes its `[trash]` padding first, so
+    magic reports `application/octet-stream` and — while inspection was keyed off
+    magic's verdict — the file was never inspected, typed as unknown, and
+    quarantined. Five of this repo's 26 real .docx files are shaped this way.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        # Order matters: the padding must come first, as LibreOffice writes it.
+        zf.writestr("[trash]/0000.dat", b"\xff\xff\xff\xff" + b"\x00" * 308)
+        zf.writestr("[trash]/0003.dat", b"\xff\xff\xff\xff" + b"\x00" * 270)
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+    assert typing_.detect(buf.getvalue()) == DOCX
+
+
+def test_widening_the_trigger_does_not_widen_what_earns_a_document_verdict():
+    """Inspection now runs on any zip, so confirm strictness still decides.
+
+    A malformed package must still come back as an archive even though it now
+    reaches the inspector by a different route.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[trash]/0000.dat", b"\x00" * 64)  # magic sees octet-stream
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("word/document.xml", "<document/>")  # no _rels/.rels
+    assert typing_.detect(buf.getvalue()) == "application/zip"

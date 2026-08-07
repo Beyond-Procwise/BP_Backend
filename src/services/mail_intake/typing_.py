@@ -119,8 +119,25 @@ def _inspect_zip_container(content: bytes) -> str:
     return "application/zip"
 
 
+# Local file header, empty archive, and spanned archive signatures. A file
+# beginning with one of these is a zip whatever libmagic decides to call it.
+_ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+
+
 def detect(content: bytes) -> str:
-    """Return the MIME type implied by the bytes themselves."""
+    """Return the MIME type implied by the bytes themselves.
+
+    Container inspection is triggered STRUCTURALLY — by the zip signature — not
+    by libmagic's verdict. That distinction is not academic: libmagic identifies
+    an OOXML package by looking for recognisable parts near the start of the
+    archive, so a Word document whose first member happens to be something else
+    is reported as `application/octet-stream`. LibreOffice writes exactly such
+    files: its `[trash]/0000.dat` padding lands first, and 5 of the 26 real
+    `.docx` files in this repo are affected. Keying inspection off libmagic's
+    answer meant those never reached it, were typed as unknown, and were
+    quarantined — a 19% false-positive rate on real Word documents that no
+    fixture would ever have shown.
+    """
     if not content:
         return UNKNOWN
     if magic is None:  # pragma: no cover - guarded for import-order safety only
@@ -129,9 +146,14 @@ def detect(content: bytes) -> str:
         detected = magic.from_buffer(content, mime=True) or UNKNOWN
     except Exception:
         return UNKNOWN
-    # Both bare ZIPs and OOXML files (which are ZIP-based) need container
-    # inspection to validate well-formedness and check for path traversal.
-    if detected == "application/zip" or detected in _OOXML.values():
+    if (
+        content[:4] in _ZIP_SIGNATURES
+        or detected == "application/zip"
+        or detected in _OOXML.values()
+    ):
+        # _inspect_zip_container is strict: anything that is not a well-formed
+        # package comes back as application/zip, so widening the trigger cannot
+        # widen what earns a document verdict.
         return _inspect_zip_container(content)
     return detected
 
