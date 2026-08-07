@@ -1489,15 +1489,44 @@ def _encrypted_ooxml() -> bytes:
 
 
 def _clean_workbook() -> bytes:
-    """An ordinary .xlsx: no macros, no encryption. Must pass the gate."""
+    """An ordinary .xlsx: no macros, no encryption, no foreign members.
+
+    Member layout mirrors real workbooks surveyed in this repo, which carry
+    exactly [Content_Types].xml, _rels, docProps and xl. Using the realistic
+    shape matters: a stripped-down fixture would pass the foreign-member check
+    without ever exercising it.
+    """
     import io
     import zipfile
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("docProps/app.xml", "<Properties/>")
+        zf.writestr("docProps/core.xml", "<coreProperties/>")
         zf.writestr("xl/workbook.xml", "<workbook/>")
         zf.writestr("xl/worksheets/sheet1.xml", "<worksheet/>")
+    return buf.getvalue()
+
+
+def _smuggling_workbook() -> bytes:
+    """A valid document skeleton wrapped around an unrelated payload.
+
+    Type detection alone calls this a Word document, because it genuinely
+    contains one — so it passes a gate that would have quarantined the same
+    payload had it arrived as a plain .zip.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("payload.exe", b"MZ\x90\x00" + b"\x00" * 256)
+        zf.writestr("secret/notes.txt", "not part of any Office format")
     return buf.getvalue()
 
 
@@ -1526,6 +1555,7 @@ BINARY_FIXTURES = {
     "encrypted_workbook.xlsx": _encrypted_ooxml,
     "macro_workbook.xlsm": _macro_workbook,
     "clean_workbook.xlsx": _clean_workbook,
+    "smuggling_document.docx": _smuggling_workbook,
     "zip_named_quote.pdf": _zip_wearing_a_pdf_name,
     "clean.pdf": _clean_pdf,
 }
@@ -1606,6 +1636,23 @@ def test_password_protected_workbook_quarantines():
     )
     assert not verdict.ok
     assert verdict.reason is QuarantineReason.ENCRYPTED
+
+
+def test_document_skeleton_wrapped_around_a_payload_quarantines():
+    """Type detection alone is foolable, and this is the case that fools it.
+
+    The container holds a genuine minimal Word document AND an executable, so
+    it types as a Word document rather than an archive — passing a gate that
+    would have quarantined the identical payload arriving as a plain .zip.
+    """
+    verdict = _verdict(
+        "smuggling_document.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+    assert "payload.exe" not in repr(verdict.detail)  # structural facts only
+    assert verdict.detail["foreign_members"]
 
 
 def test_ordinary_workbook_is_not_falsely_flagged():
@@ -1758,6 +1805,14 @@ _EXECUTABLE_MIMES = frozenset(
     }
 )
 
+_OOXML_MIMES = frozenset(
+    {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+)
+
 _ARCHIVE_MIMES = frozenset(
     {
         "application/zip",
@@ -1773,6 +1828,31 @@ _ARCHIVE_MIMES = frozenset(
 
 # OOXML macro streams, and the legacy OLE equivalents.
 _OOXML_MACRO_NAMES = ("vbaproject.bin", "vbadata.xml")
+
+# Top-level entries a genuine Office file uses. Surveyed against real workbooks
+# in this repo, which use exactly {[Content_Types].xml, _rels, docProps, xl};
+# the rest are the documented equivalents for Word, PowerPoint and custom parts.
+#
+# This exists because type detection alone is foolable. A zip carrying a valid
+# minimal document skeleton PLUS arbitrary extra members is typed as a document,
+# not an archive — so it passes a gate that would have quarantined the same
+# payload had it arrived as a plain .zip. Verified: a container holding
+# [Content_Types].xml, word/document.xml and payload.exe types cleanly as a Word
+# document. The design sends archives to human review precisely because their
+# contents are unknown; a document skeleton wrapped around unknown members is
+# that same unknown, wearing a better label.
+_OOXML_TOP_LEVEL = frozenset(
+    {
+        "[content_types].xml",
+        "_rels",
+        "docprops",
+        "customxml",
+        "customui",
+        "word",
+        "xl",
+        "ppt",
+    }
+)
 _OLE_MACRO_MARKERS = (b"VBA", b"_VBA_PROJECT", b"Macros")
 
 _OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
@@ -1805,6 +1885,16 @@ def _has_ooxml_macro(names: list) -> bool:
     return any(
         name.rsplit("/", 1)[-1] in _OOXML_MACRO_NAMES for name in lowered
     )
+
+
+def _foreign_ooxml_members(names: list) -> list:
+    """Members of an OOXML container that no genuine Office file would carry."""
+    foreign = []
+    for name in names:
+        top = name.split("/", 1)[0].strip().lower()
+        if top and top not in _OOXML_TOP_LEVEL:
+            foreign.append(top)
+    return sorted(set(foreign))
 
 
 def _is_encrypted_ooxml(content: bytes) -> bool:
@@ -1878,6 +1968,17 @@ def evaluate(
             False, QuarantineReason.MACRO, {"container": "ole"}
         )
 
+    if names is not None and detected_mime in _OOXML_MIMES:
+        foreign = _foreign_ooxml_members(names)
+        if foreign:
+            # A document skeleton wrapped around unknown members is still an
+            # archive of unknown content, and archives go to a human.
+            return SafetyVerdict(
+                False,
+                QuarantineReason.ARCHIVE,
+                {"container": "ooxml", "foreign_members": foreign[:10]},
+            )
+
     if _is_encrypted_ooxml(content):
         return SafetyVerdict(
             False, QuarantineReason.ENCRYPTED, {"container": "ooxml"}
@@ -1906,7 +2007,7 @@ def evaluate(
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_safety.py -v`
-Expected: PASS, 13 tests
+Expected: PASS, 14 tests
 
 - [ ] **Step 7: Prove the gate actually fails**
 
