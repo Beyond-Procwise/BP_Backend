@@ -3701,16 +3701,48 @@ def test_all_pass_is_recorded_with_its_asserter():
         _bundle(
             "mx.acme.test; spf=pass smtp.mailfrom=copperleaf.test; "
             "dkim=pass header.d=copperleaf.test; dmarc=pass header.from=copperleaf.test"
-        )
+        ),
+        trusted_asserter="mx.acme.test",
     )
     assert (result.spf, result.dkim, result.dmarc) == ("pass", "pass", "pass")
     assert result.asserted_by == "mx.acme.test"
     assert result.alignment == "aligned"
 
 
+def test_no_configured_asserter_means_no_verdict_is_trusted():
+    """The safe default, and the one an earlier version had backwards.
+
+    Omitting `trusted_asserter` used to mean "trust whatever header arrived",
+    so any caller that forgot it accepted forged passes. Anything upstream of
+    the machine that wrote the topmost header can forge one, so not knowing who
+    wrote it must read as `unknown`, never as `pass`.
+    """
+    result = sender_auth.evaluate(
+        _bundle("anyone-at-all.test; spf=pass; dkim=pass; dmarc=pass")
+    )
+    assert (result.spf, result.dkim, result.dmarc) == (
+        sender_auth.UNKNOWN,
+        sender_auth.UNKNOWN,
+        sender_auth.UNKNOWN,
+    )
+    # The claim is still recorded — we just do not believe it.
+    assert result.asserted_by == "anyone-at-all.test"
+
+
+def test_a_comment_in_the_authserv_id_does_not_distrust_a_real_mta():
+    """Real MTAs write `mx.acme.test (Postfix)`. Comparing the whole string
+    would downgrade a legitimate verdict for a cosmetic reason."""
+    result = sender_auth.evaluate(
+        _bundle("mx.acme.test (Postfix); spf=pass; dkim=pass; dmarc=pass"),
+        trusted_asserter="mx.acme.test",
+    )
+    assert result.spf == "pass"
+
+
 def test_spf_failure_is_recorded_not_raised():
     result = sender_auth.evaluate(
-        _bundle("mx.acme.test; spf=fail smtp.mailfrom=copperleaf.test; dkim=pass")
+        _bundle("mx.acme.test; spf=fail smtp.mailfrom=copperleaf.test; dkim=pass"),
+        trusted_asserter="mx.acme.test",
     )
     assert result.spf == "fail"
 
@@ -3731,7 +3763,9 @@ def test_misalignment_between_envelope_and_header_from_is_detected():
     msg["Subject"] = "Quote"
     msg["Authentication-Results"] = "mx.acme.test; spf=pass; dkim=pass; dmarc=pass"
     msg.set_content("body")
-    result = sender_auth.evaluate(parse(msg.as_bytes()))
+    result = sender_auth.evaluate(
+        parse(msg.as_bytes()), trusted_asserter="mx.acme.test"
+    )
     assert result.alignment == "misaligned"
     assert result.header_from == "quotes@copperleaf.test"
     assert result.envelope_from == "bounce@mailer-vendor.test"
@@ -3764,9 +3798,13 @@ def test_only_the_topmost_authentication_results_header_is_used():
     msg["Authentication-Results"] = "mx.acme.test; spf=fail"
     msg["Authentication-Results"] = "forged.test; spf=pass"
     msg.set_content("body")
-    result = sender_auth.evaluate(parse(msg.as_bytes()))
+    result = sender_auth.evaluate(
+        parse(msg.as_bytes()), trusted_asserter="mx.acme.test"
+    )
     # The receiving MTA prepends; the first occurrence is the one it wrote.
+    # A forged header appended below must not be able to overturn it.
     assert result.spf == "fail"
+    assert result.asserted_by == "mx.acme.test"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -3836,11 +3874,25 @@ def evaluate(bundle, *, trusted_asserter: Optional[str] = None) -> AuthResult:
     verdicts = {"spf": UNKNOWN, "dkim": UNKNOWN, "dmarc": UNKNOWN}
 
     if header:
+        # The authserv-id may carry a CFWS comment — `mx.acme.test (Postfix)` —
+        # so compare on the first token, or a legitimate MTA gets distrusted for
+        # cosmetic reasons.
         asserted_by = header.split(";", 1)[0].strip() or None
+        asserted_id = asserted_by.split()[0] if asserted_by else None
+
         for method, value in _METHOD.findall(header):
             verdicts[method.lower()] = value.lower()
-        if trusted_asserter and asserted_by != trusted_asserter:
-            # Hearsay: recorded, but not treated as a verdict.
+
+        # Default to trusting NOTHING. An earlier version downgraded only when
+        # a trusted_asserter was configured, so omitting it — which the
+        # signature permitted — meant any topmost Authentication-Results header
+        # was recorded as authoritative. Anything upstream of the machine that
+        # wrote that header can forge one, so the effect was a forged pass
+        # accepted by default. For a control whose entire job is detecting
+        # impersonation, the safe default is the opposite one: without a named
+        # asserter we do not know who wrote this, and "do not know" is
+        # `unknown`.
+        if asserted_id != trusted_asserter:
             verdicts = {"spf": UNKNOWN, "dkim": UNKNOWN, "dmarc": UNKNOWN}
 
     header_from = parseaddr(_first(bundle, "from") or "")[1] or None
@@ -3937,12 +3989,23 @@ def test_missing_domain_is_unmatched():
     assert result.state == "unmatched"
 
 
-def test_lookup_failure_is_unmatched_not_a_crash():
+def test_lookup_failure_is_unmatched_but_is_logged(caplog):
+    """An outage and a genuinely unknown domain produce identical results.
+
+    That is correct for the verdict — a failed lookup is not evidence of a
+    match — but without a log the two are indistinguishable, and a database
+    outage would masquerade as a run of unmatched senders. The unmatched-domain
+    rate is watched as a security signal, so an infrastructure failure quietly
+    inflating it is worse than a visible error.
+    """
     def broken(_domain):
         raise RuntimeError("db down")
 
-    result = bind("copperleaf.test", broken)
+    with caplog.at_level("ERROR"):
+        result = bind("copperleaf.test", broken)
+
     assert result.state == "unmatched"
+    assert any("supplier lookup failed" in r.getMessage() for r in caplog.records)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -3969,8 +4032,11 @@ Spec §6 stage 4, §7.3.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence, Tuple
+
+log = logging.getLogger(__name__)
 
 MATCHED = "matched"
 UNMATCHED = "unmatched"
@@ -3996,8 +4062,14 @@ def bind(sender_domain: Optional[str], candidate_lookup: CandidateLookup) -> Bin
     try:
         rows = list(candidate_lookup(domain) or ())
     except Exception:
-        # A lookup failure is not evidence of a match. Fail to unmatched and
-        # let the caller's Finding record that provenance is incomplete.
+        # A lookup failure is not evidence of a match, so the state is
+        # unmatched — but it is NOT the same event as "this domain has no
+        # supplier", and the two produce identical BindResults. Without this
+        # log a database outage would masquerade as a run of unmatched senders
+        # indefinitely, and the unmatched-domain rate would read as a security
+        # signal when it is an infrastructure failure. Logged at exception
+        # level so it is greppable and carries the traceback.
+        log.exception("supplier lookup failed for domain=%s; treating as unmatched", domain)
         return BindResult(UNMATCHED, None, ())
 
     supplier_ids = tuple(dict.fromkeys(str(row[0]) for row in rows))
