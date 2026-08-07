@@ -17,6 +17,9 @@ FIXTURES = pathlib.Path("tests/fixtures/mail_intake")
 WORD_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
+EXCEL_MIME = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
 
 def _scan(name, mime):
@@ -135,6 +138,49 @@ def test_a_speck_of_an_image_cannot_launder_injected_text():
     content = _pdf_with_invisible_text([(fitz.Rect(60, 385, 500, 415), 200)])
     hits = hidden_text.scan(content, "application/pdf")
     assert any(h.technique == "invisible_render" for h in hits)
+
+
+def test_a_large_filler_graphic_cannot_qualify_a_speck_under_the_injection():
+    """The gap the first union redesign introduced, caught in re-review.
+
+    Qualifying the page's images as a block meant that once ANY combination of
+    imagery cleared the bar, every image on the page counted as scan backing —
+    including a small one placed directly under the injected text. So a large
+    decorative graphic elsewhere on the page laundered the speck.
+
+    Measured on that construction: page union 0.519, span fully covered, no
+    hit. Asking whether the PAGE is a scan (0.85) separates it — a genuine scan
+    reads 1.000, this reads 0.519.
+    """
+    import fitz
+
+    doc = fitz.open()
+    page_rect = doc.new_page().rect
+    doc.close()
+
+    content = _pdf_with_invisible_text(
+        [
+            # A large filler graphic, well away from the injected span.
+            (
+                fitz.Rect(
+                    page_rect.x0,
+                    page_rect.y0 + page_rect.height / 2,
+                    page_rect.x1,
+                    page_rect.y1,
+                ),
+                220,
+            ),
+            # A speck sized to cover the span itself.
+            (fitz.Rect(180, 385, 460, 415), 200),
+        ],
+        text_x=200,
+    )
+
+    hits = hidden_text.scan(content, "application/pdf")
+    assert any(h.technique == "invisible_render" for h in hits), (
+        "a large graphic elsewhere on the page laundered the image under the "
+        "injected text"
+    )
 
 
 @pytest.mark.parametrize("tile_count", [2, 3, 5])
@@ -285,4 +331,19 @@ def test_document_claiming_word_but_carrying_no_document_part_fails_closed():
         zf.writestr("[Content_Types].xml", "<Types/>")
         zf.writestr("decoy/readme.txt", "nothing to see")
     hits = hidden_text.scan(buf.getvalue(), WORD_MIME)
+    assert any(h.technique == "unreadable" for h in hits)
+
+
+def test_workbook_claiming_excel_but_carrying_no_workbook_part_fails_closed():
+    """The Excel counterpart to the Word test above — the same fail-closed
+    branch, unexercised until now. A valid zip with no `xl/workbook.xml` is
+    corrupt or a decoy; returning no hits would clear it."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("decoy/readme.txt", "nothing to see")
+    hits = hidden_text.scan(buf.getvalue(), EXCEL_MIME)
     assert any(h.technique == "unreadable" for h in hits)
