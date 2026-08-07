@@ -13,7 +13,7 @@ The brief says three findings are "already documented in `Opportunity_Aggregatio
 
 **Neither document exists in this repository.** There is a root `FINDINGS.md` (2026-07-14, extraction pipeline) which is a different artefact. So the three findings have been derived from code and live data rather than re-verified against a prior write-up. Everything below is first-hand evidence.
 
-**"GPSS" / "Global Procurement Semantic Standard" appears nowhere** in the codebase, in `docs/`, or in any schema. The brief's constraint "GPSS is the vocabulary… extend the dictionary rather than shadowing it" has no dictionary to extend. This is a blocker for Phase 1 field naming and for the Category Profile Resolver in Phase 5 — see §7.
+**"GPSS" / "Global Procurement Semantic Standard" appears nowhere** in the codebase, in `docs/`, or in any schema. The brief's constraint "GPSS is the vocabulary… extend the dictionary rather than shadowing it" has no dictionary to extend. Originally raised as blocker B3 — **resolved 2026-08-07: no dictionary is needed**, because the extraction schemas already are the field registry and `bp_category` already carries a category hierarchy. See §7 B3 for the full reasoning and for a correction to this document's `bp_category` claim.
 
 ### Verdict on the three findings
 
@@ -278,10 +278,20 @@ Additionally `bp_purchase_order_trgt.contract_id` is 0 / 5,041, so even with con
 
 **Needs a decision:** (a) introduce a tenant dimension as Phase 1 work — a large change touching every table and every query; (b) carry `tenant_id` on *new* tables only, defaulted to a single tenant, so the constraint is honoured going forward without a retrofit; or (c) descope. **My recommendation is (b)** — it satisfies "all new tables carry `tenant_id`" literally, costs almost nothing now, and leaves the retrofit as a separable project. It does mean the Phase 7 pooling-neutrality test is vacuous until a second tenant exists, which should be stated rather than papered over.
 
-### B3 — GPSS does not exist. (blocks Phase 1 field naming and Phase 5 field-role resolution)
-No dictionary, no codes, no `category_l1..l4` taxonomy anywhere. `CommercialFact.gpss_code`, `Constraint.gpss_code`, the Category Profile Resolver's GPSS→role bindings, and the unmapped-GPSS-code test (Phase 7 test 14) all reference a vocabulary with no source.
+### B3 — GPSS does not exist. ~~(blocks Phase 1 field naming and Phase 5 field-role resolution)~~ **RESOLVED 2026-08-07 — no dictionary is needed**
+No dictionary, no codes. `CommercialFact.gpss_code`, `Constraint.gpss_code`, the Category Profile Resolver's GPSS→role bindings, and the unmapped-GPSS-code test (Phase 7 test 14) all reference a vocabulary with no source.
 
-**Needs a decision:** supply the GPSS dictionary, or authorise defining a minimal internal code set for the categories actually in the corpus and treat it as the seed of the dictionary rather than a shadow of it.
+**Resolution.** Re-examined before planning Phase 1b. Everything the brief asks a vocabulary to do is already satisfied by artefacts this repo owns:
+
+- **Stable field names** — `extraction_schemas/*.yaml` is a versioned, declarative registry of ~90 field definitions across four document types. That *is* a data dictionary; it simply is not called one.
+- **A category key** — `proc.bp_category` already holds a three-level hierarchy in `L1~L2~L3` form (`Information Technology~Hardware~Desktop Computers`, `Professional Services~IT Consulting~IT Consulting`): 49 rows, 22 distinct on `bp_sqldb`. `bp_requirement.category` is populated on 6,009 of 6,010 rows, 247 distinct.
+- **Cross-document concept identity** — implicit today; closed by one `concept:` key per schema field when Phase 5 needs it.
+
+A formal external dictionary is only required for interoperability — exchanging facts with another system, or mapping onto a customer's taxonomy. Nothing in Phases 1–5 needs that.
+
+The field is therefore **`concept_code`, not `gpss_code`**, derived at import time from the extraction-schema field names rather than hand-listed, so it cannot drift into a second vocabulary. Naming a column after a standard that does not exist here would invite the next reader to assume authority behind it — the exact shadowing failure the brief's constraint guards against. If GPSS is later adopted, `concept_code` is the column it maps into.
+
+> **Correction to §2b and §7 of this document, made 2026-08-07.** This map recorded that no `category_l1..l4` taxonomy existed anywhere and that `bp_category` was empty. That is true of `bp_testdb` but **false of `bp_sqldb`**, which carries the hierarchy above. The original claim was measured against the wrong database. Any future population of `category_l1..l4` must therefore fail closed rather than default, because the two databases genuinely differ.
 
 ### B4 — Four of five benchmark adjustment factors are inert on live data.
 The engine implements all five correctly. But `benchmark_live.py` neutralises spec, SLA, location and index because the corpus holds no spec scores, SLA scores, location cost indices or price indices. Volume is the only live factor. This is honest and disclosed, but it means Phase 2.2's "five multiplicative adjustment factors declared explicitly on the output" will, on this corpus, declare four as neutral. Phase 2.1's reference corpus is the fix; flagging it so the Phase 2 acceptance bar is set against reality.
