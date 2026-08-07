@@ -101,6 +101,10 @@ def test_cid_logo_never_becomes_an_artifact():
     cur = _seeded_cursor()
     outcome = _pipeline().ingest(cur, _binding(), _message("cid_signature_logo.eml"))
     assert outcome.artifact_ids == ()
+    # Dropped, not quarantined. An empty artifact_ids alone would also be
+    # satisfied by a logo that reached the gate and was held there.
+    assert outcome.quarantined == ()
+    assert not cur.statements("INSERT INTO proc.bp_ingest_artifact")
 
 
 def test_non_cid_inline_document_is_ingested():
@@ -112,12 +116,17 @@ def test_non_cid_inline_document_is_ingested():
 
 
 def test_body_and_attachment_land_in_one_bundle():
+    # The bundle is inserted before parsing (idempotency first), so the body
+    # text parsing discovers arrives via update_bundle_from_parse's UPDATE,
+    # not the initial INSERT. Checking every UPDATE to bp_ingest_bundle finds
+    # it regardless of which one carries it.
     cur = _seeded_cursor()
     _pipeline().ingest(cur, _binding(), _message("body_validity_window.eml"))
-    inserts = cur.statements("INSERT INTO proc.bp_ingest_bundle")
-    params = inserts[0][1]
+    updates = cur.statements("UPDATE proc.bp_ingest_bundle")
     assert any(
-        isinstance(p, str) and "valid until 30 September 2026" in p for p in params
+        isinstance(p, str) and "valid until 30 September 2026" in p
+        for _sql, params in updates
+        for p in (params or ())
     )
 
 
@@ -249,7 +258,82 @@ def test_redelivered_message_is_a_no_op():
     assert store.objects == {}
 
 
-def test_sweep_publishes_and_advances_ready_artifacts():
+def test_a_message_that_cannot_be_parsed_still_leaves_its_bytes_and_a_record():
+    """The failure the store-before-parse ordering exists to prevent.
+
+    A body part declaring an unknown charset raises LookupError out of the
+    stdlib — ordinary in real mail, and not MalformedMime. An earlier ordering
+    parsed first and let that escape, destroying the message: no bytes stored,
+    no bundle row, no quarantine record, nothing anyone could investigate.
+
+    The message must be multipart to exercise this: mime_walk.parse's
+    non-multipart branch already wraps `get_content()` in a try/except and
+    converts a bad charset to MalformedMime by itself (verified directly), so
+    a single-part message never reaches the unguarded path at all. The
+    unguarded call is `_walk()`'s body-part branch, reached only when the
+    message has more than one part — hence the attachment below, which forces
+    the multipart/mixed structure that actually exercises it.
+    """
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["From"] = "Sales <quotes@copperleaf.test>"
+    msg["To"] = "intake@acme.procureiq.io"
+    msg["Subject"] = "Quote"
+    msg["Message-ID"] = "<charset@copperleaf.test>"
+    msg.set_content("body")
+    msg.add_attachment(
+        b"%PDF-1.4\n", maintype="application", subtype="pdf", filename="x.pdf"
+    )
+    raw = msg.as_bytes().replace(
+        b'charset="utf-8"', b'charset="totally-not-a-charset"', 1
+    )
+
+    cur, store_ = _seeded_cursor(), FakeStore()
+    outcome = _pipeline(store_).ingest(
+        cur, _binding(), RawMessage(raw, "emails/charset.eml", None, "ref")
+    )
+
+    assert outcome.artifact_ids == ()
+    # The bytes survive, which is the whole point.
+    assert any(k.startswith("mail-intake/raw/") for k in store_.objects)
+    assert any("INSERT INTO proc.bp_ingest_bundle" in sql for sql, _ in cur.calls)
+    assert any(
+        QuarantineReason.MALFORMED_MIME.value in (p or ())
+        for p in cur.states_written()
+    )
+
+
+def test_the_sweep_announces_without_writing_anything():
+    """A safety net that writes on every pass is a leak, not a net.
+
+    The sweep re-announces a ready artifact until a consumer moves it, so it
+    runs against the same rows repeatedly by design. An earlier version appended
+    a derivation row each pass — one a minute per artifact, unbounded, while no
+    consumer existed. A derivation records that an extraction RUN happened, and
+    this function does not run extraction.
+    """
+    cur, bus = FakeCursor(), FakeBus()
+    cur.queue(
+        [
+            {
+                "artifact_id": "ART-1",
+                "bundle_id": "B-1",
+                "object_key": "mail-intake/artifacts/user-7/ab/cd/abcd",
+                "detected_mime": "application/pdf",
+                "owner_ref": "user-7",
+            }
+        ]
+    )
+    pipeline_module.sweep_ready_artifacts(cur, event_bus=bus)
+
+    assert not [
+        sql for sql, _ in cur.calls
+        if sql.strip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+    ], "the sweep must announce, not write"
+
+
+def test_sweep_publishes_ready_artifacts():
     cur, bus = FakeCursor(), FakeBus()
     cur.queue(
         [

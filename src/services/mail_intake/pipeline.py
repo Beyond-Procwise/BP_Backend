@@ -83,12 +83,49 @@ class IngestPipeline:
         owner_ref = binding["owner_ref"]
         binding_id = binding["binding_id"]
 
+        # ORDER: idempotency check, then raw MIME, then parse. Each step earns
+        # its position.
+        #
+        # The insert comes first so a re-delivered message does no work at all.
+        # The raw store comes before the parse because a message that cannot be
+        # parsed is precisely the one someone will need to look at, and an
+        # earlier version had these the other way round: `parse` ran first, and
+        # anything it raised other than MalformedMime escaped the handler
+        # entirely. A body part declaring an unknown charset raises LookupError
+        # straight out of the stdlib — ordinary in real mail — and destroyed the
+        # message: no bytes stored, no bundle row, no quarantine record, nothing
+        # to investigate. The ordering exists to prevent exactly that, and did
+        # not.
+        bundle_id = str(uuid.uuid4())
+        raw_key = store.raw_mime_key(owner_ref, bundle_id)
+
+        inserted = repo.insert_bundle(
+            cur,
+            bundle_id=bundle_id,
+            binding_id=binding_id,
+            owner_ref=owner_ref,
+            provider_message_id=message.provider_message_id,
+            received_at=message.received_at,
+            raw_mime_key=raw_key,
+        )
+        if inserted is None:
+            # Already ingested: a re-delivered provider event or an IMAP
+            # re-poll. Stopping here is what makes re-reading safe.
+            return IngestOutcome(bundle_id, (), (), ())
+
+        self._store.put_immutable(raw_key, message.raw)
+
         parsed: Optional[mime_walk.ParsedBundle] = None
         parse_error: Optional[str] = None
         try:
             parsed = mime_walk.parse(message.raw)
-        except mime_walk.MalformedMime as exc:
-            parse_error = str(exc)
+        except Exception as exc:
+            # Deliberately broad. MalformedMime is the expected failure, but the
+            # stdlib parser raises its own exceptions for hostile or merely
+            # sloppy input, and any of them means the same thing operationally:
+            # we could not read this message, so it is quarantined with the raw
+            # bytes already safe on disk.
+            parse_error = f"{type(exc).__name__}: {exc}"
 
         header_from = None
         sender_domain = None
@@ -100,41 +137,19 @@ class IngestPipeline:
                 if header_from and "@" in header_from
                 else None
             )
-
-        # The bundle id is generated here, not inside the repo, because the raw
-        # MIME key is derived from it and the column is NOT NULL — the insert
-        # has to carry a real key, not a placeholder patched up afterwards.
-        bundle_id = str(uuid.uuid4())
-        raw_key = store.raw_mime_key(owner_ref, bundle_id)
-
-        inserted = repo.insert_bundle(
-            cur,
-            bundle_id=bundle_id,
-            binding_id=binding_id,
-            owner_ref=owner_ref,
-            provider_message_id=message.provider_message_id,
-            rfc_message_id=(parsed.headers.get("message-id", [None])[0] if parsed else None),
-            thread_id=(parsed.headers.get("thread-index", [None])[0] if parsed else None),
-            sender_address=header_from,
-            sender_display_name=(parsed.headers.get("from", [None])[0] if parsed else None),
-            sender_domain=sender_domain,
-            recipients=(parsed.headers.get("to", []) if parsed else []),
-            subject=(parsed.headers.get("subject", [None])[0] if parsed else None),
-            received_at=message.received_at,
-            body_text=(parsed.body_text if parsed else None),
-            body_html=(parsed.body_html if parsed else None),
-            raw_mime_key=raw_key,
-        )
-
-        if inserted is None:
-            # Already ingested: a re-delivered provider event or an IMAP
-            # re-poll. Stopping here is what makes re-reading safe — carrying
-            # on would write a second set of artifacts for the same message.
-            return IngestOutcome(bundle_id, (), (), ())
-
-        # Raw MIME immediately: everything downstream is reconstructible from it,
-        # including the messages that fail to parse a line later.
-        self._store.put_immutable(raw_key, message.raw)
+            repo.update_bundle_from_parse(
+                cur,
+                bundle_id,
+                rfc_message_id=parsed.headers.get("message-id", [None])[0],
+                thread_id=parsed.headers.get("thread-index", [None])[0],
+                sender_address=header_from,
+                sender_display_name=parsed.headers.get("from", [None])[0],
+                sender_domain=sender_domain,
+                recipients=parsed.headers.get("to", []),
+                subject=parsed.headers.get("subject", [None])[0],
+                body_text=parsed.body_text,
+                body_html=parsed.body_html,
+            )
 
         if parsed is None:
             repo.transition_bundle(
@@ -267,7 +282,9 @@ class IngestPipeline:
         )
         repo.record_arrival(cur, artifact_id, bundle_id)
 
-        existing = repo.find_existing_artifact(cur, owner_ref, digest, None)
+        existing = repo.find_existing_artifact(
+            cur, owner_ref, digest, None, exclude_artifact_id=artifact_id
+        )
         if existing and existing != artifact_id:
             repo.mark_duplicate(
                 cur, artifact_id, existing, current=ArtifactState.STORED
@@ -320,11 +337,21 @@ class IngestPipeline:
 
 def sweep_ready_artifacts(cur: Any, event_bus: Optional[Any] = None,
                           limit: int = 50) -> int:
-    """Stage 10. Publish DocumentIngested for artifacts sitting in the queue.
+    """Stage 10. Announce artifacts sitting in the queue. Announce only.
 
-    The durable row is the contract; this is the notification. Re-running is
-    safe because the transition to EXTRACTION_COMPLETE is what removes a row
-    from the queue, and that only happens once extraction has actually run.
+    The durable row is the contract; this is the notification. An artifact
+    stays in READY_FOR_EXTRACTION until a consumer moves it, so this sweep
+    re-announces the same artifact every time it runs until one does — which is
+    the intended behaviour for a safety net, and is why the notification must
+    be cheap and repeatable.
+
+    It therefore writes NOTHING. An earlier version appended a derivation row
+    per artifact per pass, which on a 60-second job meant one row a minute per
+    ready artifact, forever, growing without bound while no consumer existed.
+    A derivation records that an extraction RUN happened; this function does not
+    run extraction, so it has no business claiming one did. The consumer that
+    performs the extraction appends the derivation and transitions the artifact
+    out of the queue.
     """
     rows = repo.claim_ready_artifacts(cur, limit=limit)
     published = 0
@@ -336,7 +363,6 @@ def sweep_ready_artifacts(cur: Any, event_bus: Optional[Any] = None,
             "detected_mime": row["detected_mime"],
             "owner_ref": row["owner_ref"],
         }
-        repo.append_derivation(cur, row["artifact_id"], PIPELINE_VERSION, None)
         if event_bus is not None:
             event_bus.publish(DOCUMENT_INGESTED, payload)
         published += 1

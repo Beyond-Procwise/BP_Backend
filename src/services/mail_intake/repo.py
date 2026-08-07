@@ -60,6 +60,37 @@ def safe_log_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def update_bundle_from_parse(cur, bundle_id: str, **fields: Any) -> None:
+    """Fill in what parsing learned, after the row already exists.
+
+    The bundle is inserted before the message is parsed, so that raw MIME is
+    safely stored and the idempotency check has already run before anything can
+    fail. The parsed headers and bodies therefore arrive as an update rather
+    than as part of the insert.
+    """
+    cur.execute(
+        """
+        UPDATE proc.bp_ingest_bundle
+           SET rfc_message_id = %s, thread_id = %s, sender_address = %s,
+               sender_display_name = %s, sender_domain = %s, recipients = %s,
+               subject = %s, body_text = %s, body_html = %s, updated_at = now()
+         WHERE bundle_id = %s
+        """,
+        (
+            fields.get("rfc_message_id"),
+            fields.get("thread_id"),
+            fields.get("sender_address"),
+            fields.get("sender_display_name"),
+            fields.get("sender_domain"),
+            json.dumps(fields.get("recipients") or []),
+            fields.get("subject"),
+            fields.get("body_text"),
+            fields.get("body_html"),
+            bundle_id,
+        ),
+    )
+
+
 def _applied(cur, what: str, row_id: str, current, target) -> bool:
     """Did the guarded UPDATE actually move the row?
 
@@ -274,15 +305,27 @@ def record_arrival(cur, artifact_id: str, bundle_id: str) -> None:
 
 
 def find_existing_artifact(cur, owner_ref: str, digest: str,
-                           logical: Optional[str]) -> Optional[str]:
-    """Content-hash lookup within the dedup scope (spec §5.3: the binding owner)."""
+                           logical: Optional[str],
+                           exclude_artifact_id: Optional[str] = None) -> Optional[str]:
+    """Content-hash lookup within the dedup scope (spec §5.3: the binding owner).
+
+    `exclude_artifact_id` keeps the caller from finding itself. The pipeline
+    inserts the artifact row before this runs, so without the exclusion the
+    query could return the row just written — there is no ORDER BY and Postgres
+    may return either match — and the artifact would compare equal to itself,
+    fail the duplicate check, and proceed to extraction. The bug appears only
+    when a prior identical artifact exists, and then only sometimes, which is
+    the worst shape for one to have.
+    """
     cur.execute(
         """
         SELECT artifact_id FROM proc.bp_ingest_artifact
          WHERE owner_ref = %s AND sha256 = %s AND duplicate_of_artifact_id IS NULL
+           AND (%s::uuid IS NULL OR artifact_id <> %s::uuid)
+         ORDER BY created_at
          LIMIT 1
         """,
-        (owner_ref, digest),
+        (owner_ref, digest, exclude_artifact_id, exclude_artifact_id),
     )
     row = cur.fetchone()
     if not row:
