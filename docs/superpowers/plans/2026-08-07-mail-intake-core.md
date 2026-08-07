@@ -6527,6 +6527,7 @@ def deliver_to_extraction(
     artifact_id: str,
     content: bytes,
     doc_type: str,
+    filename: Optional[str] = None,
     process_monitor_id: Optional[int] = None,
     dispatch: Optional[Callable[..., Any]] = None,
 ) -> Any:
@@ -6539,14 +6540,28 @@ def deliver_to_extraction(
     if dispatch is None:  # pragma: no cover - exercised in integration only
         from src.services.extraction.dispatch import dispatch_document as dispatch
 
-    # 0o600: these are attachments from arbitrary senders sitting briefly on
-    # local disk, and mkstemp already creates them owner-only. Being explicit
-    # keeps that true if the surrounding code ever changes umask.
-    handle, path = tempfile.mkstemp(prefix=f"mailintake-{artifact_id}-", suffix=".bin")
+    # The suffix must be the real one. Extraction's parser router dispatches
+    # purely on file extension, so a hardcoded ".bin" made every mail-intake
+    # document fail at L0 with "unsupported file format" — the production path
+    # could never have worked. That failure also invites precisely the wrong
+    # repair: the quickest way to make it go away is to hand extraction the S3
+    # key instead, which is the move this module exists to prevent.
+    suffix = os.path.splitext(filename or "")[1] or ".bin"
+
+    # mkstemp already creates the file owner-only (0o600 before umask, and
+    # umask can only clear bits, never add them). The explicit fchmod is
+    # belt-and-braces on a file holding an arbitrary sender's attachment.
+    handle, path = tempfile.mkstemp(
+        prefix=f"mailintake-{artifact_id}-", suffix=suffix
+    )
     try:
-        os.fchmod(handle, 0o600)
-        with os.fdopen(handle, "wb") as fh:
-            fh.write(content)
+        try:
+            os.fchmod(handle, 0o600)
+            with os.fdopen(handle, "wb") as fh:
+                fh.write(content)
+        except Exception:
+            os.close(handle)  # fdopen never took ownership
+            raise
         return dispatch(
             process_monitor_id=process_monitor_id,
             file_path=path,
@@ -6556,9 +6571,11 @@ def deliver_to_extraction(
         try:
             os.unlink(path)
         except OSError:
+            # Log the PATH — a warning that omits it leaves attachment bytes on
+            # disk with nothing to identify them for cleanup.
             log.warning(
-                "mail_intake.handoff could not remove temporary file for artifact=%s",
-                artifact_id,
+                "mail_intake.handoff could not remove %s for artifact=%s",
+                path, artifact_id,
             )
 ```
 
@@ -6606,7 +6623,20 @@ FORBIDDEN_PREFIXES = (
     "boto3",
 )
 
-EXTRACTION_ROOT = pathlib.Path("src/services/extraction")
+# Absolute, derived from this file. A relative path made rglob yield nothing
+# from any other working directory, so three of these tests passed green having
+# scanned zero files — a ratchet that silently no-ops is the exact failure it
+# exists to prevent, and pytest.ini pins no testpaths.
+#
+# All THREE roots, not just `extraction`: dispatch runs through extraction_v3
+# for parsing, invariants and the judge, and through extraction_feedback. Both
+# are clean today, but a new egress import in extraction_v3/parsers/ would not
+# have failed the build while the docstring claimed the plane was covered.
+EXTRACTION_ROOTS = (
+    REPO_ROOT / "src" / "services" / "extraction",
+    REPO_ROOT / "src" / "services" / "extraction_v3",
+    REPO_ROOT / "src" / "services" / "extraction_feedback",
+)
 
 
 def _imports(path: pathlib.Path):
@@ -6635,15 +6665,23 @@ def test_extraction_gains_no_new_route_out_of_its_plane():
     extraction a key, so the fallback that does the fetching is never reached.
     """
     offences = []
-    for path in sorted(EXTRACTION_ROOT.rglob("*.py")):
-        rel = str(path).split("mail-intake/", 1)[-1]
-        allowed = KNOWN_CROSSINGS.get(rel, set())
-        for name in _imports(path):
-            for forbidden in FORBIDDEN_PREFIXES:
-                if name == forbidden or name.startswith(forbidden + "."):
-                    if name in allowed:
-                        continue
-                    offences.append(f"{rel}: imports {name}")
+    scanned = 0
+    for root in EXTRACTION_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            scanned += 1
+            rel = str(path.relative_to(REPO_ROOT))
+            allowed = KNOWN_CROSSINGS.get(rel, set())
+            for name in _imports(path):
+                for forbidden in FORBIDDEN_PREFIXES:
+                    if name == forbidden or name.startswith(forbidden + "."):
+                        if name in allowed:
+                            continue
+                        offences.append(f"{rel}: imports {name}")
+
+    # A guard that scanned nothing is not a guard. Without this the tests pass
+    # green from any working directory where the globs match no files.
+    assert scanned > 0, "the import guard scanned zero files — check the roots"
+
     assert not offences, (
         "Interpretation Plane gained a NEW route out of its plane:\n"
         + "\n".join(offences)
@@ -6677,22 +6715,29 @@ def test_mail_intake_contains_no_llm_calls():
     # The Ingestion Plane is deterministic. Spec §2.
     forbidden = ("ollama", "llm_router", "run_tools", "AgentNick", "openai")
     offences = []
-    for path in sorted(pathlib.Path("src/services/mail_intake").rglob("*.py")):
+    scanned = 0
+    for path in sorted((REPO_ROOT / "src" / "services" / "mail_intake").rglob("*.py")):
+        scanned += 1
         body = path.read_text()
         for token in forbidden:
             if token in body:
-                offences.append(f"{path}: mentions {token}")
+                offences.append(f"{path.name}: mentions {token}")
+    assert scanned > 0, "scanned zero mail_intake files — check the root"
     assert not offences, "Ingestion Plane is not deterministic:\n" + "\n".join(offences)
 
 
 def test_extraction_is_never_handed_a_binding_or_credential():
     # It receives an artifact_id and bytes. Nothing else.
     offences = []
-    for path in sorted(EXTRACTION_ROOT.rglob("*.py")):
-        body = path.read_text()
-        for token in ("credential_ref", "binding_id", "mailbox_address"):
-            if token in body:
-                offences.append(f"{path}: references {token}")
+    scanned = 0
+    for root in EXTRACTION_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            scanned += 1
+            body = path.read_text()
+            for token in ("credential_ref", "binding_id", "mailbox_address"):
+                if token in body:
+                    offences.append(f"{path.relative_to(REPO_ROOT)}: references {token}")
+    assert scanned > 0, "scanned zero extraction files — check the roots"
     assert not offences, "\n".join(offences)
 ```
 
@@ -6825,13 +6870,98 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     normalised = posixpath.normpath(prefix).lstrip("/")
     if normalised.startswith(".."):
         raise ValueError("s3_path must not traverse outside its prefix")
+
+    # Descendant: the caller named something inside quarantine.
     if (normalised + "/").startswith(QUARANTINE_PREFIX):
         raise ValueError(
             "s3_path resolves under the mail-intake quarantine prefix, which "
             "holds content the safety gate rejected"
         )
 
+    # ANCESTOR: the caller named something quarantine sits underneath. This is
+    # the case an earlier version missed entirely. The prefix is passed to
+    # list_objects_v2 as a literal byte prefix, so "mail-intake/" — or just
+    # "mail" — enumerates every quarantined object and the endpoint then
+    # downloads and extracts each one. Every hostile form the tests covered was
+    # a descendant form, so the suite was green while the bypass stood open.
+    #
+    # Rejecting ancestors here gives a clear error, but note it CANNOT be
+    # complete on its own: "m" is a valid prefix too. The durable control is the
+    # key-level filter in _list_s3_keys below, which drops quarantine keys
+    # whatever prefix produced them. This check exists so the common case fails
+    # loudly rather than silently returning nothing.
+    if QUARANTINE_PREFIX.startswith(normalised.rstrip("/") + "/"):
+        raise ValueError(
+            "s3_path is an ancestor of the mail-intake quarantine prefix; "
+            "narrow it so quarantined content cannot be enumerated"
+        )
+
     return bucket_name, prefix
+```
+
+- [ ] **Step 6b: Filter quarantine keys at the key level**
+
+The prefix check above cannot be complete — `"m"` is a valid ancestor. The
+control that actually holds is dropping quarantine keys wherever they are
+listed, whatever prefix produced them.
+
+In `src/api/routers/documents.py`, inside `_list_s3_keys`, replace the append
+with a filtered one:
+
+```python
+        for entry in contents:
+            key = entry.get("Key") if isinstance(entry, dict) else None
+            if not key or key.endswith("/"):
+                continue
+            # Never enumerate quarantined content, whatever prefix was asked
+            # for. The prefix guard in _resolve_s3_path rejects the obvious
+            # ancestors, but a short enough prefix always slips through, so the
+            # decision has to be made per key.
+            if key.startswith(QUARANTINE_PREFIX):
+                log.warning(
+                    "documents.extract_from_s3 skipped a quarantined key under "
+                    "prefix=%s", prefix,
+                )
+                continue
+            keys.append(key)
+```
+
+Import `QUARANTINE_PREFIX` at module scope alongside the existing imports, and
+ensure a module-level `log` exists (`log = logging.getLogger(__name__)`) if the
+file has none.
+
+Add to `tests/api/test_documents_quarantine_guard.py`:
+
+```python
+def test_an_ancestor_prefix_is_rejected():
+    """The bypass the descendant-only tests missed.
+
+    `list_objects_v2` treats the prefix as literal bytes, so a prefix quarantine
+    merely sits *underneath* enumerates every quarantined object.
+    """
+    for ancestor in ("mail-intake/", "mail-intake"):
+        with pytest.raises(ValueError, match="ancestor"):
+            _resolve_s3_path(ancestor, "procwisemvp")
+
+
+def test_quarantined_keys_are_never_listed_whatever_the_prefix():
+    """The control that actually holds. A prefix check cannot be complete —
+    'm' is a valid ancestor — so the filter is per key."""
+    from src.api.routers.documents import _list_s3_keys
+
+    class FakeClient:
+        def list_objects_v2(self, **kwargs):
+            return {
+                "Contents": [
+                    {"Key": "mail-intake/artifacts/user-7/ab/cd/clean"},
+                    {"Key": f"{QUARANTINE_PREFIX}user-7/ab/cd/held"},
+                ],
+                "IsTruncated": False,
+            }
+
+    keys = _list_s3_keys(FakeClient(), "procwisemvp", "m")
+    assert keys == ["mail-intake/artifacts/user-7/ab/cd/clean"]
+    assert not any(k.startswith(QUARANTINE_PREFIX) for k in keys)
 ```
 
 - [ ] **Step 7: Run both guard suites**
