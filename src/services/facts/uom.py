@@ -58,11 +58,18 @@ _CANONICAL: Dict[str, Tuple[str, str, Optional[Decimal]]] = {
     "seat": ("seat", "count", None),
     "licence": ("licence", "count", None),
     "shipment": ("shipment", "count", None),
+    # count -- observed in the canonical product master (proc.bp_product_master)
+    "set": ("set", "count", None),
+    "sheet": ("sheet", "count", None),
+    "roll": ("roll", "count", None),
+    "pen": ("pen", "count", None),
+    "module": ("module", "count", None),
     # time
     "hour": ("hour", "time", _HOUR_IN_DAYS),
     "day": ("day", "time", Decimal("1")),
     "week": ("week", "time", Decimal("7")),
     "month": ("month", "time", Decimal("30")),
+    "quarter": ("quarter", "time", Decimal("90")),
     "year": ("year", "time", Decimal("365")),
     # mass
     "tonne": ("tonne", "mass", None),
@@ -104,6 +111,21 @@ _ALIASES: Dict[str, str] = {
     "yrs": "year",
     "years": "year",
     "annum": "year",
+    # 'Monthly' lowercases to 'monthly', which is an adverbial spelling of the
+    # unit rather than the unit itself -- a casing pass alone does not catch it.
+    "monthly": "month",
+    "weekly": "week",
+    "daily": "day",
+    "hourly": "hour",
+    "quarterly": "quarter",
+    "qtr": "quarter",
+    "quarters": "quarter",
+    # plurals of the units observed in the canonical product master
+    "sets": "set",
+    "sheets": "sheet",
+    "rolls": "roll",
+    "pens": "pen",
+    "modules": "module",
     "per annum": "year",
     # mass
     "t": "tonne",
@@ -122,7 +144,7 @@ _ALIASES: Dict[str, str] = {
     "meters": "metre",
 }
 
-_TIME_CONVENTION_UNITS = {"month", "year"}
+_TIME_CONVENTION_UNITS = {"month", "quarter", "year"}
 
 
 def _key(raw: str) -> str:

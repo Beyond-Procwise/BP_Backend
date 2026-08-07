@@ -90,6 +90,48 @@ def test_result_is_hashable_and_frozen():
         r.canonical = "box"  # type: ignore[misc]
 
 
+CANONICAL_MASTER_UNITS = {
+    # Group 1 -- a casing/spelling gap, not a missing unit.
+    "Monthly": ("month", "time"),
+    # Group 2 -- genuine units the corpus uses that the seed map lacked.
+    "set": ("set", "count"),
+    "sheet": ("sheet", "count"),
+    "roll": ("roll", "count"),
+    "pen": ("pen", "count"),
+    "module": ("module", "count"),
+    "quarter": ("quarter", "time"),
+}
+
+
+@pytest.mark.parametrize("raw,expected", sorted(CANONICAL_MASTER_UNITS.items()))
+def test_units_from_the_canonical_product_master_normalise(raw, expected):
+    """Measured against proc.bp_product_master (via the uicanvas FDW bridge):
+    the hand-typed seed covered only 7 of 18 distinct canonical values. These
+    are the ones that are genuinely units."""
+    r = normalise_uom(raw)
+    assert (r.canonical, r.dimension) == expected
+    assert UOM_UNMAPPED not in r.reason_codes
+
+
+@pytest.mark.parametrize("raw", [
+    "service", "programme", "retainer", "audit",
+])
+def test_service_engagement_bases_are_still_refused(raw):
+    """These are lump-sum engagement types, not units. Mapping them would let
+    two retainers be compared as though they were rates per identical thing --
+    exactly the error measure_role exists to prevent. They stay UOM_UNMAPPED
+    until modelled as extended_line, which is a separate decision."""
+    r = normalise_uom(raw)
+    assert r.canonical is None
+    assert UOM_UNMAPPED in r.reason_codes
+
+
+def test_a_quarter_is_calendar_ambiguous_like_month_and_year():
+    r = normalise_uom("quarter")
+    assert r.factor == Decimal("90")
+    assert any("CALENDAR_CONVENTION" in c for c in r.reason_codes)
+
+
 def test_time_units_carry_a_factor_to_a_common_basis():
     """Cross-document comparison needs hour/day/week/month/year on one basis.
     Months and years are calendar-ambiguous, so the factor is stated in days
