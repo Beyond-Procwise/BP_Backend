@@ -4,15 +4,15 @@ To: intake@acme.procureiq.io
 Date: Wed, 05 Aug 2026 09:14:02 +0100
 Message-ID: <fwd
 MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="===============1397820803018367388=="
+Content-Type: multipart/mixed; boundary="===============0760275975273776410=="
 
---===============1397820803018367388==
+--===============0760275975273776410==
 Content-Type: text/plain; charset="utf-8"
 Content-Transfer-Encoding: 7bit
 
 For the file.
 
---===============1397820803018367388==
+--===============0760275975273776410==
 Content-Type: message/rfc822
 Content-Transfer-Encoding: 8bit
 MIME-Version: 1.0
@@ -24,15 +24,15 @@ To: intake@acme.procureiq.io
 Date: Wed, 05 Aug 2026 09:14:02 +0100
 Message-ID: <fwd
 MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="===============7586526431758647752=="
+Content-Type: multipart/mixed; boundary="===============7643816393851863286=="
 
---===============7586526431758647752==
+--===============7643816393851863286==
 Content-Type: text/plain; charset="utf-8"
 Content-Transfer-Encoding: 7bit
 
 Passing this on.
 
---===============7586526431758647752==
+--===============7643816393851863286==
 Content-Type: message/rfc822
 Content-Transfer-Encoding: 8bit
 MIME-Version: 1.0
@@ -44,15 +44,15 @@ To: intake@acme.procureiq.io
 Date: Wed, 05 Aug 2026 09:14:02 +0100
 Message-ID: <quote-qt-9002@copperleaf.test>
 MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="===============4623419934025249703=="
+Content-Type: multipart/mixed; boundary="===============0089049580074098683=="
 
---===============4623419934025249703==
+--===============0089049580074098683==
 Content-Type: text/plain; charset="utf-8"
 Content-Transfer-Encoding: 7bit
 
 Pricing attached.
 
---===============4623419934025249703==
+--===============0089049580074098683==
 Content-Type: application/pdf
 Content-Transfer-Encoding: base64
 Content-Disposition: attachment; filename="quote-QT-9002.pdf"
@@ -60,8 +60,8 @@ MIME-Version: 1.0
 
 JVBERi0xLjQKJSBuZXN0ZWQgZml4dHVyZSBib2R5Cg==
 
---===============4623419934025249703==--
+--===============0089049580074098683==--
 
---===============7586526431758647752==--
+--===============7643816393851863286==--
 
---===============1397820803018367388==--
+--===============0760275975273776410==--
