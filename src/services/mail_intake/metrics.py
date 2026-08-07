@@ -59,15 +59,10 @@ def collect(cur: Any, *, window_hours: int = 24) -> Dict[str, Any]:
         "GROUP BY quarantine_reason",
         window,
     )
-    # cur.fetchall() should return exactly the rows for this GROUP BY query
-    # (real psycopg2 behaviour). The test double drains its whole remaining
-    # queue instead, so its "rows for this query" arrive nested as the first
-    # element; unwrap that case without disturbing real-cursor behaviour,
-    # where the first element is always a plain row tuple, never a list.
-    raw_rows = cur.fetchall() or []
-    if raw_rows and isinstance(raw_rows[0], list):
-        raw_rows = raw_rows[0]
-    by_reason = {str(r[0]): int(r[1]) for r in raw_rows}
+    # Plain fetchall, deliberately. This previously carried an unwrap branch
+    # that existed only because the test double drained its whole queue —
+    # production code contorted to fit a fake. The fake was fixed instead.
+    by_reason = {str(r[0]): int(r[1]) for r in (cur.fetchall() or [])}
 
     duplicates = _scalar(
         cur,

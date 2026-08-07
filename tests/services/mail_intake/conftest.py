@@ -31,8 +31,23 @@ class FakeCursor:
         return self._results.pop(0) if self._results else None
 
     def fetchall(self):
-        out, self._results = list(self._results), []
-        return out
+        """Rows for the CURRENT query, matching psycopg2 — not the whole queue.
+
+        An earlier version drained everything queued, which is not what a real
+        cursor does. Across a function issuing several queries, the first
+        fetchall swallowed every later query's rows and handed them back nested.
+        That pushed a workaround into production code — `metrics.collect` grew a
+        branch unwrapping a nested list, with a comment explaining it existed
+        for the test double. Shaping shipped code around a fake is backwards:
+        the fake is the thing that was wrong.
+
+        Semantics: pop one queued entry. A list is a row set and is returned as
+        is; anything else is a single row and is wrapped.
+        """
+        if not self._results:
+            return []
+        entry = self._results.pop(0)
+        return list(entry) if isinstance(entry, list) else [entry]
 
     # -- test helpers --
     def queue(self, *rows):
