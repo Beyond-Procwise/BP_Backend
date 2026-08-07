@@ -65,8 +65,18 @@ OCR_OVERLAP_THRESHOLD = 0.60
 # A scanned page is essentially entirely imagery. Measured: full-page, two-,
 # three- and five-tile scans all read 1.000, while the filler-plus-speck attack
 # reads 0.519 and a letterhead logo 0.019. Setting the bar high enough to
-# require the page to BE a scan separates those by a wide margin, and the
-# attacker's cost becomes a full-page graphic the reader plainly sees.
+# require the page to BE a scan separates those by a wide margin.
+#
+# KNOWN RESIDUAL BYPASS, stated plainly because an earlier version of this
+# comment claimed the attacker's cost was "a full-page graphic the reader
+# plainly sees" — which is FALSE, and a false claim in a security comment is
+# worse than a documented gap. This is a GEOMETRIC test: it measures where
+# images are placed, never whether they render as anything. A fully transparent
+# or near-white image covering 85% of the page satisfies it at no visual cost
+# and re-enables the speck-under-the-span bypass. Closing that needs alpha and
+# pixel-content inspection, which is out of scope here alongside z-order
+# occlusion analysis. What this threshold buys is a higher bar for an
+# unsophisticated attacker, not closure of the class — do not read it as more.
 #
 # CALIBRATION NOTE, stated because the number reads more authoritative than it
 # is: none of the 260 real PDFs in this repo carries an invisible OCR layer, so
