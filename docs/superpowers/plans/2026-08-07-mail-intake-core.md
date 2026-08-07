@@ -3086,30 +3086,50 @@ def test_a_speck_of_an_image_cannot_launder_injected_text():
     assert any(h.technique == "invisible_render" for h in hits)
 
 
-def test_a_scan_split_into_tiles_still_reads_as_a_scan():
+@pytest.mark.parametrize("tile_count", [2, 3, 5])
+def test_a_scan_split_into_tiles_still_reads_as_a_scan(tile_count):
     """The false positive the first version produced.
 
     Large scans are routinely laid down as adjacent tiles. An OCR span
     straddling a seam overlaps neither tile enough on its own, so testing each
-    image independently quarantined a legitimate scanned document. Coverage is
-    now measured across the union.
+    image independently quarantined a legitimate scanned document.
 
-    The span is positioned to genuinely straddle the seam, and the precondition
-    is asserted below. An earlier version of this test placed the span at the
-    left margin, where a single tile covered 100% of it — so the OLD any-single-
-    image code passed it too and the test demonstrated nothing about the union.
+    Tile count is parametrised because it decides whether QUALIFICATION works
+    too, not just span coverage. Measured on A4: two tiles put each at exactly
+    50.000% of the page — right on the threshold, decided by a float comparison
+    — and three tiles put each at 33%, below it. Judging images individually
+    therefore rejected a perfectly ordinary three-tile scan outright. Both
+    questions are now asked of the union, where every tile count reads ~100%.
+
+    The span is positioned to genuinely straddle a seam, and the precondition is
+    asserted below. An earlier version placed it at the left margin, where a
+    single tile covered 100% of it — so the OLD code passed it too and the test
+    demonstrated nothing.
     """
     import fitz
 
-    page_rect = fitz.Rect(0, 0, 612, 792)
-    half = page_rect.width / 2
-    content = _pdf_with_invisible_text(
-        [
-            (fitz.Rect(page_rect.x0, page_rect.y0, half, page_rect.y1), 220),
-            (fitz.Rect(half, page_rect.y0, page_rect.x1, page_rect.y1), 220),
-        ],
-        text_x=200,
-    )
+    # A4 is what fitz.open().new_page() actually produces — NOT US Letter. An
+    # earlier version of this test hardcoded 612x792, which left each tile just
+    # under the page-coverage threshold, so it failed for a geometry mismatch
+    # rather than for the behaviour under test.
+    doc = fitz.open()
+    page_rect = doc.new_page().rect
+    doc.close()
+
+    width = page_rect.width / tile_count
+    tiles = [
+        (
+            fitz.Rect(
+                page_rect.x0 + k * width,
+                page_rect.y0,
+                page_rect.x0 + (k + 1) * width,
+                page_rect.y1,
+            ),
+            220,
+        )
+        for k in range(tile_count)
+    ]
+    content = _pdf_with_invisible_text(tiles, text_x=200)
 
     # Precondition: NO single tile may cover the span by itself, or this test
     # would pass against the very code it exists to guard against.
@@ -3127,7 +3147,7 @@ def test_a_scan_split_into_tiles_still_reads_as_a_scan():
     doc.close()
     assert per_tile, "fixture produced no images"
     assert max(per_tile) < hidden_text.OCR_OVERLAP_THRESHOLD, (
-        f"span no longer straddles the seam (max single-tile coverage "
+        f"span no longer straddles a seam (max single-tile coverage "
         f"{max(per_tile):.3f}); this test would pass against the pre-fix code"
     )
 
@@ -3258,6 +3278,10 @@ OCR_OVERLAP_THRESHOLD = 0.60
 # concealment now costs a large visible graphic the reader would notice, rather
 # than an invisible speck.
 #
+# Measured against the union of a page's images, so tile count does not matter:
+# one-, two-, three- and five-tile scans all read as ~100%, while a letterhead
+# logo reads as ~2%.
+#
 # CALIBRATION NOTE, stated because the number reads more authoritative than it
 # is: none of the 260 real PDFs in this repo carries an invisible OCR layer, so
 # there was no corpus data to tune against. 0.50 passes a full-page scan with
@@ -3319,47 +3343,57 @@ def _image_rects(page) -> List[Any]:
     return rects
 
 
-def _scan_backings(image_rects, page_box) -> List[Any]:
-    """Images large enough to plausibly BE a page scan.
+def _union_fraction(rects, box, cols: int = 48, rows: int = 24) -> float:
+    """How much of `box` is covered by the UNION of `rects`.
 
-    A letterhead logo is not scan backing. Filtering here is what stops a
+    Sampled on a grid rather than computed as an exact rectangle union, which
+    is fiddly and buys no accuracy at these scales. Used for both questions
+    below, so they cannot drift apart.
+    """
+    if not rects or _area(box) <= 0:
+        return 0.0
+    covered = 0
+    for i in range(cols):
+        x = box[0] + (box[2] - box[0]) * (i + 0.5) / cols
+        for j in range(rows):
+            y = box[1] + (box[3] - box[1]) * (j + 0.5) / rows
+            if any(r[0] <= x <= r[2] and r[1] <= y <= r[3] for r in rects):
+                covered += 1
+    return covered / float(cols * rows)
+
+
+def _scan_backings(image_rects, page_box) -> List[Any]:
+    """The page's images, but only if together they plausibly ARE a page scan.
+
+    Qualification is on the UNION, not per image. Judging each image on its own
+    breaks on tiled scans, which are ordinary for large or multi-column
+    originals: measured here, a two-tile scan puts each tile at exactly 50.000%
+    of an A4 page — precisely on the threshold, decided by float comparison —
+    and a three-tile scan puts each at 33%, so none qualifies and a wholly
+    legitimate scanned document gets flagged. On the union all of those read as
+    100% and pass, while a letterhead logo reads as 2% and does not.
+
+    A letterhead logo is not scan backing. This filter is what stops a
     speck-sized graphic from laundering injected text.
     """
-    page_area = _area(page_box)
-    if page_area <= 0:
+    rects = [tuple(rect) for rect in image_rects]
+    if not rects:
         return []
-    return [
-        tuple(rect)
-        for rect in image_rects
-        if _area(tuple(rect)) / page_area >= OCR_PAGE_COVERAGE_MIN
-    ]
+    if _union_fraction(rects, page_box) < OCR_PAGE_COVERAGE_MIN:
+        return []
+    return rects
 
 
 def _backed_by_scan(span_box, backings) -> bool:
-    """Is the span covered by the UNION of qualifying scan images?
+    """Is the span covered by the union of qualifying scan imagery?
 
-    Union, not any-single-image: a large scan is often laid down as adjacent
-    tiles, and an OCR span straddling a tile seam overlaps neither tile by
-    enough on its own. Testing each rect independently flagged exactly that
-    legitimate case — the false positive this module exists to avoid.
-
-    The union is measured by sampling a grid across the span rather than by
-    exact rectangle union, which is fiddly and buys no accuracy at these scales.
+    Union again, for the same reason: an OCR span straddling a tile seam
+    overlaps neither tile by enough on its own, and testing each rect
+    independently flagged exactly that legitimate case.
     """
-    if not backings:
+    if not backings or _area(span_box) <= 0:
         return False
-    if _area(span_box) <= 0:
-        return False
-
-    cols, rows = 40, 12
-    covered = 0
-    for i in range(cols):
-        x = span_box[0] + (span_box[2] - span_box[0]) * (i + 0.5) / cols
-        for j in range(rows):
-            y = span_box[1] + (span_box[3] - span_box[1]) * (j + 0.5) / rows
-            if any(r[0] <= x <= r[2] and r[1] <= y <= r[3] for r in backings):
-                covered += 1
-    return covered / float(cols * rows) >= OCR_OVERLAP_THRESHOLD
+    return _union_fraction(backings, span_box) >= OCR_OVERLAP_THRESHOLD
 
 
 def _hidden_layers(doc) -> set:
