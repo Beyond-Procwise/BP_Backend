@@ -170,7 +170,12 @@ def test_reversible_class_is_not_irreversible(engine):
 
 
 def test_mapping_to_undefined_role_falls_back_to_viewer(engine):
-    """A group mapping to an undefined role must resolve to Viewer."""
+    """A group mapping to an undefined role must resolve to Viewer (ranked branch).
+
+    This test uses the default fixture's multiple_groups="highest_rank", which
+    routes to the if branch. See test_undefined_role_is_rejected_on_the_non_ranked_branch
+    for coverage of the else branch.
+    """
     undefined_mapping = {
         "policyId": "role_assignment",
         "details": {
@@ -232,3 +237,51 @@ def test_the_live_role_definition_classifies_reads_as_reversible():
     assert rbac.is_irreversible("write", policy_engine=engine) is False
     assert rbac.is_irreversible("communicate", policy_engine=engine) is True
     assert rbac.is_irreversible("delegate", policy_engine=engine) is True
+
+
+def test_undefined_role_is_rejected_on_the_non_ranked_branch():
+    """The fallback branch must apply the same rank-0 guard as the ranked one.
+
+    multiple_groups is deliberately NOT "highest_rank" here: that is what
+    routes execution into the branch this test exists to protect.
+    """
+    assignment = {
+        "policyId": "role_assignment",
+        "details": {
+            "rules": {
+                "claim": "cognito:groups",
+                "group_to_role": {"bp-mystery": "SuperAdmin"},   # not in roles
+                "no_principal_role": "Viewer",
+                "unmapped_group_role": "Viewer",
+                "multiple_groups": "first_match",                # not highest_rank
+            }
+        },
+    }
+    engine = FakePolicyEngine(
+        {"role_definition": ROLE_DEFINITION, "role_assignment": assignment}
+    )
+    principal = FakePrincipal("sub-x", {"cognito:groups": ["bp-mystery"]})
+    assert rbac.effective_role(principal, policy_engine=engine) == "Viewer"
+
+
+def test_default_path_reuses_the_cached_engine(monkeypatch):
+    """Rebuilding per call re-reads every policy row; this project has been
+    bitten by that pattern before.
+    """
+    builds = []
+
+    class Counting:
+        def __init__(self):
+            builds.append(1)
+
+        def get_policy(self, slug):
+            return None
+
+    monkeypatch.setattr(rbac, "_build_engine", lambda: Counting(), raising=False)
+    rbac.reset_policy_cache()
+    rbac._engine(None)
+    rbac._engine(None)
+    assert len(builds) == 1
+    rbac.reset_policy_cache()
+    rbac._engine(None)
+    assert len(builds) == 2

@@ -34,6 +34,19 @@ def reset_policy_cache() -> None:
     _ENGINE_CACHE, _ENGINE_CACHED_AT = None, 0.0
 
 
+def _build_engine() -> Optional[Any]:
+    """Construct a fresh PolicyEngine. Extracted for testability."""
+
+    try:
+        from src.engines.policy_engine import PolicyEngine
+        from src.services.db import get_conn
+
+        return PolicyEngine(connection_factory=get_conn)
+    except Exception as exc:  # noqa: BLE001 - resolved to deny by the callers
+        logger.error("rbac: could not construct a PolicyEngine: %s", exc)
+        return None
+
+
 def _engine(policy_engine: Optional[Any]) -> Optional[Any]:
     if policy_engine is not None:
         return policy_engine
@@ -43,17 +56,11 @@ def _engine(policy_engine: Optional[Any]) -> Optional[Any]:
     if _ENGINE_CACHE is not None and (now - _ENGINE_CACHED_AT) < _ENGINE_TTL_SECONDS:
         return _ENGINE_CACHE
 
-    try:
-        from src.engines.policy_engine import PolicyEngine
-        from src.services.db import get_conn
-
-        engine = PolicyEngine(connection_factory=get_conn)
+    engine = _build_engine()
+    if engine is not None:
         _ENGINE_CACHE = engine
         _ENGINE_CACHED_AT = now
-        return engine
-    except Exception as exc:  # noqa: BLE001 - resolved to deny by the callers
-        logger.error("rbac: could not construct a PolicyEngine: %s", exc)
-        return None
+    return engine
 
 
 def _rules(slug: str, policy_engine: Optional[Any]) -> Dict[str, Any]:
