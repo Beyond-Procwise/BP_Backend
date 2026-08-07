@@ -583,7 +583,9 @@ CREATE INDEX IF NOT EXISTS ix_bp_artifact_derivation_artifact_id
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/sql/test_mail_intake_sql.py -v`
-Expected: PASS, 16 tests
+Expected: PASS, 15 tests (5 table cases + 2 state checks + 2 quarantine-reason
+cases + dedup index + derivation + binding columns + raw_mime_key + 2 binding_id
+FK cases)
 
 - [ ] **Step 5: Apply the migration to bp_sqldb and confirm**
 
