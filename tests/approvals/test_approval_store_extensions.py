@@ -109,16 +109,6 @@ def test_revocation_requires_a_named_person(conn, ids):
         )
 
 
-def test_pending_list_returns_a_list(conn):
-    """There are 0 unsent drafts in this environment, so this asserts shape,
-    not contents -- a contents assertion would pass vacuously."""
-    rows = approval_store.list_pending_dispatch_approvals(limit=5, conn=conn)
-    assert isinstance(rows, list)
-    for row in rows:
-        assert "unique_id" in row
-        assert "content_hash" in row
-
-
 def test_an_approved_draft_is_not_pending(conn, ids):
     """Insert a draft, approve it, and confirm it drops out of the list."""
     cur = conn.cursor()

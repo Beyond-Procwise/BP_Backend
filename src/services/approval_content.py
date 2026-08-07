@@ -27,7 +27,11 @@ def _normalised(draft: Mapping) -> Dict[str, Any]:
     """
 
     out = dict(draft)
-    if not out.get("recipients") and not out.get("receiver"):
+    # Presence, not truthiness: a caller that resolved recipients and got none
+    # passes recipients=[], which is a real answer. Overriding it with a column
+    # the resolver ignores would hash against a recipient the send path will
+    # never use -- the divergence this helper exists to prevent.
+    if "recipients" not in out and "receiver" not in out:
         single = out.get("recipient_email")
         if single:
             out["receiver"] = single

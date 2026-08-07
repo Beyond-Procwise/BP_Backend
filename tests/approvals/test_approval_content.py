@@ -100,7 +100,11 @@ def test_a_raw_database_row_hashes_against_its_real_recipient():
 
 
 def test_an_already_resolved_recipient_list_wins():
-    """A caller that resolved recipients itself must not be overridden."""
+    """Non-empty resolved recipients take precedence over stale column.
+
+    This covers resolve_recipients' own preference for recipients over receiver;
+    _normalised's guard is tested separately by test_a_resolved_but_empty_recipient_list_is_not_overridden.
+    """
     raw = {
         "recipient_email": "stale@supplier-b.com",
         "recipients": ["current@supplier-b.com"],
@@ -114,3 +118,15 @@ def test_an_already_resolved_recipient_list_wins():
             "body": "Please quote.",
         }
     )
+
+
+def test_a_resolved_but_empty_recipient_list_is_not_overridden():
+    """recipients=[] is an answer, not an absence.
+
+    A caller that resolved recipients and got none must not have a stale
+    recipient_email column injected over the top -- the approval would then
+    hash against someone the send path never writes to.
+    """
+    resolved_empty = {"recipients": [], "subject": "RFQ", "body": "Please quote."}
+    with_stale_column = dict(resolved_empty, recipient_email="stale@supplier-b.com")
+    assert content_hash(resolved_empty) == content_hash(with_stale_column)
