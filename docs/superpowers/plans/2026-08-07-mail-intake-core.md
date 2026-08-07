@@ -1341,6 +1341,40 @@ def test_entry_names_escaping_the_package_are_never_a_document():
         assert typing_.detect(content) == "application/zip", hostile_name
 
 
+def test_package_libmagic_calls_octet_stream_is_still_recognised():
+    """Reproduces a real 19% false-positive rate on this repo's Word documents.
+
+    libmagic identifies an OOXML package by looking for recognisable parts near
+    the start of the archive. LibreOffice writes its `[trash]` padding first, so
+    magic reports `application/octet-stream` and — while inspection was keyed off
+    magic's verdict — the file was never inspected, typed as unknown, and
+    quarantined. Five of this repo's 26 real .docx files are shaped this way.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        # Order matters: the padding must come first, as LibreOffice writes it.
+        zf.writestr("[trash]/0000.dat", b"\xff\xff\xff\xff" + b"\x00" * 308)
+        zf.writestr("[trash]/0003.dat", b"\xff\xff\xff\xff" + b"\x00" * 270)
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+    assert typing_.detect(buf.getvalue()) == DOCX
+
+
+def test_widening_the_trigger_does_not_widen_what_earns_a_document_verdict():
+    """Inspection now runs on any zip, so confirm strictness still decides.
+
+    A malformed package must still come back as an archive even though it now
+    reaches the inspector by a different route.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[trash]/0000.dat", b"\x00" * 64)  # magic sees octet-stream
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("word/document.xml", "<document/>")  # no _rels/.rels
+    assert typing_.detect(buf.getvalue()) == "application/zip"
+
+
 def test_octet_stream_alias_never_excuses_an_archive():
     """Senders label everything octet-stream, so the alias set is broad. It must
     still not launder an archive into an acceptable document."""
@@ -1489,8 +1523,25 @@ def _inspect_zip_container(content: bytes) -> str:
     return "application/zip"
 
 
+# Local file header, empty archive, and spanned archive signatures. A file
+# beginning with one of these is a zip whatever libmagic decides to call it.
+_ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+
+
 def detect(content: bytes) -> str:
-    """Return the MIME type implied by the bytes themselves."""
+    """Return the MIME type implied by the bytes themselves.
+
+    Container inspection is triggered STRUCTURALLY — by the zip signature — not
+    by libmagic's verdict. That distinction is not academic: libmagic identifies
+    an OOXML package by looking for recognisable parts near the start of the
+    archive, so a Word document whose first member happens to be something else
+    is reported as `application/octet-stream`. LibreOffice writes exactly such
+    files: its `[trash]/0000.dat` padding lands first, and 5 of the 26 real
+    `.docx` files in this repo are affected. Keying inspection off libmagic's
+    answer meant those never reached it, were typed as unknown, and were
+    quarantined — a 19% false-positive rate on real Word documents that no
+    fixture would ever have shown.
+    """
     if not content:
         return UNKNOWN
     if magic is None:  # pragma: no cover - guarded for import-order safety only
@@ -1499,7 +1550,14 @@ def detect(content: bytes) -> str:
         detected = magic.from_buffer(content, mime=True) or UNKNOWN
     except Exception:
         return UNKNOWN
-    if detected == "application/zip":
+    if (
+        content[:4] in _ZIP_SIGNATURES
+        or detected == "application/zip"
+        or detected in _OOXML.values()
+    ):
+        # _inspect_zip_container is strict: anything that is not a well-formed
+        # package comes back as application/zip, so widening the trigger cannot
+        # widen what earns a document verdict.
         return _inspect_zip_container(content)
     return detected
 
@@ -2408,19 +2466,21 @@ def _inspect_members(content: bytes) -> Dict[str, Any]:
     sniff exclusively as text/xml, text/plain and text/html.
 
     On "never auto-expand": this reads a bounded prefix — at most
-    _MEMBER_SNIFF_BYTES from each of at most _MEMBER_SNIFF_LIMIT members, and
-    nothing at all from a member declaring an implausible size. That is
+    _MEMBER_SNIFF_BYTES from each of at most _MEMBER_SNIFF_LIMIT members, so at
+    most ~256KB of decompressed output for the whole call. That is
     classification, the same thing detect() does for the outer file, not
-    extraction: nothing is written, executed, or handed onward. Reading a
-    bounded length also bounds decompression, so a member that lies about its
-    size cannot become a decompression bomb.
+    extraction: nothing is written, executed, or handed onward. The read length
+    bounds the decompression, so a member's declared size never affects our
+    cost and no size-conditioned branch exists for a crafted size to influence.
 
     KNOWN LIMIT, stated rather than implied: a payload placed beyond the first
     _MEMBER_SNIFF_BYTES of a member will not be recognised. Sniffing further
-    only moves the boundary, since a payload can sit at any offset. The detail
-    therefore records how much was examined, so a reviewer can tell a
-    fully-classified member from a partially-classified one rather than reading
-    silence as safety. What makes the residue tolerable is that such a payload
+    only moves the boundary, since a payload can sit at any offset. On a
+    quarantine verdict the detail records how much was examined, so a reviewer
+    can tell a fully-classified member from a partially-classified one rather
+    than reading silence as safety. (A cleared file's record does not carry that
+    summary — see the deferred note in the ledger.) What makes the residue
+    tolerable is that such a payload
     cannot execute here — extraction parses the container as a document and
     ignores foreign parts — and the bytes are retained for audit either way.
 
@@ -2638,7 +2698,68 @@ break one rule and confirm a test catches it.
 
 Expected: FAIL. Restore the branch and confirm PASS again before committing.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Add the real-corpus sweep as a test**
+
+Fixtures test what the author imagined; real files test what exists. This sweep
+has now caught three false positives that the fixture suite could not see — a
+LibreOffice `[trash]` artifact, an 8MB worksheet part, and a 19% misdetection
+rate on real Word documents. It belongs in the suite, not in a scratch script.
+
+```python
+# append to tests/services/mail_intake/test_safety.py
+import glob
+
+import pytest
+
+
+def _repo_office_files():
+    root = "/home/muthu/PycharmProjects/BP_Backend"
+    found = []
+    for pattern in ("**/*.xlsx", "**/*.docx"):
+        found.extend(glob.glob(f"{root}/{pattern}", recursive=True))
+    # Exclude the virtualenv and any worktree copies of this repo.
+    return sorted(
+        f for f in set(found) if "/venv/" not in f and "/.claude/worktrees/" not in f
+    )
+
+
+@pytest.mark.integration
+def test_real_office_corpus_passes_the_gate():
+    """Every genuine Office file in this repo must clear the gate.
+
+    Marked `integration` because it depends on files outside the test tree; it
+    is skipped with `-m "not integration"`. Run it whenever the gate changes —
+    a false-positive rate here is the difference between a review queue people
+    use and one they learn to ignore.
+    """
+    files = _repo_office_files()
+    if not files:
+        pytest.skip("no real Office files available in this checkout")
+
+    declared = {
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    held = []
+    for path in files:
+        content = pathlib.Path(path).read_bytes()
+        suffix = pathlib.Path(path).suffix.lower()
+        verdict = safety.evaluate(
+            content,
+            declared_mime=declared[suffix],
+            detected_mime=typing_.detect(content),
+            filename=pathlib.Path(path).name,
+            size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+        )
+        if not verdict.ok:
+            held.append(f"{pathlib.Path(path).name}: {verdict.reason} {verdict.detail}")
+
+    assert not held, "real Office files wrongly quarantined:\n" + "\n".join(held)
+```
+
+Run it explicitly: `./venv/bin/python -m pytest tests/services/mail_intake/test_safety.py -m integration -v`
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/services/mail_intake/safety.py tests/services/mail_intake/test_safety.py tests/fixtures/mail_intake/
