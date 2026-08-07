@@ -17,7 +17,7 @@ passed here directly.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import psycopg2.extras
 
@@ -239,3 +239,130 @@ def find_round_approval(
         return _run(conn)
     with get_conn() as own:
         return _run(own)
+
+
+def list_pending_dispatch_approvals(
+    *, limit: int = 50, conn: Any = None
+) -> List[Dict[str, Any]]:
+    """Unsent drafts that have no current approval.
+
+    Without this an approver has nothing to act on. The content hash of each
+    is included so a caller approves a specific version of the draft rather
+    than the draft as a moving target.
+    """
+
+    sql = (
+        "SELECT unique_id, rfq_id, workflow_id, supplier_id, subject, body, "
+        "       recipient_email, sender, attachments, payload "
+        "  FROM proc.draft_rfq_emails "
+        " WHERE sent IS NOT TRUE "
+        "   AND unique_id IS NOT NULL "
+        " ORDER BY created_on DESC "
+        " LIMIT %s"
+    )
+
+    def _run(connection: Any) -> List[Dict[str, Any]]:
+        from src.services.approval_content import content_hash
+
+        cur = _dict_cursor(connection)
+        cur.execute(sql, (int(limit),))
+        drafts = [dict(r) for r in cur.fetchall()]
+        out: List[Dict[str, Any]] = []
+        for draft in drafts:
+            # find_dispatch_approval per row: acceptable at today's backlog
+            # size, but a query per row does not scale to a large backlog.
+            # Flagged, not silently fixed -- see task-3 report.
+            existing = find_dispatch_approval(
+                rfq_id=draft.get("rfq_id"),
+                workflow_id=draft.get("workflow_id"),
+                unique_id=draft.get("unique_id"),
+                conn=connection,
+            )
+            if existing:
+                continue
+            # draft_rfq_emails stores recipient_email (singular); content_hash
+            # (via resolve_recipients) looks for "recipients" or "receiver" --
+            # the same keys email_dispatch_service hydrates onto a draft row
+            # before hashing/sending (see its _hydrate-style mapping). Map it
+            # here too, or the hash would silently cover an empty recipient
+            # set instead of who the draft actually goes to.
+            draft.setdefault("receiver", draft.get("recipient_email"))
+            out.append(
+                {
+                    "unique_id": draft.get("unique_id"),
+                    "rfq_id": draft.get("rfq_id"),
+                    "workflow_id": draft.get("workflow_id"),
+                    "supplier_id": draft.get("supplier_id"),
+                    "subject": draft.get("subject"),
+                    "content_hash": content_hash(draft),
+                }
+            )
+        return out
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
+def revoke_approval(
+    *,
+    approval_id: int,
+    actioned_by: str,
+    reason: Optional[str] = None,
+    conn: Any = None,
+) -> int:
+    """Withdraw an approval by writing a later revoking row. Returns its id.
+
+    bp_approval is append-only, and both lookups take the newest row for a key
+    regardless of status before requiring it to be approved and signed -- so a
+    later revoked row shadows the original without mutating history.
+    """
+
+    signer = str(actioned_by or "").strip()
+    if not signer:
+        raise ValueError("actioned_by is required: a revocation must name a person")
+
+    def _run(connection: Any) -> int:
+        cur = _dict_cursor(connection)
+        cur.execute(
+            "SELECT * FROM proc.bp_approval WHERE approval_id = %s", (int(approval_id),)
+        )
+        original = cur.fetchone()
+        if original is None:
+            raise ValueError(f"no approval with id {approval_id}")
+        original = dict(original)
+
+        write = connection.cursor()
+        write.execute(
+            "INSERT INTO proc.bp_approval "
+            "(deal_id, rfq_id, supplier_id, decision, decision_reason, status, "
+            " actioned_by, actioned_at, grounding, workflow_id, created_by, created_date) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s,%s,%s, now()) "
+            "RETURNING approval_id",
+            (
+                original.get("deal_id"),
+                original.get("rfq_id"),
+                original.get("supplier_id"),
+                "deny",
+                reason,
+                "revoked",
+                signer,
+                psycopg2.extras.Json(original.get("grounding") or {}),
+                original.get("workflow_id"),
+                signer,
+            ),
+        )
+        return int(write.fetchone()[0])
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        own.autocommit = False
+        try:
+            new_id = _run(own)
+            own.commit()
+            return new_id
+        except Exception:
+            own.rollback()
+            raise
