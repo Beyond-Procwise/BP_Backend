@@ -77,6 +77,11 @@ def authorize(
                 action_class=action_class,
             )
 
+        # DO NOT move this below the `may` check: that reorders which failure
+        # an exploding engine is caught by, and silently turns a broken-engine
+        # denial back into a role denial with no error evidence (see
+        # test_an_exploding_engine_denies_rather_than_raises).
+        #
         # Fetch the applicable policies before the role-cap check below.
         # rbac's own helpers (effective_role, is_irreversible, may) each
         # catch their own engine failures internally and fall back to the

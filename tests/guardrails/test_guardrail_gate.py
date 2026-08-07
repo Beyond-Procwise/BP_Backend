@@ -192,3 +192,44 @@ def test_the_real_policy_rows_can_actually_open_the_gate():
         "no live policy row declares applies_to ['email.send'] -- the gate "
         "cannot be opened by any caller or any policy edit"
     )
+
+
+def test_a_real_decision_carries_the_policy_version():
+    """G8 requires the audited policy's version, and a fixture cannot prove it.
+
+    The unit fixtures set raw_row["version"] by hand, so they pass whether or
+    not the loader actually selects the column.
+    """
+    import os
+
+    import psycopg2
+    from dotenv import load_dotenv
+
+    from src.engines.policy_engine import PolicyEngine
+
+    load_dotenv()
+
+    def factory():
+        return psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT", 5432),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            connect_timeout=10,
+        )
+
+    class Approver:
+        subject = "sub-approver"
+        claims = {"cognito:groups": ["bp-approvers"]}
+
+    engine = PolicyEngine(connection_factory=factory)
+    decision = guardrail.authorize(
+        "email.send", "communicate", Approver(), {}, policy_engine=engine
+    )
+
+    assert decision.allowed is True, decision.reason
+    assert isinstance(decision.policy_version, int), (
+        "policy_version is None against the live database -- the loader is not "
+        "selecting bp_policy.version, so every audit row would record no version"
+    )

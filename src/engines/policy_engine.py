@@ -176,6 +176,7 @@ class PolicyEngine:
             "policy_desc",
             "policy_details",
             "policy_linked_agents",
+            "version",
         ]
         with self._connect() as conn:
             if conn is None:
@@ -185,7 +186,7 @@ class PolicyEngine:
                     cursor.execute(
                         """
                         SELECT policy_id, policy_name, policy_type, policy_desc,
-                               policy_details, policy_linked_agents
+                               policy_details, policy_linked_agents, version
                         FROM proc.bp_policy
                         WHERE COALESCE(policy_status, 1) = 1
                         -- policy_id, NOT policy_name. Callers treat the first policy of a
