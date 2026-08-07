@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from api.auth import require_user
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/decisions", tags=["Decisions"])
@@ -41,11 +43,26 @@ def get_agent_nick(request: Request):
     return nick
 
 
+def _actor(principal: Any) -> str:
+    """Who acted. From the token, never from the body.
+
+    A body-supplied actor is forgeable, and these endpoints resolve findings
+    and release supplier mail -- the name recorded against that has to mean
+    something.
+    """
+
+    subject = str(getattr(principal, "subject", "") or "").strip()
+    if not subject:
+        raise HTTPException(
+            status_code=401, detail="this action must be attributed to a person"
+        )
+    return subject
+
+
 class DecideRequest(BaseModel):
     # What the human clicked, if anything. Recorded alongside the engine's own view
     # so a call that went against the evidence is visible afterwards.
     requested: Optional[str] = None
-    user_id: Optional[str] = None
     workflow_id: Optional[str] = None
 
 
@@ -54,7 +71,10 @@ def decide_finding(
     finding_id: str,
     body: DecideRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
+    actor = _actor(principal)
+
     from engines.decision_engine import DecisionEngine
 
     engine = DecisionEngine(agent_nick)
@@ -63,7 +83,7 @@ def decide_finding(
         decision,
         workflow_id=body.workflow_id,
         agent="decision_engine",
-        created_by=body.user_id or "api",
+        created_by=actor,
     )
 
     payload = decision.to_dict()
@@ -84,7 +104,6 @@ def decide_finding(
 
 class ActionRequest(BaseModel):
     action: str
-    user_id: Optional[str] = None
     # Only for apply_value, when the operator supplies a figure other than the expected.
     value: Optional[str] = None
     # Required when the action contradicts what the evidence supports. Recorded against
@@ -97,6 +116,7 @@ def act_on_finding(
     finding_id: str,
     body: ActionRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Carry out the human's decision on a finding. The engine advises; it does not veto.
 
@@ -117,12 +137,14 @@ def act_on_finding(
     The source extraction is never overwritten — the correction is recorded against the
     finding, so what the document actually said stays intact.
     """
+    actor = _actor(principal)
+
     from engines.decision_engine import DecisionEngine
 
     result = DecisionEngine(agent_nick).execute(
         finding_id,
         body.action,
-        user_id=body.user_id or "api",
+        user_id=actor,
         value=body.value,
         override_reason=body.override_reason,
     )
@@ -139,6 +161,7 @@ def decide_email_reply(
     response_id: str,
     body: Optional[DecideRequest] = None,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Decide a supplier reply: answer it unattended, or escalate it to a human.
 
@@ -146,6 +169,8 @@ def decide_email_reply(
     request. A limit supplied by the caller would be a limit chosen by the caller,
     which is exactly the ApprovalsAgent mistake this system does not repeat.
     """
+    actor = _actor(principal)
+
     from engines.decision_engine import DecisionEngine
     from src.services.governance_tools.authority import resolve_authority
 
@@ -160,7 +185,7 @@ def decide_email_reply(
         decision,
         workflow_id=(body.workflow_id if body else None),
         agent=_EMAIL_AGENT,
-        created_by=(body.user_id if body and body.user_id else "system"),
+        created_by=actor,
     )
     payload = decision.to_dict()
     payload["decision_id"] = decision_id
@@ -169,7 +194,6 @@ def decide_email_reply(
 
 class EmailActionRequest(BaseModel):
     action: str
-    user_id: Optional[str] = None
     # Required when the action contradicts what the evidence supports. Recorded
     # against the actor. Not a flag -- a sentence. Same convention as
     # ActionRequest.override_reason on the finding path.
@@ -181,6 +205,7 @@ def act_on_email_reply(
     decision_id: int,
     body: EmailActionRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Carry out the human's send/reject on an already-decided email reply.
 
@@ -202,12 +227,14 @@ def act_on_email_reply(
     is recorded against the actor. The human is never blocked -- they are asked to
     mean it.
     """
+    actor = _actor(principal)
+
     from engines.decision_engine import DecisionEngine
 
     result = DecisionEngine(agent_nick).act_on_email_reply(
         decision_id,
         body.action,
-        user_id=body.user_id or "api",
+        user_id=actor,
         override_reason=body.override_reason,
     )
     if result.get("error") and not result.get("requires_override"):
@@ -219,6 +246,7 @@ def act_on_email_reply(
 def get_email_reply_message(
     decision_id: int,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """The supplier's own message behind an escalated email decision.
 
@@ -242,7 +270,13 @@ def get_email_reply_message(
     Nothing in the response -- including every error path -- names a table, a column or
     a driver. The keys are the parts of an email (`from`, `subject`, `received_at`,
     `body`), which is what the reader is looking at.
+
+    Reading a decision is not an approval-class action, so authentication alone
+    gates this route -- no capability check on top of it, which would lock out
+    roles that legitimately need visibility.
     """
+    _actor(principal)  # authenticated caller required; no capability check for a read
+
     # Taken from the engine rather than repeated as a literal here: the scoping value
     # and the value the decision was WRITTEN with must be the same string, always.
     from engines.decision_engine import DecisionEngine
@@ -341,6 +375,7 @@ def list_decisions(
     status: str = Query(default="open"),
     limit: int = Query(default=100, ge=1, le=500),
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Escalated decisions awaiting a human — the rows behind the Todo list.
 
@@ -373,7 +408,12 @@ def list_decisions(
     was not (an ungrounded reading is one of the reasons a reply gets escalated in
     the first place). A caller must not attribute an ungrounded sentence to the
     supplier, so the flag travels with the text rather than being assumed.
+
+    Reading the queue is not an approval-class action: authentication alone
+    gates this route, no capability check.
     """
+    _actor(principal)  # authenticated caller required; no capability check for a read
+
     where = ["d.resolution = 'escalated'"]
     params: List[Any] = []
     if subject_type:
@@ -440,8 +480,18 @@ def list_decisions(
 
 
 @router.get("/{decision_id}")
-def get_decision(decision_id: int, agent_nick=Depends(get_agent_nick)) -> Dict[str, Any]:
-    """The decision, and every fact it was computed from."""
+def get_decision(
+    decision_id: int,
+    agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
+) -> Dict[str, Any]:
+    """The decision, and every fact it was computed from.
+
+    Reading a decision is not an approval-class action: authentication alone
+    gates this route, no capability check.
+    """
+    _actor(principal)  # authenticated caller required; no capability check for a read
+
     from engines.decision_engine import DecisionEngine
 
     row = DecisionEngine(agent_nick).trace(decision_id)
