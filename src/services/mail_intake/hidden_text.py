@@ -33,6 +33,7 @@ instruction into the record would defeat the point of catching it.
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
@@ -41,9 +42,28 @@ TINY_FONT_PT = 1.5
 NEAR_ZERO_OPACITY = 0.05
 # Luminance above which text is treated as white-ish for the contrast check.
 LIGHT_LUMINANCE = 0.90
-# Fraction of a text span's area that must sit over an image for it to read as
-# an OCR layer rather than free-floating injected text.
+
+# Fraction of a text span that must sit over qualifying scan imagery for it to
+# read as an OCR layer rather than free-floating injected text.
 OCR_OVERLAP_THRESHOLD = 0.60
+
+# Fraction of the PAGE an image must cover before it counts as scan backing.
+#
+# This exists because overlap alone is defeatable. An earlier version asked only
+# whether some image covered the span; an attacker authoring the PDF — precisely
+# the threat model here — could place a 10x10 pixel graphic under the injected
+# text and the detection vanished entirely. Demonstrated, not theorised.
+# Requiring the backing image to cover a substantial share of the page means
+# concealment now costs a large visible graphic the reader would notice, rather
+# than an invisible speck.
+#
+# CALIBRATION NOTE, stated because the number reads more authoritative than it
+# is: none of the 260 real PDFs in this repo carries an invisible OCR layer, so
+# there was no corpus data to tune against. 0.50 passes a full-page scan with
+# wide margin and rejects the logo-sized case; a hybrid document whose scanned
+# region covers less than half a page would be flagged, which is the safer
+# direction to err. Revisit once real inbound mail provides examples.
+OCR_PAGE_COVERAGE_MIN = 0.50
 
 _WORD_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -98,11 +118,47 @@ def _image_rects(page) -> List[Any]:
     return rects
 
 
-def _backed_by_image(span_box, image_rects) -> bool:
-    return any(
-        _overlap_fraction(span_box, tuple(rect)) >= OCR_OVERLAP_THRESHOLD
+def _scan_backings(image_rects, page_box) -> List[Any]:
+    """Images large enough to plausibly BE a page scan.
+
+    A letterhead logo is not scan backing. Filtering here is what stops a
+    speck-sized graphic from laundering injected text.
+    """
+    page_area = _area(page_box)
+    if page_area <= 0:
+        return []
+    return [
+        tuple(rect)
         for rect in image_rects
-    )
+        if _area(tuple(rect)) / page_area >= OCR_PAGE_COVERAGE_MIN
+    ]
+
+
+def _backed_by_scan(span_box, backings) -> bool:
+    """Is the span covered by the UNION of qualifying scan images?
+
+    Union, not any-single-image: a large scan is often laid down as adjacent
+    tiles, and an OCR span straddling a tile seam overlaps neither tile by
+    enough on its own. Testing each rect independently flagged exactly that
+    legitimate case — the false positive this module exists to avoid.
+
+    The union is measured by sampling a grid across the span rather than by
+    exact rectangle union, which is fiddly and buys no accuracy at these scales.
+    """
+    if not backings:
+        return False
+    if _area(span_box) <= 0:
+        return False
+
+    cols, rows = 40, 12
+    covered = 0
+    for i in range(cols):
+        x = span_box[0] + (span_box[2] - span_box[0]) * (i + 0.5) / cols
+        for j in range(rows):
+            y = span_box[1] + (span_box[3] - span_box[1]) * (j + 0.5) / rows
+            if any(r[0] <= x <= r[2] and r[1] <= y <= r[3] for r in backings):
+                covered += 1
+    return covered / float(cols * rows) >= OCR_OVERLAP_THRESHOLD
 
 
 def _hidden_layers(doc) -> set:
@@ -143,8 +199,8 @@ def _scan_pdf(content: bytes) -> Tuple[HiddenTextHit, ...]:
                 hits.append(HiddenTextHit("unreadable", index, (0, 0, 0, 0), 0))
                 continue
 
-            image_rects = _image_rects(page)
             page_box = tuple(page.rect)
+            backings = _scan_backings(_image_rects(page), page_box)
 
             for span in spans:
                 box = tuple(span.get("bbox") or (0, 0, 0, 0))
@@ -155,7 +211,7 @@ def _scan_pdf(content: bytes) -> Tuple[HiddenTextHit, ...]:
 
                 if span.get("type") == 3:
                     # Render mode 3. Benign when it is an OCR layer over a scan.
-                    if not _backed_by_image(box, image_rects):
+                    if not _backed_by_scan(box, backings):
                         technique = "invisible_render"
                 elif float(span.get("opacity", 1.0) or 0.0) <= NEAR_ZERO_OPACITY:
                     technique = "zero_alpha"
@@ -164,7 +220,7 @@ def _scan_pdf(content: bytes) -> Tuple[HiddenTextHit, ...]:
                 elif _luminance(span.get("color") or (0, 0, 0)) >= LIGHT_LUMINANCE:
                     # White-ish text is legitimate over a dark fill or an image.
                     # Nothing beneath it means nothing renders.
-                    if not _backed_by_image(box, image_rects):
+                    if not _backed_by_scan(box, backings):
                         technique = "low_contrast"
 
                 if technique is None and span.get("layer") in hidden_layer_names:
@@ -184,6 +240,37 @@ def _scan_pdf(content: bytes) -> Tuple[HiddenTextHit, ...]:
     return tuple(hits)
 
 
+# OOXML is attacker-authored in this threat model, so these must not depend on
+# incidental formatting. Substring matching failed on both counts: it flagged
+# `<w:vanish w:val="0"/>` — the standard idiom for *disabling* an inherited
+# hidden style, i.e. genuinely visible text — and it missed
+# `<w:color w:themeColor="text1" w:val="FFFFFF"/>` because `w:val` no longer
+# immediately followed the element name. Both reproduced.
+_VANISH_ELEMENT = re.compile(r"<w:vanish\b([^>]*)>", re.IGNORECASE)
+_WHITE_COLOR_ELEMENT = re.compile(
+    r"<w:color\b[^>]*\bw:val\s*=\s*\"(?:FFFFFF|ffffff)\"", re.IGNORECASE
+)
+_SHEET_HIDDEN = re.compile(
+    r"\bstate\s*=\s*\"(?:hidden|veryHidden)\"", re.IGNORECASE
+)
+# w:val="0"/"false"/"off" all mean the toggle is switched OFF.
+_TOGGLE_OFF = re.compile(r"\bw:val\s*=\s*\"(?:0|false|off)\"", re.IGNORECASE)
+
+
+def _word_hidden_hits(body: str) -> List[HiddenTextHit]:
+    """Hidden-run and white-font detection that survives ordinary XML variation."""
+    hits: List[HiddenTextHit] = []
+    for match in _VANISH_ELEMENT.finditer(body):
+        attributes = match.group(1) or ""
+        if _TOGGLE_OFF.search(attributes):
+            continue  # explicitly switched off: the text is visible
+        hits.append(HiddenTextHit("office_hidden", 0, (0, 0, 0, 0), 0))
+        break
+    if _WHITE_COLOR_ELEMENT.search(body):
+        hits.append(HiddenTextHit("office_hidden", 0, (0, 0, 0, 0), 0))
+    return hits
+
+
 def _scan_ooxml(content: bytes, mime: str) -> Tuple[HiddenTextHit, ...]:
     """Structural inspection of the package XML. Nothing is opened or executed."""
     try:
@@ -196,16 +283,20 @@ def _scan_ooxml(content: bytes, mime: str) -> Tuple[HiddenTextHit, ...]:
             names = zf.namelist()
             hits: List[HiddenTextHit] = []
 
-            if mime == _WORD_MIME and "word/document.xml" in names:
+            if mime == _WORD_MIME:
+                if "word/document.xml" not in names:
+                    # A valid zip claiming to be a Word document but carrying no
+                    # document part is corrupt or a decoy. Falling through
+                    # silently would clear it; cannot inspect means cannot clear.
+                    return (HiddenTextHit("unreadable", 0, (0, 0, 0, 0), 0),)
                 body = zf.read("word/document.xml").decode("utf-8", "replace")
-                if "<w:vanish/>" in body or "<w:vanish " in body:
-                    hits.append(HiddenTextHit("office_hidden", 0, (0, 0, 0, 0), 0))
-                if 'w:color w:val="FFFFFF"' in body:
-                    hits.append(HiddenTextHit("office_hidden", 0, (0, 0, 0, 0), 0))
+                hits.extend(_word_hidden_hits(body))
 
-            if mime == _EXCEL_MIME and "xl/workbook.xml" in names:
+            if mime == _EXCEL_MIME:
+                if "xl/workbook.xml" not in names:
+                    return (HiddenTextHit("unreadable", 0, (0, 0, 0, 0), 0),)
                 book = zf.read("xl/workbook.xml").decode("utf-8", "replace")
-                if 'state="hidden"' in book or 'state="veryHidden"' in book:
+                if _SHEET_HIDDEN.search(book):
                     hits.append(HiddenTextHit("office_hidden", 0, (0, 0, 0, 0), 0))
 
             return tuple(hits)
