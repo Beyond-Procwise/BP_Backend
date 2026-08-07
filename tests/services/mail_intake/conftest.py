@@ -18,6 +18,10 @@ class FakeCursor:
     def __init__(self, results=()):
         self._results = list(results)
         self.calls = []
+        # Mirrors psycopg2: rows affected by the last statement. Defaults to 1
+        # so ordinary tests read as "the update applied"; set it to 0 to model
+        # a guarded UPDATE that lost a race.
+        self.rowcount = 1
 
     # -- cursor API --
     def execute(self, sql, params=None):

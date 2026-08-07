@@ -111,6 +111,11 @@ def test_claim_ready_artifacts_selects_only_ready_rows():
     cur = FakeCursor([{"artifact_id": "ART-1"}])
     rows = repo.claim_ready_artifacts(cur, limit=10)
     sql, params = cur.calls[0]
+    # Assert the FILTER, not merely that the value was bound. Checking only the
+    # parameter would keep passing if a future edit dropped `WHERE state = %s`
+    # from the SQL and left the value as a stray binding — which is precisely
+    # the regression this test exists to catch.
+    assert "WHERE state = %s" in sql
     assert ArtifactState.READY_FOR_EXTRACTION.value in params
     assert rows == [{"artifact_id": "ART-1"}]
 
@@ -127,8 +132,48 @@ def test_derivation_is_append_only():
 def test_find_existing_artifact_scopes_to_the_owner():
     cur = FakeCursor([("ART-7",)])
     assert repo.find_existing_artifact(cur, "user-7", "abc", None) == "ART-7"
-    _, params = cur.calls[0]
+    sql, params = cur.calls[0]
+    # The owner predicate must be IN THE SQL. Asserting only the bound value
+    # would pass even if the scoping clause were removed — and losing it means
+    # one customer's content hash matching another's, which is the worst
+    # failure this function can have.
+    assert "WHERE owner_ref = %s" in sql
     assert "user-7" in params
+
+
+def test_mark_duplicate_validates_the_state_it_is_given():
+    """The transition check must consult the artifact's actual state.
+
+    An earlier version passed two hardcoded literals to assert_transition, so
+    it could never raise whatever state the row was really in — it looked
+    exactly like the sibling functions that do validate, while validating
+    nothing.
+    """
+    cur = FakeCursor()
+    with pytest.raises(IllegalTransition):
+        repo.mark_duplicate(cur, "ART-1", "ART-2", current=ArtifactState.TYPED)
+    assert cur.calls == []
+
+
+def test_mark_duplicate_guards_against_a_concurrent_transition():
+    cur = FakeCursor()
+    repo.mark_duplicate(cur, "ART-1", "ART-2")
+    sql, params = cur.calls[0]
+    assert "AND state = %s" in sql
+    assert ArtifactState.STORED.value in params
+
+
+def test_a_transition_that_matched_no_row_is_reported_not_silent(caplog):
+    """A guarded UPDATE matching zero rows means another writer moved the row
+    first. Returning None made that indistinguishable from success."""
+    cur = FakeCursor()
+    cur.rowcount = 0
+    with caplog.at_level("WARNING"):
+        applied = repo.transition_artifact(
+            cur, "ART-1", ArtifactState.GATED, ArtifactState.STORED
+        )
+    assert applied is False
+    assert any("transition_skipped" in r.getMessage() for r in caplog.records)
 
 
 def test_safe_log_fields_drops_content_and_keeps_correlation_keys():

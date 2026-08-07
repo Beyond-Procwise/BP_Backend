@@ -49,6 +49,29 @@ def raw_mime_key(owner_ref: str, bundle_id: str) -> str:
     return f"{RAW_MIME_PREFIX}{owner_ref}/{bundle_id}.eml"
 
 
+def _is_not_found(exc: Exception) -> bool:
+    """True only for "this key does not exist", never for any other failure.
+
+    The distinction is the whole write-once guarantee. An earlier version caught
+    every exception and reported "absent", so a throttle, a timeout or a
+    permission change made exists() return False and put_immutable overwrote
+    genuinely different content under the same key — silently defeating the one
+    property this class exists to provide. Not knowing whether an object exists
+    is not the same as knowing it does not.
+    """
+    code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+    if code in ("404", "NoSuchKey", "NotFound"):
+        return True
+    status = getattr(exc, "response", {}).get(
+        "ResponseMetadata", {}
+    ).get("HTTPStatusCode")
+    return status == 404
+
+
+class StorageUnavailable(RuntimeError):
+    """The store could not answer. Never silently treated as "absent"."""
+
+
 class ObjectStore:
     """Thin write-once wrapper. Holds no parsing or interpretation logic."""
 
@@ -64,11 +87,16 @@ class ObjectStore:
         return self._client
 
     def exists(self, key: str) -> bool:
+        """True, False, or raise. Never "probably not"."""
         try:
             self._resolve_client().head_object(Bucket=self._bucket, Key=key)
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            if _is_not_found(exc):
+                return False
+            raise StorageUnavailable(
+                f"could not determine whether {key} exists"
+            ) from exc
 
     def get(self, key: str) -> Optional[bytes]:
         try:
@@ -76,18 +104,30 @@ class ObjectStore:
                 Bucket=self._bucket, Key=key
             )
             return response["Body"].read()
-        except Exception:
-            return None
+        except Exception as exc:
+            if _is_not_found(exc):
+                return None
+            raise StorageUnavailable(f"could not read {key}") from exc
 
     def put_immutable(self, key: str, content: bytes) -> str:
-        """Write content once. Identical re-writes are no-ops; different ones raise."""
+        """Write content once. Identical re-writes are no-ops; different ones raise.
+
+        Every branch below either proves the write is safe or refuses. In
+        particular, an existing key whose content cannot be read is NOT treated
+        as a mismatch — it is a storage failure, and calling it a mismatch would
+        report a fabricated integrity violation. Both are refusals; only one of
+        them is true.
+        """
         client = self._resolve_client()
-        if self.exists(key):
-            existing = self.get(key)
-            if existing is not None and existing != content:
-                raise ImmutabilityViolation(key)
-            if existing == content:
-                return key
+        if not self.exists(key):
+            client.put_object(Bucket=self._bucket, Key=key, Body=content)
+            return key
+
+        existing = self.get(key)
+        if existing is None:
+            raise StorageUnavailable(
+                f"{key} exists but its content could not be read; refusing to write"
+            )
+        if existing != content:
             raise ImmutabilityViolation(key)
-        client.put_object(Bucket=self._bucket, Key=key, Body=content)
         return key

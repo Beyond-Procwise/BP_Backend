@@ -3,8 +3,24 @@ prefix so the extraction path holds no key that can reach it."""
 import io
 
 import pytest
+from botocore.exceptions import ClientError
 
 from src.services.mail_intake import store
+
+
+def _not_found(operation: str) -> ClientError:
+    # store._is_not_found() inspects .response the way a real boto3
+    # ClientError does (Error.Code / ResponseMetadata.HTTPStatusCode) — a
+    # bare KeyError has no .response at all, so it would be treated as an
+    # unrecognised failure (StorageUnavailable) rather than "absent". This
+    # mirrors what a real S3 404 actually looks like.
+    return ClientError(
+        {
+            "Error": {"Code": "404", "Message": "Not Found"},
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+        },
+        operation,
+    )
 
 
 class FakeS3:
@@ -19,7 +35,7 @@ class FakeS3:
 
     def head_object(self, Bucket, Key):
         if (Bucket, Key) not in self.objects:
-            raise KeyError(Key)
+            raise _not_found("HeadObject")
         return {"ContentLength": len(self.objects[(Bucket, Key)])}
 
     def get_object(self, Bucket, Key):
@@ -27,7 +43,7 @@ class FakeS3:
         # whether a re-put is an identical no-op or a genuine violation —
         # real boto3 has no other way to compare content server-side.
         if (Bucket, Key) not in self.objects:
-            raise KeyError(Key)
+            raise _not_found("GetObject")
         return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
 
 

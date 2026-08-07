@@ -18,6 +18,7 @@ Spec §5, §9.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -28,6 +29,8 @@ from src.services.mail_intake.states import (
     QuarantineReason,
     assert_transition,
 )
+
+log = logging.getLogger(__name__)
 
 # Fields that must never reach a log line, in any environment.
 _NEVER_LOG = frozenset(
@@ -55,6 +58,26 @@ def safe_log_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         else:
             out["sender_address"] = "<redacted>"
     return out
+
+
+def _applied(cur, what: str, row_id: str, current, target) -> bool:
+    """Did the guarded UPDATE actually move the row?
+
+    Every transition here carries `AND state = %s`, which correctly stops a
+    stale writer clobbering a row that has since moved on. But a guarded UPDATE
+    matching zero rows is indistinguishable from a successful one to a caller
+    that ignores rowcount — so a lost race looked exactly like a completed
+    transition. Surfacing it costs one branch and turns a silent no-op into a
+    visible event.
+    """
+    applied = getattr(cur, "rowcount", 1) != 0
+    if not applied:
+        log.warning(
+            "mail_intake.transition_skipped op=%s id=%s expected_state=%s target=%s",
+            what, row_id, getattr(current, "value", current),
+            getattr(target, "value", target),
+        )
+    return applied
 
 
 def insert_bundle(cur, **fields: Any) -> Optional[str]:
@@ -118,7 +141,7 @@ def insert_bundle(cur, **fields: Any) -> Optional[str]:
 
 def transition_bundle(cur, bundle_id: str, current: BundleState,
                       target: BundleState,
-                      reason: Optional[QuarantineReason] = None) -> None:
+                      reason: Optional[QuarantineReason] = None) -> bool:
     assert_transition(current, target)
     cur.execute(
         """
@@ -128,6 +151,7 @@ def transition_bundle(cur, bundle_id: str, current: BundleState,
         """,
         (target.value, reason.value if reason else None, bundle_id, current.value),
     )
+    return _applied(cur, "transition_bundle", bundle_id, current, target)
 
 
 def insert_artifact(cur, **fields: Any) -> str:
@@ -164,7 +188,7 @@ def insert_artifact(cur, **fields: Any) -> str:
 def transition_artifact(cur, artifact_id: str, current: ArtifactState,
                         target: ArtifactState,
                         reason: Optional[QuarantineReason] = None,
-                        detail: Optional[Dict[str, Any]] = None) -> None:
+                        detail: Optional[Dict[str, Any]] = None) -> bool:
     assert_transition(current, target)
     cur.execute(
         """
@@ -181,18 +205,31 @@ def transition_artifact(cur, artifact_id: str, current: ArtifactState,
             current.value,
         ),
     )
+    return _applied(cur, "transition_artifact", artifact_id, current, target)
 
 
-def mark_duplicate(cur, artifact_id: str, duplicate_of: str) -> None:
-    assert_transition(ArtifactState.STORED, ArtifactState.DUPLICATE)
+def mark_duplicate(cur, artifact_id: str, duplicate_of: str,
+                   current: ArtifactState = ArtifactState.STORED) -> bool:
+    """Mark an artifact as a duplicate of another.
+
+    `current` is a parameter, not a literal. An earlier version called
+    assert_transition(STORED, DUPLICATE) with two hardcoded constants — which
+    can never raise whatever state the row is actually in, so it validated
+    nothing while looking exactly like the sibling functions that do. It also
+    omitted their `AND state = %s` guard, so a concurrent transition could
+    overwrite silently.
+    """
+    assert_transition(current, ArtifactState.DUPLICATE)
     cur.execute(
         """
         UPDATE proc.bp_ingest_artifact
            SET state = %s, duplicate_of_artifact_id = %s, updated_at = now()
-         WHERE artifact_id = %s
+         WHERE artifact_id = %s AND state = %s
         """,
-        (ArtifactState.DUPLICATE.value, duplicate_of, artifact_id),
+        (ArtifactState.DUPLICATE.value, duplicate_of, artifact_id, current.value),
     )
+    return _applied(cur, "mark_duplicate", artifact_id, current,
+                    ArtifactState.DUPLICATE)
 
 
 def insert_sender_auth(cur, bundle_id: str, auth: Any, bind_result: Any) -> None:
