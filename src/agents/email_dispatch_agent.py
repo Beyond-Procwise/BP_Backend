@@ -140,6 +140,7 @@ class EmailDispatchAgent(BaseAgent):
         draft: Dict[str, Any],
         workflow_id: Optional[str],
         round_number: Optional[int],
+        principal: Optional[Any] = None,
     ) -> Dict[str, Any]:
         unique_id = self._coerce_text(draft.get("unique_id"))
         supplier_id = self._coerce_text(draft.get("supplier_id"))
@@ -169,6 +170,7 @@ class EmailDispatchAgent(BaseAgent):
             body_override=body,
             attachments=attachments,
             workflow_dispatch_context=dispatch_context,
+            principal=principal,
         )
 
         dispatched_at_dt = datetime.now(timezone.utc)
@@ -231,6 +233,10 @@ class EmailDispatchAgent(BaseAgent):
         round_number = self._coerce_int(
             input_data.get("round") or input_data.get("round_number")
         )
+        # AgentContext carries no principal today, so this is None for every
+        # unattended run -- correctly: an unattended scheduler job may not
+        # send mail, and the gate denying it is the intended outcome.
+        principal = getattr(context, "principal", None)
 
         drafts_payload = input_data.get("drafts")
         if drafts_payload is None:
@@ -260,7 +266,7 @@ class EmailDispatchAgent(BaseAgent):
                 dispatch_records.append(already)
                 continue
 
-            record = self._send_draft(draft, workflow_id, round_number)
+            record = self._send_draft(draft, workflow_id, round_number, principal=principal)
             dispatch_records.append(record)
             if record.get("status") != "sent":
                 failures.append(record)

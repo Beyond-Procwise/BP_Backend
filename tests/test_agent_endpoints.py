@@ -10,8 +10,25 @@ from fastapi.testclient import TestClient
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from api.auth import require_user
 from api.routers.agents import router as agents_router
 from api.routers.workflows import router as workflows_router
+
+
+def _authorize_as_approver(app: FastAPI) -> None:
+    """Stand in for an authenticated caller on ``/workflows/email``.
+
+    Task 7 gated the send path on a real principal (guardrail check 4). These
+    tests stub `EmailDispatchService` itself and exist to prove the router's
+    own orchestration (process/action logging, response shaping) -- not the
+    guard, which has its own dedicated tests in tests/guardrails/. Overriding
+    the auth dependency is the standard FastAPI mechanism for supplying that
+    precondition without touching the guard.
+    """
+
+    app.dependency_overrides[require_user] = lambda: SimpleNamespace(
+        subject="test-approver", claims={"cognito:groups": ["bp-approvers"]}
+    )
 
 
 class DummyPRS:
@@ -116,6 +133,7 @@ def test_workflow_types_endpoint():
 def test_email_workflow_returns_action_id(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -198,6 +216,7 @@ def test_email_workflow_returns_action_id(monkeypatch):
 def test_email_workflow_accepts_list_recipients(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -254,6 +273,7 @@ def test_email_workflow_accepts_list_recipients(monkeypatch):
 def test_email_workflow_marks_failed_dispatch(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -316,6 +336,7 @@ def test_email_workflow_marks_failed_dispatch(monkeypatch):
 def test_email_dispatch_without_workflow_is_rejected(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
@@ -344,6 +365,7 @@ def test_email_dispatch_without_workflow_is_rejected(monkeypatch):
 def test_email_dispatch_detects_workflow_mismatch(monkeypatch):
     app = FastAPI()
     app.include_router(workflows_router)
+    _authorize_as_approver(app)
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick

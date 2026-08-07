@@ -1479,6 +1479,7 @@ async def send_email(
     dispatch_request: EmailDispatchRequest = Depends(build_email_dispatch_request),
     orchestrator: Orchestrator = Depends(get_orchestrator),
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """Send a previously drafted RFQ email using the dispatch service."""
 
@@ -1561,6 +1562,7 @@ async def send_email(
             body_override=dispatch_request.resolve_body(),
             is_workflow_email=dispatch_request.resolve_is_workflow_email(),
             workflow_dispatch_context=dispatch_request.resolve_workflow_context(),
+            principal=principal,
         )
 
         dispatch_timestamp = time.time()

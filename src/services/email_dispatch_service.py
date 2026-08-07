@@ -28,6 +28,8 @@ from .email_dispatch_chain_store import (
     register_dispatch as register_dispatch_chain,
     mark_sent as mark_dispatch_chain_sent,
 )
+from src.services import email_dispatch_guard
+from src.services.agent_actions import record_action_or_fail
 from .email_service import EmailService
 from .email_thread_store import (
     DEFAULT_THREAD_TABLE,
@@ -112,6 +114,13 @@ class EmailDispatchService:
 
         return None
 
+    def _internal_domains(self) -> List[str]:
+        """Our own email domains, used to spot internal staff contact details."""
+
+        sender = str(getattr(self.settings, "ses_default_sender", "") or "")
+        domain = sender.partition("@")[2].strip()
+        return [domain] if domain else []
+
     def send_draft(
         self,
         identifier: str,
@@ -124,8 +133,16 @@ class EmailDispatchService:
         is_workflow_email: Optional[bool] = None,
         workflow_dispatch_context: Optional[Dict[str, Any]] = None,
         notify_watcher: bool = True,
+        principal: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Send the latest draft for ``identifier`` (unique_id preferred)."""
+        """Send the latest draft for ``identifier`` (unique_id preferred).
+
+        ``principal`` is the caller's own identity, kept as an explicit
+        keyword rather than smuggled inside ``workflow_dispatch_context`` --
+        that free-form dict is dispatch metadata, not who is asking, and
+        burying identity in it is how it went missing from the guard in the
+        first place.
+        """
 
         identifier = (identifier or "").strip()
         if not identifier:
@@ -157,11 +174,11 @@ class EmailDispatchService:
             )
             rfq_identifier = self._normalise_identifier(draft.get("rfq_id"))
 
+            # The stored draft is authoritative. A caller may narrow this list
+            # but may never introduce an address of its own.
             recipient_list = self._normalise_recipients(
-                recipients if recipients is not None else draft.get("recipients")
+                email_dispatch_guard.resolve_recipients(draft, recipients)
             )
-            if not recipient_list and draft.get("receiver"):
-                recipient_list = self._normalise_recipients([draft["receiver"]])
 
             if not recipient_list:
                 raise ValueError("At least one recipient email is required to send the draft")
@@ -185,6 +202,42 @@ class EmailDispatchService:
 
             body_source = body_override if body_override is not None else draft.get("body")
             body_text = str(body_source).strip() if body_source else ""
+
+            # Nothing reaches SES until all five checks pass. Deny is recorded
+            # with the same weight as a send: an attempted send that was
+            # refused is exactly the event an auditor needs to see.
+            gate = email_dispatch_guard.check_dispatch(
+                conn=conn,
+                draft=draft,
+                recipients=recipient_list,
+                subject=subject,
+                body=body_text,
+                attachments=attachments,
+                principal=principal,
+                run_count=(workflow_dispatch_context or {}).get("run_count", 0),
+                internal_domains=self._internal_domains(),
+            )
+            record_action_or_fail(
+                phase="communicate",
+                action_type="email.send",
+                conn=conn,
+                agent="EmailDispatchAgent",
+                status="allowed" if gate.allowed else "denied",
+                summary=gate.reason,
+                details={
+                    "unique_id": unique_id,
+                    "supplier_id": draft.get("supplier_id"),
+                    "recipients": recipient_list,
+                    "principal": getattr(principal, "subject", None),
+                    "policy_name": gate.policy_name,
+                    "policy_version": gate.policy_version,
+                    "decision": "allow" if gate.allowed else "deny",
+                    "evidence": gate.evidence,
+                    "egress": "amazon_ses",
+                },
+            )
+            if not gate.allowed:
+                raise email_dispatch_guard.DispatchDenied(gate)
 
             draft_metadata_source = (
                 draft.get("metadata") if isinstance(draft.get("metadata"), dict) else {}
