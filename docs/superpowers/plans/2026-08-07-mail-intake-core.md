@@ -456,6 +456,26 @@ ALTER TABLE proc.bp_mailbox_binding
 ALTER TABLE proc.bp_mailbox_binding
     ADD COLUMN IF NOT EXISTS last_sync_at         TIMESTAMPTZ;
 
+-- The existing CHECK constraints do not admit a mail-intake binding at all:
+-- provider allows only graph/gmail/imap, and role only the style engine's
+-- exemplar_source/draft_target/both. Adding the columns above without widening
+-- these would have produced a table that physically cannot store the thing this
+-- subsystem is built to configure — caught by executing an insert against the
+-- live schema rather than by reading the DDL.
+--
+-- Both changes are additive: every value previously accepted is still accepted.
+ALTER TABLE proc.bp_mailbox_binding
+    DROP CONSTRAINT IF EXISTS bp_mailbox_binding_provider_check;
+ALTER TABLE proc.bp_mailbox_binding
+    ADD CONSTRAINT bp_mailbox_binding_provider_check
+    CHECK (provider = ANY (ARRAY['graph', 'gmail', 'imap', 'relay']));
+
+ALTER TABLE proc.bp_mailbox_binding
+    DROP CONSTRAINT IF EXISTS bp_mailbox_binding_role_check;
+ALTER TABLE proc.bp_mailbox_binding
+    ADD CONSTRAINT bp_mailbox_binding_role_check
+    CHECK (role = ANY (ARRAY['exemplar_source', 'draft_target', 'both', 'intake']));
+
 CREATE TABLE IF NOT EXISTS proc.bp_ingest_bundle (
     bundle_id           UUID PRIMARY KEY,
     -- BIGINT, not TEXT: proc.bp_mailbox_binding.binding_id is
@@ -4767,6 +4787,14 @@ def safe_log_fields(row: Dict[str, Any]) -> Dict[str, Any]:
 def insert_bundle(cur, **fields: Any) -> Optional[str]:
     """Insert a bundle, or return None if this message was already ingested.
 
+    The ON CONFLICT clause repeats the index's WHERE predicate, and must. The
+    supporting index is PARTIAL — unique on (binding_id, provider_message_id)
+    only where provider_message_id IS NOT NULL — and Postgres will not infer a
+    partial index from column names alone. Without the predicate this raises
+    InvalidColumnReference on every insert, so the idempotency mechanism fails
+    the first time it runs rather than the first time it is needed. Verified by
+    executing both forms against the live schema.
+
     The None return is the idempotency contract, and it matters: the unique
     index on (binding_id, provider_message_id) makes a re-delivered provider
     event or an IMAP re-poll a no-op. Returning the freshly generated UUID on
@@ -4785,7 +4813,9 @@ def insert_bundle(cur, **fields: Any) -> Optional[str]:
             recipients, subject, received_at, body_text, body_html,
             raw_mime_key, state
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (binding_id, provider_message_id) DO NOTHING
+        ON CONFLICT (binding_id, provider_message_id)
+            WHERE provider_message_id IS NOT NULL
+            DO NOTHING
         RETURNING bundle_id
         """,
         (
@@ -6472,11 +6502,23 @@ with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
     # probe has to create a binding before it can create a bundle. That the FK
     # forces this is the point: a bundle cannot name a binding that does not
     # exist. Everything here is rolled back.
+    # The binding table enforces more than the column list suggests, and every
+    # one of these was found by running an insert rather than reading the DDL:
+    #   * provider and role are CHECK-constrained (the migration widens them to
+    #     admit 'relay' and 'intake');
+    #   * credential_ref must match 'arn:aws:secretsmanager:%' — the table
+    #     refuses to store anything that is not a Secrets Manager ARN, which is
+    #     a good existing control and worth respecting rather than working
+    #     around;
+    #   * is_active requires scope_verified_at, so a binding cannot go live
+    #     without recorded proof its permission scope was checked. The probe
+    #     leaves it inactive.
     cur.execute(
         "INSERT INTO proc.bp_mailbox_binding "
         "(user_ref, provider, mailbox_address, role, credential_ref, is_active) "
         "VALUES ('live-check', 'relay', 'probe@example.invalid', 'intake', "
-        "'secret-ref-probe', false) RETURNING binding_id"
+        "'arn:aws:secretsmanager:eu-west-2:000000000000:secret:probe', false) "
+        "RETURNING binding_id"
     )
     binding_id = cur.fetchone()["binding_id"]
     print("probe binding:", binding_id)
