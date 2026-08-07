@@ -1218,11 +1218,20 @@ import zipfile
 from src.services.mail_intake import typing_
 
 
-def _ooxml_bytes(inner_path: str) -> bytes:
+def _ooxml_bytes(inner_path: str, extra: dict | None = None) -> bytes:
+    """A well-formed minimal OOXML package, plus any extra members given.
+
+    `_rels/.rels` is mandatory in the Open Packaging Conventions and is present
+    in every real workbook, so the happy-path fixture must carry it — otherwise
+    the fixture would not be a document by the definition the code uses.
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
         zf.writestr(inner_path, "<x/>")
+        for name, data in (extra or {}).items():
+            zf.writestr(name, data)
     return buf.getvalue()
 
 
@@ -1283,6 +1292,70 @@ def test_exact_match_is_always_permitted():
 def test_unrecognised_content_returns_octet_stream():
     assert typing_.detect(b"\x00\x01\x02not a known format") == (
         "application/octet-stream"
+    )
+
+
+# -- adversarial: a hostile sender must not obtain a document verdict --------
+#
+# These are the cases the module exists for. Absent them, the friendly tests
+# above pass against an implementation that is trivially foolable.
+
+DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def test_package_without_the_mandatory_relationships_part_is_not_a_document():
+    """A document skeleton is not a document.
+
+    _rels/.rels is mandatory in the Open Packaging Conventions. A container
+    without it is a zip that happens to hold a document-shaped entry, and must
+    be reported as the archive it is so the gate holds it for a person.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("word/document.xml", "<x/>")
+    assert typing_.detect(buf.getvalue()) == "application/zip"
+
+
+def test_well_formed_package_carrying_a_payload_is_still_typed_but_gated():
+    """Detection reports what a thing IS; the gate decides whether it is safe.
+
+    A genuinely well-formed package that also carries a payload still types as
+    a document here — that is the honest answer. Task 5's foreign-member check
+    is what quarantines it, and this test pins the division of labour so a
+    future change cannot quietly move it.
+    """
+    content = _ooxml_bytes("word/document.xml", {"payload.exe": b"MZ\x90\x00"})
+    assert typing_.detect(content) == DOCX
+
+
+def test_entry_names_escaping_the_package_are_never_a_document():
+    """Path traversal in a member name is a deliberate construction.
+
+    No real Office file contains one (verified across every workbook in this
+    repo), so its presence alone disqualifies the container from a document
+    verdict regardless of how well formed the rest of it looks.
+    """
+    for hostile_name in ("../../etc/passwd", "/etc/passwd", "..\\..\\windows\\x"):
+        content = _ooxml_bytes("word/document.xml", {hostile_name: "x"})
+        assert typing_.detect(content) == "application/zip", hostile_name
+
+
+def test_octet_stream_alias_never_excuses_an_archive():
+    """Senders label everything octet-stream, so the alias set is broad. It must
+    still not launder an archive into an acceptable document."""
+    assert not typing_.is_permitted_alias(
+        "application/octet-stream", "application/zip", "quote.docx"
+    )
+
+
+def test_extension_never_influences_the_alias_verdict():
+    """`filename` is accepted for call-site symmetry and ignored. The extension
+    is exactly as untrustworthy as the declared type."""
+    assert typing_.is_permitted_alias(
+        "application/octet-stream", "application/pdf", "anything.exe"
+    ) is typing_.is_permitted_alias(
+        "application/octet-stream", "application/pdf", "quote.pdf"
     )
 ```
 
@@ -1362,15 +1435,54 @@ ALIASES: Dict[str, FrozenSet[str]] = {
 }
 
 
+def _has_unsafe_entry_names(names) -> bool:
+    """Absolute paths or parent-directory segments in member names.
+
+    No genuine Office file carries these (verified across every real workbook
+    in this repo). Their presence is a deliberate construction, and a container
+    holding one should never be granted a document verdict.
+    """
+    for name in names:
+        if name.startswith("/") or name.startswith("\\"):
+            return True
+        if ".." in name.replace("\\", "/").split("/"):
+            return True
+    return False
+
+
 def _inspect_zip_container(content: bytes) -> str:
-    """Distinguish an OOXML document from a genuine archive by its contents."""
+    """Distinguish an OOXML document from a genuine archive by its contents.
+
+    The test is deliberately strict, because the verdict decides which gate
+    rule applies downstream: archives go to human review, documents do not.
+    A container that merely *contains* a document-shaped entry is not a
+    document — a zip holding `[Content_Types].xml`, `word/document.xml` and an
+    arbitrary payload was previously typed as a Word document and passed a gate
+    that would have quarantined the identical payload as a plain .zip.
+
+    So an OOXML verdict requires the package to be well formed: the content
+    types part, the mandatory OPC relationships part, a recognised content
+    directory, and no member names that traverse outside the package. Every
+    real workbook in this repo satisfies all four; a hand-built shell does not.
+    Anything short of that is reported as the archive it actually is, and the
+    safety gate holds it for a person.
+    """
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             names = zf.namelist()
     except Exception:
         return "application/zip"
-    if "[Content_Types].xml" not in names:
+
+    lookup = set(names)
+    if "[Content_Types].xml" not in lookup:
         return "application/zip"
+    # _rels/.rels is mandatory in the Open Packaging Conventions; a package
+    # without it is not a valid Office document whatever else it contains.
+    if "_rels/.rels" not in lookup:
+        return "application/zip"
+    if _has_unsafe_entry_names(names):
+        return "application/zip"
+
     for prefix, mime in _OOXML.items():
         if any(name.startswith(prefix) for name in names):
             return mime
@@ -1395,7 +1507,13 @@ def detect(content: bytes) -> str:
 def is_permitted_alias(
     declared: Optional[str], detected: str, filename: Optional[str] = None
 ) -> bool:
-    """True when a declared/detected disagreement is sloppiness, not evasion."""
+    """True when a declared/detected disagreement is sloppiness, not evasion.
+
+    `filename` is accepted for call-site symmetry and is deliberately IGNORED.
+    The extension comes from the sender and is exactly as untrustworthy as the
+    declared type; letting it influence the verdict would reintroduce the thing
+    this module exists to remove.
+    """
     declared_norm = (declared or UNKNOWN).split(";")[0].strip().lower()
     detected_norm = (detected or UNKNOWN).split(";")[0].strip().lower()
     if declared_norm == detected_norm:
@@ -1406,7 +1524,7 @@ def is_permitted_alias(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_typing.py -v`
-Expected: PASS, 8 tests
+Expected: PASS, 13 tests
 
 - [ ] **Step 5: Pin python-magic, which is installed but unpinned**
 
