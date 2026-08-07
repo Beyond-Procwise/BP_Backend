@@ -62,7 +62,7 @@
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `BundleState`, `ArtifactState`, `QuarantineReason` (all `str` enums); `assert_transition(current, target) -> None` raising `IllegalTransition`; `TERMINAL_ARTIFACT_STATES: frozenset`
+- Produces: `BundleState`, `ArtifactState`, `QuarantineReason` (all `str` enums); `assert_transition(current, target) -> None` raising `IllegalTransition`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -233,14 +233,6 @@ class QuarantineReason(str, Enum):
     HIDDEN_TEXT = "hidden_text"
     UNRESOLVABLE_REFERENCE = "unresolvable_reference"
 
-
-TERMINAL_ARTIFACT_STATES: FrozenSet[ArtifactState] = frozenset(
-    {
-        ArtifactState.EXTRACTION_COMPLETE,
-        ArtifactState.QUARANTINED,
-        ArtifactState.DUPLICATE,
-    }
-)
 
 _BUNDLE_MOVES: Dict[BundleState, FrozenSet[BundleState]] = {
     BundleState.RECEIVED: frozenset({BundleState.PARSED, BundleState.QUARANTINED}),
@@ -2871,18 +2863,103 @@ git commit -m "feat(mail-intake): write-once content-addressed storage and dedup
 
 **Files:**
 - Create: `src/services/mail_intake/repo.py`
+- Create: `tests/services/mail_intake/conftest.py`
 - Test: `tests/services/mail_intake/test_repo.py`
 
 **Interfaces:**
 - Consumes: `states.BundleState`, `states.ArtifactState`, `states.QuarantineReason`, `states.assert_transition`
 - Produces: `insert_bundle(cur, **fields) -> str`; `transition_bundle(cur, bundle_id, current, target, reason=None) -> None`; `insert_artifact(cur, **fields) -> str`; `transition_artifact(cur, artifact_id, current, target, reason=None, detail=None) -> None`; `insert_sender_auth(cur, bundle_id, auth, bind_result) -> None`; `record_arrival(cur, artifact_id, bundle_id) -> None`; `find_existing_artifact(cur, owner_ref, digest, logical) -> str|None`; `claim_ready_artifacts(cur, limit=50) -> list[dict]`; `append_derivation(cur, artifact_id, pipeline_version, run_ref) -> None`; `supplier_candidates(cur, domain) -> list[tuple[str, str]]`; `safe_log_fields(bundle_row: dict) -> dict`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the shared test doubles**
+
+`FakeCursor` and `FakeStore` are used by Tasks 10, 12, 14 and 15. They live in
+one conftest so there is a single definition to keep honest.
+
+```python
+# tests/services/mail_intake/conftest.py
+"""Shared test doubles for the mail_intake suite.
+
+A fake cursor and a fake object store, defined once. Every mail_intake test
+drives these rather than a real database or a real bucket, following the
+pattern in tests/services/test_analysis_store.py — the suite never needs
+either to be running.
+"""
+import pytest
+
+
+class FakeCursor:
+    """Records every statement and replays queued results in order.
+
+    Results can be supplied at construction or queued afterwards, because some
+    tests know their fixtures up front and others set them up per-case.
+    """
+
+    def __init__(self, results=()):
+        self._results = list(results)
+        self.calls = []
+
+    # -- cursor API --
+    def execute(self, sql, params=None):
+        self.calls.append((" ".join(sql.split()), params))
+
+    def fetchone(self):
+        return self._results.pop(0) if self._results else None
+
+    def fetchall(self):
+        out, self._results = list(self._results), []
+        return out
+
+    # -- test helpers --
+    def queue(self, *rows):
+        """Append rows for subsequent fetches. Returns self for chaining."""
+        self._results.extend(rows)
+        return self
+
+    def statements(self, needle):
+        """Every recorded (sql, params) whose SQL contains `needle`."""
+        return [call for call in self.calls if needle in call[0]]
+
+    def states_written(self):
+        """Params of every statement that set a state column."""
+        return [params for sql, params in self.calls if "SET state" in sql]
+
+
+class FakeStore:
+    """In-memory stand-in for store.ObjectStore."""
+
+    def __init__(self):
+        self.objects = {}
+
+    def put_immutable(self, key, content):
+        self.objects[key] = content
+        return key
+
+    def exists(self, key):
+        return key in self.objects
+
+    def get(self, key):
+        return self.objects.get(key)
+
+    def keys_under(self, prefix):
+        return [key for key in self.objects if key.startswith(prefix)]
+
+
+@pytest.fixture
+def fake_cursor():
+    return FakeCursor()
+
+
+@pytest.fixture
+def fake_store():
+    return FakeStore()
+```
+
+- [ ] **Step 2: Write the failing test**
 
 ```python
 # tests/services/mail_intake/test_repo.py
-"""Every DB write for mail intake. Tests drive a fake cursor so the suite never
-needs a database, following tests/services/test_analysis_store.py.
+"""Every DB write for mail intake. Tests drive the shared FakeCursor from
+conftest, so the suite never needs a database.
 
 Two invariants get their own tests because both are silent when broken: a state
 transition must be validated before it is written, and nothing that reaches a
@@ -2898,21 +2975,7 @@ from src.services.mail_intake.states import (
     QuarantineReason,
 )
 
-
-class FakeCursor:
-    def __init__(self, results=()):
-        self._results = list(results)
-        self.calls = []
-
-    def execute(self, sql, params=None):
-        self.calls.append((" ".join(sql.split()), params))
-
-    def fetchone(self):
-        return self._results.pop(0) if self._results else None
-
-    def fetchall(self):
-        out, self._results = list(self._results), []
-        return out
+from .conftest import FakeCursor
 
 
 def test_insert_bundle_writes_received_state_and_returns_an_id():
@@ -3030,12 +3093,12 @@ def test_safe_log_fields_redacts_addresses_outside_production(monkeypatch):
     assert "copperleaf.test" in fields["sender_address"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3: Run test to verify it fails**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_repo.py -v`
 Expected: FAIL — `ImportError: cannot import name 'repo'`
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 4: Write the implementation**
 
 ```python
 # src/services/mail_intake/repo.py
@@ -3309,15 +3372,15 @@ def supplier_candidates(cur, domain: str) -> List[Tuple[str, str]]:
     return [(str(r[0]), str(r[1])) for r in (cur.fetchall() or [])]
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 5: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_repo.py -v`
 Expected: PASS, 9 tests
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/services/mail_intake/repo.py tests/services/mail_intake/test_repo.py
+git add src/services/mail_intake/repo.py tests/services/mail_intake/conftest.py tests/services/mail_intake/test_repo.py
 git commit -m "feat(mail-intake): repository layer with validated transitions and redaction"
 ```
 
@@ -3574,7 +3637,9 @@ git commit -m "feat(mail-intake): MailSource contract and relay adapter"
 - Modify: `src/services/backend_scheduler.py` (register the sweep)
 
 **Interfaces:**
-- Consumes: everything from Tasks 1–11
+- Consumes: everything from Tasks 1–11, plus `FakeCursor` and `FakeStore` from
+  `tests/services/mail_intake/conftest.py` (Task 10). Import them; do not
+  redefine them.
 - Produces: `IngestPipeline(object_store, bucket, *, size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES, trusted_asserter=None, event_bus=None)`; `IngestPipeline.ingest(cur, binding, message: RawMessage) -> IngestOutcome`; `IngestOutcome` (frozen dataclass: `bundle_id: str`, `artifact_ids: tuple[str, ...]`, `quarantined: tuple[tuple[str, QuarantineReason], ...]`, `duplicates: tuple[str, ...]`); `sweep_ready_artifacts(cur, event_bus=None, limit=50) -> int`; `DOCUMENT_INGESTED = "mail_intake.document_ingested"`
 
 - [ ] **Step 1: Write the failing test**
@@ -3598,47 +3663,9 @@ from src.services.mail_intake.pipeline import IngestPipeline
 from src.services.mail_intake.sources.base import RawMessage
 from src.services.mail_intake.states import ArtifactState, BundleState, QuarantineReason
 
+from .conftest import FakeCursor, FakeStore
+
 FIXTURES = pathlib.Path("tests/fixtures/mail_intake")
-
-
-class FakeCursor:
-    """Enough of a cursor to record writes and answer the dedup lookup."""
-
-    def __init__(self):
-        self.calls = []
-        self._next = []
-
-    def execute(self, sql, params=None):
-        self.calls.append((" ".join(sql.split()), params))
-
-    def fetchone(self):
-        return self._next.pop(0) if self._next else None
-
-    def fetchall(self):
-        out, self._next = list(self._next), []
-        return out
-
-    # -- helpers for assertions --
-    def statements(self, needle):
-        return [c for c in self.calls if needle in c[0]]
-
-    def states_written(self):
-        return [p for sql, p in self.calls if "SET state" in sql]
-
-
-class FakeStore:
-    def __init__(self):
-        self.objects = {}
-
-    def put_immutable(self, key, content):
-        self.objects[key] = content
-        return key
-
-    def exists(self, key):
-        return key in self.objects
-
-    def get(self, key):
-        return self.objects.get(key)
 
 
 class FakeBus:
@@ -3808,7 +3835,7 @@ def test_scanned_ocr_document_is_not_quarantined():
 
 def test_sweep_publishes_and_advances_ready_artifacts():
     cur, bus = FakeCursor(), FakeBus()
-    cur._next = [
+    cur.queue(
         {
             "artifact_id": "ART-1",
             "bundle_id": "B-1",
@@ -3816,7 +3843,7 @@ def test_sweep_publishes_and_advances_ready_artifacts():
             "detected_mime": "application/pdf",
             "owner_ref": "user-7",
         }
-    ]
+    )
     count = pipeline_module.sweep_ready_artifacts(cur, event_bus=bus)
     assert count == 1
     assert bus.published[0][0] == pipeline_module.DOCUMENT_INGESTED
@@ -3825,7 +3852,7 @@ def test_sweep_publishes_and_advances_ready_artifacts():
 
 def test_emitted_payload_carries_no_document_content():
     cur, bus = FakeCursor(), FakeBus()
-    cur._next = [
+    cur.queue(
         {
             "artifact_id": "ART-1",
             "bundle_id": "B-1",
@@ -3833,7 +3860,7 @@ def test_emitted_payload_carries_no_document_content():
             "detected_mime": "application/pdf",
             "owner_ref": "user-7",
         }
-    ]
+    )
     pipeline_module.sweep_ready_artifacts(cur, event_bus=bus)
     payload = bus.published[0][1]
     assert "content" not in payload
@@ -4437,7 +4464,9 @@ git commit -m "feat(mail-intake): enforce plane boundary and close the S3 quaran
 - Create: `docs/mail_intake_configuration.md`
 
 **Interfaces:**
-- Consumes: everything
+- Consumes: everything, plus `FakeCursor` and `FakeStore` from
+  `tests/services/mail_intake/conftest.py` (Task 10). Import them; do not
+  redefine them.
 - Produces: no new interface
 
 - [ ] **Step 1: Write the acceptance suite**
@@ -4461,38 +4490,9 @@ from src.services.mail_intake.pipeline import IngestPipeline
 from src.services.mail_intake.sources.base import RawMessage
 from src.services.mail_intake.states import QuarantineReason
 
+from .conftest import FakeCursor, FakeStore
+
 FIXTURES = pathlib.Path("tests/fixtures/mail_intake")
-
-
-class FakeCursor:
-    def __init__(self):
-        self.calls = []
-        self._next = []
-
-    def execute(self, sql, params=None):
-        self.calls.append((" ".join(sql.split()), params))
-
-    def fetchone(self):
-        return self._next.pop(0) if self._next else None
-
-    def fetchall(self):
-        out, self._next = list(self._next), []
-        return out
-
-
-class FakeStore:
-    def __init__(self):
-        self.objects = {}
-
-    def put_immutable(self, key, content):
-        self.objects[key] = content
-        return key
-
-    def exists(self, key):
-        return key in self.objects
-
-    def get(self, key):
-        return self.objects.get(key)
 
 
 def _run(raw: bytes, provider_id="emails/x.eml"):
@@ -4787,7 +4787,9 @@ Follow both patterns rather than introducing a third.
 - Modify: `src/services/mail_intake/pipeline.py` (alert hooks)
 
 **Interfaces:**
-- Consumes: `states.ArtifactState`, `states.BundleState`
+- Consumes: `states.ArtifactState`, `states.BundleState`, and `FakeCursor` from
+  `tests/services/mail_intake/conftest.py` (Task 10). Import it; do not
+  redefine it.
 - Produces: `collect(cur, *, window_hours: int = 24) -> dict`; `check_alerts(cur, *, quarantine_baseline: float = 0.15, alert=None) -> list[str]`; `ALERT_ADAPTER_FAILURE`, `ALERT_QUARANTINE_RATE`
 
 - [ ] **Step 1: Write the failing test**
@@ -4802,21 +4804,7 @@ traffic. A rate alert that fires on tiny samples trains people to ignore it.
 """
 from src.services.mail_intake import metrics
 
-
-class FakeCursor:
-    def __init__(self, results):
-        self._results = list(results)
-        self.calls = []
-
-    def execute(self, sql, params=None):
-        self.calls.append((" ".join(sql.split()), params))
-
-    def fetchone(self):
-        return self._results.pop(0) if self._results else None
-
-    def fetchall(self):
-        out, self._results = list(self._results), []
-        return out
+from .conftest import FakeCursor
 
 
 def test_collect_returns_the_spec_metric_names():
