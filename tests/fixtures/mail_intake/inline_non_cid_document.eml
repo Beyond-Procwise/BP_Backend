@@ -5,33 +5,39 @@ Date: Wed, 05 Aug 2026 09:14:02 +0100
 Message-ID: <scanned-quote@copperleaf.test>
 MIME-Version: 1.0
 Content-Type: multipart/alternative;
- boundary="===============5924281425253130525=="
+ boundary="===============6273301412509992750=="
 
---===============5924281425253130525==
+--===============6273301412509992750==
 Content-Type: text/plain; charset="utf-8"
 Content-Transfer-Encoding: 7bit
 
 See below.
 
---===============5924281425253130525==
+--===============6273301412509992750==
 MIME-Version: 1.0
 Content-Type: multipart/related;
- boundary="===============2256362494686142324=="
+ boundary="===============5322031212101411279=="
 
---===============2256362494686142324==
+--===============5322031212101411279==
 Content-Type: text/html; charset="utf-8"
 Content-Transfer-Encoding: 7bit
 
 <html><body><p>See below.</p></body></html>
 
---===============2256362494686142324==
+--===============5322031212101411279==
 Content-Type: application/pdf
 Content-Transfer-Encoding: base64
 Content-Disposition: inline; filename="scan.pdf"
 MIME-Version: 1.0
 
-JVBERi0xLjQKJSBpbmxpbmUgYnV0IHVucmVmZXJlbmNlZAo=
+JVBERi0xLjQKJSBpbmxpbmUgYnV0IHVucmVmZXJlbmNlZAoxIDAgb2JqCjw8IC9UeXBlIC9DYXRh
+bG9nIC9QYWdlcyAyIDAgUiA+PgplbmRvYmoKMiAwIG9iago8PCAvVHlwZSAvUGFnZXMgL0tpZHMg
+WzMgMCBSXSAvQ291bnQgMSA+PgplbmRvYmoKMyAwIG9iago8PCAvVHlwZSAvUGFnZSAvUGFyZW50
+IDIgMCBSIC9NZWRpYUJveCBbMCAwIDIwMCAyMDBdID4+CmVuZG9iagp4cmVmCjAgNAowMDAwMDAw
+MDAwIDY1NTM1IGYgCjAwMDAwMDAwMzUgMDAwMDAgbiAKMDAwMDAwMDA4NCAwMDAwMCBuIAowMDAw
+MDAwMTQxIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNCAvUm9vdCAxIDAgUiA+PgpzdGFydHhy
+ZWYKMjEyCiUlRU9G
 
---===============2256362494686142324==--
+--===============5322031212101411279==--
 
---===============5924281425253130525==--
+--===============6273301412509992750==--

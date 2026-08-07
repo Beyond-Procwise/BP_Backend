@@ -4,20 +4,26 @@ To: intake@acme.procureiq.io
 Date: Wed, 05 Aug 2026 09:14:02 +0100
 Message-ID: <quote-qt-4471@copperleaf.test>
 MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="===============0461192263090169613=="
+Content-Type: multipart/mixed; boundary="===============3219526955919365218=="
 
---===============0461192263090169613==
+--===============3219526955919365218==
 Content-Type: text/plain; charset="utf-8"
 Content-Transfer-Encoding: 7bit
 
 Our quote is attached. Valid for 30 days from today.
 
---===============0461192263090169613==
+--===============3219526955919365218==
 Content-Type: application/pdf
 Content-Transfer-Encoding: base64
 Content-Disposition: attachment; filename="quote-QT-4471.pdf"
 MIME-Version: 1.0
 
-JVBERi0xLjQKJSBtaW5pbWFsIGZpeHR1cmUgYm9keQo=
+JVBERi0xLjQKJSBtaW5pbWFsIGZpeHR1cmUgYm9keQoxIDAgb2JqCjw8IC9UeXBlIC9DYXRhbG9n
+IC9QYWdlcyAyIDAgUiA+PgplbmRvYmoKMiAwIG9iago8PCAvVHlwZSAvUGFnZXMgL0tpZHMgWzMg
+MCBSXSAvQ291bnQgMSA+PgplbmRvYmoKMyAwIG9iago8PCAvVHlwZSAvUGFnZSAvUGFyZW50IDIg
+MCBSIC9NZWRpYUJveCBbMCAwIDIwMCAyMDBdID4+CmVuZG9iagp4cmVmCjAgNAowMDAwMDAwMDAw
+IDY1NTM1IGYgCjAwMDAwMDAwMzIgMDAwMDAgbiAKMDAwMDAwMDA4MSAwMDAwMCBuIAowMDAwMDAw
+MTM4IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNCAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYK
+MjA5CiUlRU9G
 
---===============0461192263090169613==--
+--===============3219526955919365218==--

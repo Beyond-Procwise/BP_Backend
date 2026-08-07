@@ -11,6 +11,48 @@ from email.message import EmailMessage
 HERE = pathlib.Path(__file__).parent
 
 
+def _minimal_valid_pdf(comment: bytes) -> bytes:
+    """A hand-built, structurally valid one-page PDF, not just a byte prefix.
+
+    Found by Task 12 (the pipeline orchestrator): the earlier placeholder here
+    was `%PDF-1.4\\n% <comment>\\n` — a header and a comment, nothing else. That
+    satisfies every check in this repo that only inspects the first few bytes
+    (typing_.detect, and test_mime_walk.py's `startswith(b"%PDF-1.4")`), so it
+    went unnoticed through Tasks 1-11. But safety.py's `_is_encrypted_pdf`
+    actually opens the PDF with fitz and fails closed — "unreadable PDF is not
+    a cleared PDF" — so every one of these fixtures was quarantined as
+    ENCRYPTED the first time anything ran the full parse -> type -> safety
+    chain end to end, which no test did until the pipeline orchestrator wired
+    all three together. A real xref table and trailer, not a longer prefix, is
+    what fitz needs to open it. The comment line is kept immediately after the
+    header purely so `%PDF-1.4` remains the exact byte prefix, since
+    test_mime_walk.py asserts that for `simple_pdf.eml`.
+    """
+    header = b"%PDF-1.4\n% " + comment + b"\n"
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n",
+    ]
+    body = b""
+    offsets = []
+    pos = len(header)
+    for obj in objects:
+        offsets.append(pos)
+        body += obj
+        pos += len(obj)
+    xref_offset = len(header) + len(body)
+    xref = b"xref\n0 %d\n" % (len(objects) + 1)
+    xref += b"0000000000 65535 f \n"
+    for off in offsets:
+        xref += ("%010d 00000 n \n" % off).encode("ascii")
+    trailer = (
+        b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF"
+        % (len(objects) + 1, xref_offset)
+    )
+    return header + body + xref + trailer
+
+
 def _base(subject: str, sender: str = "quotes@copperleaf.test") -> EmailMessage:
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -26,7 +68,7 @@ def simple_pdf() -> bytes:
     msg = _base("Quote QT-4471")
     msg.set_content("Our quote is attached. Valid for 30 days from today.")
     msg.add_attachment(
-        b"%PDF-1.4\n% minimal fixture body\n",
+        _minimal_valid_pdf(b"minimal fixture body"),
         maintype="application",
         subtype="pdf",
         filename="quote-QT-4471.pdf",
@@ -39,7 +81,7 @@ def forwarded_two_levels() -> bytes:
     inner = _base("Quote QT-9002")
     inner.set_content("Pricing attached.")
     inner.add_attachment(
-        b"%PDF-1.4\n% nested fixture body\n",
+        _minimal_valid_pdf(b"nested fixture body"),
         maintype="application",
         subtype="pdf",
         filename="quote-QT-9002.pdf",
@@ -88,7 +130,7 @@ def inline_non_cid_document() -> bytes:
     )
     html_part = msg.get_payload()[-1]
     html_part.add_related(
-        b"%PDF-1.4\n% inline but unreferenced\n",
+        _minimal_valid_pdf(b"inline but unreferenced"),
         maintype="application",
         subtype="pdf",
         filename="scan.pdf",
@@ -105,7 +147,7 @@ def body_carries_validity_window() -> bytes:
         "excludes delivery to offshore sites. Payment terms 45 days net."
     )
     msg.add_attachment(
-        b"%PDF-1.4\n% pricing only, no terms\n",
+        _minimal_valid_pdf(b"pricing only, no terms"),
         maintype="application",
         subtype="pdf",
         filename="quote-QT-5510.pdf",
