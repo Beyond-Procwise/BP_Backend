@@ -5244,13 +5244,18 @@ def find_existing_artifact(cur, owner_ref: str, digest: str,
     fail the duplicate check, and proceed to extraction. The bug appears only
     when a prior identical artifact exists, and then only sometimes, which is
     the worst shape for one to have.
+
+    The ordering carries `artifact_id` as a tie-breaker because `created_at`
+    alone is not unique: it defaults to `now()`, which Postgres holds stable for
+    a whole transaction, so several artifacts written in one ingest share a
+    timestamp exactly. `created_at` alone would pick arbitrarily between them.
     """
     cur.execute(
         """
         SELECT artifact_id FROM proc.bp_ingest_artifact
          WHERE owner_ref = %s AND sha256 = %s AND duplicate_of_artifact_id IS NULL
            AND (%s::uuid IS NULL OR artifact_id <> %s::uuid)
-         ORDER BY created_at
+         ORDER BY created_at, artifact_id
          LIMIT 1
         """,
         (owner_ref, digest, exclude_artifact_id, exclude_artifact_id),
@@ -6008,7 +6013,10 @@ from src.services.mail_intake.states import (
 log = logging.getLogger(__name__)
 
 DOCUMENT_INGESTED = "mail_intake.document_ingested"
-PIPELINE_VERSION = "mail-intake-1"
+# NOTE: no PIPELINE_VERSION constant here. It existed only to stamp the
+# derivation row the sweep used to write, and the sweep no longer writes — a
+# derivation records that an extraction RUN happened, which the sweep does not
+# do. The consumer that actually runs extraction owns that value and that row.
 
 
 @dataclass(frozen=True)
