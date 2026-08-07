@@ -35,18 +35,36 @@ _FOREIGN_SNIFF_BYTES = 512
 _FOREIGN_SNIFF_LIMIT = 32
 _FOREIGN_MEMBER_MAX_BYTES = 8 * 1024 * 1024
 
+# Determined by running libmagic against real samples, not from memory. Two
+# entries in an earlier version of this set were simply wrong — `text/x-python`
+# and `application/x-bat` are not strings libmagic emits, so a Python script and
+# a Windows batch file both sailed through while the set looked complete.
+#
+# KNOWN LIMIT, deliberately not papered over: VBScript, PowerShell, and Python
+# without a shebang all sniff as `text/plain`, because that is what they are.
+# Content sniffing cannot separate those from a legitimate text attachment, and
+# adding `text/plain` here would quarantine every covering note. The cases that
+# matter most — real binaries, shell scripts, batch files — are caught. A
+# text-shaped script smuggled inside a container is inert unless someone
+# extracts and runs it, which is a different control from this one.
 _EXECUTABLE_MIMES = frozenset(
     {
+        # Native binaries
         "application/x-executable",
+        "application/x-sharedlib",          # real ELF binaries report this
         "application/x-dosexec",
-        "application/x-sharedlib",
         "application/x-mach-binary",
         "application/x-msdownload",
         "application/vnd.microsoft.portable-executable",
-        "text/x-shellscript",
-        "text/x-python",
+        "application/x-java-applet",        # compiled .class
+        # Scripts
+        "text/x-shellscript",               # sh, bash
+        "text/x-script.python",             # NOT text/x-python
+        "text/x-msdos-batch",               # .bat and .cmd; NOT application/x-bat
         "text/x-perl",
-        "application/x-bat",
+        "text/x-ruby",
+        "text/x-php",
+        "application/javascript",
     }
 )
 

@@ -6,6 +6,8 @@ in particular must pass without the workbook ever being handed to openpyxl.
 """
 import pathlib
 
+import pytest
+
 from src.services.mail_intake import safety, typing_
 from src.services.mail_intake.states import QuarantineReason
 
@@ -84,6 +86,74 @@ def test_detail_names_the_content_kind_but_never_the_senders_filename():
     assert "payload.exe" not in blob
     assert "payload" not in blob
     assert any("exec" in k or "dosexec" in k for k in verdict.detail["flagged_kinds"])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"#!/bin/sh\nrm -rf /\n", id="shell"),
+        pytest.param(b"#!/usr/bin/env python3\nimport os\n", id="python"),
+        pytest.param(b"@echo off\r\ndel /f /q C:\\*\r\n", id="batch"),
+        pytest.param(b"#!/usr/bin/perl\nprint 1;\n", id="perl"),
+        pytest.param(b"<?php system($_GET['c']); ?>\n", id="php"),
+        pytest.param(b"MZ\x90\x00" + b"\x00" * 256, id="pe-binary"),
+    ],
+)
+def test_smuggled_script_types_are_caught(payload):
+    """The executable MIME set must match what libmagic actually emits.
+
+    An earlier version listed `text/x-python` and `application/x-bat`. Neither
+    is a string libmagic produces, so a Python script and a batch file both
+    passed while the set looked complete. Each case here is one libmagic
+    verdict, pinned.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("extra/thing", payload)
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
+    assert verdict.detail["flagged_kinds"]
+
+
+def test_real_elf_binary_is_caught():
+    """Synthetic stubs can sniff differently from real binaries, so use one."""
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("extra/tool", elf)
+    content = buf.getvalue()
+
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.EXECUTABLE
 
 
 def test_real_libreoffice_artifact_is_not_quarantined():
