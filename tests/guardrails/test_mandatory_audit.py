@@ -7,6 +7,7 @@ two behave differently under exactly the same failure.
 """
 
 import os
+import uuid
 
 import psycopg2
 import pytest
@@ -75,34 +76,30 @@ def test_mandatory_writer_names_the_action_in_the_error():
 
 
 def test_mandatory_writer_succeeds_and_persists(db_conn):
-    """The strict writer must successfully insert and commit on healthy connection."""
-    trace_id = "test-success-audit-trace-12345"
+    """The strict writer must successfully insert and persist on healthy connection."""
+    trace_id = uuid.uuid4().hex
 
-    # Write with the strict writer using the provided connection
     agent_actions.record_action_or_fail(
         phase="communicate",
         action_type="email.send",
-        trace_id=trace_id,
-        summary="test audit success",
         conn=db_conn,
+        trace_id=trace_id,
+        agent="probe",
+        status="allowed",
     )
 
-    # Commit the transaction to make the write persistent
-    db_conn.commit()
+    # Visible on our own connection without committing. Verify here and roll
+    # back: this is the audit table on a shared cluster, and a test that seeds
+    # it undermines the record this layer exists to make trustworthy.
+    cur = db_conn.cursor()
+    cur.execute(
+        "SELECT phase, action_type, agent FROM proc.bp_agent_actions "
+        "WHERE trace_id = %s",
+        (trace_id,),
+    )
+    row = cur.fetchone()
+    assert row is not None, "the strict writer did not persist the row"
+    assert row[0] == "communicate"
+    assert row[1] == "email.send"
 
-    # Verify the row exists in the database
-    with db_conn.cursor() as cur:
-        cur.execute(
-            "SELECT trace_id, phase, action_type FROM proc.bp_agent_actions WHERE trace_id = %s",
-            (trace_id,),
-        )
-        row = cur.fetchone()
-
-    assert row is not None, f"audit row with trace_id '{trace_id}' was not persisted"
-    persisted_trace_id, persisted_phase, persisted_action_type = row
-    assert persisted_trace_id == trace_id
-    assert persisted_phase == "communicate"
-    assert persisted_action_type == "email.send"
-
-    # Clean up: roll back so test data doesn't persist
     db_conn.rollback()
