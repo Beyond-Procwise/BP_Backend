@@ -111,32 +111,58 @@ BASE_DRAFT = {
     "recipients": ["buyer@supplier-b.com"],
 }
 
-# The approval hash is bound to BASE_DRAFT, not to the `body`/`subject`/
-# `recipients` kwargs individual tests below pass to check_dispatch --
-# content_hash reads them off the draft mapping itself, which none of these
-# tests mutate (test_check_1_input_payload_claiming_approval_is_ignored is
-# the one exception, and it supplies its own approval_lookup returning None,
-# so it never reaches the hash check).
-BASE_APPROVED_HASH = content_hash(BASE_DRAFT)
+_BASE_RECIPIENTS = ["buyer@supplier-b.com"]
+_BASE_SUBJECT = "Request for quotation"
+_BASE_BODY = "Please quote for 100 units."
+
+
+def _approved_hash(*, recipients=None, subject=None, body=None, attachments=None):
+    """The hash for a send with these resolved values (defaulting to
+    base_kwargs' own defaults for whichever are not given).
+
+    check_dispatch's content-hash check (C1) hashes what check_dispatch was
+    actually called with -- recipients/subject/body/attachments -- not the
+    stored `draft`. So a test that overrides one of those to reach a
+    *different* check (allow-list, sensitivity, ...) must approve the same
+    resolved material it is about to send, or it gets denied earlier by the
+    content-binding check instead of exercising what it means to test.
+    """
+    return content_hash(
+        {
+            "recipients": recipients if recipients is not None else _BASE_RECIPIENTS,
+            "subject": subject if subject is not None else _BASE_SUBJECT,
+            "body": body if body is not None else _BASE_BODY,
+            "attachments": attachments,
+        }
+    )
+
+
+def _approval(**hash_kwargs):
+    return {
+        "approval_id": 1,
+        "status": "approved",
+        "actioned_by": "buyer@ourcompany.com",
+        "grounding": {"content_hash": _approved_hash(**hash_kwargs)},
+    }
+
+
+# Kept as a named constant: the approval matching base_kwargs' own (default,
+# unoverridden) resolved values.
+BASE_APPROVED_HASH = _approved_hash()
 
 
 def base_kwargs(**overrides):
     kwargs = dict(
         conn=FakeConn(),
         draft=dict(BASE_DRAFT),
-        recipients=["buyer@supplier-b.com"],
-        subject="Request for quotation",
-        body="Please quote for 100 units.",
+        recipients=list(_BASE_RECIPIENTS),
+        subject=_BASE_SUBJECT,
+        body=_BASE_BODY,
         attachments=None,
         principal=approver(),
         run_count=0,
         policy_engine=engine(),
-        approval_lookup=lambda **_: {
-            "approval_id": 1,
-            "status": "approved",
-            "actioned_by": "buyer@ourcompany.com",
-            "grounding": {"content_hash": BASE_APPROVED_HASH},
-        },
+        approval_lookup=lambda **_: _approval(),
         internal_domains=["ourcompany.com"],
         peer_prices=[],
     )
@@ -168,7 +194,10 @@ def test_check_1_input_payload_claiming_approval_is_ignored():
 
 def test_check_2_recipient_not_on_supplier_master_denies():
     decision = guard.check_dispatch(
-        **base_kwargs(recipients=["stranger@elsewhere.com"])
+        **base_kwargs(
+            recipients=["stranger@elsewhere.com"],
+            approval_lookup=lambda **_: _approval(recipients=["stranger@elsewhere.com"]),
+        )
     )
     assert decision.allowed is False
     assert "allow-list" in decision.reason.lower()
@@ -179,6 +208,9 @@ def test_check_3_competitor_price_to_internal_supplier_denies():
         **base_kwargs(
             body="Supplier B quoted 12,450.00 for this line.",
             peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
+            approval_lookup=lambda **_: _approval(
+                body="Supplier B quoted 12,450.00 for this line."
+            ),
         )
     )
     assert decision.allowed is False
@@ -191,6 +223,9 @@ def test_check_3_cleared_supplier_may_receive_commercial_content():
             conn=FakeConn(clearance="commercial_confidential"),
             body="Supplier B quoted 12,450.00 for this line.",
             peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
+            approval_lookup=lambda **_: _approval(
+                body="Supplier B quoted 12,450.00 for this line."
+            ),
         )
     )
     assert decision.allowed is True, decision.reason
@@ -242,11 +277,8 @@ def test_peer_prices_come_from_the_approval_not_the_draft():
             body="Supplier B quoted 12,450.00 for this line.",
             peer_prices=None,  # production path: the guard must resolve them
             approval_lookup=lambda **_: {
-                "approval_id": 1,
-                "status": "approved",
-                "actioned_by": "buyer@ourcompany.com",
+                **_approval(body="Supplier B quoted 12,450.00 for this line."),
                 "deal_id": "DEAL-9",
-                "grounding": {"content_hash": BASE_APPROVED_HASH},
             },
         )
     )
@@ -271,6 +303,7 @@ def test_the_senders_own_signature_does_not_block_the_send():
             body=SIGNATURE_BODY,
             sender="jane.doe@ourcompany.com",
             internal_domains=["ourcompany.com"],
+            approval_lookup=lambda **_: _approval(body=SIGNATURE_BODY),
         )
     )
     assert decision.allowed is True, decision.reason
@@ -282,6 +315,7 @@ def test_a_colleagues_address_still_blocks_the_send():
             body=SIGNATURE_BODY,
             sender="someone.else@ourcompany.com",
             internal_domains=["ourcompany.com"],
+            approval_lookup=lambda **_: _approval(body=SIGNATURE_BODY),
         )
     )
     assert decision.allowed is False
@@ -316,13 +350,7 @@ def test_check_3_a_failed_peer_price_lookup_denies_rather_than_passes():
         **base_kwargs(
             conn=ExplodingPeerPrices(),
             peer_prices=None,  # force the guard to call _peer_prices itself
-            approval_lookup=lambda **_: {
-                "approval_id": 1,
-                "status": "approved",
-                "actioned_by": "buyer@ourcompany.com",
-                "deal_id": "DEAL-9",
-                "grounding": {"content_hash": BASE_APPROVED_HASH},
-            },
+            approval_lookup=lambda **_: {**_approval(), "deal_id": "DEAL-9"},
         )
     )
     assert decision.allowed is False
@@ -358,7 +386,12 @@ def test_denials_carry_policy_attribution_not_just_a_name():
     assert d1.policy_id == "email_dispatch_approval"
     assert d1.policy_version == 1
 
-    d2 = guard.check_dispatch(**base_kwargs(recipients=["stranger@elsewhere.com"]))
+    d2 = guard.check_dispatch(
+        **base_kwargs(
+            recipients=["stranger@elsewhere.com"],
+            approval_lookup=lambda **_: _approval(recipients=["stranger@elsewhere.com"]),
+        )
+    )
     assert d2.policy_id == "email_recipient_allowlist"
     assert d2.policy_version == 1
 
@@ -366,6 +399,9 @@ def test_denials_carry_policy_attribution_not_just_a_name():
         **base_kwargs(
             body="Supplier B quoted 12,450.00 for this line.",
             peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
+            approval_lookup=lambda **_: _approval(
+                body="Supplier B quoted 12,450.00 for this line."
+            ),
         )
     )
     assert d3.policy_id == "email_sensitivity"

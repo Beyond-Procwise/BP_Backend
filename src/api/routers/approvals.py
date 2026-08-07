@@ -13,12 +13,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.auth import require_user
 from src.services import approval_store, guardrail, rbac
+from src.services.agent_actions import record_action_or_fail
 from src.services.approval_content import content_hash
+from src.services.draft_hydration import DRAFT_COLUMNS, hydrate_draft, resolve_effective_content
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,13 @@ _REVOKE_SCOPE_OWN_ONLY = "own_only"
 _REVOKE_SCOPE_OWN_OR_HIGHER = "own_or_higher_rank"
 _REVOKE_SCOPES = {_REVOKE_SCOPE_ANY, _REVOKE_SCOPE_OWN_ONLY, _REVOKE_SCOPE_OWN_OR_HIGHER}
 
+# _required_role_rank's fail-restrictive sentinel: higher than any real
+# role's rank can ever be, so `role_rank(role) > _RANK_DENY_ALL` is False for
+# every role and own_or_higher_rank's override never fires. An unreadable
+# policy or a missing required_role must deny the override, not admit it --
+# see I8.
+_RANK_DENY_ALL = 1 << 30
+
 
 class ApproveRequest(BaseModel):
     """What is being approved. Deliberately carries no actor field."""
@@ -47,21 +56,22 @@ class RevokeRequest(BaseModel):
     reason: Optional[str] = None
 
 
-def get_agent_nick(request: Request):
-    nick = getattr(request.app.state, "agent_nick", None)
-    if not nick:
-        raise HTTPException(status_code=503, detail="AgentNick not available")
-    return nick
-
-
 def _load_draft(unique_id: str, conn: Any = None) -> Optional[Dict[str, Any]]:
-    """The stored draft being approved, or None."""
+    """The stored draft being approved, hydrated the same way the send path
+    hydrates it, or ``None``.
+
+    Reading only a handful of raw columns here (as this used to) is the C2
+    bug: the send path hydrates payload-over-columns, so an approver could
+    see and approve one subject/body while the send path would transmit a
+    different one for the identical row -- the two never hashed the same
+    thing and a genuinely approved draft could never pass its own
+    content-binding check.
+    """
 
     from src.services.db import get_conn
 
     sql = (
-        "SELECT unique_id, rfq_id, workflow_id, supplier_id, subject, body, "
-        "       recipient_email, sender, attachments, payload "
+        "SELECT " + ", ".join(DRAFT_COLUMNS) + " "
         "  FROM proc.draft_rfq_emails "
         " WHERE unique_id = %s AND sent IS NOT TRUE "
         " ORDER BY id DESC LIMIT 1"
@@ -71,7 +81,7 @@ def _load_draft(unique_id: str, conn: Any = None) -> Optional[Dict[str, Any]]:
         cur = approval_store._dict_cursor(connection)
         cur.execute(sql, (unique_id,))
         row = cur.fetchone()
-        return dict(row) if row else None
+        return hydrate_draft(dict(row)) if row else None
 
     if conn is not None:
         return _run(conn)
@@ -79,12 +89,76 @@ def _load_draft(unique_id: str, conn: Any = None) -> Optional[Dict[str, Any]]:
         return _run(own)
 
 
-def _require_capability(principal: Any, context: Dict[str, Any]) -> None:
-    """Deny unless policy grants this caller the approve_email capability."""
+def _capability_policy(policy_engine: Any) -> Optional[Dict[str, Any]]:
+    """The EmailApprovalCapabilityPolicy row itself, read once per caller.
 
-    decision = guardrail.authorize(_ACTION, _ACTION_CLASS, principal, context)
+    ``_revoke_scope``, ``_required_role_rank`` and the approval-recording
+    code below all need facts from this same row; centralising the read
+    means they can no longer disagree about whether it was readable.
+    """
+
+    try:
+        policy = policy_engine.get_policy(_CAPABILITY_POLICY_SLUG) if policy_engine else None
+    except Exception as exc:  # noqa: BLE001 - callers apply their own strict default
+        logger.error("approvals: could not read %s: %s", _CAPABILITY_POLICY_SLUG, exc)
+        return None
+    return policy if isinstance(policy, dict) else None
+
+
+def _capability_policy_db_id(policy_engine: Any) -> Optional[int]:
+    """``proc.bp_policy.policy_id`` (bigint) for EmailApprovalCapabilityPolicy.
+
+    ``guardrail.Decision.policy_id`` carries ``PolicyEngine``'s slug string
+    (e.g. ``"email_approval_capability"``), which is a *different* value
+    from this database column of the same name -- see
+    ``approval_store.record_approval``'s module docstring. Passing the slug
+    straight into ``bp_approval.policy_id`` (bigint) would fail the INSERT,
+    so the real numeric id is read from the policy's own raw row instead.
+    """
+
+    policy = _capability_policy(policy_engine)
+    raw_row = (policy or {}).get("raw_row") or {}
+    value = raw_row.get("policy_id") if isinstance(raw_row, dict) else None
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _require_capability(
+    principal: Any, context: Dict[str, Any], *, actioned_by: Optional[str] = None
+) -> guardrail.Decision:
+    """Deny unless policy grants this caller the approve_email capability.
+
+    Every verdict -- allow or deny -- is written to ``bp_agent_actions``
+    before returning (G8): this surface used to produce no audit row at
+    all, for either outcome, which is invisible either way an auditor needs
+    it. Returns the ``Decision`` so a caller that goes on to record an
+    approval can attribute it to the policy that actually decided, rather
+    than a hardcoded name that happened to belong to a different policy.
+    """
+
+    engine = rbac.policy_engine()
+    decision = guardrail.authorize(_ACTION, _ACTION_CLASS, principal, context, policy_engine=engine)
+    record_action_or_fail(
+        phase="approve",
+        action_type=_ACTION,
+        agent="ApprovalsRouter",
+        status="allowed" if decision.allowed else "denied",
+        summary=decision.reason,
+        details={
+            **context,
+            "principal": actioned_by,
+            "policy_id": decision.policy_id,
+            "policy_name": decision.policy_name,
+            "policy_version": decision.policy_version,
+            "decision": "allow" if decision.allowed else "deny",
+            "evidence": decision.evidence,
+        },
+    )
     if not decision.allowed:
         raise HTTPException(status_code=403, detail=decision.reason)
+    return decision
 
 
 def _subject(principal: Any) -> str:
@@ -103,7 +177,10 @@ def _subject(principal: Any) -> str:
 def list_pending(principal=Depends(require_user)) -> Dict[str, Any]:
     """Drafts awaiting a decision, each with the hash a caller would approve."""
 
-    _require_capability(principal, {"action": "list_pending"})
+    _require_capability(
+        principal, {"action": "list_pending"},
+        actioned_by=str(getattr(principal, "subject", "") or "") or None,
+    )
     rows = approval_store.list_pending_dispatch_approvals(limit=200)
     return {"pending": rows, "count": len(rows)}
 
@@ -117,7 +194,9 @@ def approve_dispatch(
     """Approve a drafted email for sending."""
 
     actioned_by = _subject(principal)
-    _require_capability(principal, {"unique_id": unique_id})
+    decision = _require_capability(
+        principal, {"unique_id": unique_id}, actioned_by=actioned_by
+    )
 
     draft = _load_draft(unique_id)
     if draft is None:
@@ -125,7 +204,10 @@ def approve_dispatch(
             status_code=404, detail=f"no unsent draft with unique_id {unique_id}"
         )
 
-    digest = content_hash(draft)
+    # Hash the resolved material a send with no overrides would transmit
+    # right now -- the same computation the send path uses (see C1), so an
+    # unedited draft's approval and its eventual send agree (see C2).
+    digest = content_hash(resolve_effective_content(draft))
     approval_id = approval_store.record_approval(
         rfq_id=draft.get("rfq_id"),
         workflow_id=draft.get("workflow_id"),
@@ -133,8 +215,13 @@ def approve_dispatch(
         supplier_id=draft.get("supplier_id"),
         actioned_by=actioned_by,
         deal_id=draft.get("deal_id"),
-        policy_name="EmailDispatchApprovalPolicy",
-        grounding_extra={"content_hash": digest, "reason": body.reason},
+        policy_id=_capability_policy_db_id(rbac.policy_engine()),
+        policy_name=decision.policy_name or "EmailApprovalCapabilityPolicy",
+        grounding_extra={
+            "content_hash": digest,
+            "reason": body.reason,
+            "policy_version": decision.policy_version,
+        },
     )
     logger.info(
         "approval recorded: unique_id=%s approval_id=%s by=%s",
@@ -161,7 +248,15 @@ def approve_round(
     """
 
     actioned_by = _subject(principal)
-    _require_capability(principal, {"workflow_id": workflow_id, "round": round_num})
+    decision = _require_capability(
+        principal, {"workflow_id": workflow_id, "round": round_num},
+        actioned_by=actioned_by,
+    )
+
+    if not approval_store.negotiation_workflow_exists(workflow_id=workflow_id):
+        raise HTTPException(
+            status_code=404, detail=f"no negotiation workflow {workflow_id}"
+        )
 
     approval_id = approval_store.record_approval(
         rfq_id=None,
@@ -169,8 +264,13 @@ def approve_round(
         unique_id=None,
         supplier_id=None,
         actioned_by=actioned_by,
-        policy_name="EmailDispatchApprovalPolicy",
-        grounding_extra={"round": int(round_num), "reason": body.reason},
+        policy_id=_capability_policy_db_id(rbac.policy_engine()),
+        policy_name=decision.policy_name or "EmailApprovalCapabilityPolicy",
+        grounding_extra={
+            "round": int(round_num),
+            "reason": body.reason,
+            "policy_version": decision.policy_version,
+        },
     )
     return {
         "approval_id": approval_id,
@@ -190,12 +290,7 @@ def _revoke_scope(policy_engine: Any) -> str:
     access, not silently widen it.
     """
 
-    try:
-        policy = policy_engine.get_policy(_CAPABILITY_POLICY_SLUG) if policy_engine else None
-    except Exception as exc:  # noqa: BLE001 - an unreadable policy is the strict default
-        logger.error("approvals: could not read %s: %s", _CAPABILITY_POLICY_SLUG, exc)
-        policy = None
-
+    policy = _capability_policy(policy_engine)
     rules = ((policy or {}).get("details") or {}).get("rules") or {}
     value = str(rules.get("revoke_scope") or "").strip()
     return value if value in _REVOKE_SCOPES else _REVOKE_SCOPE_OWN_OR_HIGHER
@@ -205,15 +300,34 @@ def _required_role_rank(policy_engine: Any) -> int:
     """Rank of the role EmailApprovalCapabilityPolicy requires to approve at
     all (today, Buyer) -- the floor ``own_or_higher_rank`` measures a senior
     override against, since ``bp_approval`` does not record the original
-    approver's role."""
+    approver's role.
 
-    try:
-        policy = policy_engine.get_policy(_CAPABILITY_POLICY_SLUG) if policy_engine else None
-    except Exception:  # noqa: BLE001 - unreadable policy denies via rank 0 below
-        policy = None
+    Fails restrictive: an unreadable policy, or one with no ``required_role``
+    at all, returns a rank higher than any real role so the override in
+    ``_may_revoke`` never fires -- only the original approver may then
+    revoke. This used to return ``rbac.role_rank(None, ...)`` == 0 in both
+    cases, and since every real role ranks >= 1, ``role_rank(role) > 0`` was
+    true for *any* role: a capability row with no ``required_role`` silently
+    turned ``own_or_higher_rank`` into ``any_approver`` (I8). Its sibling
+    ``_revoke_scope`` already fails to the restrictive option on the same
+    failure; this brought the two back into agreement.
+    """
 
-    required_role = ((policy or {}).get("details") or {}).get("required_role")
-    return rbac.role_rank(required_role, policy_engine=policy_engine)
+    policy = _capability_policy(policy_engine)
+    if not isinstance(policy, dict):
+        return _RANK_DENY_ALL
+
+    required_role = (policy.get("details") or {}).get("required_role")
+    if not required_role:
+        return _RANK_DENY_ALL
+
+    rank = rbac.role_rank(required_role, policy_engine=policy_engine)
+    if rank <= 0:
+        # required_role is set but names a role policy does not recognise
+        # (typo'd/renamed) -- an unenforceable restriction denies, exactly
+        # like guardrail.authorize's own required_role handling.
+        return _RANK_DENY_ALL
+    return rank
 
 
 def _may_revoke(principal: Any, actioned_by: str, approval: Dict[str, Any]) -> bool:
@@ -252,7 +366,9 @@ def revoke(
     """Withdraw an approval. Writes a later row; history is not rewritten."""
 
     actioned_by = _subject(principal)
-    _require_capability(principal, {"approval_id": approval_id})
+    _require_capability(
+        principal, {"approval_id": approval_id}, actioned_by=actioned_by
+    )
 
     approval = approval_store.get_approval(approval_id=approval_id)
     if approval is None:

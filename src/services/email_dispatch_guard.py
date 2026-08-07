@@ -443,7 +443,21 @@ def check_dispatch(
                 )
                 or "deny"
             ).lower()
-            current_hash = content_hash(draft)
+            # Hash what is actually about to be transmitted -- recipient_list,
+            # subject, body and attachments are this call's own resolved
+            # values, already reflecting any subject_override/body_override
+            # the caller supplied. Hashing `draft` (the stored row) instead,
+            # as this used to, let an override sail through unchecked: the
+            # stored row never changed, so its approved hash still matched.
+            # That was verbatim the attack this check exists to prevent.
+            current_hash = content_hash(
+                {
+                    "recipients": recipient_list,
+                    "subject": subject,
+                    "body": body,
+                    "attachments": attachments,
+                }
+            )
             if approved_hash != current_hash and mismatch_mode != "warn":
                 return guardrail.Decision(
                     allowed=False,

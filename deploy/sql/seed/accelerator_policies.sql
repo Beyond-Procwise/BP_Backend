@@ -41,6 +41,11 @@ UPDATE proc.bp_policy
    AND policy_details->>'policy_identifier' = 'email_dispatch_approval';
 
 -- 3. The approval action itself, so authorize() has a policy to resolve.
+-- self_approval_allowed does NOT appear here (I6): the design deliberately
+-- allows self-approval -- the agent drafts on the user's behalf, so
+-- approving is authorship rather than oversight -- and no code ever read
+-- that key. A customer who set it false got neither a second-person control
+-- nor an error; a key nothing enforces must not ship as if it were a lever.
 INSERT INTO proc.bp_policy
     (policy_name, policy_type, policy_desc, policy_details,
      policy_linked_agents, policy_status, version, created_by, created_date)
@@ -52,10 +57,7 @@ VALUES
    "policy_identifier": "email_approval_capability",
    "required_role": "Buyer",
    "applies_to": ["approval.email"],
-   "rules": {
-     "self_approval_allowed": true,
-     "note": "The agent drafts on the user behalf, so approving is authorship rather than oversight. Set self_approval_allowed to false to require a second person."
-   }
+   "rules": {}
  }'::jsonb,
  '', 1, 1, 'accelerator_seed', now()
 );

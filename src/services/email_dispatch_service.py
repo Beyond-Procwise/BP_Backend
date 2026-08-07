@@ -30,6 +30,7 @@ from .email_dispatch_chain_store import (
 )
 from src.services import email_dispatch_guard
 from src.services.agent_actions import record_action_or_fail
+from src.services.draft_hydration import DRAFT_COLUMNS, hydrate_draft, resolve_effective_content
 from .email_service import EmailService
 from .email_thread_store import (
     DEFAULT_THREAD_TABLE,
@@ -192,11 +193,20 @@ class EmailDispatchService:
             )
             rfq_identifier = self._normalise_identifier(draft.get("rfq_id"))
 
+            # What is actually going to be transmitted. The approval
+            # endpoints compute this same way (with no overrides) so the two
+            # sides hash identical material -- see draft_hydration.
+            # resolve_effective_content and the C1/C2 findings this closes.
+            effective = resolve_effective_content(
+                draft,
+                recipients=recipients,
+                subject_override=subject_override,
+                body_override=body_override,
+            )
+
             # The stored draft is authoritative. A caller may narrow this list
             # but may never introduce an address of its own.
-            recipient_list = self._normalise_recipients(
-                email_dispatch_guard.resolve_recipients(draft, recipients)
-            )
+            recipient_list = self._normalise_recipients(effective["recipients"])
 
             if not recipient_list:
                 raise ValueError("At least one recipient email is required to send the draft")
@@ -211,15 +221,8 @@ class EmailDispatchService:
             if not sender_email:
                 raise ValueError("Sender email address is required")
 
-            if subject_override is not None:
-                subject_candidate = subject_override
-            else:
-                subject_candidate = draft.get("subject")
-            subject_str = str(subject_candidate).strip() if subject_candidate else ""
-            subject = subject_str or f"{unique_id} – Request for Quotation"
-
-            body_source = body_override if body_override is not None else draft.get("body")
-            body_text = str(body_source).strip() if body_source else ""
+            subject = effective["subject"]
+            body_text = effective["body"]
 
             # Nothing reaches SES until all five checks pass. Deny is recorded
             # with the same weight as a send: an attempted send that was
@@ -1148,77 +1151,23 @@ class EmailDispatchService:
             return cur.fetchone()
 
     def _hydrate_draft(self, row: Tuple) -> Dict[str, Any]:
+        """Build the one draft shape shared with the approval endpoints.
+
+        The row-to-dict mapping and the payload-wins-over-columns precedence
+        live in ``draft_hydration.hydrate_draft`` now, not here -- a second
+        copy of this logic is exactly how C2 happened (the approval side
+        read raw columns while this method read payload-first, and the two
+        hashed different content for the same row).
+        """
+
         values = list(row)
-        if len(values) < 20:
-            values.extend([None] * (20 - len(values)))
+        if len(values) < len(DRAFT_COLUMNS):
+            values.extend([None] * (len(DRAFT_COLUMNS) - len(values)))
+        row_dict = dict(zip(DRAFT_COLUMNS, values))
 
-        (
-            draft_id,
-            rfq_id,
-            supplier_id,
-            supplier_name,
-            subject,
-            body,
-            sent,
-            recipient_email,
-            contact_level,
-            thread_index,
-            payload,
-            sender,
-            sent_on,
-            workflow_id,
-            run_id,
-            unique_id,
-            mailbox,
-            dispatch_run_id,
-            dispatched_at,
-            attachments_column,
-        ) = values[:20]
-
-        hydrated: Dict[str, Any]
-        if isinstance(payload, dict):
-            hydrated = dict(payload)
-        else:
-            try:
-                hydrated = json.loads(payload) if payload else {}
-            except Exception:
-                hydrated = {}
-
-        defaults = {
-            "id": draft_id,
-            "rfq_id": rfq_id,
-            "supplier_id": supplier_id,
-            "supplier_name": supplier_name,
-            "subject": subject,
-            "body": body,
-            "sent_status": bool(sent),
-            "receiver": recipient_email,
-            "contact_level": contact_level,
-            "thread_index": thread_index,
-            "sender": sender,
-            "recipients": hydrated.get("recipients") or ([recipient_email] if recipient_email else []),
-            "workflow_id": workflow_id,
-            "run_id": run_id,
-            "unique_id": unique_id,
-            "mailbox": mailbox,
-            "dispatch_run_id": dispatch_run_id,
-            "dispatched_at": dispatched_at,
-            "attachments": attachments_column,
-        }
-        for key, value in defaults.items():
-            hydrated.setdefault(key, value)
-        if sent_on and "sent_on" not in hydrated:
-            hydrated["sent_on"] = sent_on if isinstance(sent_on, str) else getattr(sent_on, "isoformat", lambda: sent_on)()
-        recipients_value = hydrated.get("recipients")
-        if isinstance(recipients_value, str):
-            hydrated["recipients"] = self._normalise_recipients([recipients_value])
-        elif isinstance(recipients_value, Iterable):
-            hydrated["recipients"] = self._normalise_recipients(recipients_value)
-        else:
-            hydrated["recipients"] = []
-        if not hydrated.get("sender"):
-            hydrated["sender"] = getattr(self.settings, "ses_default_sender", "")
-        return hydrated
+        return hydrate_draft(
+            row_dict, default_sender=getattr(self.settings, "ses_default_sender", "")
+        )
 
     @staticmethod
     def _extract_workflow_identifier(payload: Any) -> Optional[str]:

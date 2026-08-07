@@ -131,3 +131,46 @@ def test_an_approved_draft_is_not_pending(conn, ids):
     )
     pending_after = approval_store.list_pending_dispatch_approvals(limit=200, conn=conn)
     assert not any(r["unique_id"] == ids["unique_id"] for r in pending_after)
+
+
+# ---------------------------------------------------------------------------
+# I7 -- negotiation_workflow_exists, the lookup approve_round was missing.
+# ---------------------------------------------------------------------------
+
+
+def test_negotiation_workflow_exists_is_false_for_an_unknown_workflow(conn, ids):
+    assert approval_store.negotiation_workflow_exists(
+        workflow_id=ids["workflow_id"], conn=conn
+    ) is False
+
+
+def test_negotiation_workflow_exists_is_true_once_a_session_state_row_exists(conn, ids):
+    """negotiation_session_state is the table actually written to (live
+    counts at the time this was added: 7 rows there vs 1 in
+    negotiation_sessions)."""
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO proc.negotiation_session_state (workflow_id, supplier_id) "
+        "VALUES (%s, %s)",
+        (ids["workflow_id"], "SUP-1"),
+    )
+    assert approval_store.negotiation_workflow_exists(
+        workflow_id=ids["workflow_id"], conn=conn
+    ) is True
+
+
+def test_negotiation_workflow_exists_is_true_for_a_negotiation_sessions_row(conn, ids):
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO proc.negotiation_sessions (workflow_id, supplier_id, round) "
+        "VALUES (%s, %s, %s)",
+        (ids["workflow_id"], "SUP-1", 1),
+    )
+    assert approval_store.negotiation_workflow_exists(
+        workflow_id=ids["workflow_id"], conn=conn
+    ) is True
+
+
+def test_negotiation_workflow_exists_returns_false_for_a_blank_workflow_id(conn):
+    assert approval_store.negotiation_workflow_exists(workflow_id="", conn=conn) is False
+    assert approval_store.negotiation_workflow_exists(workflow_id=None, conn=conn) is False

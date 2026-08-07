@@ -75,3 +75,18 @@ def test_dispatch_approval_requires_buyer_and_denies_on_content_mismatch(engine)
     details = policy["details"]
     assert details["required_role"] == "Buyer"
     assert details["rules"]["on_content_mismatch"] == "deny"
+
+
+def test_self_approval_allowed_key_does_not_exist(engine):
+    """I6: self_approval_allowed shipped as a policy key nothing ever read.
+    Live value was `true`, with a note telling a customer to set it `false`
+    to require a second person -- a customer who did got neither control
+    nor an error. The design deliberately allows self-approval (the agent
+    drafts on the user's behalf, so approving is authorship rather than
+    oversight); the key must not exist to be mistaken for a real lever.
+    """
+    policy = engine.get_policy("email_approval_capability")
+    assert policy is not None
+    rules = policy["details"].get("rules") or {}
+    assert "self_approval_allowed" not in rules
+    assert "note" not in rules

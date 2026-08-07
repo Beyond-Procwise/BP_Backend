@@ -40,7 +40,16 @@ def _normalised(draft: Mapping) -> Dict[str, Any]:
 
 def _attachment_identities(draft: Mapping[str, Any]) -> list:
     """Attachment names, sorted. Content is not hashed -- the identity of what
-    was attached is what an approver actually reviewed."""
+    was attached is what an approver actually reviewed.
+
+    Two shapes reach here: the stored metadata list
+    (``[{"filename": ..., "s3_key": ...}, ...]``, from
+    ``proc.draft_rfq_emails.attachments``) and the loaded-bytes list
+    (``[(bytes, filename), ...]``, what ``EmailDispatchService._load_attachments``
+    hands to the send path). Both are reduced to the same sorted filename
+    list, which is what makes an approval-side hash (built from the former)
+    agree with a send-side hash (built from the latter) when nothing changed.
+    """
 
     out = []
     raw = draft.get("attachments")
@@ -48,6 +57,13 @@ def _attachment_identities(draft: Mapping[str, Any]) -> list:
         for item in raw:
             if isinstance(item, dict):
                 name = item.get("filename") or item.get("name")
+            elif (
+                isinstance(item, (tuple, list))
+                and len(item) == 2
+                and isinstance(item[0], (bytes, bytearray))
+            ):
+                # (bytes, filename), as loaded for the MIME path.
+                name = item[1]
             else:
                 name = item
             text = str(name or "").strip()
