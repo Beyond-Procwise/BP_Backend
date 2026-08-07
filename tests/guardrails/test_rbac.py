@@ -198,3 +198,37 @@ def test_mapping_to_undefined_role_falls_back_to_viewer(engine):
     )
     principal = FakePrincipal("sub-x", {"cognito:groups": ["bp-superadmins"]})
     assert rbac.effective_role(principal, policy_engine=restricted_engine) == "Viewer"
+
+
+def test_the_live_role_definition_classifies_reads_as_reversible():
+    """A fixture that outruns the database hides an unapplied migration.
+
+    The rest of this file asserts against ROLE_DEFINITION. This one reads the
+    real row, so it fails when the fixture and the database disagree.
+    """
+    import os
+
+    import psycopg2
+    from dotenv import load_dotenv
+
+    from src.engines.policy_engine import PolicyEngine
+
+    load_dotenv()
+
+    def factory():
+        return psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT", 5432),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            connect_timeout=10,
+        )
+
+    engine = PolicyEngine(connection_factory=factory)
+
+    assert rbac.is_irreversible("read", policy_engine=engine) is False
+    assert rbac.is_irreversible("compute", policy_engine=engine) is False
+    assert rbac.is_irreversible("write", policy_engine=engine) is False
+    assert rbac.is_irreversible("communicate", policy_engine=engine) is True
+    assert rbac.is_irreversible("delegate", policy_engine=engine) is True
