@@ -126,6 +126,50 @@ def record_action(*, phase: str, action_type: str, conn: Any = None, **fields: A
         log.warning("agent_actions.record_action failed (%s/%s): %s", phase, action_type, exc)
 
 
+class AuditWriteError(RuntimeError):
+    """Raised when an action that must be audited could not be recorded."""
+
+
+def record_action_or_fail(
+    *, phase: str, action_type: str, conn: Any = None, **fields: Any
+) -> None:
+    """Insert one action row, or raise.
+
+    The counterpart to :func:`record_action` for irreversible actions —
+    sending, approving, configuring. Auditing cannot be switched off, so an
+    action whose audit row cannot be written does not proceed. Reads and
+    computes keep the best-effort writer, because a transient database blip
+    should not halt an extraction backlog.
+    """
+
+    try:
+        fields["phase"] = phase
+        fields["action_type"] = action_type
+        params = _row_params(fields)
+        if conn is not None:
+            _write_on_shared_conn(conn, lambda cur: cur.execute(_INSERT, params))
+            return
+        with get_conn() as own:
+            own.autocommit = False
+            cur = own.cursor()
+            try:
+                cur.execute(_INSERT, params)
+                own.commit()
+            except Exception:
+                own.rollback()
+                raise
+    except Exception as exc:
+        log.error(
+            "agent_actions.record_action_or_fail failed (%s/%s): %s",
+            phase,
+            action_type,
+            exc,
+        )
+        raise AuditWriteError(
+            f"could not audit {phase}/{action_type}: {exc}"
+        ) from exc
+
+
 def bulk_record(rows: Iterable[Mapping[str, Any]], *, conn: Any = None) -> None:
     """Insert many rows (each mapping must include phase + action_type).
 
