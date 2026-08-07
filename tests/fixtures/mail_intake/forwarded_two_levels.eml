@@ -1,0 +1,67 @@
+Subject: Fwd: Fwd: Quote QT-9002
+From: Copperleaf Sales <manager@acme.test>
+To: intake@acme.procureiq.io
+Date: Wed, 05 Aug 2026 09:14:02 +0100
+Message-ID: <fwd
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============1397820803018367388=="
+
+--===============1397820803018367388==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+For the file.
+
+--===============1397820803018367388==
+Content-Type: message/rfc822
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+Content-Disposition: attachment
+
+Subject: Fwd: Quote QT-9002
+From: Copperleaf Sales <buyer@acme.test>
+To: intake@acme.procureiq.io
+Date: Wed, 05 Aug 2026 09:14:02 +0100
+Message-ID: <fwd
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============7586526431758647752=="
+
+--===============7586526431758647752==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Passing this on.
+
+--===============7586526431758647752==
+Content-Type: message/rfc822
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+Content-Disposition: attachment
+
+Subject: Quote QT-9002
+From: Copperleaf Sales <quotes@copperleaf.test>
+To: intake@acme.procureiq.io
+Date: Wed, 05 Aug 2026 09:14:02 +0100
+Message-ID: <quote-qt-9002@copperleaf.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============4623419934025249703=="
+
+--===============4623419934025249703==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Pricing attached.
+
+--===============4623419934025249703==
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="quote-QT-9002.pdf"
+MIME-Version: 1.0
+
+JVBERi0xLjQKJSBuZXN0ZWQgZml4dHVyZSBib2R5Cg==
+
+--===============4623419934025249703==--
+
+--===============7586526431758647752==--
+
+--===============1397820803018367388==--

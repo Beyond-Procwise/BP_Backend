@@ -1,0 +1,37 @@
+Subject: Scanned quote
+From: Copperleaf Sales <quotes@copperleaf.test>
+To: intake@acme.procureiq.io
+Date: Wed, 05 Aug 2026 09:14:02 +0100
+Message-ID: <scanned-quote@copperleaf.test>
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============8511503366639891629=="
+
+--===============8511503366639891629==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+See below.
+
+--===============8511503366639891629==
+MIME-Version: 1.0
+Content-Type: multipart/related;
+ boundary="===============8017297026672070044=="
+
+--===============8017297026672070044==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html><body><p>See below.</p></body></html>
+
+--===============8017297026672070044==
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="scan.pdf"
+MIME-Version: 1.0
+
+JVBERi0xLjQKJSBpbmxpbmUgYnV0IHVucmVmZXJlbmNlZAo=
+
+--===============8017297026672070044==--
+
+--===============8511503366639891629==--

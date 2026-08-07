@@ -1,0 +1,7 @@
+From: broken@copperleaf.test
+To: intake@acme.procureiq.io
+Subject: Quote
+Content-Type: multipart/mixed; boundary="----X"
+MIME-Version: 1.0
+
+there is no boundary in this body at all
