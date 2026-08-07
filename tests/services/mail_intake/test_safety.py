@@ -286,7 +286,141 @@ def test_benign_mislabel_passes():
     assert verdict.ok
 
 
-def test_detail_never_carries_document_content():
-    verdict = _verdict("encrypted.pdf", "application/pdf")
-    blob = repr(verdict.detail).lower()
-    assert "confidential" not in blob
+def test_detail_never_carries_sender_controlled_text():
+    """Aimed at a DATA-DEPENDENT detail path, deliberately.
+
+    An earlier version of this test asserted against the encrypted-PDF path,
+    whose detail is the hardcoded literal {"container": "pdf"} — an assertion
+    that could never fail whatever the gate did, and which therefore missed a
+    real leak. The detail is persisted to quarantine_detail and interpolated
+    into a log line, so anything sender-controlled reaching it lands in the
+    record a human reads.
+    """
+    content = (FIXTURES / "clean.pdf").read_bytes()
+    marker = "MARKER-INJECTED-BY-SENDER"
+    verdict = safety.evaluate(
+        content,
+        declared_mime=f'application/{marker}"><img src=x onerror=y>',
+        detected_mime=typing_.detect(content),
+        filename=f"{marker}.pdf",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok  # declared/detected disagree, so this quarantines
+    assert marker not in repr(verdict.detail)
+    assert "onerror" not in repr(verdict.detail)
+
+
+def test_payload_under_an_office_prefix_is_still_caught():
+    """The Critical finding: naming decided whether classification happened.
+
+    An earlier version selected candidates by top-level path segment, so a
+    payload placed under `word/` or `xl/` was never sniffed at all — renaming
+    one path segment defeated the whole control.
+    """
+    import io
+    import pathlib
+    import zipfile
+
+    elf = pathlib.Path("/bin/ls").read_bytes()
+    for location in ("word/payload.exe", "xl/media/payload.exe", "docProps/x.exe"):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("[Content_Types].xml", "<Types/>")
+            zf.writestr("_rels/.rels", "<Relationships/>")
+            zf.writestr("word/document.xml", "<document/>")
+            zf.writestr(location, elf)
+        content = buf.getvalue()
+        verdict = safety.evaluate(
+            content,
+            declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            detected_mime=typing_.detect(content),
+            filename="quote.docx",
+            size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+        )
+        assert not verdict.ok, location
+        assert verdict.reason is QuarantineReason.EXECUTABLE, location
+
+
+def test_padding_past_the_inspection_limit_fails_closed():
+    """Exceeding the inspection limit must quarantine, not report silence.
+
+    An earlier version truncated the member list and recorded nothing, so
+    padding a container with decoys and putting the payload last produced a
+    clean verdict.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        for i in range(safety._MEMBER_SNIFF_LIMIT + 1):
+            zf.writestr(f"pad/{i:04d}.dat", b"inert")
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+    assert verdict.detail["truncated"] is True
+
+
+def test_archive_nested_inside_a_document_is_caught():
+    """"Archives go to a human" must not be defeated by wrapping."""
+    import io
+    import zipfile
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("evil.txt", "payload")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
+        zf.writestr("word/document.xml", "<document/>")
+        zf.writestr("word/inner.zip", inner.getvalue())
+    content = buf.getvalue()
+    verdict = safety.evaluate(
+        content,
+        declared_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        detected_mime=typing_.detect(content),
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.ARCHIVE
+    assert verdict.detail["archive_kinds"]
+
+
+@pytest.mark.parametrize(
+    "mime",
+    [
+        "application/x-msi",
+        "application/vnd.ms-cab-compressed",
+        "application/x-ms-shortcut",
+        "application/x-iso9660-image",
+    ],
+)
+def test_named_but_unexpected_types_do_not_clear(mime):
+    """The tail allow-lists. Dodging every named hazard is not being a document.
+
+    An MSI is an installer and a .lnk is a command launcher; both were cleared
+    by the previous default-allow tail whenever the sender declared the true
+    type, because neither appears in the hazard lists.
+    """
+    verdict = safety.evaluate(
+        b"arbitrary bytes",
+        declared_mime=mime,
+        detected_mime=mime,
+        filename="quote.docx",
+        size_ceiling_bytes=safety.DEFAULT_SIZE_CEILING_BYTES,
+    )
+    assert not verdict.ok
+    assert verdict.reason is QuarantineReason.UNKNOWN_TYPE
