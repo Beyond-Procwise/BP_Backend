@@ -6377,11 +6377,33 @@ def sweep_ready_artifacts(cur: Any, event_bus: Optional[Any] = None,
 Run: `./venv/bin/python -m pytest tests/services/mail_intake/test_pipeline.py -v`
 Expected: PASS, 11 tests
 
-- [ ] **Step 5: Register the sweep on the scheduler**
+- [ ] **Step 5: Register the sweep on the scheduler, guarded**
 
 Read `src/services/backend_scheduler.py:352` (`register_job`) and follow the
 existing registration pattern exactly. The sweep runs every 60 seconds, opens
 its own connection via `get_conn`, and calls `sweep_ready_artifacts`.
+
+**Guard it on the table existing.** Registering unconditionally means that in
+any environment where `2026-08-07-mail-intake.sql` has not been applied — a
+developer checkout, a staging box, anywhere the migration lags the deploy — the
+job raises `UndefinedTable` and logs an exception every sixty seconds, forever.
+That is not a broken feature so much as a broken log: the noise buries whatever
+someone is actually trying to read.
+
+```python
+def _mail_intake_tables_present() -> bool:
+    """Cheap existence probe, so an unmigrated environment stays quiet."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('proc.bp_ingest_artifact')")
+            row = cur.fetchone()
+            return bool(row and row[0])
+    except Exception:
+        return False
+```
+
+Check it once at registration and skip the job with a single INFO line if the
+table is absent, rather than failing every minute.
 
 - [ ] **Step 6: Run the full mail_intake suite**
 
@@ -6559,12 +6581,37 @@ KNOWN_CROSSINGS: Dict[str, set] = {
     "src/services/extraction/parser.py": {"boto3"},
 }
 
+# Extension chosen by DETECTED type, never by the sender's filename. Keys are
+# the types safety._PERMITTED_DOCUMENT_MIMES clears, so anything reaching this
+# module has an entry.
+_SUFFIX_FOR_MIME: Dict[str, str] = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/rtf": ".rtf",
+    "text/csv": ".csv",
+    "text/plain": ".txt",
+    "text/html": ".html",
+    "text/xml": ".xml",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/tiff": ".tiff",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/webp": ".webp",
+}
+
 
 def deliver_to_extraction(
     *,
     artifact_id: str,
     content: bytes,
     doc_type: str,
+    detected_mime: Optional[str] = None,
     filename: Optional[str] = None,
     process_monitor_id: Optional[int] = None,
     dispatch: Optional[Callable[..., Any]] = None,
@@ -6578,13 +6625,23 @@ def deliver_to_extraction(
     if dispatch is None:  # pragma: no cover - exercised in integration only
         from src.services.extraction.dispatch import dispatch_document as dispatch
 
-    # The suffix must be the real one. Extraction's parser router dispatches
-    # purely on file extension, so a hardcoded ".bin" made every mail-intake
-    # document fail at L0 with "unsupported file format" — the production path
-    # could never have worked. That failure also invites precisely the wrong
-    # repair: the quickest way to make it go away is to hand extraction the S3
+    # The suffix must be the real one, because extraction's parser router
+    # dispatches purely on file extension — a hardcoded ".bin" made every
+    # mail-intake document fail at L0 with "unsupported file format", so the
+    # production path could never have worked. That failure also invites the
+    # wrong repair: the quickest way to clear it is to hand extraction the S3
     # key instead, which is the move this module exists to prevent.
-    suffix = os.path.splitext(filename or "")[1] or ".bin"
+    #
+    # It comes from `detected_mime`, NOT from the filename. The filename is
+    # sender-controlled, and letting it choose which parser runs would hand the
+    # sender exactly the influence this module denies them — a genuine PDF named
+    # `quote.csv` would otherwise be routed to the CSV parser. `typing_` already
+    # ignores the filename for the same reason. It is used only as a tiebreak
+    # when the detected type maps to several extensions, and bounded either way.
+    suffix = _SUFFIX_FOR_MIME.get(detected_mime or "")
+    if suffix is None:
+        candidate = os.path.splitext(filename or "")[1].lower()
+        suffix = candidate if 0 < len(candidate) <= 8 and candidate.isascii() else ".bin"
 
     # mkstemp already creates the file owner-only (0o600 before umask, and
     # umask can only clear bits, never add them). The explicit fchmod is
@@ -6909,12 +6966,21 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     if normalised.startswith(".."):
         raise ValueError("s3_path must not traverse outside its prefix")
 
-    # Descendant: the caller named something inside quarantine.
-    if (normalised + "/").startswith(QUARANTINE_PREFIX):
-        raise ValueError(
-            "s3_path resolves under the mail-intake quarantine prefix, which "
-            "holds content the safety gate rejected"
-        )
+    # BOTH withheld stores, not just quarantine. `mail-intake/raw/` holds the
+    # complete raw MIME of every message — including every message whose
+    # attachment the gate rejected, and every malformed bundle. An earlier
+    # version guarded only the quarantine prefix, having created the raw store
+    # in the same change and never added it here. The endpoint writes what it
+    # downloads with an .eml suffix and the extractor reads any non-PDF as text,
+    # so an injection carried in the BODY of a quarantined message reached the
+    # model through the very endpoint this guard exists to harden.
+    for withheld in (QUARANTINE_PREFIX, RAW_MIME_PREFIX):
+        # Descendant: the caller named something inside a withheld store.
+        if (normalised + "/").startswith(withheld):
+            raise ValueError(
+                f"s3_path resolves under {withheld}, which holds content "
+                "withheld from extraction"
+            )
 
     # ANCESTOR: the caller named something quarantine sits underneath. This is
     # the case an earlier version missed entirely. The prefix is passed to
@@ -6928,11 +6994,12 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     # key-level filter in _list_s3_keys below, which drops quarantine keys
     # whatever prefix produced them. This check exists so the common case fails
     # loudly rather than silently returning nothing.
-    if QUARANTINE_PREFIX.startswith(normalised.rstrip("/") + "/"):
-        raise ValueError(
-            "s3_path is an ancestor of the mail-intake quarantine prefix; "
-            "narrow it so quarantined content cannot be enumerated"
-        )
+    for withheld in (QUARANTINE_PREFIX, RAW_MIME_PREFIX):
+        if withheld.startswith(normalised.rstrip("/") + "/"):
+            raise ValueError(
+                f"s3_path is an ancestor of {withheld}; narrow it so withheld "
+                "content cannot be enumerated"
+            )
 
     return bucket_name, prefix
 ```
@@ -6955,9 +7022,9 @@ with a filtered one:
             # for. The prefix guard in _resolve_s3_path rejects the obvious
             # ancestors, but a short enough prefix always slips through, so the
             # decision has to be made per key.
-            if key.startswith(QUARANTINE_PREFIX):
+            if key.startswith(QUARANTINE_PREFIX) or key.startswith(RAW_MIME_PREFIX):
                 log.warning(
-                    "documents.extract_from_s3 skipped a quarantined key under "
+                    "documents.extract_from_s3 skipped a withheld key under "
                     "prefix=%s", prefix,
                 )
                 continue
@@ -7201,10 +7268,12 @@ email, and it does not act on anything a document says.
 
 ## What access is requested
 
-Three connection methods are supported. **The relay method is preferred and
-needs no access to your mail system at all.**
+Three connection methods are planned. **Only the relay method is available
+today** — the Microsoft 365 and IMAP connectors are described here so you can
+plan for them, and are marked below. The relay method is also the preferred one,
+and it **needs no access to your mail system at all.**
 
-### 1. Relay address (recommended)
+### 1. Relay address (recommended — AVAILABLE NOW)
 
 You are given an address such as `intake@yourcompany.procureiq.io`. Suppliers
 send or copy their quotes to it, or you forward them.
@@ -7216,7 +7285,7 @@ send or copy their quotes to it, or you forward them.
 This is the option most likely to clear a security review quickly, because
 there is nothing to grant.
 
-### 2. Microsoft 365 (Graph)
+### 2. Microsoft 365 (Graph) — PLANNED, not yet available
 
 - **Permission requested:** `Mail.Read`, application permission.
 - **Scope:** restricted to named mailboxes or folders using an *application
@@ -7238,7 +7307,7 @@ there is nothing to grant.
   accept a value in that form — a pasted password or key is rejected outright
   rather than stored.
 
-### 3. IMAP
+### 3. IMAP — PLANNED, not yet available
 
 - **Permission requested:** read access to one named folder.
 - **Not requested:** sending, deleting, moving or modifying messages.
@@ -7275,18 +7344,34 @@ unpacked:
 | ZIP and other archives | Contents unknown until unpacked; a person decides |
 | Programs and scripts | Regardless of what the file is named |
 | Files above the size limit | Configurable; 25 MB by default |
-| Files whose type does not match their name | A `.pdf` that is really something else |
-| Documents containing hidden text | Text present in the file but invisible to a reader — a known method of attempting to influence automated document reading |
+| Files whose contents do not match how they were labelled | The sender's declared file type disagrees with what the bytes actually are. Note the system never looks at the *filename* — a name is trivial to change, so it is deliberately ignored. A ZIP or a program named `.pdf` is held, but by the archive and program rules below rather than this one |
+| Unsupported formats | OpenDocument (`.odt`, `.ods`) and other formats we do not read are held for a person. Worth telling suppliers, so a quote is not delayed by arriving in an unexpected format |
+| Documents containing hidden text | Text present in the file but invisible to a reader — a known method of attempting to influence automated document reading. Checked in PDF, Word and Excel files only; see the note below for what this does and does not cover |
 
 Held items are retained with the reason recorded. An authorised person can
 release one, and that release is itself recorded.
 
-## A note on hidden text
+## A note on hidden text, and what it does not cover
 
 Scanned documents legitimately contain invisible text — that is how a scan
 becomes searchable. This feature distinguishes that from concealment by
-checking whether the invisible text sits over a scanned image. Ordinary scanned
-invoices are unaffected.
+checking whether the invisible text sits over a scanned image, so ordinary
+scanned invoices are unaffected.
+
+We would rather be precise about the limits than let this read as settled:
+
+- **It covers PDF, Word and Excel files.** Other formats we accept —
+  PowerPoint, the older `.doc` and `.xls`, rich text, HTML and images — are not
+  scanned for hidden text today.
+- **It catches the ordinary attempt, not a determined one.** The check compares
+  where images sit on the page, not what they actually show, so someone who
+  knows the method can still conceal text from it.
+
+What this means in practice: treat it as one control among several, not as a
+guarantee. The controls that do not depend on detecting intent — programs and
+scripts held whatever they are named, archives never unpacked, macro-bearing
+files held, and nothing in a document being able to change an approval or a
+score — are the ones carrying the weight.
 
 ## What this feature cannot do
 
