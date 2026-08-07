@@ -135,6 +135,7 @@ class EmailDispatchService:
         notify_watcher: bool = True,
         principal: Optional[Any] = None,
         run_count: int = 0,
+        agent_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send the latest draft for ``identifier`` (unique_id preferred).
 
@@ -152,6 +153,13 @@ class EmailDispatchService:
         drafts in one invocation (``EmailDispatchAgent.run``, the batch and
         dispatch-all endpoints) must pass the count of sends already
         attempted so far in that loop.
+
+        ``agent_name`` identifies the agent asking for this send when there
+        is no ``principal`` behind it -- an agent-initiated dispatch, as
+        opposed to a human clicking send on an approved draft. The guard
+        consults ``EmailReplyAutonomyPolicy`` (via ``resolve_authority``) for
+        this name when no human approval is on file; without it, an
+        unapproved send is refused outright, exactly as before.
         """
 
         identifier = (identifier or "").strip()
@@ -227,6 +235,7 @@ class EmailDispatchService:
                 sender=sender_email,
                 run_count=run_count,
                 internal_domains=self._internal_domains(),
+                agent_name=agent_name,
             )
             # Audited on its OWN connection, not the shared `conn` above.
             # `conn` is a raw psycopg2 connection under a bare `with conn:`,
