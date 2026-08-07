@@ -45,6 +45,7 @@ SENSITIVITY_POLICY = {
             "on_missing_clearance": "use_default",
         },
     },
+    "raw_row": {"version": 1},
 }
 
 
@@ -406,6 +407,48 @@ def test_a_disabled_detector_does_not_fire(engine):
     assert "internal_staff_contact" not in result.detectors_fired
 
 
+@pytest.mark.parametrize("bad_raises_to", ["Commercial_Confidential", "confidential", "", "  "])
+def test_a_typo_d_raises_to_denies_rather_than_silently_scoring_zero(bad_raises_to):
+    """A raises_to that does not resolve to a declared class used to score 0
+    in the rank comparison, which never beats "internal"'s rank of 2 -- so
+    the detector fired, was recorded in detectors_fired, and the content
+    was sent anyway. This is the same failure class as guardrail.py's
+    required_role typo: an unresolvable target class must deny, not
+    silently lose the comparison."""
+    policy = {
+        "policyId": "email_sensitivity",
+        "policyName": "EmailSensitivityPolicy",
+        "details": {
+            "policy_identifier": "email_sensitivity",
+            "rules": {
+                **SENSITIVITY_POLICY["details"]["rules"],
+                "detectors": {
+                    **SENSITIVITY_POLICY["details"]["rules"]["detectors"],
+                    "internal_staff_contact": {
+                        "enabled": True,
+                        "raises_to": bad_raises_to,
+                    },
+                },
+            },
+        },
+    }
+    typo_engine = FakePolicyEngine({"email_sensitivity": policy})
+    result = sens.classify(
+        subject="s",
+        body="Call jane.doe@ourcompany.com.",
+        attachments=None,
+        recipient_supplier_id="SUP-1",
+        peer_prices=None,
+        internal_domains=["ourcompany.com"],
+        policy_engine=typo_engine,
+    )
+    assert result.content_class == sens.CLASS_UNDETERMINED
+    assert "internal_staff_contact" in result.detectors_fired
+    assert sens.clearance_permits(
+        result.content_class, "personal", policy_engine=typo_engine
+    ) is False
+
+
 def test_missing_policy_yields_undetermined(engine):
     empty = FakePolicyEngine({})
     result = sens.classify(
@@ -503,3 +546,35 @@ def test_the_live_email_sensitivity_policy_gates_both_directions():
         )
         is False
     )
+
+
+def test_no_engine_supplied_reuses_rbacs_shared_cache_not_a_fresh_one(monkeypatch):
+    """Before this fix, classify(policy_engine=None) built a brand-new
+    PolicyEngine on every call -- two full bp_policy reads per send (one
+    here, one in rbac). It must instead resolve rbac's own TTL-cached
+    engine, the same way guardrail.authorize and email_dispatch_guard do."""
+    from src.services import rbac
+
+    builds = []
+
+    class Counting:
+        def __init__(self):
+            builds.append(1)
+
+        def get_policy(self, slug):
+            return None
+
+    monkeypatch.setattr(rbac, "_build_engine", lambda: Counting(), raising=False)
+    rbac.reset_policy_cache()
+
+    sens.classify(
+        subject="s", body="b", attachments=None, recipient_supplier_id="SUP-1",
+        peer_prices=None, internal_domains=[],
+    )
+    sens.classify(
+        subject="s", body="b", attachments=None, recipient_supplier_id="SUP-1",
+        peer_prices=None, internal_domains=[],
+    )
+
+    assert len(builds) == 1, "each call built its own engine instead of reusing rbac's"
+    rbac.reset_policy_cache()

@@ -70,21 +70,36 @@ def _supplier_clearance(conn: Any, supplier_id: Optional[str]) -> Optional[str]:
 
 def _peer_prices(
     conn: Any, deal_id: Optional[str], supplier_id: Optional[str]
-) -> List[Dict[str, Any]]:
+) -> Optional[List[Dict[str, Any]]]:
     """Quote totals on this deal belonging to suppliers other than the recipient.
 
     Scoped to the deal so the comparison is against genuine competitors on the
-    same requirement. An empty result means "no competing quote on file", which
-    is a real answer -- but it is also what a broken lookup returns, so failures
-    are logged loudly rather than swallowed.
+    same requirement. ``[]`` means "no competing quote on file" -- a real,
+    proceed-able answer. ``None`` means the lookup itself could not be
+    performed, and the caller must deny rather than silently read that the
+    same way: an empty peer list because ``bp_quote_trgt`` is unreachable is
+    not the same fact as an empty peer list because there genuinely is no
+    competing quote, and collapsing them together downgraded a broken query
+    into a pass on the highest-value leak this detector exists to catch.
 
     The draft itself carries no deal_id (``proc.draft_rfq_emails`` has no such
     column); the caller must resolve the deal from the approval row instead
-    and pass it in here.
+    and pass it in here. No deal_id is treated as a genuine "nothing to
+    compare against" rather than a failure -- there is nothing to look up.
     """
 
     if hasattr(conn, "lookup_peer_prices"):
-        return list(conn.lookup_peer_prices(deal_id, supplier_id) or [])
+        try:
+            result = conn.lookup_peer_prices(deal_id, supplier_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "peer price lookup failed for deal %s: %s -- denying rather "
+                "than treating this deal as having no competing quotes",
+                deal_id,
+                exc,
+            )
+            return None
+        return list(result or [])
     if not deal_id:
         return []
     try:
@@ -98,12 +113,12 @@ def _peer_prices(
         return [{"supplier_id": r[0], "amount": r[1]} for r in cur.fetchall()]
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "peer price lookup failed for deal %s: %s -- the third_party_price "
-            "detector cannot fire for this message",
+            "peer price lookup failed for deal %s: %s -- denying rather than "
+            "treating this deal as having no competing quotes",
             deal_id,
             exc,
         )
-        return []
+        return None
 
 
 def _daily_send_count(conn: Any, principal_subject: Optional[str]) -> Optional[int]:
@@ -166,6 +181,23 @@ def resolve_recipients(
     return [r for r in stored if r.casefold() in asked]
 
 
+def _policy(policy_engine: Optional[Any], slug: str) -> Optional[Dict[str, Any]]:
+    """The named policy's full ``PolicyEngine.get_policy`` row, or ``None``.
+
+    Used to attribute a denial's ``policy_id``/``policy_version`` (spec G8),
+    not just the hardcoded display name every check used to carry alone.
+    """
+
+    engine = policy_engine if policy_engine is not None else rbac.policy_engine()
+    if engine is None:
+        return None
+    try:
+        policy = engine.get_policy(slug)
+    except Exception:  # noqa: BLE001
+        return None
+    return policy if isinstance(policy, dict) else None
+
+
 def _rules(policy_engine: Optional[Any], slug: str) -> Dict[str, Any]:
     # None means "resolve the real thing", not "no rules exist" -- exactly
     # like rbac.authorize and email_sensitivity.classify already do for the
@@ -188,6 +220,111 @@ def _rules(policy_engine: Optional[Any], slug: str) -> Dict[str, Any]:
         return {}
     rules = details.get("rules")
     return rules if isinstance(rules, dict) else {}
+
+
+def check_recipient_and_sensitivity(
+    *,
+    conn: Any,
+    supplier_id: Optional[str],
+    recipients: Optional[Iterable[str]],
+    subject: Optional[str],
+    body: Optional[str],
+    attachments: Optional[Iterable[Any]] = None,
+    sender: Optional[str] = None,
+    deal_id: Optional[str] = None,
+    internal_domains: Optional[Iterable[str]] = None,
+    peer_prices: Optional[Iterable[Dict[str, Any]]] = None,
+    policy_engine: Optional[Any] = None,
+) -> guardrail.Decision:
+    """Checks 2 and 3 of the five: recipient allow-list, then content
+    sensitivity versus supplier clearance.
+
+    Factored out so a caller with no approval workflow of its own -- the
+    value-summary supplier-query send path, which is not a governed RFQ
+    dispatch and so has no ``bp_approval`` row to check -- can still run the
+    same allow-list and sensitivity gate ``check_dispatch`` runs, rather than
+    a second, drifting implementation of the same two checks. On allow,
+    ``evidence["content_class"]`` carries the resolved classification for
+    the caller's own audit row.
+    """
+
+    try:
+        recipient_list = _normalise(recipients)
+        if not recipient_list:
+            return guardrail.deny_from_policy(
+                "no recipient survived allow-list resolution",
+                _policy(policy_engine, "email_recipient_allowlist"),
+                policy_name="EmailRecipientAllowlistPolicy",
+            )
+        known = {
+            str(a).casefold() for a in (_supplier_emails(conn, supplier_id) or [])
+        }
+        unknown = [r for r in recipient_list if r.casefold() not in known]
+        if unknown:
+            return guardrail.deny_from_policy(
+                f"recipient not on the supplier allow-list: {unknown[0]}",
+                _policy(policy_engine, "email_recipient_allowlist"),
+                policy_name="EmailRecipientAllowlistPolicy",
+                unknown_recipients=unknown,
+            )
+
+        clearance = _supplier_clearance(conn, supplier_id)
+        resolved_peers = (
+            list(peer_prices)
+            if peer_prices is not None
+            else _peer_prices(conn, deal_id, supplier_id)
+        )
+        if resolved_peers is None:
+            # The lookup itself failed -- not "no competing quotes". Reading
+            # a broken bp_quote_trgt query as an empty peer list would
+            # silently downgrade the sensitivity check to a pass on the
+            # highest-value leak this detector exists to catch.
+            return guardrail.deny_from_policy(
+                "could not determine competing quotes for this deal; denying "
+                "rather than classifying content unmetered",
+                _policy(policy_engine, "email_sensitivity"),
+                policy_name="EmailSensitivityPolicy",
+                deal_id=deal_id,
+            )
+        classification = email_sensitivity.classify(
+            subject=subject,
+            body=body,
+            attachments=attachments,
+            recipient_supplier_id=supplier_id,
+            peer_prices=resolved_peers,
+            internal_domains=internal_domains or [],
+            sender=sender,
+            policy_engine=policy_engine,
+        )
+        if not email_sensitivity.clearance_permits(
+            classification.content_class, clearance, policy_engine=policy_engine
+        ):
+            return guardrail.deny_from_policy(
+                f"content is {classification.content_class}; supplier clearance "
+                f"is {clearance or 'default'}",
+                _policy(policy_engine, "email_sensitivity"),
+                policy_name="EmailSensitivityPolicy",
+                detectors_fired=classification.detectors_fired,
+                detector_evidence=classification.evidence,
+            )
+
+        return guardrail.Decision(
+            allowed=True,
+            reason="recipient allow-list and content sensitivity checks passed",
+            evidence={
+                "recipients": recipient_list,
+                "content_class": classification.content_class,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken guard is a closed guard
+        logger.error(
+            "email_dispatch_guard.check_recipient_and_sensitivity failed: %s", exc
+        )
+        return guardrail.Decision(
+            allowed=False,
+            reason="dispatch guard failed; denying",
+            evidence={"error": str(exc)},
+        )
 
 
 def check_dispatch(
@@ -221,68 +358,34 @@ def check_dispatch(
             conn=conn,
         )
         if not approval:
-            return guardrail.Decision(
-                allowed=False,
-                reason="no recorded human approval for this draft",
+            return guardrail.deny_from_policy(
+                "no recorded human approval for this draft",
+                _policy(policy_engine, "email_dispatch_approval"),
                 policy_name="EmailDispatchApprovalPolicy",
-                evidence={"unique_id": draft.get("unique_id")},
+                unique_id=draft.get("unique_id"),
             )
 
         # The draft has no deal_id; the approval does. Check 1 has already
         # fetched it by the time the classifier needs it.
         deal_id = approval.get("deal_id")
 
-        # --- 2. Recipient allow-list -------------------------------------
-        if not recipient_list:
-            return guardrail.Decision(
-                allowed=False,
-                reason="no recipient survived allow-list resolution",
-                policy_name="EmailRecipientAllowlistPolicy",
-            )
-        known = {
-            str(a).casefold() for a in (_supplier_emails(conn, supplier_id) or [])
-        }
-        unknown = [r for r in recipient_list if r.casefold() not in known]
-        if unknown:
-            return guardrail.Decision(
-                allowed=False,
-                reason=f"recipient not on the supplier allow-list: {unknown[0]}",
-                policy_name="EmailRecipientAllowlistPolicy",
-                evidence={"unknown_recipients": unknown},
-            )
-
-        # --- 3. Sensitivity versus supplier clearance --------------------
-        clearance = _supplier_clearance(conn, supplier_id)
-        resolved_peers = (
-            list(peer_prices)
-            if peer_prices is not None
-            else _peer_prices(conn, deal_id, supplier_id)
-        )
-        classification = email_sensitivity.classify(
+        # --- 2 & 3. Recipient allow-list, then content sensitivity -------
+        sensitivity_decision = check_recipient_and_sensitivity(
+            conn=conn,
+            supplier_id=supplier_id,
+            recipients=recipient_list,
             subject=subject,
             body=body,
             attachments=attachments,
-            recipient_supplier_id=supplier_id,
-            peer_prices=resolved_peers,
-            internal_domains=internal_domains or [],
             sender=sender,
+            deal_id=deal_id,
+            internal_domains=internal_domains,
+            peer_prices=peer_prices,
             policy_engine=policy_engine,
         )
-        if not email_sensitivity.clearance_permits(
-            classification.content_class, clearance, policy_engine=policy_engine
-        ):
-            return guardrail.Decision(
-                allowed=False,
-                reason=(
-                    f"content is {classification.content_class}; supplier clearance "
-                    f"is {clearance or 'default'}"
-                ),
-                policy_name="EmailSensitivityPolicy",
-                evidence={
-                    "detectors_fired": classification.detectors_fired,
-                    "detector_evidence": classification.evidence,
-                },
-            )
+        if not sensitivity_decision.allowed:
+            return sensitivity_decision
+        content_class = sensitivity_decision.evidence.get("content_class")
 
         # --- 4. Policy ----------------------------------------------------
         decision = guardrail.authorize(
@@ -306,9 +409,9 @@ def check_dispatch(
         except (TypeError, ValueError):
             max_per_run = None
         if max_per_run is not None and int(run_count) >= max_per_run:
-            return guardrail.Decision(
-                allowed=False,
-                reason=f"volume cap reached: {run_count}/{max_per_run} for this run",
+            return guardrail.deny_from_policy(
+                f"volume cap reached: {run_count}/{max_per_run} for this run",
+                _policy(policy_engine, "email_volume"),
                 policy_name="EmailVolumePolicy",
             )
 
@@ -320,23 +423,19 @@ def check_dispatch(
             principal_subject = getattr(principal, "subject", None)
             daily_count = _daily_send_count(conn, principal_subject)
             if daily_count is None:
-                return guardrail.Decision(
-                    allowed=False,
-                    reason=(
-                        "could not determine this user's daily send count; "
-                        "denying rather than sending unmetered"
-                    ),
+                return guardrail.deny_from_policy(
+                    "could not determine this user's daily send count; "
+                    "denying rather than sending unmetered",
+                    _policy(policy_engine, "email_volume"),
                     policy_name="EmailVolumePolicy",
                 )
             if daily_count >= max_per_day:
-                return guardrail.Decision(
-                    allowed=False,
-                    reason=(
-                        f"daily volume cap reached: {daily_count}/{max_per_day} "
-                        "for this user"
-                    ),
+                return guardrail.deny_from_policy(
+                    f"daily volume cap reached: {daily_count}/{max_per_day} "
+                    "for this user",
+                    _policy(policy_engine, "email_volume"),
                     policy_name="EmailVolumePolicy",
-                    evidence={"principal": principal_subject},
+                    principal=principal_subject,
                 )
 
         return guardrail.Decision(
@@ -348,7 +447,7 @@ def check_dispatch(
             evidence={
                 "approval_id": approval.get("approval_id"),
                 "approved_by": approval.get("actioned_by"),
-                "content_class": classification.content_class,
+                "content_class": content_class,
                 "recipients": recipient_list,
             },
         )

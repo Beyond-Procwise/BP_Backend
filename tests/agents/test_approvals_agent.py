@@ -191,6 +191,110 @@ def test_fixture_matches_what_policy_engine_really_emits():
     assert policy["raw_row"]["policy_name"] == "ApprovalThresholdPolicy"
 
 
+# --- C3: an automated verdict must never become a findable dispatch
+# approval; only a human explicitly naming themselves may produce one. ------
+
+class _FakeApprovalCursor:
+    def __init__(self, log):
+        self._log = log
+        self._next_id = len(log) + 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self._log.append((sql, params))
+
+    def fetchone(self):
+        return (self._next_id,)
+
+
+class _FakeApprovalConn:
+    """Stands in for agent_nick.get_db_connection() so both the automated
+    raw-INSERT path and approval_store.record_approval's conn= path can be
+    exercised without a database."""
+
+    def __init__(self):
+        self.log = []
+        self.committed = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def cursor(self):
+        return _FakeApprovalCursor(self.log)
+
+    def commit(self):
+        self.committed += 1
+
+
+def test_human_actioned_by_reuses_approval_store_and_is_findable():
+    """When a human names themselves via payload['actioned_by'], the row
+    must be written through approval_store.record_approval -- the only place
+    status/actioned_by are set -- so it becomes a real, findable dispatch
+    approval (proc.bp_approval had zero rows and nothing could satisfy
+    find_dispatch_approval before this)."""
+    fake_conn = _FakeApprovalConn()
+    agent = _agent(_GOVERNED)
+    agent.agent_nick.get_db_connection = lambda: fake_conn
+
+    out = agent.run(_ctx(
+        amount=5000, currency="GBP", rfq_id="RFQ-1", workflow_id="WF-1",
+        unique_id="PROC-WF-1", supplier_id="SUP-1", deal_id="DEAL-1",
+        actioned_by="buyer@ourcompany.com",
+    ))
+
+    assert out.data["approval_id"] == 1
+    assert fake_conn.committed == 1
+    sql, params = fake_conn.log[0]
+    assert "INSERT INTO proc.bp_approval" in sql
+    # approval_store.record_approval's own fixed vocabulary: status is
+    # ALWAYS 'approved' and actioned_by is ALWAYS set once this path runs --
+    # regardless of the automated comparison's own decision.
+    assert "approved" in params
+    assert "buyer@ourcompany.com" in params
+    assert "DEAL-1" in params  # I3: deal_id is carried through
+
+
+def test_automated_verdict_never_sets_status_or_actioned_by():
+    """No actioned_by in the payload -> the existing automated INSERT runs,
+    and it must not name status/actioned_by columns at all: an unattended
+    threshold comparison must never satisfy
+    approval_store.find_dispatch_approval's 'a human signed this' check."""
+    fake_conn = _FakeApprovalConn()
+    agent = _agent(_GOVERNED)
+    agent.agent_nick.get_db_connection = lambda: fake_conn
+
+    out = agent.run(_ctx(amount=5000, currency="GBP"))
+
+    assert out.data["approval_id"] == 1
+    sql, _params = fake_conn.log[0]
+    assert "status" not in sql.lower()
+    assert "actioned_by" not in sql.lower()
+
+
+def test_escalation_with_no_human_actor_still_uses_the_automated_path():
+    """An ESCALATE verdict with nobody named must not accidentally become
+    findable either -- only payload['actioned_by'] switches the path, never
+    the verdict itself."""
+    fake_conn = _FakeApprovalConn()
+    agent = _agent(_GOVERNED)
+    agent.agent_nick.get_db_connection = lambda: fake_conn
+
+    out = agent.run(_ctx(amount=25000, currency="GBP"))
+
+    assert out.data["decision"] == DECISION_ESCALATE
+    sql, _params = fake_conn.log[0]
+    assert "status" not in sql.lower()
+    assert "actioned_by" not in sql.lower()
+
+
 def test_agent_resolves_threshold_from_a_real_policy_engine():
     """End-to-end through the real PolicyEngine, not a hand-written stub."""
     from engines.policy_engine import PolicyEngine

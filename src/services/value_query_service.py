@@ -20,7 +20,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from src.services import agent_actions, grounded_retone
+from src.services import agent_actions, email_dispatch_guard, grounded_retone, guardrail
+from src.services.email_dispatch_guard import DispatchDenied
 from src.services.value_summary_service import DISCREPANCY_VALUE_TYPES, parse_amount
 
 logger = logging.getLogger(__name__)
@@ -280,22 +281,45 @@ _STAMP_SQL = """
 """
 
 
+def _sender_address(agent_nick) -> Optional[str]:
+    return getattr(getattr(agent_nick, "settings", None), "ses_default_sender", None) \
+        or "noreply@procwise.co.uk"
+
+
+def _internal_domains(agent_nick) -> list:
+    sender = str(_sender_address(agent_nick) or "")
+    domain = sender.partition("@")[2].strip()
+    return [domain] if domain else []
+
+
 def send_query(finding_id: str, *, to: str, subject: str, body: str, agent_nick,
-               conn=None) -> dict:
+               principal=None, policy_engine=None, conn=None) -> dict:
     """Send the reviewed draft and record that it went.
 
     The row is stamped ONLY after SES accepts the message. A failed send that still stamped
     would make an unasked question look asked, and the finding would sit there waiting for a
     reply nobody was ever asked for.
+
+    ``principal`` is the authenticated caller. Nothing here previously checked WHO was
+    sending, or to WHOM, or WHAT: this route carried a caller-supplied recipient and body
+    straight to SES for any finding id, with no approval, no allow-list, no sensitivity
+    check and no policy call -- the exact hole the rest of this guardrail layer exists to
+    close. It is closed the same way the governed RFQ dispatch path is: the supplier
+    allow-list and content sensitivity first, then policy, reusing
+    ``email_dispatch_guard.check_recipient_and_sensitivity`` rather than a second
+    implementation of the same two checks. ``policy_engine`` is normally left ``None``
+    (the real, shared engine); it exists as an explicit seam for tests, the same
+    convention ``guardrail.authorize`` and ``email_dispatch_guard`` already use.
     """
     if conn is not None:
-        return _send(conn, finding_id, to, subject, body, agent_nick)
+        return _send(conn, finding_id, to, subject, body, agent_nick, principal, policy_engine)
     from src.services.db import get_conn
     with get_conn() as own:
-        return _send(own, finding_id, to, subject, body, agent_nick)
+        return _send(own, finding_id, to, subject, body, agent_nick, principal, policy_engine)
 
 
-def _send(conn, finding_id: str, to: str, subject: str, body: str, agent_nick) -> dict:
+def _send(conn, finding_id: str, to: str, subject: str, body: str, agent_nick,
+          principal=None, policy_engine=None) -> dict:
     if not str(to or "").strip():
         raise ValueError("a query needs a recipient — no supplier email on file")
     cur = conn.cursor()
@@ -306,6 +330,67 @@ def _send(conn, finding_id: str, to: str, subject: str, body: str, agent_nick) -
     if row.get("query_sent_at") is not None:
         raise ValueError(f"disc:{row['discrepancy_id']} was already queried on "
                          f"{_iso(row['query_sent_at'])}")
+
+    supplier_id = row.get("supplier_id")
+    deal_id = row.get("deal_id")
+
+    if not supplier_id:
+        # The allow-list and sensitivity checks both key off the supplier on
+        # the invoice. Without one there is nobody's contact_email_1/2 to
+        # check the recipient against, and skipping the check because the
+        # join happened to be empty is exactly the kind of silent bypass
+        # this layer exists to close. Deny.
+        gate = guardrail.Decision(
+            allowed=False,
+            reason=(
+                "no supplier on file for this finding; the recipient "
+                "allow-list cannot be verified"
+            ),
+            policy_name="EmailRecipientAllowlistPolicy",
+            evidence={"finding_id": f"disc:{row['discrepancy_id']}"},
+        )
+    else:
+        gate = email_dispatch_guard.check_recipient_and_sensitivity(
+            conn=conn,
+            supplier_id=supplier_id,
+            recipients=[to],
+            subject=subject,
+            body=body,
+            attachments=None,
+            sender=_sender_address(agent_nick),
+            deal_id=deal_id,
+            internal_domains=_internal_domains(agent_nick),
+            policy_engine=policy_engine,
+        )
+
+    if gate.allowed:
+        gate = guardrail.authorize(
+            "email.send", "communicate", principal,
+            {"finding_id": f"disc:{row['discrepancy_id']}", "supplier_id": supplier_id,
+             "to": to},
+            policy_engine=policy_engine,
+        )
+
+    agent_actions.record_action_or_fail(
+        phase="communicate", action_type="email.send", agent=AGENT, conn=conn,
+        deal_id=deal_id, doc_pk=row.get("doc_pk_candidate"), doc_type="invoice",
+        status="allowed" if gate.allowed else "denied",
+        summary=gate.reason,
+        details={
+            "finding_id": f"disc:{row['discrepancy_id']}",
+            "to": to,
+            "supplier_id": supplier_id,
+            "principal": getattr(principal, "subject", None),
+            "policy_id": gate.policy_id,
+            "policy_name": gate.policy_name,
+            "policy_version": gate.policy_version,
+            "decision": "allow" if gate.allowed else "deny",
+            "evidence": gate.evidence,
+            "egress": "amazon_ses",
+        },
+    )
+    if not gate.allowed:
+        raise email_dispatch_guard.DispatchDenied(gate)
 
     if not _send_email(to=to, subject=subject, body=body, agent_nick=agent_nick):
         raise RuntimeError(f"the query to {to} was not accepted for delivery")

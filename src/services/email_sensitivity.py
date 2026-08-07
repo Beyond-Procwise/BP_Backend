@@ -64,13 +64,18 @@ class ClassificationResult:
 def _rules(policy_engine: Optional[Any]) -> Dict[str, Any]:
     engine = policy_engine
     if engine is None:
+        # Reuse rbac's shared, TTL-cached engine rather than constructing a
+        # fresh PolicyEngine on every call -- every send otherwise paid for
+        # two full bp_policy reads (this one and rbac's) instead of sharing
+        # the one rbac already maintains.
         try:
-            from src.engines.policy_engine import PolicyEngine
-            from src.services.db import get_conn
+            from src.services import rbac
 
-            engine = PolicyEngine(connection_factory=get_conn)
+            engine = rbac.policy_engine()
         except Exception as exc:  # noqa: BLE001
             logger.error("email_sensitivity: no PolicyEngine: %s", exc)
+            return {}
+        if engine is None:
             return {}
     try:
         policy = engine.get_policy(_SLUG)
@@ -295,7 +300,25 @@ def classify(
         fired.append(name)
         evidence[name] = hit
         raised = str(config.get("raises_to") or "")
-        rank = order.get(raised, 0)
+        if raised not in order:
+            # Same failure class as guardrail.py's required_role typo: a
+            # raises_to that does not resolve to a declared class used to
+            # score 0, which never beats "internal"'s rank of 2 -- so the
+            # detector fired, was recorded in detectors_fired, and the
+            # content was sent anyway. A misconfigured target class must
+            # deny, not silently lose the comparison.
+            return ClassificationResult(
+                content_class=CLASS_UNDETERMINED,
+                detectors_fired=fired,
+                evidence={
+                    **evidence,
+                    "error": (
+                        f"detector {name} raises_to {raised!r}, which is not "
+                        "a class this policy declares"
+                    ),
+                },
+            )
+        rank = order[raised]
         if rank > best_rank:
             best_class, best_rank = raised, rank
 

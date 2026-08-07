@@ -57,6 +57,46 @@ def _version_of(policy: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def policy_attribution(policy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The ``policy_id``/``policy_name``/``policy_version`` triple a
+    ``Decision`` should carry when it was decided by ``policy`` (a
+    ``PolicyEngine.get_policy``-shaped dict, or ``None``).
+
+    Centralised so every caller attributes a decision the same way -- this
+    is exactly where the I1/C2-class "missing attribution" bugs on this
+    plan have lived: three near-identical inline ``Decision(...)`` blocks
+    that happened to agree until one of them drifted.
+    """
+
+    if not isinstance(policy, dict):
+        return {"policy_id": None, "policy_name": None, "policy_version": None}
+    return {
+        "policy_id": policy.get("policyId"),
+        "policy_name": policy.get("policyName"),
+        "policy_version": _version_of(policy),
+    }
+
+
+def deny_from_policy(
+    reason: str,
+    policy: Optional[Dict[str, Any]] = None,
+    *,
+    policy_name: Optional[str] = None,
+    **evidence: Any,
+) -> Decision:
+    """A denial attributed to ``policy``.
+
+    ``policy_name`` is a fallback used only when ``policy`` itself could not
+    be resolved (e.g. the engine is unreachable) -- ``policy_id`` and
+    ``policy_version`` stay ``None`` in that case rather than being guessed.
+    """
+
+    attribution = policy_attribution(policy)
+    if attribution["policy_name"] is None and policy_name:
+        attribution["policy_name"] = policy_name
+    return Decision(allowed=False, reason=reason, evidence=dict(evidence), **attribution)
+
+
 def authorize(
     action: str,
     action_class: str,
@@ -133,38 +173,28 @@ def authorize(
                     # this as "no cap" would silently delete the
                     # restriction instead of denying it. An unenforceable
                     # restriction denies rather than evaporating.
-                    return Decision(
-                        allowed=False,
-                        reason=(
-                            f"{policy.get('policyName')} requires role "
-                            f"{required_role!r}, which no policy defines"
-                        ),
-                        policy_id=policy.get("policyId"),
-                        policy_name=policy.get("policyName"),
-                        policy_version=_version_of(policy),
-                        evidence={"action": action, "role": role},
+                    return deny_from_policy(
+                        f"{policy.get('policyName')} requires role "
+                        f"{required_role!r}, which no policy defines",
+                        policy,
+                        action=action,
+                        role=role,
                     )
                 if rbac.role_rank(role, policy_engine=engine) < required_rank:
-                    return Decision(
-                        allowed=False,
-                        reason=(
-                            f"{policy.get('policyName')} requires role "
-                            f"{required_role}; caller is {role}"
-                        ),
-                        policy_id=policy.get("policyId"),
-                        policy_name=policy.get("policyName"),
-                        policy_version=_version_of(policy),
-                        evidence={"action": action, "role": role},
+                    return deny_from_policy(
+                        f"{policy.get('policyName')} requires role "
+                        f"{required_role}; caller is {role}",
+                        policy,
+                        action=action,
+                        role=role,
                     )
 
             if str(rules.get("effect") or "").lower() == "deny":
-                return Decision(
-                    allowed=False,
-                    reason=str(rules.get("reason") or "denied by policy"),
-                    policy_id=policy.get("policyId"),
-                    policy_name=policy.get("policyName"),
-                    policy_version=_version_of(policy),
-                    evidence={"action": action, "role": role},
+                return deny_from_policy(
+                    str(rules.get("reason") or "denied by policy"),
+                    policy,
+                    action=action,
+                    role=role,
                 )
 
             if allowing is None:

@@ -264,6 +264,82 @@ def test_undefined_role_is_rejected_on_the_non_ranked_branch():
     assert rbac.effective_role(principal, policy_engine=engine) == "Viewer"
 
 
+# --- C3(b): proc.bp_role_assignment is the only route to an Approver
+# before Cognito groups exist, and until this wiring it was created and
+# schema-tested but read by no code -- resolve_roles only read
+# cognito:groups. ---------------------------------------------------------
+
+def test_a_direct_role_assignment_grants_that_role(engine, monkeypatch):
+    monkeypatch.setattr(
+        rbac, "_load_role_assignments", lambda: {"sub-5": ["Approver"]}
+    )
+    rbac.reset_policy_cache()
+    principal = FakePrincipal("sub-5", {})  # no cognito:groups at all
+    assert rbac.effective_role(principal, policy_engine=engine) == "Approver"
+
+
+def test_a_revoked_role_assignment_does_not_grant(engine, monkeypatch):
+    """_load_role_assignments only ever returns ACTIVE rows (revoked_at IS
+    NULL is in the SQL WHERE clause) -- a revoked row is simply absent from
+    what it returns, so a subject with only a revoked grant resolves the
+    same as a subject with none at all."""
+    monkeypatch.setattr(rbac, "_load_role_assignments", lambda: {})
+    rbac.reset_policy_cache()
+    principal = FakePrincipal("sub-6", {})
+    assert rbac.effective_role(principal, policy_engine=engine) == "Viewer"
+
+
+def test_a_direct_grant_combines_with_cognito_groups_via_highest_rank(engine, monkeypatch):
+    """A direct Buyer grant plus a Cognito Admin group must resolve to
+    Admin: multiple_groups: highest_rank governs across BOTH sources, not
+    just the Cognito ones."""
+    monkeypatch.setattr(rbac, "_load_role_assignments", lambda: {"sub-7": ["Buyer"]})
+    rbac.reset_policy_cache()
+    principal = FakePrincipal("sub-7", {"cognito:groups": ["bp-admins"]})
+    assert rbac.effective_role(principal, policy_engine=engine) == "Admin"
+
+    # And the reverse: a direct Admin grant outranks a mere Viewer group.
+    monkeypatch.setattr(rbac, "_load_role_assignments", lambda: {"sub-7": ["Admin"]})
+    rbac.reset_policy_cache()
+    principal = FakePrincipal("sub-7", {"cognito:groups": ["bp-viewers"]})
+    assert rbac.effective_role(principal, policy_engine=engine) == "Admin"
+
+
+def test_a_failed_role_assignment_lookup_never_raises_and_grants_nothing(monkeypatch):
+    """An unenforceable table read must not become a raise, and must not
+    grant more than Cognito groups alone would -- it degrades to "nobody has
+    a direct grant", never to something more permissive. This exercises the
+    REAL _load_role_assignments (not a monkeypatched stand-in), forcing its
+    own get_conn() call to raise.
+    """
+
+    class _ExplodingConnCtx:
+        def __enter__(self):
+            raise RuntimeError("bp_role_assignment is unreachable")
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        "src.services.db.get_conn", lambda: _ExplodingConnCtx(), raising=False
+    )
+    assert rbac._load_role_assignments() == {}
+
+
+def test_direct_roles_cache_does_not_hit_the_loader_every_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        rbac, "_load_role_assignments", lambda: calls.append(1) or {"sub-8": ["Buyer"]}
+    )
+    rbac.reset_policy_cache()
+    rbac._direct_roles("sub-8")
+    rbac._direct_roles("sub-8")
+    assert len(calls) == 1
+    rbac.reset_policy_cache()
+    rbac._direct_roles("sub-8")
+    assert len(calls) == 2
+
+
 def test_default_path_reuses_the_cached_engine(monkeypatch):
     """Rebuilding per call re-reads every policy row; this project has been
     bitten by that pattern before.

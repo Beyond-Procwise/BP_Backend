@@ -26,12 +26,71 @@ _ENGINE_CACHE: Optional[Any] = None
 _ENGINE_CACHED_AT: float = 0.0
 _ENGINE_TTL_SECONDS = 60.0
 
+# proc.bp_role_assignment: direct subject -> role overrides, for granting a
+# role before a Cognito group exists for it. The whole (small) active table
+# is cached the same way the engine is -- a per-call query here would add
+# exactly the N+1 pattern this project has already been bitten by once.
+_ROLE_ASSIGNMENT_CACHE: Optional[Dict[str, List[str]]] = None
+_ROLE_ASSIGNMENT_CACHED_AT: float = 0.0
+_ROLE_ASSIGNMENT_TTL_SECONDS = 60.0
+
 
 def reset_policy_cache() -> None:
-    """Drop the cached engine. For tests and for an explicit reload."""
+    """Drop the cached engine and role-assignment table. For tests and for an
+    explicit reload."""
 
     global _ENGINE_CACHE, _ENGINE_CACHED_AT
+    global _ROLE_ASSIGNMENT_CACHE, _ROLE_ASSIGNMENT_CACHED_AT
     _ENGINE_CACHE, _ENGINE_CACHED_AT = None, 0.0
+    _ROLE_ASSIGNMENT_CACHE, _ROLE_ASSIGNMENT_CACHED_AT = None, 0.0
+
+
+def _load_role_assignments() -> Dict[str, List[str]]:
+    """Every active (``revoked_at IS NULL``) subject -> role row.
+
+    Extracted so tests can monkeypatch the load without a database, the same
+    way ``_build_engine`` is stood in for elsewhere in this module. Any
+    failure (table missing, connection down) resolves to "nobody has a
+    direct grant" -- the caller falls back to whatever Cognito groups say,
+    never to something more permissive.
+    """
+
+    try:
+        from src.services.db import get_conn
+
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT subject, role FROM proc.bp_role_assignment "
+                "WHERE revoked_at IS NULL"
+            )
+            table: Dict[str, List[str]] = {}
+            for subject, role in cur.fetchall():
+                if not subject or not role:
+                    continue
+                table.setdefault(str(subject), []).append(str(role))
+            return table
+    except Exception as exc:  # noqa: BLE001
+        logger.error("rbac: could not load proc.bp_role_assignment: %s", exc)
+        return {}
+
+
+def _direct_roles(subject: Optional[str]) -> List[str]:
+    """Roles ``subject`` holds via a direct proc.bp_role_assignment grant."""
+
+    if not subject:
+        return []
+
+    global _ROLE_ASSIGNMENT_CACHE, _ROLE_ASSIGNMENT_CACHED_AT
+    now = time.time()
+    if (
+        _ROLE_ASSIGNMENT_CACHE is None
+        or (now - _ROLE_ASSIGNMENT_CACHED_AT) >= _ROLE_ASSIGNMENT_TTL_SECONDS
+    ):
+        _ROLE_ASSIGNMENT_CACHE = _load_role_assignments()
+        _ROLE_ASSIGNMENT_CACHED_AT = now
+
+    return list(_ROLE_ASSIGNMENT_CACHE.get(str(subject), []))
 
 
 def _build_engine() -> Optional[Any]:
@@ -113,13 +172,26 @@ def role_rank(role: Optional[str], policy_engine: Optional[Any] = None) -> int:
 def resolve_roles(
     principal: Optional[Any], policy_engine: Optional[Any] = None
 ) -> List[str]:
-    """Roles carried by ``principal``, mapped from its identity-provider groups."""
+    """Roles carried by ``principal``.
+
+    Two sources, combined: a direct ``proc.bp_role_assignment`` grant (this
+    is what makes an Approver possible before any Cognito group exists), and
+    the identity-provider groups on the token, mapped through policy.
+    ``effective_role``'s ``multiple_groups: highest_rank`` rule then picks
+    the best of whichever roles either source produced.
+    """
 
     rules = _rules(_ROLE_ASSIGNMENT_SLUG, policy_engine)
     if not rules:
         return []
     if principal is None:
         return []
+
+    resolved: List[str] = []
+
+    subject = getattr(principal, "subject", None)
+    if subject:
+        resolved.extend(_direct_roles(subject))
 
     claim = str(rules.get("claim") or "cognito:groups")
     claims = getattr(principal, "claims", None)
@@ -135,7 +207,6 @@ def resolve_roles(
     mapping = mapping if isinstance(mapping, dict) else {}
     unmapped = str(rules.get("unmapped_group_role") or ROLE_UNKNOWN)
 
-    resolved: List[str] = []
     for group in groups:
         resolved.append(str(mapping.get(group) or unmapped))
     return resolved

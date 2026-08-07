@@ -228,25 +228,40 @@ class EmailDispatchService:
                 run_count=run_count,
                 internal_domains=self._internal_domains(),
             )
-            record_action_or_fail(
-                phase="communicate",
-                action_type="email.send",
-                conn=conn,
-                agent="EmailDispatchAgent",
-                status="allowed" if gate.allowed else "denied",
-                summary=gate.reason,
-                details={
-                    "unique_id": unique_id,
-                    "supplier_id": draft.get("supplier_id"),
-                    "recipients": recipient_list,
-                    "principal": getattr(principal, "subject", None),
-                    "policy_name": gate.policy_name,
-                    "policy_version": gate.policy_version,
-                    "decision": "allow" if gate.allowed else "deny",
-                    "evidence": gate.evidence,
-                    "egress": "amazon_ses",
-                },
-            )
+            # Audited on its OWN connection, not the shared `conn` above.
+            # `conn` is a raw psycopg2 connection under a bare `with conn:`,
+            # which rolls back on exception -- so a deny (which raises
+            # DispatchDenied right below) discarded the SAVEPOINT'd audit row
+            # along with the rollback, and even an allow's row sat
+            # uncommitted until `conn.commit()` far below, after send_email
+            # had already run. A short-lived, independently committed
+            # connection makes the audit row durable before send_email is
+            # ever called, and immune to whatever the caller's own
+            # transaction does afterwards -- which is the property an audit
+            # trail actually needs. A failure to write it (AuditWriteError)
+            # still propagates and aborts the send: nothing below this block
+            # runs.
+            with self.agent_nick.get_db_connection() as audit_conn:
+                record_action_or_fail(
+                    phase="communicate",
+                    action_type="email.send",
+                    conn=audit_conn,
+                    agent="EmailDispatchAgent",
+                    status="allowed" if gate.allowed else "denied",
+                    summary=gate.reason,
+                    details={
+                        "unique_id": unique_id,
+                        "supplier_id": draft.get("supplier_id"),
+                        "recipients": recipient_list,
+                        "principal": getattr(principal, "subject", None),
+                        "policy_id": gate.policy_id,
+                        "policy_name": gate.policy_name,
+                        "policy_version": gate.policy_version,
+                        "decision": "allow" if gate.allowed else "deny",
+                        "evidence": gate.evidence,
+                        "egress": "amazon_ses",
+                    },
+                )
             if not gate.allowed:
                 raise email_dispatch_guard.DispatchDenied(gate)
 

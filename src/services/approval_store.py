@@ -50,15 +50,26 @@ def record_approval(
     policy_name: Optional[str] = None,  # e.g. "EmailDispatchApprovalPolicy"
     amount: Optional[Any] = None,
     currency: Optional[str] = None,
+    grounding_extra: Optional[Dict[str, Any]] = None,
     conn: Any = None,
 ) -> int:
-    """Record a human approval. Returns the new ``approval_id``."""
+    """Record a human approval. Returns the new ``approval_id``.
+
+    ``grounding_extra`` merges additional facts into the stored grounding
+    (e.g. the amount/threshold/comparison a spend-authority verdict was
+    computed from) alongside the ``unique_id`` this module always records.
+    It never overrides ``unique_id`` itself.
+    """
 
     signer = str(actioned_by or "").strip()
     if not signer:
         raise ValueError("actioned_by is required: an approval must name a person")
 
-    grounding = psycopg2.extras.Json({"unique_id": unique_id})
+    grounding_payload: Dict[str, Any] = {}
+    if grounding_extra:
+        grounding_payload.update(grounding_extra)
+    grounding_payload["unique_id"] = unique_id
+    grounding = psycopg2.extras.Json(grounding_payload)
     sql = (
         "INSERT INTO proc.bp_approval "
         "(deal_id, rfq_id, workflow_id, supplier_id, amount, currency, decision, "

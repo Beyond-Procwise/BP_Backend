@@ -100,6 +100,35 @@ def _no_audit(monkeypatch):
     return calls
 
 
+class _FakePrincipal:
+    """A minimal stand-in for api.auth.Principal (subject + claims)."""
+
+    def __init__(self, subject="sub-approver", claims=None):
+        self.subject = subject
+        self.claims = claims or {"cognito:groups": ["bp-approvers"]}
+
+
+@pytest.fixture
+def _allow_guard(monkeypatch):
+    """Stand the C1 guard aside for tests about the SEND MECHANICS --
+    stamping, audit, error propagation -- rather than the guard itself,
+    which has its own dedicated RED/GREEN proof below (and reuses the same
+    checks proven in tests/guardrails/test_send_path_gate.py). This is the
+    same kind of test double tests/test_email_dispatch_service.py already
+    uses for its own non-guard tests.
+    """
+    monkeypatch.setattr(
+        vq.guardrail, "authorize",
+        lambda *a, **k: vq.guardrail.Decision(allowed=True, reason="test stub"),
+    )
+    monkeypatch.setattr(
+        vq.email_dispatch_guard, "check_recipient_and_sensitivity",
+        lambda **k: vq.guardrail.Decision(
+            allowed=True, reason="test stub", evidence={"content_class": "internal"}
+        ),
+    )
+
+
 # --- draft ---------------------------------------------------------------
 
 def test_draft_figures_are_byte_equal_to_stored_values(conn):
@@ -231,12 +260,12 @@ def test_a_governed_template_overrides_the_default(conn, monkeypatch):
 
 # --- send ----------------------------------------------------------------
 
-def test_send_stamps_query_sent_and_audits(conn, monkeypatch, _no_audit):
+def test_send_stamps_query_sent_and_audits(conn, monkeypatch, _no_audit, _allow_guard):
     sent = {}
     monkeypatch.setattr(vq, "_send_email",
                         lambda **kw: sent.update(kw) or True)
     out = vq.send_query("disc:80", to="ap@techworld.example", subject="S", body="B",
-                        agent_nick=object(), conn=conn)
+                        agent_nick=object(), principal=_FakePrincipal(), conn=conn)
     assert out["status"] == "sent" and out["query_sent_at"]
     assert sent["to"] == "ap@techworld.example" and sent["subject"] == "S"
 
@@ -247,25 +276,25 @@ def test_send_stamps_query_sent_and_audits(conn, monkeypatch, _no_audit):
     assert _no_audit[0]["doc_pk"] == "INV-1042"
 
 
-def test_send_failure_leaves_the_row_untouched(conn, monkeypatch):
+def test_send_failure_leaves_the_row_untouched(conn, monkeypatch, _allow_guard):
     def _boom(**kw):
         raise RuntimeError("SES refused")
     monkeypatch.setattr(vq, "_send_email", _boom)
 
     with pytest.raises(RuntimeError, match="SES refused"):
         vq.send_query("disc:80", to="ap@techworld.example", subject="S", body="B",
-                      agent_nick=object(), conn=conn)
+                      agent_nick=object(), principal=_FakePrincipal(), conn=conn)
     # Nothing stamped, nothing committed: an unsent query must never look sent.
     assert not [s for s, _ in conn.log if "UPDATE" in s]
     assert conn.committed == 0
 
 
-def test_send_reports_a_refusal_without_raising_as_a_failure(conn, monkeypatch):
+def test_send_reports_a_refusal_without_raising_as_a_failure(conn, monkeypatch, _allow_guard):
     # send_email returns success=False rather than raising — still a failure, still no stamp.
     monkeypatch.setattr(vq, "_send_email", lambda **kw: False)
     with pytest.raises(RuntimeError, match="not accepted"):
         vq.send_query("disc:80", to="a@b.example", subject="S", body="B",
-                      agent_nick=object(), conn=conn)
+                      agent_nick=object(), principal=_FakePrincipal(), conn=conn)
     assert not [s for s, _ in conn.log if "UPDATE" in s]
 
 
@@ -291,6 +320,138 @@ def test_send_refuses_an_empty_recipient(conn, monkeypatch):
         with pytest.raises(ValueError, match="recipient"):
             vq.send_query("disc:80", to=bad, subject="S", body="B",
                           agent_nick=object(), conn=conn)
+
+
+# --- C1: the send route must run the same gate the RFQ dispatch path does ---
+#
+# This route used to carry a caller-supplied `to`/`subject`/`body` straight to
+# SES for any finding id -- no approval, no allow-list, no sensitivity check,
+# no policy call. These tests exercise the REAL guardrail.authorize and
+# email_dispatch_guard.check_recipient_and_sensitivity (no `_allow_guard`
+# stub), so they prove the actual wiring, not a double standing in for it.
+
+def test_send_denies_without_an_authenticated_principal(conn, monkeypatch):
+    """No principal reaches the gate -> guardrail.authorize's own
+    fail-closed rule for irreversible actions refuses it, exactly as it
+    does for the RFQ dispatch path."""
+    monkeypatch.setattr(vq, "_send_email", lambda **kw: True)
+    with pytest.raises(vq.DispatchDenied) as excinfo:
+        vq.send_query("disc:80", to="ap@techworld.example", subject="S", body="B",
+                      agent_nick=object(), conn=conn)
+    assert "no authenticated principal" in excinfo.value.decision.reason
+    # Nothing sent, nothing stamped.
+    assert not [s for s, _ in conn.log if "UPDATE" in s]
+
+
+class _AllowlistConn:
+    """Wraps a `_FakeConn` and answers the guard's own lookups, so checks 2
+    (allow-list) and 3 (sensitivity) pass on real data rather than a stub."""
+
+    def __init__(self, inner, *, emails=("ap@techworld.example",), clearance="internal"):
+        self._inner = inner
+        self._emails = set(emails)
+        self._clearance = clearance
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def lookup_supplier_emails(self, supplier_id):
+        return set(self._emails)
+
+    def lookup_supplier_clearance(self, supplier_id):
+        return self._clearance
+
+
+def test_send_denies_a_recipient_not_on_the_supplier_allowlist(conn, monkeypatch):
+    """The recipient still has to be a real address on the supplier master.
+    The fake connection here answers no supplier-email rows at all, so any
+    address is "unknown" -- the same failure mode check_dispatch's own
+    allow-list check produces for the RFQ path."""
+    monkeypatch.setattr(vq, "_send_email", lambda **kw: True)
+    with pytest.raises(vq.DispatchDenied) as excinfo:
+        vq.send_query("disc:80", to="someone-else@random.example", subject="S", body="B",
+                      agent_nick=object(), principal=_FakePrincipal(), conn=conn)
+    assert "allow-list" in excinfo.value.decision.reason.lower()
+    assert not [s for s, _ in conn.log if "UPDATE" in s]
+
+
+def test_send_denies_when_the_finding_has_no_supplier_on_file(conn, monkeypatch):
+    """No supplier_id means no contact_email_1/2 to check the recipient
+    against. Skipping the check because the join was empty would be exactly
+    the silent bypass this layer exists to close -- it must deny instead."""
+    conn.row["supplier_id"] = None
+    monkeypatch.setattr(vq, "_send_email", lambda **kw: True)
+    with pytest.raises(vq.DispatchDenied) as excinfo:
+        vq.send_query("disc:80", to="ap@techworld.example", subject="S", body="B",
+                      agent_nick=object(), principal=_FakePrincipal(), conn=conn)
+    assert "no supplier on file" in excinfo.value.decision.reason.lower()
+    assert not [s for s, _ in conn.log if "UPDATE" in s]
+
+
+def test_send_denies_without_an_authenticated_principal(conn, monkeypatch):
+    """Recipient and content are both fine (the wrapped conn answers the
+    allow-list and clearance lookups, and an explicit policy_engine gives
+    email_sensitivity real rules to classify against); the only thing
+    missing is a principal, and guardrail.authorize's own fail-closed rule
+    for irreversible actions refuses it -- exactly as it does for the RFQ
+    dispatch path, and regardless of what any policy row says."""
+    from tests.guardrails.test_send_path_gate import engine as _guard_engine
+
+    conn.row["supplier_email"] = "ap@techworld.example"
+    wrapped = _AllowlistConn(conn)
+    monkeypatch.setattr(vq, "_send_email", lambda **kw: True)
+    with pytest.raises(vq.DispatchDenied) as excinfo:
+        vq.send_query("disc:80", to="ap@techworld.example", subject="S", body="B",
+                      agent_nick=object(), policy_engine=_guard_engine(), conn=wrapped)
+    assert "no authenticated principal" in excinfo.value.decision.reason
+    assert not [s for s, _ in conn.log if "UPDATE" in s]
+
+
+def test_send_denial_is_audited_with_the_strict_writer(conn, monkeypatch, _no_audit):
+    """C1 requires record_action_or_fail, not the lenient writer, for this
+    gate decision -- a failed audit write must abort the send rather than
+    let it through unlogged."""
+    monkeypatch.setattr(vq, "_send_email", lambda **kw: True)
+
+    calls = []
+
+    def _boom(**kw):
+        calls.append(kw)
+        raise vq.agent_actions.AuditWriteError("audit table is unreachable")
+
+    monkeypatch.setattr(vq.agent_actions, "record_action_or_fail", _boom)
+
+    with pytest.raises(vq.agent_actions.AuditWriteError):
+        vq.send_query("disc:80", to="someone-else@random.example", subject="S", body="B",
+                      agent_nick=object(), conn=conn)
+
+    assert calls, "record_action_or_fail must be called for the gate decision"
+    assert calls[0]["status"] == "denied"  # not on the allow-list -> the gate denies
+    assert not [s for s, _ in conn.log if "UPDATE" in s]
+
+
+def test_send_allowed_by_the_real_guard_is_audited_and_sent(conn, monkeypatch):
+    """The positive case, end to end through the REAL guard: an Approver
+    sending to an address that genuinely is on the supplier master, with
+    routine (internal-clearance) content. `policy_engine` is injected
+    explicitly (the same seam guardrail.authorize/check_dispatch already
+    expose for tests) rather than depending on the process-wide rbac cache,
+    which under pytest resolves to an in-memory stand-in with no rows and
+    would fail this closed for reasons unrelated to what this test checks.
+    """
+    from tests.guardrails.test_send_path_gate import engine as _guard_engine, approver
+
+    conn.row["supplier_email"] = "ap@techworld.example"
+    wrapped = _AllowlistConn(conn)
+    sent = {}
+    monkeypatch.setattr(vq, "_send_email", lambda **kw: sent.update(kw) or True)
+
+    out = vq.send_query("disc:80", to="ap@techworld.example", subject="S", body="B",
+                        agent_nick=object(), principal=approver(),
+                        policy_engine=_guard_engine(), conn=wrapped)
+
+    assert out["status"] == "sent"
+    assert sent["to"] == "ap@techworld.example"
 
 
 # --- the router ----------------------------------------------------------

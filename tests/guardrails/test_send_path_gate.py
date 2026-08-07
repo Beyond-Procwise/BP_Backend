@@ -274,6 +274,47 @@ def test_a_colleagues_address_still_blocks_the_send():
     assert "clearance" in decision.reason.lower()
 
 
+def test_check_3_a_failed_peer_price_lookup_denies_rather_than_passes():
+    """_daily_send_count already distinguishes "no principal" from "the
+    lookup failed" by returning None for both and denying on None.
+    _peer_prices used to conflate its own two cases -- [] meant BOTH "no
+    competing quote on file" (proceed) and "the query exploded" (should
+    deny) -- so a broken bp_quote_trgt query silently downgraded the
+    sensitivity check to a pass on the highest-value leak it exists to
+    catch. A genuine empty peer list must still proceed; see
+    test_check_3_cleared_supplier_may_receive_commercial_content and the
+    happy path for that direction.
+
+    No ``lookup_peer_prices`` hook is defined on the fake connection here --
+    that would force the test-double branch, whose exception the OLD code
+    let escape uncaught, and which happened to get denied anyway by
+    check_dispatch's own generic catch-all (a false proof: it denies either
+    way, for the wrong reason). Instead this forces the REAL production
+    branch -- ``cursor()`` on the raw SQL path -- to fail, exactly like a
+    broken bp_quote_trgt query would.
+    """
+
+    class ExplodingPeerPrices(FakeConn):
+        def cursor(self):
+            raise RuntimeError("bp_quote_trgt is unreachable")
+
+    decision = guard.check_dispatch(
+        **base_kwargs(
+            conn=ExplodingPeerPrices(),
+            peer_prices=None,  # force the guard to call _peer_prices itself
+            approval_lookup=lambda **_: {
+                "approval_id": 1,
+                "status": "approved",
+                "actioned_by": "buyer@ourcompany.com",
+                "deal_id": "DEAL-9",
+            },
+        )
+    )
+    assert decision.allowed is False
+    assert "competing quotes" in decision.reason.lower()
+    assert decision.policy_name == "EmailSensitivityPolicy"
+
+
 def test_check_5_daily_cap_denies_when_the_lookup_is_at_or_over_the_limit():
     """max_per_user_per_day is declared by VOLUME_POLICY (50) and must be
     enforced, not merely read. A lookup returning >= the limit denies."""
@@ -289,6 +330,35 @@ def test_check_5_daily_cap_allows_comfortably_under_the_limit():
         **base_kwargs(conn=FakeConn(daily_send_count=1))
     )
     assert decision.allowed is True, decision.reason
+
+
+def test_denials_carry_policy_attribution_not_just_a_name():
+    """G8 requires the audited policy's id and its version, not merely a
+    display name. Before this fix, checks 1, 2, 3 and 5 built their Decision
+    with policy_name only -- policy_id was always None, and policy_version
+    was None unless check 4 (the only check that ever called
+    guardrail.authorize) happened to decide the outcome.
+    """
+    d1 = guard.check_dispatch(**base_kwargs(approval_lookup=lambda **_: None))
+    assert d1.policy_id == "email_dispatch_approval"
+    assert d1.policy_version == 1
+
+    d2 = guard.check_dispatch(**base_kwargs(recipients=["stranger@elsewhere.com"]))
+    assert d2.policy_id == "email_recipient_allowlist"
+    assert d2.policy_version == 1
+
+    d3 = guard.check_dispatch(
+        **base_kwargs(
+            body="Supplier B quoted 12,450.00 for this line.",
+            peer_prices=[{"supplier_id": "SUP-2", "amount": "12450.00"}],
+        )
+    )
+    assert d3.policy_id == "email_sensitivity"
+    assert d3.policy_version == 1
+
+    d5 = guard.check_dispatch(**base_kwargs(run_count=2))
+    assert d5.policy_id == "email_volume"
+    assert d5.policy_version == 1
 
 
 def test_check_5_a_failed_daily_count_lookup_denies_rather_than_passes():
