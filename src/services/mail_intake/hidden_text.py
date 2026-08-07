@@ -57,6 +57,10 @@ OCR_OVERLAP_THRESHOLD = 0.60
 # concealment now costs a large visible graphic the reader would notice, rather
 # than an invisible speck.
 #
+# Measured against the union of a page's images, so tile count does not matter:
+# one-, two-, three- and five-tile scans all read as ~100%, while a letterhead
+# logo reads as ~2%.
+#
 # CALIBRATION NOTE, stated because the number reads more authoritative than it
 # is: none of the 260 real PDFs in this repo carries an invisible OCR layer, so
 # there was no corpus data to tune against. 0.50 passes a full-page scan with
@@ -118,47 +122,57 @@ def _image_rects(page) -> List[Any]:
     return rects
 
 
-def _scan_backings(image_rects, page_box) -> List[Any]:
-    """Images large enough to plausibly BE a page scan.
+def _union_fraction(rects, box, cols: int = 48, rows: int = 24) -> float:
+    """How much of `box` is covered by the UNION of `rects`.
 
-    A letterhead logo is not scan backing. Filtering here is what stops a
+    Sampled on a grid rather than computed as an exact rectangle union, which
+    is fiddly and buys no accuracy at these scales. Used for both questions
+    below, so they cannot drift apart.
+    """
+    if not rects or _area(box) <= 0:
+        return 0.0
+    covered = 0
+    for i in range(cols):
+        x = box[0] + (box[2] - box[0]) * (i + 0.5) / cols
+        for j in range(rows):
+            y = box[1] + (box[3] - box[1]) * (j + 0.5) / rows
+            if any(r[0] <= x <= r[2] and r[1] <= y <= r[3] for r in rects):
+                covered += 1
+    return covered / float(cols * rows)
+
+
+def _scan_backings(image_rects, page_box) -> List[Any]:
+    """The page's images, but only if together they plausibly ARE a page scan.
+
+    Qualification is on the UNION, not per image. Judging each image on its own
+    breaks on tiled scans, which are ordinary for large or multi-column
+    originals: measured here, a two-tile scan puts each tile at exactly 50.000%
+    of an A4 page — precisely on the threshold, decided by float comparison —
+    and a three-tile scan puts each at 33%, so none qualifies and a wholly
+    legitimate scanned document gets flagged. On the union all of those read as
+    100% and pass, while a letterhead logo reads as 2% and does not.
+
+    A letterhead logo is not scan backing. This filter is what stops a
     speck-sized graphic from laundering injected text.
     """
-    page_area = _area(page_box)
-    if page_area <= 0:
+    rects = [tuple(rect) for rect in image_rects]
+    if not rects:
         return []
-    return [
-        tuple(rect)
-        for rect in image_rects
-        if _area(tuple(rect)) / page_area >= OCR_PAGE_COVERAGE_MIN
-    ]
+    if _union_fraction(rects, page_box) < OCR_PAGE_COVERAGE_MIN:
+        return []
+    return rects
 
 
 def _backed_by_scan(span_box, backings) -> bool:
-    """Is the span covered by the UNION of qualifying scan images?
+    """Is the span covered by the union of qualifying scan imagery?
 
-    Union, not any-single-image: a large scan is often laid down as adjacent
-    tiles, and an OCR span straddling a tile seam overlaps neither tile by
-    enough on its own. Testing each rect independently flagged exactly that
-    legitimate case — the false positive this module exists to avoid.
-
-    The union is measured by sampling a grid across the span rather than by
-    exact rectangle union, which is fiddly and buys no accuracy at these scales.
+    Union again, for the same reason: an OCR span straddling a tile seam
+    overlaps neither tile by enough on its own, and testing each rect
+    independently flagged exactly that legitimate case.
     """
-    if not backings:
+    if not backings or _area(span_box) <= 0:
         return False
-    if _area(span_box) <= 0:
-        return False
-
-    cols, rows = 40, 12
-    covered = 0
-    for i in range(cols):
-        x = span_box[0] + (span_box[2] - span_box[0]) * (i + 0.5) / cols
-        for j in range(rows):
-            y = span_box[1] + (span_box[3] - span_box[1]) * (j + 0.5) / rows
-            if any(r[0] <= x <= r[2] and r[1] <= y <= r[3] for r in backings):
-                covered += 1
-    return covered / float(cols * rows) >= OCR_OVERLAP_THRESHOLD
+    return _union_fraction(backings, span_box) >= OCR_OVERLAP_THRESHOLD
 
 
 def _hidden_layers(doc) -> set:

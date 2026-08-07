@@ -8,6 +8,8 @@ scanned invoices means quarantining nearly everything.
 """
 import pathlib
 
+import pytest
+
 from src.services.mail_intake import hidden_text
 
 FIXTURES = pathlib.Path("tests/fixtures/mail_intake")
@@ -135,34 +137,75 @@ def test_a_speck_of_an_image_cannot_launder_injected_text():
     assert any(h.technique == "invisible_render" for h in hits)
 
 
-def test_a_scan_split_into_tiles_still_reads_as_a_scan():
+@pytest.mark.parametrize("tile_count", [2, 3, 5])
+def test_a_scan_split_into_tiles_still_reads_as_a_scan(tile_count):
     """The false positive the first version produced.
 
     Large scans are routinely laid down as adjacent tiles. An OCR span
     straddling a seam overlaps neither tile enough on its own, so testing each
-    image independently quarantined a legitimate scanned document. Coverage is
-    now measured across the union.
+    image independently quarantined a legitimate scanned document.
 
-    The span is positioned to genuinely straddle the seam, and the precondition
-    is asserted below. An earlier version of this test placed the span at the
-    left margin, where a single tile covered 100% of it — so the OLD any-single-
-    image code passed it too and the test demonstrated nothing about the union.
+    Tile count is parametrised because it decides whether QUALIFICATION works
+    too, not just span coverage. Measured on A4: two tiles put each at exactly
+    50.000% of the page — right on the threshold, decided by a float comparison
+    — and three tiles put each at 33%, below it. Judging images individually
+    therefore rejected a perfectly ordinary three-tile scan outright. Both
+    questions are now asked of the union, where every tile count reads ~100%.
+
+    The span is positioned to genuinely straddle a seam, and the precondition is
+    asserted below. An earlier version placed it at the left margin, where a
+    single tile covered 100% of it — so the OLD code passed it too and the test
+    demonstrated nothing.
+
+    A fixed `text_x=200` was tried next, calibrated only against the 2-tile
+    case (where it lands almost exactly on the seam). Parametrising the tile
+    count without re-deriving the position broke it: for 3 tiles the same
+    x=200 falls just past the first internal boundary and lands mostly inside
+    a single tile (measured 87.6% max single-tile coverage — the precondition
+    below catches this and fails loudly rather than silently passing a test
+    that proves nothing for that tile count). The position is therefore
+    derived per tile_count instead of hardcoded: the span's actual rendered
+    width is measured with a text-only probe (no images), then the span is
+    centred on the first internal seam (`x = tile_width`) for whatever
+    tile_count is under test, so it straddles a seam by construction rather
+    than by coincidence.
     """
     import fitz
 
-    # Matches the ACTUAL default page size produced by fitz.open().new_page()
-    # (A4, 595x842) — not U.S. Letter. Using a mismatched paper size here would
-    # make each tile cover under 50% of the real page, so neither would clear
-    # OCR_PAGE_COVERAGE_MIN regardless of the union logic being tested.
-    page_rect = fitz.Rect(0, 0, 595, 842)
-    half = page_rect.width / 2
-    content = _pdf_with_invisible_text(
-        [
-            (fitz.Rect(page_rect.x0, page_rect.y0, half, page_rect.y1), 220),
-            (fitz.Rect(half, page_rect.y0, page_rect.x1, page_rect.y1), 220),
-        ],
-        text_x=200,
+    # A4 is what fitz.open().new_page() actually produces — NOT US Letter. An
+    # earlier version of this test hardcoded 612x792, which left each tile just
+    # under the page-coverage threshold, so it failed for a geometry mismatch
+    # rather than for the behaviour under test.
+    doc = fitz.open()
+    page_rect = doc.new_page().rect
+    doc.close()
+
+    # Measure the span's actual rendered width via a text-only probe, so the
+    # seam-straddling position below is derived rather than guessed.
+    probe = _pdf_with_invisible_text([], text_x=0)
+    probe_doc = fitz.open(stream=probe, filetype="pdf")
+    probe_span = next(
+        s for s in probe_doc[0].get_texttrace() if s["type"] == 3
     )
+    span_width = probe_span["bbox"][2] - probe_span["bbox"][0]
+    probe_doc.close()
+
+    width = page_rect.width / tile_count
+    tiles = [
+        (
+            fitz.Rect(
+                page_rect.x0 + k * width,
+                page_rect.y0,
+                page_rect.x0 + (k + 1) * width,
+                page_rect.y1,
+            ),
+            220,
+        )
+        for k in range(tile_count)
+    ]
+    # Centre the span on the first internal seam (boundary at x=width).
+    text_x = width - span_width / 2
+    content = _pdf_with_invisible_text(tiles, text_x=text_x)
 
     # Precondition: NO single tile may cover the span by itself, or this test
     # would pass against the very code it exists to guard against.
@@ -180,7 +223,7 @@ def test_a_scan_split_into_tiles_still_reads_as_a_scan():
     doc.close()
     assert per_tile, "fixture produced no images"
     assert max(per_tile) < hidden_text.OCR_OVERLAP_THRESHOLD, (
-        f"span no longer straddles the seam (max single-tile coverage "
+        f"span no longer straddles a seam (max single-tile coverage "
         f"{max(per_tile):.3f}); this test would pass against the pre-fix code"
     )
 
