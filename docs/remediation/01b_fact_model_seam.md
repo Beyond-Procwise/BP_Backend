@@ -286,9 +286,15 @@ canonical unit, and a test asserts that collision cannot happen. This follows
 the plan's own principle for the adjacent case — *"never NULL, because a NULL
 would make the model reject a fact that genuinely exists"*.
 
-**All 108 facts on `bp_sqldb` carry `UOM_ABSENT`.** A comparison layer must
-refuse to compare two rates whose basis is unstated; that is Phase 5's job and
-the reason code is what makes it possible.
+**106 of the 108 facts on `bp_sqldb` carry `UOM_ABSENT`.** A comparison layer
+must refuse to compare two rates whose basis is unstated; that is Phase 5's job
+and the reason code is what makes it possible.
+
+The other two are recovered from the item description (§14.4): where the unit
+column fails and the description ends in a bare period adverb — `HR Advisory &
+Employment Law Retainer (Quarterly)` — the basis is read from there and
+stamped `BASIS_FROM_DESCRIPTION`, so a derived basis never looks like one the
+document stated outright.
 
 ---
 
@@ -620,3 +626,51 @@ than restate it:
 The prerequisite for both is deciding how canonical data reaches the live
 database (FDW view, sync, or repointing). That decision is worth more than
 either table.
+
+---
+
+## 15. Addendum — recovering a billing period from the description
+
+Some documents state the deliverable in the unit column and the *period* in the
+description: `HR Advisory & Employment Law Retainer (Quarterly)` is billed per
+quarter, and `quarter` is a unit the vocabulary already maps. Recovering that
+turns an incomparable lump sum into a real rate.
+
+This is inference over free text, which is where fabrication starts, so the
+rule is deliberately narrow: **a parenthetical whose entire content is a period
+adverb**, bounded to 20 characters. Every other shape in this corpus is a trap,
+and each of these is a real string from the data:
+
+| Description | Why parsing it would be wrong |
+|---|---|
+| `Enterprise Licence - 12 months` | a **term length**; billed per licence |
+| `Advanced Package (3 months)` | a **duration**, not a rate |
+| `Tier 3 Marketing Services (Months 1-10)` | a **range** |
+| `(4 visits per month)` | frequency of **visits**, not of billing |
+| `Monthly Design & Marketing Package` | an adjective in the **product's name** |
+| `Quarterly Business Review Service` | the deliverable is a QBR; the period is unstated |
+
+Bare period *nouns* are deliberately excluded — only the adverbial forms
+(`Monthly`, `Quarterly`, `per quarter`) qualify, because "12 months" and
+"4 visits per month" both contain the noun and neither says the price is per
+month. Two different periods in one description is a refusal, not a coin toss.
+
+Three rules make it safe:
+
+- **A stated unit is never overridden.** The description is consulted only when
+  the unit column fails to resolve. One product row carries
+  `unit_of_measure = 'month'` against a description reading `(Quarterly)` — the
+  two columns contradict each other, and the column is the more direct
+  statement.
+- **A rescue does not absolve the column.** If the unit column held something
+  that is not a unit, `UOM_UNMAPPED` is still recorded; the value being
+  recoverable elsewhere does not make the column right.
+- **`BASIS_FROM_DESCRIPTION` is stamped on every derived basis**, so what was
+  worked out never becomes indistinguishable from what the page said.
+
+**Measured yield, honestly: 6 of 679 unresolved lines on `bp_sqldb` (0.9%), 2
+of 328 on `bp_testdb`.** Every match is correct, and they are all the same two
+service lines. This is a precision-first, low-recall rule — nothing else in
+this corpus states its period in a parseable parenthetical. Its value is that
+it is right, it cannot fabricate, and it generalises to future documents using
+the `(Monthly)` / `(Quarterly)` convention.

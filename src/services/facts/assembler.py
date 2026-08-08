@@ -45,7 +45,12 @@ from src.services.facts.models import (
     ValidationState,
     ValueBasis,
 )
-from src.services.facts.uom import UOM_UNMAPPED, ensure_vocabulary, normalise_uom
+from src.services.facts.uom import (
+    UOM_UNMAPPED,
+    basis_from_description,
+    ensure_vocabulary,
+    normalise_uom,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -360,13 +365,29 @@ def _assemble_one(
 
     if uom_result.canonical is not None:
         basis_uom = uom_result.canonical
-    elif has_raw_uom:
-        # Unmappable, so carry the document's own string forward untouched.
-        basis_uom = raw_uom
-        reason_codes.append(UOM_UNMAPPED)
     else:
-        basis_uom = BASIS_UOM_UNSTATED
-        reason_codes.append(UOM_ABSENT)
+        # The column did not give a unit. Some documents state the period in
+        # the description instead -- 'HR Advisory Retainer (Quarterly)' is
+        # billed per quarter, with the deliverable noun in the unit column.
+        # Only consulted when the column has failed, so a stated unit is never
+        # overridden: one product row in the master carries unit_of_measure
+        # 'month' against a description saying '(Quarterly)', and the column is
+        # the more direct statement.
+        derived = basis_from_description(line.get("item_description"))
+        if derived is not None:
+            basis_uom = derived.canonical
+            reason_codes.extend(derived.reason_codes)
+            if has_raw_uom:
+                # The column still held something that is not a unit; that it
+                # was rescued elsewhere does not make the column right.
+                reason_codes.append(UOM_UNMAPPED)
+        elif has_raw_uom:
+            # Unmappable, so carry the document's own string forward untouched.
+            basis_uom = raw_uom
+            reason_codes.append(UOM_UNMAPPED)
+        else:
+            basis_uom = BASIS_UOM_UNSTATED
+            reason_codes.append(UOM_ABSENT)
     reason_codes.extend(c for c in uom_result.reason_codes if c != UOM_UNMAPPED)
 
     # --- role ----------------------------------------------------------------
