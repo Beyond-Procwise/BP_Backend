@@ -191,6 +191,151 @@ def test_fixture_matches_what_policy_engine_really_emits():
     assert policy["raw_row"]["policy_name"] == "ApprovalThresholdPolicy"
 
 
+# --- C3 (fix round 2): an automated verdict must never become a findable
+# dispatch approval, and a caller-supplied "actioned_by" must not be able to
+# forge one either. -----------------------------------------------------
+#
+# Fix round 1 accepted a non-blank payload["actioned_by"] as proof a human
+# had approved, and wrote a genuinely findable approval (status='approved',
+# actioned_by set) through approval_store.record_approval when it was
+# present. That was a forgery hole: payload is context.input_data, the
+# caller-supplied body of POST /agent-workflows/{workflow_id}/run, which has
+# NO auth dependency at all. An unauthenticated caller could name themselves
+# actioned_by and plant a real approval row for a workflow_id an
+# email_dispatch node elsewhere in the same graph would then find -- and it
+# ignored this agent's OWN verdict, writing an "approved" row even when the
+# amount was above threshold and the real decision was escalate.
+#
+# AgentContext carries no authenticated principal anywhere in this codebase
+# (no orchestrator path attaches one, and context.user_id is exactly as
+# caller-suppliable as the removed payload["actioned_by"] was). So rather
+# than invent a middle ground, this agent now NEVER produces a findable
+# approval, full stop -- the same as before fix round 1 existed. A human
+# approving a dispatch must do so through a surface that authenticates them
+# and records its own approval.
+
+class _FakeApprovalCursor:
+    def __init__(self, log):
+        self._log = log
+        self._next_id = len(log) + 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self._log.append((sql, params))
+
+    def fetchone(self):
+        return (self._next_id,)
+
+
+class _FakeApprovalConn:
+    """Stands in for agent_nick.get_db_connection() so the automated
+    raw-INSERT path can be exercised without a database."""
+
+    def __init__(self):
+        self.log = []
+        self.committed = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def cursor(self):
+        return _FakeApprovalCursor(self.log)
+
+    def commit(self):
+        self.committed += 1
+
+
+def test_a_forged_actioned_by_in_the_payload_writes_nothing_findable():
+    """The exploit this round closes: an unauthenticated caller cannot name
+    themselves actioned_by in the workflow-run payload and get a genuinely
+    findable (status='approved', actioned_by set) row. There is exactly one
+    INSERT this agent ever issues, and it never carries those columns --
+    regardless of what the payload says.
+    """
+    fake_conn = _FakeApprovalConn()
+    agent = _agent(_GOVERNED)
+    agent.agent_nick.get_db_connection = lambda: fake_conn
+
+    out = agent.run(_ctx(
+        amount=5000, currency="GBP", rfq_id="RFQ-1", workflow_id="WF-1",
+        unique_id="PROC-WF-1", supplier_id="SUP-1", deal_id="DEAL-1",
+        actioned_by="buyer@ourcompany.com",  # forged: no authenticated caller
+    ))
+
+    assert out.data["decision"] == DECISION_APPROVE
+    assert out.data["approval_id"] == 1
+    assert len(fake_conn.log) == 1, "must issue exactly one INSERT, never a second one"
+    sql, params = fake_conn.log[0]
+    assert "INSERT INTO proc.bp_approval" in sql
+    assert "status" not in sql.lower()
+    assert "actioned_by" not in sql.lower()
+    # The forged name must not even reach the row as free text anywhere.
+    assert "buyer@ourcompany.com" not in params
+
+
+def test_an_escalate_verdict_writes_nothing_findable_even_with_a_forged_actioned_by():
+    """An amount above threshold yields decision=escalate from run(). A
+    forged actioned_by must not override that into an approved, findable
+    row -- the exact "ignored the agent's own verdict" half of the exploit.
+    """
+    fake_conn = _FakeApprovalConn()
+    agent = _agent(_GOVERNED)
+    agent.agent_nick.get_db_connection = lambda: fake_conn
+
+    out = agent.run(_ctx(
+        amount=25000, currency="GBP", rfq_id="RFQ-2", workflow_id="WF-2",
+        actioned_by="buyer@ourcompany.com",
+    ))
+
+    assert out.data["decision"] == DECISION_ESCALATE
+    sql, params = fake_conn.log[0]
+    assert "status" not in sql.lower()
+    assert "actioned_by" not in sql.lower()
+    assert "buyer@ourcompany.com" not in params
+    # The row that IS written must honestly say escalate, not approve.
+    assert DECISION_ESCALATE in params
+
+
+def test_automated_verdict_never_sets_status_or_actioned_by():
+    """No actioned_by in the payload -> the automated INSERT runs, and it
+    must not name status/actioned_by columns at all: an unattended
+    threshold comparison must never satisfy
+    approval_store.find_dispatch_approval's 'a human signed this' check."""
+    fake_conn = _FakeApprovalConn()
+    agent = _agent(_GOVERNED)
+    agent.agent_nick.get_db_connection = lambda: fake_conn
+
+    out = agent.run(_ctx(amount=5000, currency="GBP"))
+
+    assert out.data["approval_id"] == 1
+    sql, _params = fake_conn.log[0]
+    assert "status" not in sql.lower()
+    assert "actioned_by" not in sql.lower()
+
+
+def test_escalation_with_no_human_actor_still_uses_the_automated_path():
+    """An ESCALATE verdict with nobody named must not accidentally become
+    findable either."""
+    fake_conn = _FakeApprovalConn()
+    agent = _agent(_GOVERNED)
+    agent.agent_nick.get_db_connection = lambda: fake_conn
+
+    out = agent.run(_ctx(amount=25000, currency="GBP"))
+
+    assert out.data["decision"] == DECISION_ESCALATE
+    sql, _params = fake_conn.log[0]
+    assert "status" not in sql.lower()
+    assert "actioned_by" not in sql.lower()
+
+
 def test_agent_resolves_threshold_from_a_real_policy_engine():
     """End-to-end through the real PolicyEngine, not a hand-written stub."""
     from engines.policy_engine import PolicyEngine

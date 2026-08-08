@@ -14,6 +14,7 @@ import logging
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.facts.deprecation import read_calculation_detail
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +32,16 @@ def upsert_opportunity(cur, rec: dict) -> None:
     updating, and a colliding id could overwrite an unrelated finding and inherit
     its lifecycle stage.
     """
+    # Still written for one release, so the payload itself is kept for the
+    # INSERT below -- but it is no longer the system of record. Reads go
+    # through the shim, which prefers the structured column and logs every
+    # JSONB fallback so the column can be retired on evidence, not assumption.
     calc = rec.get("calculation_details") or {}
-    item_desc = rec.get("item_description") or calc.get("item_description") or rec.get("item_id")
+    item_desc = (
+        rec.get("item_description")
+        or read_calculation_detail(rec, "item_description")
+        or rec.get("item_id")
+    )
     stage = "rejected" if rec.get("is_rejected") else "identified"
     # Pre-ref_id rows fall back to their own id so the identity is never blank.
     ref_id = str(rec.get("opportunity_ref_id") or rec.get("opportunity_id"))
@@ -73,10 +82,10 @@ def upsert_opportunity(cur, rec: dict) -> None:
             rec.get("ml_priority_score"), rec.get("weightage"),
             json.dumps(calc), json.dumps(rec.get("source_records") or []),
             rec.get("detected_on"),
-            rec.get("quote_id") or calc.get("quote_id"),
-            rec.get("po_id") or calc.get("po_id"),
-            rec.get("invoice_id") or calc.get("invoice_id"),
-            rec.get("deal_id") or calc.get("deal_id"),
+            rec.get("quote_id") or read_calculation_detail(rec, "quote_id"),
+            rec.get("po_id") or read_calculation_detail(rec, "po_id"),
+            rec.get("invoice_id") or read_calculation_detail(rec, "invoice_id"),
+            rec.get("deal_id") or read_calculation_detail(rec, "deal_id"),
         ),
     )
 

@@ -231,11 +231,43 @@ class ApprovalsAgent(BaseAgent):
     ) -> Optional[int]:
         """Write the decision to ``proc.bp_approval`` and return its approval_id.
 
-        A failure here yields a NULL approval_id that the caller can see, rather
-        than being swallowed: the previous version hid a missing table behind a
-        bare except and reported success regardless.
+        This is ALWAYS the automated verdict -- a threshold comparison with
+        nobody in the loop -- and it MUST NOT set ``status``/``actioned_by``:
+        doing so would let an unattended comparison satisfy
+        :func:`approval_store.find_dispatch_approval`'s "a human signed
+        this" check, which is exactly the gap this layer exists to close.
+
+        A prior version of this method also accepted ``payload["actioned_by"]``
+        as proof a human had approved, and wrote a genuinely findable
+        approval (via :func:`approval_store.record_approval`) when it was
+        present. That was a forgery hole, not a feature: ``payload`` is
+        ``context.input_data``, the caller-supplied body of
+        ``POST /agent-workflows/{workflow_id}/run`` -- a route with **no
+        auth dependency at all** -- so any unauthenticated caller could name
+        themselves ``actioned_by`` and plant a real, matchable approval row
+        for a ``workflow_id`` an ``email_dispatch`` node elsewhere in the
+        same graph would then find. Worse, that path ignored this agent's
+        OWN verdict: an amount above the governed threshold still yields
+        ``decision=escalate`` from :meth:`run`, and the forged path wrote an
+        ``approved`` row regardless.
+
+        ``AgentContext`` carries no authenticated principal today (no
+        orchestrator path attaches one, and ``context.user_id`` is exactly
+        as caller-suppliable as the removed ``payload["actioned_by"]`` was --
+        see ``RunBody.user_id`` in ``agent_workflows.py``), so there is no
+        trustworthy identity to condition a findable-approval write on from
+        here. Writing no findable approval at all is strictly better than a
+        forgeable one: this method, correctly, cannot ever satisfy
+        ``find_dispatch_approval``. A human approving a dispatch must do so
+        through a surface that authenticates them and records ITS OWN
+        approval -- not through this agent's automated threshold check.
+
+        A failure here yields a NULL approval_id that the caller can see,
+        rather than being swallowed: the previous version hid a missing
+        table behind a bare except and reported success regardless.
         """
         best = payload.get("best_quote") or {}
+
         try:
             with self.agent_nick.get_db_connection() as conn:
                 with conn.cursor() as cur:

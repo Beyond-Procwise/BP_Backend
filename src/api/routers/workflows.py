@@ -1479,6 +1479,7 @@ async def send_email(
     dispatch_request: EmailDispatchRequest = Depends(build_email_dispatch_request),
     orchestrator: Orchestrator = Depends(get_orchestrator),
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """Send a previously drafted RFQ email using the dispatch service."""
 
@@ -1561,6 +1562,7 @@ async def send_email(
             body_override=dispatch_request.resolve_body(),
             is_workflow_email=dispatch_request.resolve_is_workflow_email(),
             workflow_dispatch_context=dispatch_request.resolve_workflow_context(),
+            principal=principal,
         )
 
         dispatch_timestamp = time.time()
@@ -1683,6 +1685,7 @@ async def send_email(
 async def dispatch_batch_emails(
     request: EmailBatchDispatchRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     if not request.drafts:
         raise HTTPException(
@@ -1698,6 +1701,10 @@ async def dispatch_batch_emails(
 
     results: List[Dict[str, Any]] = []
     workflows_to_notify: Set[str] = set()
+    # Sends actually attempted in this batch so far -- what the guard's
+    # volume cap (check 5) counts against. A draft skipped below for having
+    # no identifier never reaches send_draft, so it must not advance this.
+    send_attempts = 0
     for draft in request.drafts:
         identifier = draft.resolved_identifier()
         if not identifier:
@@ -1724,7 +1731,10 @@ async def dispatch_batch_emails(
                 subject_override=draft.resolved_subject(),
                 body_override=draft.resolved_body(),
                 notify_watcher=False,
+                principal=principal,
+                run_count=send_attempts,
             )
+            send_attempts += 1
             results.append(
                 {
                     "unique_id": identifier,
@@ -1739,6 +1749,7 @@ async def dispatch_batch_emails(
                 if workflow_identifier:
                     workflows_to_notify.add(workflow_identifier)
         except Exception as exc:  # pragma: no cover - runtime dependent
+            send_attempts += 1
             logger.error("Failed to dispatch %s: %s", identifier, str(exc))
             results.append(
                 {
@@ -1945,6 +1956,7 @@ def remove_email_attachment(
 async def dispatch_workflow_drafts(
     workflow_id: str,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     try:
         with agent_nick.get_db_connection() as conn:
@@ -1975,6 +1987,9 @@ async def dispatch_workflow_drafts(
 
         results: List[Dict[str, Any]] = []
         workflows_to_notify: Set[str] = set()
+        # Sends actually attempted in this run so far -- what the guard's
+        # volume cap (check 5) counts against.
+        send_attempts = 0
         for unique_id, supplier_id, subject, sent in draft_rows:
             try:
                 result = await run_in_threadpool(
@@ -1982,7 +1997,10 @@ async def dispatch_workflow_drafts(
                     identifier=unique_id,
                     subject_override=subject,
                     notify_watcher=False,
+                    principal=principal,
+                    run_count=send_attempts,
                 )
+                send_attempts += 1
                 results.append(
                     {
                         "unique_id": unique_id,
@@ -1997,6 +2015,7 @@ async def dispatch_workflow_drafts(
                     if workflow_identifier:
                         workflows_to_notify.add(workflow_identifier)
             except Exception as exc:  # pragma: no cover - runtime dependent
+                send_attempts += 1
                 logger.error("Failed to dispatch %s: %s", unique_id, str(exc))
                 results.append(
                     {

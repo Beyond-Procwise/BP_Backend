@@ -22,6 +22,23 @@ from engines.decision_engine import Decision, ESCALATED
 import api.routers.decisions as decisions_router
 
 
+class _Principal:
+    """A stand-in authenticated caller.
+
+    These endpoint tests build their own bare `FastAPI()` app rather than the
+    full `api.main` app, so `api.auth`'s module-level `_mode` (set by
+    `configure()` at app import) is not reliably "off" here -- it depends on
+    whatever earlier test in the session last called `configure()`, if any.
+    Overriding the dependency directly, the same way tests/approvals/
+    test_approval_endpoints.py does, makes every test in this file
+    authenticate as this fixed subject regardless of import order.
+    """
+
+    subject = "sub-test-actor-001"
+    email = "actor@ourcompany.com"
+    claims = {"cognito:groups": ["bp-approvers"]}
+
+
 ROWS = [
     (7, "email_reply", "wf-1-PeopleFirst", "PeopleFirst HR Solutions Ltd", "DEAL-1",
      "escalate", "escalated", "price_change is escalate-only", "EmailReplyAutonomyPolicy",
@@ -77,6 +94,7 @@ def client():
     cur = _Cur()
     app = FastAPI()
     app.include_router(decisions_router.router)
+    app.dependency_overrides[decisions_router.require_user] = lambda: _Principal()
     app.state.agent_nick = SimpleNamespace(
         get_db_connection=lambda: _Conn(cur),
         policy_engine=SimpleNamespace(get_policy=lambda slug: None),
@@ -162,6 +180,7 @@ def test_an_ungrounded_sentence_is_flagged_and_a_dataless_row_stays_absent():
     ])
     app = FastAPI()
     app.include_router(decisions_router.router)
+    app.dependency_overrides[decisions_router.require_user] = lambda: _Principal()
     app.state.agent_nick = SimpleNamespace(
         get_db_connection=lambda: _MemoryConn(table),
         policy_engine=SimpleNamespace(get_policy=lambda slug: None),
@@ -230,14 +249,16 @@ def test_action_route_wires_to_the_engine_and_never_touches_findings(client, mon
     monkeypatch.setattr("engines.decision_engine.DecisionEngine.decide_finding", boom, raising=True)
     monkeypatch.setattr("engines.decision_engine.DecisionEngine._fetch_finding", boom, raising=True)
 
+    # No user_id in the body -- the actor comes from the authenticated
+    # principal the `client` fixture overrides require_user with.
     res = client.post("/decisions/email-reply/7/action",
-                      json={"action": "reject", "user_id": "alice"})
+                      json={"action": "reject"})
     assert res.status_code == 200
     body = res.json()
     assert body["applied"] is True
     assert body["decision_id"] == 99
-    assert captured == {"decision_id": 7, "action": "reject", "user_id": "alice",
-                        "override_reason": None}
+    assert captured == {"decision_id": 7, "action": "reject",
+                        "user_id": _Principal.subject, "override_reason": None}
 
 
 def test_action_route_returns_400_on_unknown_decision(client, monkeypatch):
@@ -489,6 +510,7 @@ def test_after_an_action_the_original_decision_no_longer_matches_the_queue():
     }])
     app = FastAPI()
     app.include_router(decisions_router.router)
+    app.dependency_overrides[decisions_router.require_user] = lambda: _Principal()
     app.state.agent_nick = SimpleNamespace(
         get_db_connection=lambda: _MemoryConn(table),
         policy_engine=SimpleNamespace(get_policy=lambda slug: None),
@@ -500,9 +522,11 @@ def test_after_an_action_the_original_decision_no_longer_matches_the_queue():
     assert before.json()["total"] == 1
     assert before.json()["data"][0]["decision_id"] == 7
 
+    # No user_id in the body -- the actor comes from the authenticated
+    # principal the app's require_user override supplies.
     res = memory_client.post(
         "/decisions/email-reply/7/action",
-        json={"action": "send", "user_id": "alice",
+        json={"action": "send",
               "override_reason": "supplier confirmed on the phone"},
     )
     assert res.status_code == 200
@@ -523,7 +547,7 @@ def test_after_an_action_the_original_decision_no_longer_matches_the_queue():
     audit_rows = [r for r in table.rows if r["decision_id"] != 7]
     assert len(audit_rows) == 1
     assert audit_rows[0]["decision"] == "send"
-    assert audit_rows[0]["actioned_by"] == "alice"
+    assert audit_rows[0]["actioned_by"] == _Principal.subject
     assert audit_rows[0]["override_reason"] == "supplier confirmed on the phone"
 
     # And a decision NOT actioned still shows up -- proving the queue query
@@ -568,6 +592,7 @@ def test_a_failed_audit_write_leaves_the_original_decision_in_the_queue():
 
     app = FastAPI()
     app.include_router(decisions_router.router)
+    app.dependency_overrides[decisions_router.require_user] = lambda: _Principal()
     nick = SimpleNamespace(
         get_db_connection=lambda: _MemoryConn(table),
         policy_engine=SimpleNamespace(get_policy=lambda slug: None),
@@ -593,7 +618,7 @@ def test_a_failed_audit_write_leaves_the_original_decision_in_the_queue():
     # Also confirmed at the HTTP layer: the router maps a plain error (no
     # requires_override) to 400, so the human sees the action did NOT succeed.
     res = memory_client.post("/decisions/email-reply/7/action",
-                             json={"action": "reject", "user_id": "bob"})
+                             json={"action": "reject"})
     assert res.status_code == 400
 
 
@@ -617,6 +642,7 @@ def test_total_reflects_the_true_server_side_count_not_the_page_size():
     table = _MemoryBpDecisionTable(rows=rows)
     app = FastAPI()
     app.include_router(decisions_router.router)
+    app.dependency_overrides[decisions_router.require_user] = lambda: _Principal()
     app.state.agent_nick = SimpleNamespace(
         get_db_connection=lambda: _MemoryConn(table),
         policy_engine=SimpleNamespace(get_policy=lambda slug: None),
@@ -736,6 +762,7 @@ def _message_client(decisions, replies, raise_on_message=False):
     cur = _MessageCursor(decisions, replies, raise_on_message)
     app = FastAPI()
     app.include_router(decisions_router.router)
+    app.dependency_overrides[decisions_router.require_user] = lambda: _Principal()
     app.state.agent_nick = SimpleNamespace(
         get_db_connection=lambda: _MessageConn(cur),
         policy_engine=SimpleNamespace(get_policy=lambda slug: None),
@@ -875,6 +902,7 @@ def test_a_failed_queue_read_says_so_without_quoting_the_driver(caplog):
     import logging
     app = FastAPI()
     app.include_router(decisions_router.router)
+    app.dependency_overrides[decisions_router.require_user] = lambda: _Principal()
     app.state.agent_nick = SimpleNamespace(
         get_db_connection=lambda: _ExplodingConn(),
         policy_engine=SimpleNamespace(get_policy=lambda slug: None),

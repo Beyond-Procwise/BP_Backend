@@ -2916,7 +2916,12 @@ class NegotiationAgent(BaseAgent):
         )
 
     def _hitl_enforced(self) -> bool:
-        """Return whether HITL checkpoints are enforced."""
+        """Whether the deployment asks for HITL checkpoints.
+
+        Advisory only. A false result narrows nothing on its own -- the
+        caller still requires a human decision. Approval is never skipped
+        because a setting says so.
+        """
 
         try:
             return bool(getattr(self.agent_nick.settings, "hitl_enabled", True))
@@ -2977,11 +2982,30 @@ class NegotiationAgent(BaseAgent):
         shared_context: Dict[str, Any],
         negotiation_state: Dict[str, Any],
         round_num: int,
+        conn: Any = None,
     ) -> Dict[str, Any]:
-        """Determine the HITL decision for the given round."""
+        """Determine the HITL decision for the given round.
+
+        ``conn`` is an optional database connection used only to verify an
+        ``approved`` claim against ``proc.bp_approval`` (see below); it is
+        not required for the pending/rejected paths and callers that do not
+        pass one still work -- the verification opens its own connection.
+        """
 
         if not self._hitl_enforced():
-            return {"status": "approved", "source": "hitl_disabled"}
+            # hitl_enabled may narrow which rounds need review; it can never
+            # switch review off. A false setting fails closed.
+            logger.warning(
+                "hitl_enabled is false for workflow %s round %s; approval is "
+                "still required and the round stays pending",
+                getattr(context, "workflow_id", None),
+                round_num,
+            )
+            return {
+                "status": "pending",
+                "source": "awaiting_review",
+                "hitl_disabled_ignored": True,
+            }
 
         decisions = negotiation_state.setdefault(
             "hitl_decisions", self._extract_hitl_decisions(context, shared_context)
@@ -2993,19 +3017,33 @@ class NegotiationAgent(BaseAgent):
                 raw_value = decisions[key]
                 break
 
-        auto_flag: Optional[bool] = None
+        # A caller cannot waive its own human checkpoint. The flag is read
+        # only so its use can be recorded -- an attempted bypass is exactly
+        # the event an auditor needs to see -- and is never acted on.
+        bypass_attempted = False
         if raw_value is None:
-            if isinstance(shared_context, dict):
-                auto_flag = shared_context.get("hitl_auto_approve")
-            if isinstance(context.input_data, dict):
-                inherited = context.input_data.get("hitl_auto_approve")
-                if inherited is not None:
-                    auto_flag = bool(inherited)
+            if isinstance(shared_context, dict) and shared_context.get(
+                "hitl_auto_approve"
+            ):
+                bypass_attempted = True
+            if isinstance(context.input_data, dict) and context.input_data.get(
+                "hitl_auto_approve"
+            ):
+                bypass_attempted = True
 
         if raw_value is None:
-            if isinstance(auto_flag, bool) and auto_flag:
-                return {"status": "approved", "source": "auto_approved"}
-            return {"status": "pending", "source": "awaiting_review"}
+            if bypass_attempted:
+                logger.warning(
+                    "hitl_auto_approve was supplied for workflow %s round %s and "
+                    "was ignored; approval requires a named human",
+                    getattr(context, "workflow_id", None),
+                    round_num,
+                )
+            return {
+                "status": "pending",
+                "source": "awaiting_review",
+                "bypass_attempted": bypass_attempted,
+            }
 
         status, reason = self._normalise_hitl_value(raw_value)
         decision_info: Dict[str, Any] = {
@@ -3015,6 +3053,41 @@ class NegotiationAgent(BaseAgent):
         }
         if reason:
             decision_info["reason"] = reason
+
+        if status == "approved":
+            # A decision carried in the request payload (there is no other
+            # source today -- see _extract_hitl_decisions) is a claim, not
+            # an approval. It is honoured only once it is corroborated by a
+            # signed row in proc.bp_approval. Refusing to proceed on a
+            # rejected claim needs no such authority, so only "approved"
+            # is gated here. Any failure to reach the store is treated the
+            # same as "no corroborating row": fail closed, never approved.
+            approved_row: Optional[Dict[str, Any]] = None
+            try:
+                from src.services import approval_store
+
+                approved_row = approval_store.find_round_approval(
+                    workflow_id=getattr(context, "workflow_id", None),
+                    round_num=round_num,
+                    conn=conn,
+                )
+            except Exception:
+                approved_row = None
+
+            if not approved_row:
+                logger.warning(
+                    "an approval claim for workflow %s round %s has no "
+                    "corroborating proc.bp_approval row; the round stays "
+                    "pending",
+                    getattr(context, "workflow_id", None),
+                    round_num,
+                )
+                return {
+                    "status": "pending",
+                    "source": "awaiting_review",
+                    "unverified_claim": True,
+                }
+
         return decision_info
 
     def _log_hitl_checkpoint(

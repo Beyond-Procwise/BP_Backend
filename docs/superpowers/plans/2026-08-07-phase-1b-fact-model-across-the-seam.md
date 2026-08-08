@@ -64,6 +64,27 @@ Across all three `_trgt` line tables: ten high-volume units (`case`, `tonne`, `e
 
 Those last are payment terms and scope descriptions that landed in the UoM column. They must yield `UOM_UNMAPPED` and carry forward un-normalised. This gives the normaliser a concrete, closed acceptance set: 14 map, 14 must refuse.
 
+### F6. A number's *role* cannot be inferred from its name, and for a fifth of lines it cannot be inferred at all
+
+"Volume" may mean a count or a physical measure. "Price" may mean a unit rate or an extended total. The schemas already distinguish `unit_price` from `line_total` by name — and a real bug in this codebase still booked a line total as a unit price. Correct names, wrong values. A dictionary would not have caught it.
+
+What discriminates is **type plus arithmetic**. A quantity is a count or a measure-with-a-unit; a unit rate is money *per unit*; a total is money. And `quantity × unit_price = line_total` **tests** the assignment rather than trusting the label. Measured on `bp_sqldb` (genuinely extracted, not seeded):
+
+| Line table | Rows | Testable | Invariant holds | `quantity = 1` (blind) |
+|---|---|---|---|---|
+| quote | 316 | 183 (58%) | **143 (78.1%)** | 48 (15%) |
+| invoice | 152 | 99 (65%) | **92 (92.9%)** | 28 (18%) |
+| purchase order | 171 | 124 (73%) | **114 (91.9%)** | 39 (23%) |
+
+Two consequences, both load-bearing:
+
+- Between **7% and 22% of real lines fail the check** — at least one of the three numbers is mis-assigned or mis-extracted.
+- Where **quantity is 1** — about a fifth of all lines — the unit rate and the total are numerically identical and *no arithmetic can separate them*. This is precisely the blind spot that let the historical unit-price-as-total bug ship unnoticed.
+
+On `bp_testdb` the invariant holds at 100%, but only because the seeder computed it that way. Do not use that number as evidence of anything.
+
+**Design consequence:** `value_basis` (as-supplied / baseline-corrected / normalised) says *whose baseline*, not *what kind of measure*. A fact carrying `4586.65` with no role is ambiguous, and a later comparison could put one supplier's unit rate against another's line total and produce a confident wrong answer. The model therefore gains **`measure_role`**, **`basis_uom`** and **`arithmetic_state`** — the last recording that a role could not be verified, rather than letting an unverified fact look identical to a checked one. `measure_role` is also the clean representation for services, which in this corpus legitimately have no unit price: a lump-sum line states `extended_line` rather than leaving `unit_price` ambiguously NULL.
+
 ---
 
 ## Blocker B3 — resolved 2026-08-07: no data dictionary is needed
@@ -94,6 +115,7 @@ The UoM normaliser in Task 1 remains **category-independent** — it maps a UoM 
 | `src/services/facts/uom.py` | Deterministic UoM normaliser; closed map; `UOM_UNMAPPED` |
 | `src/services/facts/fx.py` | Dated FX resolution against `bp_fx_rates`; `FX_UNAVAILABLE` |
 | `src/services/facts/models.py` | `CommercialFact`, `FactProvenance`, `Constraint`, enums, validators |
+| `src/services/facts/arithmetic.py` | Pure role-consistency check: `quantity × unit_rate = extended_line`, and the states for when it cannot run |
 | `src/services/facts/assembler.py` | Builds and persists facts from `_trgt` rows + provenance |
 | `src/services/facts/store.py` | Persistence for facts, provenance, constraints, finding links |
 | `src/services/facts/concept_codes.py` | Concept vocabulary derived from the extraction-schema field names (B3 resolution) |
@@ -374,7 +396,7 @@ git commit -m "feat(facts): FX resolution that stamps rate, date and source onto
 - Create: `tests/services/facts/test_models.py`
 
 **Interfaces:**
-- Produces: `FactProvenance`, `CommercialFact`, enums `ValueBasis`, `ValidationState`, and `concept_codes.CONCEPT_CODES: frozenset[str]` / `concept_codes.is_known(code) -> bool`. `CommercialFact.provenance: list[FactProvenance]` with a validator rejecting an empty list.
+- Produces: `FactProvenance`, `CommercialFact`, enums `ValueBasis`, `ValidationState`, `MeasureRole`, `ArithmeticState`, and `concept_codes.CONCEPT_CODES: frozenset[str]` / `concept_codes.is_known(code) -> bool`. `CommercialFact.provenance: list[FactProvenance]` with a validator rejecting an empty list.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -412,6 +434,9 @@ def _prov(**over):
 def _fact(**over):
     base = dict(fact_id="f-1", tenant_id="default", fact_type="line_unit_price",
                 unit_price=Decimal("86.94"), currency="GBP", quantity=Decimal("2"),
+                extended_value=Decimal("173.88"),
+                measure_role="unit_rate", basis_uom="each",
+                arithmetic_state="consistent",
                 value_basis=ValueBasis.AS_SUPPLIED,
                 validation_state=ValidationState.VALID,
                 provenance=[_prov()])
@@ -473,6 +498,54 @@ def test_value_basis_is_a_closed_enum():
         _fact(value_basis="whatever")
 
 
+def test_measure_role_is_a_closed_enum():
+    """'Price' can mean a unit rate or a total; 'volume' can mean a count or a
+    physical measure. The role says which, so a comparison can never put one
+    supplier's unit rate against another's line total."""
+    from src.services.facts.models import MeasureRole
+    assert {r.value for r in MeasureRole} == {
+        "unit_rate", "extended_line", "document_total",
+        "quantity", "tax", "discount"}
+    with pytest.raises(ValidationError):
+        _fact(measure_role="price")
+
+
+def test_a_unit_rate_must_declare_what_it_is_per():
+    """£86.94 is not comparable to £86.94 until you know one is per user-month
+    and the other per day. A unit_rate without a basis_uom is not a fact, it is
+    a number."""
+    with pytest.raises(ValidationError):
+        _fact(measure_role="unit_rate", basis_uom=None)
+    ok = _fact(measure_role="unit_rate", basis_uom="user_month")
+    assert ok.basis_uom == "user_month"
+
+
+def test_a_lump_sum_service_line_needs_no_unit_rate():
+    """Services in this corpus legitimately have no unit price. The role says
+    'this is a total', which is truthful — rather than a NULL unit_price that
+    reads as missing data."""
+    f = _fact(measure_role="extended_line", unit_price=None,
+              quantity=None, basis_uom=None, extended_value=Decimal("58000.00"))
+    assert f.measure_role.value == "extended_line"
+    assert f.unit_price is None
+
+
+def test_arithmetic_state_is_a_closed_enum_including_the_untestable_cases():
+    """~19% of real lines have quantity=1, where a unit rate and a total are
+    numerically identical and no arithmetic can separate them. The fact must
+    record that its role was unverifiable rather than look identical to a
+    checked one."""
+    from src.services.facts.models import ArithmeticState
+    assert {s.value for s in ArithmeticState} == {
+        "consistent", "inconsistent",
+        "untestable_quantity_one", "untestable_missing_input"}
+
+
+def test_arithmetic_state_is_required_on_a_priced_fact():
+    with pytest.raises(ValidationError):
+        _fact(measure_role="unit_rate", basis_uom="each", arithmetic_state=None)
+
+
 def test_concept_code_comes_from_the_extraction_schemas_not_an_invented_list():
     """B3 resolution: the extraction schemas ARE the field registry. Every
     concept_code must be a field name that actually exists in one of them —
@@ -515,6 +588,13 @@ def test_an_unknown_concept_code_is_rejected_rather_than_stored():
 `concept_codes.py` **derives** its vocabulary by reading `extraction_schemas/*.yaml` at import time and collecting every declared field name into `CONCEPT_CODES: frozenset[str]`, with `is_known(code) -> bool`. Do not hand-type a list — a hand-typed list is a second vocabulary that drifts from the schemas the moment either changes, which is exactly the shadowing failure this is meant to avoid. Cache the parse at module level; the loader already reads these files, so cost is negligible. The module docstring should state that the extraction schemas are the field registry, and that `concept_code` is the column a formal dictionary would map into if one is ever adopted.
 
 `models.py` follows `src/services/benchmark/models.py`'s conventions (`from __future__ import annotations`, `BaseModel`, `ConfigDict`, `Field`, `field_validator`, `str`-valued `Enum`s). Field groups per the brief: identity, economics, commercial identity, term, allocation, grouping, integrity, provenance, bitemporal. Every monetary and quantity field is `Decimal`. `concept_code` is `Optional[str]` with a `field_validator` rejecting any value not in `CONCEPT_CODES`. Every field the corpus cannot supply today (`category_l1..l4`, `contract_id`, `term_*`, `escalator_*`, `cost_centre`, `bundle_group_id`, …) is `Optional` with default `None`.
+
+**The three F6 fields need a `model_validator`, not just field types**, because their rules are cross-field:
+- `measure_role == unit_rate` ⟹ `basis_uom` must be non-empty. A unit rate with no "per what" is not comparable to anything and must not be constructible.
+- `measure_role` in `{unit_rate, extended_line, document_total}` ⟹ `arithmetic_state` is required. A priced fact that does not say whether its role was verified is exactly the ambiguity this phase exists to remove.
+- `measure_role == extended_line` permits `unit_price`, `quantity` and `basis_uom` all NULL — the lump-sum services case, which is truthful rather than missing.
+
+Do **not** give `arithmetic_state` a default. A default would let an unverified fact silently claim the same standing as a checked one, which is the failure mode F6 documents.
 
 `category_l1..l4` stay nullable in this phase but are **not** blocked: `proc.bp_category` supplies a `L1~L2~L3` hierarchy keyed on `item_description`. Populating them is a join the Fact Assembler could do later; it is deliberately out of scope here so that Task 6 stays a single-responsibility service. Note the split — `bp_sqldb` has 49 rows, `bp_testdb` has 0 — so any future population must fail closed, not default.
 
@@ -616,6 +696,8 @@ Requirements, all load-bearing:
 
 - Every table carries `tenant_id TEXT NOT NULL DEFAULT 'default'` (B2 decision — new tables only) and the bitemporal trio `valid_from TIMESTAMPTZ NOT NULL DEFAULT now()`, `valid_to TIMESTAMPTZ`, `recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()`.
 - Money and quantity columns are `NUMERIC`, never `double precision`.
+- `bp_commercial_fact` carries `measure_role TEXT`, `basis_uom TEXT` and `arithmetic_state TEXT`, each with a `CHECK` constraint listing the permitted values — the enum must be enforced in the database as well as in Pydantic, because the backfill and any future direct insert bypass the model. Add the two cross-field rules as `CHECK`s too: a `unit_rate` row must have a non-null `basis_uom`, and a row whose `measure_role` is one of `unit_rate`/`extended_line`/`document_total` must have a non-null `arithmetic_state`.
+- Index `(tenant_id, measure_role)` — every cross-supplier comparison filters on the role, and comparing across roles is the error the column exists to prevent.
 - `bp_fact_provenance` has `fact_id` FK to `bp_commercial_fact` with `ON DELETE CASCADE`, plus `document_id`, `doc_type`, `extraction_id`, `field_path`, `page`, `locator`, `verbatim_snippet`, `extracted_at`.
 - **Enforce the mandatory-provenance rule at the database level, not only in Pydantic.** A deferred constraint trigger is the only way to express "at least one child row" in Postgres; implement it as a `CONSTRAINT TRIGGER … DEFERRABLE INITIALLY DEFERRED` on `bp_commercial_fact` that raises if no `bp_fact_provenance` row exists for the fact at commit. State in a comment why a `CHECK` cannot express this.
 - `bp_finding_fact`: `(opportunity_ref_id, fact_id, role)` with a primary key over all three, FK to `bp_commercial_fact`, and an index on `opportunity_ref_id` — the acceptance query in Task 9 drives from it.
@@ -643,19 +725,81 @@ done
 
 ---
 
-## Task 6: The Fact Assembler
+## Task 6: The role-consistency check and the Fact Assembler
 
-The heart of the phase. Deterministic service, no LLM.
+The heart of the phase. Deterministic service, no LLM. Two modules: a pure arithmetic checker, then the assembler that uses it.
 
 **Files:**
-- Create: `src/services/facts/store.py`, `src/services/facts/assembler.py`
-- Create: `tests/services/facts/test_assembler.py`
+- Create: `src/services/facts/arithmetic.py`, `src/services/facts/store.py`, `src/services/facts/assembler.py`
+- Create: `tests/services/facts/test_arithmetic.py`, `tests/services/facts/test_assembler.py`
 
 **Interfaces:**
-- Consumes: `normalise_uom`, `resolve_fx`, `CommercialFact`, `FactProvenance`
-- Produces: `assemble_line_facts(cur, doc_type: str, doc_pk: str) -> list[CommercialFact]` and `persist_facts(cur, facts) -> int`.
+- Consumes: `normalise_uom`, `resolve_fx`, `CommercialFact`, `FactProvenance`, `MeasureRole`, `ArithmeticState`
+- Produces: `check_line_arithmetic(quantity, unit_price, extended, *, tolerance=Decimal("0.02")) -> ArithmeticState` and `assemble_line_facts(cur, doc_type: str, doc_pk: str) -> list[CommercialFact]` and `persist_facts(cur, facts) -> int`.
 
-- [ ] **Step 1: Write the failing test.**
+- [ ] **Step 1a: Write the failing test for the arithmetic checker.**
+
+```python
+"""quantity × unit_rate = extended_line is what TESTS a role assignment
+instead of trusting a label. Measured on bp_sqldb it holds for 78-93% of real
+lines, and is structurally blind on the ~19% where quantity is 1."""
+from __future__ import annotations
+
+import sys
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from src.services.facts.arithmetic import check_line_arithmetic  # noqa: E402
+from src.services.facts.models import ArithmeticState  # noqa: E402
+
+D = Decimal
+
+
+def test_consistent_line():
+    assert check_line_arithmetic(D("2"), D("86.94"), D("173.88")) is ArithmeticState.CONSISTENT
+
+
+def test_a_total_booked_as_a_unit_rate_is_caught():
+    """The historical bug: the line total landed in unit_price. With quantity
+    40 the arithmetic is off by exactly the quantity factor."""
+    assert check_line_arithmetic(D("40"), D("4586.65"), D("4586.65")) is ArithmeticState.INCONSISTENT
+
+
+def test_quantity_one_is_untestable_not_consistent():
+    """With quantity 1 a unit rate and a total are numerically identical, so
+    the check CANNOT pass — it must abstain. Returning CONSISTENT here would
+    manufacture confidence for a fifth of the corpus."""
+    assert check_line_arithmetic(D("1"), D("500"), D("500")) is ArithmeticState.UNTESTABLE_QUANTITY_ONE
+
+
+@pytest.mark.parametrize("q,u,e", [
+    (None, D("10"), D("20")), (D("2"), None, D("20")), (D("2"), D("10"), None),
+])
+def test_missing_input_is_untestable(q, u, e):
+    assert check_line_arithmetic(q, u, e) is ArithmeticState.UNTESTABLE_MISSING_INPUT
+
+
+def test_rounding_tolerance_is_absolute_not_proportional():
+    """A proportional tolerance scales the blind spot with the value — the
+    larger the line, the more error it hides. completeness.py already learned
+    this the hard way."""
+    assert check_line_arithmetic(D("3"), D("10.00"), D("30.01")) is ArithmeticState.CONSISTENT
+    assert check_line_arithmetic(D("3"), D("10000.00"), D("30001.00")) is ArithmeticState.INCONSISTENT
+
+
+def test_zero_quantity_is_untestable_not_a_division():
+    assert check_line_arithmetic(D("0"), D("10"), D("0")) is ArithmeticState.UNTESTABLE_MISSING_INPUT
+```
+
+- [ ] **Step 1b: Run to verify it fails, implement `arithmetic.py`, run to verify it passes.**
+
+Pure function, `Decimal` throughout, no I/O. The `quantity == 1` branch must be checked **before** the equality comparison — otherwise a qty-1 line falls through as `CONSISTENT` and the abstention never happens.
+
+- [ ] **Step 1: Write the failing test for the assembler.**
 
 Cover, with fake cursors returning shaped rows:
 - A line row with matching provenance produces a fact whose `provenance` is non-empty and whose `unit_price`, `quantity`, `currency` come from the row.
@@ -663,12 +807,14 @@ Cover, with fake cursors returning shaped rows:
 - An unmappable UoM yields a fact carrying the raw `uom`, `uom_normalised=None` and `UOM_UNMAPPED` in `reason_codes`.
 - A non-GBP line yields `fx_rate`, `fx_rate_date`, `fx_rate_source` populated; a currency absent from `bp_fx_rates` yields `FX_UNAVAILABLE` in `reason_codes` and a NULL rate, not a guessed 1.0.
 - `field_path` lookup uses the line's index, and **the index convention is asserted explicitly** — provenance writes `line_items[0]` while the `_trgt` line tables use `line_number`/`line_no`. Verify against real data which is 0-based and which is 1-based before writing the mapping; an off-by-one here silently attaches the wrong line's evidence to a price, which is worse than no evidence.
+- **Role assignment**: a line with a unit price yields `measure_role=unit_rate` with `basis_uom` taken from the normalised UoM; a line with only an amount yields `extended_line`. `arithmetic_state` comes from `check_line_arithmetic`. Assert that a line whose UoM is `UOM_UNMAPPED` still gets a `unit_rate` role but carries `basis_uom` as the **raw** UoM string with the reason code attached — never a normalised guess, and never NULL, because a NULL would make the model reject a fact that genuinely exists.
+- **An `INCONSISTENT` line still produces a fact.** It is not dropped. The whole point of the state is that the record carries its own reliability; suppressing inconsistent lines would hide 7–22% of the corpus and quietly improve the apparent numbers.
 
 - [ ] **Step 2: Run to verify it fails. Step 3: Implement. Step 4: Run to verify it passes.**
 
 Per F1, the assembler drives from the `_trgt` line row and looks provenance up by `(doc_type, doc_pk, field_path)`. It never enumerates provenance and joins forward.
 
-- [ ] **Step 5: Live smoke run against `bp_sqldb`** (the only database with real provenance, per F2). Assemble facts for a handful of invoices and print how many facts were produced versus lines read, with the skip reasons. Record the ratio — it is the honest measure of what mandatory provenance costs on this corpus, and Task 10 needs it.
+- [ ] **Step 5: Live smoke run against `bp_sqldb`** (the only database with real provenance, per F2). Assemble facts for a handful of invoices and print how many facts were produced versus lines read, with the skip reasons, **and the distribution of `arithmetic_state` across the facts produced**. Record both. The first is the honest measure of what mandatory provenance costs on this corpus; the second should land near F6's measured 78–93% consistent with roughly a fifth untestable, and a wide divergence from that means the checker is wrong. Task 10 needs both figures.
 
 - [ ] **Step 6: Commit.**
 
@@ -724,7 +870,9 @@ The brief's bar: *a query over `Finding` can reconstruct, for any opportunity, t
 **Files:**
 - Create: `tests/services/facts/test_acceptance_reconstruct.py`
 
-- [ ] **Step 1: Write the test.** For a seeded opportunity linked through `bp_finding_fact`, a single SQL statement joining `bp_opportunity → bp_finding_fact → bp_commercial_fact → bp_fact_provenance` must return unit price, quantity, UoM, currency, contract reference, term and `(document_id, page, locator, verbatim_snippet)` for every contributing fact — with **no `->>`, no `jsonb_extract`, no regex, and no reference to `calculation_details`.** Assert that textually against the query string, the way Phase 1a's coverage harness asserts its SQL reads the provenance table.
+- [ ] **Step 1: Write the test.** For a seeded opportunity linked through `bp_finding_fact`, a single SQL statement joining `bp_opportunity → bp_finding_fact → bp_commercial_fact → bp_fact_provenance` must return unit price, quantity, UoM, currency, contract reference, term, **`measure_role`, `basis_uom`, `arithmetic_state`** and `(document_id, page, locator, verbatim_snippet)` for every contributing fact — with **no `->>`, no `jsonb_extract`, no regex, and no reference to `calculation_details`.** Assert that textually against the query string, the way Phase 1a's coverage harness asserts its SQL reads the provenance table.
+
+- [ ] **Step 1b: Add the comparability test.** Assert that the reconstruction lets a caller tell a unit rate from a total *without inspecting the number* — construct two facts with the same `unit_price` value but roles `unit_rate` and `extended_line`, and assert the query distinguishes them. Then assert that two `unit_rate` facts with different `basis_uom` are not treated as comparable. This is the acceptance criterion for the question the model exists to answer: when a document says "price", which price is it?
 
 - [ ] **Step 2: Run it against `bp_sqldb`** — per F2, `bp_testdb` has almost no provenance and will produce almost no facts. Record both results; the difference is the honest measure.
 
@@ -736,7 +884,7 @@ The brief's bar: *a query over `Finding` can reconstruct, for any opportunity, t
 
 **Files:** Create `docs/remediation/01b_fact_model_seam.md`.
 
-Must cover: the four new tables and why `bp_finding_fact` is a join table rather than flat columns (F3's measured 1:3 cardinality); the provenance-mandatory guarantee and where it is enforced (Pydantic validator **and** deferred constraint trigger); F1's join-direction finding; **F2 prominently** — mandatory provenance means the seeded corpus yields almost no facts, with the measured ratio from Task 6 Step 5; F4's FX limitation stated as a limitation; F5's UoM refusal set; the honest backfill harvest from Task 7 and how much was marked `INDETERMINATE`; and the open blockers carried forward.
+Must cover: the four new tables and why `bp_finding_fact` is a join table rather than flat columns (F3's measured 1:3 cardinality); the provenance-mandatory guarantee and where it is enforced (Pydantic validator **and** deferred constraint trigger); **F6 — why a number's role is carried explicitly rather than inferred from its field name**, with the measured 78–93% invariant rate, the ~19% `quantity = 1` blind spot, the note that names alone did not prevent the historical unit-price-as-total bug, and the fact that an `INCONSISTENT` line is kept rather than dropped; F1's join-direction finding; **F2 prominently** — mandatory provenance means the seeded corpus yields almost no facts, with the measured ratio from Task 6 Step 5; F4's FX limitation stated as a limitation; F5's UoM refusal set; the honest backfill harvest from Task 7 and how much was marked `INDETERMINATE`; and the open blockers carried forward.
 
 It must also record **the B3 resolution as a decision, with its reasoning** — that no data dictionary is needed because the extraction schemas already are the field registry and `bp_category` already carries a three-level hierarchy; that `concept_code` is derived from the schemas rather than hand-listed, so it cannot drift into a shadow vocabulary; and that a formal dictionary would only be required for interoperability with an external system, which nothing in Phases 1–5 needs. Note the correction to the Phase 0 seam map (`bp_category` is populated on `bp_sqldb`, empty on `bp_testdb`), and state what would change if GPSS were later adopted: `concept_code` is the column it maps into.
 
@@ -751,6 +899,9 @@ Remember `docs/` is git-ignored except `docs/remediation/` — this path is nega
 - [ ] The Task 9 query reconstructs every contributing number for an opportunity with no free-text parsing.
 - [ ] Both migrations applied to both databases; both rollbacks executed and re-applied.
 - [ ] The `UOM_UNMAPPED` set of 14 values is refused, not coerced.
+- [ ] A `unit_rate` fact cannot be constructed without a `basis_uom`, and a priced fact cannot be constructed without an `arithmetic_state` — both proven by test **and** by database `CHECK` constraints.
+- [ ] A `quantity = 1` line yields `UNTESTABLE_QUANTITY_ONE`, never `CONSISTENT`.
+- [ ] The observed `arithmetic_state` distribution on `bp_sqldb` is within reach of F6's measured 78–93% consistent; a wide divergence means the checker is wrong and must be investigated before the phase closes.
 - [ ] No LLM call exists anywhere in `src/services/facts/`.
 
 **Explicitly NOT in scope:** the reference corpus and benchmark resolution (Phase 2); variance decomposition, baseline integrity and the correlation-adjusted rollup (Phase 3); the Interpretation Plane (Phase 4); report blocks (Phase 5). Also out of scope, each deliberately rather than because it is blocked: re-extracting the corpus; populating `category_l1..l4` from `bp_category` (a join the assembler could do, held back to keep Task 6 single-responsibility); and the per-category UoM basis, which is a Phase 5 rendering concern keyed on the category hierarchy, not a Phase 1b one.
