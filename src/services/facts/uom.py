@@ -179,12 +179,31 @@ def _key(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 _ACTIVE_SQL = """
-    SELECT uom_code, dimension, aliases, factor_days, factor_convention
+    SELECT uom_code, dimension, aliases, factor_days, factor_convention,
+           recorded_at
+      FROM proc.bp_uom_canonical
+     WHERE status = 'active'
+"""
+
+# The version probe. Deliberately reads two scalars over a ~24-row table rather
+# than the vocabulary itself: it runs far more often than a reload, and the
+# whole point is that the common case (nothing changed) stays cheap.
+#
+# count AND max(recorded_at), because neither alone is sufficient — editing a
+# row without adding one leaves the count identical, and a row added and
+# another removed in the same window leaves it identical too.
+_VERSION_SQL = """
+    SELECT count(*), max(recorded_at)
       FROM proc.bp_uom_canonical
      WHERE status = 'active'
 """
 
 _DEFAULT_TTL_SECONDS = 300.0
+
+# How often a process checks whether anyone else changed the vocabulary. This
+# is the real bound on how long a confirmed unit takes to take effect
+# everywhere; the TTL above is only a backstop.
+_DEFAULT_PROBE_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -207,6 +226,9 @@ SEED_VOCABULARY = Vocabulary(
 _lock = threading.Lock()
 _active: Vocabulary = SEED_VOCABULARY
 _loaded_at: Optional[float] = None
+_probed_at: float = 0.0
+_version: Optional[Tuple[Any, ...]] = None
+_invalidated: bool = False
 
 
 def build_vocabulary(rows: Iterable[Mapping[str, Any]], *, source: str) -> Vocabulary:
@@ -247,26 +269,78 @@ def active_vocabulary() -> Vocabulary:
 
 def reset_vocabulary() -> None:
     """Drop back to the built-in seed. For tests and for a forced re-read."""
-    global _active, _loaded_at
+    global _active, _loaded_at, _probed_at, _version, _invalidated
     with _lock:
         _active = SEED_VOCABULARY
         _loaded_at = None
+        _probed_at = 0.0
+        _version = None
+        _invalidated = False
 
 
-def ensure_vocabulary(cur, *, ttl_seconds: float = _DEFAULT_TTL_SECONDS) -> Vocabulary:
-    """Load the vocabulary from the database if the cached copy is stale.
+def invalidate_vocabulary() -> None:
+    """Force the next ``ensure_vocabulary`` to re-read, ignoring the TTL.
 
-    Takes a cursor rather than opening a connection so it can reuse the one the
-    caller already has, and so this module still performs no I/O of its own.
-    Cheap to call repeatedly: within the TTL it does nothing at all.
+    Call this after confirming or rejecting a unit, so the change takes effect
+    at once rather than after the cache expires.
 
-    Never raises. A failure leaves whatever vocabulary is already in force.
+    IN-PROCESS ONLY. A function call cannot reach the other workers, and a
+    hook that only worked in whichever process happened to receive it would
+    look correct in a single-process test and quietly fail in production. The
+    version probe in ``ensure_vocabulary`` is what covers everyone else.
     """
-    global _active, _loaded_at
+    global _invalidated
+    with _lock:
+        _invalidated = True
+
+
+def _read_version(cur) -> Optional[Tuple[Any, ...]]:
+    """(count, max recorded_at) of the active vocabulary, or None if unreadable."""
+    try:
+        cur.execute(_VERSION_SQL)
+        row = cur.fetchone()
+    except Exception:
+        logger.debug("uom vocabulary version probe failed", exc_info=True)
+        return None
+    if not row:
+        return None
+    return tuple(row)
+
+
+def ensure_vocabulary(
+    cur,
+    *,
+    ttl_seconds: float = _DEFAULT_TTL_SECONDS,
+    probe_seconds: float = _DEFAULT_PROBE_SECONDS,
+) -> Vocabulary:
+    """Load the vocabulary from the database if the cached copy is out of date.
+
+    Takes a cursor rather than opening a connection, so it reuses the one the
+    caller already has and this module still performs no I/O of its own.
+
+    Cheap to call repeatedly. Within ``probe_seconds`` it does nothing at all;
+    after that it reads two scalars, and only re-reads the vocabulary when
+    those scalars say something actually changed.
+
+    Never raises. Any failure leaves whatever vocabulary is already in force.
+    """
+    global _active, _loaded_at, _probed_at, _version, _invalidated
 
     now = time.monotonic()
-    if _loaded_at is not None and (now - _loaded_at) < ttl_seconds:
-        return _active
+    forced = _invalidated
+
+    if not forced and _loaded_at is not None:
+        if (now - _loaded_at) < ttl_seconds:
+            # Still inside the TTL: ask the cheap question, and only then the
+            # expensive one.
+            if (now - _probed_at) < probe_seconds:
+                return _active
+            version = _read_version(cur)
+            _probed_at = now
+            if version is None or version == _version:
+                return _active
+            logger.info("uom vocabulary changed (%s -> %s); reloading",
+                        _version, version)
 
     try:
         cur.execute(_ACTIVE_SQL)
@@ -281,6 +355,8 @@ def ensure_vocabulary(cur, *, ttl_seconds: float = _DEFAULT_TTL_SECONDS) -> Voca
         return _active
 
     vocabulary = build_vocabulary(rows, source=f"bp_uom_canonical@{len(rows)}units")
+    stamps = [r.get("recorded_at") for r in rows if r.get("recorded_at") is not None]
+    version: Tuple[Any, ...] = (len(rows), max(stamps) if stamps else None)
 
     # Check the BUILT vocabulary, not the raw row count. Rows that parse to
     # nothing usable — a changed column list, a cursor answering a different
@@ -297,6 +373,9 @@ def ensure_vocabulary(cur, *, ttl_seconds: float = _DEFAULT_TTL_SECONDS) -> Voca
     with _lock:
         _active = vocabulary
         _loaded_at = now
+        _probed_at = now
+        _version = version
+        _invalidated = False
     logger.info("loaded %d active units from proc.bp_uom_canonical", len(rows))
     return vocabulary
 
