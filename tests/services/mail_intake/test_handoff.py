@@ -93,10 +93,11 @@ def test_the_temp_file_carries_the_real_extension():
         artifact_id="ART-4",
         content=b"%PDF-1.4\n",
         doc_type="invoice",
+        detected_mime="application/pdf",
         filename="quote.PDF",
         dispatch=fake_dispatch,
     )
-    assert seen["path"].endswith(".PDF")
+    assert seen["path"].endswith(".pdf")
 
 
 def test_a_missing_filename_falls_back_to_bin():
@@ -111,3 +112,28 @@ def test_a_missing_filename_falls_back_to_bin():
         dispatch=fake_dispatch,
     )
     assert seen["path"].endswith(".bin")
+
+
+def test_a_mismatched_filename_does_not_choose_the_parser():
+    """The whole point of the fix: the filename is sender-controlled, and a
+    genuine PDF named `quote.csv` must not be routed to the CSV parser.
+
+    detected_mime is the byte-derived truth; the filename is only a bounded
+    tiebreak when detected_mime maps to nothing, never an override.
+    """
+    seen = {}
+
+    def fake_dispatch(*, process_monitor_id, file_path, doc_type):
+        seen["path"] = file_path
+        return {}
+
+    handoff.deliver_to_extraction(
+        artifact_id="ART-6",
+        content=b"%PDF-1.4\n",
+        doc_type="invoice",
+        detected_mime="application/pdf",
+        filename="quote.csv",
+        dispatch=fake_dispatch,
+    )
+    assert seen["path"].endswith(".pdf")
+    assert not seen["path"].endswith(".csv")

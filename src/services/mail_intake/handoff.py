@@ -33,12 +33,37 @@ KNOWN_CROSSINGS: Dict[str, set] = {
     "src/services/extraction/parser.py": {"boto3"},
 }
 
+# Extension chosen by DETECTED type, never by the sender's filename. Keys are
+# the types safety._PERMITTED_DOCUMENT_MIMES clears, so anything reaching this
+# module has an entry.
+_SUFFIX_FOR_MIME: Dict[str, str] = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/rtf": ".rtf",
+    "text/csv": ".csv",
+    "text/plain": ".txt",
+    "text/html": ".html",
+    "text/xml": ".xml",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/tiff": ".tiff",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/webp": ".webp",
+}
+
 
 def deliver_to_extraction(
     *,
     artifact_id: str,
     content: bytes,
     doc_type: str,
+    detected_mime: Optional[str] = None,
     filename: Optional[str] = None,
     process_monitor_id: Optional[int] = None,
     dispatch: Optional[Callable[..., Any]] = None,
@@ -52,13 +77,23 @@ def deliver_to_extraction(
     if dispatch is None:  # pragma: no cover - exercised in integration only
         from src.services.extraction.dispatch import dispatch_document as dispatch
 
-    # The suffix must be the real one. Extraction's parser router dispatches
-    # purely on file extension, so a hardcoded ".bin" made every mail-intake
-    # document fail at L0 with "unsupported file format" — the production
-    # path could never have worked. That failure also invites precisely the
-    # wrong repair: the quickest way to make it go away is to hand extraction
-    # the S3 key instead, which is the move this module exists to prevent.
-    suffix = os.path.splitext(filename or "")[1] or ".bin"
+    # The suffix must be the real one, because extraction's parser router
+    # dispatches purely on file extension — a hardcoded ".bin" made every
+    # mail-intake document fail at L0 with "unsupported file format", so the
+    # production path could never have worked. That failure also invites the
+    # wrong repair: the quickest way to clear it is to hand extraction the S3
+    # key instead, which is the move this module exists to prevent.
+    #
+    # It comes from `detected_mime`, NOT from the filename. The filename is
+    # sender-controlled, and letting it choose which parser runs would hand the
+    # sender exactly the influence this module denies them — a genuine PDF named
+    # `quote.csv` would otherwise be routed to the CSV parser. `typing_` already
+    # ignores the filename for the same reason. It is used only as a tiebreak
+    # when the detected type maps to several extensions, and bounded either way.
+    suffix = _SUFFIX_FOR_MIME.get(detected_mime or "")
+    if suffix is None:
+        candidate = os.path.splitext(filename or "")[1].lower()
+        suffix = candidate if 0 < len(candidate) <= 8 and candidate.isascii() else ".bin"
 
     # mkstemp already creates the file owner-only (0o600 before umask, and
     # umask can only clear bits, never add them). The explicit fchmod is

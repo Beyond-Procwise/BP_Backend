@@ -13,10 +13,12 @@ email, and it does not act on anything a document says.
 
 ## What access is requested
 
-Three connection methods are supported. **The relay method is preferred and
-needs no access to your mail system at all.**
+Three connection methods are planned. **Only the relay method is available
+today** — the Microsoft 365 and IMAP connectors are described here so you can
+plan for them, and are marked below. The relay method is also the preferred one,
+and it **needs no access to your mail system at all.**
 
-### 1. Relay address (recommended)
+### 1. Relay address (recommended — AVAILABLE NOW)
 
 You are given an address such as `intake@yourcompany.procureiq.io`. Suppliers
 send or copy their quotes to it, or you forward them.
@@ -28,7 +30,7 @@ send or copy their quotes to it, or you forward them.
 This is the option most likely to clear a security review quickly, because
 there is nothing to grant.
 
-### 2. Microsoft 365 (Graph)
+### 2. Microsoft 365 (Graph) — PLANNED, not yet available
 
 - **Permission requested:** `Mail.Read`, application permission.
 - **Scope:** restricted to named mailboxes or folders using an *application
@@ -50,7 +52,7 @@ there is nothing to grant.
   accept a value in that form — a pasted password or key is rejected outright
   rather than stored.
 
-### 3. IMAP
+### 3. IMAP — PLANNED, not yet available
 
 - **Permission requested:** read access to one named folder.
 - **Not requested:** sending, deleting, moving or modifying messages.
@@ -87,18 +89,34 @@ unpacked:
 | ZIP and other archives | Contents unknown until unpacked; a person decides |
 | Programs and scripts | Regardless of what the file is named |
 | Files above the size limit | Configurable; 25 MB by default |
-| Files whose type does not match their name | A `.pdf` that is really something else |
-| Documents containing hidden text | Text present in the file but invisible to a reader — a known method of attempting to influence automated document reading |
+| Files whose contents do not match how they were labelled | The sender's declared file type disagrees with what the bytes actually are. Note the system never looks at the *filename* — a name is trivial to change, so it is deliberately ignored. A ZIP or a program named `.pdf` is held, but by the archive and program rules below rather than this one |
+| Unsupported formats | OpenDocument (`.odt`, `.ods`) and other formats we do not read are held for a person. Worth telling suppliers, so a quote is not delayed by arriving in an unexpected format |
+| Documents containing hidden text | Text present in the file but invisible to a reader — a known method of attempting to influence automated document reading. Checked in PDF, Word and Excel files only; see the note below for what this does and does not cover |
 
 Held items are retained with the reason recorded. An authorised person can
 release one, and that release is itself recorded.
 
-## A note on hidden text
+## A note on hidden text, and what it does not cover
 
 Scanned documents legitimately contain invisible text — that is how a scan
 becomes searchable. This feature distinguishes that from concealment by
-checking whether the invisible text sits over a scanned image. Ordinary scanned
-invoices are unaffected.
+checking whether the invisible text sits over a scanned image, so ordinary
+scanned invoices are unaffected.
+
+We would rather be precise about the limits than let this read as settled:
+
+- **It covers PDF, Word and Excel files.** Other formats we accept —
+  PowerPoint, the older `.doc` and `.xls`, rich text, HTML and images — are not
+  scanned for hidden text today.
+- **It catches the ordinary attempt, not a determined one.** The check compares
+  where images sit on the page, not what they actually show, so someone who
+  knows the method can still conceal text from it.
+
+What this means in practice: treat it as one control among several, not as a
+guarantee. The controls that do not depend on detecting intent — programs and
+scripts held whatever they are named, archives never unpacked, macro-bearing
+files held, and nothing in a document being able to change an approval or a
+score — are the ones carrying the weight.
 
 ## What this feature cannot do
 

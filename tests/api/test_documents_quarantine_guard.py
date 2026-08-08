@@ -7,7 +7,7 @@ Spec §2.3 crossing 1.
 import pytest
 
 from src.api.routers.documents import _resolve_s3_path
-from src.services.mail_intake.store import ARTIFACT_PREFIX, QUARANTINE_PREFIX
+from src.services.mail_intake.store import ARTIFACT_PREFIX, QUARANTINE_PREFIX, RAW_MIME_PREFIX
 
 
 def test_ordinary_prefix_still_resolves():
@@ -69,3 +69,38 @@ def test_quarantined_keys_are_never_listed_whatever_the_prefix():
     keys = _list_s3_keys(FakeClient(), "procwisemvp", "m")
     assert keys == ["mail-intake/artifacts/user-7/ab/cd/clean"]
     assert not any(k.startswith(QUARANTINE_PREFIX) for k in keys)
+
+
+def test_raw_mime_prefix_is_rejected():
+    """`mail-intake/raw/` holds the complete raw MIME of every message,
+    including every one whose attachment the gate rejected and every
+    malformed bundle. The guard must cover it, not just quarantine."""
+    with pytest.raises(ValueError, match="raw"):
+        _resolve_s3_path(f"{RAW_MIME_PREFIX}user-7/some-bundle.eml", "procwisemvp")
+
+
+def test_raw_mime_ancestor_prefix_is_rejected():
+    """Same ancestor bypass as quarantine, for the raw store."""
+    for ancestor in ("mail-intake/", "mail-intake"):
+        with pytest.raises(ValueError, match="ancestor"):
+            _resolve_s3_path(ancestor, "procwisemvp")
+
+
+def test_raw_mime_keys_are_never_listed_whatever_the_prefix():
+    """The durable control for the raw store: a per-key filter, because a
+    prefix check alone cannot be complete — 'm' is a valid ancestor too."""
+    from src.api.routers.documents import _list_s3_keys
+
+    class FakeClient:
+        def list_objects_v2(self, **kwargs):
+            return {
+                "Contents": [
+                    {"Key": "mail-intake/artifacts/user-7/ab/cd/clean"},
+                    {"Key": f"{RAW_MIME_PREFIX}user-7/some-bundle.eml"},
+                ],
+                "IsTruncated": False,
+            }
+
+    keys = _list_s3_keys(FakeClient(), "procwisemvp", "m")
+    assert keys == ["mail-intake/artifacts/user-7/ab/cd/clean"]
+    assert not any(k.startswith(RAW_MIME_PREFIX) for k in keys)

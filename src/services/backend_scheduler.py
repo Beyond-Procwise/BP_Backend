@@ -754,6 +754,27 @@ class BackendScheduler:
         except Exception:
             logger.exception("price outlier scan failed")
 
+    @staticmethod
+    def _mail_intake_tables_present() -> bool:
+        """Cheap existence probe, so an unmigrated environment stays quiet.
+
+        Registering the sweep unconditionally means that anywhere
+        2026-08-07-mail-intake.sql has not been applied — a developer
+        checkout, a staging box, anywhere the migration lags the deploy — the
+        job raises UndefinedTable and logs an exception every sixty seconds,
+        forever. That is not a broken feature so much as a broken log: the
+        noise buries whatever someone is actually trying to read.
+        """
+        try:
+            from src.services.db import get_conn
+
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('proc.bp_ingest_artifact')")
+                row = cur.fetchone()
+                return bool(row and row[0])
+        except Exception:
+            return False
+
     def _register_mail_intake_sweep_job(self) -> None:
         """Register the mail-intake emit sweep (spec §6 stage 10).
 
@@ -763,6 +784,12 @@ class BackendScheduler:
         EventBus. Every 60 seconds, matching the brief.
         """
         if self.MAIL_INTAKE_SWEEP_JOB_NAME in self._jobs:
+            return
+        if not self._mail_intake_tables_present():
+            logger.info(
+                "mail intake sweep: proc.bp_ingest_artifact not found, "
+                "skipping registration (migration not yet applied)"
+            )
             return
         self.register_job(
             self.MAIL_INTAKE_SWEEP_JOB_NAME,

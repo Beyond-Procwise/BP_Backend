@@ -174,7 +174,7 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
 
     import posixpath
 
-    from src.services.mail_intake.store import QUARANTINE_PREFIX
+    from src.services.mail_intake.store import QUARANTINE_PREFIX, RAW_MIME_PREFIX
 
     value = s3_path.strip()
     if not value:
@@ -198,12 +198,22 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     if normalised.startswith(".."):
         raise ValueError("s3_path must not traverse outside its prefix")
 
-    # Descendant: the caller named something inside quarantine.
-    if (normalised + "/").startswith(QUARANTINE_PREFIX):
-        raise ValueError(
-            "s3_path resolves under the mail-intake quarantine prefix, which "
-            "holds content the safety gate rejected"
-        )
+    # BOTH withheld stores, not just quarantine. `mail-intake/raw/` holds the
+    # complete raw MIME of every message — including every message whose
+    # attachment the gate rejected, and every malformed bundle. An earlier
+    # version guarded only the quarantine prefix, having created the raw store
+    # in the same change and never added it here. The endpoint writes what it
+    # downloads with an .eml suffix and the extractor reads any non-PDF as
+    # text, so an injection carried in the BODY of a quarantined message
+    # reached the model through the very endpoint this guard exists to
+    # harden.
+    for withheld in (QUARANTINE_PREFIX, RAW_MIME_PREFIX):
+        # Descendant: the caller named something inside a withheld store.
+        if (normalised + "/").startswith(withheld):
+            raise ValueError(
+                f"s3_path resolves under {withheld}, which holds content "
+                "withheld from extraction"
+            )
 
     # ANCESTOR: the caller named something quarantine sits underneath. This is
     # the case an earlier version missed entirely. The prefix is passed to
@@ -218,11 +228,12 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
     # the key-level filter in _list_s3_keys below, which drops quarantine keys
     # whatever prefix produced them. This check exists so the common case
     # fails loudly rather than silently returning nothing.
-    if QUARANTINE_PREFIX.startswith(normalised.rstrip("/") + "/"):
-        raise ValueError(
-            "s3_path is an ancestor of the mail-intake quarantine prefix; "
-            "narrow it so quarantined content cannot be enumerated"
-        )
+    for withheld in (QUARANTINE_PREFIX, RAW_MIME_PREFIX):
+        if withheld.startswith(normalised.rstrip("/") + "/"):
+            raise ValueError(
+                f"s3_path is an ancestor of {withheld}; narrow it so withheld "
+                "content cannot be enumerated"
+            )
 
     return bucket_name, prefix
 
@@ -230,7 +241,7 @@ def _resolve_s3_path(s3_path: str, default_bucket: str) -> Tuple[str, str]:
 def _list_s3_keys(client: Any, bucket: str, prefix: str) -> List[str]:
     """List all object keys for the provided prefix."""
 
-    from src.services.mail_intake.store import QUARANTINE_PREFIX
+    from src.services.mail_intake.store import QUARANTINE_PREFIX, RAW_MIME_PREFIX
 
     keys: List[str] = []
     continuation: Optional[str] = None
@@ -245,13 +256,13 @@ def _list_s3_keys(client: Any, bucket: str, prefix: str) -> List[str]:
             key = entry.get("Key") if isinstance(entry, dict) else None
             if not key or key.endswith("/"):
                 continue
-            # Never enumerate quarantined content, whatever prefix was asked
+            # Never enumerate withheld content, whatever prefix was asked
             # for. The prefix guard in _resolve_s3_path rejects the obvious
             # ancestors, but a short enough prefix always slips through, so
             # the decision has to be made per key.
-            if key.startswith(QUARANTINE_PREFIX):
+            if key.startswith(QUARANTINE_PREFIX) or key.startswith(RAW_MIME_PREFIX):
                 logger.warning(
-                    "documents.extract_from_s3 skipped a quarantined key under "
+                    "documents.extract_from_s3 skipped a withheld key under "
                     "prefix=%s", prefix,
                 )
                 continue
