@@ -86,11 +86,11 @@ unpacked:
 |---|---|
 | Password-protected documents | Cannot be checked without the password |
 | Documents containing macros | Macros are executable code |
-| ZIP and other archives | Contents unknown until unpacked; a person decides |
+| ZIP and other archives | Contents unknown until unpacked; a person decides. This also catches OpenDocument files (`.odt`, `.ods`), which are archives internally and are not among the formats we read — worth telling suppliers, so a quote is not delayed by arriving in an unexpected format |
 | Programs and scripts | Regardless of what the file is named |
 | Files above the size limit | Configurable; 25 MB by default |
 | Files whose contents do not match how they were labelled | The sender's declared file type disagrees with what the bytes actually are. Note the system never looks at the *filename* — a name is trivial to change, so it is deliberately ignored. A ZIP or a program named `.pdf` is held, but by the archive and program rules below rather than this one |
-| Unsupported formats | OpenDocument (`.odt`, `.ods`) and other formats we do not read are held for a person. Worth telling suppliers, so a quote is not delayed by arriving in an unexpected format |
+| Unsupported formats | Anything else we do not read — installers, shortcut files, and similar — is held for a person rather than guessed at |
 | Documents containing hidden text | Text present in the file but invisible to a reader — a known method of attempting to influence automated document reading. Checked in PDF, Word and Excel files only; see the note below for what this does and does not cover |
 
 Held items are retained with the reason recorded. An authorised person can
