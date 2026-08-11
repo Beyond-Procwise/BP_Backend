@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from qdrant_client import QdrantClient, models
+from qdrant_client import models  # dataclasses only
 
 from config.settings import settings
 
@@ -135,7 +135,12 @@ def ensure_source_type_indexes(client: QdrantClient) -> None:
 
 
 def run() -> None:
-    client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+    from src.services import egress
+    client = egress.vector_client(
+        purpose=egress.Purpose.VECTOR_INDEX,
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
+    )
     ensure_source_type_indexes(client)
 
 

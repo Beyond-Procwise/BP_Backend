@@ -24,7 +24,7 @@ import threading
 import psycopg2
 from http import HTTPStatus
 
-from qdrant_client import QdrantClient, models
+from qdrant_client import models  # dataclasses only; the client is built by services.egress
 from sentence_transformers import SentenceTransformer
 import ollama
 from ollama._types import ResponseError

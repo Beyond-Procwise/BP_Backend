@@ -58,6 +58,29 @@ _NETWORK_SUBMODULES = {
     "http.client",
 }
 
+# Submodules of a flagged package that CANNOT open a connection: request/response
+# dataclasses, configuration objects, exception types. Importing one is not
+# egress and never becomes egress.
+#
+# This exists because the first version of this lint did not have it, and flagged
+# 18 of 25 modules for `from qdrant_client import models` or
+# `from botocore.exceptions import ClientError` — roughly 72% false positives,
+# against exactly the argument made three lines above about urllib.parse. A lint
+# that cries wolf on `models.Filter` is a lint somebody switches off, at which
+# point it protects nothing.
+#
+# The distinction that matters is CONSTRUCTING A CONNECTION. `QdrantClient(...)`
+# and `boto3.client(...)` do; `models.PointStruct` and `Config(...)` do not.
+_BENIGN_SUBMODULES = {
+    "qdrant_client.models",          # Filter, PointStruct, VectorParams, ...
+    "qdrant_client.http.exceptions",  # UnexpectedResponse
+    "qdrant_client.conversions",
+    "botocore.config",               # Config(max_pool_connections=...)
+    "botocore.exceptions",           # ClientError, BotoCoreError, ...
+    "neo4j.exceptions",
+    "requests.exceptions",
+}
+
 # The module that is ALLOWED to import clients, because it is the wrapper.
 _THE_CHOKEPOINT = "src/services/egress.py"
 
@@ -65,31 +88,17 @@ _THE_CHOKEPOINT = "src/services/egress.py"
 # already reached the network directly; the comment says which client. This list
 # may only shrink.
 _KNOWN: dict[str, str] = {
-    "src/agents/base_agent.py": "boto3, botocore, neo4j, qdrant_client",
-    "src/agents/data_extraction_agent.py": "qdrant_client",
+    "src/agents/base_agent.py": "boto3, neo4j",
     "src/agents/email_watcher_agent.py": "socket",
-    "src/agents/extraction_engine.py": "requests",
-    "src/agents/quote_evaluation_agent.py": "qdrant_client",
-    "src/api/routers/documents.py": "botocore",
-    "src/resources/qdrant_migrations/20241015_add_learning_collection.py": "qdrant_client",
-    "src/resources/qdrant_migrations/20241105_add_source_type_indexes.py": "qdrant_client",
-    "src/services/conversation_memory.py": "qdrant_client",
-    "src/services/data_flow_manager.py": "qdrant_client",
-    "src/services/document_embedding_service.py": "qdrant_client",
-    "src/services/email_credentials_manager.py": "boto3, botocore",
+    "src/services/email_credentials_manager.py": "boto3",
     "src/services/email_dispatch_service.py": "boto3",
-    "src/services/email_ingest_lambda.py": "boto3, botocore",
-    "src/services/email_service.py": "boto3, botocore, smtplib",
-    "src/services/email_sqs_loader.py": "boto3, botocore",
+    "src/services/email_ingest_lambda.py": "boto3",
+    "src/services/email_service.py": "boto3, smtplib",
+    "src/services/email_sqs_loader.py": "boto3",
     "src/services/kg_ingestion_service.py": "neo4j",
-    "src/services/learning_repository.py": "qdrant_client",
-    "src/services/model_selector.py": "botocore, qdrant_client",
     "src/services/platform_kg.py": "neo4j",
     "src/services/procurement_kg_builder.py": "neo4j",
-    "src/services/rag_service.py": "qdrant_client",
-    "src/services/static_policy_loader.py": "botocore, qdrant_client",
-    "src/services/style/graph_source.py": "boto3, requests",
-    "src/services/supplier_relationship_service.py": "qdrant_client",
+    "src/services/style/graph_source.py": "boto3",
 }
 
 
@@ -104,10 +113,29 @@ def _imported_network_clients(path: Path) -> set[str]:
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom) and node.module:
-            names = [node.module]
+            # Both the module AND module.name, so `from qdrant_client import
+            # models` is seen as `qdrant_client.models` and can be recognised as
+            # a dataclass namespace. Checking node.module alone reads it as the
+            # root package and flags every dataclass import in the codebase.
+            names = [node.module] + [
+                f"{node.module}.{a.name}" for a in node.names
+            ]
         else:
             continue
+        # A `from X import a, b` yields [X, X.a, X.b]. If every specific name is
+        # benign the bare X must not flag on its own, or the dataclass import is
+        # caught by the root anyway and the benign list does nothing.
+        specific = [n for n in names if "." in n]
+        if specific and all(
+            any(n == b or n.startswith(b + ".") for b in _BENIGN_SUBMODULES)
+            for n in specific
+        ):
+            continue
+
         for name in names:
+            if any(name == b or name.startswith(b + ".")
+                   for b in _BENIGN_SUBMODULES):
+                continue          # dataclasses / config / exceptions
             if name.split(".")[0] in _NETWORK_MODULES:
                 found.add(name.split(".")[0])
             elif any(name == sub or name.startswith(sub + ".")
