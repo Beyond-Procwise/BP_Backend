@@ -145,13 +145,13 @@ class ProcurementKGBuilder:
         # 604 of 13,014 graph invoices were absent from bp_invoice_trgt, and all
         # but 3 of a 500-row sample were absent from _stg too — orphans from an
         # earlier corpus that no number of rebuilds would have cleared.
+        # Reconciliation runs LAST, not here — see step 7. Every phase after
+        # this one can create nodes (the Excel reference load brought S1 and S2
+        # into Supplier), so sweeping now would leave exactly the nodes the
+        # later phases add.
         self._run_tag = uuid.uuid4().hex
         for entity_name, (table, pk, label) in ENTITY_TABLE_MAP.items():
-            n = self._load_entity(table, pk, label)
-            counts[entity_name] = n
-            counts[f"removed_{entity_name}"] = self._reconcile_entity(
-                table, pk, label, loaded=n,
-            )
+            counts[entity_name] = self._load_entity(table, pk, label)
 
         # 3. Create FK-based relationships
         for from_label, rel_type, to_label, from_fk, to_pk in FK_RELATIONSHIPS:
@@ -168,19 +168,57 @@ class ProcurementKGBuilder:
         # 6. Infer supplier nodes from extracted data if bp_supplier is empty
         counts["inferred_suppliers"] = self._infer_suppliers()
 
+        # 7. Reconcile LAST. Everything above can create nodes: the relationship
+        # phases MERGE, the Excel reference load introduced Supplier S1 and S2,
+        # and _infer_suppliers used to invent them wholesale. Sweeping before
+        # those ran left precisely the nodes they added — measured: an otherwise
+        # exact mirror still carried two suppliers absent from bp_supplier.
+        #
+        # Running it here means one rule holds for every node of a mapped label,
+        # whichever phase put it there: if the source table does not have the
+        # key, the graph does not keep the node.
+        for entity_name, (table, pk, label) in ENTITY_TABLE_MAP.items():
+            counts[f"removed_{entity_name}"] = self._reconcile_entity(
+                table, pk, label, loaded=counts.get(entity_name, 0),
+            )
+
         logger.info("[KG Builder] Complete: %s", counts)
         return counts
 
     def _create_indexes(self) -> None:
-        """Create indexes for all entity labels."""
+        """Ensure each entity's primary key is UNIQUE, and index the lookups.
+
+        The primary keys get CONSTRAINTs, not plain indexes. An index makes
+        MERGE fast; it does not make it safe. With only an index, nothing stops
+        two nodes existing for one key, and the graph had accumulated 19 such
+        duplicates — ORB-Q-6612 seven times — against source tables that hold no
+        duplicate keys at all. A uniqueness constraint makes that impossible
+        rather than merely unlikely.
+
+        The constraint supplies its own index, so it replaces rather than
+        supplements the old one. Neo4j refuses `CREATE CONSTRAINT` while a plain
+        index exists on the same property ("There already exists an index..."),
+        which is why scripts/kg_dedupe_and_constrain.py drops those first; this
+        method is only asked to keep them in place afterwards.
+
+        Failures are swallowed per statement, as before: a constraint that
+        cannot be created (because duplicates were reintroduced by some other
+        path) must not stop the rebuild, and the duplicates will show up in the
+        reconciliation counts.
+        """
         with self._driver.session() as session:
             for _, (_, pk, label) in ENTITY_TABLE_MAP.items():
                 try:
                     session.run(
-                        f"CREATE INDEX IF NOT EXISTS FOR (n:{label}) ON (n.{pk})"
+                        f"CREATE CONSTRAINT uniq_{label.lower()}_{pk} "
+                        f"IF NOT EXISTS FOR (n:{label}) REQUIRE n.{pk} IS UNIQUE"
                     )
                 except Exception:
-                    pass
+                    logger.warning(
+                        "KG: could not ensure the uniqueness constraint on "
+                        "%s.%s — duplicates remain possible for this label",
+                        label, pk, exc_info=True,
+                    )
             # Extra indexes for relationship lookups
             for idx in [
                 "CREATE INDEX IF NOT EXISTS FOR (n:Supplier) ON (n.supplier_name)",

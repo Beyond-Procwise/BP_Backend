@@ -367,10 +367,30 @@ it safe. Without a uniqueness constraint, concurrent or differently-shaped MERGE
 patterns can each create a node for the same key, and nothing objects. This
 pre-dates the reconciliation work — the duplicates were already there.
 
-The fix is to promote those indexes to uniqueness constraints, which **cannot be
-applied while duplicates exist** — Neo4j rejects the constraint. So it is a
-two-step job: dedupe (keep one node per key, move its relationships), then add
-the constraints so it cannot recur. Worth doing, but it is a separate change
-with its own verification, not a tail-end edit to this one.
+**FIXED 2026-08-11** by `scripts/kg_dedupe_and_constrain.py`, in the two steps
+the ordering forces:
 
-Current error: 21 duplicates in 237,540 nodes, 0.009%.
+1. **Dedupe.** 19 nodes across 8 keys — Invoice 2, PurchaseOrder 1, Quote 16.
+   Every affected key was from the seeded demo set (`ORB-INV-9901`,
+   `CPS-Q-3380`, `NXF-2024-441 (V2)`, `ORB-Q-6612`), consistent with those
+   documents having been loaded repeatedly through different paths. The source
+   tables are clean, so this was a graph artefact, not bad data.
+
+   APOC is not installed, so `apoc.refactor.mergeNodes` was unavailable and the
+   relationships were re-pointed explicitly: survivor is the node with the most
+   relationships (tie-broken on element id, so a re-run is deterministic), the
+   others' edges are MERGEd onto it, then they are deleted. Affected nodes
+   backed up first.
+
+2. **Constrain.** A plain index BLOCKS the constraint — Neo4j answers "There
+   already exists an index (:Label {pk}). A constraint cannot be created...",
+   because the constraint brings its own index. So each old index is dropped
+   first. Nine uniqueness constraints now in force.
+
+   `_create_indexes` was also changed to create CONSTRAINTs rather than plain
+   indexes, or the next rebuild would have re-created the indexes that block
+   them.
+
+Verified by attempting a real duplicate: `CREATE (q:Quote {quote_id: <existing>})`
+is now refused with `ConstraintValidationFailed`. Duplication is impossible
+rather than merely unlikely.
