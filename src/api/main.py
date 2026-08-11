@@ -4,7 +4,7 @@ import sys, os, uvicorn, logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Protocol, cast
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
@@ -50,6 +50,9 @@ from agents.approvals_agent import ApprovalsAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
 from api.routers import agents as agents_router_mod, documents, email, metrics, run, stream, system, training, vendors, workflows, deal_summary, deal_proposals, promotion, summary, negotiate, opportunities,session
 from api.routers import ws as ws_router_mod
+# Imported here, not further down, because every router below is mounted with
+# require_user as a dependency and that reference is resolved at mount time.
+from api import auth as _ask_auth
 from api.routers import agent_workflows as agent_workflows_router
 from api.routers import agent_groups as agent_groups_router
 from api.routers import models as models_router
@@ -398,39 +401,71 @@ app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_al
 # during WebSocket upgrade. Auth handled inside ws.py via token= query param.
 app.include_router(ws_router_mod.router)
 
-app.include_router(agents_router_mod.router)
-app.include_router(documents.router)
-app.include_router(email.router)
-app.include_router(workflows.router)
-app.include_router(system.router)
-app.include_router(run.router)
-app.include_router(stream.router)
-app.include_router(training.router)
-app.include_router(vendors.build_router())
-app.include_router(metrics.router)
-app.include_router(extraction_feedback_router.router)
-app.include_router(decisions_router.router)
-app.include_router(agent_workflows_router.router)
-app.include_router(agent_groups_router.router)
-app.include_router(models_router.router)
-app.include_router(support_router.router)
-app.include_router(supplier_review_router.router)
-app.include_router(supplier_research_router.router)
-app.include_router(governance_router.router)
-app.include_router(deal_summary.router)
-app.include_router(deal_proposals.router)
-app.include_router(negotiate.router)
-app.include_router(opportunities.router)
-app.include_router(promotion.router)
-app.include_router(summary.router)
-app.include_router(session.router)
-app.include_router(obligations_router.router)
-app.include_router(benchmark_router.router)
-app.include_router(requirements_router.router)
-app.include_router(fx_router.router)
-app.include_router(value_summary_router.router)
-app.include_router(analysis_router.router)
-app.include_router(approvals_router.router)
+# --------------------------------------------------------------------------
+# Every HTTP router below is mounted WITH authentication.
+#
+# Four of thirty-four carried a principal before this: approvals, decisions,
+# value_summary and workflows. The other thirty answered anyone who could reach
+# the port — /benchmark, /opportunities, /documents, /analysis, /summary, and
+# /agents/reason, which hands AgentNick a task and exposes every registered
+# agent to it as a callable tool.
+#
+# The dependency is applied HERE rather than in each router on purpose. A
+# per-router decoration is a control a new router forgets; a list every router
+# must appear in to be served is one a new router cannot be added without
+# touching. tests/api/test_every_router_is_authenticated.py asserts the two
+# stay in step, so adding a router without a deliberate decision fails a test
+# rather than quietly opening an endpoint.
+#
+# require_user honours ASK_AUTH_MODE: `enforce` (the default, and what .env
+# sets) verifies a Cognito ID token; `off` returns None and admits everyone,
+# logging a warning at startup; a misconfigured `enforce` refuses with 503
+# rather than falling open.
+#
+# The UI already sends the token: services/api.js sets
+# axios.defaults.headers.common["Authorization"] at login, and the SpendIQ
+# views that call this service directly on VITE_AI_API_URL rely on that same
+# default (see the comment at useSpendData.js:8). So this is enforcement of a
+# credential that is already on the wire, not a new requirement on callers.
+# --------------------------------------------------------------------------
+_AUTHENTICATED_ROUTERS = [
+    agents_router_mod.router,
+    documents.router,
+    email.router,
+    workflows.router,
+    system.router,
+    run.router,
+    stream.router,
+    training.router,
+    vendors.build_router(),
+    metrics.router,
+    extraction_feedback_router.router,
+    decisions_router.router,
+    agent_workflows_router.router,
+    agent_groups_router.router,
+    models_router.router,
+    support_router.router,
+    supplier_review_router.router,
+    supplier_research_router.router,
+    governance_router.router,
+    deal_summary.router,
+    deal_proposals.router,
+    negotiate.router,
+    opportunities.router,
+    promotion.router,
+    summary.router,
+    session.router,
+    obligations_router.router,
+    benchmark_router.router,
+    requirements_router.router,
+    fx_router.router,
+    value_summary_router.router,
+    analysis_router.router,
+    approvals_router.router,
+]
+
+for _router in _AUTHENTICATED_ROUTERS:
+    app.include_router(_router, dependencies=[Depends(_ask_auth.require_user)])
 import src.services.requirement_similarity  # noqa: F401 — registers the quote_rival profile at startup
 
 
@@ -562,10 +597,11 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
         )
 
 
-# Ask-endpoint authentication. Configured once at import so the mode is decided
-# before the first request, and surfaced on /health — an unauthenticated ask
-# endpoint must be visible, not something you discover by testing it.
-from api import auth as _ask_auth  # noqa: E402
+# Authentication mode. `_ask_auth` itself is imported near the top, because the
+# router mounting above depends on require_user; only configure() runs here, so
+# the mode is decided once at import, before the first request, and is surfaced
+# on /health — auth being off must be visible, not something you discover by
+# testing an endpoint.
 from config.settings import settings as _settings  # noqa: E402
 
 _ASK_AUTH_MODE = _ask_auth.configure(_settings)
