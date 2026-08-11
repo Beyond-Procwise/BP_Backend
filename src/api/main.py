@@ -215,6 +215,18 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("FX-rates schema init failed (non-critical)")
 
+        # Ensure the egress audit table exists. Non-critical: services.egress_log
+        # swallows its own write failures by design, so a missing table costs the
+        # audit trail and not the requests it observes — but that is a gap worth
+        # seeing in the startup log rather than discovering when someone asks
+        # what left the boundary last month.
+        try:
+            from src.services.egress_log import ensure_schema as _ensure_egress_schema
+            _ensure_egress_schema()
+            logger.info("Egress audit schema ensured")
+        except Exception:
+            logger.exception("Egress audit schema init failed (non-critical)")
+
         # Ensure provenance sidecar schema exists.
         try:
             from services.db import get_conn as _prov_db_get_conn

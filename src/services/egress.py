@@ -33,16 +33,25 @@ WHAT THIS DOES NOT DO YET, STATED PLAINLY
     piece of work, and ``_evaluate`` is the seam it will plug into. Until then
     this records rather than refuses, and the docstring says so rather than
     letting the presence of a "gate" imply a decision is being made.
-  * It does not classify payloads. There is no classification registry.
-  * It does not write ``bp_egress_event``. Recording currently goes to the log,
-    because a table that exists but is written from one of twenty-three paths
-    would make coverage look better than it is. The record shape here is the one
-    that table will take.
+  * It does not classify payloads. There is no classification registry, so the
+    ``classification`` column on every event row is empty.
 
-So: this is the seam, with the SSRF guard and the audit line real, and the
-policy evaluation honestly absent. It is worth having before the policy model
-exists precisely because it is what makes adding one a single change rather
-than twenty-three.
+WHAT IT DOES RECORD
+
+Every call — refused, failed or successful — writes a row to
+``proc.bp_egress_event`` via ``services.egress_log``, carrying purpose,
+destination, method, outcome and a SHA-256 of the request body. The hash rather
+than the body: the point is to prove which payload was or was not sent, not to
+make the audit log a second copy of the data it is auditing. A REFUSED call's
+digest is recorded too, because that is the evidence of what was withheld.
+
+``policy_version`` on those rows is NULL, because there is no policy to have a
+version. A row claiming one would be worse than a NULL.
+
+So: this is the seam, with the SSRF guard, the audit trail and the payload
+digest real, and the policy evaluation honestly absent. It is worth having
+before the policy model exists precisely because it is what makes adding one a
+single change rather than twenty-three.
 """
 from __future__ import annotations
 
@@ -214,18 +223,34 @@ def _evaluate(purpose: Purpose, destination: str) -> tuple[bool, str]:
 
 
 def _record(*, purpose: Purpose, destination: str, method: str,
-            outcome: str, detail: str = "") -> None:
-    """One line per outbound call, whatever the outcome.
+            outcome: str, detail: str = "",
+            payload_sha256: Optional[str] = None,
+            payload_bytes: Optional[int] = None) -> None:
+    """One line per outbound call, whatever the outcome, to the log AND the table.
 
     A refused or failed call still disclosed a hostname and usually the shape of
-    a query, so it is recorded on the same footing as a successful one. This is
-    the shape ``bp_egress_event`` will take: purpose, destination, decision.
+    a query, so it is recorded on the same footing as a successful one.
+
+    Both destinations on purpose. The log line is what an operator reads while
+    something is happening; ``proc.bp_egress_event`` is what answers "what left
+    on 12 March" afterwards. The table write is queued and never raises — this
+    observes outbound calls, and an audit writer able to break the call it is
+    watching would be a worse problem than a gap in the audit.
     """
     logger.info(
         "egress purpose=%s destination=%s method=%s outcome=%s%s",
         purpose.value, destination, method, outcome,
         f" detail={detail}" if detail else "",
     )
+    try:
+        from src.services import egress_log
+        egress_log.record(
+            purpose=purpose.value, destination=destination, method=method,
+            outcome=outcome, detail=detail,
+            payload_sha256=payload_sha256, payload_bytes=payload_bytes,
+        )
+    except Exception:  # noqa: BLE001 - never fail a call over its own audit row
+        logger.debug("egress event not queued", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -267,10 +292,19 @@ def request(
     """
     destination = urlsplit(url).hostname or "?"
 
+    # Hash the body once, here, and carry the digest through every outcome
+    # branch. A refused call's payload is worth recording precisely because it
+    # did NOT go: the digest proves which payload was withheld.
+    from src.services.egress_log import payload_digest
+    _sha, _bytes = payload_digest(
+        kwargs.get("json") if kwargs.get("json") is not None else kwargs.get("data")
+    )
+
     permitted, why = _evaluate(purpose, destination)
     if not permitted:
         _record(purpose=purpose, destination=destination, method=method,
-                outcome="denied", detail=why)
+                outcome="denied", detail=why,
+                payload_sha256=_sha, payload_bytes=_bytes)
         return None
 
     current = url
@@ -280,7 +314,8 @@ def request(
         )
         if not ok:
             _record(purpose=purpose, destination=urlsplit(current).hostname or "?",
-                    method=method, outcome="refused", detail=reason)
+                    method=method, outcome="refused", detail=reason,
+                    payload_sha256=_sha, payload_bytes=_bytes)
             return None
 
         try:
@@ -289,7 +324,8 @@ def request(
             )
         except Exception as exc:  # noqa: BLE001
             _record(purpose=purpose, destination=destination, method=method,
-                    outcome="error", detail=type(exc).__name__)
+                    outcome="error", detail=type(exc).__name__,
+                    payload_sha256=_sha, payload_bytes=_bytes)
             if raise_transport_errors:
                 raise
             return None
@@ -302,11 +338,13 @@ def request(
             continue
 
         _record(purpose=purpose, destination=destination, method=method,
-                outcome=f"http_{response.status_code}")
+                outcome=f"http_{response.status_code}",
+                payload_sha256=_sha, payload_bytes=_bytes)
         return response
 
     _record(purpose=purpose, destination=destination, method=method,
-            outcome="refused", detail=f"more than {_MAX_REDIRECTS} redirects")
+            outcome="refused", detail=f"more than {_MAX_REDIRECTS} redirects",
+            payload_sha256=_sha, payload_bytes=_bytes)
     return None
 
 
