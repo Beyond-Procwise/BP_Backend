@@ -413,6 +413,7 @@ class BackendScheduler:
         self._register_extraction_feedback_job()
         self._register_price_outlier_job()
         self._register_value_digest_job()
+        self._register_capture_retention_job()
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
@@ -722,6 +723,43 @@ class BackendScheduler:
             # run_weekly_digest already swallows its own failures; this is the backstop for
             # anything raised before it gets that far.
             logger.exception("value digest failed")
+
+    CAPTURE_RETENTION_JOB_NAME = "capture-retention"
+
+    def _register_capture_retention_job(self) -> None:
+        """Age out the on-disk captures of document and agent content.
+
+        Registered unconditionally, with no enable switch. The other jobs here
+        do something; this one stops something accumulating, and a retention
+        sweep that can be turned off is a retention policy that quietly is not
+        one. The window is tunable via CAPTURE_RETENTION_DAYS; the sweep itself
+        is not optional.
+
+        Daily, and on boot: these directories had four months of content in them
+        when the job was written, so the first run has real work to do and there
+        is no reason to make an operator wait a day for it.
+        """
+        if self.CAPTURE_RETENTION_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.CAPTURE_RETENTION_JOB_NAME,
+            self._run_capture_retention,
+            interval=timedelta(days=1),
+        )
+
+    def _run_capture_retention(self) -> None:
+        try:
+            from src.services.capture_retention import purge_all, retention_days
+            removed = purge_all()
+            total = sum(removed.values())
+            if total:
+                logger.info(
+                    "capture retention: removed %d file(s) older than %d days — %s",
+                    total, retention_days(),
+                    ", ".join(f"{k}: {v}" for k, v in removed.items() if v),
+                )
+        except Exception:
+            logger.exception("capture retention sweep failed")
 
     def _register_price_outlier_job(self) -> None:
         """Scan for extreme prices and raise them for review."""
