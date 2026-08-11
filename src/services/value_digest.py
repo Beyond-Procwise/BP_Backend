@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+from src.services import guardrail
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +165,57 @@ def recipients() -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+@dataclass(frozen=True)
+class _DigestPrincipal:
+    """Who the digest sends as.
+
+    Carries a subject and NOTHING else — deliberately no ``claims``. rbac
+    resolves a principal's roles from two places: identity-provider group
+    claims on a token, and a direct grant in ``proc.bp_role_assignment``.
+    A principal built from configuration must not supply claims, because a
+    group claim written into an environment variable is a role the
+    configuration granted itself. With subject alone, the only thing that can
+    give this identity permission is a row in the governed grant table.
+    """
+
+    subject: str
+
+
+def sent_as() -> Optional[_DigestPrincipal]:
+    """The configured sending identity, or None when nobody is accountable.
+
+    A scheduled job has no authenticated caller. ``guardrail.authorize`` would
+    refuse a ``None`` principal for an irreversible class anyway, but relying on
+    that leaves the digest one policy edit away from sending unattributed mail.
+    This refuses explicitly instead, so the reason in the log names the missing
+    configuration rather than a generic policy denial.
+    """
+    subject = os.environ.get("VALUE_DIGEST_SENT_AS", "").strip()
+    return _DigestPrincipal(subject=subject) if subject else None
+
+
+def _sender_domain() -> str:
+    sender = os.environ.get("SES_DEFAULT_SENDER", "").strip()
+    return sender.partition("@")[2].strip().lower()
+
+
+def _external(addresses: list[str]) -> list[str]:
+    """Recipients outside the sending domain.
+
+    The digest body names suppliers and the amounts we believe they over-billed.
+    That is internal commercial analysis, and an address outside our own domain
+    is not a typo worth delivering — it is the whole finding set leaving.
+
+    With no sending domain configured we cannot tell internal from external, so
+    every address counts as external and the digest does not send. Failing the
+    other way would make a missing environment variable into a broadcast.
+    """
+    domain = _sender_domain()
+    if not domain:
+        return list(addresses)
+    return [a for a in addresses if a.partition("@")[2].strip().lower() != domain]
+
+
 def _load_summary() -> dict:
     from src.services.value_summary_service import build_value_summary
     return build_value_summary()
@@ -194,6 +248,49 @@ def run_weekly_digest(agent_nick=None) -> int:
     if not to:
         logger.info("value digest: no VALUE_DIGEST_RECIPIENTS configured — skipping")
         return 0
+
+    # --- who is this being sent as -------------------------------------
+    principal = sent_as()
+    if principal is None:
+        logger.warning(
+            "value digest: VALUE_DIGEST_SENT_AS is not set, so no identity is "
+            "accountable for this mail — not sending. Set it to a subject that "
+            "holds a send grant in proc.bp_role_assignment."
+        )
+        return 0
+
+    # --- who is it going to --------------------------------------------
+    # Checked before the summary is built: there is no reason to assemble a
+    # corpus-wide findings list for a send that is already refused.
+    outside = _external(to)
+    if outside:
+        logger.warning(
+            "value digest: %d recipient(s) outside the sending domain (%s) — "
+            "not sending. The digest names suppliers and disputed amounts.",
+            len(outside), ", ".join(outside),
+        )
+        return 0
+
+    # --- may this identity send at all ---------------------------------
+    # Same call value_query_service makes. NOT email_dispatch_guard: that path
+    # requires a stored approved draft and recipients on the supplier master,
+    # and this is internal mail with neither.
+    try:
+        decision = guardrail.authorize(
+            "email.send",
+            "communicate",
+            principal,
+            {"recipients": to, "purpose": "value_digest"},
+        )
+    except Exception:
+        # authorize() is written not to raise, but a gate that fails open
+        # because of an unexpected error is not a gate.
+        logger.exception("value digest: authorization raised — not sending")
+        return 0
+    if not decision.allowed:
+        logger.warning("value digest: refused by policy — %s", decision.reason)
+        return 0
+
     try:
         digest = compose_digest(_load_summary(), datetime.now(timezone.utc))
     except Exception:
