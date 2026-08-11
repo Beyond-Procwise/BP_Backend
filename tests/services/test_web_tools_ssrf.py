@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.services import egress
 from src.services.supplier_enrichment import web_tools
 
 
@@ -33,7 +34,7 @@ class _Transport:
         self._headers = headers or {"Content-Type": "text/html"}
         self._text = text
 
-    def __call__(self, url, **kwargs):
+    def __call__(self, method, url, **kwargs):
         self.calls.append(url)
         self.kwargs.append(kwargs)
         return _Response(self._status, self._headers, self._text, url)
@@ -53,8 +54,17 @@ class _Response:
 
 @pytest.fixture
 def transport(monkeypatch):
+    """Patched at the egress layer, not at web_tools.
+
+    fetch_url no longer owns the destination checks — they live in
+    services.egress, which is the only module permitted to hold an HTTP client.
+    These tests still drive fetch_url, because what matters is that the
+    model-supplied URL cannot reach an internal address through the function the
+    model actually calls; where the check physically lives is an implementation
+    detail that should be free to move.
+    """
     t = _Transport()
-    monkeypatch.setattr(web_tools.requests, "get", t)
+    monkeypatch.setattr(egress.requests, "request", t)
     return t
 
 
@@ -103,7 +113,7 @@ def test_a_hostname_resolving_to_a_private_address_is_refused(
     nothing here; the check has to happen after resolution.
     """
     monkeypatch.setattr(
-        web_tools, "_resolve", lambda host: ["169.254.169.254"]
+        egress, "_resolve", lambda host: ["169.254.169.254"]
     )
     assert web_tools.fetch_url("http://metadata.evil.example/") == ""
     assert transport.calls == []
@@ -118,7 +128,7 @@ def test_redirects_are_not_delegated_to_the_transport(transport, monkeypatch):
     would make the test a guard that checks nothing. The only way the caller can
     stay responsible for each hop is to turn the library's own following off.
     """
-    monkeypatch.setattr(web_tools, "_resolve", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(egress, "_resolve", lambda host: ["93.184.216.34"])
     web_tools.fetch_url("https://acme-supplies.example/")
     assert transport.kwargs, "transport was never reached"
     assert transport.kwargs[0].get("allow_redirects") is False, (
@@ -136,7 +146,7 @@ def test_a_redirect_into_the_private_range_is_not_followed(monkeypatch):
     """
     hops = []
 
-    def _get(url, **kwargs):
+    def _get(method, url, **kwargs):
         hops.append(url)
         if "evil.example" in url:
             return _Response(
@@ -147,8 +157,8 @@ def test_a_redirect_into_the_private_range_is_not_followed(monkeypatch):
             )
         return _Response(200, {"Content-Type": "text/html"}, "SECRET", url)
 
-    monkeypatch.setattr(web_tools.requests, "get", _get)
-    monkeypatch.setattr(web_tools, "_resolve", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(egress.requests, "request", _get)
+    monkeypatch.setattr(egress, "_resolve", lambda host: ["93.184.216.34"])
     assert web_tools.fetch_url("https://evil.example/redirect") == ""
     assert not any("169.254" in h for h in hops), (
         f"SSRF via redirect: transport reached {hops}"
@@ -160,7 +170,7 @@ def test_a_redirect_to_another_public_page_is_followed(monkeypatch):
     trailing-slash canonicalisation, are the common case on supplier sites."""
     hops = []
 
-    def _get(url, **kwargs):
+    def _get(method, url, **kwargs):
         hops.append(url)
         if url.endswith("/about"):
             return _Response(
@@ -171,27 +181,27 @@ def test_a_redirect_to_another_public_page_is_followed(monkeypatch):
             )
         return _Response(200, {"Content-Type": "text/html"}, "ACME Ltd", url)
 
-    monkeypatch.setattr(web_tools.requests, "get", _get)
-    monkeypatch.setattr(web_tools, "_resolve", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(egress.requests, "request", _get)
+    monkeypatch.setattr(egress, "_resolve", lambda host: ["93.184.216.34"])
     assert "ACME" in web_tools.fetch_url("https://acme-supplies.example/about")
     assert hops == ["https://acme-supplies.example/about",
                     "https://acme-supplies.example/about/"]
 
 
 def test_a_redirect_loop_terminates(monkeypatch):
-    def _get(url, **kwargs):
+    def _get(method, url, **kwargs):
         return _Response(302, {"Location": "https://acme-supplies.example/loop",
                                "Content-Type": "text/html"}, "", url)
 
-    monkeypatch.setattr(web_tools.requests, "get", _get)
-    monkeypatch.setattr(web_tools, "_resolve", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(egress.requests, "request", _get)
+    monkeypatch.setattr(egress, "_resolve", lambda host: ["93.184.216.34"])
     assert web_tools.fetch_url("https://acme-supplies.example/loop") == ""
 
 
 def test_a_non_standard_port_on_a_public_host_is_refused(transport, monkeypatch):
     """Port 11434/5432/6379 on a public name is a proxy for reaching a service,
     not a web page. Supplier research needs 80 and 443 and nothing else."""
-    monkeypatch.setattr(web_tools, "_resolve", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(egress, "_resolve", lambda host: ["93.184.216.34"])
     assert web_tools.fetch_url("http://example.com:11434/api/tags") == ""
     assert transport.calls == []
 
@@ -201,7 +211,7 @@ def test_a_non_standard_port_on_a_public_host_is_refused(transport, monkeypatch)
 # --------------------------------------------------------------------------
 
 def test_an_ordinary_public_supplier_page_still_fetches(transport, monkeypatch):
-    monkeypatch.setattr(web_tools, "_resolve", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(egress, "_resolve", lambda host: ["93.184.216.34"])
     out = web_tools.fetch_url("https://acme-supplies.example/about")
     assert transport.calls == ["https://acme-supplies.example/about"]
     assert out  # non-empty text returned
@@ -211,6 +221,6 @@ def test_an_unresolvable_host_is_refused_rather_than_attempted(
     transport, monkeypatch
 ):
     """No resolution means no proof the host is external. Refuse, don't try."""
-    monkeypatch.setattr(web_tools, "_resolve", lambda host: [])
+    monkeypatch.setattr(egress, "_resolve", lambda host: [])
     assert web_tools.fetch_url("https://nx.invalid/") == ""
     assert transport.calls == []

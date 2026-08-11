@@ -97,7 +97,6 @@ _KNOWN: dict[str, str] = {
     "src/services/structural_extractor/derivation_rules/fx.py": "requests",
     "src/services/style/graph_source.py": "boto3, requests",
     "src/services/supplier_enrichment/research.py": "requests",
-    "src/services/supplier_enrichment/web_tools.py": "requests, socket",
     "src/services/supplier_relationship_service.py": "qdrant_client",
     "src/services/tool_runtime.py": "requests",
 }
