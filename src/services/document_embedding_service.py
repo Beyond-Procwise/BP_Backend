@@ -18,7 +18,40 @@ from services.document_extractor import LayoutAwareParser
 from services.semantic_chunker import SemanticChunker
 from services.semantic_cache import SemanticCacheManager
 
-DISALLOWED_METADATA_KEYS: set[str] = set()
+# Metadata keys stripped from every payload before it is written to the vector
+# index. This is the LAST point at which a field can be kept out of Qdrant —
+# QDRANT_URL points at Qdrant Cloud (eu-central-1), so a payload written here
+# has left the trust boundary and there is no per-tenant scoping to fall back on.
+#
+# Declared ONCE and imported by rag_service and static_policy_loader. It used to
+# be declared separately in rag_service as well, and both were empty; two empty
+# sets meant populating either one silently left the other write path unredacted.
+#
+# Each key earns its place by being (a) observed in the live index and (b) never
+# read back on any retrieval path:
+#
+#   uploaded_by  a named person's email address, set by routers/documents.py:435.
+#                Observed live in `uploaded_documents`. The scoping logic in
+#                model_selector.py:2710 that reads `uploaded_by` takes it from
+#                the in-process upload context, NOT from the Qdrant payload, so
+#                removing it here does not affect that check.
+#   s3_key       an internal object path. Observed live in
+#                `procwise_document_embeddings`. Every other s3_key reference in
+#                the codebase reads the database or S3 itself, never a payload.
+#
+# Deliberately NOT here: `content`, `summary`, `text_summary`, `session_id`,
+# `filename`, `doc_name`, `document_id`, `chunk_id`. Retrieval consumes all of
+# them, and over-redaction fails silently — the write succeeds, the answers get
+# worse, and nothing errors. `content` in particular is the document text and IS
+# still leaving; scoping that is per-tenant collections plus a disable switch,
+# which this set cannot express and must not be described as covering.
+#
+# Adding a key here also purges it from existing points on the next write, via
+# _remove_disallowed_payload_fields / rag_service._purge_disallowed_metadata.
+DISALLOWED_METADATA_KEYS: set[str] = {
+    "uploaded_by",
+    "s3_key",
+}
 
 logger = logging.getLogger(__name__)
 
