@@ -127,3 +127,55 @@ Only then does collection-per-tenant mean anything. Until then the honest
 statement is that this product is single-tenant, and the isolation control that
 matters is `RAG_EXTERNAL_ENABLED` (shipped) plus not putting a second customer
 on the same deployment.
+
+---
+
+## 4. Synthetic contracts removed from the knowledge graph — DONE 2026-08-11
+
+**Status:** closed.
+
+The Neo4j graph held a test dataset that had never been cleared, and it was
+disagreeing with the relational store in a way that could only mislead:
+
+| | Graph (before) | Relational |
+|---|---|---|
+| Contract | 3,051 | **0** |
+| Supplier | 7,851 | 5,028 |
+
+The 3,051 `Contract` nodes were unmistakably synthetic — sequential
+`C00002`..`C00014` ids, every `last_modified_date` identical at
+`2025-09-02 10:29:03.494372` (one bulk load), and incoherent field combinations
+such as jurisdiction `UK` with governing law `German Civil Code`. They existed
+only in the graph; `proc.bp_contracts` has always held 0 rows.
+
+They were attached to 2,529 `Supplier` nodes carrying `S####` ids — a different
+scheme from the real `SUP-*` suppliers. Verified disjoint before deleting:
+
+* S#### suppliers touched **0** Invoice, PurchaseOrder, Quote, InvoiceLine,
+  POLine or QuoteLine nodes.
+* Real `SUP-*` suppliers touched **0** Contract nodes.
+
+So the test data formed an island connected to nothing real, and removing it
+could not affect production entities.
+
+**Removed:** 3,051 Contract + 2,529 Supplier nodes and their 2,981
+`SUPPLIER_PARTY_TO_CONTRACT` relationships. Graph went 13,130 -> 7,550 nodes.
+Real counts unchanged: Invoice 612, Quote 435, PurchaseOrder 295, InvoiceLine
+408, QuoteLine 197, POLine 164.
+
+**Backup:** `backups/neo4j/synthetic_contracts_<stamp>.json` — 5,580 nodes and
+3,008 relationships, enough to reconstruct the island if it is ever wanted.
+Gitignored.
+
+### Two observations that are NOT closed by this
+
+1. **5,051 graph suppliers have no relationships at all.** Pre-existing, not
+   caused by the delete (the deleted nodes all had relationships). The graph
+   holds 5,205 `SUP-*` suppliers against 5,028 in `proc.bp_supplier`, so the
+   supplier set has drifted from the relational source independently.
+
+2. **The graph was last written 2026-07-31.** That is 11 days before this note,
+   while `proc.bp_invoice_trgt` holds 12,408 invoices against the graph's 612.
+   Whatever stopped `kg_sync` writing is a separate question, and the KG is
+   stale for reasons this cleanup does not address. Both `corpus_facts.describe`
+   and the `describe_platform` tool read it.

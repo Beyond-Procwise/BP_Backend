@@ -40,3 +40,4 @@ backups/testdata/
 # ignored for the same reason and this one was not, so 517 files sat untracked
 # and one `git add .` from the remote. Aged out by services/capture_retention.
 data/conversations/
+backups/neo4j/
