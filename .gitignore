@@ -41,3 +41,6 @@ backups/testdata/
 # and one `git add .` from the remote. Aged out by services/capture_retention.
 data/conversations/
 backups/neo4j/
+
+# Supervised KG rebuild transcripts (scripts/kg_full_rebuild.py)
+logs/kg_rebuild*.log
