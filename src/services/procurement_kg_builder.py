@@ -1,28 +1,33 @@
 """Procurement Knowledge Graph Builder.
 
-Creates Neo4j nodes from live bp_ table data and connects them using
-the relationship model defined in the KG Excel workbook.
+Creates Neo4j nodes from live bp_ table data and connects them using the
+relationship model defined in the KG Excel workbook.
 
-Entity-to-Table mapping:
-  Supplier        → proc.bp_supplier
-  Contract        → proc.bp_contracts
-  Invoice         → proc.bp_invoice
-  InvoiceLine     → proc.bp_invoice_line_items
-  PurchaseOrder   → proc.bp_purchase_order
-  POLine          → proc.bp_po_line_items
-  Quote           → proc.bp_quote
-  QuoteLine       → proc.bp_quote_line_items
-  Category        → proc.bp_category
-  Approval        → proc.bp_approvals
-  Policy          → proc.bp_policy
+THE GRAPH MIRRORS THE _trgt TIER. _trgt is the final, accepted state of a
+document: a later version supersedes an earlier one there, and what sits in
+_trgt is what is approved and transacted against. The graph therefore holds
+exactly what _trgt holds — a rebuild loads what is there AND removes what is
+not, so a count taken from the graph agrees with a count taken from the
+database. See ``_reconcile_entity``.
 
-Runs unsupervised via BackendScheduler.
+The authoritative entity-to-table mapping is ``ENTITY_TABLE_MAP`` below, and
+this docstring deliberately does not restate it: the previous copy listed
+proc.bp_invoice / bp_quote / bp_purchase_order long after those tables were
+dropped, which is how a stale comment came to describe a broken build as
+though it worked. ``tests/services/test_kg_source_tables.py`` checks the map
+against the live schema.
+
+Scheduling: the per-document sync (``extraction.kg_sync``) runs on every
+promotion. The FULL rebuild is gated behind KG_FULL_REBUILD_ENABLED and is off
+by default — it is a mass write, not an increment — and
+``scripts/kg_full_rebuild.py`` runs it supervised.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -126,10 +131,27 @@ class ProcurementKGBuilder:
         # 1. Create indexes for fast lookups
         self._create_indexes()
 
-        # 2. Load all entities from bp_ tables
+        # 2. Load all entities, then remove anything the source no longer holds.
+        #
+        # The graph MIRRORS the _trgt tier. _trgt is the final, accepted state of
+        # a document: a later version supersedes an earlier one there, and what
+        # sits in _trgt is what is approved and transacted against. So a node
+        # whose row has gone from _trgt is not history worth keeping — it is a
+        # document the business no longer recognises, and leaving it makes every
+        # count read from the graph wrong.
+        #
+        # Before this, _load_entity only ever MERGEd, so a rebuild added and
+        # updated but never removed. Measured 2026-08-11 after a full rebuild:
+        # 604 of 13,014 graph invoices were absent from bp_invoice_trgt, and all
+        # but 3 of a 500-row sample were absent from _stg too — orphans from an
+        # earlier corpus that no number of rebuilds would have cleared.
+        self._run_tag = uuid.uuid4().hex
         for entity_name, (table, pk, label) in ENTITY_TABLE_MAP.items():
             n = self._load_entity(table, pk, label)
             counts[entity_name] = n
+            counts[f"removed_{entity_name}"] = self._reconcile_entity(
+                table, pk, label, loaded=n,
+            )
 
         # 3. Create FK-based relationships
         for from_label, rel_type, to_label, from_fk, to_pk in FK_RELATIONSHIPS:
@@ -232,10 +254,16 @@ class ProcurementKGBuilder:
                             if s:
                                 props[k] = s
 
+                # _kg_run stamps which rebuild last saw this row. _reconcile_entity
+                # sweeps whatever the current run did not stamp — a mark-and-sweep,
+                # rather than shipping 115,000 primary keys back as a query
+                # parameter to ask which ones to keep.
                 session.run(
-                    f"MERGE (n:{label} {{{pk}: $pk_val}}) SET n += $props",
+                    f"MERGE (n:{label} {{{pk}: $pk_val}}) "
+                    f"SET n += $props, n._kg_run = $run",
                     pk_val=str(pk_val),
                     props=props,
+                    run=getattr(self, "_run_tag", None),
                 )
                 count += 1
 
@@ -289,6 +317,108 @@ class ProcurementKGBuilder:
         except Exception:
             logger.debug("PO→Quote linking failed", exc_info=True)
         return count
+
+    def _reconcile_entity(self, table: str, pk: str, label: str,
+                          *, loaded: int) -> int:
+        """Delete nodes of ``label`` this run did not load. Returns rows removed.
+
+        The graph mirrors _trgt, so a node whose source row has gone must go
+        too. Implemented as mark-and-sweep on ``_kg_run``: _load_entity stamps
+        every row it writes with the current run tag, and this removes whatever
+        carries a different tag or none.
+
+        THE SAFETY PROPERTY. A source table that fails to read returns 0 from
+        _load_entity, and a sweep on that would delete every node of the label —
+        turning a transient database error into silent data loss, on a timer.
+        So a zero load NEVER sweeps. The only way to empty a label here is for
+        the source table to genuinely be readable and empty, which is checked
+        against the table rather than inferred from the load.
+
+        A sweep that would remove more than half the label is also refused. That
+        is not a rule about correctness — a legitimate bulk deletion would trip
+        it — but a rebuild removing most of the graph is a thing a person should
+        confirm, not something to discover afterwards.
+        """
+        if not self._driver:
+            return 0
+
+        # Set only when the source table was read successfully and found empty.
+        # That is positive evidence the label should be emptied, as against the
+        # mere absence of loaded rows, which is what a failed read looks like.
+        source_verified_empty = False
+
+        if loaded == 0:
+            # Distinguish "source is empty" from "source could not be read".
+            try:
+                conn = self._agent_nick.get_db_connection()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(f"SELECT count(*) FROM {table}")
+                        source_rows = (cur.fetchone() or [0])[0]
+                finally:
+                    conn.close()
+            except Exception:
+                logger.warning(
+                    "KG: %s loaded 0 rows and %s could not be counted — not "
+                    "sweeping %s, because a failed read must not empty a label",
+                    label, table, label, exc_info=True,
+                )
+                return 0
+            if source_rows:
+                logger.warning(
+                    "KG: %s loaded 0 rows but %s holds %d — the load failed, "
+                    "so %s nodes are left alone",
+                    label, table, source_rows, label,
+                )
+                return 0
+            source_verified_empty = True
+
+        with self._driver.session() as session:
+            stale = session.run(
+                f"MATCH (n:{label}) "
+                "WHERE n._kg_run IS NULL OR n._kg_run <> $run "
+                "RETURN count(n) AS c",
+                run=self._run_tag,
+            ).single()["c"]
+            if not stale:
+                return 0
+
+            total = session.run(
+                f"MATCH (n:{label}) RETURN count(n) AS c"
+            ).single()["c"]
+            # The ratio guard is about UNVERIFIED mass deletion. When the source
+            # table was read and found empty we have positive evidence that the
+            # label should be emptied, so the guard does not apply — otherwise
+            # a legitimately emptied table (proc.bp_contracts holds 0 rows) could
+            # never be mirrored, and the graph would keep entities the business
+            # has deleted.
+            if total and stale > total / 2 and not source_verified_empty:
+                logger.error(
+                    "KG: refusing to sweep %s — %d of %d nodes are stale. "
+                    "A rebuild removing most of a label needs a person to look; "
+                    "re-run once the source is known good.",
+                    label, stale, total,
+                )
+                return 0
+
+            removed = 0
+            while True:
+                n = session.run(
+                    f"MATCH (n:{label}) "
+                    "WHERE n._kg_run IS NULL OR n._kg_run <> $run "
+                    "WITH n LIMIT 1000 DETACH DELETE n RETURN count(*) AS n",
+                    run=self._run_tag,
+                ).single()["n"]
+                removed += n
+                if n == 0:
+                    break
+
+        if removed:
+            logger.info(
+                "[KG] Removed %d stale %s node(s) no longer in %s",
+                removed, label, table,
+            )
+        return removed
 
     def _supplier_master_is_empty(self) -> bool:
         """True when proc.bp_supplier has no rows to build Supplier nodes from."""

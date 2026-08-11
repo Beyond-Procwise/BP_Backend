@@ -625,8 +625,51 @@ class BackendScheduler:
             from src.services.linking_engine import promote_ready
             result = promote_ready()
             logger.info("trgt promotion completed: %s", result)
+            self._sync_promoted_to_kg(result)
         except Exception:
             logger.exception("trgt promotion job failed")
+
+    def _sync_promoted_to_kg(self, result: dict) -> int:
+        """Push rows that just reached _trgt into the knowledge graph.
+
+        This is where the per-document KG sync belongs, and it used to live in
+        process_monitor_watcher — firing when dispatch returned ``promoted``,
+        which is _stg promotion, not _trgt. The graph mirrors _trgt, so syncing
+        at the earlier point created nodes for documents that had not reached
+        final state, and the reconciling rebuild then swept them. The graph
+        oscillated for exactly the documents still in flight.
+
+        Failures never propagate. A document is durable in _trgt before this
+        runs; the graph is a downstream view and can be rebuilt from _trgt at
+        any time, so a KG problem must not fail the promotion job.
+
+        KNOWN GAP: linking_engine reports purchase-order promotions in aggregate
+        (`{"doc_type": "purchase_order", "promoted": n}`) with no primary keys,
+        so POs promoted here are not individually synced — the full rebuild
+        picks them up. Fixing that means returning the PO ids from
+        `_promote_purchase_orders`, which is a change to linking_engine rather
+        than to this job.
+        """
+        synced = 0
+        for entry in (result or {}).get("details") or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("action") != "promoted":
+                continue
+            doc_type, doc_pk = entry.get("doc_type"), entry.get("doc_pk")
+            if not doc_type or not doc_pk:
+                continue
+            try:
+                from src.services.extraction.kg_sync import sync_row_to_kg
+                synced += sync_row_to_kg(self.agent_nick, doc_type, str(doc_pk))
+            except Exception:
+                logger.exception(
+                    "KG sync failed for %s pk=%s after _trgt promotion",
+                    doc_type, doc_pk,
+                )
+        if synced:
+            logger.info("trgt promotion: %d row(s) synced to the KG", synced)
+        return synced
 
     def _register_deal_assignment_job(self) -> None:
         """Assign documents to deals after _stg->_trgt promotion (look-forward +

@@ -1,9 +1,18 @@
-"""Refresh the Knowledge Graph with a single promoted stg row.
+"""Refresh the Knowledge Graph with a single promoted _trgt row.
 
-Called from the process_monitor_watcher *after* dispatch_document returns
-``status='promoted'``. The watcher has the live ``agent_nick`` object, so
-this thin adapter borrows it to construct the existing
-``KGIngestionService`` and re-ingests just the one stg row that landed.
+Called from ``BackendScheduler._run_trgt_promotion`` after a row reaches
+_trgt. It builds the existing ``KGIngestionService`` and re-ingests that one
+row.
+
+WHY _trgt AND NOT _stg. This used to read _stg and fire from the
+process_monitor_watcher the moment dispatch returned ``promoted`` — which is
+_stg promotion, not _trgt. The graph mirrors _trgt: _trgt is the final,
+accepted state of a document, and what sits there is what is approved and
+transacted against. Syncing from _stg put nodes in the graph for documents that
+had not reached that state, and the reconciling rebuild then swept them as
+absent from _trgt — so the graph oscillated for exactly the documents still in
+flight. Observed on invoice 0526: present in bp_invoice_stg, absent from
+bp_invoice_trgt, synced by this function and removed by the next rebuild.
 
 Why per-row rather than batch:
   - The renovation pipeline processes documents one at a time, so a
@@ -13,8 +22,8 @@ Why per-row rather than batch:
 
 Failures are NEVER raised back to the caller — KG sync is a downstream
 side effect of a successful promotion. If Neo4j is down or the row can't
-be re-read for any reason, we log and move on. The stg row is the source
-of truth; KG can be rebuilt from stg at any time.
+be re-read for any reason, we log and move on. The _trgt row is the source
+of truth; the KG can be rebuilt from _trgt at any time.
 """
 from __future__ import annotations
 
@@ -23,10 +32,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_STG_TABLE = {
-    "invoice": "proc.bp_invoice_stg",
-    "purchase_order": "proc.bp_purchase_order_stg",
-    "quote": "proc.bp_quote_stg",
+_TRGT_TABLE = {
+    "invoice": "proc.bp_invoice_trgt",
+    "purchase_order": "proc.bp_purchase_order_trgt",
+    "quote": "proc.bp_quote_trgt",
 }
 _PK_COL = {
     "invoice": "invoice_id",
@@ -49,9 +58,9 @@ def sync_row_to_kg(
     if agent_nick is None:
         logger.debug("kg_sync: no agent_nick — skipping KG refresh")
         return 0
-    stg_t = _STG_TABLE.get(doc_type)
+    trgt_t = _TRGT_TABLE.get(doc_type)
     pk_col = _PK_COL.get(doc_type)
-    if not stg_t or not pk_col:
+    if not trgt_t or not pk_col:
         logger.debug("kg_sync: unknown doc_type=%r — skipping", doc_type)
         return 0
 
@@ -62,18 +71,19 @@ def sync_row_to_kg(
 
         with get_conn() as conn:
             df = pd.read_sql(
-                f"SELECT * FROM {stg_t} WHERE {pk_col} = %s",
+                f"SELECT * FROM {trgt_t} WHERE {pk_col} = %s",
                 conn,
                 params=(doc_pk,),
             )
         if df.empty:
             logger.warning(
-                "kg_sync: no stg row found for %s pk=%s — skipping", doc_type, doc_pk,
+                "kg_sync: no _trgt row for %s pk=%s — not synced (it has not "
+                "reached final state)", doc_type, doc_pk,
             )
             return 0
 
         kg = KGIngestionService(agent_nick)
-        n = kg.ingest_dataframe(df, doc_type, source=f"{stg_t}:{doc_pk}")
+        n = kg.ingest_dataframe(df, doc_type, source=f"{trgt_t}:{doc_pk}")
         logger.info(
             "AgentNick: KG refreshed %s pk=%s rows=%d", doc_type, doc_pk, n,
         )

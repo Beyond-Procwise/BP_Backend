@@ -198,3 +198,96 @@ def test_an_unreadable_supplier_master_does_not_enable_inference():
     b._agent_nick = _Boom()
     assert b._supplier_master_is_empty() is False
     assert b._infer_suppliers() == 0
+
+
+# --------------------------------------------------------------------------
+# Reconciliation: the graph mirrors _trgt, and a failed read never empties it
+# --------------------------------------------------------------------------
+
+class _Single:
+    def __init__(self, val): self._val = val
+    def single(self): return self._val
+
+
+class _FakeSession:
+    """Answers the reconciler's three query shapes from a scripted state."""
+
+    def __init__(self, state): self.state = state; self.deleted = 0
+
+    def run(self, cypher, **kw):
+        if "RETURN count(n) AS c" in cypher and "_kg_run" in cypher:
+            return _Single({"c": self.state["stale"]})
+        if "RETURN count(n) AS c" in cypher:
+            return _Single({"c": self.state["total"]})
+        if "DETACH DELETE" in cypher:
+            n = min(1000, self.state["stale"] - self.deleted)
+            self.deleted += n
+            return _Single({"n": n})
+        return _Single({})
+
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+class _FakeDriver:
+    def __init__(self, session): self._s = session
+    def session(self): return self._s
+
+
+def _reconciler(*, stale, total, source_rows=None, db_raises=False):
+    from src.services.procurement_kg_builder import ProcurementKGBuilder
+    b = ProcurementKGBuilder.__new__(ProcurementKGBuilder)
+    b._run_tag = "run-1"
+    b._session = _FakeSession({"stale": stale, "total": total})
+    b._driver = _FakeDriver(b._session)
+
+    class _Nick:
+        def get_db_connection(inner):
+            if db_raises:
+                raise RuntimeError("db down")
+            return _FakeConn(source_rows or 0)
+    b._agent_nick = _Nick()
+    return b
+
+
+def test_stale_nodes_are_removed_so_the_graph_mirrors_the_source():
+    b = _reconciler(stale=604, total=13014)
+    assert b._reconcile_entity("proc.bp_invoice_trgt", "invoice_id",
+                               "Invoice", loaded=12408) == 604
+
+
+def test_a_failed_source_read_never_sweeps_the_label():
+    """The property that matters most. _load_entity returns 0 when a table
+    cannot be read, and sweeping on that would turn a transient database error
+    into silent data loss — unattended, on a six-hour timer."""
+    b = _reconciler(stale=13014, total=13014, source_rows=12408)
+    assert b._reconcile_entity("proc.bp_invoice_trgt", "invoice_id",
+                               "Invoice", loaded=0) == 0
+
+
+def test_an_uncountable_source_also_never_sweeps():
+    b = _reconciler(stale=13014, total=13014, db_raises=True)
+    assert b._reconcile_entity("proc.bp_invoice_trgt", "invoice_id",
+                               "Invoice", loaded=0) == 0
+
+
+def test_a_genuinely_empty_source_may_empty_the_label():
+    """Distinct from the case above: the table read fine and holds nothing, so
+    the graph should hold nothing either."""
+    b = _reconciler(stale=3, total=3, source_rows=0)
+    assert b._reconcile_entity("proc.bp_contracts", "contract_id",
+                               "Contract", loaded=0) == 3
+
+
+def test_a_sweep_of_most_of_a_label_is_refused():
+    """Not a correctness rule — a real bulk deletion would trip it. A rebuild
+    removing most of the graph is something a person should confirm."""
+    b = _reconciler(stale=9000, total=13014)
+    assert b._reconcile_entity("proc.bp_invoice_trgt", "invoice_id",
+                               "Invoice", loaded=4014) == 0
+
+
+def test_nothing_stale_means_nothing_removed():
+    b = _reconciler(stale=0, total=13014)
+    assert b._reconcile_entity("proc.bp_invoice_trgt", "invoice_id",
+                               "Invoice", loaded=13014) == 0

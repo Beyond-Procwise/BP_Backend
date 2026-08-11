@@ -577,18 +577,16 @@ class ProcessMonitorWatcher:
             # AgentNick → Knowledge Graph refresh: after a successful
             # stg promotion, push the row into Neo4j so the graph stays
             # in lock-step with the relational truth. KG sync is a
-            # post-commit side effect — failures are logged but never
-            # propagate, since the row is already durable in stg.
-            if status == "promoted" and pk:
-                try:
-                    from src.services.extraction.kg_sync import sync_row_to_kg
-                    _kg_doc_type = result.get("doc_type") or doc_type
-                    sync_row_to_kg(self._agent_nick, _kg_doc_type, pk)
-                except Exception:
-                    logger.exception(
-                        "KG sync failed for record %s (%s pk=%s)",
-                        record_id, doc_type, pk,
-                    )
+            # KG sync used to fire here. It does not any more, and the reason is
+            # a tier, not a preference: `status == "promoted"` at this point
+            # means the row reached _stg. The graph mirrors _trgt — the final,
+            # accepted state a document is approved and transacted against — so
+            # syncing here created nodes for documents still in flight, which
+            # the reconciling rebuild then swept as absent from _trgt. The graph
+            # oscillated for exactly the documents that had not settled.
+            #
+            # It now runs from BackendScheduler._sync_promoted_to_kg, against the
+            # rows that actually reach _trgt. See services/extraction/kg_sync.py.
 
             # Contract obligations: the field extractor above read the contract's TABLES.
             # This reads its PROSE — the clauses stating who must do what, when, and what

@@ -292,7 +292,85 @@ updates but **never deletes a node whose source row has gone**. The graph
 therefore accumulates stale entities indefinitely and will keep drifting from
 the relational store no matter how often it is rebuilt.
 
-Deciding what to do needs a product answer, not a cleanup script: should the
-graph mirror `_trgt` exactly (delete anything absent from it), or retain history
-for documents that have since been superseded? Until that is settled, any count
-taken from the graph runs about 3-5% high on documents.
+**RESOLVED 2026-08-11: the graph mirrors `_trgt` exactly.**
+
+`_trgt` is the final, accepted state of a document. Documents are the source of
+record elsewhere, but once a document reaches its final state in `_trgt` that is
+the correct data; a later version supersedes it by committing to `_trgt`, and
+the accepted version there is what is approved and transacted against. So a node
+whose row has gone from `_trgt` is not history worth keeping — it is a document
+the business no longer recognises.
+
+`ProcurementKGBuilder._reconcile_entity` implements it as mark-and-sweep:
+`_load_entity` stamps every row it writes with the current run tag, and anything
+carrying a different tag or none is removed. Mark-and-sweep rather than shipping
+115,000 primary keys back as a query parameter.
+
+Two safety properties, because a rebuild that deletes is a rebuild that can lose
+data on a timer:
+
+* **A failed source read never sweeps.** `_load_entity` returns 0 both when a
+  table is empty and when it cannot be read. Sweeping on that would turn a
+  transient database error into silent data loss. A zero load is only allowed to
+  empty a label after the source table has been separately counted and found
+  genuinely empty.
+* **An unverified sweep of more than half a label is refused**, and logged as an
+  error for a person to look at. It does not apply when the source was verified
+  empty — otherwise a legitimately emptied table could never be mirrored, and
+  `proc.bp_contracts` (0 rows) would keep its nodes forever. That interaction
+  was found by a test, not by inspection.
+
+---
+
+## 7. Graph now mirrors _trgt — reconciling rebuild run 2026-08-11
+
+Second rebuild, with reconciliation: 6.7 minutes, 239,736 -> 237,540 nodes.
+Every sweep landed on exactly the residual measured beforehand:
+
+| label | swept | predicted |
+|---|---|---|
+| Supplier | 130 | 130 |
+| Invoice | 604 | 604 |
+| InvoiceLine | 408 | 408 |
+| PurchaseOrder | 290 | 291 |
+| POLine | 164 | 164 |
+| Quote | 405 | 421 |
+| QuoteLine | 197 | 197 |
+
+(Quote and PO swept slightly fewer because some old nodes did still match a
+current `_trgt` row and were correctly kept rather than removed.)
+
+`inferred_suppliers: 0` — the new guard held, and the log says why:
+"proc.bp_supplier is populated — skipping supplier inference".
+
+The per-document sync now fires from `BackendScheduler._sync_promoted_to_kg`
+after `_trgt` promotion, reading `_trgt`, instead of from
+`process_monitor_watcher` after `_stg` promotion. Syncing at the earlier point
+created nodes for documents still in flight which the reconciling rebuild then
+swept — the graph oscillated for exactly the unsettled documents.
+
+### OPEN: 21 duplicate nodes, and the reason
+
+Compared by primary key the graph now matches `_trgt` **exactly** — zero extra
+ids at every label. But four labels have more NODES than distinct keys:
+
+    Invoice        12,410 nodes / 12,408 distinct keys   -> 2 duplicates
+    Quote          21,065 nodes / 21,049 distinct keys   -> 16 duplicates
+    PurchaseOrder   5,042 nodes /  5,041 distinct keys   -> 1 duplicate
+    Supplier        5,030 nodes /  5,030 distinct keys   -> 2 extra ids
+
+`ORB-Q-6612` exists seven times.
+
+Cause: `_create_indexes` issues `CREATE INDEX`, not
+`CREATE CONSTRAINT ... IS UNIQUE`. An index makes MERGE fast; it does not make
+it safe. Without a uniqueness constraint, concurrent or differently-shaped MERGE
+patterns can each create a node for the same key, and nothing objects. This
+pre-dates the reconciliation work — the duplicates were already there.
+
+The fix is to promote those indexes to uniqueness constraints, which **cannot be
+applied while duplicates exist** — Neo4j rejects the constraint. So it is a
+two-step job: dedupe (keep one node per key, move its relationships), then add
+the constraints so it cannot recur. Worth doing, but it is a separate change
+with its own verification, not a tail-end edit to this one.
+
+Current error: 21 duplicates in 237,540 nodes, 0.009%.
