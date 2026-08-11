@@ -35,18 +35,34 @@ KG_WORKBOOK_PATH = os.getenv(
 )
 
 # Entity → (table, pk_column, neo4j_label)
+# Source tables for the graph's nodes: (table, primary key, Neo4j label).
+#
+# THESE MUST BE THE _trgt TIER. The six document entries used to name
+# proc.bp_invoice / bp_quote / bp_purchase_order and their line-item tables —
+# the pre-renovation names. Those tables were dropped when the pipeline moved to
+# _stg -> _trgt, so every document loader read a table that did not exist,
+# caught the error, logged it at DEBUG, and returned 0. The graph stopped
+# gaining documents on 2026-07-31 and the job kept reporting success. Verified
+# 2026-08-11: all six were MISSING from information_schema.
+#
+# The PK names are the real column names, checked against information_schema
+# rather than assumed. Two were also wrong before: bp_category has no
+# `category_id` (its columns are item_description, category) and bp_policy has
+# `policy_id`, not `id` — so Policy nodes never loaded either, silently, from 19
+# live rows.
+#
+# proc.bp_approvals does not exist at all and the Approval entry is removed
+# rather than left to fail quietly every run.
 ENTITY_TABLE_MAP = {
     "Supplier": ("proc.bp_supplier", "supplier_id", "Supplier"),
     "Contract": ("proc.bp_contracts", "contract_id", "Contract"),
-    "Invoice": ("proc.bp_invoice", "invoice_id", "Invoice"),
-    "InvoiceLine": ("proc.bp_invoice_line_items", "invoice_line_id", "InvoiceLine"),
-    "PurchaseOrder": ("proc.bp_purchase_order", "po_id", "PurchaseOrder"),
-    "POLine": ("proc.bp_po_line_items", "po_line_id", "POLine"),
-    "Quote": ("proc.bp_quote", "quote_id", "Quote"),
-    "QuoteLine": ("proc.bp_quote_line_items", "quote_line_id", "QuoteLine"),
-    "Category": ("proc.bp_category", "category_id", "Category"),
-    "Approval": ("proc.bp_approvals", "id", "Approval"),
-    "Policy": ("proc.bp_policy", "id", "Policy"),
+    "Invoice": ("proc.bp_invoice_trgt", "invoice_id", "Invoice"),
+    "InvoiceLine": ("proc.bp_invoice_line_items_trgt", "invoice_line_id", "InvoiceLine"),
+    "PurchaseOrder": ("proc.bp_purchase_order_trgt", "po_id", "PurchaseOrder"),
+    "POLine": ("proc.bp_po_line_items_trgt", "po_line_id", "POLine"),
+    "Quote": ("proc.bp_quote_trgt", "quote_id", "Quote"),
+    "QuoteLine": ("proc.bp_quote_line_items_trgt", "quote_line_id", "QuoteLine"),
+    "Policy": ("proc.bp_policy", "policy_id", "Policy"),
 }
 
 # FK-based relationships: (from_label, rel_type, to_label, from_fk, to_pk)
@@ -153,19 +169,46 @@ class ProcurementKGBuilder:
                 except Exception:
                     pass
 
+    # Rows fetched per round trip. The previous code used `LIMIT 5000` with no
+    # offset, which was not a batch size but a silent cap: bp_supplier has 5,028
+    # rows, so 28 suppliers never reached the graph and nothing said so. The
+    # line-item tables are far worse — bp_quote_line_items_trgt alone has
+    # 115,814 rows, so a 5,000 cap would have loaded 4% of it and reported
+    # success.
+    _PAGE = 5000
+
     def _load_entity(self, table: str, pk: str, label: str) -> int:
-        """Load all rows from a bp_ table as Neo4j nodes."""
+        """Load every row from a source table as Neo4j nodes. Paged, not capped."""
         try:
             conn = self._agent_nick.get_db_connection()
             try:
+                rows: list = []
                 with conn.cursor() as cur:
-                    cur.execute(f"SELECT * FROM {table} LIMIT 5000")
-                    rows = cur.fetchall()
-                    cols = [d.name for d in cur.description]
+                    offset = 0
+                    while True:
+                        cur.execute(
+                            f"SELECT * FROM {table} ORDER BY {pk} "
+                            f"LIMIT {self._PAGE} OFFSET {offset}"
+                        )
+                        page = cur.fetchall()
+                        if not page:
+                            break
+                        if not rows:
+                            cols = [d.name for d in cur.description]
+                        rows.extend(page)
+                        if len(page) < self._PAGE:
+                            break
+                        offset += self._PAGE
             finally:
                 conn.close()
         except Exception:
-            logger.debug("Failed to read %s", table, exc_info=True)
+            # WARNING, not DEBUG. This was the line that hid a broken graph for
+            # eleven days: six tables failed to read on every run and produced
+            # no output at any normal log level.
+            logger.warning(
+                "KG: could not read %s — no %s nodes will be loaded",
+                table, label, exc_info=True,
+            )
             return 0
 
         if not rows:

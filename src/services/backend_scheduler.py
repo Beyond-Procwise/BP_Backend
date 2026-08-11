@@ -857,8 +857,43 @@ class BackendScheduler:
             initial_delay=timedelta(minutes=2),
         )
 
+    # Document labels a healthy full rebuild must produce. If every one of these
+    # is zero the run did nothing, whatever else it reports.
+    _KG_DOCUMENT_LABELS = (
+        "Invoice", "InvoiceLine", "PurchaseOrder", "POLine", "Quote", "QuoteLine",
+    )
+
+    @staticmethod
+    def _kg_full_rebuild_enabled() -> bool:
+        """Whether the SCHEDULED job may perform a full rebuild.
+
+        OFF by default, for the same reason the duplicate-invoice detector above
+        is: a full rebuild is not an increment. The graph currently holds ~600
+        invoices while the _trgt tier holds 12,408, so the first run after the
+        source tables were corrected would write roughly 232,000 nodes —
+        38,000 documents and 194,000 line items — unattended, on a six-hour
+        timer, with nobody looking.
+
+        Set KG_FULL_REBUILD_ENABLED=1 once that first rebuild has been run
+        deliberately and its result checked. The per-document path
+        (extraction.kg_sync) is unaffected and keeps working either way, so
+        newly promoted documents still reach the graph while this is off.
+        """
+        import os  # imported per-function, as everywhere else in this module
+
+        return os.environ.get("KG_FULL_REBUILD_ENABLED", "0").strip() in (
+            "1", "true", "True",
+        )
+
     def _run_kg_sync(self) -> None:
         """Build/refresh the procurement knowledge graph."""
+        if not self._kg_full_rebuild_enabled():
+            logger.info(
+                "KG full rebuild skipped (KG_FULL_REBUILD_ENABLED unset). "
+                "Per-document sync is unaffected; run the rebuild deliberately "
+                "the first time — see docs/remediation."
+            )
+            return
         try:
             from services.procurement_kg_builder import ProcurementKGBuilder
             builder = ProcurementKGBuilder(self.agent_nick)
@@ -869,7 +904,23 @@ class BackendScheduler:
                 )
                 return
             counts = builder.build_full_graph()
-            logger.info("KG sync completed: %s", counts)
+
+            # A run that loaded no documents is a failure, not a completion.
+            # This job logged "KG sync completed: {...}" with every document
+            # count at zero for eleven days, because the builder was reading six
+            # tables that no longer existed. A success message containing all
+            # zeros is worse than an error: it answers the question nobody
+            # re-asked.
+            loaded = {k: counts.get(k, 0) for k in self._KG_DOCUMENT_LABELS}
+            if not any(loaded.values()):
+                logger.error(
+                    "KG sync loaded NO documents — every one of %s came back 0. "
+                    "The source tables are unreadable or empty; the graph has "
+                    "not been refreshed. Counts: %s",
+                    ", ".join(self._KG_DOCUMENT_LABELS), counts,
+                )
+            else:
+                logger.info("KG sync completed: %s", counts)
             builder.close()
         except Exception:
             logger.exception("KG sync job failed")

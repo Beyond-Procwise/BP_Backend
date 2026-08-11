@@ -179,3 +179,66 @@ Gitignored.
    Whatever stopped `kg_sync` writing is a separate question, and the KG is
    stale for reasons this cleanup does not address. Both `corpus_facts.describe`
    and the `describe_platform` tool read it.
+
+---
+
+## 5. Why the knowledge graph stopped updating — ROOT CAUSE, 2026-08-11
+
+**Status:** fixed in code; the first full rebuild is deliberately still pending.
+
+`ProcurementKGBuilder.ENTITY_TABLE_MAP` named six tables that no longer exist:
+
+    proc.bp_invoice, bp_invoice_line_items, bp_purchase_order,
+    bp_po_line_items, bp_quote, bp_quote_line_items
+
+They were dropped when extraction moved to `_stg -> _trgt`. Every document
+loader read a missing table, caught the error, logged it at **DEBUG**, and
+returned 0. The scheduled job then logged `"KG sync completed: {...}"` at INFO
+with every document count at zero. The graph last gained a document on
+2026-07-31; nobody noticed for eleven days, while `corpus_facts.describe` and
+AgentNick's `describe_platform` tool kept reading it.
+
+Two further entries were wrong in the same silent way:
+
+* `bp_category` has no `category_id` column at all (its columns are
+  `item_description`, `category`) — entry removed, the table holds 0 rows.
+* `bp_policy` is keyed on `policy_id`, not `id` — so **19 live policy rows never
+  loaded**, silently, for as long as the map has existed.
+* `proc.bp_approvals` does not exist — entry removed.
+
+### What was fixed
+
+1. **The map now reads the `_trgt` tier**, with primary keys checked against
+   `information_schema` rather than assumed.
+2. **`LIMIT 5000` was a silent cap, not a batch size** — no OFFSET. `bp_supplier`
+   has 5,028 rows so 28 never loaded; `bp_quote_line_items_trgt` has 115,814, of
+   which it would have loaded 4% and reported success. Now paged.
+3. **The failed read logs at WARNING**, naming the table and the label that will
+   be missing. This is the line that hid the fault.
+4. **The job no longer claims success on an empty run.** If every document label
+   comes back 0 it logs an error saying so.
+5. **`KG_FULL_REBUILD_ENABLED` gates the scheduled rebuild, default OFF** —
+   same pattern and same reasoning as `DUPLICATE_INVOICE_DETECTOR_ENABLED`
+   above it in that file.
+
+`tests/services/test_kg_source_tables.py` pins all of it against the live
+schema, and connects with psycopg2 directly rather than through
+`services.db.get_conn`, which substitutes a fake connection under pytest — a
+schema test asking a stub whether a table exists proves nothing.
+
+### THE OPEN PART: the first full rebuild
+
+The scheduled rebuild is off. Turning it on writes roughly **232,000 nodes**
+(38,498 documents + 193,857 line items) into a graph that currently holds a few
+thousand — unattended, on a six-hour timer. Run it deliberately and watch it:
+
+```
+KG_FULL_REBUILD_ENABLED=1  # then trigger _run_kg_sync once, supervised
+```
+
+Note the loader does one `session.run` per row, so ~232k round trips. Expect it
+to be slow, and consider batching with UNWIND before making it routine.
+
+**Already loaded during diagnosis** (supervised, verified): PurchaseOrder 295 ->
+5,332, plus one invoice and a supplier refresh. Invoice, Quote and all three
+line-item labels are still at their stale counts.
