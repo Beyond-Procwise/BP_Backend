@@ -290,8 +290,54 @@ class ProcurementKGBuilder:
             logger.debug("PO→Quote linking failed", exc_info=True)
         return count
 
+    def _supplier_master_is_empty(self) -> bool:
+        """True when proc.bp_supplier has no rows to build Supplier nodes from."""
+        try:
+            conn = self._agent_nick.get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT count(*) FROM proc.bp_supplier")
+                    return (cur.fetchone() or [0])[0] == 0
+            finally:
+                conn.close()
+        except Exception:
+            # Cannot tell — assume it is populated. Inferring suppliers into a
+            # graph that already has a real supplier master is the damaging
+            # direction, so that is the one to avoid on uncertainty.
+            logger.warning("KG: could not size proc.bp_supplier; "
+                           "skipping supplier inference", exc_info=True)
+            return False
+
     def _infer_suppliers(self) -> int:
-        """Create Supplier nodes from extracted data if bp_supplier is empty."""
+        """Create Supplier nodes from extracted data, ONLY if bp_supplier is empty.
+
+        The docstring has always said "if bp_supplier is empty". The check was
+        never written, so this ran on every rebuild against a populated supplier
+        master, and it fabricates identifiers:
+
+            MERGE (s:Supplier {supplier_name: p.supplier_name})
+            ON CREATE SET s.supplier_id = p.supplier_name
+
+        That sets a supplier_id to a company NAME. Such a node can never join to
+        proc.bp_supplier, inflates every supplier count taken from the graph,
+        and puts a third id shape alongside the real SUP-* ones. Measured
+        2026-08-11: the graph held 5,324 suppliers against 5,028 in the master.
+
+        The invoice/quote/contract branches are milder but the same idea in
+        reverse — they set supplier_name to the supplier_id, so a node's name is
+        "SUP-Northgate". Also fabrication, also only defensible when there is no
+        master to read.
+
+        So the guard the docstring promised is now real. With a populated master
+        this returns 0 and the supplier set in the graph matches the source.
+        """
+        if not self._supplier_master_is_empty():
+            logger.info(
+                "KG: proc.bp_supplier is populated — skipping supplier "
+                "inference (it fabricates ids from names)"
+            )
+            return 0
+
         count = 0
         try:
             with self._driver.session() as session:

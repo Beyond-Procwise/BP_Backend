@@ -141,3 +141,60 @@ def test_each_source_table_exists_with_the_primary_key_named(
         f"Rows load with a null key and are skipped, silently. "
         f"Columns: {sorted(columns)[:12]}"
     )
+
+
+# --------------------------------------------------------------------------
+# Supplier inference must not run against a populated master
+# --------------------------------------------------------------------------
+
+class _FakeCursor:
+    def __init__(self, count): self._count = count
+    def execute(self, *a, **kw): pass
+    def fetchone(self): return [self._count]
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+class _FakeConn:
+    def __init__(self, count): self._count = count
+    def cursor(self): return _FakeCursor(self._count)
+    def close(self): pass
+
+
+class _FakeNick:
+    def __init__(self, supplier_rows): self._n = supplier_rows
+    def get_db_connection(self): return _FakeConn(self._n)
+
+
+def _builder(supplier_rows):
+    from src.services.procurement_kg_builder import ProcurementKGBuilder
+    b = ProcurementKGBuilder.__new__(ProcurementKGBuilder)
+    b._agent_nick = _FakeNick(supplier_rows)
+    b._driver = object()          # never reached when the guard holds
+    return b
+
+
+def test_supplier_inference_is_skipped_when_the_master_is_populated():
+    """It fabricates ids: the PO branch MERGEs on supplier_name and sets
+    supplier_id to that same NAME, producing supplier nodes that can never join
+    to proc.bp_supplier. Measured 2026-08-11: 5,324 graph suppliers against
+    5,028 in the master."""
+    assert _builder(supplier_rows=5028)._infer_suppliers() == 0
+
+
+def test_supplier_inference_is_allowed_when_the_master_is_empty():
+    """The case the docstring always described — a graph built before any
+    supplier master exists is better than no suppliers at all."""
+    b = _builder(supplier_rows=0)
+    assert b._supplier_master_is_empty() is True
+
+
+def test_an_unreadable_supplier_master_does_not_enable_inference():
+    """Uncertainty must not licence the damaging direction."""
+    class _Boom:
+        def get_db_connection(self): raise RuntimeError("db down")
+    from src.services.procurement_kg_builder import ProcurementKGBuilder
+    b = ProcurementKGBuilder.__new__(ProcurementKGBuilder)
+    b._agent_nick = _Boom()
+    assert b._supplier_master_is_empty() is False
+    assert b._infer_suppliers() == 0

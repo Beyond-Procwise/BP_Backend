@@ -242,3 +242,57 @@ to be slow, and consider batching with UNWIND before making it routine.
 **Already loaded during diagnosis** (supervised, verified): PurchaseOrder 295 ->
 5,332, plus one invoice and a supplier refresh. Invoice, Quote and all three
 line-item labels are still at their stale counts.
+
+---
+
+## 6. Full KG rebuild run — DONE 2026-08-11, with one issue left open
+
+Ran supervised via `scripts/kg_full_rebuild.py`. **7.5 minutes, 12,590 ->
+239,902 nodes.**
+
+| label | before | after | source |
+|---|---|---|---|
+| Invoice | 613 | 13,014 | 12,408 |
+| InvoiceLine | 408 | 55,891 | 55,483 |
+| PurchaseOrder | 5,332 | 5,332 | 5,041 |
+| POLine | 164 | 22,724 | 22,560 |
+| Quote | 435 | 21,470 | 21,049 |
+| QuoteLine | 197 | 116,011 | 115,814 |
+| Policy | **0** | **19** | 19 |
+
+`Policy` going 0 -> 19 is the `policy_id` key fix: those rows had never loaded.
+
+### Fabricated suppliers removed
+
+`_infer_suppliers` ran unguarded for as long as it has existed, inventing
+Supplier nodes from document fields — the PO branch setting `supplier_id` to a
+company NAME. 166 such nodes were in the graph:
+
+    inferred_from_quote      55
+    inferred_from_invoice    52
+    inferred_from_po         41
+    inferred_from_contract   18   (residue of the deleted test contracts)
+
+All 166 removed via `scripts/kg_remove_inferred_suppliers.py`, after confirming
+none of them exists in `proc.bp_supplier`. Backed up first. Supplier 5,324 ->
+5,158. The guard is now in the builder, so this does not recur.
+
+### OPEN: the rebuild is additive and never removes anything
+
+Every label still exceeds its source table, and the excess matches the OLD graph
+counts almost exactly (InvoiceLine +408, POLine +164, QuoteLine +197 — identical
+to the pre-rebuild figures).
+
+Sampled: of 13,014 graph invoices, **604 are not in `bp_invoice_trgt`**, and only
+3 of the first 500 are in `bp_invoice_stg` either. They are orphans from an
+earlier era of the corpus.
+
+The cause is structural: `_load_entity` issues `MERGE`, so a rebuild adds and
+updates but **never deletes a node whose source row has gone**. The graph
+therefore accumulates stale entities indefinitely and will keep drifting from
+the relational store no matter how often it is rebuilt.
+
+Deciding what to do needs a product answer, not a cleanup script: should the
+graph mirror `_trgt` exactly (delete anything absent from it), or retain history
+for documents that have since been superseded? Until that is settled, any count
+taken from the graph runs about 3-5% high on documents.
