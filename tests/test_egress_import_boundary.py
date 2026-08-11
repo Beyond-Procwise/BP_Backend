@@ -88,17 +88,13 @@ _THE_CHOKEPOINT = "src/services/egress.py"
 # already reached the network directly; the comment says which client. This list
 # may only shrink.
 _KNOWN: dict[str, str] = {
-    "src/agents/base_agent.py": "boto3, neo4j",
-    "src/agents/email_watcher_agent.py": "socket",
-    "src/services/email_credentials_manager.py": "boto3",
-    "src/services/email_dispatch_service.py": "boto3",
-    "src/services/email_ingest_lambda.py": "boto3",
-    "src/services/email_service.py": "boto3, smtplib",
-    "src/services/email_sqs_loader.py": "boto3",
+    "src/agents/base_agent.py": "neo4j — construction is lazy inside a method; graph_client migration pending",
+    "src/agents/email_watcher_agent.py": "socket — used for a timeout constant, not a connection",
+    "src/services/email_ingest_lambda.py": "boto3 — separately deployed Lambda; see the note in _KNOWN",
+    "src/services/email_service.py": "smtplib — SMTP send, already gated by email_dispatch_guard",
     "src/services/kg_ingestion_service.py": "neo4j",
     "src/services/platform_kg.py": "neo4j",
     "src/services/procurement_kg_builder.py": "neo4j",
-    "src/services/style/graph_source.py": "boto3",
 }
 
 

@@ -107,6 +107,15 @@ def test_read_and_write_s3_bytes_use_bare_client_and_configured_bucket(monkeypat
             return b"PDF-BYTES"
 
     class _FakeS3Client:
+        # boto3 clients expose meta.events; services.egress.aws_client attaches
+        # its per-request recorder there. Without it the fake would exercise
+        # egress's defensive branch instead of the path production takes.
+        class meta:
+            class events:
+                @staticmethod
+                def register(*_a, **_kw):
+                    return None
+
         def get_object(self, Bucket, Key):
             calls["get"] = (Bucket, Key)
             return {"Body": _FakeBody()}

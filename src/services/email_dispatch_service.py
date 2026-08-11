@@ -41,6 +41,8 @@ from .email_thread_store import (
 
 configure_gpu()
 
+from src.services import egress as _egress
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_THREAD_TABLE = DEFAULT_THREAD_TABLE
@@ -1054,10 +1056,9 @@ class EmailDispatchService:
 
     def _read_s3_bytes(self, s3_key: str) -> bytes:
         """Fetch one attachment's bytes. Separated so tests can stand it in."""
-        import boto3
         from config.settings import settings
 
-        client = boto3.client("s3")
+        client = _egress.aws_client("s3", purpose=_egress.Purpose.OBJECT_STORAGE)
         obj = client.get_object(Bucket=settings.s3_bucket_name, Key=s3_key)
         return obj["Body"].read()
 
@@ -1068,10 +1069,9 @@ class EmailDispatchService:
         the extraction pipeline, and a supplier's countersigned contract
         arriving there would raise discrepancy findings against itself.
         """
-        import boto3
         from config.settings import settings
 
-        client = boto3.client("s3")
+        client = _egress.aws_client("s3", purpose=_egress.Purpose.OBJECT_STORAGE)
         client.put_object(
             Bucket=settings.s3_bucket_name,
             Key=s3_key,

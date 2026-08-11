@@ -412,9 +412,19 @@ def aws_client(service: str, *, purpose: Purpose, **kwargs: Any) -> Any:
     import boto3  # imported here so the module has no hard AWS dependency
 
     client = boto3.client(service, **kwargs)
-    client.meta.events.register(
-        "before-send.*.*", _record_sdk_request(purpose, service)
-    )
+    try:
+        client.meta.events.register(
+            "before-send.*.*", _record_sdk_request(purpose, service)
+        )
+    except Exception:  # noqa: BLE001
+        # A real boto3 client always has meta.events; a stub or a future client
+        # object may not. Returning an unrecorded but WORKING client is the
+        # right trade: this observes AWS calls, and an observer that can stop
+        # them from happening is a worse problem than a gap in the record.
+        logger.debug(
+            "egress: could not attach request recording to the %s client",
+            service, exc_info=True,
+        )
     return client
 
 

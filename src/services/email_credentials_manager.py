@@ -9,8 +9,9 @@ import json
 import logging
 from dataclasses import dataclass
 
-import boto3
 from botocore.exceptions import ClientError
+
+from src.services import egress as _egress
 
 from utils.gpu import configure_gpu
 
@@ -47,7 +48,7 @@ class SESSMTPAccessManager:
 
         region = getattr(self.settings, "ses_region", None) or "eu-west-1"
 
-        iam_client = boto3.client("iam")
+        iam_client = _egress.aws_client("iam", purpose=_egress.Purpose.SECRETS)
         secrets_client = self._secrets_manager_client(region)
 
         iam_user = getattr(self.settings, "ses_smtp_iam_user", None)
@@ -257,14 +258,14 @@ class SESSMTPAccessManager:
 
         role_arn = getattr(self.settings, "ses_secret_role_arn", None)
         if not role_arn:
-            return boto3.client("secretsmanager", region_name=region)
+            return _egress.aws_client("secretsmanager", purpose=_egress.Purpose.SECRETS, region_name=region)
 
         self.logger.debug(
             "Assuming role %s to update SES SMTP credentials", role_arn
         )
 
         sts_kwargs = {"region_name": region} if region else {}
-        sts_client = boto3.client("sts", **sts_kwargs)
+        sts_client = _egress.aws_client("sts", purpose=_egress.Purpose.SECRETS, **sts_kwargs)
 
         try:
             response = sts_client.assume_role(
@@ -286,8 +287,9 @@ class SESSMTPAccessManager:
         if not all([access_key, secret_key, session_token]):
             raise CredentialsRotationError("Incomplete credentials received from STS")
 
-        return boto3.client(
+        return _egress.aws_client(
             "secretsmanager",
+            purpose=_egress.Purpose.SECRETS,
             region_name=region,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,

@@ -40,6 +40,8 @@ from services.style.sources import RawExemplar
 
 from src.services import egress
 
+from src.services import egress as _egress
+
 logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
@@ -89,10 +91,9 @@ def resolve_credentials(credential_ref: str, *, client=None) -> GraphCredentials
         raise ValueError("credential_ref must be a Secrets Manager ARN")
 
     if client is None:  # pragma: no cover - exercised only with real AWS
-        import boto3
 
         region = credential_ref.split(":")[3]
-        client = boto3.client("secretsmanager", region_name=region)
+        client = _egress.aws_client("secretsmanager", purpose=_egress.Purpose.SECRETS, region_name=region)
 
     payload = client.get_secret_value(SecretId=credential_ref)
     raw = payload.get("SecretString")

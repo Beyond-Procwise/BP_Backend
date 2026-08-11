@@ -5,7 +5,6 @@ _os.environ.setdefault("HF_HUB_OFFLINE", "1")
 _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 _os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 
-import boto3
 from botocore.config import Config
 import json
 import logging
@@ -1496,8 +1495,9 @@ class AgentNick:
         self.static_policy_loader: Optional[StaticPolicyLoader] = None
         s3_pool = max(4, int(getattr(self.settings, "s3_max_pool_connections", 64)))
         self._s3_pool_size = s3_pool
-        self.s3_client = boto3.client(
+        self.s3_client = _egress.aws_client(
             "s3",
+            purpose=_egress.Purpose.OBJECT_STORAGE,
             config=Config(
                 max_pool_connections=s3_pool,
                 retries={"max_attempts": 10, "mode": "standard"},

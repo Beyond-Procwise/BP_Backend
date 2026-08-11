@@ -350,3 +350,44 @@ def test_the_switch_defaults_to_on(monkeypatch):
 def test_the_switch_parses_the_usual_spellings(monkeypatch, value, expected):
     monkeypatch.setenv("RAG_EXTERNAL_ENABLED", value)
     assert egress.external_rag_enabled() is expected
+
+
+def test_a_client_without_an_event_system_is_still_returned_usable(monkeypatch):
+    """Recording is best-effort; the client is not.
+
+    A stub or a future boto3 object may not expose meta.events. Returning an
+    unrecorded but working client is the right trade — this observes AWS calls,
+    and an observer that can stop them happening is a worse problem than a gap
+    in the record.
+    """
+    class _NoMeta:
+        def list_buckets(self):
+            return {"Buckets": []}
+
+    import boto3
+    monkeypatch.setattr(boto3, "client", lambda *a, **kw: _NoMeta())
+    client = egress.aws_client("s3", purpose=Purpose.OBJECT_STORAGE)
+    assert client.list_buckets() == {"Buckets": []}
+
+
+def test_no_region_is_added_to_an_aws_client(monkeypatch):
+    """The house pattern is a bare client that takes its region from the
+    environment (see tests/api/test_email_attachments.py). The factory must not
+    quietly start pinning one."""
+    seen = {}
+
+    class _Stub:
+        class meta:
+            class events:
+                @staticmethod
+                def register(*a, **kw):
+                    return None
+
+    import boto3
+    def _client(service, *a, **kw):
+        seen["call"] = (service, a, kw)
+        return _Stub()
+
+    monkeypatch.setattr(boto3, "client", _client)
+    egress.aws_client("s3", purpose=Purpose.OBJECT_STORAGE)
+    assert seen["call"] == ("s3", (), {})
