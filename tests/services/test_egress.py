@@ -155,6 +155,37 @@ def test_request_returns_none_rather_than_raising(transport):
     assert egress.get("http://127.0.0.1/", purpose=Purpose.FX_RATES) is None
 
 
+def test_transport_errors_can_be_re_raised_with_their_type_intact(monkeypatch):
+    """Retry loops branch on the KIND of failure.
+
+    ollama_client backs off differently for a ReadTimeout than a
+    ConnectionError. Collapsing both into None would leave that code looking
+    correct while taking one path forever, so the original exception has to
+    reach it unchanged.
+    """
+    import requests as _rq
+
+    def _boom(method, url, **kwargs):
+        raise _rq.exceptions.ReadTimeout("too slow")
+
+    monkeypatch.setattr(egress.requests, "request", _boom)
+    monkeypatch.setattr(egress, "_resolve", lambda host: ["93.184.216.34"])
+
+    with pytest.raises(_rq.exceptions.ReadTimeout):
+        egress.get("https://acme.example/", purpose=Purpose.MODEL_INFERENCE,
+                   raise_transport_errors=True)
+
+
+def test_a_refused_destination_still_returns_none_under_raise_transport_errors(
+    transport,
+):
+    """A refusal is not a transport failure. Raising it into a retry loop would
+    make the caller retry something that will refuse identically every time."""
+    assert egress.get("http://169.254.169.254/", purpose=Purpose.MODEL_INFERENCE,
+                      raise_transport_errors=True) is None
+    assert transport == []
+
+
 def test_request_or_raise_distinguishes_refused_from_empty(transport):
     """For callers where a silent None reads as "nothing found" rather than
     "we were not allowed to look"."""

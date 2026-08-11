@@ -83,22 +83,17 @@ _KNOWN: dict[str, str] = {
     "src/services/email_service.py": "boto3, botocore, smtplib",
     "src/services/email_sqs_loader.py": "boto3, botocore",
     "src/services/extraction/parser.py": "boto3",
-    "src/services/governance_tools/governed_reasoning.py": "requests",
     "src/services/kg_ingestion_service.py": "neo4j",
     "src/services/learning_repository.py": "qdrant_client",
     "src/services/model_selector.py": "botocore, qdrant_client",
-    "src/services/ollama_client.py": "requests",
     "src/services/platform_kg.py": "neo4j",
     "src/services/process_routing_service.py": "httpx",
     "src/services/procurement_kg_builder.py": "neo4j",
     "src/services/qdrant_health.py": "qdrant_client, requests",
     "src/services/rag_service.py": "qdrant_client",
     "src/services/static_policy_loader.py": "botocore, qdrant_client",
-    "src/services/structural_extractor/derivation_rules/fx.py": "requests",
     "src/services/style/graph_source.py": "boto3, requests",
-    "src/services/supplier_enrichment/research.py": "requests",
     "src/services/supplier_relationship_service.py": "qdrant_client",
-    "src/services/tool_runtime.py": "requests",
 }
 
 

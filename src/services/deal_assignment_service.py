@@ -406,33 +406,109 @@ def _deal_date_for_doc(cur, doc_type, doc_pk):
 # ---------------------------------------------------------------------------
 # Look-back pass (quote-gated)
 # ---------------------------------------------------------------------------
-def _quote_anchor_for_po(cur, po, npo=None):
+class _AnchorCache:
+    """Everything `_quote_anchor_for_po` would otherwise re-query for every PO.
+
+    `_look_back` asks for the anchoring quote of every PO in the corpus, and each
+    ask ran up to four queries plus one line-items query PER candidate quote. The
+    same quotes and the same line items were fetched again for every PO that
+    considered them: measured live on 2026-08-01, ~40,000 round trips to RDS and
+    about four and a half minutes for a pass that linked nothing at all.
+
+    This is a pure memo — same rows, same scoring, so the same anchor. The one
+    deliberate change is that candidate order is now explicit (`order by
+    quote_id`) where it used to be whatever order the server happened to return;
+    that only matters for tie-breaks, which were previously unstable between runs.
+
+    Built once per pass and thrown away with it, so it cannot go stale mid-run.
+    """
+
+    def __init__(self, cur) -> None:
+        quo, qln = _DOC["quote"][3], _DOC["quote"][5]
+        poln, inv = _DOC["po"][5], _DOC["invoice"][3]
+
+        self.quotes_by_npo: dict = {}
+        self.quotes_by_supplier: dict = {}
+        self.quote_by_id: dict = {}
+        self.all_quotes: list = []
+        for q in _rows(cur, f"select * from {quo} order by quote_id"):
+            self.all_quotes.append(q)
+            # setdefault, not assignment: the uncached path takes the FIRST row a
+            # quote_id lookup returns, so a duplicate must not displace it.
+            self.quote_by_id.setdefault(str(q.get("quote_id")), q)
+            npo = _norm_po(q.get("po_id"))
+            if npo:
+                self.quotes_by_npo.setdefault(npo, []).append(q)
+            self.quotes_by_supplier.setdefault(q.get("supplier_id"), []).append(q)
+
+        self.quote_lines: dict = {}
+        for r in _rows(cur, f"select * from {qln}"):
+            self.quote_lines.setdefault(str(r.get("quote_id")), []).append(r)
+
+        self.po_lines: dict = {}
+        for r in _rows(cur, f"select * from {poln}"):
+            self.po_lines.setdefault(str(r.get("po_id")), []).append(r)
+
+        self.invoices_by_npo: dict = {}
+        for r in _rows(cur, f"select invoice_id, po_id, deal_id from {inv}"):
+            npo = _norm_po(r.get("po_id"))
+            if npo:
+                self.invoices_by_npo.setdefault(npo, []).append(r)
+
+
+def _quote_anchor_for_po(cur, po, npo=None, cache=None):
     """Return the quote that ANCHORS this PO (or None). Quote is the deal anchor:
     matched by explicit reference (quote.po_id, po_line_items.quote_number) or, when
     refs are absent, by relationship score >= QUOTE_ANCHOR_MIN_SCORE (supplier +
-    line-item/product overlap + amount + temporal). Candidates narrowed by supplier."""
+    line-item/product overlap + amount + temporal). Candidates narrowed by supplier.
+
+    `cache` is an optional `_AnchorCache`. With it, every lookup below is served
+    from memory instead of the database; without it the queries run exactly as
+    they always have, so any caller that has no cache is unaffected.
+    """
     quo = _DOC["quote"][3]
     npo = npo or _norm_po(po.get("po_id"))
+    po_id = po.get("po_id")
+    poln = _DOC["po"][5]
     # 1) explicit: a quote whose own po_id resolves to this canonical PO
     if npo:
-        ex = _rows(cur, f"select * from {quo} where {_PO_NORM_COND}=%s", (npo,))
+        ex = (cache.quotes_by_npo.get(npo, []) if cache is not None
+              else _rows(cur, f"select * from {quo} where {_PO_NORM_COND}=%s", (npo,)))
         if ex:
             return ex[0]
     # 2) the PO's line items naming a quote_number
-    poln = _DOC["po"][5]
-    for r in _rows(cur, f"select distinct quote_number from {poln} "
-                        f"where po_id=%s and coalesce(quote_number,'')<>''", (po.get("po_id"),)):
-        qr = _rows(cur, f"select * from {quo} where quote_id=%s", (str(r["quote_number"]),))
-        if qr:
-            return qr[0]
+    if cache is not None:
+        seen, numbers = set(), []
+        for r in cache.po_lines.get(str(po_id), []):        # SQL's DISTINCT, in order
+            qn = r.get("quote_number")
+            if qn is None or str(qn) == "" or str(qn) in seen:
+                continue
+            seen.add(str(qn))
+            numbers.append(str(qn))
+        for qn in numbers:
+            hit = cache.quote_by_id.get(qn)
+            if hit:
+                return hit
+    else:
+        for r in _rows(cur, f"select distinct quote_number from {poln} "
+                            f"where po_id=%s and coalesce(quote_number,'')<>''", (po_id,)):
+            qr = _rows(cur, f"select * from {quo} where quote_id=%s", (str(r["quote_number"]),))
+            if qr:
+                return qr[0]
     # 3) relationship score (supplier-narrowed; line items strengthen the match)
     sup = po.get("supplier_id")
-    cand = (_rows(cur, f"select * from {quo} where supplier_id=%s", (sup,)) if sup
-            else _rows(cur, f"select * from {quo}"))
-    po_lines = _rows(cur, f"select * from {poln} where po_id=%s", (po.get("po_id"),))
+    if cache is not None:
+        cand = cache.quotes_by_supplier.get(sup, []) if sup else cache.all_quotes
+        po_lines = cache.po_lines.get(str(po_id), [])
+    else:
+        cand = (_rows(cur, f"select * from {quo} where supplier_id=%s", (sup,)) if sup
+                else _rows(cur, f"select * from {quo}"))
+        po_lines = _rows(cur, f"select * from {poln} where po_id=%s", (po_id,))
     best, best_f = None, 0.0
     for q in cand:
-        q_lines = _rows(cur, f"select * from {_DOC['quote'][5]} where quote_id=%s", (q.get("quote_id"),))
+        q_lines = (cache.quote_lines.get(str(q.get("quote_id")), []) if cache is not None
+                   else _rows(cur, f"select * from {_DOC['quote'][5]} where quote_id=%s",
+                              (q.get("quote_id"),)))
         link = score_link(q, po, "quote_po", source_lines=q_lines, target_lines=po_lines)
         if link.get("F", 0) >= QUOTE_ANCHOR_MIN_SCORE and link["F"] > best_f:
             best, best_f = q, link["F"]
@@ -447,14 +523,15 @@ def _look_back(cur) -> int:
     deal minted) — surfaced as Orphaned_Awaiting_Quote by reconcile_status. Only
     currently-unlinked docs are stamped, so authoritative look-forward deals are never
     clobbered. Returns the number of documents newly linked."""
-    inv_trgt = _DOC["invoice"][3]
     linked = 0
     pending = pending_batch_docs(cur)
+    # Read the corpus once instead of once per PO — see _AnchorCache.
+    cache = _AnchorCache(cur)
     for po in _rows(cur, f"select * from {_PO['trgt']}"):
         npo = _norm_po(po.get("po_id"))
         if not npo:
             continue
-        quote = _quote_anchor_for_po(cur, po, npo)
+        quote = _quote_anchor_for_po(cur, po, npo, cache=cache)
         if quote is None:
             continue   # no anchoring quote -> PO + its invoices stay orphaned
         supplier = po.get("supplier_name") or po.get("supplier_id")
@@ -465,7 +542,7 @@ def _look_back(cur) -> int:
         deal_date = resolve_deal_date(po)
         members = [("po", po.get("po_id"), po.get("deal_id")),
                    ("quote", quote.get("quote_id"), quote.get("deal_id"))]
-        for inv in _rows(cur, f"select invoice_id, deal_id from {inv_trgt} where {_PO_NORM_COND}=%s", (npo,)):
+        for inv in cache.invoices_by_npo.get(npo, []):
             members.append(("invoice", inv["invoice_id"], inv.get("deal_id")))
         members = [(dt, dpk, cur_deal) for (dt, dpk, cur_deal) in members
                    if (dt, str(dpk)) not in pending]

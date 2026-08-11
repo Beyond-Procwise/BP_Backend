@@ -58,6 +58,25 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Transport exception types, re-exported.
+#
+# A caller that retries has to branch on the KIND of failure — ollama_client
+# backs off differently for a read timeout than a refused connection. Without
+# these it would have to `import requests` to name the exception, which the
+# import boundary forbids and which would make the wrapper pointless: the client
+# would be back in the caller's namespace, one keystroke from being used
+# directly.
+#
+# `ConnectionError` deliberately shadows the builtin INSIDE this namespace only.
+# Callers write `egress.ConnectionError`, which is unambiguous; nothing in this
+# module raises or catches the builtin.
+Timeout = requests.exceptions.Timeout
+ReadTimeout = requests.exceptions.ReadTimeout
+ConnectionError = requests.exceptions.ConnectionError  # noqa: A001
+HTTPError = requests.exceptions.HTTPError
+RequestException = requests.exceptions.RequestException
+Response = requests.Response
+
 
 class Purpose(str, Enum):
     """Why an outbound call is being made.
@@ -218,15 +237,25 @@ def request(
     require_global: bool = True,
     follow_redirects: bool = False,
     timeout: int = 15,
+    raise_transport_errors: bool = False,
     **kwargs: Any,
 ) -> Optional[requests.Response]:
     """Make one outbound HTTP call, described and recorded.
 
-    Returns the response, or None if it was refused or failed — callers in this
-    codebase uniformly treat an outbound failure as "no data", and raising would
-    turn a network problem into an outage in paths that currently degrade.
+    Returns the response, or None if it was refused or failed — most callers in
+    this codebase treat an outbound failure as "no data", and raising would turn
+    a network problem into an outage in paths that currently degrade.
     ``EgressDenied`` is raised only when a caller asks for it via
     :func:`request_or_raise`.
+
+    ``raise_transport_errors=True`` re-raises the original exception instead of
+    returning None, with its type intact. That exists because collapsing every
+    failure into None would silently break retry loops that branch on the KIND
+    of failure: ``ollama_client`` backs off differently for a ReadTimeout than a
+    ConnectionError, and a wrapper that hid the difference would leave the code
+    looking correct while taking one path forever. A refused DESTINATION still
+    returns None under this flag — that is not a transport failure and retrying
+    it would just re-refuse.
 
     Redirects are NOT delegated to ``requests`` by default. A redirect it follows
     is a request this function never described, checked or recorded, so each hop
@@ -257,6 +286,8 @@ def request(
         except Exception as exc:  # noqa: BLE001
             _record(purpose=purpose, destination=destination, method=method,
                     outcome="error", detail=type(exc).__name__)
+            if raise_transport_errors:
+                raise
             return None
 
         if follow_redirects and response.status_code in (301, 302, 303, 307, 308):

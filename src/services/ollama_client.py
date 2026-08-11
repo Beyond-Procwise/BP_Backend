@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-import requests
+from src.services import egress
 
 logger = logging.getLogger(__name__)
 
@@ -129,11 +129,21 @@ def ollama_generate(
             return None
 
         try:
-            response = requests.post(
+            response = egress.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
+                purpose=egress.Purpose.MODEL_INFERENCE,
                 json=payload,
                 timeout=timeout,
+                # The model daemon is on localhost by design, so the
+                # non-global address check does not apply here.
+                require_global=False,
+                # The retry loop below branches on ReadTimeout vs
+                # ConnectionError with different backoffs; it needs the real
+                # exception, not None.
+                raise_transport_errors=True,
             )
+            if response is None:
+                return None
             response.raise_for_status()
             body = response.json()
             text = (body.get("response") or "").strip()
@@ -149,7 +159,7 @@ def ollama_generate(
                     if match:
                         text = match.group(0).strip()
             return text
-        except requests.exceptions.ReadTimeout:
+        except egress.ReadTimeout:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(
                 "Ollama read timeout (attempt %d/%d, model=%s, timeout=%ds) — "
@@ -158,7 +168,7 @@ def ollama_generate(
             )
             if attempt < retries:
                 time.sleep(delay)
-        except requests.exceptions.ConnectionError:
+        except egress.ConnectionError:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(
                 "Ollama connection error (attempt %d/%d) — retrying in %ds",
@@ -228,12 +238,16 @@ def ollama_cloud_generate(
 
     for attempt in range(1, retries + 1):
         try:
-            response = requests.post(
+            response = egress.post(
                 f"{base}/api/generate",
+                purpose=egress.Purpose.MODEL_INFERENCE,
                 json=payload,
                 headers=headers,
                 timeout=timeout,
+                raise_transport_errors=True,
             )
+            if response is None:
+                return None
             response.raise_for_status()
             body = response.json()
             # Return only the user-facing response. Deliberately do NOT fall back
@@ -253,7 +267,7 @@ def ollama_cloud_generate(
                 time.sleep(min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY))
                 continue
             return text
-        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
+        except (egress.ReadTimeout, egress.ConnectionError) as exc:
             delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
             logger.warning(
                 "Ollama Cloud transient error (attempt %d/%d, model=%s): %s — retrying in %ds",
@@ -274,8 +288,10 @@ def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
     """Preload model into Ollama VRAM with keep_alive."""
     model = model or DEFAULT_MODEL
     try:
-        response = requests.post(
+        response = egress.post(
             f"{OLLAMA_BASE_URL}/api/generate",
+            purpose=egress.Purpose.MODEL_INFERENCE,
+            require_global=False,
             # The layer count MUST match what callers ask for, or this pins an instance
             # nothing else can use and the first real request stalls loading another.
             json={

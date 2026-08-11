@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-import requests
+from src.services import egress
 
 log = logging.getLogger(__name__)
 
@@ -166,7 +166,16 @@ def _chat(
     }
     if schemas:
         payload["tools"] = schemas
-    response = requests.post(_OLLAMA_CHAT, json=payload, timeout=timeout)
+    response = egress.post(
+        _OLLAMA_CHAT,
+        purpose=egress.Purpose.MODEL_INFERENCE,
+        json=payload,
+        timeout=timeout,
+        require_global=False,   # the model daemon is on localhost by design
+        raise_transport_errors=True,
+    )
+    if response is None:
+        return {}
     response.raise_for_status()
     return response.json().get("message", {}) or {}
 
@@ -264,9 +273,18 @@ def run_tools_stream(
                 "options": {"temperature": 0, "num_predict": 2048},
                 "tools": schemas,
             }
-            response = requests.post(
-                _OLLAMA_CHAT, json=payload, timeout=timeout_s, stream=True
+            response = egress.post(
+                _OLLAMA_CHAT,
+                purpose=egress.Purpose.MODEL_INFERENCE,
+                json=payload,
+                timeout=timeout_s,
+                stream=True,
+                require_global=False,
+                raise_transport_errors=True,
             )
+            if response is None:
+                result.error = "egress refused the model call"
+                return result
             response.raise_for_status()
 
             content_parts: List[str] = []

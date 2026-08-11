@@ -197,7 +197,7 @@ def test_look_back_joins_existing_po_deal_when_quote_anchors():
            "expected_delivery_date": None, "deal_id": "DEAL_A2026052891", "deal_name": "deal_a"}]
     quote = [{"quote_id": "QUT1", "po_id": "526702", "supplier_id": "SUP-Duncan",
               "deal_id": None, "deal_name": None}]
-    inv = [{"invoice_id": "INV9", "deal_id": None}]
+    inv = [{"invoice_id": "INV9", "po_id": "526702", "deal_id": None}]
     cur = _ScriptCursor(
         script=[("from proc.bp_purchase_order_trgt", po),
                 ("from proc.bp_quote_trgt", quote),
@@ -261,7 +261,7 @@ def test_look_back_forms_dealv2_when_quote_anchors():
            "expected_delivery_date": None, "deal_id": None, "deal_name": None}]
     quote = [{"quote_id": "Q41", "po_id": "502001", "supplier_id": "SUP-Thrive",
               "deal_id": None, "deal_name": None}]
-    inv = [{"invoice_id": "103404", "deal_id": None}]
+    inv = [{"invoice_id": "103404", "po_id": "502001", "deal_id": None}]
     cur = _ScriptCursor(
         script=[("from proc.bp_purchase_order_trgt", po),
                 ("from proc.bp_quote_trgt", quote),
@@ -507,3 +507,122 @@ def test_assign_deals_runs_all_passes_and_returns_counts(monkeypatch):
                                     "processed": 0, "skipped": 0}}
     assert calls == ["fwd", "back", "rec", "prop", "conf", "meta", "dates",
                      "mirror", "prune", "status"]
+
+
+# --- look-back anchor cache -------------------------------------------------
+# _look_back asks _quote_anchor_for_po for the anchoring quote of EVERY PO, and
+# each ask re-queried the corpus: the explicit-match query, the PO's line items,
+# the supplier's candidate quotes, and then one line-items query PER candidate.
+# The same quotes and the same line items were fetched again for every PO that
+# considered them — measured live on 2026-08-01 at ~4m20s for a run that linked
+# nothing at all (5,041 POs, 21,049 quotes, 115,814 quote line rows).
+#
+# The cache is a pure memo: same rows, same scoring, same anchor. These tests pin
+# that equivalence, because a faster pass that picks a DIFFERENT anchor would be
+# a correctness regression, not an optimisation.
+
+class _CountingCursor(_ScriptCursor):
+    """_ScriptCursor that also counts how many statements matched a fragment."""
+
+    def count(self, fragment):
+        return sum(1 for sql, _ in self.executed if fragment.lower() in sql.lower())
+
+
+def _anchor_case(po, quotes, quote_lines=(), po_lines=()):
+    return _CountingCursor(
+        script=[("from proc.bp_purchase_order_trgt", [po]),
+                ("from proc.bp_quote_trgt", list(quotes)),
+                ("from proc.bp_quote_line_items", list(quote_lines)),
+                ("from proc.bp_po_line_items", list(po_lines))],
+        columns=_QA_COLMAP)
+
+
+def test_cached_anchor_takes_an_explicit_po_reference():
+    """Stage 1: a quote whose own po_id resolves to this canonical PO wins outright."""
+    po = {"po_id": "502001", "supplier_id": "SUP-T", "supplier_name": "T"}
+    quotes = [{"quote_id": "Q41", "po_id": "502001", "supplier_id": "SUP-T", "deal_id": None}]
+    cur = _anchor_case(po, quotes)
+
+    got = das._quote_anchor_for_po(cur, po, cache=das._AnchorCache(cur))
+
+    assert got is not None and got.get("quote_id") == "Q41"
+
+
+def test_cached_anchor_falls_back_to_a_line_item_quote_number():
+    """Stage 2: no explicit po_id on the quote, so it is reachable only through
+    the PO's line item naming it. The cache must reproduce SQL's DISTINCT."""
+    po = {"po_id": "502001", "supplier_id": "SUP-T", "supplier_name": "T"}
+    quotes = [{"quote_id": "Q77", "po_id": None, "supplier_id": "SUP-T", "deal_id": None}]
+    po_lines = [{"po_id": "502001", "quote_number": "Q77"},
+                {"po_id": "502001", "quote_number": "Q77"},   # duplicate: DISTINCT
+                {"po_id": "502001", "quote_number": ""}]      # blank: excluded
+    cur = _anchor_case(po, quotes, po_lines=po_lines)
+
+    got = das._quote_anchor_for_po(cur, po, cache=das._AnchorCache(cur))
+
+    assert got is not None and got.get("quote_id") == "Q77"
+
+
+def test_cached_anchor_scores_candidates_with_their_own_line_items(monkeypatch):
+    """Stage 3 is the expensive one: it scores every same-supplier quote. The
+    cache must hand score_link each candidate's OWN line items, or the winner
+    changes — which would be a correctness regression, not an optimisation."""
+    po = {"po_id": "502001", "supplier_id": "SUP-T", "supplier_name": "T"}
+    quotes = [{"quote_id": "Q1", "po_id": None, "supplier_id": "SUP-T", "deal_id": None},
+              {"quote_id": "Q2", "po_id": None, "supplier_id": "SUP-T", "deal_id": None}]
+    qlines = [{"quote_id": "Q2", "description": "widget"}]
+    seen = {}
+
+    def score(src, tgt, kind, source_lines=None, target_lines=None):
+        seen[src.get("quote_id")] = list(source_lines or [])
+        return {"F": 99.0 if source_lines else 10.0}
+
+    monkeypatch.setattr(das, "score_link", score)
+    cur = _anchor_case(po, quotes, quote_lines=qlines)
+
+    got = das._quote_anchor_for_po(cur, po, cache=das._AnchorCache(cur))
+
+    assert got is not None and got.get("quote_id") == "Q2"
+    assert seen["Q1"] == [], "Q1 has no lines and must not be given Q2's"
+    assert len(seen["Q2"]) == 1
+
+
+def test_the_uncached_path_still_queries(monkeypatch):
+    """Regression guard: the no-cache path is the contract for any other caller,
+    so it must keep working rather than quietly become dead code."""
+    po = {"po_id": "502001", "supplier_id": "SUP-T", "supplier_name": "T"}
+    quotes = [{"quote_id": "Q41", "po_id": "502001", "supplier_id": "SUP-T", "deal_id": None}]
+    cur = _anchor_case(po, quotes)
+
+    das._quote_anchor_for_po(cur, po)
+
+    # The narrow, npo-filtered lookup — NOT the cache's unfiltered corpus read.
+    # Asserting on the table alone would pass even if this path were replaced by
+    # "build a whole cache for one PO", which is the opposite of the point.
+    assert any(das._PO_NORM_COND in sql for sql, _ in cur.executed), \
+        "the uncached path must issue its own filtered query"
+    assert not any("order by quote_id" in sql.lower() for sql, _ in cur.executed), \
+        "it must not build the full-corpus cache for a single lookup"
+
+
+def test_look_back_reads_each_table_once_not_once_per_po(monkeypatch):
+    """THE fix. Three POs used to mean three passes over the quote corpus; now the
+    corpus is read once up front however many POs there are."""
+    pos = [{"po_id": f"5020{i:02d}", "supplier_id": "SUP-T", "supplier_name": "T",
+            "expected_delivery_date": None, "deal_id": "D1", "deal_name": "D"}
+           for i in range(3)]
+    quotes = [{"quote_id": "Q1", "po_id": None, "supplier_id": "SUP-T",
+               "deal_id": "D1", "deal_name": "D"}]
+    cur = _CountingCursor(
+        script=[("from proc.bp_purchase_order_trgt", pos),
+                ("from proc.bp_quote_trgt", quotes),
+                ("from proc.bp_quote_line_items", []),
+                ("from proc.bp_po_line_items", [])],
+        columns=_QA_COLMAP)
+    monkeypatch.setattr(das, "score_link", lambda *a, **k: {"F": 99.0})
+
+    das._look_back(cur)
+
+    assert cur.count("from proc.bp_quote_trgt") == 1, "the quote corpus must be read once"
+    assert cur.count("from proc.bp_quote_line_items") == 1
+    assert cur.count("from proc.bp_invoice_trgt") == 1

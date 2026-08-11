@@ -11,7 +11,7 @@ import logging
 import os
 import re
 
-import requests
+from src.services import egress
 
 from src.services.governance_tools import tools as GT
 
@@ -198,11 +198,20 @@ def _audit(result: dict, task: str, agent: str | None) -> dict:
 
 
 def _chat(messages: list[dict]) -> dict:
-    r = requests.post(_OLLAMA_CHAT, json={
-        "model": _MODEL, "messages": messages, "tools": _TOOLS,
-        "stream": False, "think": False, "keep_alive": -1,
-        "options": {"temperature": 0, "num_predict": 2048},
-    }, timeout=180)
+    r = egress.post(
+        _OLLAMA_CHAT,
+        purpose=egress.Purpose.MODEL_INFERENCE,
+        json={
+            "model": _MODEL, "messages": messages, "tools": _TOOLS,
+            "stream": False, "think": False, "keep_alive": -1,
+            "options": {"temperature": 0, "num_predict": 2048},
+        },
+        timeout=180,
+        require_global=False,   # the model daemon is on localhost by design
+        raise_transport_errors=True,
+    )
+    if r is None:
+        return {}
     r.raise_for_status()
     return r.json().get("message", {})
 
