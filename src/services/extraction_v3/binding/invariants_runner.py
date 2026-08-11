@@ -116,8 +116,40 @@ def run_invariants(
         out.append(
             InvariantResult(
                 name=r.name,
-                severity=sev_str,
+                severity=_severity_for(r, sev_str),
                 message=getattr(r, "message", None) or None,
             )
         )
     return out
+
+
+def _severity_for(result, raw: str) -> str:
+    """Map a ValidatorResult onto the vocabulary InvariantResult declares.
+
+    That vocabulary — "PASS" | "INFO" | "WARNING" | "CRITICAL" | "NA" — has been
+    in the dataclass comment since this file was written, and was never
+    implemented: the raw v2 severity was passed straight through. Two things
+    went wrong as a result, and consumers could not tell them apart.
+
+    ``ValidatorResult.ok()`` does not set a severity, so it inherits the
+    dataclass default of WARNING. A satisfied invariant therefore arrived
+    claiming "warning" — identical to a failed one. dispatch.py files a
+    discrepancy per WARNING, so honouring the raw value would have filed one for
+    every invariant that HELD.
+
+    And the raw values are lowercase while every consumer compares against the
+    uppercase names in the declared vocabulary, so nothing matched at all. Live
+    on 2026-08-11: 0 rows of issue_type='invariant_failed' against 821
+    discrepancies of every other type.
+
+    So: a pass is PASS, an abstention is NA, and only a genuine failure carries a
+    severity that asks anyone to act.
+    """
+    if getattr(result, "passed", False):
+        # ValidatorResult.na() is a pass carrying message="not_applicable".
+        # Abstaining is not the same as passing — the check could not run, and a
+        # reader who cannot tell those apart cannot tell coverage from success.
+        if (getattr(result, "message", "") or "") == "not_applicable":
+            return "NA"
+        return "PASS"
+    return (raw or "").upper() or "WARNING"

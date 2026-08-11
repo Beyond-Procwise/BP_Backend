@@ -551,10 +551,18 @@ def dispatch_document(
     # document waits on the Action page for a person instead of being promoted on a guess.
     _apply_currency_resolution(columns, full_text, registry, discrepancies)
 
-    # Invariants
+    # Invariants.
+    #
+    # `line_items` is passed, not []. It used to be [], although the list is in
+    # scope and fully populated by this point — built at build_line_items,
+    # replaced by the recovery pass, and trimmed by the subtotal-closure step
+    # above. With an empty list every line-level check returned not_applicable,
+    # so line_arithmetic (quantity x unit_price = line_amount), subtotal_closure
+    # and line_sum_closure never ran on any document. line_arithmetic is exactly
+    # the check that would have caught a unit price booked as a line total.
     try:
         invariant_results = run_invariants(
-            header=columns, line_items=[], schema=registry.schema,
+            header=columns, line_items=line_items, schema=registry.schema,
         )
     except Exception as exc:
         log.warning("invariants_runner failed: %s", exc)
