@@ -418,19 +418,106 @@ def aws_client(service: str, *, purpose: Purpose, **kwargs: Any) -> Any:
     return client
 
 
+class EgressDisabled(RuntimeError):
+    """Raised when an outbound path is switched off and the caller was writing.
+
+    Distinct from ``EgressDenied``, which means policy refused this particular
+    call. This means the whole channel is off by configuration.
+    """
+
+
+def external_rag_enabled() -> bool:
+    """Whether document text may be sent to the external vector index.
+
+    ``RAG_EXTERNAL_ENABLED=0`` turns it off. Default ON, because turning it off
+    on an existing deployment without being asked would silently empty every
+    search result — the switch exists to be a deliberate choice, in both
+    directions.
+    """
+    import os
+    return os.getenv("RAG_EXTERNAL_ENABLED", "1").strip() not in ("0", "false", "False")
+
+
+class _DisabledVectorClient:
+    """Stands in for QdrantClient when the external index is switched off.
+
+    The asymmetry here is deliberate and is the whole design:
+
+      READS return empty. A search that finds nothing is what "we hold no
+      documents you can search" looks like, and the product degrades to
+      answering from the database instead of failing. That is the graceful
+      degradation the audit asked for.
+
+      WRITES raise. A no-op upsert would let a document report as ingested and
+      then never be findable — data loss wearing the costume of success. If
+      embedding is off, an upload must fail loudly enough that somebody turns it
+      back on or stops uploading.
+
+    Attribute access for anything unrecognised raises too, rather than returning
+    a Mock-like object that would make an unknown call silently succeed.
+    """
+
+    _READ_EMPTY: dict[str, Any] = {
+        "search": [], "query_points": [], "scroll": ([], None),
+        "retrieve": [], "search_batch": [], "get_collections": None,
+        "count": 0,
+    }
+
+    def __init__(self, destination: str) -> None:
+        self._destination = destination
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._READ_EMPTY:
+            empty = self._READ_EMPTY[name]
+
+            def _read(*_a: Any, **_kw: Any) -> Any:
+                logger.debug(
+                    "vector index disabled: %s returned empty", name
+                )
+                return empty
+
+            return _read
+
+        def _write(*_a: Any, **_kw: Any) -> Any:
+            _record(purpose=Purpose.VECTOR_INDEX, destination=self._destination,
+                    method=name.upper(), outcome="disabled",
+                    detail="RAG_EXTERNAL_ENABLED=0")
+            raise EgressDisabled(
+                f"the external vector index is disabled (RAG_EXTERNAL_ENABLED=0), "
+                f"so {name}() cannot run. Reads degrade to empty; writes refuse, "
+                f"because a silent no-op would make a document look ingested and "
+                f"leave it unsearchable."
+            )
+
+        return _write
+
+
 def vector_client(*, purpose: Purpose, url: str, api_key: Optional[str] = None,
                   **kwargs: Any) -> Any:
-    """A QdrantClient, with its CONSTRUCTION recorded.
+    """A QdrantClient, with its CONSTRUCTION recorded — or a disabled stand-in.
+
+    The ``RAG_EXTERNAL_ENABLED`` check lives HERE rather than at the callers.
+    The audit's I3 finding was that the one enrichment switch in the codebase is
+    read at exactly one line, in one router, while four other importable entry
+    points to the same egress ignore it. A switch each caller must remember to
+    consult is a switch some caller will not.
 
     Per-call recording is not available: qdrant_client offers no request hook to
     attach to. The line this writes says a client was made for a purpose against
     a host — it does not describe the upserts and searches that follow. Anyone
-    reading an egress log should know that a single line here can stand for a
-    great many payloads.
+    reading an egress log should know a single line here can stand for a great
+    many payloads.
     """
+    destination = urlsplit(url).hostname or url
+
+    if not external_rag_enabled():
+        _record(purpose=purpose, destination=destination, method="CONNECT",
+                outcome="disabled", detail="RAG_EXTERNAL_ENABLED=0")
+        return _DisabledVectorClient(destination)
+
     from qdrant_client import QdrantClient
 
-    _record(purpose=purpose, destination=urlsplit(url).hostname or url,
+    _record(purpose=purpose, destination=destination,
             method="CONNECT", outcome="client_created",
             detail="qdrant; per-call recording unavailable")
     return QdrantClient(url=url, api_key=api_key, **kwargs)

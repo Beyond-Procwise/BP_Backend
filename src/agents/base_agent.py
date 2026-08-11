@@ -1478,7 +1478,19 @@ class AgentNick:
         os.environ.setdefault("OLLAMA_NUM_PARALLEL", "8")
         os.environ.setdefault("OMP_NUM_THREADS", "8")
         self._db_engine = None
-        self.qdrant_client = QdrantClient(url=self.settings.qdrant_url, api_key=self.settings.qdrant_api_key)
+        # The ONE production construction of a Qdrant client. Every other
+        # consumer — rag_service, document_embedding_service, learning_repository,
+        # the agents — borrows this instance off agent_nick rather than making
+        # its own, so routing this single line through egress puts the whole
+        # vector-index path behind RAG_EXTERNAL_ENABLED and the egress record.
+        # (The two other QdrantClient constructions in the tree are one-off
+        # migration scripts.)
+        from src.services import egress as _egress
+        self.qdrant_client = _egress.vector_client(
+            purpose=_egress.Purpose.VECTOR_INDEX,
+            url=self.settings.qdrant_url,
+            api_key=self.settings.qdrant_api_key,
+        )
         self.embedding_model = SentenceTransformer(self.settings.embedding_model, device=self.device)
         self.learning_repository = LearningRepository(self)
         self.static_policy_loader: Optional[StaticPolicyLoader] = None
