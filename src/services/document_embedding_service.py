@@ -48,6 +48,13 @@ from services.semantic_cache import SemanticCacheManager
 #
 # Adding a key here also purges it from existing points on the next write, via
 # _remove_disallowed_payload_fields / rag_service._purge_disallowed_metadata.
+#
+# OPEN, as of 2026-08-11: points written BEFORE this set was populated still
+# carry both keys — 244 in procwise_document_embeddings, 6 in uploaded_documents.
+# The purge above clears them, but only when something next writes to that
+# collection, which may be today or next month. Whether to run it deliberately
+# instead is an open decision, with the one-off script and the reasoning in
+# docs/remediation/02_open_operational_actions.md.
 DISALLOWED_METADATA_KEYS: set[str] = {
     "uploaded_by",
     "s3_key",
