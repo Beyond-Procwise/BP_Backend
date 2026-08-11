@@ -51,12 +51,15 @@ def _try_download_key(key: str, bucket: str, dest: str) -> bool:
     """Attempt one S3 GetObject for (bucket, key) → dest path.
     Returns True if downloaded a non-empty body."""
     try:
-        import boto3
-    except ImportError:  # pragma: no cover - boto3 must be present in prod
-        log.warning("boto3 not installed; cannot download s3://%s/%s", bucket, key)
+        from src.services import egress
+    except ImportError:  # pragma: no cover - defensive
+        log.warning("egress unavailable; cannot download s3://%s/%s", bucket, key)
         return False
     try:
-        client = boto3.client("s3")
+        # Through the factory so the GetObject is recorded with a purpose. The
+        # client returned is an ordinary boto3 client; nothing about the call
+        # below changes.
+        client = egress.aws_client("s3", purpose=egress.Purpose.OBJECT_STORAGE)
         resp = client.get_object(Bucket=bucket, Key=key)
         body = resp.get("Body") if isinstance(resp, dict) else None
         if body is None:

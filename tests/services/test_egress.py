@@ -193,3 +193,80 @@ def test_request_or_raise_distinguishes_refused_from_empty(transport):
         egress.request_or_raise("GET", "http://169.254.169.254/",
                                 purpose=Purpose.SUPPLIER_RESEARCH)
     assert exc.value.purpose == "supplier_research"
+
+
+# --------------------------------------------------------------------------
+# SDK clients
+#
+# The point of these is the ASYMMETRY. aws_client records every request;
+# vector_client and graph_client record only that a client was made. Asserting
+# that difference is what stops a reader of an egress log assuming uniform
+# coverage.
+# --------------------------------------------------------------------------
+
+def test_an_aws_client_records_every_request_not_just_its_construction(caplog):
+    client = egress.aws_client(
+        "s3", purpose=Purpose.OBJECT_STORAGE, region_name="eu-west-1",
+        aws_access_key_id="x", aws_secret_access_key="y",
+    )
+    with caplog.at_level(logging.INFO, logger="src.services.egress"):
+        try:
+            client.list_buckets()
+        except Exception:
+            pass          # offline / bad creds: the hook fires before the send
+    line = "\n".join(caplog.messages)
+    assert "purpose=object_storage" in line
+    assert "outcome=aws_request" in line
+    assert "amazonaws.com" in line
+
+
+def test_constructing_an_aws_client_alone_records_nothing(caplog):
+    """Construction is not a request. A line here would inflate the record with
+    events that put no bytes on the wire."""
+    with caplog.at_level(logging.INFO, logger="src.services.egress"):
+        egress.aws_client("s3", purpose=Purpose.OBJECT_STORAGE,
+                          region_name="eu-west-1",
+                          aws_access_key_id="x", aws_secret_access_key="y")
+    assert "aws_request" not in "\n".join(caplog.messages)
+
+
+def test_a_vector_client_records_its_construction_and_says_what_it_cannot_see(
+    monkeypatch, caplog,
+):
+    """qdrant_client has no request hook. One line stands for every upsert and
+    search that follows, and the record says so rather than implying each call
+    was seen."""
+    import qdrant_client
+    monkeypatch.setattr(qdrant_client, "QdrantClient",
+                        lambda **kw: object())
+    with caplog.at_level(logging.INFO, logger="src.services.egress"):
+        egress.vector_client(purpose=Purpose.VECTOR_INDEX,
+                             url="https://abc.eu-central-1-0.aws.cloud.qdrant.io:6333",
+                             api_key="k")
+    line = "\n".join(caplog.messages)
+    assert "outcome=client_created" in line
+    assert "destination=abc.eu-central-1-0.aws.cloud.qdrant.io" in line
+    assert "per-call recording unavailable" in line
+
+
+def test_a_graph_client_carries_the_same_caveat(monkeypatch, caplog):
+    # neo4j is not installed in every environment (it is absent from this venv,
+    # which is why the four modules that import it do so lazily). Skip rather
+    # than pretend the driver is there.
+    neo4j = pytest.importorskip("neo4j")
+    monkeypatch.setattr(neo4j.GraphDatabase, "driver",
+                        staticmethod(lambda uri, auth=None, **kw: object()))
+    with caplog.at_level(logging.INFO, logger="src.services.egress"):
+        egress.graph_client(purpose=Purpose.GRAPH, uri="bolt://localhost:7687")
+    line = "\n".join(caplog.messages)
+    assert "outcome=client_created" in line
+    assert "per-call recording unavailable" in line
+
+
+def test_the_sdk_factories_return_a_real_client(monkeypatch):
+    """A wrapper that changed behaviour would be rejected by callers, and a
+    factory nobody uses records nothing."""
+    client = egress.aws_client("s3", purpose=Purpose.OBJECT_STORAGE,
+                               region_name="eu-west-1",
+                               aws_access_key_id="x", aws_secret_access_key="y")
+    assert hasattr(client, "list_buckets") and hasattr(client, "put_object")

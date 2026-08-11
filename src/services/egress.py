@@ -93,6 +93,10 @@ class Purpose(str, Enum):
     MAILBOX = "mailbox"                          # IMAP/Graph mailbox access
     NOTIFICATION = "notification"                # outbound mail
     HEALTHCHECK = "healthcheck"                  # liveness, carries no payload
+    OBJECT_STORAGE = "object_storage"            # S3 document read/write
+    SECRETS = "secrets"                          # Secrets Manager / STS
+    QUEUE = "queue"                              # SQS
+    GRAPH = "graph"                              # knowledge-graph read/write
 
 
 @dataclass(frozen=True)
@@ -312,6 +316,99 @@ def get(url: str, *, purpose: Purpose, **kwargs: Any) -> Optional[requests.Respo
 
 def post(url: str, *, purpose: Purpose, **kwargs: Any) -> Optional[requests.Response]:
     return request("POST", url, purpose=purpose, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# SDK clients
+#
+# boto3, qdrant_client and neo4j open their own connections. They cannot be
+# routed through the HTTP wrapper above without reimplementing them, so the
+# shape here is a factory: the caller says why it wants a client, and gets a
+# real one back with recording attached.
+#
+# THE COVERAGE IS NOT UNIFORM, and pretending otherwise would be the same defect
+# this module exists to fix:
+#
+#   aws_client     botocore has a per-request event hook, so EVERY call the
+#                  client makes is recorded, with its destination. Genuine
+#                  coverage, equivalent to the HTTP path.
+#   vector_client  qdrant_client exposes no comparable hook. Only the
+#                  CONSTRUCTION is recorded — one line saying a client was made
+#                  for a purpose, against a host. The individual upserts and
+#                  searches are not visible here.
+#   graph_client   same as vector_client.
+#
+# So a `bp_egress_event` built on this would be complete for AWS and a
+# construction-level summary for the other two. That is worth having and worth
+# saying out loud; it is not the same thing as auditing every call.
+# ---------------------------------------------------------------------------
+
+def _record_sdk_request(purpose: Purpose, service: str):
+    """A botocore ``before-send`` handler that records one AWS request."""
+
+    def _handler(request=None, **_kwargs: Any) -> None:
+        url = getattr(request, "url", "") or ""
+        _record(
+            purpose=purpose,
+            destination=urlsplit(url).hostname or service,
+            method=getattr(request, "method", "?"),
+            outcome="aws_request",
+            detail=service,
+        )
+        return None
+
+    return _handler
+
+
+def aws_client(service: str, *, purpose: Purpose, **kwargs: Any) -> Any:
+    """A boto3 client that records every request it makes.
+
+    The recording is attached with botocore's ``before-send`` event, so it fires
+    per request rather than per client — a client is constructed once and used
+    for thousands of calls, and a construction-time line would describe almost
+    none of them.
+
+    The client returned is a real boto3 client with no behaviour changed. This
+    does not gate AWS calls; it makes them visible.
+    """
+    import boto3  # imported here so the module has no hard AWS dependency
+
+    client = boto3.client(service, **kwargs)
+    client.meta.events.register(
+        "before-send.*.*", _record_sdk_request(purpose, service)
+    )
+    return client
+
+
+def vector_client(*, purpose: Purpose, url: str, api_key: Optional[str] = None,
+                  **kwargs: Any) -> Any:
+    """A QdrantClient, with its CONSTRUCTION recorded.
+
+    Per-call recording is not available: qdrant_client offers no request hook to
+    attach to. The line this writes says a client was made for a purpose against
+    a host — it does not describe the upserts and searches that follow. Anyone
+    reading an egress log should know that a single line here can stand for a
+    great many payloads.
+    """
+    from qdrant_client import QdrantClient
+
+    _record(purpose=purpose, destination=urlsplit(url).hostname or url,
+            method="CONNECT", outcome="client_created",
+            detail="qdrant; per-call recording unavailable")
+    return QdrantClient(url=url, api_key=api_key, **kwargs)
+
+
+def graph_client(*, purpose: Purpose, uri: str, auth: Any = None,
+                 **kwargs: Any) -> Any:
+    """A neo4j driver, with its CONSTRUCTION recorded. Same caveat as
+    :func:`vector_client`: the queries that follow are not individually visible.
+    """
+    from neo4j import GraphDatabase
+
+    _record(purpose=purpose, destination=urlsplit(uri).hostname or uri,
+            method="CONNECT", outcome="client_created",
+            detail="neo4j; per-call recording unavailable")
+    return GraphDatabase.driver(uri, auth=auth, **kwargs)
 
 
 def request_or_raise(method: str, url: str, *, purpose: Purpose,

@@ -14,8 +14,7 @@ import threading
 import time
 from typing import Optional
 
-import requests
-from qdrant_client import QdrantClient
+from src.services import egress
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +42,15 @@ def is_qdrant_healthy(url: str = "http://localhost:6333", api_key: Optional[str]
         headers = {}
         if api_key:
             headers["api-key"] = api_key
-        resp = requests.get(f"{url}/healthz", timeout=5, headers=headers)
+        resp = egress.get(
+            f"{url}/healthz",
+            purpose=egress.Purpose.HEALTHCHECK,
+            timeout=5,
+            headers=headers,
+            require_global=False,   # Qdrant may be local or in-VPC
+        )
+        if resp is None:
+            return False
         return resp.status_code == 200
     except Exception:
         return False
@@ -162,7 +169,7 @@ def reconnect_qdrant_client(
     *,
     url: Optional[str] = None,
     api_key: Optional[str] = None,
-) -> QdrantClient:
+) -> object:
     """Reconnect the QdrantClient on ``agent_nick`` after a recovery.
 
     Creates a fresh client instance and replaces the old one on the shared
@@ -171,7 +178,11 @@ def reconnect_qdrant_client(
     qdrant_url = url or getattr(agent_nick.settings, "qdrant_url", "http://localhost:6333")
     qdrant_api_key = api_key or getattr(agent_nick.settings, "qdrant_api_key", None)
 
-    new_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+    new_client = egress.vector_client(
+        purpose=egress.Purpose.VECTOR_INDEX,
+        url=qdrant_url,
+        api_key=qdrant_api_key,
+    )
 
     # Verify the new client works
     try:
