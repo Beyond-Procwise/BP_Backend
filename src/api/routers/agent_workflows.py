@@ -240,7 +240,7 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
         return {
             "run_id": run_id, "status": status, "pending": [],
             "nodes": _describe_nodes(wf["graph"]),
-            "node_statuses": {}, "errors": [],
+            "node_statuses": {}, "node_results": {}, "errors": [],
         }
 
     try:
@@ -268,10 +268,103 @@ def _execute(request: Request, run_id: str, wf: Dict[str, Any],
         "run_id": run_id,
         "status": getattr(state, "status", "completed"),
         "node_statuses": {k: getattr(v, "value", v) for k, v in state.node_statuses.items()},
+        "node_results": _summarise_node_results(
+            getattr(state, "node_results", {}) or {}, wf["graph"]
+        ),
         "errors": _readable_errors(state.errors, wf["graph"]),
         "nodes": _describe_nodes(wf["graph"]),
         "pending": [],
     }
+
+
+# Keys an agent writes for the process, not the person: run bookkeeping, context
+# snapshots, plans. A result card that shipped these would put the system's
+# internals on the wire — the exact thing _readable_errors stopped doing for
+# failures, done here for successes.
+_INTERNAL_RESULT_KEYS = {
+    "action_id", "context", "plan", "routing_history", "task_profile",
+    "policy_context", "knowledge_base", "input_data", "shared_data", "raw",
+    "raw_response", "trace", "messages", "prompt",
+}
+
+# Prose keys, in the order a human would want them as the card's one-line answer.
+_HEADLINE_KEYS = ("summary", "message", "answer", "recommendation", "status_message")
+
+_MAX_FACTS = 6
+_MAX_VALUE_CHARS = 120
+
+
+def _fact_label(key: str) -> str:
+    return key.replace("_", " ").strip().capitalize()
+
+
+def _summarise_node_results(
+    node_results: Dict[str, Any], graph: Dict[str, Any]
+) -> Dict[str, Dict[str, Any]]:
+    """One renderable card per node: a headline and a few flat facts.
+
+    Summarised, never forwarded: scalars are kept (truncated), lists become
+    counts, and nested dicts, underscored keys and known-internal keys do not
+    leave the process at all. Everything that does leave goes through the
+    output-safety gate — an agent's summary sentence can name a table or a
+    stack frame just as easily as an error string can.
+    """
+    from services import output_safety as osafe
+
+    labels = {n.get("id"): n.get("agent_slug") for n in (graph.get("nodes") or [])}
+
+    cards: Dict[str, Dict[str, Any]] = {}
+    for node_id, data in (node_results or {}).items():
+        data = data if isinstance(data, dict) else {}
+
+        headline = ""
+        for key in _HEADLINE_KEYS:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                headline = value.strip()[:200]
+                break
+
+        facts: List[Dict[str, str]] = []
+        for key, value in data.items():
+            if len(facts) >= _MAX_FACTS:
+                break
+            if not isinstance(key, str) or key.startswith("_"):
+                continue
+            if key in _INTERNAL_RESULT_KEYS or key in _HEADLINE_KEYS:
+                continue
+            if isinstance(value, bool):
+                shown = "yes" if value else "no"
+            elif isinstance(value, int):
+                shown = str(value)
+            elif isinstance(value, float):
+                # 44154.802707999974 is a computation artefact, not a figure
+                # a person reads.
+                shown = f"{value:.2f}"
+            elif isinstance(value, str):
+                if not value.strip() or len(value) > _MAX_VALUE_CHARS:
+                    continue
+                shown = value.strip()
+            elif isinstance(value, list):
+                if not value:
+                    continue
+                shown = f"{len(value)} item" + ("" if len(value) == 1 else "s")
+            else:
+                continue  # dicts and anything exotic stay in the process
+            facts.append({"label": _fact_label(key), "value": shown})
+
+        if not headline:
+            headline = (
+                f"Produced {facts[0]['value']} — {facts[0]['label'].lower()}"
+                if facts and facts[0]["value"].endswith("items")
+                else "Completed"
+            )
+
+        cards[node_id] = {
+            "agent_slug": labels.get(node_id) or "",
+            "headline": osafe.enforce(headline, where="workflow result headline"),
+            "facts": osafe.scrub_payload(facts, where="workflow result facts"),
+        }
+    return cards
 
 
 def _readable_errors(errors: Any, graph: Dict[str, Any]) -> List[str]:
