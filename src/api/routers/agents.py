@@ -163,7 +163,9 @@ class CreateAgentBody(BaseModel):
     slug: Optional[str] = None
     description: str = ""
     backing_slug: str
-    instructions: str
+    # Optional on purpose: the workspace console sends only a description —
+    # the governed prompt is derived from it. Explicit instructions still win.
+    instructions: str = ""
     capabilities: Optional[List[str]] = None
     # Both optional, and both meaning "leave it alone" when absent. An agent
     # created without them behaves exactly as one created before they existed:
@@ -320,9 +322,13 @@ async def create_agent(
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="name must not be empty")
-    instructions = body.instructions or ""
-    if not instructions.strip():
-        raise HTTPException(status_code=422, detail="instructions must not be empty")
+    instructions = (body.instructions or "").strip() or (body.description or "").strip()
+    if not instructions:
+        raise HTTPException(
+            status_code=422,
+            detail="instructions or description required: one of them becomes "
+                   "the governed prompt that tells this agent what to do",
+        )
 
     slug = (body.slug or _kebab(name)).strip()
     if not _KEBAB_RE.match(slug):
