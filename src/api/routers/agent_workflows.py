@@ -7,7 +7,10 @@ workflow works out what it cannot know and asks the human for it. It never guess
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
+from collections import OrderedDict
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -153,19 +156,57 @@ def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str,
 
 @router.get("/runs/{run_id}")
 def get_run(run_id: str) -> Dict[str, Any]:
-    """Surface the run's real persisted status alongside its pending questions,
-    so an operator/UI can tell 'executing' / 'completed' / 'failed' /
-    'awaiting_input' apart — an unknown run and a completed run were
-    previously indistinguishable (both returned an empty ``pending`` list).
+    """The run's persisted status, its pending questions, AND its live
+    per-node progress — the poll target that lets the canvas light nodes up
+    while a run executes in the background instead of freezing on a held
+    request (programme item A3).
     """
     run_row = reqrepo.get_run(run_id)
     if run_row is None:
         raise HTTPException(status_code=404, detail=f"No such run {run_id}")
-    return {
+
+    status = run_row["status"]
+    state = _LIVE_RUNS.get(run_id)
+
+    # A row saying "executing" with no live state in this process means the
+    # server restarted mid-run: the thread is gone and no amount of polling
+    # will finish it. Heal it to failed on first sight rather than reporting
+    # "executing" forever.
+    if status == "executing" and state is None:
+        reqrepo.finish_run(run_id, "failed")
+        return {
+            "run_id": run_id, "status": "failed",
+            "pending": [],
+            "node_statuses": {}, "node_results": {},
+            "errors": ["The run was interrupted by a server restart — run it again."],
+            "nodes": [],
+        }
+
+    # The run ROW carries the workflow id (create_run stores it); the
+    # request-rows resolver is only a fallback for legacy rows. A run that
+    # asked no questions has NO request rows, so resolving through them
+    # alone returned None and progress rendered empty (live bug, 2026-08-22).
+    graph = None
+    workflow_id = run_row.get("agent_workflow_id") or reqrepo.workflow_id_for(run_id)
+    if workflow_id is not None:
+        wf = repo.get(workflow_id)
+        if wf:
+            graph = wf["graph"]
+
+    out: Dict[str, Any] = {
         "run_id": run_id,
-        "status": run_row["status"],
+        "status": status,
         "pending": reqrepo.open_requests(run_id),
+        "node_statuses": {}, "node_results": {}, "errors": [],
+        "nodes": _describe_nodes(graph) if graph else [],
     }
+    if state is not None and graph is not None:
+        out["node_statuses"] = {
+            k: getattr(v, "value", v) for k, v in state.node_statuses.items()
+        }
+        out["node_results"] = _summarise_node_results(state.node_results, graph)
+        out["errors"] = _readable_errors(state.errors, graph)
+    return out
 
 
 @router.post("/runs/{run_id}/input")
@@ -219,9 +260,32 @@ def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, A
     return _claim_and_execute(request, run_id, wf, {**original_payload, **answers}, "human")
 
 
+# A run gets this long to finish in-request before the caller is answered
+# "executing" and left to poll GET /runs/{run_id}. Short runs still feel
+# instant; a GPU-bound run no longer holds the connection for minutes.
+_SYNC_GRACE_SECONDS = 1.0
+
+# Live WorkflowState per run, readable by GET /runs/{run_id} while the
+# background thread mutates it (the engine mutates the resume_state object in
+# place, so a snapshot read here is always current). Completed runs stay until
+# the cap evicts them — the canvas polls once more AFTER completion to fetch
+# the final results. In-process on purpose: this service runs one worker, and
+# the durable run row (proc, via reqrepo) still owns the status of record.
+_LIVE_RUNS: "OrderedDict[str, Any]" = OrderedDict()
+_LIVE_RUNS_CAP = 100
+
+
+def _remember_live_run(run_id: str, state: Any) -> None:
+    _LIVE_RUNS[run_id] = state
+    _LIVE_RUNS.move_to_end(run_id)
+    while len(_LIVE_RUNS) > _LIVE_RUNS_CAP:
+        _LIVE_RUNS.popitem(last=False)
+
+
 def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
                         input_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Atomically claim this run for execution, then execute it exactly once.
+    """Atomically claim this run, then execute it exactly once — in the
+    background.
 
     The claim is a single conditional UPDATE (see
     ``workflow_input_request_repo.claim_for_execution``) so a replayed final
@@ -231,6 +295,11 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
     instead of running it again (the agents this can trigger include
     email_dispatch, negotiation and supplier_interaction — running twice
     means sending real emails twice).
+
+    Execution happens on a daemon thread; the request waits at most
+    ``_SYNC_GRACE_SECONDS`` and then answers with whatever state the run has
+    reached — "executing" if it is still going, final state if it finished
+    inside the grace. The canvas polls GET /runs/{run_id} for the rest.
     """
     if not reqrepo.claim_for_execution(run_id):
         run_row = reqrepo.get_run(run_id)
@@ -243,38 +312,70 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
             "node_statuses": {}, "node_results": {}, "errors": [],
         }
 
+    # Anything that must fail loudly — no orchestrator, an uncompilable graph —
+    # fails HERE, before a thread exists, and marks the claimed run failed so
+    # it is not left "executing" forever.
     try:
-        result = _execute(request, run_id, wf, input_data, user_id)
+        orchestrator = getattr(request.app.state, "orchestrator", None)
+        if orchestrator is None:
+            raise HTTPException(status_code=503, detail="Orchestrator not available")
+        engine = getattr(orchestrator, "_workflow_engine", None)
+        if engine is None:
+            raise HTTPException(status_code=503, detail="Workflow engine not available")
+        graph = compile_graph(wf["name"], wf["graph"])
     except Exception:
         reqrepo.finish_run(run_id, "failed")
         raise
-    reqrepo.finish_run(run_id, "failed" if result.get("errors") else "completed")
-    return result
 
+    from orchestration.workflow_engine import WorkflowState
 
-def _execute(request: Request, run_id: str, wf: Dict[str, Any],
-             input_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    orchestrator = getattr(request.app.state, "orchestrator", None)
-    if orchestrator is None:
-        raise HTTPException(status_code=503, detail="Orchestrator not available")
-    engine = getattr(orchestrator, "_workflow_engine", None)
-    if engine is None:
-        raise HTTPException(status_code=503, detail="Workflow engine not available")
+    state = WorkflowState(
+        workflow_id=run_id,
+        workflow_name=wf["name"],
+        user_id=user_id,
+        started_at=datetime.utcnow().isoformat(),
+        shared_data=dict(input_data or {}),
+    )
+    _remember_live_run(run_id, state)
 
-    graph = compile_graph(wf["name"], wf["graph"])
-    state = engine.execute(graph, input_data=input_data, user_id=user_id, workflow_id=run_id)
+    worker = threading.Thread(
+        target=_run_to_completion,
+        args=(engine, graph, state, run_id, user_id),
+        name=f"agent-workflow-{run_id}",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=_SYNC_GRACE_SECONDS)
 
+    run_row = reqrepo.get_run(run_id)
     return {
         "run_id": run_id,
-        "status": getattr(state, "status", "completed"),
-        "node_statuses": {k: getattr(v, "value", v) for k, v in state.node_statuses.items()},
-        "node_results": _summarise_node_results(
-            getattr(state, "node_results", {}) or {}, wf["graph"]
-        ),
+        "status": run_row["status"] if run_row else "executing",
+        "node_statuses": {
+            k: getattr(v, "value", v) for k, v in state.node_statuses.items()
+        },
+        "node_results": _summarise_node_results(state.node_results, wf["graph"]),
         "errors": _readable_errors(state.errors, wf["graph"]),
         "nodes": _describe_nodes(wf["graph"]),
         "pending": [],
     }
+
+
+def _run_to_completion(engine: Any, graph: Any, state: Any, run_id: str,
+                       user_id: str) -> None:
+    """The background body of a run. Owns the terminal status of the run row:
+    whatever happens — a clean finish, agent-level errors, or the engine
+    itself raising — the row leaves "executing"."""
+    try:
+        engine.execute(graph, input_data=dict(state.shared_data),
+                       user_id=user_id, workflow_id=run_id, resume_state=state)
+        final = "failed" if (state.errors or state.status == "failed") else "completed"
+    except Exception as exc:  # noqa: BLE001 — a thread that dies silently strands the run
+        logger.exception("agent workflow run %s crashed", run_id)
+        state.status = "failed"
+        state.errors.append({"error": str(exc)})
+        final = "failed"
+    reqrepo.finish_run(run_id, final)
 
 
 # Keys an agent writes for the process, not the person: run bookkeeping, context

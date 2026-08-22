@@ -40,16 +40,19 @@ RAW_NODE_RESULT = {
 
 
 class _FakeEngine:
+    """Finishes instantly, inside the sync grace — the POST response itself
+    carries the final state, results included."""
+
     def __init__(self, node_results):
         self._node_results = node_results
 
-    def execute(self, graph, input_data, user_id, workflow_id):
-        return SimpleNamespace(
-            status="completed",
-            node_statuses={"n1": "completed"},
-            node_results=self._node_results,
-            errors=[],
-        )
+    def execute(self, graph, *, input_data=None, user_id="system",
+                workflow_id=None, resume_state=None):
+        state = resume_state
+        state.node_statuses.update({k: "completed" for k in self._node_results})
+        state.node_results.update(self._node_results)
+        state.status = "completed"
+        return state
 
 
 @pytest.fixture()
@@ -57,10 +60,25 @@ def run_app(monkeypatch):
     def build(node_results):
         wf = {"workflow_id": 5, "name": "Ranking", "graph": GRAPH}
         monkeypatch.setattr(awf.repo, "get", lambda wid: wf)
+        statuses = {}
         monkeypatch.setattr(awf.reqrepo, "answers_for", lambda rid: {})
-        monkeypatch.setattr(awf.reqrepo, "create_run", lambda *a, **k: None)
-        monkeypatch.setattr(awf.reqrepo, "claim_for_execution", lambda rid: True)
-        monkeypatch.setattr(awf.reqrepo, "finish_run", lambda *a, **k: None)
+        monkeypatch.setattr(
+            awf.reqrepo, "create_run",
+            lambda rid, agent_workflow_id, payload, status: statuses.__setitem__(rid, status),
+        )
+        def claim(rid):
+            if statuses.get(rid) == "pending":
+                statuses[rid] = "executing"
+                return True
+            return False
+        monkeypatch.setattr(awf.reqrepo, "claim_for_execution", claim)
+        monkeypatch.setattr(
+            awf.reqrepo, "finish_run", lambda rid, status: statuses.__setitem__(rid, status)
+        )
+        monkeypatch.setattr(
+            awf.reqrepo, "get_run",
+            lambda rid: {"status": statuses[rid]} if rid in statuses else None,
+        )
         monkeypatch.setattr(awf, "pending_requests", lambda *a, **k: [])
         monkeypatch.setattr(awf, "compile_graph", lambda name, graph: graph)
         monkeypatch.setattr(awf, "governance_for", lambda slug: None, raising=False)
