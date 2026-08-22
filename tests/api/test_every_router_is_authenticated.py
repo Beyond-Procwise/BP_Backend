@@ -45,6 +45,34 @@ _WEBSOCKET_PREFIX = "/ws/"
 _REFUSALS = {401, 403}
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _enforce_auth():
+    """Force enforce mode for this module, whatever the sandbox's .env says.
+
+    This guard proves the ROUTERS are mounted behind ``require_user`` — a claim
+    that is only observable while enforcement is on. The sandbox toggles
+    ASK_AUTH_MODE to "off" for local demos (the UI runs with the dev auth
+    bypass), and reading that toggle here made the mounting guard report the
+    demo configuration instead of the mounting. The verifier below refuses
+    every token; no request in this module sends one anyway.
+    """
+    # api.main calls auth.configure() at import time, which would overwrite
+    # whatever this fixture sets. Import it FIRST so that configure() has
+    # already run (imports are cached — it runs once per process), then force
+    # the mode for the module.
+    import api.main  # noqa: F401
+    from api import auth as _auth
+
+    class _RefuseAll:
+        def verify(self, token):
+            raise _auth.AuthError("no tokens are valid in this test")
+
+    previous = (_auth._mode, _auth._verifier)
+    _auth._mode, _auth._verifier = "enforce", _RefuseAll()
+    yield
+    _auth._mode, _auth._verifier = previous
+
+
 @pytest.fixture(scope="module")
 def client():
     from fastapi.testclient import TestClient
