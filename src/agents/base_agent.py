@@ -120,6 +120,41 @@ _AGENT_MODEL_FIELD_PREFERENCES: Dict[str, Tuple[str, ...]] = {
 }
 
 
+# Tools a workflow node's reasoning loop must never reach: the one tool that
+# sends real email. Dispatch stays a drawable node with its own atomic-claim
+# protection (agent_workflows._claim_and_execute); a loop must not trigger it.
+NODE_TOOL_EXCLUSIONS: Tuple[str, ...] = ("run_email_dispatch",)
+
+# Keys the orchestrator injects into a node's input for the agent's own use
+# (governance rows, model choice). They are not workflow facts and would only
+# crowd the model's context.
+_NODE_TASK_SKIP_KEYS = frozenset({"prompts", "policies", "llm", "workflow_id"})
+_NODE_TASK_MAX_CHARS = 6000
+
+
+def _render_node_task(input_data: Any) -> str:
+    """The workflow's state so far, as the task for a reasoning node."""
+    facts: Dict[str, Any] = {}
+    if isinstance(input_data, dict):
+        for key, value in input_data.items():
+            if not isinstance(key, str) or key in _NODE_TASK_SKIP_KEYS or key.startswith("_"):
+                continue
+            facts[key] = value
+    try:
+        rendered = json.dumps(facts, ensure_ascii=False, default=str, indent=1)
+    except Exception:  # pragma: no cover - defensive
+        rendered = str(facts)
+    if len(rendered) > _NODE_TASK_MAX_CHARS:
+        rendered = rendered[:_NODE_TASK_MAX_CHARS] + "\n... (truncated)"
+    return (
+        "You are one step in a procurement workflow. Carry out your instructions "
+        "using the tools, then answer with what you found or decided, concretely. "
+        "Write plain prose: no markdown, no bold marks, no bullet symbols.\n\n"
+        "What the workflow has so far (inputs and earlier steps' outputs):\n"
+        f"{rendered}"
+    )
+
+
 class AgentStatus(str, Enum):
     """Execution status for an agent."""
 
@@ -278,6 +313,62 @@ class BaseAgent:
     def run(self, *args, **kwargs):
         raise NotImplementedError("Each agent must implement its own 'run' method.")
 
+    # ------------------------------------------------------------------
+    # Reasoning with tools (programme item A4)
+    # ------------------------------------------------------------------
+    def instructions(self) -> Optional[str]:
+        """The instructions a person gave THIS agent, or None.
+
+        Stored by the workspace as the ``<slug>_instructions`` bp_prompt row
+        linked to the derived agent's slug. Until A4 nothing read it back.
+        """
+        return self.resolve_prompt(f"{self._governance_slug()}_instructions")
+
+    def reason(self, task: str, **kwargs: Any):
+        """Plan and act on ``task`` with AgentNick's governed tools, under this
+        agent's own instructions.
+
+        Same loop as ``AgentNick.reason`` — corpus facts, governed policies and
+        prompts, registered agents as tools — with this agent's instructions
+        added to the system prompt. ``NODE_TOOL_EXCLUSIONS`` applies unless the
+        caller passes its own ``exclude``.
+        """
+        from orchestration.agentnick_control import reason as _reason
+
+        parts = [p for p in (self.instructions(), kwargs.pop("extra_system", None)) if p]
+        kwargs.setdefault("exclude", NODE_TOOL_EXCLUSIONS)
+        return _reason(
+            self.agent_nick,
+            task,
+            extra_system="\n\n".join(parts) or None,
+            **kwargs,
+        )
+
+    def run_tool_loop(self, context: "AgentContext") -> "AgentOutput":
+        """Run this workflow node by reasoning with tools.
+
+        The task is what the workflow has produced so far (the node's input
+        data, minus the governance blobs the orchestrator injects). The result
+        is a normal node result: the answer, which tools were used, and a trace
+        of what each was asked — never what it returned, which can be raw rows.
+        """
+        task = _render_node_task(context.input_data)
+        result = self.reason(
+            task, workflow_id=context.workflow_id, user_id=context.user_id
+        )
+        data: Dict[str, Any] = {
+            "tools_used": list(result.tools_used),
+            "rounds": result.rounds,
+            "trace": [
+                {"name": c.name, "arguments": c.arguments, "ok": c.ok, "error": c.error}
+                for c in result.calls
+            ],
+        }
+        if result.error and not result.answer:
+            return AgentOutput(status=AgentStatus.FAILED, data=data, error=result.error)
+        data["answer"] = result.answer
+        return AgentOutput(status=AgentStatus.SUCCESS, data=data)
+
     def set_workflow_context(self, wf_ctx) -> None:
         """Attach a WorkflowContext for inter-agent communication."""
         self._workflow_context = wf_ctx
@@ -399,12 +490,19 @@ class BaseAgent:
             logger.debug("governing_policy: get_policy failed", exc_info=True)
             return None
 
-    def execute(self, context: "AgentContext") -> "AgentOutput":
+    def execute(
+        self, context: "AgentContext", *, tool_loop: bool = False
+    ) -> "AgentOutput":
         """Execute the agent with process logging.
 
         This centralises writes to ``proc.routing`` and ``proc.bp_action`` so that
         every agent invocation is captured in the database regardless of how it
         is triggered.
+
+        ``tool_loop=True`` (a workflow node built from a canvas-made agent) swaps
+        the agent's fixed ``run`` for :meth:`run_tool_loop` — the governed
+        AgentNick loop under this agent's own instructions. Everything around
+        it — logging, memory, the plan, the context snapshot — is unchanged.
         """
 
         routing_service = getattr(self.agent_nick, "process_routing_service", None)
@@ -426,7 +524,7 @@ class BaseAgent:
         start_ts = datetime.utcnow()
         try:
             snapshot = self._prepare_context(context)
-            result = self.run(context)
+            result = self.run_tool_loop(context) if tool_loop else self.run(context)
             if isinstance(result, AgentOutput):
                 result = self._with_plan(context, result)
                 result = self._with_context_snapshot(context, result, snapshot)

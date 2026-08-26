@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from services.tool_runtime import Tool, ToolRunResult, run_tools
 
@@ -62,8 +62,18 @@ Arithmetic:
 - Report the figures as given. Do not round, rescale, or restate them in other units."""
 
 
-def _agent_tools(agent_nick: Any) -> List[Tool]:
-    """Wrap every instantiable agent as a callable tool."""
+def _agent_tools(
+    agent_nick: Any,
+    *,
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> List[Tool]:
+    """Wrap every instantiable agent as a callable tool.
+
+    ``workflow_id`` / ``user_id`` tie the agent's routing rows to the run that
+    called it (a workflow node reasoning with tools); without them each call
+    gets its own id, as the Ask path always has.
+    """
     registry = getattr(agent_nick, "auto_registry", None)
     agents = getattr(agent_nick, "agents", None)
     if registry is None or not agents:
@@ -96,9 +106,9 @@ def _agent_tools(agent_nick: Any) -> List[Tool]:
                 from agents.base_agent import AgentContext
 
                 ctx = AgentContext(
-                    workflow_id=uuid.uuid4().hex,
+                    workflow_id=workflow_id or uuid.uuid4().hex,
                     agent_id=slug,
-                    user_id="AgentNick",
+                    user_id=user_id or "AgentNick",
                     input_data=payload,
                 )
                 output = agent.run(ctx)
@@ -246,9 +256,27 @@ def _corpus_tools(agent_nick: Any) -> List[Tool]:
     ]
 
 
-def build_tools(agent_nick: Any) -> List[Tool]:
-    """Every tool AgentNick can reach: the agents, governance, and the corpus."""
-    return _agent_tools(agent_nick) + _governance_tools() + _corpus_tools(agent_nick)
+def build_tools(
+    agent_nick: Any,
+    *,
+    exclude: Sequence[str] = (),
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> List[Tool]:
+    """Every tool AgentNick can reach: the agents, governance, and the corpus.
+
+    ``exclude`` names tools to leave out — a workflow node's loop, for one,
+    must never be handed the tool that sends real email.
+    """
+    tools = (
+        _agent_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
+        + _governance_tools()
+        + _corpus_tools(agent_nick)
+    )
+    if exclude:
+        blocked = set(exclude)
+        tools = [t for t in tools if t.name not in blocked]
+    return tools
 
 
 def reason(
@@ -258,6 +286,9 @@ def reason(
     max_rounds: int = 6,
     require_tool_use: bool = True,
     extra_system: Optional[str] = None,
+    exclude: Sequence[str] = (),
+    workflow_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> ToolRunResult:
     """Let AgentNick plan and act on ``task`` by calling tools.
 
@@ -265,7 +296,9 @@ def reason(
     produced without consulting a single tool is a guess, and the loop nudges once
     before accepting it.
     """
-    tools = build_tools(agent_nick)
+    tools = build_tools(
+        agent_nick, exclude=exclude, workflow_id=workflow_id, user_id=user_id
+    )
     system = _SYSTEM if not extra_system else f"{_SYSTEM}\n\n{extra_system}"
     result = run_tools(
         task,

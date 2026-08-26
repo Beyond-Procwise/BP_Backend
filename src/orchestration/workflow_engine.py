@@ -194,6 +194,11 @@ class WorkflowNode:
     # declarative workflow compute fields (e.g. product_category from findings)
     # that the legacy path derived imperatively. Default None = no behaviour.
     post_process: Optional[Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]] = None
+    # True for a node whose agent reasons with tools (programme item A4): the
+    # engine hands the flag to ``agent.execute`` and the agent runs the governed
+    # AgentNick loop under its own instructions instead of its fixed ``run``.
+    # The compiler sets this for canvas-made (derived) agents only.
+    tool_loop: bool = False
 
     def build_input_data(self, state: WorkflowState) -> Dict[str, Any]:
         """Build the agent's input_data from the workflow state."""
@@ -562,7 +567,13 @@ class WorkflowEngine:
         attempts = node.retry_count + 1
         for attempt in range(attempts):
             try:
-                result = agent.execute(context)
+                # The keyword is passed only when set, so an agent whose
+                # ``execute(context)`` predates the flag keeps working.
+                result = (
+                    agent.execute(context, tool_loop=True)
+                    if node.tool_loop
+                    else agent.execute(context)
+                )
                 if result.status == AgentStatus.SUCCESS:
                     break
                 if attempt < attempts - 1:

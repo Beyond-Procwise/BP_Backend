@@ -148,3 +148,35 @@ def test_a_node_with_no_meaningful_fields_still_gets_a_card(run_app):
     card = resp.json()["node_results"]["n1"]
     assert card["headline"]  # never blank — the card must say something
     assert card["facts"] == []
+
+
+def test_a_reasoning_nodes_full_answer_rides_with_the_card(run_app):
+    """Programme item A4: a canvas-made agent's result IS its answer — several
+    paragraphs, not a one-liner. The headline stays short; the card also
+    carries the full answer so the recommendation is not cut off mid-sentence."""
+    answer = ("No policy titled negotiation_priority exists. " * 6
+              + "Negotiate with Harbourline Trading 13 first: ₹102,142,166.94 invoiced.")
+    client = run_app({"n1": {"answer": answer, "tools_used": ["get_corpus_facts"], "rounds": 3}})
+    resp = client.post("/agent-workflows/5/run", json={"payload": {}})
+
+    card = resp.json()["node_results"]["n1"]
+    assert len(card["headline"]) <= 200
+    assert card["answer"].endswith("₹102,142,166.94 invoiced.")
+    assert {f["label"]: f["value"] for f in card["facts"]}["Tools used"] == "1 item"
+
+
+def test_a_node_without_an_answer_has_no_answer_field(run_app):
+    client = run_app({"n1": {"summary": "3 suppliers ranked."}})
+    resp = client.post("/agent-workflows/5/run", json={"payload": {}})
+    assert "answer" not in resp.json()["node_results"]["n1"]
+
+
+def test_markdown_marks_are_stripped_from_a_reasoning_answer(run_app):
+    """The card renders plain text; the model's **bold** and `code` marks
+    would show as literal symbols."""
+    client = run_app({"n1": {"answer": "Negotiate with **Harbourline Trading 13** first (`top_supplier`)."}})
+    resp = client.post("/agent-workflows/5/run", json={"payload": {}})
+
+    card = resp.json()["node_results"]["n1"]
+    assert card["answer"] == "Negotiate with Harbourline Trading 13 first (top_supplier)."
+    assert card["headline"] == "Negotiate with Harbourline Trading 13 first (top_supplier)."

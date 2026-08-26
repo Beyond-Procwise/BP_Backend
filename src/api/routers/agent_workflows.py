@@ -7,6 +7,7 @@ workflow works out what it cannot know and asks the human for it. It never guess
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import uuid
 from collections import OrderedDict
@@ -393,10 +394,22 @@ _HEADLINE_KEYS = ("summary", "message", "answer", "recommendation", "status_mess
 
 _MAX_FACTS = 6
 _MAX_VALUE_CHARS = 120
+# A reasoning node's answer is prose — a recommendation and its reasons — so the
+# card carries it in full (bounded), where the headline is only its first line.
+_MAX_ANSWER_CHARS = 2000
 
 
 def _fact_label(key: str) -> str:
     return key.replace("_", " ").strip().capitalize()
+
+
+_MARKDOWN_MARKS = re.compile(r"\*\*|__|`")
+
+
+def _plain(text: str) -> str:
+    """The card renders plain text; a model's **bold** and `code` marks would
+    show as literal symbols."""
+    return _MARKDOWN_MARKS.sub("", text)
 
 
 def _summarise_node_results(
@@ -422,7 +435,7 @@ def _summarise_node_results(
         for key in _HEADLINE_KEYS:
             value = data.get(key)
             if isinstance(value, str) and value.strip():
-                headline = value.strip()[:200]
+                headline = _plain(value.strip())[:200]
                 break
 
         facts: List[Dict[str, str]] = []
@@ -460,11 +473,17 @@ def _summarise_node_results(
                 else "Completed"
             )
 
-        cards[node_id] = {
+        card: Dict[str, Any] = {
             "agent_slug": labels.get(node_id) or "",
             "headline": osafe.enforce(headline, where="workflow result headline"),
             "facts": osafe.scrub_payload(facts, where="workflow result facts"),
         }
+        answer = data.get("answer")
+        if isinstance(answer, str) and answer.strip():
+            card["answer"] = osafe.enforce(
+                _plain(answer.strip())[:_MAX_ANSWER_CHARS], where="workflow result answer"
+            )
+        cards[node_id] = card
     return cards
 
 
