@@ -43,6 +43,7 @@ from utils.email_markers import attach_hidden_marker
 from pathlib import Path
 
 from services.redis_client import get_workflow_redis_client
+from src.services.formulas import ensure_registered, evaluate
 # Play ranking lives in negotiation_advice: it is pure scoring and the advisor needs
 # it without instantiating an agent. TRADE_OFF_HINTS is imported rather than
 # redefined so the hints cannot drift between the two callers.
@@ -1531,7 +1532,31 @@ def decide_strategy(
             "rationale": "Price missing; request structured quote.",
         }
 
-    plan = compute_decision(payload, supplier_message_text=supplier_message or "", offer_prev=offer_prev)
+    ensure_registered()
+    plan = evaluate("negotiation.counter_plan", {
+        "current_offer": payload.get("current_offer"),
+        "target_price": payload.get("target_price"),
+        "round": payload.get("round"),
+        "max_rounds": payload.get("max_rounds"),
+        "walkaway_price": payload.get("walkaway_price"),
+        "currency": payload.get("currency"),
+        "ask_early_pay_disc": payload.get("ask_early_pay_disc"),
+        "ask_lead_time_keep": payload.get("ask_lead_time_keep"),
+        "supplier_message_text": supplier_message or "",
+        "offer_prev": offer_prev,
+    }).or_else(None)
+    if plan is None:
+        # The contract refused the payload -- a negative price, a round below 1.
+        # Ask for structured pricing rather than countering at a number derived
+        # from an input we would not accept.
+        return {
+            "strategy": "clarify",
+            "counter_price": None,
+            "asks": ["Confirm unit price, currency, tiered price @ 100/250/500."],
+            "lead_time_request": None,
+            "rationale": "Pricing inputs failed validation; request a structured quote.",
+            "decision_origin": "contract_refused",
+        }
 
     decision: Dict[str, Any] = {
         "strategy": plan.get("decision", "counter"),
@@ -6419,22 +6444,45 @@ class NegotiationAgent(BaseAgent):
 
         buyer_max = self._validate_buyer_max(buyer_max)
 
-        candidates: List[float] = []
+        # A supplier's cost floor is evidence or it is nothing. Until
+        # 2026-09-05 this fell through to `price * 0.85` when all three
+        # sources were absent -- which is the ordinary case, because nothing
+        # in this repository produces a should-cost and benchmarks are rarely
+        # supplied. Everything downstream then computed against a number
+        # invented from the supplier's own offer, and could not tell it apart
+        # from a costed one. Worse, the counter-email justification gated its
+        # "based on our market analysis and benchmarking" claim on a
+        # 15% gap to this floor, and (offer - 0.85*offer) / (0.85*offer) is
+        # 0.1765 -- so the claim was made to every supplier, every time,
+        # whether or not any benchmarking had occurred.
+        #
+        # `supplier_floor_basis` names the evidence so a consumer can tell a
+        # costed floor from an absent one without inferring it from the value.
+        candidates: List[Tuple[float, str]] = []
         if should_cost is not None and should_cost > 0:
-            candidates.append(float(should_cost))
+            candidates.append((float(should_cost), "should_cost"))
         bench_low = self._coerce_float(benchmarks.get("p10") or benchmarks.get("low"))
         if bench_low:
-            candidates.append(bench_low)
+            candidates.append((bench_low, "benchmark_p10"))
         hist_min = self._coerce_float(history.get("min_accepted_price"))
         if hist_min:
-            candidates.append(hist_min)
-        supplier_floor = min(candidates) if candidates else (price * 0.85 if price else None)
+            candidates.append((hist_min, "history_min_accepted"))
 
-        if supplier_floor:
+        findings: List[str] = []
+        if candidates:
+            supplier_floor, supplier_floor_basis = min(candidates, key=lambda c: c[0])
             if signals.get("capacity_tight"):
                 supplier_floor *= 1.03
             if signals.get("tone") == "firm":
                 supplier_floor *= 1.01
+        else:
+            supplier_floor = None
+            supplier_floor_basis = None
+            findings.append(
+                "zopa.supplier_floor UNASSESSED: no should-cost, no benchmark "
+                "p10/low and no historic minimum accepted price. The supplier's "
+                "cost base is unknown; do not present a counter as cost-justified."
+            )
 
         concession = signals.get("concession_band_pct") or 0.05
         entry = None
@@ -6444,7 +6492,9 @@ class NegotiationAgent(BaseAgent):
         return {
             "buyer_max": float(buyer_max) if buyer_max is not None else None,
             "supplier_floor": float(supplier_floor) if supplier_floor is not None else None,
+            "supplier_floor_basis": supplier_floor_basis,
             "entry_counter": entry,
+            "findings": findings,
         }
 
     def _adaptive_strategy(

@@ -255,14 +255,27 @@ def negotiation_strategy(cur, deal_id: str, d: Optional[dict] = None) -> list[di
         f"{'Savings of ' + _money(saving, d.get('currency')) + ' have been secured. ' if saving else ''}"
         f"{'Contract/closure date is ' + closure_str + '.' if closure_str else ''}"
     ).strip()
-    # standpoint as indexed rates (100 = quote baseline); our aim = strategy target discount
-    supplier_rate = 50
-    our_aim = 47
-    walk_away = 50
+    # Standpoint as an indexed rate (100 = quote baseline). Only supplierRate
+    # is derivable from this deal's own figures.
+    #
+    # Until 2026-09-05 this block also emitted `our_aim = supplier_rate - 3`
+    # under the label "optimalPrice", and `walk_away = supplier_rate`. Neither
+    # was computed from anything: the -3 was an arbitrary constant, and a
+    # walk-away equal to the supplier's own rate asserts that we will never
+    # walk away. With no quote or no actual, the literals 50/47/50 shipped to
+    # the buyer unchanged. Deriving an optimum needs a should-cost or a
+    # benchmark, and deriving a walk-away needs an authority limit; this
+    # project has neither (see docs/negotiation-agent-state-audit.md 1.2, 1.6).
+    # So the page now says it does not know.
+    supplier_rate = None
     if quote and actual and quote > 0:
         supplier_rate = round(actual / quote * 50)
-        our_aim = max(0, supplier_rate - 3)
-        walk_away = supplier_rate
+    our_aim = None
+    walk_away = None
+    unavailable_reason = (
+        "An optimal price needs a should-cost or benchmark, and a walk-away "
+        "needs an authority limit. Neither is available for this deal."
+    )
     persona, key_driver, recommendation = _supplier_insights(cur, d)
     # leveragePoints and counterStrategy were two fixed strings shown to every
     # buyer on every deal — "Cost justification and benchmark variance" regardless
@@ -277,9 +290,11 @@ def negotiation_strategy(cur, deal_id: str, d: Optional[dict] = None) -> list[di
         plays = []
     return [{
         "highLevelSummary": high,
-        "currentStandpoint": {"supplierRate": supplier_rate, "ourAim": our_aim, "walkAway": walk_away},
-        "preferredOutcome": {"optimalPrice": our_aim, "targetRange": f"{our_aim}-{supplier_rate}",
-                             "walkAway": walk_away},
+        "currentStandpoint": {"supplierRate": supplier_rate, "ourAim": our_aim,
+                              "walkAway": walk_away},
+        "preferredOutcome": {"optimalPrice": our_aim, "targetRange": None,
+                             "walkAway": walk_away,
+                             "unavailableReason": unavailable_reason},
         "plays": plays,
         "supplierInsights": {"persona": persona, "keyDriver": key_driver,
                              "recommendation": recommendation},
