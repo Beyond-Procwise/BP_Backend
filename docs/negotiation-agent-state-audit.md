@@ -396,7 +396,18 @@ snapshotted as a golden vector.**
 | 15 | **`negotiate_dashboard.py:259` (negotiation-strategy block)** | **supplierRate, ourAim ("optimalPrice"), walkAway** | **50, 47, 50, −3, ×50** | **no** | no | ❌ | **PH — user-facing** |
 | 16 | `negotiation_strategy_engine.py:264` `generate_position` | target_price | 6 discount rates | yes | no | ❌ | DEAD |
 
-**Registered: 8 of 16. Zero of the sixteen write an audit record.** Items **3, 4, 5 and 15** must
+**Registered: 11 of 16 as of 2026-09-05 (was 8).** Items 3, 6 and the salvaged
+BATNA are now registered as `negotiation.zopa_estimate`,
+`negotiation.outlier_rails` and `negotiation.batna_strength`, with every vector
+marked PROVISIONAL — they pin *arithmetic*, not correctness. Items 4, 5, 7 and
+15 remain unregistered: 4 and 5 are pure functions of item 3 and gain nothing
+until it has a real cost basis; 15 no longer computes a number at all.
+**Zero of the sixteen write an audit record.**
+
+Registering item 6 immediately surfaced a defect the audit had missed:
+`volume_units > MAX_VOLUME_LIMIT * 1.5` is a strict `>` against exactly
+`1500.0`, so a buyer entering the round number 1500 breaches the review rail
+but never the escalation rail. Pinned as a golden vector so it stays visible. Items **3, 4, 5 and 15** must
 not receive behaviour-snapshot golden vectors: 3/4/5 compute on a fabricated cost floor, and 15
 is a literal placeholder shown to buyers.
 
@@ -428,30 +439,51 @@ literal constant as "optimalPrice" today.
 
 ---
 
-## 4. Recommended path (replaces Phase 2 as written)
+## 4. Remediation status (updated 2026-09-05, post-approval)
 
-Phase 2 presumes the refactor landed. It has not. I recommend, in order, and **I have made no
-code changes pending your decision**:
+All four decisions in §5 were approved. Landed so far, in the order requested:
 
-1. **Stop the bleeding (small, safe, no numerical change):** mark item 15 as unavailable rather
-   than emitting 50/47/50; make `_estimate_zopa` return `supplier_floor=None` instead of
-   `offer × 0.85`, and have consumers report "no cost basis" rather than compute on a fiction.
-   *This one does change numbers — deliberately — and is the change I most want your sign-off on.*
-2. **Do not delete the strategy engine yet.** It is dead, but it holds the only BATNA reasoning
-   and the two proxy fields. Salvage first (into whatever replaces `select_tactic`), delete second.
+| Commit | Step |
+|---|---|
+| `343b5a0` | BATNA salvaged into `src/services/negotiation/leverage.py`; `negotiation_strategy_engine.py` and its test file deleted; planner rewired onto `BatnaAssessment` |
+| `e4eda2e` | The `price * 0.85` cost floor and the 50/47/50 dashboard standpoint removed |
+| `b86e851` | This audit and `docs/adr/0001-negotiation-track-b-deferral.md` |
+| *(uncommitted)* | Three formulas registered PROVISIONAL — the registry itself is another session's untracked work in progress |
+
+**Still open**, deferred into the four-function refactor rather than retrofitted
+onto the 13k-line class: fail-closed on every function (§2 step 2), confidence
+propagation to the Action Centre (step 3), and criticality as a required
+leverage input (step 4).
+
+### The path that was recommended, and taken
+
+1. ~~**Stop the bleeding.**~~ Done in `e4eda2e`. Note the consequence found while making the
+   change: the counter-email justification gated its "based on our market analysis and
+   benchmarking" claim on a >15% gap to the fabricated floor, and
+   `(offer − 0.85·offer)/(0.85·offer) = 0.1765` — so that sentence was sent to **every supplier
+   on every negotiation**, benchmark or no benchmark. Removing the floor removed the claim.
+   Separately, no UI consumer of `currentStandpoint`/`optimalPrice`/`walkAway` was found in
+   `beyond_procwise_ui`, so item 15 was served but not rendered.
+2. ~~**Do not delete the strategy engine yet.**~~ Done in `343b5a0`, salvage first.
 3. **Then** the refactor to four functions, with fail-closed contracts and confidence
    propagation designed in from the start — rather than retrofitting them onto the 13k-line class.
 4. Register items 3–7 and 15 with `PROVISIONAL` vectors as part of step 1, not before it.
 5. ADR for Track B deferral — writable now, independent of the above.
 
-## 5. Decisions I need from you
+## 5. Decisions (answered 2026-09-05 — all four approved)
 
-1. **Is the four-function refactor still the target?** If yes it is a substantial build, not a
-   remediation, and should be planned as one.
-2. **May I change the numbers in item 1 above** (remove the `×0.85` floor and the 50/47/50
-   standpoint)? Both are behaviour changes to user-facing figures — flagged explicitly per your
-   constraint. I will not touch them without a yes.
-3. **CISE** — is it expected to exist in BP_Backend, is it in another repo, or is Kraljic-from-
-   signals the intended substitute? §1.3 assumes the third.
-4. **`negotiation_strategy_engine.py`** — salvage-then-delete (my recommendation), or delete now
-   and accept losing BATNA?
+1. **Is the four-function refactor still the target?** → **Yes.** Treated as a build to be
+   planned, not started at the tail of the audit session. Steps 2–4 of Phase 2 belong inside it.
+2. **May I change the numbers?** → **Yes**, both changed in `e4eda2e`.
+3. **CISE** → Kraljic-from-signals is the intended substitute; §1.3's assumption stands. There
+   is no criticality service to wire, so Phase 2 step 4 becomes "make the Kraljic quadrant a
+   required leverage input to tactic selection, with `indeterminate` yielding a provisional
+   recommendation" — `classification.classify` already fails closed correctly.
+4. **`negotiation_strategy_engine.py`** → salvage-then-delete. Done in `343b5a0`.
+
+### Remaining open question
+
+The formula registry (`src/services/formulas/`) is **entirely untracked** in this checkout —
+another session's work in progress. The three PROVISIONAL registrations from this work sit in
+its `definitions/negotiation.py` and cannot be committed independently without landing a file
+that imports untracked modules. How that lands is not this work's call.
