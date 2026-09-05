@@ -8,17 +8,30 @@ from .model import DEGENERACY_FLOOR, ProblemModel
 from .solver import PENALTY_LOG_ODDS, SOLVER_VERSION, Program, Solution
 
 
-def _normalise(margin: float, objective: float) -> float:
-    """Margin as a fraction of the objective, in [0, 1].
+def _normalise(margin: float, scale: float) -> float:
+    """Margin as a fraction of the link's own evidence, in [0, 1].
 
-    An objective of zero carries no scale to compare against, so any positive
-    margin there is treated as fully decisive rather than dividing by nothing.
+    Not `margin / |objective|` as the brief specifies. The objective carries the
+    unassignment penalty, which is deliberately an order of magnitude larger than
+    any edge, so in any request where one document goes unplaced the penalty
+    dominates the denominator, every margin divides down to nearly nothing, and
+    the whole result reads DEGENERATE however decisive it was. Measured on the
+    first real caller: two quotes competing for one order at F=95 and F=90 — a
+    clear win — normalised to 0.008 and was reported contested.
+
+    Normalising against the whole solution's evidence has the same fault in
+    reverse: in a 200-link batch every individual margin is small next to the
+    total. So the denominator is local — this link's own weight — which is what
+    a margin is meaningfully a fraction of, and is independent of batch size.
+
+    A link at even odds carries no evidence to compare against, so any positive
+    margin there is fully decisive rather than dividing by nothing.
     """
     if margin == float("inf"):
         return 1.0
-    if objective == 0.0:
+    if scale == 0.0:
         return 1.0 if margin > 0 else 0.0
-    return min(1.0, max(0.0, margin / abs(objective)))
+    return min(1.0, max(0.0, margin / abs(scale)))
 
 
 def _link(pm: ProblemModel, i: int, best: Solution, alt: Solution) -> ResolvedLink:
@@ -38,7 +51,7 @@ def _link(pm: ProblemModel, i: int, best: Solution, alt: Solution) -> ResolvedLi
         target_id=edge.target_id,
         log_odds=edge.log_odds,
         margin=margin,
-        margin_normalised=_normalise(margin, best.cost),
+        margin_normalised=_normalise(margin, abs(edge.log_odds)),
         displaced_by=displaced,
     )
 
@@ -63,7 +76,7 @@ def _is_isolated(pm: ProblemModel, i: int, claimants: dict[str, int]) -> bool:
     return True
 
 
-def _isolated_link(pm: ProblemModel, i: int, objective: float) -> ResolvedLink:
+def _isolated_link(pm: ProblemModel, i: int) -> ResolvedLink:
     """The closed-form link for an isolated single candidate: its only
     alternative is leaving the source unassigned."""
     edge = pm.edges[i]
@@ -73,7 +86,7 @@ def _isolated_link(pm: ProblemModel, i: int, objective: float) -> ResolvedLink:
         target_id=edge.target_id,
         log_odds=edge.log_odds,
         margin=margin,
-        margin_normalised=_normalise(margin, objective),
+        margin_normalised=_normalise(margin, abs(edge.log_odds)),
         displaced_by=(),
     )
 
@@ -127,7 +140,7 @@ def resolve(request: ResolutionRequest) -> ResolutionResult:
         if i in alternatives:
             links.append(_link(pm, i, best, alternatives[i]))
         else:
-            links.append(_isolated_link(pm, i, best.cost))
+            links.append(_isolated_link(pm, i))
     links = tuple(links)
     degenerate = any(l.margin_normalised < DEGENERACY_FLOOR for l in links)
 

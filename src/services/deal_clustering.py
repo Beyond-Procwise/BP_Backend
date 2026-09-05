@@ -4,6 +4,7 @@ I/O, so it is fully testable on fixtures and a bad run can never corrupt assigne
 """
 from __future__ import annotations
 
+import math
 import re
 from itertools import combinations
 from typing import Optional
@@ -11,6 +12,13 @@ from typing import Optional
 from src.services.requirement_similarity import rivalry_score
 from src.services.version_collapse import base_reference, collapse_versions  # noqa: F401 (collapse_versions re-exported for callers)
 from src.services.linking_engine import score_link
+from src.services.resolution import (
+    CandidateEdge,
+    CardinalityRule,
+    ResolutionRequest,
+    resolve,
+)
+from src.services.resolution.model import DEGENERACY_FLOOR
 
 THRESHOLD = 0.70   # complete-linkage bar; a tunable starting value (spec §Validation)
 
@@ -64,8 +72,91 @@ def cluster_confidence(cluster: list[dict], matrix: dict) -> float:
     return round(min(pairs) * 100.0, 1)
 
 
+# An award is exclusive at both ends: a purchase order is placed with one
+# supplier, and a quote wins at most one order. That is a property of the SET of
+# quotes and orders, and scoring one pair at a time cannot see it — which is how
+# two quotes could each be handed the same PO, and how a quote could be given its
+# favourite order while the only quote that could have taken a second order was
+# left with nothing.
+_AWARD_PROFILE = "quote_po_award"
+_AWARD_RULE = CardinalityRule(_AWARD_PROFILE, "1:1", 1, 1)
+
+
+def _award_log_odds(f: float) -> float:
+    """The engine's F score as log-odds, for the resolver's objective.
+
+    Deliberately NOT the scorer's raw pre-sigmoid L. Every gate in this codebase
+    decides on F — which is L put through the sigmoid and then multiplied by the
+    coverage and cap terms — so ranking on F is what preserves today's answers.
+    The logit is monotone in F, so a set of one quote resolves to exactly the PO
+    the old argmax picked.
+    """
+    p = min(max(f / 100.0, 1e-9), 1.0 - 1e-9)
+    return math.log(p / (1.0 - p))
+
+
+def _no_award() -> dict:
+    return {"po_id": None, "F": 0.0, "margin": 0.0, "margin_normalised": 0.0,
+            "contested": False}
+
+
+def awarded_pos(bids: list[dict], pos: list[dict], po_lines: dict, quote_lines: dict,
+                min_score: float = 80.0, scorer=None,
+                exclude_targets: tuple = (), request_id: str = "awards") -> dict:
+    """Which PO each bid won, decided over the whole batch at once.
+
+    Scores every bid against every PO exactly as before — same profile, same
+    min_score gate — then hands the surviving pairs to the resolution layer,
+    which returns the assignment carrying the most evidence subject to one award
+    per order. Each award reports its margin: how much evidence separates it from
+    the best assignment that does NOT contain it. ``contested`` marks an award
+    the evidence did not really choose.
+
+    ``exclude_targets`` withholds purchase orders that are already spoken for —
+    a PO citing a bid's own reference is a declared fact and is not up for
+    competition.
+    """
+    # Looked up at call time, not bound as a default, so the module's scorer can
+    # be substituted the same way pairwise_matrix's can.
+    scorer = scorer or score_link
+    awards = {b["quote_id"]: _no_award() for b in bids}
+    excluded = set(exclude_targets)
+    edges, scored = [], {}
+    for bid in bids:
+        bid_lines = quote_lines.get(bid["quote_id"], []) if quote_lines else []
+        for po in pos:
+            if po["po_id"] in excluded:
+                continue
+            link = scorer(bid, po, "quote_po", bid_lines, po_lines.get(po["po_id"], []))
+            f = float(link.get("F", 0.0))
+            if f < min_score:
+                continue
+            scored[(bid["quote_id"], po["po_id"])] = f
+            edges.append(CandidateEdge(
+                source_id=bid["quote_id"], target_id=po["po_id"],
+                log_odds=_award_log_odds(f), confidence=f / 100.0,
+                profile_id=_AWARD_PROFILE, consumes={},
+            ))
+    if not edges:
+        return awards
+
+    result = resolve(ResolutionRequest(
+        request_id=request_id, edges=tuple(edges), capacities=(),
+        rules=(_AWARD_RULE,), profile_registry_version="deal_clustering/quote_po",
+    ))
+    for link in result.links:
+        awards[link.source_id] = {
+            "po_id": link.target_id,
+            "F": scored[(link.source_id, link.target_id)],
+            "margin": link.margin,
+            "margin_normalised": link.margin_normalised,
+            "contested": link.margin_normalised < DEGENERACY_FLOOR,
+        }
+    return awards
+
+
 def awarded_po(bid: dict, pos: list[dict], po_lines: dict, bid_lines: list,
-               min_score: float = 80.0, scorer=score_link) -> Optional[str]:
+               min_score: float = 80.0, scorer=None) -> Optional[str]:
     """The PO this bid won, by CONTINUITY scoring (quote_po: same supplier AND price —
     exact unit-price match is correct for an award). NOT supplier-name string matching,
     which loses SUP-GomezGoodAndCross vs 'Gomez, Good and Cross Trading Ltd' and any null
@@ -74,15 +165,20 @@ def awarded_po(bid: dict, pos: list[dict], po_lines: dict, bid_lines: list,
 
 
 def awarded_po_scored(bid: dict, pos: list[dict], po_lines: dict, bid_lines: list,
-                      min_score: float = 80.0, scorer=score_link) -> tuple[Optional[str], float]:
+                      min_score: float = 80.0, scorer=None) -> tuple[Optional[str], float]:
     """awarded_po, but also handing back the winning continuity score so a caller can
-    SAY how strong the link was. (id, F) — (None, 0.0) when nothing clears min_score."""
-    best_id, best_f = None, 0.0
-    for po in pos:
-        link = scorer(bid, po, "quote_po", bid_lines, po_lines.get(po["po_id"], []))
-        if link["F"] >= min_score and link["F"] > best_f:
-            best_id, best_f = po["po_id"], link["F"]
-    return best_id, best_f
+    SAY how strong the link was. (id, F) — (None, 0.0) when nothing clears min_score.
+
+    One bid is a set of one, so this goes through the same resolver as the batch:
+    one code path, one tie-break rule. With a single bid there is nothing to
+    compete with, so the answer is the same PO the old argmax returned — except
+    on an exact tie, which now resolves to the lexicographically first po_id
+    instead of whichever order the caller happened to pass the POs in.
+    """
+    award = awarded_pos([bid], pos, po_lines, {bid["quote_id"]: bid_lines},
+                        min_score=min_score, scorer=scorer,
+                        request_id=f"award:{bid['quote_id']}")[bid["quote_id"]]
+    return award["po_id"], award["F"]
 
 
 def award_veto(bid_a: dict, bid_b: dict, awards: dict) -> bool:
@@ -218,8 +314,8 @@ def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, d
     # HOW each award was made is kept (award_how) so the stored po member can say
     # why it is attached — "the PO cites this bid" vs "continuity score F".
     awards, award_how = {}, {}
+    scored_bids = []
     for b in bids:
-        bid_lines = quote_lines.get(b["quote_id"], [])
         explicit = _explicit_award(b, purchase_orders, po_lines)
         if explicit:
             awards[b["quote_id"]] = explicit
@@ -229,14 +325,32 @@ def cluster_batch(*, quotes, quote_lines, purchase_orders, po_lines, invoices, d
                 "score": 100.0,
             }
             continue
-        best_id, best_f = awarded_po_scored(b, purchase_orders, po_lines, bid_lines,
-                                            min_score=60.0)
-        awards[b["quote_id"]] = best_id
-        if best_id:
+        scored_bids.append(b)
+
+    # Continuity awards are decided across the whole batch at once, not one bid at
+    # a time. An order is placed with one supplier, so it can be won once; picking
+    # each bid's own favourite independently handed the same PO to two events,
+    # and a purchase order attached to two sourcing events is a phantom deal that
+    # every figure reading _trgt then counts twice. Orders already claimed by an
+    # explicit quote reference are withheld from the competition: a declared fact
+    # is not up for scoring.
+    resolved = awarded_pos(scored_bids, purchase_orders, po_lines, quote_lines,
+                           min_score=60.0,
+                           exclude_targets=tuple(sorted(set(awards.values()))),
+                           request_id="cluster_batch:awards")
+    for b in scored_bids:
+        award = resolved[b["quote_id"]]
+        awards[b["quote_id"]] = award["po_id"]
+        if award["po_id"]:
             award_how[b["quote_id"]] = {
                 "linked_by": "continuity", "cites": b["quote_id"],
                 "detail": "same supplier and pricing as this bid (continuity score)",
-                "score": round(best_f, 2),
+                "score": round(award["F"], 2),
+                # How much evidence separates this award from the best assignment
+                # that does NOT contain it. A contested award is one the evidence
+                # did not really choose -- a human should look.
+                "margin": round(award["margin"], 2),
+                "contested": award["contested"],
             }
 
     # Apply the veto by zeroing correlation on any vetoed pair, so complete linkage cannot

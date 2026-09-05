@@ -127,6 +127,27 @@ four things that make it fast are all exact:
    load-bearing: dropping either of the last two makes
    `test_every_margin_matches_a_brute_force_re_solve` fail.
 
+## The margin is normalised against evidence, not against the objective
+
+The brief specifies `margin_normalised = margin / |objective|`. Implemented
+literally, that is unusable. The objective carries the unassignment penalty,
+which is deliberately an order of magnitude larger than any edge, so in any
+request where a single document goes unplaced the penalty dominates the
+denominator and every margin divides down to nearly nothing — the whole result
+then reads DEGENERATE however decisive it actually was.
+
+Measured on the first real wiring: two quotes competing for one purchase order,
+one scoring F=95 and the other F=90. A clear win. It normalised to 0.008 and was
+reported contested.
+
+Normalising against the whole solution's evidence has the same fault in reverse:
+in a 200-link batch every individual margin is small next to the total, so every
+large batch would read degenerate instead.
+
+The denominator is therefore local — the link's own weight, `|log_odds|`. That is
+what a margin is meaningfully a fraction of, and it does not move with batch
+size. `margin` itself is unchanged and is still the exact objective difference.
+
 ## Tolerance is absolute here, relative everywhere else
 
 `ResourceCapacity.tolerance` is an absolute quantity in the same unit as
@@ -140,3 +161,21 @@ Callers must convert. This layer does not guess a percentage.
 It emits the margin. It does not decide what to do with it: no routing
 threshold, no promotion gate, no band. The scorer, the gap layer and the hard
 gates are untouched.
+
+## First caller: deal_clustering award detection
+
+`deal_clustering.awarded_pos` scores every bid against every purchase order
+exactly as before — same `quote_po` profile, same `min_score` gate — and then
+hands the surviving pairs here under a 1:1 rule, because an order is placed with
+one supplier and a quote wins at most one order.
+
+Edge weight is the logit of the engine's own `F`, **not** the scorer's raw
+pre-sigmoid `L`. Every gate in that codebase decides on F, which is L put
+through the sigmoid and then multiplied by the coverage and cap terms, so
+ranking on F is what preserves today's answers. The logit is monotone in F, so a
+batch of one quote resolves to exactly the order the old argmax returned.
+
+`awarded_po_scored` keeps its single-bid contract and goes through the same
+resolver, so there is one tie-break rule rather than two. Its only behaviour
+change is on an exact tie, which now resolves to the lexicographically first
+`po_id` instead of whichever order the caller happened to pass the orders in.
