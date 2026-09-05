@@ -17,11 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from orchestration.workflow_context import WorkflowContext, SignalType
 from agents.auto_registry import AutoRegistry
-from engines.negotiation_strategy_engine import (
-    NegotiationStrategyEngine,
-    NegotiationContext,
-    Strategy,
-)
+from src.services.negotiation.leverage import BatnaAssessment, assess_batna
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +42,10 @@ class WorkflowPlan:
 
     goal: str
     steps: List[PlanStep]
-    negotiation_strategy: Optional[Strategy] = None
+    #: The buyer's walk-away position, or an UNASSESSED assessment when the
+    #: alternative-supplier count was never established. Replaces the former
+    #: ``Strategy`` object, whose ``target_discount`` was a fabricated number.
+    negotiation_batna: Optional[BatnaAssessment] = None
     escalation_policy: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -79,7 +78,8 @@ def _reasoning_model() -> str:
 
 _OLLAMA_MODEL = _reasoning_model()
 
-# High-value task threshold (mirrors NegotiationStrategyEngine.escalation_threshold)
+# High-value task threshold (was mirrored from the deleted
+# NegotiationStrategyEngine.escalation_threshold; now the sole definition)
 _HIGH_VALUE_THRESHOLD = 50_000.0
 
 
@@ -112,7 +112,6 @@ class ReasoningEngine:
         self._registry = registry
         self._pattern_service = pattern_service
         self._context_service = context_service
-        self._negotiation_engine = NegotiationStrategyEngine()
 
     # ------------------------------------------------------------------
     # Public API
@@ -206,7 +205,6 @@ class ReasoningEngine:
         if self._pattern_service is not None:
             try:
                 task_type = task.get("task_type", "unknown")
-                strategy_name = plan.negotiation_strategy.name if plan.negotiation_strategy else "none"
                 self._pattern_service.record_pattern(
                     pattern_type="workflow_outcome",
                     pattern_text=f"{task_type}:{observation.action}:confidence={observation.confidence:.2f}",
@@ -353,7 +351,7 @@ class ReasoningEngine:
             escalation_policy["threshold"] = _HIGH_VALUE_THRESHOLD
 
         steps: List[PlanStep] = []
-        negotiation_strategy: Optional[Strategy] = None
+        negotiation_batna: Optional[BatnaAssessment] = None
 
         if task_type == "document_extraction":
             steps = [
@@ -369,23 +367,29 @@ class ReasoningEngine:
             ]
 
         elif task_type == "negotiation":
-            # Select negotiation strategy
-            neg_ctx = NegotiationContext(
-                supplier_name=str(task.get("supplier_name", "")),
-                order_value=order_value,
-                category=str(task.get("category", "")),
-                supplier_history_count=int(task.get("supplier_history_count", 0) or 0),
-                alternative_quotes=int(task.get("alternative_quotes", 0) or 0),
-                urgency=str(task.get("urgency", "normal")),
+            # The leverage the buyer actually has, assessed from the two BATNA
+            # proxies. Note the counts are passed through as-is: coercing a
+            # missing count to 0 is what made the old engine treat "we never
+            # looked for an alternative" as "there is no alternative", and then
+            # anchor hardest on it.
+            negotiation_batna = assess_batna(
+                alternative_quotes=task.get("alternative_quotes"),
+                supplier_history_count=task.get("supplier_history_count"),
+                supplier_name=task.get("supplier_name") or None,
             )
-            negotiation_strategy = self._negotiation_engine.select_strategy(neg_ctx)
             steps = [
                 PlanStep(
                     agent="negotiation",
                     parallel_group=0,
-                    input_mapping={"strategy": negotiation_strategy.name},
+                    input_mapping={
+                        "batna_strength": negotiation_batna.strength,
+                        "batna_confidence": negotiation_batna.confidence.value,
+                    },
                 ),
             ]
+            if negotiation_batna.findings:
+                escalation_policy["batna_unassessed"] = True
+                escalation_policy["findings"] = list(negotiation_batna.findings)
 
         elif task_type == "rfq":
             steps = [
@@ -416,7 +420,7 @@ class ReasoningEngine:
         return WorkflowPlan(
             goal=goal,
             steps=steps,
-            negotiation_strategy=negotiation_strategy,
+            negotiation_batna=negotiation_batna,
             escalation_policy=escalation_policy,
         )
 
