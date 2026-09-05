@@ -10,6 +10,7 @@ deal_date is the order's expected delivery date stamped on every doc.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any, Optional
 
@@ -21,6 +22,13 @@ from src.services.linking_engine import (
     _table_columns,
     score_link,
 )
+from src.services.resolution import (
+    CandidateEdge,
+    CardinalityRule,
+    ResolutionRequest,
+    resolve,
+)
+from src.services.resolution.model import DEGENERACY_FLOOR
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +36,11 @@ MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))
 # Bar for a quote to ANCHOR a PO (form/complete a deal). Defaults to the link bar.
 QUOTE_ANCHOR_MIN_SCORE = float(os.getenv("QUOTE_ANCHOR_MIN_SCORE",
                                          os.getenv("PROMOTE_MIN_LINK_SCORE", "80")))
+
+# One quote anchors one purchase order: a quote is raised for a single sourcing
+# event, and an order is placed against a single quote.
+_ANCHOR_PROFILE = "po_quote_anchor"
+_ANCHOR_RULE = CardinalityRule(_ANCHOR_PROFILE, "1:1", 1, 1)
 
 
 def is_established_deal(cur, deal_id: Optional[str]) -> bool:
@@ -456,27 +469,21 @@ class _AnchorCache:
                 self.invoices_by_npo.setdefault(npo, []).append(r)
 
 
-def _quote_anchor_for_po(cur, po, npo=None, cache=None):
-    """Return the quote that ANCHORS this PO (or None). Quote is the deal anchor:
-    matched by explicit reference (quote.po_id, po_line_items.quote_number) or, when
-    refs are absent, by relationship score >= QUOTE_ANCHOR_MIN_SCORE (supplier +
-    line-item/product overlap + amount + temporal). Candidates narrowed by supplier.
+def _explicit_anchor(cur, po, npo, cache):
+    """The quote a purchase order DECLARES as its own — a reference, not a guess.
 
-    `cache` is an optional `_AnchorCache`. With it, every lookup below is served
-    from memory instead of the database; without it the queries run exactly as
-    they always have, so any caller that has no cache is unaffected.
+    1) a quote whose own po_id resolves to this canonical PO, then
+    2) the PO's line items naming a quote_number.
+    Both are unchanged; only what happens when neither exists has moved.
     """
     quo = _DOC["quote"][3]
-    npo = npo or _norm_po(po.get("po_id"))
-    po_id = po.get("po_id")
     poln = _DOC["po"][5]
-    # 1) explicit: a quote whose own po_id resolves to this canonical PO
+    po_id = po.get("po_id")
     if npo:
         ex = (cache.quotes_by_npo.get(npo, []) if cache is not None
               else _rows(cur, f"select * from {quo} where {_PO_NORM_COND}=%s", (npo,)))
         if ex:
             return ex[0]
-    # 2) the PO's line items naming a quote_number
     if cache is not None:
         seen, numbers = set(), []
         for r in cache.po_lines.get(str(po_id), []):        # SQL's DISTINCT, in order
@@ -495,7 +502,15 @@ def _quote_anchor_for_po(cur, po, npo=None, cache=None):
             qr = _rows(cur, f"select * from {quo} where quote_id=%s", (str(r["quote_number"]),))
             if qr:
                 return qr[0]
-    # 3) relationship score (supplier-narrowed; line items strengthen the match)
+    return None
+
+
+def _anchor_candidates(cur, po, cache):
+    """The quotes worth scoring against this PO, and the PO's lines. Narrowed by
+    supplier exactly as before."""
+    quo = _DOC["quote"][3]
+    poln = _DOC["po"][5]
+    po_id = po.get("po_id")
     sup = po.get("supplier_id")
     if cache is not None:
         cand = cache.quotes_by_supplier.get(sup, []) if sup else cache.all_quotes
@@ -504,15 +519,124 @@ def _quote_anchor_for_po(cur, po, npo=None, cache=None):
         cand = (_rows(cur, f"select * from {quo} where supplier_id=%s", (sup,)) if sup
                 else _rows(cur, f"select * from {quo}"))
         po_lines = _rows(cur, f"select * from {poln} where po_id=%s", (po_id,))
-    best, best_f = None, 0.0
-    for q in cand:
-        q_lines = (cache.quote_lines.get(str(q.get("quote_id")), []) if cache is not None
-                   else _rows(cur, f"select * from {_DOC['quote'][5]} where quote_id=%s",
-                              (q.get("quote_id"),)))
-        link = score_link(q, po, "quote_po", source_lines=q_lines, target_lines=po_lines)
-        if link.get("F", 0) >= QUOTE_ANCHOR_MIN_SCORE and link["F"] > best_f:
-            best, best_f = q, link["F"]
-    return best
+    return cand, po_lines
+
+
+def _anchor_quote_lines(cur, q, cache):
+    if cache is not None:
+        return cache.quote_lines.get(str(q.get("quote_id")), [])
+    return _rows(cur, f"select * from {_DOC['quote'][5]} where quote_id=%s",
+                 (q.get("quote_id"),))
+
+
+def _anchor_log_odds(f: float) -> float:
+    """The engine's F score as log-odds, for the resolver's objective. Monotone in
+    F, so a single PO resolves to exactly the quote the old argmax returned."""
+    p = min(max(f / 100.0, 1e-9), 1.0 - 1e-9)
+    return math.log(p / (1.0 - p))
+
+
+def _quote_anchors(cur, pos, cache=None) -> dict:
+    """str(po_id) -> the quote that ANCHORS it, or None, decided across all the
+    purchase orders at once.
+
+    A quote is the deal anchor, and a quote is raised for one sourcing event, so
+    it can anchor one purchase order. Asked one PO at a time, the same quote said
+    yes to several of them, and each then minted its own deal on the strength of
+    a quote already spent — which is how one sourcing event became two.
+
+    Declared references still win outright and are taken first; the quotes they
+    consume are withdrawn before anything is scored. What is left is scored
+    exactly as before, against the same QUOTE_ANCHOR_MIN_SCORE bar, and then
+    resolved as a set under a one-quote-one-order rule.
+
+    Scoring is grouped by supplier because candidates are already narrowed by
+    supplier, so no candidate edge can cross a group. Resolving the groups
+    separately is therefore the same answer as resolving them together, on
+    problems small enough to stay fast.
+    """
+    anchors: dict = {str(po.get("po_id")): None for po in pos}
+    claimed: set = set()
+
+    ordered = sorted(pos, key=lambda p: str(p.get("po_id") or ""))
+    for po in ordered:
+        quote = _explicit_anchor(cur, po, _norm_po(po.get("po_id")), cache)
+        if quote is None:
+            continue
+        qid = str(quote.get("quote_id"))
+        if qid in claimed:
+            # Two orders declaring the same quote is a contradiction in the
+            # documents, not a choice to make: the first by canonical order keeps
+            # it and the other falls through to scoring, so the outcome does not
+            # depend on the order rows came back in.
+            log.warning("quote %s is declared by more than one purchase order; "
+                        "%s keeps it", qid, po.get("po_id"))
+            continue
+        anchors[str(po.get("po_id"))] = quote
+        claimed.add(qid)
+
+    remaining = [po for po in ordered if anchors[str(po.get("po_id"))] is None]
+    groups: dict = {}
+    for po in remaining:
+        groups.setdefault(po.get("supplier_id"), []).append(po)
+
+    for supplier, group in sorted(groups.items(), key=lambda kv: str(kv[0])):
+        edges, quote_rows = [], {}
+        for po in group:
+            candidates, po_lines = _anchor_candidates(cur, po, cache)
+            for q in candidates:
+                qid = str(q.get("quote_id"))
+                if qid in claimed:
+                    continue
+                link = score_link(q, po, "quote_po",
+                                  source_lines=_anchor_quote_lines(cur, q, cache),
+                                  target_lines=po_lines)
+                f = float(link.get("F", 0) or 0)
+                if f < QUOTE_ANCHOR_MIN_SCORE:
+                    continue
+                quote_rows[qid] = q
+                edges.append(CandidateEdge(
+                    source_id=str(po.get("po_id")), target_id=qid,
+                    log_odds=_anchor_log_odds(f), confidence=f / 100.0,
+                    profile_id=_ANCHOR_PROFILE, consumes={},
+                ))
+        if not edges:
+            continue
+        result = resolve(ResolutionRequest(
+            request_id=f"anchor:{supplier}", edges=tuple(edges), capacities=(),
+            rules=(_ANCHOR_RULE,),
+            profile_registry_version="deal_assignment/quote_po",
+        ))
+        for link in result.links:
+            anchors[link.source_id] = quote_rows[link.target_id]
+            claimed.add(link.target_id)
+            if link.margin_normalised < DEGENERACY_FLOOR:
+                # The evidence did not really choose this anchor: a different
+                # quote would have served almost as well, and a deal is about to
+                # be minted on it.
+                log.warning("anchor %s -> quote %s is contested (margin %.3f); "
+                            "a deal is being formed on evidence that barely "
+                            "separates it from the alternative",
+                            link.source_id, link.target_id, link.margin)
+    return anchors
+
+
+def _quote_anchor_for_po(cur, po, npo=None, cache=None):
+    """Return the quote that ANCHORS this PO (or None). Quote is the deal anchor:
+    matched by explicit reference (quote.po_id, po_line_items.quote_number) or, when
+    refs are absent, by relationship score >= QUOTE_ANCHOR_MIN_SCORE (supplier +
+    line-item/product overlap + amount + temporal). Candidates narrowed by supplier.
+
+    `cache` is an optional `_AnchorCache`. With it, every lookup below is served
+    from memory instead of the database; without it the queries run exactly as
+    they always have, so any caller that has no cache is unaffected.
+
+    One PO is a set of one, so this goes through the same resolver as the batch.
+    With nothing to compete against, the answer is the quote the old argmax
+    returned — except on an exact tie, which now resolves to the lexicographically
+    first quote_id rather than whichever order the rows arrived in.
+    """
+    return _quote_anchors(cur, [po], cache=cache)[str(po.get("po_id"))]
 
 
 def _look_back(cur) -> int:
@@ -527,11 +651,14 @@ def _look_back(cur) -> int:
     pending = pending_batch_docs(cur)
     # Read the corpus once instead of once per PO — see _AnchorCache.
     cache = _AnchorCache(cur)
-    for po in _rows(cur, f"select * from {_PO['trgt']}"):
+    all_pos = [po for po in _rows(cur, f"select * from {_PO['trgt']}")
+               if _norm_po(po.get("po_id"))]
+    # Anchors are decided for the whole corpus at once, so one quote cannot end
+    # up anchoring two orders and minting two deals from one sourcing event.
+    anchors = _quote_anchors(cur, all_pos, cache=cache)
+    for po in all_pos:
         npo = _norm_po(po.get("po_id"))
-        if not npo:
-            continue
-        quote = _quote_anchor_for_po(cur, po, npo, cache=cache)
+        quote = anchors.get(str(po.get("po_id")))
         if quote is None:
             continue   # no anchoring quote -> PO + its invoices stay orphaned
         supplier = po.get("supplier_name") or po.get("supplier_id")

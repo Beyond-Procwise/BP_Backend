@@ -626,3 +626,105 @@ def test_look_back_reads_each_table_once_not_once_per_po(monkeypatch):
     assert cur.count("from proc.bp_quote_trgt") == 1, "the quote corpus must be read once"
     assert cur.count("from proc.bp_quote_line_items") == 1
     assert cur.count("from proc.bp_invoice_trgt") == 1
+
+
+# --- anchoring is a set problem --------------------------------------------
+# A quote is the deal anchor, and a quote is raised for one sourcing event, so it
+# can anchor one purchase order. Asking each PO independently for "my best quote"
+# cannot honour that: the same quote answered yes to several POs, and each of
+# them then minted its own deal on the strength of it.
+
+def _anchor_batch(pos, quotes, quote_lines=(), po_lines=()):
+    return _ScriptCursor(
+        script=[("from proc.bp_purchase_order_trgt", list(pos)),
+                ("from proc.bp_quote_trgt", list(quotes)),
+                ("from proc.bp_quote_line_items", list(quote_lines)),
+                ("from proc.bp_po_line_items", list(po_lines))],
+        columns=_QA_COLMAP)
+
+
+def _table_scorer(table):
+    def score(src, tgt, kind, source_lines=None, target_lines=None, **kw):
+        return {"F": table.get((tgt.get("po_id"), src.get("quote_id")), 0.0)}
+    return score
+
+
+def _anchor_ids(anchors):
+    return {po_id: (q.get("quote_id") if q else None) for po_id, q in anchors.items()}
+
+
+def test_one_quote_anchors_one_purchase_order(monkeypatch):
+    """Both POs score well against the only quote in the corpus. It can anchor
+    one of them; the other has no anchor and stays orphaned, which is the
+    documented outcome — not a second deal built on a quote already spent."""
+    pos = [{"po_id": "P1", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None},
+           {"po_id": "P2", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None}]
+    quotes = [{"quote_id": "Q1", "po_id": None, "supplier_id": "SUP-T", "deal_id": None}]
+    monkeypatch.setattr(das, "score_link",
+                        _table_scorer({("P1", "Q1"): 95.0, ("P2", "Q1"): 90.0}))
+    cur = _anchor_batch(pos, quotes)
+
+    anchors = das._quote_anchors(cur, pos, cache=das._AnchorCache(cur))
+
+    assert _anchor_ids(anchors) == {"P1": "Q1", "P2": None}
+
+
+def test_the_set_beats_each_po_taking_its_favourite_quote(monkeypatch):
+    """P1 prefers Q1, but Q1 is the only quote P2 can use at all. Giving P1 its
+    favourite strands P2 and loses a whole deal; crossing them over anchors both."""
+    pos = [{"po_id": "P1", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None},
+           {"po_id": "P2", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None}]
+    quotes = [{"quote_id": "Q1", "po_id": None, "supplier_id": "SUP-T", "deal_id": None},
+              {"quote_id": "Q2", "po_id": None, "supplier_id": "SUP-T", "deal_id": None}]
+    monkeypatch.setattr(das, "score_link", _table_scorer({
+        ("P1", "Q1"): 95.0, ("P1", "Q2"): 85.0,
+        ("P2", "Q1"): 90.0,
+    }))
+    cur = _anchor_batch(pos, quotes)
+
+    anchors = das._quote_anchors(cur, pos, cache=das._AnchorCache(cur))
+
+    assert _anchor_ids(anchors) == {"P1": "Q2", "P2": "Q1"}
+
+
+def test_a_quote_claimed_by_an_explicit_reference_is_not_scored_away(monkeypatch):
+    """Q1's own po_id names P1. That is a declared fact, so Q1 is spent — P2
+    cannot be handed it however well it scores."""
+    pos = [{"po_id": "P1", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None},
+           {"po_id": "P2", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None}]
+    quotes = [{"quote_id": "Q1", "po_id": "P1", "supplier_id": "SUP-T", "deal_id": None}]
+    monkeypatch.setattr(das, "score_link", _table_scorer({("P2", "Q1"): 99.0}))
+    cur = _anchor_batch(pos, quotes)
+
+    anchors = das._quote_anchors(cur, pos, cache=das._AnchorCache(cur))
+
+    assert _anchor_ids(anchors) == {"P1": "Q1", "P2": None}
+
+
+def test_a_score_below_the_anchor_bar_is_never_a_candidate(monkeypatch):
+    pos = [{"po_id": "P1", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None}]
+    quotes = [{"quote_id": "Q1", "po_id": None, "supplier_id": "SUP-T", "deal_id": None}]
+    monkeypatch.setattr(das, "score_link",
+                        _table_scorer({("P1", "Q1"): das.QUOTE_ANCHOR_MIN_SCORE - 0.1}))
+    cur = _anchor_batch(pos, quotes)
+
+    anchors = das._quote_anchors(cur, pos, cache=das._AnchorCache(cur))
+
+    assert _anchor_ids(anchors) == {"P1": None}
+
+
+def test_look_back_never_builds_two_deals_on_one_quote(monkeypatch):
+    """End to end: the orphaned PO must not be stamped with a deal of its own."""
+    pos = [{"po_id": "P1", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None},
+           {"po_id": "P2", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None}]
+    quotes = [{"quote_id": "Q1", "po_id": None, "supplier_id": "SUP-T", "deal_id": None}]
+    monkeypatch.setattr(das, "score_link",
+                        _table_scorer({("P1", "Q1"): 95.0, ("P2", "Q1"): 90.0}))
+    cur = _anchor_batch(pos, quotes)
+
+    das._look_back(cur)
+
+    stamped = [e for e in cur.executed
+               if "update proc.bp_purchase_order_trgt" in e[0].lower()]
+    stamped_pos = {p for e in stamped for p in e[1] if p in ("P1", "P2")}
+    assert stamped_pos == {"P1"}, f"P2 was given a deal too: {stamped_pos}"
