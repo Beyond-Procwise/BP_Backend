@@ -14,7 +14,18 @@ from src.services.negotiation_advice.classification import (
     classify, default_thresholds, _style_for, THRESHOLD_POLICY_SLUG,
 )
 from src.services.negotiation_advice.grounding import apply_states
-from src.services.negotiation_advice.ranking import rank_plays
+from src.services.formulas import ensure_registered, evaluate
+from src.services.negotiation_advice.ranking import rank_plays  # noqa: F401 (public re-export)
+
+#: What `classify` itself returns when the deal's signals cannot place it. Used
+#: as the explicit fallback when the CONTRACT refuses, so a refused evaluation
+#: and an indeterminate deal reach the rest of this module in the same shape --
+#: neither of which is a quadrant, and neither of which may be guessed.
+_INDETERMINATE = {
+    "quadrant": None, "quadrant_reasons": ["classification inputs were not usable"],
+    "quadrant_confidence": 0.0, "style": None, "style_reasons": [],
+    "indeterminate": True,
+}
 from src.services.negotiation_advice.signals import (
     gather_signals, market_context_dict, supplier_performance_dict,
 )
@@ -128,7 +139,10 @@ def build_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
     effective = dict(measured)
     effective.update(stated)
 
-    verdict = classify(effective, thresholds=load_thresholds(conn))
+    ensure_registered()
+    verdict = evaluate("negotiation.kraljic_quadrant", {
+        "signals": effective, "thresholds": load_thresholds(conn),
+    }).or_else(_INDETERMINATE)
     quadrant = overrides.get("quadrant") or verdict["quadrant"]
     quadrant_source = "buyer" if overrides.get("quadrant") else "computed"
 
@@ -145,13 +159,14 @@ def build_advice(deal_id: str, *, conn=None, created_by: Optional[str] = None,
 
     plays: list = []
     if quadrant and style:
-        ranked = rank_plays(
-            quadrant, style,
-            lever_priorities=[lever] if lever else None,
-            supplier_performance=supplier_performance_dict(effective),
-            market_context=market_context_dict(effective),
-            limit=limit,
-        )
+        ranked = evaluate("negotiation.play_rank", {
+            "supplier_type": quadrant, "negotiation_style": style,
+            "lever_priorities": [lever] if lever else None,
+            "policy_guidance": None,
+            "supplier_performance": supplier_performance_dict(effective),
+            "market_context": market_context_dict(effective),
+            "playbook": None, "limit": limit,
+        }).or_else({"plays": []})
         plays = apply_states(ranked.get("plays") or [], effective)
         for p in plays:
             p["why"] = explain_play(p, effective)
@@ -230,12 +245,14 @@ def apply_turn(deal_id: str, message: dict, *, conn=None,
         return None
 
     if action == "compare_style" and message.get("style") and out["quadrant"]:
-        other = rank_plays(
-            out["quadrant"], message["style"],
-            supplier_performance=supplier_performance_dict(out["signals"]),
-            market_context=market_context_dict(out["signals"]),
-            limit=_DEFAULT_LIMIT,
-        )
+        ensure_registered()
+        other = evaluate("negotiation.play_rank", {
+            "supplier_type": out["quadrant"], "negotiation_style": message["style"],
+            "lever_priorities": None, "policy_guidance": None,
+            "supplier_performance": supplier_performance_dict(out["signals"]),
+            "market_context": market_context_dict(out["signals"]),
+            "playbook": None, "limit": _DEFAULT_LIMIT,
+        }).or_else({"plays": []})
         out["comparison"] = {
             "style": message["style"],
             "plays": apply_states(other.get("plays") or [], out["signals"]),

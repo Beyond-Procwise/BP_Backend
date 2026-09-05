@@ -17,6 +17,9 @@ import pandas as pd
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 from models.opportunity_priority_model import OpportunityPriorityModel
+from src.services.formulas import (
+    UNASSESSED, ensure_registered, evaluate, evaluate_many,
+)
 from services.data_flow_manager import DataFlowManager
 from services.facts.deprecation import read_calculation_detail
 from services.opportunity_service import load_opportunity_feedback
@@ -406,6 +409,35 @@ class Finding:
                 )
 
         return serialised
+
+
+def finding_weight_factor(
+    base_impact: float, risk_score: float, coverage: float
+) -> float:
+    """One finding's unnormalised weight: money at stake, amplified by supplier
+    risk and by how much of that supplier's document flow we can actually see.
+
+    The guard matters. A finding with real money behind it must never fall to a
+    zero weight because risk or coverage arrived as -1: it would vanish from the
+    ranking entirely, which is the opposite of what a risk signal should do.
+    """
+    factor = base_impact * (1.0 + risk_score) * (1.0 + coverage)
+    if factor <= 0.0 and base_impact > 0.0:
+        return base_impact
+    return factor
+
+
+def normalise_weightages(factors: List[float]) -> List[float]:
+    """Turn unnormalised weight factors into shares of the run.
+
+    A total of zero yields zeros rather than dividing: nothing in this run
+    carried weight, and 1/n would invent an even split that the evidence does
+    not support.
+    """
+    total = sum(factors)
+    if total <= 0:
+        return [0.0 for _ in factors]
+    return [factor / total for factor in factors]
 
 
 class OpportunityMinerAgent(BaseAgent):
@@ -2168,7 +2200,10 @@ class OpportunityMinerAgent(BaseAgent):
 
             policy_table_coverage = self._build_policy_data_coverage(tables)
 
-            # compute weightage with risk and data coverage awareness
+            # compute weightage with risk and data coverage awareness, through
+            # the formula registry so every factor is contract-checked and the
+            # whole run's shares are one audited evaluation
+            ensure_registered()
             weight_factors: List[float] = []
             for f in filtered:
                 supplier_id = f.supplier_id
@@ -2180,18 +2215,26 @@ class OpportunityMinerAgent(BaseAgent):
                 risk_score = self._normalise_risk_score(risk_raw)
                 coverage = self._supplier_flow_coverage(supplier_id, supplier_name)
                 base_impact = max(f.financial_impact_gbp, 0.0)
-                factor = base_impact * (1.0 + risk_score) * (1.0 + coverage)
-                if factor <= 0.0 and base_impact > 0.0:
-                    factor = base_impact
-                weight_factors.append(factor)
+                weight_factors.append(
+                    evaluate("opportunity.finding_weight_factor", {
+                        "base_impact": base_impact,
+                        "risk_score": risk_score,
+                        "coverage": coverage,
+                    }).or_else(base_impact)
+                )
                 details = f.calculation_details if isinstance(f.calculation_details, dict) else {}
                 details.setdefault("risk_score_normalised", risk_score)
                 details.setdefault("flow_coverage", coverage)
                 f.calculation_details = details
 
-            total_factor = sum(weight_factors)
-            for f, factor in zip(filtered, weight_factors):
-                f.weightage = (factor / total_factor) if total_factor > 0 else 0.0
+            shares = evaluate_many(
+                "opportunity.weightage_shares",
+                [{"factor": factor} for factor in weight_factors],
+            )
+            for f, share in zip(filtered, shares.values):
+                # A refused share is not a zero share; keep the finding out of
+                # the ranking rather than pinning it to the bottom of it.
+                f.weightage = None if share is UNASSESSED else share
 
             policy_top_summary = self._summarise_top_opportunities(
                 per_policy_retained, per_policy_categories, limit=2

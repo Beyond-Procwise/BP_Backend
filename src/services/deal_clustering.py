@@ -9,7 +9,10 @@ import re
 from itertools import combinations
 from typing import Optional
 
-from src.services.requirement_similarity import rivalry_score
+import logging
+
+from src.services.formulas import ensure_registered, evaluate_many
+from src.services.requirement_similarity import rivalry_score  # noqa: F401 (kept for callers passing scorer=)
 from src.services.version_collapse import base_reference, collapse_versions  # noqa: F401 (collapse_versions re-exported for callers)
 from src.services.linking_engine import score_link
 from src.services.resolution import (
@@ -20,19 +23,57 @@ from src.services.resolution import (
 )
 from src.services.resolution.model import DEGENERACY_FLOOR
 
+log = logging.getLogger(__name__)
+
 THRESHOLD = 0.70   # complete-linkage bar; a tunable starting value (spec §Validation)
 
 
-def pairwise_matrix(bids: list[dict], lines: dict, scorer=rivalry_score) -> dict:
+def pairwise_matrix(bids: list[dict], lines: dict, scorer=None) -> dict:
     """Correlation + evidence for every unordered bid pair. Two bids from the SAME
-    supplier are never rivals (R3) and are excluded before scoring."""
-    matrix: dict = {}
+    supplier are never rivals (R3) and are excluded before scoring.
+
+    The default path scores the whole batch through the formula registry in one
+    `evaluate_many`, so a batch of N bids produces ONE audit record rather than
+    N(N-1)/2 of them. `scorer=` remains an injection seam for tests and for
+    callers with their own comparator; passing one bypasses the registry, which
+    is why it is not the default.
+    """
+    pairs = []
     for a, b in combinations(bids, 2):
         sa, sb = a.get("supplier_id"), b.get("supplier_id")
         if sa is not None and sb is not None and sa == sb:
             continue   # R3: same supplier -> versions/duplicates, never rivalry
-        res = scorer(a, b, lines.get(a["quote_id"], []), lines.get(b["quote_id"], []))
-        matrix[frozenset((a["quote_id"], b["quote_id"]))] = res
+        pairs.append((a, b))
+
+    if scorer is not None:
+        return {
+            frozenset((a["quote_id"], b["quote_id"])): scorer(
+                a, b, lines.get(a["quote_id"], []), lines.get(b["quote_id"], [])
+            )
+            for a, b in pairs
+        }
+
+    ensure_registered()
+    batch = evaluate_many("rivalry.correlation", [
+        {"bid_a": a, "bid_b": b,
+         "lines_a": lines.get(a["quote_id"], []),
+         "lines_b": lines.get(b["quote_id"], [])}
+        for a, b in pairs
+    ])
+
+    matrix: dict = {}
+    for (a, b), result in zip(pairs, batch):
+        if result.unassessed:
+            # An unscoreable pair is left OUT of the matrix rather than entered
+            # as 0.0. `_corr` already reads a missing pair as 0.0 for linkage
+            # purposes, but the distinction matters to anything that inspects
+            # the matrix: absent means "not scored", not "scored, and unrelated".
+            log.warning(
+                "rivalry unassessed for %s <-> %s: %s",
+                a.get("quote_id"), b.get("quote_id"), result.why(),
+            )
+            continue
+        matrix[frozenset((a["quote_id"], b["quote_id"]))] = result.value
     return matrix
 
 

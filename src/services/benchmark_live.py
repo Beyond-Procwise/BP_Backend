@@ -2,7 +2,7 @@
 
 Loads a deal's quote lines and the pooled PO/invoice price history from
 bp_sqldb (_trgt tables), normalises the match keys, and runs
-services.benchmark.engine.compute_benchmark over each line.
+the registered `benchmark.adjusted_price` formula over each line.
 
 The ENGINE stays exact-match and pure; all live-data messiness is handled
 HERE, explicitly and disclosed in the response:
@@ -19,10 +19,13 @@ HERE, explicitly and disclosed in the response:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
-from services.benchmark.engine import compute_benchmark
+from src.services.formulas import ensure_registered, evaluate
 from services.benchmark.models import BenchmarkPoint, BenchmarkSettings, QuoteLine
+
+log = logging.getLogger(__name__)
 
 # Neutral midpoint used for BOTH the quote's requested scores and every
 # benchmark point's scores: identical values => spec/SLA factors == 1.0.
@@ -271,7 +274,20 @@ def benchmark_deal(
         )
         # No lookup tables exist in the DB yet: empty tables make every miss
         # explicit via fallbacks_used instead of silently pricing with 1.0.
-        result = compute_benchmark(quote, points, {}, {}, settings)
+        ensure_registered()
+        outcome = evaluate("benchmark.adjusted_price", {
+            "quote": quote, "points": points,
+            "location_index_table": {}, "index_table": {}, "settings": settings,
+        })
+        if outcome.unassessed:
+            # A refused contract is not a zero benchmark. Skip the line and say
+            # why, rather than publishing a variance computed from nothing.
+            log.warning(
+                "benchmark unassessed for quote line %s: %s",
+                row.get("quote_line_id"), outcome.why(),
+            )
+            continue
+        result = outcome.value
         payload = result.model_dump()
         payload["source_item_description"] = row["item_description"]
         payload["quote_line_id"] = row["quote_line_id"]

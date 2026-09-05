@@ -13,7 +13,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from services.benchmark.engine import compute_benchmark
+from src.services.formulas import ensure_registered, evaluate
 from services.benchmark.models import BenchmarkPoint, BenchmarkSettings, QuoteLine
 from services.benchmark_live import benchmark_deal
 from src.services.db import get_conn
@@ -53,11 +53,16 @@ class BenchmarkPreviewRequest(BaseModel):
 
 @router.post("/preview", summary="Run the deterministic benchmark engine on a supplied payload")
 def benchmark_preview(body: BenchmarkPreviewRequest) -> dict[str, Any]:
-    result = compute_benchmark(
-        body.quote,
-        body.points,
-        body.location_index_table,
-        body.index_table,
-        body.settings or BenchmarkSettings(),
-    )
-    return result.model_dump()
+    ensure_registered()
+    outcome = evaluate("benchmark.adjusted_price", {
+        "quote": body.quote,
+        "points": body.points,
+        "location_index_table": body.location_index_table,
+        "index_table": body.index_table,
+        "settings": body.settings or BenchmarkSettings(),
+    })
+    if outcome.unassessed:
+        # The contract refused the payload. Say so with the reason rather than
+        # returning an empty result that reads like "no benchmark exists".
+        raise HTTPException(status_code=422, detail=outcome.why())
+    return outcome.value.model_dump()

@@ -1,0 +1,45 @@
+name: Formula golden vectors
+
+# The formula registry refuses to import when any registered formula stops
+# reproducing its pinned behaviour. Running that import on every commit is what
+# turns "the maths changed" from something noticed in production into something
+# noticed in the pull request.
+
+on:
+  push:
+    branches: [main, Development]
+  pull_request:
+
+jobs:
+  goldens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify every golden vector reproduces
+        run: python -m scripts.formulas.check_goldens
+
+      - name: Registry unit tests
+        run: python -m pytest tests/services/formulas -q
+
+      - name: Model inventory is current
+        run: |
+          python -m src.services.formulas.inventory > /tmp/model-inventory.md
+          # The generated-at line and last-validated timestamps move every run;
+          # everything else must match what is committed.
+          strip() { grep -v -e '^Generated from the formula registry' \
+                            -e '^| \`' ; }
+          diff <(strip < docs/model-inventory.md) <(strip < /tmp/model-inventory.md) \
+            || { echo "docs/model-inventory.md is stale. Regenerate it with:"; \
+                 echo "  python -m src.services.formulas.inventory > docs/model-inventory.md"; \
+                 exit 1; }

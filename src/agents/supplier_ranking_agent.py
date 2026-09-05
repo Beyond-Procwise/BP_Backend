@@ -19,6 +19,7 @@ from utils.instructions import parse_instruction_sources
 from utils.db import read_sql_compat
 from utils.reference_loader import load_reference_dataset
 from services.supplier_relationship_service import SupplierRelationshipService
+from src.services.formulas import ensure_registered, evaluate_many
 from .base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,119 @@ def _normalize_days_to_score(
         return 100.0
     score = (1.0 - (clamped - min_days) / (max_days - min_days)) * 100
     return float(round(score, 2))
+
+
+def _deal_price_scores(scored_df: pd.DataFrame) -> pd.DataFrame:
+    """Deal-scoped price scoring, through the registry.
+
+    One `evaluate_many` over the whole deal rather than a call per supplier:
+    the score is ratio-to-cheapest, so it is a property of the deal's bid set
+    and cannot be computed a row at a time.
+    """
+    if "price" not in scored_df.columns:
+        return scored_df
+    ensure_registered()
+    out = scored_df.copy()
+    batch = evaluate_many(
+        "supplier.deal_price_score",
+        [{"price": _price_or_none(v)} for v in out["price"]],
+    )
+    if batch.record.status != "ok":
+        # The contract refused the bid set. NaN, not zero: "we could not score
+        # price here" is not "every supplier priced worst".
+        logger.warning("deal price scoring unassessed: %s", batch[0].why())
+        out["price_score"] = np.nan
+        return out
+    out["price_score"] = list(batch.values)
+    return out
+
+
+def _price_or_none(value: Any) -> Optional[float]:
+    numeric = pd.to_numeric(value, errors="coerce")
+    return None if pd.isna(numeric) else float(numeric)
+
+
+def _composite_via_registry(
+    scored_df: pd.DataFrame, weights: Dict[str, float]
+) -> Tuple[Any, List[List[str]]]:
+    """Composite scoring, through the registry.
+
+    Population-scoped, so it goes through `evaluate_many` as one evaluation over
+    the whole frame. `scored_on` still comes from `composite_scores`, which is
+    the registered body: the registry hands back the numbers, and the frame
+    needs the per-supplier criterion list alongside them.
+    """
+    ensure_registered()
+    criteria = [c for c in weights if f"{c}_score" in scored_df.columns]
+    contexts = [
+        {"scores": {c: _score_or_nan(row.get(f"{c}_score")) for c in criteria}}
+        for _, row in scored_df.iterrows()
+    ]
+    batch = evaluate_many(
+        "supplier.composite_score", contexts, shared={"weights": dict(weights)}
+    )
+    _final, scored_on = composite_scores(scored_df, weights)
+    if batch.record.status != "ok":
+        logger.warning(
+            "composite scoring unassessed (%s); no supplier is ranked",
+            batch[0].why() if len(batch) else "empty frame",
+        )
+        return np.full(len(scored_df), np.nan), [[] for _ in range(len(scored_df))]
+    return np.asarray(batch.values, dtype=float), scored_on
+
+
+def _score_or_nan(value: Any) -> float:
+    numeric = pd.to_numeric(value, errors="coerce")
+    return float("nan") if pd.isna(numeric) else float(numeric)
+
+
+def composite_scores(
+    scored_df: pd.DataFrame, weights: Dict[str, float]
+) -> Tuple[Any, List[List[str]]]:
+    """Composite supplier score, and which criteria each supplier was scored on.
+
+    Population-scoped by nature: it reads the frame, not a row. Extracted from
+    ``run()`` verbatim so the registry can version and audit it without there
+    being two copies of the arithmetic.
+
+    Each supplier is scored only on the metrics we actually hold for them, with
+    that supplier's weights renormalised over those metrics. The earlier
+    ``fillna(0)`` charged a supplier the full weight of every metric while
+    scoring them 0 on any that were missing --- so a supplier whose payment
+    terms we simply never read ranked as though they had offered the worst
+    terms on the table. That punishes gaps in OUR data as if they were faults
+    in THEIR bid.
+
+    A supplier with no measurable metric at all scores NaN, not 0.0: we have no
+    opinion on them, and saying "0" would be inventing one.
+    """
+    criteria_cols = {
+        crit: f"{crit}_score"
+        for crit in weights
+        if f"{crit}_score" in scored_df.columns
+    }
+    for crit in weights:
+        if crit not in criteria_cols:
+            logger.warning("Criterion column missing: %s_score", crit)
+
+    if not criteria_cols:
+        return np.full(len(scored_df), np.nan), [[] for _ in range(len(scored_df))]
+
+    score_frame = scored_df[list(criteria_cols.values())].apply(
+        pd.to_numeric, errors="coerce"
+    )
+    weight_row = pd.Series(
+        {col: float(weights[crit]) for crit, col in criteria_cols.items()}
+    )
+    present = score_frame.notna()
+    weighted_sum = (score_frame.fillna(0) * weight_row).sum(axis=1)
+    weight_present = present.mul(weight_row, axis=1).sum(axis=1)
+    final_score = np.where(weight_present > 0, weighted_sum / weight_present, np.nan)
+    scored_on = present.apply(
+        lambda r: [c.removesuffix("_score") for c in present.columns[r.values]],
+        axis=1,
+    )
+    return final_score, scored_on
 
 
 def ensure_payment_terms_score(df: pd.DataFrame) -> pd.DataFrame:
@@ -958,7 +1072,7 @@ class SupplierRankingAgent(BaseAgent):
         # competed. Runs after the generic normaliser so it overrides any global
         # price pass, which would rank a supplier against unrelated deals.
         if getattr(self, "_deal_priced", False):
-            scored_df = self._score_deal_price(scored_df)
+            scored_df = _deal_price_scores(scored_df)
 
         normalised_weights = self._normalise_weight_map(scored_df, weights)
         if normalised_weights:
@@ -974,35 +1088,9 @@ class SupplierRankingAgent(BaseAgent):
         #
         # A supplier with no measurable metric at all scores NaN, not 0.0: we have no
         # opinion on them, and saying "0" would be inventing one.
-        criteria_cols = {
-            crit: f"{crit}_score"
-            for crit in weights
-            if f"{crit}_score" in scored_df.columns
-        }
-        for crit in weights:
-            if crit not in criteria_cols:
-                logger.warning("Criterion column missing: %s_score", crit)
-
-        if criteria_cols:
-            score_frame = scored_df[list(criteria_cols.values())].apply(
-                pd.to_numeric, errors="coerce"
-            )
-            weight_row = pd.Series(
-                {col: float(weights[crit]) for crit, col in criteria_cols.items()}
-            )
-            present = score_frame.notna()
-            weighted_sum = (score_frame.fillna(0) * weight_row).sum(axis=1)
-            weight_present = present.mul(weight_row, axis=1).sum(axis=1)
-            scored_df["final_score"] = np.where(
-                weight_present > 0, weighted_sum / weight_present, np.nan
-            )
-            scored_df["scored_on"] = present.apply(
-                lambda r: [c.removesuffix("_score") for c in present.columns[r.values]],
-                axis=1,
-            )
-        else:
-            scored_df["final_score"] = np.nan
-            scored_df["scored_on"] = [[] for _ in range(len(scored_df))]
+        final_scores, scored_on = _composite_via_registry(scored_df, weights)
+        scored_df["final_score"] = final_scores
+        scored_df["scored_on"] = scored_on
 
         scored_df = self._apply_flow_bonus(
             scored_df, flow_index, flow_name_index, alias_tokens_map

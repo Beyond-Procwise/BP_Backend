@@ -14,7 +14,13 @@ from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 from services.benchmark_live import _norm_currency, _norm_item, _norm_uom
-from services.price_outlier.rule import OutlierSettings, Verdict, assess
+from services.price_outlier.rule import OutlierSettings, Verdict
+
+# The outlier rule is reached by name through the formula registry, never called
+# directly: that is what versions it, validates its inputs and records what it
+# was asked. Importing the definitions module is what registers it.
+from src.services.formulas import evaluate_many
+from src.services.formulas.definitions import price_outlier as _formula  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +186,13 @@ def find_outliers(cur, settings: Optional[OutlierSettings] = None) -> list[Findi
     for source in _SOURCES:
         currency_by_doc = _line_currency(cur, source)
         pool_prefix = _POOL_PREFIX_BY_DOC_TYPE.get(source["doc_type"])
+
+        # Build the whole sweep first, then evaluate it as ONE batch. A per-line
+        # `evaluate` would write one audit record per line across the entire
+        # corpus; `evaluate_many` writes one for the sweep, which is what makes
+        # the audit trail readable rather than a flood.
+        lines: list[dict] = []
+        contexts: list[dict] = []
         for line in _load_lines(cur, source):
             key = (
                 _norm_item(line["item_description"]),
@@ -192,8 +205,28 @@ def find_outliers(cur, settings: Optional[OutlierSettings] = None) -> list[Findi
                 f"{pool_prefix}:{line['doc_pk']}" if pool_prefix is not None
                 else None
             )
-            peers = peers_for(index, key, own_doc=own_doc)
-            verdict = assess(float(line["unit_price"]), peers, settings)
+            lines.append({"line": line, "key": key})
+            contexts.append({
+                "price": float(line["unit_price"]),
+                "peers": peers_for(index, key, own_doc=own_doc),
+                "settings": settings,
+            })
+
+        batch = evaluate_many("price_outlier.verdict", contexts)
+
+        for entry, result in zip(lines, batch):
+            line, key = entry["line"], entry["key"]
+            if result.unassessed:
+                # The contract refused this line -- a negative price, say. That
+                # is not "no outlier"; it is a line we could not assess, and it
+                # must not be silently cleared.
+                logger.warning(
+                    "price outlier unassessed for %s %s line %s: %s",
+                    source["doc_type"], line["doc_pk"], line["line_number"],
+                    result.why(),
+                )
+                continue
+            verdict = result.value
             if not verdict.flagged:
                 continue
             findings.append(

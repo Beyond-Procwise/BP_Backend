@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.formulas import ensure_registered, evaluate
 from src.services.deal_summary import gather_deal_context
 
 log = logging.getLogger(__name__)
@@ -124,22 +125,30 @@ def _compute(ctx: dict, cur) -> dict:
         volume = _sum_qty(quote)
     unit_price = (deal_value / volume) if (deal_value is not None and volume) else None
 
-    inv_unit = _weighted_unit_price(inv)
-    quote_unit = _weighted_unit_price(quote)
+    ensure_registered()
+
+    inv_unit = evaluate("deal.weighted_unit_price", {"documents": inv}).or_else(None)
+    quote_unit = evaluate("deal.weighted_unit_price", {"documents": quote}).or_else(None)
     if quote_unit is None:
-        quote_unit = _weighted_unit_price(po)
-    price_change_pct = _pct_change(inv_unit, quote_unit)
+        quote_unit = evaluate("deal.weighted_unit_price", {"documents": po}).or_else(None)
+    price_change_pct = evaluate(
+        "deal.pct_change", {"new": inv_unit, "base": quote_unit}
+    ).or_else(None)
 
     inv_vol = _sum_qty(inv)
     quote_vol = _sum_qty(quote)
     if quote_vol is None:
         quote_vol = _sum_qty(po)
-    volume_change_pct = _pct_change(inv_vol, quote_vol)
+    volume_change_pct = evaluate(
+        "deal.pct_change", {"new": inv_vol, "base": quote_vol}
+    ).or_else(None)
 
     # efficiency = realized savings = (quoted unit - invoiced unit) * invoiced volume
-    efficiency_score = None
-    if inv_unit is not None and quote_unit is not None and inv_vol is not None:
-        efficiency_score = round((quote_unit - inv_unit) * inv_vol, 2)
+    efficiency_score = evaluate("deal.realised_savings", {
+        "quoted_unit_price": quote_unit,
+        "invoiced_unit_price": inv_unit,
+        "invoiced_volume": inv_vol,
+    }).or_else(None)
 
     items = _items_from(inv) or _items_from(quote) or _items_from(po)
 
