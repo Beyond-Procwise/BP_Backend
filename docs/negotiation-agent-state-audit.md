@@ -161,6 +161,15 @@ Three separate things select a tactic and they do not agree:
 > `strategy_lower in {"accept","decline"}` is **False**, so the supplier is never marked ACCEPTED
 > and the negotiation runs another round against an offer we had already decided to take.
 > **A best-and-final we want to accept cannot close the negotiation.** Not in the original audit.
+>
+> **FIXED 2026-09-07.** `_adaptive_strategy` now returns the plan untouched when its decision is
+> already terminal — adapting a decision that has been made is not adaptation. The pair
+> `{"accept", "decline"}` is now the module-level `TERMINAL_STRATEGIES`, shared by
+> `_adaptive_strategy` and `_execute_negotiation_round`, because the bug was the two readings
+> disagreeing about what "terminal" meant. Nine tests in
+> `tests/services/negotiation/test_terminal_decision_survives.py`, watched failing first
+> (`assert 'package-trade' == 'accept'`). The package-trade tactic still fires on a live
+> negotiation against a firm supplier, which is who it is for.
 
 ### `evaluate_counter` → **HEURISTIC** (`_estimate_zopa` + `_optimize_multi_issue`)
 
@@ -709,9 +718,10 @@ away from the function that appears to be missing it.**
 
 ### Found on re-verification, not in the original pass
 
-1. **A best-and-final we want to accept cannot close the negotiation.** `_adaptive_strategy`
-   overwrites `accept` with `package-trade`; the round loop only closes on `accept`/`decline`.
-   Verified end-to-end. This is a bug, not a design gap — see §1.1 `select_tactic`.
+1. ~~**A best-and-final we want to accept cannot close the negotiation.**~~ `_adaptive_strategy`
+   overwrote `accept` with `package-trade`; the round loop only closes on `accept`/`decline`.
+   Verified end-to-end, then **FIXED the same day** — see §1.1 `select_tactic`. The plan's
+   terminal decisions now survive, and `TERMINAL_STRATEGIES` gives both readings one definition.
 2. **The UNASSESSED cost-floor marker reaches no consumer.** Produced at :6497, read nowhere;
    its only rendering point is in dead code. §1.4.
 3. **~900 dead lines inside the agent**, including the three prompt methods and a ~700-line prose
@@ -724,7 +734,7 @@ away from the function that appears to be missing it.**
 
 1. **The four-function refactor** — still the target, still not started. Fail-closed is partly
    landed; confidence propagation and criticality-as-leverage are untouched.
-2. **Close the accept path** (finding 1). Small, and it stops finished negotiations finishing.
+2. ~~**Close the accept path**~~ — **done 2026-09-07.** Suite 250 → 259, no regressions.
 3. **Install `DbAuditSink`** — the records already exist; only the sink is missing.
 4. **Surface `zopa["findings"]`**, and delete or wire the dead code around it.
 5. Standing defects: leverage unread; outlier rails one-directional; the `1500` strict-`>`

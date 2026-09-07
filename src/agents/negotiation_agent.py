@@ -117,6 +117,14 @@ FINAL_OFFER_PATTERNS = (
     "ultimatum",
 )
 
+#: The decisions that end a negotiation. `plan_counter` returns one of these when
+#: it has resolved the outcome -- an offer inside our threshold is accepted, one
+#: above it is declined -- and `_execute_negotiation_round` closes the supplier on
+#: them. Both readings must agree, so they share this definition rather than each
+#: spelling out the pair: they did not agree before, and a decision to accept was
+#: being reopened downstream (see `_adaptive_strategy`).
+TERMINAL_STRATEGIES = frozenset({"accept", "decline"})
+
 # LEVER_CATEGORIES and TRADE_OFF_HINTS now live in
 # services.negotiation_advice.ranking, next to the scoring that uses them.
 # TRADE_OFF_HINTS is imported above; it is still read by
@@ -3791,7 +3799,7 @@ class NegotiationAgent(BaseAgent):
                         supplier_state["current_round"] = round_num
 
                         strategy_lower = (strategy or "").lower()
-                        if strategy_lower in {"accept", "decline"}:
+                        if strategy_lower in TERMINAL_STRATEGIES:
                             supplier_state["status"] = (
                                 "ACCEPTED" if strategy_lower == "accept" else "DECLINED"
                             )
@@ -6511,6 +6519,21 @@ class NegotiationAgent(BaseAgent):
         decision = dict(base_decision)
         price_locked = bool(base_decision.get("price_plan_locked"))
         current_round = int(round_hint) if isinstance(round_hint, (int, float)) else 1
+
+        if str(decision.get("strategy") or "").lower() in TERMINAL_STRATEGIES:
+            # The plan has already resolved this negotiation. `plan_counter` reads
+            # the same final-offer language `signals["finality_hint"]` reports, and
+            # it went further: it compared the offer against the walk-away and
+            # decided. Adapting a decision that has been made is not adaptation.
+            #
+            # The finality branch below used to run over the top of it, replacing
+            # `accept` with `package-trade` -- so a best-and-final we had decided to
+            # take never matched the `accept`/`decline` test in
+            # `_execute_negotiation_round`, the supplier was never added to
+            # `completed_suppliers`, and the loop opened another round bargaining
+            # against an offer we had already agreed. `price_plan_locked` guards the
+            # price against exactly this; nothing guarded the decision.
+            return decision
 
         if signals.get("finality_hint"):
             decision["strategy"] = "package-trade"
