@@ -14,9 +14,9 @@ quoting anything from its 2026-09-05 body.
 
 **Published copy:** <https://claude.ai/code/artifact/116b5502-75e4-4fb8-be51-0add5afa5f8e>
 
-**Status, 2026-09-07:** Phase 0 tasks **0a, 0b and 0c are done** (`25318ac`, `a6655b6`, `b5aa637`);
-**0d is open and needs a decision** — see the correction in §2.2. §5 records what shipped, what
-changed behaviour, and what was carried forward. Everything below the status line describes the code
+**Status, 2026-09-07:** **Phase 0 is complete** — 0a `25318ac`, 0b `a6655b6`, 0c `b5aa637`,
+0d `260c8f2`. Only 0e (the learning-snapshot drain, carried out of 0b) remains open. §5 records what
+shipped, what changed behaviour, and what was carried forward. Everything below the status line describes the code
 as it was found; where a finding has since been acted on it is marked in §5, not rewritten in place.
 
 ---
@@ -50,7 +50,7 @@ Five routes reach `NegotiationAgent` on paper. One runs in production.
 | EmailWatcher | `email_watcher.py:1401` | **LIVE** | The only route that runs end to end. No orchestrator, so no workflow context, no authority block, no HITL resolution. The returned `AgentOutput` is discarded. |
 | `POST /workflows` | `workflows.py:2072` | **LIVE, thin** | `"negotiation"` is not in `WORKFLOW_REGISTRY`, so it falls to `_execute_generic_workflow`. Chains `next_agents` correctly — the only route that does. |
 | `supplier_interaction` graph | `workflow_definitions.py:441` | **UNREACHABLE** | Edge condition can never be true. See §2.1. |
-| `_execute_supplier_interaction_workflow` | `orchestrator.py:2202` | **SHADOWED**, but reachable in degraded mode | The declarative engine is checked first and wins. It runs only when `WorkflowEngine` fails to construct (`orchestrator.py:176-179`), and its own tests no longer exercise it. See §2.2. |
+| ~~`_execute_supplier_interaction_workflow`~~ | ~~`orchestrator.py:2202`~~ | **DELETED** `260c8f2` | Was shadowed in normal operation and reachable only when `WorkflowEngine` failed to construct. See §2.2. |
 | `quote_evaluation` graph | `workflow_definitions.py:305` | **CONDITIONAL** | Fires only if the API caller supplies `supplier`, `current_offer`, `target_price` and `rfq_id` themselves. `QuoteEvaluationAgent` returns none of them. |
 
 ### 1.1 The decision chain, per supplier per round
@@ -191,18 +191,18 @@ Two further facts bear on the decision:
 * **It is not ungoverned.** `_apply_authority` runs at `orchestrator.py:429`, before the branch at
   `:442`, so both paths receive the injected mandate.
 
-**Fix — open decision, not a mechanical deletion.** Fixing §2.1 makes the declarative graph the
+> **✔ Closed 2026-09-07 by 0d** (`260c8f2`). The fallback was deleted and a graph-backed workflow
+> now fails rather than routing elsewhere. See §5 for what that means operationally.
+
+**Fix — the decision taken.** Fixing §2.1 makes the declarative graph the
 single control flow in normal operation, which is the intended direction (12-Factor #8, per the
 comment at `orchestrator.py:459`). What to do with the fallback is a real choice:
 
 * **Delete it, and let a failed engine init fail loudly.** One control flow, fail-closed. Silently
   rerouting a workflow through a second, unverified implementation with different behaviour is the
   class of problem this document exists to describe — and since the fallback's own tests do not
-  pass, it would likely fail anyway. *Recommended.*
-* **Keep it as a documented degraded mode, and fix its four tests** so it is genuinely exercised.
-
-Whichever is chosen, record it in the ADR set. Leaving two implementations, one of which only runs
-when something has already gone wrong and is not under test, is how the next reader is misled.
+  pass, it would likely fail anyway. **← chosen.**
+* ~~Keep it as a documented degraded mode, and fix its four tests so it is genuinely exercised.~~
 
 ### 2.3 The spend mandate is resolved, injected, and never read
 
@@ -355,7 +355,7 @@ platform already resolves for it.
 | 0a | Rename the graph keys to `supplier_responses` in node output, input mapping and edge predicate; add a shape test | `workflow_definitions.py:141, :427, :449` | **DONE** `25318ac` | 0b, 0d |
 | 0b | Capture the `AgentOutput` on the watcher route; persist `hitl_email_tasks` | `email_watcher.py:1401`, `negotiation_agent.py:2530` | **DONE** `a6655b6` | 1c |
 | 0c | Read and enforce `input_data["authority"]["negotiation_agent"]`; resolve it directly on the watcher route | `negotiation_agent.py:5056-6365` | **DONE** `b5aa637` | — |
-| 0d | ~~Delete `_execute_supplier_interaction_workflow`~~ — **decide** whether to delete the degraded-mode fallback or keep and test it (§2.2) | `orchestrator.py:493, :1989-2274` | **OPEN** — needs a decision | — |
+| 0d | Delete the degraded-mode fallback; a graph-backed workflow now fails rather than routing elsewhere | `orchestrator.py:176-181, :448-470` | **DONE** `260c8f2` | — |
 | 0e | Drain the learning snapshot on the watcher route — carried out of 0b, see below | `email_watcher.py`, `orchestrator.py:3025-3065` | ~0.5d | 1c |
 
 ### What shipped, and what changed behaviour
@@ -410,6 +410,22 @@ Two things fell out of building it:
 
 Two existing tests asserted a counter composed with no mandate at all. They now supply one
 explicitly; the gate was not weakened to keep them green.
+
+**0d.** `_execute_supplier_interaction_workflow` is gone (288 lines), with its branch. A failed
+engine build is still tolerated at construction — workflows with no declarative graph are
+unaffected and the orchestrator still starts — but a workflow that *is* in `WORKFLOW_REGISTRY` now
+raises, and `execute_workflow`'s handler turns that into a failed result naming the reason. The init
+log moved from `warning` to `error` and no longer claims a fallback exists. Five tests, including
+the narrowness guard: a workflow outside the registry still reaches `_execute_generic_workflow`.
+`tests/test_orchestrator_supplier_workflow.py` keeps the three tests of helpers that still exist and
+loses the four obsolete ones plus their unused stubs — 424 lines to 69. Baseline 28 failures, now
+24: exactly the four removed, and no new ones.
+
+**Operationally this is a behaviour change worth knowing.** Before, a broken `WorkflowEngine` meant
+`supplier_interaction` quietly ran a different pipeline. Now it returns
+`{"status": "failed", "error": "workflow 'supplier_interaction' runs on the declarative workflow
+engine, which failed to initialise (…). Refusing to run it another way."}`. If the engine starts
+failing in an environment, that surfaces immediately instead of as odd downstream behaviour.
 
 **0e, carried forward.** The learning-snapshot drain was scoped into 0b and is not done. The drain
 lives in the orchestrator (`:3025-3065`) and the watcher route has no orchestrator, so doing it
