@@ -105,6 +105,35 @@ class ProcwiseAppState(Protocol):
 async def lifespan(app: FastAPI):
     logger.info("API starting up...")
     state = cast(ProcwiseAppState, app.state)
+
+    # Make formula evaluation records durable, BEFORE the initialisation block
+    # below. Every `evaluate` call already built a full EvaluationRecord --
+    # inputs, output, version hash, findings, confidence -- and emitted it to a
+    # 5,000-entry in-process ring buffer, so the records were correct and then
+    # died with the process. Nothing reached proc.bp_agent_actions.
+    #
+    # Placement is the point. This sits outside that `try` because the whole of
+    # it is skipped by one `except Exception` when anything in it fails, and it
+    # does fail: a cross-encoder load OOMs whenever the GPU is busy, and the
+    # handler nulls out the app state and yields. An audit sink depends on no
+    # agent, no model and no GPU, so making its durability contingent on a warm
+    # GPU is exactly backwards -- a degraded boot is when you most want the
+    # record of what was computed.
+    #
+    # The database is deliberately not the *default* sink (ADR 0002 D6): a
+    # formula run over pairs would flood the audit table, which is why the batch
+    # sweeps go through `evaluate_many` and write one record each. That reasoning
+    # is about sweeps, not this process -- the API's formulas run a handful of
+    # times per request (benchmark's per-deal loop averages 4.5 quote lines, p95
+    # of 9, worst observed 49). Idempotent, because lifespan can run more than
+    # once in a process.
+    try:
+        from src.services.formulas import install_db_audit_sink
+
+        install_db_audit_sink()
+    except Exception:
+        logger.exception("formula audit sink install failed (non-critical)")
+
     try:
         agent_nick = AgentNick()
 

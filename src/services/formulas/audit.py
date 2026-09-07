@@ -226,6 +226,37 @@ def get_audit_sink() -> AuditSink:
     return _sink
 
 
+def install_db_audit_sink(*, agent: str = "formula_registry") -> bool:
+    """Make evaluation records durable for the life of this process.
+
+    Returns True if this call installed the sink, False if a durable one was
+    already in place. The idempotence is the point: ``lifespan`` can run more
+    than once in a process (tests, reloads, an app mounted twice), and a second
+    unconditional install would bury the sink the first one displaced, so the
+    original could never be restored.
+
+    Not the default, deliberately — see ADR 0002 D6. A formula evaluated over
+    pairs would flood ``proc.bp_agent_actions``, which is why the module-level
+    default stays an in-process ring buffer and the batch sweeps go through
+    ``evaluate_many`` (one record per sweep). This installs the durable sink
+    where that reasoning does not apply: the API process, whose formulas run a
+    handful of times per request.
+
+    Assignment is inline rather than via ``set_audit_sink`` because that helper
+    takes ``_sink_lock`` too, and a plain ``threading.Lock`` is not reentrant.
+    """
+    global _sink
+    with _sink_lock:
+        if isinstance(_sink, DbAuditSink):
+            return False
+        previous, _sink = _sink, DbAuditSink(agent=agent)
+    logger.info(
+        "formula audit records now durable: %s -> DbAuditSink(proc.bp_agent_actions)",
+        type(previous).__name__,
+    )
+    return True
+
+
 def emit(record: EvaluationRecord) -> None:
     try:
         _sink.write(record)
@@ -239,5 +270,6 @@ def now() -> datetime:
 
 __all__ = [
     "Provenance", "EvaluationRecord", "AuditSink", "MemoryAuditSink",
-    "NullAuditSink", "DbAuditSink", "set_audit_sink", "get_audit_sink", "emit",
+    "NullAuditSink", "DbAuditSink", "set_audit_sink", "get_audit_sink",
+    "install_db_audit_sink", "emit",
 ]

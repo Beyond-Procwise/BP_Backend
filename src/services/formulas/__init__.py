@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from .audit import (
     AuditSink, DbAuditSink, EvaluationRecord, MemoryAuditSink, NullAuditSink,
-    Provenance, get_audit_sink, set_audit_sink,
+    Provenance, get_audit_sink, install_db_audit_sink, set_audit_sink,
 )
 from .contract import Contract, Finding, Output, Quantity, Term, Unit
 from .evaluate import BatchResult, EvaluationRefused, Result, evaluate, evaluate_many
@@ -37,5 +37,6 @@ __all__ = [
     "evaluate", "evaluate_many", "Result", "BatchResult", "EvaluationRefused",
     "Provenance", "EvaluationRecord", "AuditSink", "MemoryAuditSink",
     "NullAuditSink", "DbAuditSink", "set_audit_sink", "get_audit_sink",
+    "install_db_audit_sink",
     "model_inventory", "render_markdown",
 ]

@@ -735,7 +735,13 @@ away from the function that appears to be missing it.**
 1. **The four-function refactor** — still the target, still not started. Fail-closed is partly
    landed; confidence propagation and criticality-as-leverage are untouched.
 2. ~~**Close the accept path**~~ — **done 2026-09-07.** Suite 250 → 259, no regressions.
-3. **Install `DbAuditSink`** — the records already exist; only the sink is missing.
+3. ~~**Install `DbAuditSink`**~~ — **done 2026-09-07.** Installed in `lifespan`, *ahead of* the
+   initialisation block: that block is skipped wholesale by one `except Exception`, and it is
+   skipped in practice — a cross-encoder load OOMs whenever the GPU is busy, which is how the
+   first attempt silently installed nothing. Verified on the running server against bp_testdb:
+   0 `formula_eval` rows before, 2 after one `/deals/{id}/advice` call
+   (`negotiation.kraljic_quadrant`, `negotiation.play_rank`), each carrying the qualified
+   version, hash, timing and full record in `details`.
 4. **Surface `zopa["findings"]`**, and delete or wire the dead code around it.
 5. Standing defects: leverage unread; outlier rails one-directional; the `1500` strict-`>`
    boundary; the swallowed LLM failure.
