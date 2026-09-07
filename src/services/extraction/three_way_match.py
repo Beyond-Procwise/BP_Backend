@@ -16,15 +16,30 @@ that contains it.
 Deliberately NOT flagged: an invoice billing LESS than its PO. Partial and split invoices
 are normal procurement, and crying wolf on every one of them is how a check gets ignored.
 Over-billing is the asymmetry that costs money.
+
+Over-billing hides in the aggregate, though, and comparing one document at a time cannot
+see it. Two invoice lines that both land on the same PO line each pass a check against
+that line's full authorised total while together billing twice it; two invoices each
+citing the same PO at 60% of its value each pass the header check while together billing
+120%. Both are now checked as a set: the lines are assigned to PO lines over the whole
+document at once rather than one at a time, and what a PO line -- or a whole PO -- has
+been billed in total is compared against what it authorised.
 """
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import Any, Optional
 
 from src.services.extraction.persistence import Discrepancy, get_conn
 from src.services.linking_engine import _norm_po, _PO_NORM_SQL
+from src.services.resolution import (
+    CandidateEdge,
+    CardinalityRule,
+    ResolutionRequest,
+    resolve,
+)
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +98,130 @@ def _match_po_line(desc: Any, po_lines: list[dict]) -> Optional[dict]:
         if score > best_score:
             best, best_score = l, score
     return best if best_score >= 0.5 else None
+
+
+# ---------------------------------------------------------------------------
+# Which PO line is each invoice line billing for?
+# ---------------------------------------------------------------------------
+# Scores that keep _match_po_line's precedence exactly: an exact key beats a
+# containment, and a containment beats any token overlap however convincing.
+_EXACT_SCORE = 1.0
+_CONTAINED_SCORE = 0.9
+_OVERLAP_CEILING = 0.8      # strictly below _CONTAINED_SCORE
+_OVERLAP_FLOOR = 0.5        # the threshold _match_po_line has always used
+
+# How many PO lines one invoice line is allowed to compete for. Every candidate
+# pair is a variable, so keeping all of them makes the model grow with the
+# product of the two line counts: a 30-line invoice against a 30-line purchase
+# order was 900 edges and 0.58s, and a 200-line document would have run for
+# minutes inside extraction. Keeping each line's best few is linear instead.
+#
+# It is a bound, and worth stating as one: an assignment could in principle want
+# to push a line past its fourth choice, and this will not let it. That needs
+# four other lines to outbid it on all four, which only happens in a document
+# whose descriptions are near-identical — and there the fallback below matches
+# it anyway. The best candidate is never dropped, so nothing this bound does can
+# change a document whose lines do not compete.
+_MAX_CANDIDATES_PER_LINE = 4
+
+_LINE_PROFILE = "invoice_line_po_line"
+# Prefer to give each invoice line a PO line of its own. Preferring, not
+# requiring: see _assign_lines.
+_LINE_RULE = CardinalityRule(_LINE_PROFILE, "1:1")
+
+
+def _line_log_odds(score: float) -> float:
+    """A match score as log-odds, for the resolver's objective. Monotone, so a
+    document whose lines do not compete resolves to exactly what matching them
+    one at a time would have returned."""
+    p = min(max(score, 1e-9), 1.0 - 1e-9)
+    return math.log(p / (1.0 - p))
+
+
+def _candidate_po_lines(desc: Any, po_lines: list[dict]) -> list[tuple[int, float]]:
+    """Every PO line this invoice line could be billing for, with a score.
+
+    Eligibility is exactly what `_match_po_line` has always allowed — an exact
+    key, one description containing the other, or a token overlap of at least
+    0.5. The difference is that this returns all of them instead of the first
+    or best, so the assignment below has something to choose between.
+    """
+    key = _norm_item(desc)
+    if not key:
+        return []
+    words = set(key.split())
+    out: list[tuple[int, float]] = []
+    for i, line in enumerate(po_lines):
+        pk = _norm_item(line.get("item_description"))
+        if not pk:
+            continue
+        if pk == key:
+            out.append((i, _EXACT_SCORE))
+            continue
+        if pk.startswith(key) or key.startswith(pk) or pk in key or key in pk:
+            out.append((i, _CONTAINED_SCORE))
+            continue
+        pw = set(pk.split())
+        if not pw or not words:
+            continue
+        overlap = len(words & pw) / len(words | pw)
+        if overlap >= _OVERLAP_FLOOR:
+            out.append((i, _OVERLAP_CEILING * overlap))
+    # Best first, PO line order breaking ties, then bounded.
+    out.sort(key=lambda c: (-c[1], c[0]))
+    return out[:_MAX_CANDIDATES_PER_LINE]
+
+
+def _assign_lines(line_items: list[dict], po_lines: list[dict],
+                  po_id: Any) -> dict[int, dict]:
+    """Which PO line each invoice line is billing for, decided over the whole
+    document at once rather than one line at a time.
+
+    Matching each line independently gives every line its own favourite, which
+    goes wrong in two ways a set view fixes. Two invoice lines can settle on the
+    same PO line while another PO line is then reported as never billed. And a
+    line's favourite can be another line's only option: the first line takes it
+    on a 0.6 overlap, the second needed it at 0.9, and both end up on the same
+    PO line with a real one left over. Assigning the document as a set resolves
+    both, and the tie-break is the resolution layer's documented rule rather
+    than the order the PO lines happened to come out of the database in.
+
+    **Preferring a PO line of one's own is not requiring one.** Split billing —
+    two invoice lines against a single ordered item — is ordinary, so a line the
+    one-to-one pass could not place falls back to its own best match rather than
+    being left unplaced. This function never causes an accusation; a line it
+    cannot match at all is one `_match_po_line` could not match either. What
+    happens when two lines do share a PO line is a finding about the total
+    billed against it, raised in `check_against_po`, not a refusal to match.
+    """
+    edges = []
+    for idx, item in enumerate(line_items or []):
+        for i, score in _candidate_po_lines(item.get("item_description"), po_lines):
+            edges.append(CandidateEdge(
+                source_id=f"line:{idx}", target_id=f"po_line:{i}",
+                log_odds=_line_log_odds(score), confidence=score,
+                profile_id=_LINE_PROFILE, consumes={},
+            ))
+
+    assigned: dict[int, dict] = {}
+    if edges:
+        result = resolve(ResolutionRequest(
+            request_id=f"three_way_match:{po_id}",
+            edges=tuple(edges), capacities=(), rules=(_LINE_RULE,),
+            profile_registry_version="three_way_match/line_v1",
+        ))
+        for link in result.links:
+            assigned[int(link.source_id.split(":", 1)[1])] = po_lines[
+                int(link.target_id.split(":", 1)[1])
+            ]
+
+    for idx, item in enumerate(line_items or []):
+        if idx in assigned:
+            continue
+        fallback = _match_po_line(item.get("item_description"), po_lines)
+        if fallback is not None:
+            assigned[idx] = fallback
+    return assigned
 
 
 def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
@@ -194,6 +333,95 @@ def _po_uploaded_but_unpromoted(po_id: str) -> bool:
     return False
 
 
+def _billed_by_other_invoices(po_id: str, exclude_invoice_id: Any,
+                             currency: Any) -> tuple[float, list[str], bool]:
+    """What other invoices have already billed against this purchase order.
+
+    Returns (total, invoice_ids, complete). ``complete`` is False when some
+    invoice on the PO had to be left out because its currency differs from the
+    PO's, or because the lookup failed — the total is then a floor rather than
+    the whole story, and the caller says so.
+
+    Net amounts, matching the header check above: it compares the document's
+    `invoice_amount` against the PO's `total_amount`, so the siblings have to be
+    added on the same basis or the comparison is between two different things.
+    """
+    canonical = _norm_po(po_id)
+    if not canonical or not currency:
+        return 0.0, [], False
+    cond = _PO_NORM_SQL.format(col="po_id")
+    exclude = str(exclude_invoice_id) if exclude_invoice_id else ""
+    total, ids, complete = 0.0, [], True
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            # One row per invoice_id across both tiers: a document staged and then
+            # promoted is one invoice, not two.
+            cur.execute(
+                "SELECT invoice_id, MAX(invoice_amount), MAX(currency) FROM ("
+                f"  SELECT invoice_id, invoice_amount, currency FROM proc.bp_invoice_stg WHERE {cond} = %s"
+                "  UNION ALL"
+                f"  SELECT invoice_id, invoice_amount, currency FROM proc.bp_invoice_trgt WHERE {cond} = %s"
+                ") x WHERE invoice_id IS NOT NULL AND invoice_id <> %s GROUP BY invoice_id",
+                (canonical, canonical, exclude),
+            )
+            rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 — a sibling lookup must not lose the other findings
+        log.exception("three-way match: could not read sibling invoices for PO %s", po_id)
+        return 0.0, [], False
+
+    want = str(currency).strip().upper()
+    for invoice_id, amount, cur_code in rows:
+        value = _f(amount)
+        if value is None or not cur_code or str(cur_code).strip().upper() != want:
+            complete = False
+            continue
+        total += value
+        ids.append(str(invoice_id))
+    return round(total, 2), sorted(ids), complete
+
+
+def _check_po_consumed_as_a_set(po: dict, columns: dict,
+                                doc_total: Optional[float]) -> list[Discrepancy]:
+    """Do the invoices citing this PO, together, bill more than it authorised?"""
+    po_total = _f(po.get("total_amount"))
+    po_currency = po.get("currency")
+    doc_currency = columns.get("currency")
+    if not po_total or doc_total is None or not po_currency:
+        return []
+    if not doc_currency or str(doc_currency).strip().upper() != str(po_currency).strip().upper():
+        return []
+
+    others, ids, complete = _billed_by_other_invoices(
+        po["po_id"], columns.get("invoice_id"), po_currency
+    )
+    if not ids:
+        return []
+
+    combined = round(others + doc_total, 2)
+    if combined <= po_total or _agrees(combined, po_total):
+        return []
+
+    this_one = str(columns.get("invoice_id") or "this invoice")
+    claimants = ", ".join(ids + [this_one])
+    caveat = ("" if complete else
+              " (invoices in another currency are excluded, so the real total is higher)")
+    return [Discrepancy(
+        field_name="invoice_amount",
+        issue_type="po_over_consumed",
+        severity="critical",
+        blocks_promotion=False,
+        raw_value=f"{combined:.2f}",
+        expected_value=f"{po_total:.2f}",
+        computed_value=f"+{round(combined - po_total, 2):.2f}",
+        notes=(
+            f"purchase order {po['po_id']} authorised {po_total:,.2f} {po_currency}; "
+            f"{claimants} bill {combined:,.2f} combined, "
+            f"{round(combined - po_total, 2):,.2f} more than was ordered{caveat}"
+        ),
+    )]
+
+
 def check_against_po(
     doc_type: str,
     columns: dict[str, Any],
@@ -266,7 +494,10 @@ def check_against_po(
         ))
 
     # --- lines: what is being charged that the PO did not authorise? ----------------
+    # Assigned as a set, not one line at a time: see _assign_lines.
+    assigned = _assign_lines(line_items or [], po_lines, po["po_id"])
     matched_po_lines: set[int] = set()
+    claims: dict[int, list[tuple[Any, float]]] = {}
 
     for idx, li in enumerate(line_items or []):
         desc = li.get("item_description")
@@ -275,9 +506,11 @@ def check_against_po(
         if not key:
             continue
 
-        po_line = _match_po_line(desc, po_lines)
+        po_line = assigned.get(idx)
         if po_line is not None:
             matched_po_lines.add(id(po_line))
+            if amt is not None:
+                claims.setdefault(id(po_line), []).append((desc, amt))
         if po_line is None:
             # "Charged but not on the PO" requires a charge: a row with no
             # money is furniture or an extraction gap (both surfaced
@@ -327,6 +560,45 @@ def check_against_po(
                     f"'{str(desc)[:60]}': {qty:g} billed, {po_qty:g} ordered"
                 ),
             ))
+
+    # --- is one PO line being billed twice over? ------------------------------------
+    # Each line above was compared against the PO line's FULL authorised total, which
+    # every one of them can pass while together billing more than was ordered. Two
+    # invoice lines at 60% of a PO line are 120% of it, and neither is individually
+    # over-billing. Only the sum says so.
+    for pl in po_lines:
+        billed = claims.get(id(pl), [])
+        if len(billed) < 2:
+            continue
+        po_amt = _f(pl.get("line_total"))
+        total = round(sum(a for _, a in billed), 2)
+        if not po_amt or total <= po_amt or _agrees(total, po_amt):
+            continue
+        out.append(Discrepancy(
+            field_name="line_items",
+            issue_type="po_line_over_consumed",
+            severity="critical",
+            blocks_promotion=False,
+            raw_value=f"{total:.2f}",
+            expected_value=f"{po_amt:.2f}",
+            computed_value=f"+{round(total - po_amt, 2):.2f}",
+            notes=(
+                f"'{str(pl.get('item_description'))[:60]}' was authorised at "
+                f"{po_amt:,.2f} on purchase order {po['po_id']} and is billed "
+                f"{len(billed)} times on this document — "
+                + ", ".join(f"{str(d)[:40]} {a:,.2f}" for d, a in billed)
+                + f" — {round(total - po_amt, 2):,.2f} more than was ordered"
+            ),
+        ))
+
+    # --- is the PO being billed twice over, across documents? -----------------------
+    # The header check above asks whether THIS invoice exceeds the PO. Two invoices at
+    # 60% of it each pass that and together bill 120%, so the question has to be asked
+    # of the set. Only invoices stating the PO's own currency are added up: converting
+    # here would mean inventing a rate, and a total nobody can verify is worse than no
+    # finding at all.
+    if doc_type == "invoice" and po_total:
+        out.extend(_check_po_consumed_as_a_set(po, columns, doc_total))
 
     # --- what did the PO authorise that never arrived on the invoice? ---------------
     # Only lines nothing on the document matched to — using the same matcher, so a PO line

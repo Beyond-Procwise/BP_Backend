@@ -280,6 +280,23 @@ def find_duplicates(invoices: list[dict], min_score: float = RAISE_BAND) -> list
 
     # One finding per document, against the invoice it most strongly duplicates —
     # three identical invoices raise two findings, not three overlapping pairs.
+    #
+    # Taking each document's own strongest match is a per-source argmax, and
+    # unlike the award and anchor decisions it does NOT need the resolution
+    # layer. Those two are coupled: an order can be won once, so what one bid
+    # takes another cannot have, and the best assignment is not the one every
+    # bid would pick for itself. Here nothing is scarce. One original can be
+    # duplicated any number of times, no two findings compete for anything, and
+    # the globally best set of pairings is exactly each document's own favourite.
+    # Routing this through the resolver would add a solve and change nothing.
+    #
+    # What it does share with them is the need for a stated tie-break. `>` keeps
+    # the first match seen at a given score, and `pairs` is built from `rows`
+    # sorted by (invoice_date, invoice_id) with each document compared only
+    # against those before it. So on an exact tie the original is the EARLIEST
+    # invoice by date, then by id — which is the right answer as well as a
+    # deterministic one: the first issue of a document is the one the later
+    # copies duplicate.
     return [
         {"later": later, "earlier": earlier,
          "amount": round(float(later["total_amount"]), 2),
