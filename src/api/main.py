@@ -101,6 +101,37 @@ class ProcwiseAppState(Protocol):
     extraction_v3_schemas: dict
     session_notify_listener: Optional[Any]
 
+def _optional(name: str, build, *, default=None):
+    """Build a startup subsystem whose absence the API can serve without.
+
+    Returns ``default`` and logs, rather than propagating, so one subsystem's
+    failure costs that subsystem alone.
+
+    The distinction this draws is the point. ``lifespan`` catches everything
+    around its whole initialisation and responds by nulling fourteen pieces of
+    app state -- which is the right answer when the core is gone and there is
+    nothing left to serve with, and the wrong answer to a reranker that would
+    not fit on the GPU. That is not a hypothetical: it happened on every boot of
+    this host, and because the handler is at the end, everything after the
+    failure point was skipped too -- the session-status bridge, the
+    extraction-hint cache and the formula audit sink all silently did not start.
+
+    A subsystem belongs here when its consumers already tolerate its absence.
+    ``state.rag_pipeline`` is the model: both routers that use it raise a clean
+    503 when it is missing, so losing it was always meant to be survivable. The
+    core -- AgentNick, the registries, the orchestrator -- stays outside, and a
+    failure there is still fatal and still loud.
+    """
+    try:
+        return build()
+    except Exception:
+        logger.exception(
+            "startup: %s is unavailable; continuing without it. The API will "
+            "serve, and any endpoint that needs it will say so.", name,
+        )
+        return default
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("API starting up...")
@@ -168,26 +199,43 @@ async def lifespan(app: FastAPI):
             "SupplierInteractionAgent": "supplier_interaction",
         })
 
-        # Initialize reasoning engine
+        # Initialize reasoning engine. Optional: the pattern store is a DDL
+        # round-trip and the reasoning engine is not reachable from any request
+        # path today (`create_plan` has no callers), so neither is worth the
+        # whole system. Nothing outside this module reads
+        # `agent_nick.reasoning_engine`.
         from services.pattern_service import PatternService
         from services.procurement_context_service import ProcurementContextService
         from orchestration.reasoning_engine import ReasoningEngine
 
-        pattern_service = PatternService(agent_nick)
-        pattern_service.ensure_table()
-        context_service = ProcurementContextService(agent_nick)
-        reasoning_engine = ReasoningEngine(
-            agent_nick, auto_registry, pattern_service, context_service
+        def _build_pattern_service():
+            service = PatternService(agent_nick)
+            service.ensure_table()
+            return service
+
+        pattern_service = _optional("the pattern store", _build_pattern_service)
+        context_service = _optional(
+            "the procurement context service",
+            lambda: ProcurementContextService(agent_nick),
+        )
+        reasoning_engine = _optional(
+            "the reasoning engine",
+            lambda: ReasoningEngine(
+                agent_nick, auto_registry, pattern_service, context_service
+            ),
         )
         agent_nick.reasoning_engine = reasoning_engine
         agent_nick.pattern_service = pattern_service
 
         # Seed initial patterns if table is empty
-        from services.seed_patterns import seed_patterns
-        existing = pattern_service.get_patterns()
-        if not existing:
-            seed_patterns(pattern_service)
-            logger.info("Seeded initial procurement patterns")
+        if pattern_service is not None:
+            def _seed_patterns_if_empty():
+                from services.seed_patterns import seed_patterns
+                if not pattern_service.get_patterns():
+                    seed_patterns(pattern_service)
+                    logger.info("Seeded initial procurement patterns")
+
+            _optional("the initial procurement patterns", _seed_patterns_if_empty)
 
         # === Extraction V3: schema validation (fail-loud on drift) ===
         try:
@@ -272,18 +320,35 @@ async def lifespan(app: FastAPI):
             )
 
         state.agent_nick = agent_nick
-        state.model_training_endpoint = ModelTrainingEndpoint(agent_nick)
+
+        # Optional: Orchestrator's own signature defaults training_endpoint to
+        # None, so it is built to run without this.
+        state.model_training_endpoint = _optional(
+            "the model training endpoint", lambda: ModelTrainingEndpoint(agent_nick)
+        )
+
+        # Core. Every request routes through the orchestrator; without it there
+        # is nothing to degrade to, so a failure here is still fatal.
         orchestrator = Orchestrator(
             agent_nick,
             training_endpoint=state.model_training_endpoint,
         )
         state.orchestrator = orchestrator
-        state.rag_pipeline = RAGPipeline(agent_nick)
+
+        # Optional, and the one that actually fired: RAGPipeline builds a
+        # cross-encoder, which OOMs when the GPU is busy. Both routers that use
+        # it already raise 503 when it is missing.
+        state.rag_pipeline = _optional(
+            "the RAG pipeline", lambda: RAGPipeline(agent_nick)
+        )
+
         state.agent_registry = agent_nick.agents
         state.supplier_interaction_agent = agents_dict.get("supplier_interaction")
         state.negotiation_agent = agents_dict.get("negotiation")
         state.email_watcher_runner = run_email_watcher_for_workflow
-        backend_scheduler = orchestrator.backend_scheduler
+        backend_scheduler = _optional(
+            "the backend scheduler", lambda: orchestrator.backend_scheduler
+        )
         state.backend_scheduler = backend_scheduler
         try:
             email_watcher_service = backend_scheduler.get_email_watcher_service()
