@@ -118,3 +118,46 @@ class ProblemModel:
         """Resources any edge actually draws on, in canonical order."""
         seen = {r for e in self.edges for r in e.consumes}
         return tuple(sorted(seen))
+
+
+def partition(pm: "ProblemModel") -> tuple[tuple[int, ...], ...]:
+    """Split the edges into groups that no constraint couples, in canonical order.
+
+    Two edges share a group when a constraint row can hold them both: they share
+    a source (every source has a coverage row), they share a target that carries
+    a cardinality limit, or they draw on the same declared-capacity resource.
+    A target nobody bounded and a resource nobody gave a capacity write no row,
+    so they couple nothing.
+
+    Because the objective is a plain sum over edges and no row spans two groups,
+    minimising each group separately minimises the whole — and so does the
+    rank tie-break, which is also a per-edge sum. The split is exact, not a
+    heuristic decomposition: it is the same optimum, found in smaller pieces.
+    """
+    parent: dict[object, object] = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i, e in enumerate(pm.edges):
+        union(("e", i), ("s", e.source_id))
+        if pm.target_bounds[e.target_id] is not None:
+            union(("e", i), ("t", e.target_id))
+        for r in e.consumes:
+            if r in pm.capacities:
+                union(("e", i), ("r", r))
+
+    groups: dict[object, list[int]] = {}
+    for i in range(len(pm.edges)):
+        groups.setdefault(find(("e", i)), []).append(i)
+    # Ordered by their lowest edge index, so the groups themselves are canonical.
+    return tuple(tuple(g) for g in sorted(groups.values(), key=lambda g: g[0]))

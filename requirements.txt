@@ -24,6 +24,14 @@ spacy
 transformers
 pandas
 numpy
+# scipy -> services/resolution/solver.py, which solves the global assignment with
+# scipy.optimize.milp (HiGHS). It was already present in both virtualenvs as a
+# transitive dependency and so was never declared, which left the resolution
+# layer one unrelated dependency bump away from disappearing. milp arrived in
+# scipy 1.9, so that is the floor; the layer's determinism does not rest on the
+# solver's tie-handling (the tie-break is an explicit term in the objective —
+# see services/resolution/DECISIONS.md), so no upper bound is imposed.
+scipy>=1.9
 tiktoken
 unstructured[local-inference]
 pdf2image

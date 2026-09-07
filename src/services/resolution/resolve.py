@@ -5,7 +5,7 @@ from .certificate import certify
 from .contracts import ResolutionRequest, ResolutionResult, ResolvedLink
 from .fingerprint import inputs_hash
 from .model import DEGENERACY_FLOOR, ProblemModel
-from .solver import PENALTY_LOG_ODDS, SOLVER_VERSION, Program, Solution
+from .solver import PENALTY_LOG_ODDS, SOLVER_VERSION, Portfolio, Solution
 
 
 def _normalise(margin: float, scale: float) -> float:
@@ -110,7 +110,7 @@ def resolve(request: ResolutionRequest) -> ResolutionResult:
             solver_version=SOLVER_VERSION,
         )
 
-    program = Program(pm)
+    program = Portfolio(pm)
     best = program.solve()
     if not best.feasible:
         return ResolutionResult(

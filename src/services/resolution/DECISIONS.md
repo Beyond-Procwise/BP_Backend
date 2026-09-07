@@ -17,6 +17,19 @@ whole layer ships with no new dependency.
 The consequence: there is one model, not two. A pure assignment problem is just
 the case where no edge declares any `consumes`.
 
+`scipy` is now declared in `requirements.txt` with a `>=1.9` floor, the release
+`scipy.optimize.milp` arrived in. It was previously present in both virtualenvs
+only as a transitive dependency and was never named, which left this layer one
+unrelated dependency bump away from disappearing.
+
+No upper bound is pinned. The tie-break is an explicit term in the objective
+rather than a reliance on the solver's own ordering, so a HiGHS version change
+cannot move an answer the rule reaches — with the one exception recorded under
+the tie-break below, where the rule is silent and the solver picks. The two
+virtualenvs here run different versions (1.16.3 under `venv`, 1.17.1 under
+`.venv`) and the whole package's tests pass identically on both, which is the
+evidence for that rather than the argument.
+
 ## Cost scaling multiplier: 10,000
 
 Edge costs must be integers for the tie-break below to be exact. `log_odds`
@@ -45,34 +58,81 @@ It is also why a single-candidate link's margin is ~100 plus its own log-odds:
 the alternative to that link is not a worse PO, it is no PO at all, and the
 margin says so.
 
-## Tie-break: lexicographic on (source_id, target_id)
+## Tie-break: canonical rank, not solver order
 
 Edges are sorted by `(source_id, target_id, profile_id)` before the model is
 built, and every index downstream — variable position, cost vector, rank —
 derives from that order and nothing else. A shuffled input therefore produces a
 byte-identical model.
 
-Among solutions that tie on true cost, the chosen one is decided by an explicit
-term in the objective, not by solver internals: each edge variable carries its
-canonical rank as a sub-unit cost. Because the true cost is first multiplied by
+Among solutions that tie on true cost, the chosen one is decided as far as
+possible by an explicit term in the objective rather than by solver internals:
+each edge variable carries its canonical rank as a sub-unit cost. How far that
+reaches is set out below, and it is not all the way. Because the true cost is first multiplied by
 `tiebreak_scale = n² + 1`, and the largest achievable sum of ranks is
 `n(n-1)/2 < n² + 1`, the rank term can only ever separate solutions that are
 already equal on evidence. It never changes which assignment is optimal.
 
-**Scope of the rank term.** The primary solve ranks every edge, so the returned
-`links` are globally determined. A margin re-solve ranks only the edges of the
-source whose link was forbidden. That is enough: a re-solve contributes two
-things to the output, the objective value (independent of the rank term, since
-cost is recomputed from `log_odds`) and `displaced_by` (which concerns only that
-source). Ranking every edge in every re-solve is not free — it splits objective
-ties that HiGHS would otherwise prune, and measured **3x slower** across the
-margin loop. So the documented rule is:
+**Scope of the rank term.** Every solve carries it — the primary one and every
+margin re-solve — so the layer never hands a choice among tied optima to HiGHS
+where the rule can reach.
 
-> Among alternative optima, `displaced_by` reports the placement in which the
-> affected source takes its lexicographically earliest targets.
+An earlier version ranked only the affected source's edges during a re-solve, on
+the theory that ranking everything splits objective ties HiGHS would otherwise
+prune, and recorded that as measured 3x cheaper. Re-measured interleaved on a
+500-edge request, that is backwards: 60 re-solves take 0.44s ranking every edge
+against 0.71s ranking one source's, on a single-group model, and the two are
+level (1.02x) on a clustered one. The simpler and more determined option is also
+the cheaper one, so it is the one in the code.
 
-Ties elsewhere in an alternative solution are not separated, because nothing in
-the output depends on them.
+**What the rank term decides, and what it does not.** The rule is not quite
+"lexicographic on `(source_id, target_id)`". A term added to a sum minimises the
+*total* rank of the chosen edges, so among tied optima the winner is the one
+whose edges carry the smallest rank sum in canonical order. That orders most
+ties. It does not order a symmetric one: every perfect matching of a 3×3 block of
+identical edges has the same total, so the rule is silent there and HiGHS picks.
+The pick is still stable — identical inputs build an identical model — but that
+is stability, not a rule, and the difference matters because the brief asks for
+the latter.
+
+`test_a_symmetric_tie_is_stable_even_though_the_rule_cannot_reach_it` pins that
+boundary so it cannot drift unnoticed, and
+`test_a_pure_tie_is_decided_by_canonical_rank` plus
+`test_ties_are_broken_by_canonical_rank_not_by_the_solver` check the cases the
+rule does reach, by enumerating every optimum and demanding the min-rank one
+back. Closing the gap entirely would need rank weights growing geometrically
+with the edge count, so that no two distinct edge sets could share a sum; that is
+not representable in float64 for a 500-edge request, and buying it with a
+per-edge sequence of re-solves would cost more than the margin loop itself.
+
+## Independent groups are solved independently
+
+A request is rarely one problem. Two edges can only interfere if a constraint row
+can hold them both: they share a source (every source has a coverage row), they
+share a target that carries a cardinality limit, or they draw on the same
+declared-capacity resource. `model.partition` unions exactly those three
+relations and hands the solver one group at a time.
+
+Nothing about the answer changes. The objective is a plain sum over edges, no row
+spans two groups, and the rank tie-break is also a per-edge sum, so the minimum
+of the whole is the sum of the minima — and the smallest total rank over the
+whole is achieved exactly when each group's own total rank is smallest, so the
+tie-break survives the split as well. A target nobody bounded and a resource
+nobody gave a capacity write no row at all, so they couple nothing — which is why
+the union is over active constraints rather than over "shares a target".
+
+What changes is the margin loop, which is where nearly all the time goes. An edge
+can only perturb its own group, so forbidding it re-solves that group and carries
+the other groups' costs over untouched. On the shape the live callers actually
+produce — `deal_assignment_service` already batches by supplier — a 500-edge
+request falls into 25 groups, and the loop goes from 251 solves of a 500-edge
+model to 251 solves of a 20-edge one. Measured below.
+
+`test_splitting_a_request_into_groups_does_not_change_the_optimum` checks the
+claim directly on every large graph in the corpus: the objective is solved twice,
+once group by group and once as a single undecomposed program, and the two must
+agree. The margin oracle for large graphs uses the undecomposed program too, so
+a bug in the split shows up as a wrong margin rather than passing quietly.
 
 ## What INFEASIBLE means
 
@@ -106,7 +166,7 @@ answer.
 
 **Nowhere.** No margin is approximated, no optimality gap is tolerated
 (`mip_rel_gap` is left at its exact default), and no constraint is relaxed. The
-four things that make it fast are all exact:
+five things that make it fast are all exact:
 
 1. **One equality row instead of two rows when a source may take one target.**
    `sum(edges) + unassigned = 1` says exactly what a coverage row plus a
@@ -126,6 +186,123 @@ four things that make it fast are all exact:
    `penalty + log_odds` and no re-solve is run. All three conditions are
    load-bearing: dropping either of the last two makes
    `test_every_margin_matches_a_brute_force_re_solve` fail.
+5. **Only the affected group is re-solved for a margin.** See the section above.
+   This is the largest of the five by a wide margin, and the only one that
+   changes the shape of the cost curve rather than its constant.
+
+## The corpus the properties run on
+
+The properties are only worth as much as the graphs they run on, and a generator
+that emits sparse graphs where every source has one obvious target passes all
+seven while testing nothing. So `tests/services/resolution/generator.py` builds
+hardness in deliberately, and `test_corpus_is_adversarial` asserts on the corpus
+itself before any property is checked, printing what it actually produced.
+
+Three things are injected rather than hoped for: a source with three or more
+candidates within 0.05 log-odds of each other, so the tie-break is genuinely
+load-bearing; a resource whose claimants together want more than it holds, so
+somebody has to lose; and a source with nowhere it could possibly go, so the
+layer has to fail closed. Node counts are drawn from four equally weighted bands
+spanning 2 to 200, so the corpus is not clustered at the small end.
+
+The realised distribution, which is what the assertions are written against:
+
+| | count | share | floor |
+|---|---|---|---|
+| near-tie | 450 | 45.0% | 30% |
+| contested resource | 622 | 62.2% | 20% |
+| constructed infeasible | 130 | 13.0% | 10% |
+| 2–8 nodes | 257 | 25.7% | 10% |
+| 9–30 nodes | 246 | 24.6% | 10% |
+| 31–90 nodes | 252 | 25.2% | 10% |
+| 91–200 nodes | 245 | 24.5% | 10% |
+
+1000 graphs, 82,275 edges, 1 to 366 edges each. Solving them returns 683
+RESOLVED, 187 DEGENERATE and 130 INFEASIBLE, and the corpus test asserts that
+all three statuses are exercised — otherwise a property could pass by returning
+early on a corpus that never actually solves anything.
+
+Traits are **observed** from the built request, never taken on trust from the
+intent that built it: the near-tie trait is granted by re-reading the edge
+weights, the contested trait by re-adding the claims, and infeasibility by an
+independently written placeability check rather than by asking the layer.
+
+Two oracles check the answers. Under 8 nodes every valid assignment is
+enumerated, and the solver's objective and every one of its margins must match.
+Above that, enumeration is hopeless, so the oracle is the same model solved in
+one undecomposed piece — the pre-optimisation code path — which shares none of
+the margin loop's shortcuts.
+
+## Measured cost
+
+The brief asks for solve plus margin computation on a 500-edge graph in under two
+seconds, and reports of one number would hide the thing that actually decides it:
+whether the graph falls into independent groups. Three shapes, each 500 edges,
+timed on this dev box (4 cores, otherwise idle, `venv` / scipy 1.16.3), median of
+three runs, before and after groups were solved independently:
+
+| 500-edge shape | groups | before | after |
+|---|---|---|---|
+| clustered by supplier — what the live callers batch | 25 | 2.42s | **0.42s** |
+| spread over one pool of 80 orders, sparse | 1 | 1.69s | **1.36s** |
+| dense contested, a genuine multi-knapsack | 1 | 19.17s | **19.28s** |
+
+Two of the three meet the target. The clustered shape is the one that matters —
+`deal_assignment_service` already groups by supplier before it resolves, and
+`deal_clustering` resolves one batch at a time — and it is 5.7x faster than it
+was. The spread shape has no decomposition to find and sits on the line: 1.36s
+idle, about 2.1s with the cores busy, so machine load alone moves it across.
+
+The dense case misses by an order of magnitude and is not fixable by any exact
+means available here. It is 167 branch-and-bound solves of a 501-edge model whose
+capacity rows genuinely bind — a multi-knapsack, not an assignment problem. The
+LP relaxation is 100x faster but is never integral on these (measured: 0/12), so
+there is nothing to fall back to, and scipy's fixed per-call cost is only 0.88ms,
+so the time is real solver work rather than overhead. Cutting it would mean
+either an approximate margin, which the brief rules out and which would be worse
+than a slow honest one, or a residual-graph shortest-path formulation that only
+exists for the pure assignment case with no capacities. It is recorded, excluded
+from the default test run, and left alone.
+
+`tests/services/resolution/test_performance.py` builds all three and prints the
+numbers on every run, so this table can be re-derived rather than believed.
+
+## Mutation check
+
+A suite that passes proves nothing on its own; what matters is whether it fails
+when the code is wrong. Four bugs were introduced one at a time, the whole
+package's tests run against each, and the bug reverted. None was committed, and
+none was applied to this checkout — the runs happen in a detached `git worktree`
+so a shared working tree is never left holding a deliberately broken solver.
+
+| bug introduced | tests that caught it | failures |
+|---|---|---|
+| cost sign inverted, so the model maximises | 9, incl. `test_solver_objective_matches_brute_force`, `test_raising_a_chosen_edge_never_removes_it`, `test_the_optimal_pair_beats_the_per_source_best_choices` | 1436 |
+| one resource capacity row dropped from the model | 8, incl. `test_no_resource_is_consumed_beyond_capacity_plus_tolerance`, `test_five_invoices_where_any_four_fit_are_degenerate`, `test_splitting_a_request_into_groups_does_not_change_the_optimum` | 55 |
+| tie-break left to the solver (rank term removed) | 2: `test_a_pure_tie_is_decided_by_canonical_rank`, `test_ties_are_broken_by_canonical_rank_not_by_the_solver` | 5 |
+| second-best assignment returned instead of the best | 15, incl. `test_solver_objective_matches_brute_force`, `test_every_margin_matches_a_brute_force_re_solve`, `test_four_invoices_summing_exactly_to_one_po_resolve_as_a_set` | 2061 |
+
+The third one is the reason this exercise was worth doing. On the first run it
+was **not caught at all**: the whole suite stayed green with the tie-break gone.
+Canonical sorting already makes the *model* identical under a shuffled input, so
+the determinism property never notices — it is testing that the inputs are
+normalised, not that ties are ruled on. Nothing else looked at which of several
+tied optima came back.
+
+Two things were added to close it. `test_ties_are_broken_by_canonical_rank_not_by_the_solver`
+enumerates every optimum of each small graph and demands the smallest-rank one
+back; and because exact ties turned out to be almost absent from a corpus of
+random weights (1 small graph in 257 had more than one optimum), the generator
+now makes half of its near-tie injections *exact* ties, which is the only kind
+that leaves a tie-break anything to do. That took the corpus from 1 graph with
+competing optima to 7.
+
+`test_a_pure_tie_is_decided_by_canonical_rank` adds five shapes built to be
+nothing but ties. Three of them — partial capacity, where which of several
+identical claimants gets in is a free choice — are the ones that actually
+separate; with the rank term removed the last claimants win instead of the
+first. The other two ties HiGHS happens to break the same way the rule would, so
+they prove nothing on their own and are kept only as documentation of the shape.
 
 ## The margin is normalised against evidence, not against the objective
 
