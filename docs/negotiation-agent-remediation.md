@@ -14,6 +14,11 @@ quoting anything from its 2026-09-05 body.
 
 **Published copy:** <https://claude.ai/code/artifact/116b5502-75e4-4fb8-be51-0add5afa5f8e>
 
+**Status, 2026-09-07:** Phase 0 tasks **0a, 0b and 0c are done** (`25318ac`, `a6655b6`, `b5aa637`);
+**0d is open and needs a decision** — see the correction in §2.2. §5 records what shipped, what
+changed behaviour, and what was carried forward. Everything below the status line describes the code
+as it was found; where a finding has since been acted on it is marked in §5, not rewritten in place.
+
 ---
 
 ## 0. How to read this
@@ -45,7 +50,7 @@ Five routes reach `NegotiationAgent` on paper. One runs in production.
 | EmailWatcher | `email_watcher.py:1401` | **LIVE** | The only route that runs end to end. No orchestrator, so no workflow context, no authority block, no HITL resolution. The returned `AgentOutput` is discarded. |
 | `POST /workflows` | `workflows.py:2072` | **LIVE, thin** | `"negotiation"` is not in `WORKFLOW_REGISTRY`, so it falls to `_execute_generic_workflow`. Chains `next_agents` correctly — the only route that does. |
 | `supplier_interaction` graph | `workflow_definitions.py:441` | **UNREACHABLE** | Edge condition can never be true. See §2.1. |
-| `_execute_supplier_interaction_workflow` | `orchestrator.py:2202` | **SHADOWED** | The declarative engine is checked first and wins. See §2.2. |
+| `_execute_supplier_interaction_workflow` | `orchestrator.py:2202` | **SHADOWED**, but reachable in degraded mode | The declarative engine is checked first and wins. It runs only when `WorkflowEngine` fails to construct (`orchestrator.py:176-179`), and its own tests no longer exercise it. See §2.2. |
 | `quote_evaluation` graph | `workflow_definitions.py:305` | **CONDITIONAL** | Fires only if the API caller supplies `supplier`, `current_offer`, `target_price` and `rfq_id` themselves. `QuoteEvaluationAgent` returns none of them. |
 
 ### 1.1 The decision chain, per supplier per round
@@ -165,18 +170,44 @@ use_engine = (self._workflow_engine is not None
 
 `"supplier_interaction"` is in `WORKFLOW_REGISTRY` (`workflow_definitions.py:556`), and
 `use_workflow_engine` is set to `False` nowhere in the repository — the default at `:465` is its
-only occurrence. So `_execute_supplier_interaction_workflow` (`orchestrator.py:493`, defined
-`:1989`), which contains the only code that builds a real negotiation payload and dispatches it
-(`:2202-2233`), is dead in production. It is shadowed by the graph in §2.1, which cannot reach the
-node.
+only occurrence. So in normal operation `_execute_supplier_interaction_workflow`
+(`orchestrator.py:493`, defined `:1989`), which contains the only code that builds a real
+negotiation payload and dispatches it (`:2202-2233`), never runs. It is shadowed by the graph in
+§2.1, which cannot reach the node.
 
-**Fix.** Do not resurrect the bespoke path. Fixing §2.1 makes the declarative graph the single
-control flow, which is the intended direction (12-Factor #8, per the comment at
-`orchestrator.py:459`). Once §2.1 is verified green, delete `_execute_supplier_interaction_workflow`
-and its branch, and record the removal in the ADR set. Leaving two implementations, one
-unreachable, is how the next reader is misled.
+> **↻ Corrected 2026-09-07.** An earlier revision of this document called that method *dead code in
+> production*. That is wrong, and the distinction changes what to do about it. `orchestrator.py:176-179`
+> catches **any** `WorkflowEngine` construction failure and sets `_workflow_engine = None` with an
+> empty `_workflow_registry`, logging *"Workflow engine init failed, using legacy routing"*. `use_engine`
+> is then false and the bespoke path runs. It is a **degraded-mode fallback**, not dead code.
+
+Two further facts bear on the decision:
+
+* **Its own tests stopped exercising it and nobody noticed.** All four tests in
+  `tests/test_orchestrator_supplier_workflow.py` fail on an empty `.calls` list — the stub agent is
+  never invoked, because `execute_workflow("supplier_interaction", …)` takes the engine path. They
+  broke when the declarative engine began shadowing the method, and the failure was tolerated. So
+  the fallback is not merely unused; it is unverified.
+* **It is not ungoverned.** `_apply_authority` runs at `orchestrator.py:429`, before the branch at
+  `:442`, so both paths receive the injected mandate.
+
+**Fix — open decision, not a mechanical deletion.** Fixing §2.1 makes the declarative graph the
+single control flow in normal operation, which is the intended direction (12-Factor #8, per the
+comment at `orchestrator.py:459`). What to do with the fallback is a real choice:
+
+* **Delete it, and let a failed engine init fail loudly.** One control flow, fail-closed. Silently
+  rerouting a workflow through a second, unverified implementation with different behaviour is the
+  class of problem this document exists to describe — and since the fallback's own tests do not
+  pass, it would likely fail anyway. *Recommended.*
+* **Keep it as a documented degraded mode, and fix its four tests** so it is genuinely exercised.
+
+Whichever is chosen, record it in the ADR set. Leaving two implementations, one of which only runs
+when something has already gone wrong and is not under test, is how the next reader is misled.
 
 ### 2.3 The spend mandate is resolved, injected, and never read
+
+> **✔ Closed 2026-09-07 by 0c** (`b5aa637`). Described below as it was found; see §5 for what the
+> enforcement does and the two decisions behind it.
 
 `src/services/governance_tools/authority.py` is a well-built fail-closed mandate resolver:
 `limit_gbp`, `auto_intents`, `escalate_intents`, resolved per agent through
@@ -231,7 +262,8 @@ exists and is disconnected; the connected component is a fixed table.
 | `should_cost` input | ABSENT | one read at `:5199` | Zero producers in the repository. The costed-floor branch has never executed in production. |
 | Kraljic / play selection | ORPHANED | `:7596-7615` | Returns `{"plays": []}` unless `input_data["supplier_type"]` is set. No live caller sets it. The classifier itself is the best-built code in the domain — and it is `deal_id`-keyed. |
 | Deal-size tiering | ABSENT | — | No size bands on the negotiation path. Same 3-round loop and same gate for a £500 order and a £5M framework. `max_rounds` hard-capped at 3 (`:3257`). |
-| HITL approval gate | PARTIAL | `:3012-3125` | Excellent and genuinely fail-closed — but its only call site (`:3312`) is in `_run_multi_round_negotiation`, whose only orchestrated caller is shadowed (§2.2). |
+| HITL approval gate | PARTIAL → **reachable** | `:3012-3125` | Excellent and genuinely fail-closed. Its only call site (`:3312`) is in `_run_multi_round_negotiation`, which nothing could reach until 0a. Still gates only that path — `_run_single_negotiation` and `_run_batch_negotiations` never call it. |
+| Spend mandate | ABSENT → **IMPLEMENTED** (0c) | `:10700-10850`, `authority.py` | Live limit GBP 10,000. Withholds the counter price when the commitment is over it, uncomputable, or in a currency the limit is not set in; escalates a terminal accept rather than rewriting it. |
 | Approval → resume | ABSENT | `:2530`, `:3499-3506` | `POST /approvals/round/{wf}/{n}` writes a `bp_approval` row and nothing consumes it. A paused negotiation cannot be resumed. |
 | Dispatch approval gate | IMPLEMENTED | `email_dispatch_guard.py:356` | Requires a `proc.bp_approval` row before any send, on every path. Currently carrying the entire governance load on its own. |
 | Round audit trail | ABSENT | `:1685-1718` | Ends in `logger.info("NEGOTIATION_ROUND_EVENT %s", …)`. No table. Positions, rationale and evidence are not co-recorded anywhere queryable. |
@@ -282,6 +314,11 @@ hard_constraints max_price=72 respected by optimiser? 78.4      ← ignored
 Whichever surface a reviewer approves from, the other is wrong — and the approval binds to neither,
 because a round approval records no content hash (`approvals.py:246`).
 
+> **◐ Partly closed 2026-09-07 by 0c** (`b5aa637`): `counter_options` is now cleared when the
+> mandate withholds a counter, because the leak fired inside 0c's own test. The general divergence
+> below — an in-mandate counter shipping 88.00 in the email and 78.40 in `counter_proposals` — is
+> untouched and remains task 1b.
+
 **Fix.** Pick one price as authoritative. Either stop publishing `counter_options`, or drop
 `price_plan_locked` and let the optimiser's price through with the hard-constraint clamp actually
 implemented. Then bind the round approval to a content hash of the counter, the way draft approvals
@@ -313,12 +350,76 @@ No new capability. Every piece already exists; these tasks connect them. Phase 0
 multi-round HITL path reachable for the first time and gives the agent the spend mandate the
 platform already resolves for it.
 
-| # | Change | Files | Effort | Blocks |
+| # | Change | Files | Status | Blocks |
 |---|---|---|---|---|
-| 0a | Rename the graph keys to `supplier_responses` in node output, input mapping and edge predicate; add a shape test | `workflow_definitions.py:141, :427, :449` | ~1h | 0b, 0d |
-| 0b | Capture the `AgentOutput` on the watcher route; persist `hitl_email_tasks`; drain the learning snapshot | `email_watcher.py:1401`, `negotiation_agent.py:3499` | ~0.5d | 1c |
-| 0c | Read and enforce `input_data["authority"]["negotiation_agent"]`; resolve it directly on the watcher route | `negotiation_agent.py:5056-6365` | ~1d | — |
-| 0d | Delete `_execute_supplier_interaction_workflow` and its branch once 0a is green; record in ADR | `orchestrator.py:493, :1989-2274` | ~2h | — |
+| 0a | Rename the graph keys to `supplier_responses` in node output, input mapping and edge predicate; add a shape test | `workflow_definitions.py:141, :427, :449` | **DONE** `25318ac` | 0b, 0d |
+| 0b | Capture the `AgentOutput` on the watcher route; persist `hitl_email_tasks` | `email_watcher.py:1401`, `negotiation_agent.py:2530` | **DONE** `a6655b6` | 1c |
+| 0c | Read and enforce `input_data["authority"]["negotiation_agent"]`; resolve it directly on the watcher route | `negotiation_agent.py:5056-6365` | **DONE** `b5aa637` | — |
+| 0d | ~~Delete `_execute_supplier_interaction_workflow`~~ — **decide** whether to delete the degraded-mode fallback or keep and test it (§2.2) | `orchestrator.py:493, :1989-2274` | **OPEN** — needs a decision | — |
+| 0e | Drain the learning snapshot on the watcher route — carried out of 0b, see below | `email_watcher.py`, `orchestrator.py:3025-3065` | ~0.5d | 1c |
+
+### What shipped, and what changed behaviour
+
+**0a.** `watch_responses` published `responses`; `EmailWatcherAgent` returns `supplier_responses`.
+Renamed in all three places. Before the fix the engine reported
+`negotiate: <NodeStatus.SKIPPED: 'skipped'>`; the node now executes. Five tests, including one that
+runs the whole graph through the engine and one that feeds the node's built `input_data` to the real
+`_extract_batch_inputs`.
+
+**0b.** Held rounds now persist onto the session via `_persist_held_email_tasks`, reduced to the
+JSON-safe form the round loop already uses — storing them raw makes `_save_session_state_obj` raise
+into its own `except` and store nothing. On the watcher side the `AgentOutput` is captured and the
+`delete_responses` call is gated on it: a failed or raising negotiation no longer destroys the only
+record of what the supplier offered. `AgentStatus` was not imported in `email_watcher.py` and the
+resulting `NameError` was being swallowed by the surrounding `except`. Nine tests; both persistence
+guards were verified by breaking them on purpose.
+
+**0c — this one changes commercial behaviour, deliberately.** Two decisions were taken rather than
+defaulted:
+
+* *The limit is a total spend; the agent only sees a unit price.* `proc.supplier_response` has no
+  quantity column and `supplier_interaction_agent.py` never mentions one, so on the live route the
+  commitment a counter represents **cannot be established**. Unknown is treated as outside the
+  mandate. The rejected alternative was comparing the unit price to the £10,000 limit, which would
+  have passed £250,000 of commitment on a £50 unit price — a guardrail that checks nothing.
+* *The number is withheld, not flagged.* A review flag stops nothing here: `_detect_outliers` sets
+  one and the email is still drafted around the price.
+
+Verified against the live policy (`ApprovalThresholdPolicy`, GBP 10,000):
+
+```
+120 units @ GBP 80  = 9,600      -> counter 80.0  [counter]
+120 units @ GBP 90  = 10,800     -> counter None  [review]
+   this counter commits GBP 10,800.00, above the governed GBP 10,000 limit
+unit price GBP 80, qty unknown   -> counter None  [review]
+   the quantity this counter would commit is not stated, so its total value
+   cannot be established against the GBP 10,000 limit
+120 units @ EUR 80               -> counter None  [review]
+   this counter is priced in EUR and the limit is set in GBP; the two cannot be compared
+```
+
+Two things fell out of building it:
+
+* **Risk 2 (§4.2) fired during 0c's own test.** Clearing `decision["counter_price"]` withheld
+  nothing — `counter_options` still shipped GBP 1,144.00, because `_optimize_multi_issue` knows
+  nothing about the mandate and its price is published to `counter_proposals`. Now cleared with it.
+* **A terminal `accept` must be escalated, never rewritten.** Turning it into `review` leaves the
+  supplier unclosed and reopens bargaining on an offer already agreed — the bug
+  `_adaptive_strategy` returns early to avoid. An out-of-mandate accept raises
+  `human_override_required` instead. Four tests hold that line.
+
+Two existing tests asserted a counter composed with no mandate at all. They now supply one
+explicitly; the gate was not weakened to keep them green.
+
+**0e, carried forward.** The learning-snapshot drain was scoped into 0b and is not done. The drain
+lives in the orchestrator (`:3025-3065`) and the watcher route has no orchestrator, so doing it
+properly means extracting that ~40 lines into a shared function rather than copying it. Left for
+its own change.
+
+Regression method for all three: a detached `git worktree` at the pre-Phase-0 commit, never
+`git stash` — another session shares this checkout. **50 pre-existing failures before and after,
+byte-identical sets**, across the negotiation, watcher, orchestration, governance and guardrail
+suites.
 
 ### Phase 1 — Stop the silent bad outcomes *(correctness)*
 
@@ -369,6 +470,15 @@ something to learn.
   position (`leverage.py:28-46`).
 - **`TERMINAL_STRATEGIES` as one module-level definition** (`:126`) — two readings disagreeing was
   the bug that stopped an accepted best-and-final from ever closing the negotiation.
+
+One more that looks live and is not: **`src/services/negotiation_session.py` (132 lines) has zero
+importers.** `grep -rn "from services.negotiation_session"` over `src/`, `tests/` and `scripts/`
+returns nothing. The agent defines its *own* `NegotiationSession` and `SupplierNegotiationState` at
+`negotiation_agent.py:13279-13365`, with different fields (`negotiation_parameters`, not
+`parameters`; no `workflow_id`), and that is the one `_load_session_state_obj` uses. There are four
+classes called `NegotiationSession` in this repository — the agent's, this dead one,
+`procurement_workflow.py:194` and `email_thread.py:112`. Importing the wrong one costs an
+afternoon; it cost one during 0b.
 
 Two things genuinely are dead and can go: the ~900 lines behind `NEG_USE_ENHANCED_MESSAGES`
 (`:1624`, `:7712-8360`), which defaults off and has never run; and the second
