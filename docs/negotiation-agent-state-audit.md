@@ -4,6 +4,12 @@
 **Test baseline:** `tests/test_negotiation_agent.py`, `tests/test_negotiation_strategy_engine.py`,
 `tests/test_negotiation_skills.py`, `tests/services/negotiation_advice/` — **214 passed** in 165s.
 
+**Re-verified 2026-09-07** at `fbc4b56`, by reading the whole agent and *running* the load-bearing
+claims rather than re-reading them. Five findings below were wrong or had gone stale; each is
+corrected in place under a **`↻ 2026-09-07`** marker, and §6 lists them together. New test
+baseline, same suites plus `tests/services/formulas/` and `tests/services/negotiation/`:
+**250 passed** in 188s.
+
 ---
 
 ## 0. Finding that reframes the whole audit
@@ -30,6 +36,10 @@ What actually exists is the pre-refactor shape:
 | single deterministic state machine | `src/agents/negotiation_agent.py` — **13,292 lines**, one `NegotiationAgent` god class plus 8 module-level helper classes |
 | four narrow LLM-callable functions | zero. One LLM call exists, in `_extract_negotiation_signals` (:6372), and it is a free-text JSON prompt with no grammar and no schema validation |
 | `negotiation_strategy_engine.py` as a "remnant" | still present (405 lines), still imported at process start, still under test (`tests/test_negotiation_strategy_engine.py`) |
+
+> **↻ 2026-09-07 — this finding stands.** The grep is still empty at `fbc4b56`. The class has
+> *grown* to **13,342 lines**. The strategy-engine row is the one thing that changed: it was
+> salvaged and deleted in `343b5a0` (§4).
 
 Consequently **§1.1 is answered as MISSING throughout**, and the rest of the audit reports what
 the code does *instead*, mapped onto the four intended responsibilities. The remediation plan in
@@ -97,6 +107,29 @@ read — only `message_text` is. The supplier's *movement between rounds* is com
   key is absent rather than present-and-`None`. Two different failure modes for the same defect.
 - `ctx.max_rounds` silently defaults to `3` (:1497), `ask_early_pay_disc` to `0.02` (:1471).
 
+> **↻ 2026-09-07 — CORRECTION 1 of 5. `generate_plan`'s analogue now fails closed, and the price
+> is single-sourced.** `decide_strategy` no longer calls `compute_decision` directly: it calls
+> `evaluate("negotiation.counter_plan", …)` through the formula registry (:1535-1547), which
+> validates every input against the declared contract *before* the maths runs. Three consequences,
+> all verified by running them:
+>
+> - **A refused contract yields `clarify`, marked.** `current_offer = -5` returns
+>   `strategy="clarify"` with `decision_origin="contract_refused"` and the reason
+>   *"current_offer=-5 money is below the declared minimum 0 (range [0, +inf])"*. The two failure
+>   modes above are now one, and it is named. The bare `KeyError` is unreachable from this path —
+>   `decide_strategy` null-checks first and the contract rejects second.
+> - **A successful plan is marked too**, with `decision_origin="plan_counter"` and
+>   `price_plan_locked=True`.
+> - **`price_plan_locked` makes the counter price authoritative.** `_adaptive_strategy` skips its
+>   price branch when locked (:6528), and `_run_single_negotiation_locked` strips `counter_price`
+>   out of `_optimize_multi_issue`'s overrides (:5545-5546). See the correction under
+>   `select_tactic`.
+>
+> **What has NOT changed:** the never-read fields above. `aggressiveness`, `leverage`, `urgency`,
+> `min_abs_step`, `offer_prev` and `offer_new` are still set and still unread. The registry pins
+> that in its own `notes`: *"not governed and not configurable at the call site (gap report F22)"*.
+> There is still no leverage input to counter pricing.
+
 ### `select_tactic` → **HEURISTIC, split across three places, none authoritative**
 
 Three separate things select a tactic and they do not agree:
@@ -113,6 +146,22 @@ Three separate things select a tactic and they do not agree:
    alternatives are missing, :47-56), carries a confidence, and documents that
    `bp_supplier.supplier_type` is *not* a Kraljic axis.
 
+> **↻ 2026-09-07 — CORRECTION 2 of 5. They no longer disagree about the price, and (1) is gone.**
+> Item 1 was salvaged and deleted in `343b5a0`. Item 2's price branch is dead whenever the plan is
+> locked, which is every path where a counter price exists at all. **The counter price is now
+> single-sourced from `negotiation.counter_plan`.** The audit's sentence "adjusts `counter_price`
+> toward a ZOPA midpoint" describes a branch that no longer executes in production.
+>
+> **But the `strategy` is not locked, only the price — and that is a live bug.** On any finality
+> hint `_adaptive_strategy` still overwrites `decision["strategy"]` with `"package-trade"` and
+> returns early (:6515-6523), *including when the plan said `accept`*. The multi-round loop closes
+> a supplier only on `accept` or `decline` (`_execute_negotiation_round`:3794). Verified
+> end-to-end: a supplier offering 79.00 against an 80.00 target and writing *"this is our final
+> offer"* produces `plan_counter → accept`, then `_adaptive_strategy → package-trade`, then
+> `strategy_lower in {"accept","decline"}` is **False**, so the supplier is never marked ACCEPTED
+> and the negotiation runs another round against an offer we had already decided to take.
+> **A best-and-final we want to accept cannot close the negotiation.** Not in the original audit.
+
 ### `evaluate_counter` → **HEURISTIC** (`_estimate_zopa` + `_optimize_multi_issue`)
 
 `:6399-6448` and `:6505-6651`. No LLM. `_optimize_multi_issue` scores an exhaustively enumerated
@@ -124,6 +173,15 @@ normalised weighted sum, default weights `price .5 / delivery .2 / risk .2 / ter
 i.e. **it invents a 15%-below-offer supplier cost floor out of nothing**, and the caller cannot
 tell that from a floor derived from a real should-cost model. This is the single most
 consequential placeholder in the domain.
+
+> **↻ 2026-09-07 — fixed in `e4eda2e`, verified live.** With no should-cost, no benchmark and no
+> history, `_estimate_zopa` now returns `supplier_floor: None`, `supplier_floor_basis: None`, and
+> a finding naming the absence: *"zopa.supplier_floor UNASSESSED: … The supplier's cost base is
+> unknown; do not present a counter as cost-justified."* The fabrication is gone.
+>
+> **The marker reaches nobody, though** — see the correction in §1.4. `zopa["findings"]` is
+> written at :6497 and read at no call site: `zopa` never enters the agent's output `data`, and
+> its only rendering point (`_build_prompt_context`'s `zopa_summary`) is in dead code.
 
 ### `reconcile` → **MISSING, with no analogue**
 
@@ -177,6 +235,20 @@ price-outlier verdict.
   `{"quadrant": None, "quadrant_confidence": 0.0, "indeterminate": True}` with named reasons.
   This is the one place in the negotiation domain that already behaves the way the brief asks for.
   Note it is *not* wired to the counter ladder — `plan_counter` never sees the quadrant.
+
+> **↻ 2026-09-07 — CORRECTION 4 of 5. The thresholds are no longer "compiled into source".**
+> `advisor.load_thresholds` reads them from `proc.bp_policy` via `PolicyEngine`, slug
+> `negotiation_advice_thresholds`; `classification.default_thresholds()` is now only the fallback
+> when that lookup fails. Confirmed present in the live DB (`.env` → **bp_testdb**):
+> `policy_id 605`, `policy_type 'negotiation'`, `policy_details {"high_spend": 98175.0,
+> "many_alternatives": 93}`.
+>
+> The values are identical, so nothing about the *classifications* changes — but they are governed
+> data now, editable without a deploy. **D-10 is narrowed, not closed**: drift is still measured by
+> nothing, and D-11 (`93` duplicated as `signals.THIN_MARKET_ALTERNATIVES`) is untouched.
+>
+> The last sentence stands and is the point: `plan_counter` still never sees the quadrant. This is
+> Phase 2 step 4, still deferred into the refactor.
 
 ---
 
@@ -238,6 +310,26 @@ signed PO or a regex over an email.
   (:3907) → the round record the Action Centre reply panel renders
   (`src/api/routers/workflows.py:1396`). Nothing on that path carries provenance.
 
+> **↻ 2026-09-07 — the finding stands, and is now precisely diagnosable.** The vocabulary now
+> *exists* and is *produced*: `Confidence` (`src/services/formulas/unassessed.py`) with
+> OBSERVED/ASSERTED/UNVERIFIED, and every registry evaluation attaches one to its
+> `EvaluationRecord`. What is missing is no longer the vocabulary — it is the **wire**. Three
+> concrete breaks, all verified:
+>
+> 1. **`zopa["findings"]` is written and never read.** Produced at :6497; `zopa` is passed to
+>    message composers but never into the agent's output `data`. Its only rendering point is
+>    `_build_prompt_context`'s `zopa_summary` key (:9026) — and that method has **zero callers**
+>    (§1.5). So the UNASSESSED cost-floor marker that `e4eda2e` added reaches no consumer.
+> 2. **The evaluation records die with the process.** See §1.7 — the default audit sink is an
+>    in-process ring buffer and nothing installs the durable one.
+> 3. **The regex-over-prose path is unchanged.** `_extract_price_from_response` still takes the
+>    first currency-looking number with no confidence and no candidate list.
+>
+> Also verified live on 2026-09-07: the LLM leg of `_extract_negotiation_signals` **failed while
+> being observed** — Ollama returned `500` three times, `except Exception: logger.debug(…)`
+> swallowed it, and the agent proceeded on keyword-only defaults with nothing in the output to say
+> the model had never answered. The defect described two paragraphs above is not hypothetical.
+
 ### Additional placeholder reaching the UI directly
 
 `src/services/negotiate_dashboard.py:259-282` computes the Negotiate page's `currentStandpoint`
@@ -258,6 +350,12 @@ wherever the supplier is"*. `walkAway` is set **equal to the supplier's own rate
 walk-away threshold is meaningless. When `quote` or `actual` is missing, the literals 50/47/50
 ship unchanged. This is a **PLACEHOLDER presented to buyers as a recommended negotiating
 position**, and it is not registered, not tested, and carries no marker.
+
+> **↻ 2026-09-07 — fixed in `e4eda2e`, verified.** `ourAim` and `walkAway` are now `None`, and the
+> payload carries `unavailableReason`: *"An optimal price needs a should-cost or benchmark, and a
+> walk-away needs an authority limit. Neither is available for this deal."* `supplierRate` remains
+> — but it is a measured index (`actual / quote × 50`), not an invented position, and it is `None`
+> when either figure is missing. The page now says it does not know.
 
 ---
 
@@ -312,6 +410,22 @@ not, however, the same field, and nothing reads `supplier_history_count`'s relat
 
 Three independent, mutually inconsistent vocabularies for the same three decisions.
 
+### ↻ 2026-09-07 — dead code this audit missed, all inside `negotiation_agent.py`
+
+The original pass looked for dead *modules* and found the strategy engine. Reading the whole file
+turns up roughly **900 further lines that no request path can reach**, three of which matter
+because the audit reasoned about them as if they ran:
+
+| What | Evidence | Why it matters |
+|---|---|---|
+| `_get_prompt_template` (:8859), `_build_prompt_context` (:8896), `_apply_prompt_template` (:9061) | zero callers; grep returns only the three `def` lines | This is the **only** place `zopa_summary` — and therefore the UNASSESSED cost-floor finding — was ever rendered. Its unreachability is why §1.4's break (1) exists. |
+| `_compose_negotiation_message` (:8686), the "simple" composer | zero callers; superseded by `_compose_negotiation_message_rich` | ~150 lines plus five `_craft_*_simple` helpers. |
+| `_compose_negotiation_message_rich` (:7689) and its ~15 `_craft_*` / `_weave_*` helpers | reachable, but only when `NEG_USE_ENHANCED_MESSAGES` is `true`; it **defaults to `"false"` (:1616) and is not set in `.env`** | ~700 lines that do not run in production. **`_craft_position_statement` (:7876) lives here** — the "based on our market analysis and benchmarking" claim §4 discusses was behind a disabled flag as well as gated on the fabricated floor. |
+
+The live message is therefore `_build_summary_fallback` (:8572): a bulleted round plan, not prose.
+Any future work that assumes the agent writes persuasive negotiation copy should check this flag
+first.
+
 ---
 
 ## 1.6 Governance and state
@@ -348,6 +462,26 @@ instead, which is what the existing registered formulas already use.
   *target*, never to `walkaway_price`. `walkaway_price` is consulted on only two branches: the
   max-rounds hold (:312) and the finality accept/decline test (:349). A round-2 counter above
   the walk-away is emitted without complaint.
+
+> **↻ 2026-09-07 — CORRECTION 3 of 5. This finding is WRONG, and it was the most consequential
+> error in the audit.** It is true of `plan_counter` read in isolation, which is what was
+> inspected. It is not true of the agent. `_run_single_negotiation_locked` passes every counter
+> through `_respect_positions` (:10607) immediately after `decide_strategy` returns (:5247, and
+> again at :5288 on the review path), and that helper clamps in all three directions:
+>
+> ```python
+> candidate = max(candidate, positions.desired)    # floor at the target
+> candidate = min(candidate, positions.no_deal)    # CEILING AT THE WALK-AWAY
+> candidate = min(candidate, positions.start)      # never above our own last position
+> ```
+>
+> `positions.no_deal` **is** `walkaway_price` (`_build_positions`:10571). Verified by running it:
+> a counter of `88.00` against a walk-away of `85.00` returns **`85.00`**; with no walk-away
+> supplied it returns `88.00` unchanged. The guardrail exists, is reached on the live path, and
+> works. A round-2 counter above the walk-away is *not* emitted.
+>
+> The rest of this section stands: the direction of `_detect_outliers` is unchanged, and the
+> `0.2` / `0.4` log-string mismatch at :10637 is still there.
 - **`_detect_outliers` (:10585-10660) guards the opposite direction.** Both its price rails —
   `market_gap` and `walkaway_gap` — are `(reference − offer)/reference`, i.e. they fire when the
   supplier's offer is *below* the reference. Thresholds `MARKET_REVIEW_THRESHOLD = 0.2` and
@@ -404,12 +538,33 @@ marked PROVISIONAL — they pin *arithmetic*, not correctness. Items 4, 5, 7 and
 until it has a real cost basis; 15 no longer computes a number at all.
 **Zero of the sixteen write an audit record.**
 
+> **↻ 2026-09-07 — CORRECTION 5 of 5. The last line is wrong; the 11 registered formulas all
+> write one.** `evaluate()` builds a full `EvaluationRecord` — inputs, output, version + version
+> hash, findings, confidence, duration, trace/deal/document ids — and calls `_audit.emit(record)`
+> on every path, including both refusal paths (`evaluate.py:178, 198, 214, 232`). Refusals are
+> recorded as `status="unassessed"` with the blocking finding attached.
+>
+> The real gap is narrower and worth stating exactly: **the default sink is
+> `MemoryAuditSink` — a 5,000-entry in-process ring buffer (`audit.py:94`) — and nothing anywhere
+> installs `DbAuditSink`.** Grep for `DbAuditSink` finds only its definition and two re-exports.
+> So the records are produced correctly and then die with the process; nothing reaches
+> `proc.bp_agent_actions`. Installing the durable sink is a small, self-contained job, and it is
+> the cheapest of the outstanding items.
+>
+> The five unregistered formulas (4, 5, 7, 15) still write nothing, since they never go near the
+> registry.
+
 Registering item 6 immediately surfaced a defect the audit had missed:
 `volume_units > MAX_VOLUME_LIMIT * 1.5` is a strict `>` against exactly
 `1500.0`, so a buyer entering the round number 1500 breaches the review rail
 but never the escalation rail. Pinned as a golden vector so it stays visible. Items **3, 4, 5 and 15** must
 not receive behaviour-snapshot golden vectors: 3/4/5 compute on a fabricated cost floor, and 15
 is a literal placeholder shown to buyers.
+
+> **↻ 2026-09-07 — the `1500` boundary bug is still live**, still pinned as a golden vector, still
+> unfixed. The caveat above has aged, though: since `e4eda2e` items 3/4/5 no longer compute on a
+> fabricated floor — item 3 returns `None` plus a finding, and 4/5 consume that. They are safe to
+> snapshot now, and would gain little until there is a real cost basis to snapshot against.
 
 ---
 
@@ -422,6 +577,16 @@ is a literal placeholder shown to buyers.
 | **PLACEHOLDER** | `_estimate_zopa` `offer × 0.85` supplier floor; `LEAD_TIME_VALUE_PCT_PER_WEEK = 0.01`; **`negotiate_dashboard` 50/47/50 standpoint shown to buyers**; `compute_decision`'s three never-read behavioural knobs |
 | **DEAD** | `negotiation_strategy_engine.py` (405 lines) + `tests/test_negotiation_strategy_engine.py`; `ReasoningEngine.create_plan` / `_rule_based_plan`; `SupplierSignals.offer_prev` / `offer_new`; `NegotiationContext.min_abs_step` |
 | **MISSING** | all four target functions; every Track B service (6/6); CISE entirely; tri-state confidence; provenance on extracted counters; bitemporal negotiation state; GPSS; a row-typed approval matrix; walk-away as a ceiling on our own counter |
+
+### ↻ 2026-09-07 — the same table, re-verified
+
+| | Item |
+|---|---|
+| **REAL** | everything above, plus: **`_respect_positions` enforcing the walk-away ceiling** (moved up from MISSING); the counter price single-sourced through `negotiation.counter_plan`; contract refusal → marked `clarify`; **11 registered formulas, all emitting an `EvaluationRecord`**; the honest `unavailableReason` on the Negotiate page |
+| **HEURISTIC** | unchanged, except Kraljic thresholds are now **governed rows in `proc.bp_policy`**, not source constants |
+| **PLACEHOLDER** | `LEAD_TIME_VALUE_PCT_PER_WEEK = 0.01`; `compute_decision`'s never-read knobs. **The `offer × 0.85` floor and the 50/47/50 standpoint are gone** (`e4eda2e`) |
+| **DEAD** | the strategy engine is now actually deleted; `ReasoningEngine.create_plan`; `offer_prev`/`offer_new`; `min_abs_step`; **plus ~900 lines inside the agent the first pass missed — the three prompt methods, `_compose_negotiation_message`, and the flag-disabled prose composer** (§1.5) |
+| **MISSING** | all four target functions; Track B 6/6; CISE; tri-state confidence *on the wire* (the vocabulary now exists and is produced — it reaches no consumer); provenance on extracted counters; bitemporal state; GPSS; a row-typed approval matrix; **a durable audit sink**; **leverage as an input to counter pricing** |
 
 ## 3. Honest confidence ceiling
 
@@ -436,6 +601,21 @@ price ladder at all**.
 The *numbers* — counter_price, supplier_floor, optimalPrice, walkAway — should not be presented
 to a buyer as computed positions until Track B exists. Item 15 in particular is presenting a
 literal constant as "optimalPrice" today.
+
+> **↻ 2026-09-07 — the ceiling is unchanged, but for one fewer reason.** Two of the four props
+> under the paragraph above are gone: there is no invented cost floor (the floor is `None` with a
+> named finding), and no literal constant is presented as "optimalPrice". The two that remain are
+> the load-bearing ones — **the counter price still originates in a regex first-match over
+> supplier prose, and no leverage signal reaches the price ladder.**
+>
+> So the verdict holds word for word: **directionally useful, numerically unsupported.** What
+> changed is that the system now *says so* in the two places it previously guessed, instead of
+> presenting a guess as a computation. That is the difference between wrong and unassessed, and it
+> was the point of `e4eda2e`.
+>
+> Worth recording alongside it: `proc.bp_negotiation_advice`, `proc.negotiation_sessions` and
+> `proc.negotiation_session_state` are **all empty** in bp_testdb as of 2026-09-07. No negotiation
+> has ever run against this corpus, so none of the above has been exercised on real data.
 
 ---
 
@@ -454,6 +634,20 @@ All four decisions in §5 were approved. Landed so far, in the order requested:
 onto the 13k-line class: fail-closed on every function (§2 step 2), confidence
 propagation to the Action Centre (step 3), and criticality as a required
 leverage input (step 4).
+
+> **↻ 2026-09-07 — the registry landed, and one of the three deferred items is partly done.**
+> The "remaining open question" in §5 is closed: `src/services/formulas/` is tracked, committed in
+> `9988eaa` (the registry, 25 files) and `d76b5d0` (callers, the ADR and the gap report). It is not
+> a passive record — `decide_strategy` and `negotiation_advice.advisor` both *call* `evaluate()`
+> on the live path, so the contract runs in production.
+>
+> Revised status of the three deferred items:
+>
+> | Item | Status 2026-09-07 |
+> |---|---|
+> | fail-closed on every function (step 2) | **partly landed.** The contract refuses bad input to `negotiation.counter_plan` and `decide_strategy` returns a marked `clarify`. `classify` already failed closed. The other functions are untouched. |
+> | confidence propagation (step 3) | **untouched, now precisely diagnosable.** The marker is produced and read by nobody — §1.4 names the three breaks. Fixing the sink and surfacing `zopa["findings"]` are separable from the refactor. |
+> | criticality as a required leverage input (step 4) | **untouched.** `plan_counter` still never sees the quadrant. |
 
 ### The path that was recommended, and taken
 
@@ -487,3 +681,53 @@ The formula registry (`src/services/formulas/`) is **entirely untracked** in thi
 another session's work in progress. The three PROVISIONAL registrations from this work sit in
 its `definitions/negotiation.py` and cannot be committed independently without landing a file
 that imports untracked modules. How that lands is not this work's call.
+
+> **↻ 2026-09-07 — closed.** It landed as `9988eaa` + `d76b5d0`, tracked, with 11 negotiation
+> formulas registered and their goldens under CI (`.github/workflows/formula-goldens.yml`).
+
+---
+
+## 6. ↻ Re-verification, 2026-09-07
+
+Method: read `negotiation_agent.py` end to end (13,342 lines) plus the advice services, the
+registry, the dashboard and the router; then **execute** each load-bearing claim against the live
+`.env` database rather than re-reading the source. Suites re-run: **250 passed** in 188s.
+
+### The five corrections
+
+| # | Original finding | Verdict | Evidence |
+|---|---|---|---|
+| 1 | `generate_plan`'s analogue silently defaults / raises `KeyError` | **stale** | `decide_strategy` routes through the registry; a refused contract returns `clarify` + `decision_origin="contract_refused"`. Ran it with `current_offer=-5`. |
+| 2 | Three things set the price and disagree | **stale** | `price_plan_locked` makes `negotiation.counter_plan` authoritative; the other two price branches are dead in production. |
+| 3 | **Walk-away is not a ceiling on our own counter** | **WRONG** | `_respect_positions` clamps `min(counter, walkaway)` on the live path. Counter 88.00 vs walk-away 85.00 → **85.00**. |
+| 4 | Kraljic thresholds frozen in source | **stale** | Governed row `proc.bp_policy` id 605. Values unchanged; D-10 narrowed, not closed. |
+| 5 | **Zero of the sixteen write an audit record** | **WRONG** | All 11 registered formulas emit an `EvaluationRecord`, refusals included. The gap is the *sink*: `MemoryAuditSink` by default, `DbAuditSink` installed nowhere. |
+
+Correction 3 is the one to remember: it was derived by reading `plan_counter` in isolation and
+never checking what the agent does with its return value. **A guardrail can live one call frame
+away from the function that appears to be missing it.**
+
+### Found on re-verification, not in the original pass
+
+1. **A best-and-final we want to accept cannot close the negotiation.** `_adaptive_strategy`
+   overwrites `accept` with `package-trade`; the round loop only closes on `accept`/`decline`.
+   Verified end-to-end. This is a bug, not a design gap — see §1.1 `select_tactic`.
+2. **The UNASSESSED cost-floor marker reaches no consumer.** Produced at :6497, read nowhere;
+   its only rendering point is in dead code. §1.4.
+3. **~900 dead lines inside the agent**, including the three prompt methods and a ~700-line prose
+   composer behind a flag that defaults off. §1.5.
+4. **The LLM signal leg was observed failing** — Ollama `500` ×3, swallowed, no trace in the
+   output. §1.4.
+5. **Nothing has ever run here.** The three negotiation tables are empty in bp_testdb.
+
+### Outstanding, in the order worth doing
+
+1. **The four-function refactor** — still the target, still not started. Fail-closed is partly
+   landed; confidence propagation and criticality-as-leverage are untouched.
+2. **Close the accept path** (finding 1). Small, and it stops finished negotiations finishing.
+3. **Install `DbAuditSink`** — the records already exist; only the sink is missing.
+4. **Surface `zopa["findings"]`**, and delete or wire the dead code around it.
+5. Standing defects: leverage unread; outlier rails one-directional; the `1500` strict-`>`
+   boundary; the swallowed LLM failure.
+6. Formula registration 11/16; items 4 and 5 deliberately blocked on a real cost basis.
+7. **Track B 6/6** — deferred with written triggers (ADR 0001), none scheduled.
