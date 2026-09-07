@@ -118,6 +118,13 @@ class TestFactsCarryTheirRenderedForm:
                     type=ColumnType.PCT)
         assert fact.display == "23.4%"
 
+    def test_a_plain_decimal_keeps_the_precision_it_was_measured_at(self):
+        # A ratio of 1.0 is a measurement — "the leader is level with the next".
+        # Normalising it to "1" reads as a rounded-off integer instead.
+        fact = Fact(code=FactCode.TOP_1_TO_TOP_2_RATIO, value=Decimal("1.0"),
+                    type=ColumnType.TEXT)
+        assert fact.display == "1.0"
+
     def test_the_numeric_tokens_a_sentence_may_quote_come_off_the_facts(self):
         answer = _answer(facts=[
             Fact(code=FactCode.TOP_1_SHARE, value=Decimal("23.42"), type=ColumnType.PCT),

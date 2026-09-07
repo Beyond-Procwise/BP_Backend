@@ -60,6 +60,10 @@ SOURCE_TABLE = "proc.bp_invoice_trgt"
 DEFAULT_TOP_N = 10
 DEFAULT_CONCENTRATION_THRESHOLD_PCT = Decimal("20")
 
+# Below this, the leader is level with the next supplier rather than ahead of
+# it, and the headline says nothing about the gap.
+MEANINGFUL_LEAD = Decimal("1.2")
+
 
 @dataclass(frozen=True)
 class SupplierSpendRow:
@@ -177,14 +181,18 @@ def build_supplier_spend_ranking(
             facts.append(Fact(code=FactCode.TOP_1_SHARE, entity=leader.name,
                               entity_ref=leader.supplier_id, value=leader_share,
                               type=ColumnType.PCT))
-            if leader_share >= concentration_threshold_pct:
-                facts.append(Fact(code=FactCode.CONCENTRATION_THRESHOLD_BREACHED,
-                                  entity=leader.name, entity_ref=leader.supplier_id,
-                                  value=leader_share, type=ColumnType.PCT))
         top_n_share = _pct(sum((s.converted for s in visible), Decimal(0)), population_total)
         if top_n_share is not None:
             facts.append(Fact(code=FactCode.TOP_N_SHARE_OF_TOTAL, value=top_n_share,
                               type=ColumnType.PCT, unit=str(len(visible))))
+            # Concentration is a property of the group, not of its leader. A
+            # top-1 rule cannot fire on a book this wide — across 3,510
+            # suppliers the largest holds 1.4% — so it would have reported
+            # "no concentration risk" whatever the shape of the spend.
+            if top_n_share >= concentration_threshold_pct:
+                facts.append(Fact(code=FactCode.CONCENTRATION_THRESHOLD_BREACHED,
+                                  value=top_n_share, type=ColumnType.PCT,
+                                  unit=str(len(visible))))
         if len(visible) > 1:
             ratio = _ratio(visible[0].converted, visible[1].converted)
             if ratio is not None:
@@ -224,6 +232,7 @@ def build_supplier_spend_ranking(
         dropped = len(unconvertible)
         anomalies.append(Anomaly(
             code=AnomalyCode.UNCONVERTED_CURRENCY, severity=Severity.HIGH,
+            subject=", ".join(missing_currencies[:2]),
             text=(f"No exchange rate for {names}; "
                   f"{dropped} supplier{'' if dropped == 1 else 's'} left out of the ranking "
                   f"and excluded from the total."),
@@ -394,12 +403,18 @@ def _with_templated_headline(answer: AnalyticAnswer, *, manual: bool) -> Analyti
     sentence = f"{leader} is the largest supplier"
     if share is not None:
         sentence += f" at {share.display} of {answer.scope.measure.value.lower()} spend"
-    if ratio is not None:
+    # A ratio near 1 is not a lead. "1.0 times the next" is a sentence
+    # pretending to be a finding, and the live corpus produces exactly that:
+    # £288.4K against £274.9K at the top of FY26. The fact still exists for the
+    # insight writer; the template simply declines to narrate it.
+    if ratio is not None and ratio.value is not None and ratio.value >= MEANINGFUL_LEAD:
         sentence += f", {ratio.display} times the next"
     text = sentence + "."
 
-    if FactCode.CONCENTRATION_THRESHOLD_BREACHED in facts:
-        text += " That is above the concentration threshold."
+    breach = facts.get(FactCode.CONCENTRATION_THRESHOLD_BREACHED)
+    if breach is not None:
+        text += (f" The top {breach.unit} hold {breach.display} of it between them, "
+                 "above the concentration threshold.")
 
     confidence = Confidence.UNASSESSED if manual else Confidence.ASSERTED
     return answer.model_copy(update={"headline": Headline(text=text, confidence=confidence)})

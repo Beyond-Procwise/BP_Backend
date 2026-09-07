@@ -252,15 +252,25 @@ class Fact(BaseModel):
             return format_delta(self.value)
         if self.type is ColumnType.INT:
             return format_int(self.value)
-        return f"{self.value.normalize():f}"
+        # Not normalised: a ratio measured at 1.0 means the leader is level with
+        # the next, and printing "1" reads as a rounded-off integer instead.
+        return f"{self.value}"
 
 
 class Anomaly(BaseModel):
+    """Something about the answer the reader has to know before trusting it.
+
+    ``subject`` is the short thing the anomaly is about — the currency codes
+    with no rate, say — kept apart from the prose so a next-step label can name
+    it without parsing a sentence. ``entity_refs`` are the records affected.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     code: AnomalyCode
     severity: Severity
     text: str
+    subject: Optional[str] = None
     entity_refs: List[str] = Field(default_factory=list)
 
 
@@ -325,6 +335,10 @@ class AnalyticAnswer(BaseModel):
         tokens: set[str] = set()
         for fact in self.facts:
             tokens.update(match.group(0) for match in _NUMBER.finditer(fact.display))
+            # The unit carries the N in a top-N finding, and a sentence saying
+            # "the top 10" is quoting the payload, not inventing a figure.
+            if fact.unit:
+                tokens.update(match.group(0) for match in _NUMBER.finditer(fact.unit))
         tokens.update(match.group(0) for match in _NUMBER.finditer(self.scope.line()))
         return tokens
 

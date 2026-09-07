@@ -127,3 +127,65 @@ def _load_rates() -> dict:
         "fetched_at": result.get("fetched_at"),
         "stale": bool(result.get("stale")),
     }
+
+
+# A dimension present on a handful of rows is not a dimension. bp_invoice_trgt
+# carries requested_by on 2 of 12,408 rows: non-zero, and useless. A rung is
+# offered only when its data covers a real share of the population.
+COVERAGE_FLOOR = Decimal("0.05")
+
+_AVAILABILITY_SQL = """
+SELECT (SELECT COUNT(*)::int FROM proc.bp_invoice_trgt
+         WHERE invoice_date >= %s AND invoice_date <= %s)                     AS invoices,
+       (SELECT COUNT(*)::int FROM proc.bp_invoice_trgt
+         WHERE invoice_date >= %s AND invoice_date <= %s)                     AS prior_invoices,
+       (SELECT COUNT(*)::int FROM proc.bp_invoice_trgt
+         WHERE contract_id IS NOT NULL)                                       AS with_contract,
+       (SELECT COUNT(*)::int FROM proc.bp_invoice_trgt
+         WHERE requested_by IS NOT NULL)                                      AS with_requester,
+       (SELECT COUNT(*)::int FROM proc.bp_category)                           AS categories,
+       (SELECT COUNT(*)::int FROM proc.bp_supplier)                           AS suppliers,
+       (SELECT COUNT(*)::int FROM proc.bp_supplier
+         WHERE risk_score IS NOT NULL)                                        AS with_risk_score
+"""
+
+
+def _covered(filled: int, population: int) -> bool:
+    if not population:
+        return False
+    return Decimal(filled) / Decimal(population) >= COVERAGE_FLOOR
+
+
+def available_data(cur, period: Period, prior: Optional[Period] = None) -> frozenset:
+    """Which ladder prerequisites this corpus actually satisfies.
+
+    Asked of the database, never assumed from a schema: a column that exists is
+    not data that exists. Offering a step whose screen would be empty is the
+    dead-end control this product has removed elsewhere, and it is not
+    reintroduced here.
+    """
+    window = (period.start, period.end)
+    prior_window = ((prior.start, prior.end) if prior is not None
+                    else (period.start.replace(year=period.start.year - 1),
+                          period.end.replace(year=period.end.year - 1)))
+    cur.execute(_AVAILABILITY_SQL, (*window, *prior_window))
+    columns = [d[0] for d in cur.description]
+    counts = dict(zip(columns, cur.fetchone() or ()))
+
+    invoices = int(counts.get("invoices") or 0)
+    if not invoices:
+        return frozenset()
+
+    suppliers = int(counts.get("suppliers") or 0)
+    keys = {"spend"}
+    if int(counts.get("prior_invoices") or 0) > 0:
+        keys.add("period_comparison")
+    if int(counts.get("categories") or 0) > 0:
+        keys.add("category")
+    if _covered(int(counts.get("with_contract") or 0), invoices):
+        keys.add("contract_link")
+    if _covered(int(counts.get("with_requester") or 0), invoices):
+        keys.add("relationship_owner")
+    if _covered(int(counts.get("with_risk_score") or 0), suppliers):
+        keys.add("risk_score")
+    return frozenset(keys)

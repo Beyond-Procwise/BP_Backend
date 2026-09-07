@@ -143,14 +143,21 @@ class TestFacts:
                      if f.code is FactCode.TOP_1_TO_TOP_2_RATIO)
         assert ratio.value == Decimal("1.3")
 
-    def test_a_concentration_breach_is_a_fact_when_the_leader_crosses_the_threshold(self):
-        answer = _build(concentration_threshold_pct=Decimal("30"))
+    def test_concentration_is_measured_on_the_top_n_not_on_the_leader_alone(self):
+        # A top-1 threshold is the wrong instrument for this corpus: across
+        # 3,510 suppliers the leader holds 1.4%, so a 20% top-1 rule would never
+        # fire however concentrated the book actually was. The breach is the
+        # share the visible group holds between them.
+        answer = _build(top_n=2, concentration_threshold_pct=Decimal("30"))
         breach = next(f for f in answer.facts
                       if f.code is FactCode.CONCENTRATION_THRESHOLD_BREACHED)
-        assert breach.entity == "Kestrel Supplies 8"
+        assert Decimal("62") < breach.value < Decimal("64")
+        assert breach.unit == "2"
+        # No single supplier owns a group finding, so none is named.
+        assert breach.entity is None
 
-    def test_no_breach_fact_when_the_leader_is_under_the_threshold(self):
-        answer = _build(concentration_threshold_pct=Decimal("90"))
+    def test_no_breach_when_the_top_n_share_is_under_the_threshold(self):
+        answer = _build(top_n=1, concentration_threshold_pct=Decimal("90"))
         assert FactCode.CONCENTRATION_THRESHOLD_BREACHED not in self._codes(answer)
 
     def test_a_supplier_billing_in_more_than_one_currency_is_flagged(self):
@@ -233,6 +240,18 @@ class TestReportingAsBilled:
 
 
 class TestTheHeadlineIsTemplatedUntilAModelEarnsIt:
+    def test_a_negligible_gap_to_second_place_is_not_narrated_as_a_lead(self):
+        # Live: Kestrel £288.4K against Meridian £274.9K is a ratio of 1.0, and
+        # "1.0 times the next" is not a finding — it is a sentence pretending to
+        # be one. The fact is still produced; the headline just does not use it.
+        rows = [_row("Kestrel Supplies 12", "288400"), _row("Meridian Services 2", "274900")]
+        answer = _build(rows=rows, population_count=2)
+        assert "times the next" not in answer.headline.text
+
+    def test_a_real_lead_is_narrated(self):
+        assert "times the next" in _build().headline.text
+
+
     def test_every_number_in_the_templated_headline_comes_off_the_payload(self):
         # The same check the insight writer's output will face in PR 5. The
         # template has to pass it too, or the fallback would be held to a

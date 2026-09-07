@@ -89,3 +89,51 @@ class TestFetchPopulation:
         cursor = FakeCursor(rows=[(0, 0)], description=["suppliers", "invoices"])
         fetch_population(cursor, PERIOD)
         assert cursor.executed[0][1] == (PERIOD.start, PERIOD.end)
+
+
+class TestAvailableData:
+    """Which ladder rungs lead somewhere, asked of the database rather than assumed.
+
+    A dimension that exists as a column is not a dimension that exists as data.
+    bp_invoice_trgt has a contract_id and there are 3,051 contracts on record,
+    but the column is filled on 0 of 12,408 invoices — so contract coverage
+    cannot be computed, and a step offering it would dispatch to an empty
+    screen. requested_by is filled on 2 rows of 12,408, which is the same
+    problem wearing a non-zero number.
+    """
+
+    def _cursor(self, **counts):
+        columns = ["invoices", "prior_invoices", "with_contract", "with_requester",
+                   "categories", "suppliers", "with_risk_score"]
+        defaults = dict(invoices=12408, prior_invoices=1718, with_contract=0,
+                        with_requester=2, categories=0, suppliers=5028,
+                        with_risk_score=5000)
+        defaults.update(counts)
+        return FakeCursor(rows=[tuple(defaults[c] for c in columns)], description=columns)
+
+    def test_spend_and_risk_are_available_in_the_live_corpus(self):
+        from src.services.analytics.repository import available_data
+        keys = available_data(self._cursor(), PERIOD)
+        assert "spend" in keys
+        assert "risk_score" in keys
+
+    def test_a_column_filled_on_no_rows_is_not_available(self):
+        from src.services.analytics.repository import available_data
+        assert "contract_link" not in available_data(self._cursor(), PERIOD)
+
+    def test_a_column_filled_on_two_rows_in_twelve_thousand_is_not_available_either(self):
+        from src.services.analytics.repository import available_data
+        assert "relationship_owner" not in available_data(self._cursor(), PERIOD)
+
+    def test_the_same_column_well_populated_is_available(self):
+        from src.services.analytics.repository import available_data
+        keys = available_data(self._cursor(with_requester=9000), PERIOD)
+        assert "relationship_owner" in keys
+
+    def test_no_prior_invoices_means_no_period_comparison(self):
+        from src.services.analytics.repository import available_data
+        assert "period_comparison" not in available_data(self._cursor(prior_invoices=0), PERIOD)
+
+    def test_an_empty_period_offers_nothing_at_all(self):
+        from src.services.analytics.repository import available_data
+        assert available_data(self._cursor(invoices=0), PERIOD) == frozenset()
