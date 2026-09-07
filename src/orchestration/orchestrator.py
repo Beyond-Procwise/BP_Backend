@@ -174,9 +174,18 @@ class Orchestrator:
             self._workflow_registry = WORKFLOW_REGISTRY
             logger.info("Declarative workflow engine initialized with %d workflows", len(WORKFLOW_REGISTRY))
         except Exception as exc:
-            logger.warning("Workflow engine init failed, using legacy routing: %s", exc)
+            # Tolerated so the rest of the orchestrator still starts -- workflows
+            # with no declarative graph are unaffected. It is NOT a licence to
+            # run a graph-backed workflow some other way: see the guard in
+            # execute_workflow, which fails those loudly rather than rerouting
+            # them. "using legacy routing" was the old behaviour and it is gone.
+            logger.error(
+                "Workflow engine init failed; workflows with a declarative graph "
+                "will now fail rather than route elsewhere: %s", exc
+            )
             self._workflow_engine = None
             self._workflow_registry = {}
+            self._workflow_engine_error = str(exc)
 
         # BackendScheduler MUST be the last thing initialized because it
         # starts the ProcessMonitorWatcher which immediately sweeps for
@@ -438,6 +447,28 @@ class Orchestrator:
 
             workflow_config = enriched_input.get("workflow_configuration")
 
+            # A workflow with a declarative graph runs on the engine or not at
+            # all. Until 2026-09-07 a failed engine build fell through to a
+            # hand-rolled second implementation of supplier_interaction, whose
+            # own tests had quietly stopped exercising it -- so a broken engine
+            # became a different pipeline that still returned a result. Failing
+            # here is louder and honest. Narrow on purpose: a workflow with no
+            # graph (negotiation, for one) is untouched by this.
+            from orchestration.workflow_definitions import WORKFLOW_REGISTRY as _GRAPHS
+
+            if (
+                self._workflow_engine is None
+                and workflow_name in _GRAPHS
+                and not workflow_config
+                and enriched_input.get("use_workflow_engine", True)
+            ):
+                raise RuntimeError(
+                    f"workflow '{workflow_name}' runs on the declarative workflow "
+                    f"engine, which failed to initialise "
+                    f"({getattr(self, '_workflow_engine_error', 'reason not recorded')}). "
+                    "Refusing to run it another way."
+                )
+
             # --- New DAG Scheduler path (Phase 3 migration) ---
             if getattr(self.settings, 'use_dag_scheduler', False) and workflow_name in self._workflow_registry:
                 from orchestration.workflow_definitions import get_workflow
@@ -489,8 +520,6 @@ class Orchestrator:
                 result = self._execute_quote_workflow(context)
             elif workflow_name == "opportunity_mining":
                 result = self._execute_opportunity_workflow(context)
-            elif workflow_name == "supplier_interaction":
-                result = self._execute_supplier_interaction_workflow(context)
             else:
                 result = self._execute_generic_workflow(workflow_name, context)
 
@@ -1984,295 +2013,6 @@ class Orchestrator:
         else:
             logger.info("SupplierRankingAgent skipped due to empty candidate list")
 
-        return results
-
-    def _execute_supplier_interaction_workflow(self, context: AgentContext) -> Dict:
-        """Coordinate drafting, dispatch waits, and supplier processing."""
-
-        payload = dict(context.input_data or {})
-        draft_payload = payload.get("draft_payload")
-        supplier_payload = payload.get("supplier_input")
-
-        if not isinstance(draft_payload, dict):
-            result = self._execute_agent("supplier_interaction", context)
-            return result.data if result else {}
-
-        dispatch_timeout_raw = payload.get("dispatch_timeout_seconds")
-        dispatch_poll_raw = payload.get("dispatch_poll_interval")
-        response_timeout_raw = payload.get("response_timeout_seconds")
-        response_poll_raw = payload.get("response_poll_interval")
-
-        def _positive(value, fallback):
-            try:
-                num = float(value)
-            except Exception:
-                return fallback
-            if num <= 0:
-                return fallback
-            return num
-
-        dispatch_timeout = int(_positive(dispatch_timeout_raw, 300))
-        dispatch_poll = max(0, int(_positive(dispatch_poll_raw, getattr(self.settings, "email_response_poll_seconds", 60))))
-        response_timeout = int(_positive(response_timeout_raw, getattr(self.settings, "email_response_timeout_seconds", 900)))
-        response_poll = max(0, int(_positive(response_poll_raw, getattr(self.settings, "email_response_poll_seconds", 60))))
-
-        email_ctx = self._create_child_context(context, "email_drafting", dict(draft_payload))
-        for key in (
-            "draft_payload",
-            "supplier_input",
-            "dispatch_timeout_seconds",
-            "dispatch_poll_interval",
-            "response_timeout_seconds",
-            "response_poll_interval",
-        ):
-            email_ctx.input_data.pop(key, None)
-
-        email_result = self._execute_agent("email_drafting", email_ctx)
-        email_data = email_result.data if email_result else {}
-        email_drafts = self._extract_drafts(email_result)
-        drafted_email_count = len([draft for draft in email_drafts if isinstance(draft, dict)])
-        tracked_unique_ids = [
-            str(draft.get("unique_id")).strip()
-            for draft in email_drafts
-            if isinstance(draft, dict)
-            and draft.get("unique_id") not in (None, "")
-        ]
-        tracked_unique_ids = [uid for uid in tracked_unique_ids if uid]
-
-        workflow_hint = self._select_workflow_identifier(email_drafts, context.workflow_id)
-        email_drafts = self._filter_drafts_for_workflow(email_drafts, workflow_hint)
-        unique_ids = [draft.get("unique_id") for draft in email_drafts]
-
-        dispatch_input: Dict[str, Any] = {}
-        if email_result and email_result.pass_fields:
-            dispatch_input.update(dict(email_result.pass_fields))
-        dispatch_input.setdefault("drafts", email_drafts)
-        dispatch_input.setdefault("workflow_id", workflow_hint)
-        round_hint = (
-            payload.get("round_number")
-            or payload.get("round")
-            or (supplier_payload.get("round") if isinstance(supplier_payload, dict) else None)
-        )
-        if round_hint is not None:
-            dispatch_input.setdefault("round", round_hint)
-
-        dispatch_ctx = self._create_child_context(context, "email_dispatch", dispatch_input)
-        dispatch_result = self._execute_agent("email_dispatch", dispatch_ctx)
-        dispatch_data = dispatch_result.data if dispatch_result else {}
-
-        if isinstance(dispatch_data.get("drafts"), list):
-            email_drafts = [draft for draft in dispatch_data["drafts"] if isinstance(draft, dict)]
-            unique_ids = [draft.get("unique_id") for draft in email_drafts]
-
-        dispatch_records = (
-            dispatch_data.get("dispatch_records")
-            if isinstance(dispatch_data.get("dispatch_records"), list)
-            else []
-        )
-        if dispatch_records:
-            tracked_unique_ids = [
-                str(record.get("unique_id")).strip()
-                for record in dispatch_records
-                if record.get("unique_id")
-            ]
-            tracked_unique_ids = [uid for uid in tracked_unique_ids if uid]
-            unique_ids = [record.get("unique_id") for record in dispatch_records]
-
-        coordinator = SupplierResponseWorkflow()
-        readiness: Dict[str, Dict[str, object]] = {}
-
-        if isinstance(dispatch_data.get("expected_dispatches"), int):
-            expected_email_count = int(dispatch_data["expected_dispatches"])
-        else:
-            expected_email_count = len(tracked_unique_ids) or drafted_email_count
-
-        try:
-            readiness = coordinator.ensure_ready(
-                workflow_id=workflow_hint,
-                unique_ids=unique_ids,
-                dispatch_timeout=dispatch_timeout,
-                dispatch_poll_interval=dispatch_poll,
-                response_timeout=response_timeout,
-                response_poll_interval=response_poll,
-            )
-        except TimeoutError:
-            logger.warning(
-                "Supplier response readiness timed out for workflow=%s",
-                workflow_hint,
-            )
-            normalised_ids = list(tracked_unique_ids) or [
-                uid for uid in unique_ids if uid
-            ]
-            readiness = {
-                "activation": {
-                    "activated": False,
-                    "timed_out": True,
-                    "workflow_id": workflow_hint,
-                    "unique_ids": normalised_ids,
-                },
-                "dispatch": {
-                    "complete": False,
-                    "timed_out": True,
-                    "workflow_id": workflow_hint,
-                    "expected_dispatches": expected_email_count,
-                    "completed_dispatches": 0,
-                    "unique_ids": normalised_ids,
-                },
-                "responses": {
-                    "complete": False,
-                    "timed_out": True,
-                    "workflow_id": workflow_hint,
-                    "expected_responses": expected_email_count,
-                    "completed_responses": 0,
-                    "unique_ids": normalised_ids,
-                },
-            }
-        except Exception:
-            logger.exception(
-                "Failed to coordinate supplier response readiness for workflow=%s",
-                workflow_hint,
-            )
-            readiness = {}
-
-        supplier_input: Dict[str, Any] = {}
-        if email_result and email_result.pass_fields:
-            supplier_input.update(dict(email_result.pass_fields))
-        if isinstance(supplier_payload, dict):
-            supplier_input.update(supplier_payload)
-        supplier_input["drafts"] = email_drafts
-        supplier_input.setdefault("expected_dispatch_count", expected_email_count)
-        # Retain legacy key for agents that still inspect the historical field.
-        supplier_input.setdefault("expected_email_count", expected_email_count)
-        if dispatch_records:
-            supplier_input.setdefault("dispatch_records", dispatch_records)
-        if dispatch_data.get("failures"):
-            supplier_input.setdefault("dispatch_failures", dispatch_data.get("failures"))
-        if dispatch_data:
-            supplier_input.setdefault("dispatch_metadata", dispatch_data)
-        if tracked_unique_ids:
-            supplier_input.setdefault("expected_unique_ids", tracked_unique_ids)
-        supplier_input.setdefault("await_response", True)
-        if len([uid for uid in unique_ids if uid]) > 1:
-            supplier_input.setdefault("await_all_responses", True)
-        supplier_input.setdefault("workflow_id", workflow_hint)
-        supplier_input.setdefault("response_timeout", response_timeout)
-        supplier_input.setdefault("response_timeout_seconds", response_timeout)
-        supplier_input.setdefault("response_poll_interval", response_poll)
-        supplier_input.setdefault("dispatch_timeout", dispatch_timeout)
-        supplier_input.setdefault("dispatch_timeout_seconds", dispatch_timeout)
-        supplier_input.setdefault("dispatch_poll_interval", dispatch_poll)
-        supplier_input.setdefault("action", "await_workflow_batch")
-
-        supplier_ctx = self._create_child_context(context, "supplier_interaction", supplier_input)
-        for key in (
-            "draft_payload",
-            "supplier_input",
-            "dispatch_timeout_seconds",
-            "dispatch_poll_interval",
-            "response_timeout_seconds",
-            "response_poll_interval",
-        ):
-            supplier_ctx.input_data.pop(key, None)
-
-        logger.info(
-            "Waiting for SupplierInteractionAgent to complete... workflow=%s",
-            workflow_hint,
-        )
-        supplier_result = self._execute_agent("supplier_interaction", supplier_ctx)
-        logger.info(
-            "SupplierInteractionAgent completed for workflow=%s with status=%s",
-            workflow_hint,
-            getattr(supplier_result, "status", None),
-        )
-
-        scheduler = getattr(self, "backend_scheduler", None)
-        if (
-            workflow_hint
-            and scheduler
-            and hasattr(scheduler, "notify_email_dispatch")
-        ):
-            try:
-                scheduler.notify_email_dispatch(workflow_hint)
-            except Exception:
-                logger.exception(
-                    "Failed to notify email watcher for workflow=%s from orchestrator",
-                    workflow_hint,
-                )
-
-        negotiation_result = None
-        if (
-            supplier_result
-            and supplier_result.status == AgentStatus.SUCCESS
-            and "negotiation" in self.agents
-        ):
-            negotiation_payload: Dict[str, Any] = {}
-            if supplier_result.pass_fields:
-                negotiation_payload.update(dict(supplier_result.pass_fields))
-            if supplier_result.data:
-                negotiation_payload.setdefault("negotiation_batch", True)
-                negotiation_payload.update(dict(supplier_result.data))
-
-            if isinstance(supplier_result.data, dict):
-                primary_reference = supplier_result.data.get("session_reference")
-                if primary_reference:
-                    negotiation_payload.setdefault("session_reference", primary_reference)
-
-            thread_headers_payload: Optional[Dict[str, Any]] = None
-            if isinstance(supplier_result.data, dict):
-                thread_headers_payload = supplier_result.data.get("thread_headers")
-            if not thread_headers_payload and isinstance(supplier_result.pass_fields, dict):
-                thread_headers_payload = supplier_result.pass_fields.get("thread_headers")
-            if thread_headers_payload:
-                negotiation_payload["thread_headers"] = thread_headers_payload
-
-            responses = negotiation_payload.get("supplier_responses")
-            if isinstance(responses, list) and responses:
-                negotiation_ctx = self._create_child_context(
-                    context, "negotiation", negotiation_payload
-                )
-                negotiation_result = self._execute_agent("negotiation", negotiation_ctx)
-
-        if supplier_result and supplier_result.status != AgentStatus.SUCCESS:
-            logger.warning(
-                "SupplierInteractionAgent returned non-success status %s for workflow=%s",
-                supplier_result.status,
-                workflow_hint,
-            )
-
-        activation_summary = readiness.get("activation", {}) if readiness else {}
-        if activation_summary and not activation_summary.get("activated", False):
-            logger.warning(
-                "Supplier interaction activation incomplete for workflow=%s", workflow_hint
-            )
-
-        results: Dict[str, Any] = {
-            "email_drafting": email_data,
-            "dispatch_monitor": readiness.get("dispatch") if readiness else None,
-            "response_monitor": readiness.get("responses") if readiness else None,
-            "activation_monitor": activation_summary,
-            "supplier_interaction": supplier_result.data if supplier_result else {},
-            "expected_email_count": expected_email_count,
-            "tracked_unique_ids": tracked_unique_ids,
-            "supplier_interaction_status": (
-                supplier_result.status.value if supplier_result else None
-            ),
-        }
-
-        if supplier_result and supplier_result.next_agents:
-            results["next_agents"] = list(supplier_result.next_agents)
-        if supplier_result and supplier_result.pass_fields:
-            results["supplier_pass_fields"] = dict(supplier_result.pass_fields)
-        if negotiation_result:
-            results["negotiation"] = negotiation_result.data if negotiation_result else {}
-            if negotiation_result and negotiation_result.pass_fields:
-                results["negotiation_pass_fields"] = dict(negotiation_result.pass_fields)
-            if negotiation_result and negotiation_result.status:
-                results["negotiation_status"] = negotiation_result.status.value
-            if negotiation_result and negotiation_result.next_agents:
-                existing = results.setdefault("next_agents", [])
-                for agent_name in negotiation_result.next_agents:
-                    if agent_name not in existing:
-                        existing.append(agent_name)
         return results
 
     @staticmethod
