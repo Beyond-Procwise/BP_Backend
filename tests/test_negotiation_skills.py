@@ -549,6 +549,21 @@ class TestAgentCounterWithPlaybook:
                 "supplier_type": "Leverage",
                 "negotiation_style": "Collaborative",
                 "lever_priorities": ["Commercial", "Operational"],
+                # A counter is a commitment: without a mandate covering it the
+                # agent withholds the price and this stops being a counter at
+                # all (see _apply_authority). This block is what the orchestrator
+                # injects; the quantity is what makes the commitment computable.
+                "quantity": 1,
+                "authority": {
+                    "negotiation_agent": {
+                        "agent": "negotiation_agent",
+                        "governed": True,
+                        "policy_name": "EmailReplyAutonomyPolicy",
+                        "limit_gbp": "1000000",
+                        "limit_currency": "USD",
+                        "reason": "resolved from governed policy",
+                    }
+                },
             },
         )
         output = agent.run(context)

@@ -125,6 +125,10 @@ FINAL_OFFER_PATTERNS = (
 #: being reopened downstream (see `_adaptive_strategy`).
 TERMINAL_STRATEGIES = frozenset({"accept", "decline"})
 
+#: The key `resolve_authority` files this agent's mandate under, and the name in
+#: EmailReplyAutonomyPolicy.policy_linked_agents. Must match both.
+AUTHORITY_AGENT_KEY = "negotiation_agent"
+
 # LEVER_CATEGORIES and TRADE_OFF_HINTS now live in
 # services.negotiation_advice.ranking, next to the scoring that uses them.
 # TRADE_OFF_HINTS is imported above; it is still read by
@@ -5373,6 +5377,17 @@ class NegotiationAgent(BaseAgent):
         else:
             decision["rationale"] = structured_rationale
 
+        # Last gate before the counter becomes a message. Placed after the
+        # rationale is composed so a withheld counter's explanation is the one a
+        # buyer reads, and before _optimize_multi_issue so nothing can put a
+        # number back.
+        self._apply_authority(
+            decision,
+            self._resolve_authority_block(context),
+            currency=currency,
+            volume_units=volume_units,
+        )
+
         playbook_context = self._resolve_playbook_context(context, decision)
         play_recommendations = playbook_context.get("plays", [])
         if play_recommendations:
@@ -5610,7 +5625,14 @@ class NegotiationAgent(BaseAgent):
             overrides = {k: v for k, v in overrides.items() if k != "counter_price"}
         decision.update(overrides)
         counter_options = optimized.get("counter_options") or []
-        if not counter_options and decision.get("counter_price") is not None:
+        if decision.get("authority_withheld"):
+            # `_optimize_multi_issue` knows nothing about the mandate, and its
+            # options are published to draft_payload["counter_proposals"] and to
+            # AgentOutput.data. Clearing decision["counter_price"] alone does not
+            # withhold anything -- it moves the figure to another key on the same
+            # payload, which is how a governed refusal still reaches a supplier.
+            counter_options = []
+        elif not counter_options and decision.get("counter_price") is not None:
             counter_options = [{"price": decision["counter_price"], "terms": None, "bundle": None}]
 
         supplier_name = context.input_data.get("supplier_name") or supplier
@@ -10710,6 +10732,203 @@ class NegotiationAgent(BaseAgent):
                 pass
 
         return round(candidate, 2)
+
+    def _resolve_authority_block(
+        self, context: AgentContext
+    ) -> Optional[Dict[str, Any]]:
+        """This agent's mandate for this run.
+
+        The orchestrator resolves it for the negotiation and supplier_interaction
+        workflows and injects it at ``input_data["authority"]``. The live
+        inbound-reply route has no orchestrator, so the agent resolves it itself
+        rather than read a missing block as permission -- which is the whole
+        reason `resolve_authority` fails closed.
+        """
+
+        injected = (context.input_data or {}).get("authority")
+        if isinstance(injected, dict):
+            block = injected.get(AUTHORITY_AGENT_KEY)
+            if isinstance(block, dict):
+                return block
+
+        try:
+            from src.engines.policy_engine import PolicyEngine
+            from src.services.db import get_conn
+            from src.services.governance_tools.authority import resolve_authority
+
+            resolved = resolve_authority(
+                PolicyEngine(connection_factory=get_conn), [AUTHORITY_AGENT_KEY]
+            )
+            return resolved.get(AUTHORITY_AGENT_KEY)
+        except Exception:
+            logger.exception(
+                "authority resolution failed for the negotiation agent; no price "
+                "will be proposed on this round"
+            )
+            from src.services.governance_tools.authority import ungoverned_block
+
+            return ungoverned_block(
+                AUTHORITY_AGENT_KEY, "the policy that sets its value limit could not be read"
+            )
+
+    def _authority_refusal(
+        self,
+        block: Optional[Dict[str, Any]],
+        *,
+        counter_price: Optional[float],
+        currency: Optional[str],
+        volume_units: Optional[float],
+    ) -> Optional[str]:
+        """``None`` when this counter is within mandate, else why it is not.
+
+        The returned string is user-facing: it is interpolated into the decision
+        rationale a buyer reads, so it names no slugs and no config identifiers.
+
+        Every branch here narrows. An absent block, an unreadable policy, a limit
+        with no currency, a currency we cannot compare, a quantity nobody stated
+        -- each of those is "we cannot show this is within mandate", which is not
+        the same as being within it. That is the stance `ungoverned_block` already
+        takes for the resolver, and `DecisionEngine` for email replies.
+        """
+
+        if counter_price is None:
+            return None  # nothing is being committed, so there is nothing to authorise
+
+        if not isinstance(block, dict) or not block.get("governed"):
+            stated = block.get("reason") if isinstance(block, dict) else None
+            return stated or (
+                "no authority to propose a price unattended was resolved from "
+                "governed policy"
+            )
+
+        limit_raw = block.get("limit_gbp")
+        if limit_raw in (None, ""):
+            return (
+                "the policy that governs this agent states no value limit, so "
+                "there is no ceiling to check this counter against"
+            )
+        try:
+            limit = float(str(limit_raw).replace(",", ""))
+        except (TypeError, ValueError):
+            return (
+                "the governed value limit is not a number, so it cannot be "
+                "applied to this counter"
+            )
+
+        limit_currency = self._normalise_currency(block.get("limit_currency"))
+        if not limit_currency:
+            return (
+                "the governed value limit states no currency, so it cannot be "
+                "compared with this counter"
+            )
+
+        counter_currency = self._normalise_currency(currency)
+        if not counter_currency or counter_currency != limit_currency:
+            # No FX here, and inventing a rate of 1.0 by comparing bare numbers
+            # is how a limit silently stops meaning anything.
+            return (
+                f"this counter is priced in "
+                f"{counter_currency or 'an unstated currency'} and the limit is "
+                f"set in {limit_currency}; the two cannot be compared"
+            )
+
+        if volume_units is None:
+            return (
+                f"the quantity this counter would commit is not stated, so its "
+                f"total value cannot be established against the "
+                f"{limit_currency} {limit:,.0f} limit"
+            )
+
+        try:
+            total = float(counter_price) * float(volume_units)
+        except (TypeError, ValueError):
+            return (
+                "the quantity this counter would commit is not a number, so its "
+                "total value cannot be established"
+            )
+
+        if total > limit:
+            return (
+                f"this counter commits {limit_currency} {total:,.2f}, above the "
+                f"governed {limit_currency} {limit:,.0f} limit"
+            )
+        return None
+
+    def _apply_authority(
+        self,
+        decision: Dict[str, Any],
+        block: Optional[Dict[str, Any]],
+        *,
+        currency: Optional[str],
+        volume_units: Optional[float],
+    ) -> None:
+        """Hold the decision to the mandate, in place.
+
+        Withholds the NUMBER rather than flagging it. A review flag stops nothing
+        here -- `_detect_outliers` sets one and the email is still drafted around
+        the price -- so an unmandated figure would still reach a supplier on the
+        strength of a dispatch approval. `decide_strategy` already has this shape
+        for a refused contract: no `counter_price`, and a reason.
+        """
+
+        decision["authority"] = {
+            "governed": bool(isinstance(block, dict) and block.get("governed")),
+            "policy_id": (block or {}).get("policy_id") if isinstance(block, dict) else None,
+            "policy_name": (block or {}).get("policy_name") if isinstance(block, dict) else None,
+            "limit_gbp": (block or {}).get("limit_gbp") if isinstance(block, dict) else None,
+            "limit_currency": (block or {}).get("limit_currency") if isinstance(block, dict) else None,
+        }
+
+        reason = self._authority_refusal(
+            block,
+            counter_price=decision.get("counter_price"),
+            currency=currency,
+            volume_units=volume_units,
+        )
+        if reason is None:
+            return
+
+        decision["authority_withheld"] = True
+        decision["authority_reason"] = reason
+
+        if str(decision.get("strategy") or "").lower() in TERMINAL_STRATEGIES:
+            # `plan_counter` has already resolved this negotiation against the
+            # supplier's best-and-final, and `_execute_negotiation_round` closes
+            # the supplier only on `accept`/`decline`. Rewriting the strategy here
+            # would leave it open and reopen bargaining on an offer we had agreed
+            # -- the bug `_adaptive_strategy` returns early to avoid. An accept
+            # beyond mandate is escalated instead, through the flag the agent
+            # already uses for that and which closes `negotiation_allowed`.
+            decision.setdefault("flags", {})["human_override_required"] = True
+            decision["human_override_required"] = True
+            decision["recommendation"] = "query_for_human_review"
+            decision["rationale"] = (
+                f"This decision needs a buyer's sign-off because {reason}."
+            )
+            alerts = list(decision.get("alerts") or [])
+            alert = f"Beyond mandate: {reason}."
+            if alert not in alerts:
+                alerts.append(alert)
+            decision["alerts"] = alerts
+            return
+
+        decision["counter_price"] = None
+        decision["strategy"] = "review"
+        decision["decision_origin"] = "authority_withheld"
+        # Nothing downstream may put a number back: the multi-issue optimiser's
+        # price is dropped only while this is set.
+        decision["price_plan_locked"] = True
+        decision["recommendation"] = "query_for_human_review"
+        decision.setdefault("flags", {})["review_recommended"] = True
+        decision["rationale"] = (
+            f"No counter price is proposed because {reason}. A buyer needs to set "
+            "the figure before anything goes to this supplier."
+        )
+        alerts = list(decision.get("alerts") or [])
+        alert = f"Counter withheld: {reason}."
+        if alert not in alerts:
+            alerts.append(alert)
+        decision["alerts"] = alerts
 
     def _detect_outliers(
         self,
