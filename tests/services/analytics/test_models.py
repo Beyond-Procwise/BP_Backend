@@ -124,7 +124,9 @@ class TestFactsCarryTheirRenderedForm:
             Fact(code=FactCode.TOP_1_TO_TOP_2_RATIO, value=Decimal("1.8"),
                  type=ColumnType.TEXT),
         ])
-        assert answer.quotable_numbers() == {"23.4", "1.8"}
+        assert {"23.4", "1.8"} <= answer.quotable_numbers()
+        # A figure from neither the facts nor the scope line is not quotable.
+        assert "99.9" not in answer.quotable_numbers()
 
 
 class TestNextSteps:
@@ -180,3 +182,47 @@ class TestAnomalies:
         # Ranking across unconverted currencies is the defect this work exists
         # to end; the code for it has to exist in the contract.
         assert AnomalyCode.RANKING_NOT_COMPARABLE.value == "RANKING_NOT_COMPARABLE"
+
+
+class TestTheNumbersASentenceMayCarry:
+    """The insight writer is handed scope and facts and nothing else, and may use
+    no number that is not already in them. Two details make that checkable.
+
+    First, a supplier in this corpus is called "Kestrel Supplies 8". Scanning a
+    sentence for digits would flag the 8 in its own name, so entity names are
+    removed before the scan rather than added to the allowed set — otherwise
+    naming one supplier would licence "8% of spend" as well.
+
+    Second, the writer also sees the scope line, so the period and the
+    population count are legitimately quotable.
+    """
+
+    def _answer_with_facts(self):
+        return _answer(facts=[
+            Fact(code=FactCode.TOP_1_SHARE, entity="Kestrel Supplies 8",
+                 value=Decimal("36.05"), type=ColumnType.PCT),
+            Fact(code=FactCode.TOP_1_TO_TOP_2_RATIO, value=Decimal("1.3"),
+                 type=ColumnType.TEXT),
+        ])
+
+    def test_a_sentence_quoting_only_facts_is_clean(self):
+        answer = self._answer_with_facts()
+        assert answer.unquoted_numbers(
+            "Kestrel Supplies 8 holds 36.1% of spend, 1.3 times the next supplier."
+        ) == set()
+
+    def test_a_number_the_model_invented_is_caught(self):
+        answer = self._answer_with_facts()
+        assert answer.unquoted_numbers("Spend rose 14.2% against last year.") == {"14.2"}
+
+    def test_digits_inside_a_supplier_name_are_not_mistaken_for_a_claim(self):
+        answer = self._answer_with_facts()
+        assert answer.unquoted_numbers("Kestrel Supplies 8 leads.") == set()
+
+    def test_naming_a_supplier_does_not_licence_its_digits_as_a_figure(self):
+        answer = self._answer_with_facts()
+        assert answer.unquoted_numbers("Kestrel Supplies 8 holds 8% of spend.") == {"8"}
+
+    def test_the_population_count_from_the_scope_line_is_quotable(self):
+        answer = self._answer_with_facts()
+        assert answer.unquoted_numbers("Across 3,510 suppliers, concentration is high.") == set()

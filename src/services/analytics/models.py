@@ -318,10 +318,38 @@ class AnalyticAnswer(BaseModel):
         """Every numeric token the insight writer is allowed to put in a sentence.
 
         Taken off the rendered form of each fact, because the rendered form is
-        what a sentence would quote. A number outside this set did not come from
-        the data, and the sentence carrying it is rejected.
+        what a sentence would quote, plus the scope line — the writer is shown
+        both, so the period and the population count are legitimately hers. A
+        number outside this set did not come from the payload.
         """
         tokens: set[str] = set()
         for fact in self.facts:
             tokens.update(match.group(0) for match in _NUMBER.finditer(fact.display))
+        tokens.update(match.group(0) for match in _NUMBER.finditer(self.scope.line()))
         return tokens
+
+    def unquoted_numbers(self, text: str) -> set[str]:
+        """The numbers in ``text`` that the payload does not support.
+
+        Entity names are removed before the scan rather than folded into the
+        allowed set. A supplier in this corpus is called "Kestrel Supplies 8":
+        counting the 8 as quotable would let the same sentence claim "8% of
+        spend" and pass. Removing the name instead means naming a supplier
+        licences nothing.
+
+        Empty means the sentence is grounded. Anything else is what the model
+        made up, and the sentence is discarded for a templated one.
+        """
+        stripped = text or ""
+        names = {fact.entity for fact in self.facts if fact.entity}
+        for row in self.table.rows:
+            for key in ("supplier", "entity", "name"):
+                value = row.get(key)
+                if isinstance(value, str) and value:
+                    names.add(value)
+        # Longest first, so "Kestrel Supplies 8" is removed before a shorter
+        # name that happens to be a prefix of it.
+        for name in sorted(names, key=len, reverse=True):
+            stripped = stripped.replace(name, " ")
+        found = {match.group(0) for match in _NUMBER.finditer(stripped)}
+        return found - self.quotable_numbers()
