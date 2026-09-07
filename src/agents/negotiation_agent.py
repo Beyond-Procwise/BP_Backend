@@ -2530,6 +2530,7 @@ class NegotiationAgent(BaseAgent):
                 storage = negotiation_state.setdefault("hitl_email_tasks", {})
                 if isinstance(storage, dict):
                     storage[int(round_number)] = deepcopy(pending_entries)
+                self._persist_held_email_tasks(negotiation_state, round_number)
             return
 
         primary_identifier = None
@@ -2572,6 +2573,61 @@ class NegotiationAgent(BaseAgent):
 
         if isinstance(bundle_data, dict) and bundle_data:
             draft_bundles.append(deepcopy(bundle_data))
+
+    def _persist_held_email_tasks(
+        self, negotiation_state: Dict[str, Any], round_number: int
+    ) -> None:
+        """Put a round held for approval on the session, so it outlives this process.
+
+        Withholding approval stashes the drafted counters in
+        ``negotiation_state["hitl_email_tasks"]``, which is process memory. They
+        reached the caller only through ``AgentOutput.data`` (see
+        ``_run_multi_round_negotiation``), and the one live caller --
+        ``email_watcher.py``, on the inbound-reply route -- discards that output.
+        So the counters a human was asked to approve did not survive the run that
+        wrote them, and approving the round afterwards released nothing.
+
+        The session already persists between rounds; the held round belongs on it.
+        Entries carry a ``NegotiationIdentifier`` and an ``AgentOutput``, neither
+        of which is JSON, so they are reduced to the same JSON-safe form
+        ``_run_multi_round_negotiation`` uses before they reach the store.
+        """
+
+        session = negotiation_state.get("session")
+        workflow_id = self._coerce_text(negotiation_state.get("workflow_id"))
+        if session is None or not workflow_id:
+            logger.warning(
+                "a negotiation round is held for approval but cannot be persisted "
+                "(session=%s workflow_id=%s); it will not survive this process",
+                type(session).__name__ if session is not None else None,
+                workflow_id,
+            )
+            return
+
+        held = negotiation_state.get("hitl_email_tasks")
+        if not isinstance(held, dict) or not held:
+            return
+
+        try:
+            serialisable = json.loads(json.dumps(held, default=str))
+        except (TypeError, ValueError):
+            logger.exception(
+                "held email tasks for workflow %s round %s could not be serialised; "
+                "the round stays held but is not recoverable after a restart",
+                workflow_id,
+                round_number,
+            )
+            return
+
+        try:
+            session.negotiation_parameters["hitl_email_tasks"] = serialisable
+            self._save_session_state_obj(workflow_id, session)
+        except Exception:  # pragma: no cover - persistence must not lose the round
+            logger.exception(
+                "failed to persist held email tasks for workflow %s round %s",
+                workflow_id,
+                round_number,
+            )
 
     def _queue_round_action_for_immediate_drafts(
         self,

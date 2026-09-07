@@ -21,7 +21,7 @@ from email.utils import parseaddr, parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
-from agents.base_agent import AgentContext, AgentOutput
+from agents.base_agent import AgentContext, AgentOutput, AgentStatus
 from agents.negotiation_agent import NegotiationAgent
 from agents.supplier_interaction_agent import SupplierInteractionAgent
 from services.event_bus import get_event_bus
@@ -1374,7 +1374,6 @@ class EmailWatcher:
                 ]
             if unique_id and unique_id not in ids_from_agent:
                 ids_from_agent.append(unique_id)
-            processed_ids.extend(ids_from_agent)
 
             negotiation_payload = dict(wait_result.data)
             negotiation_payload.setdefault("supplier_responses", responses)
@@ -1390,7 +1389,15 @@ class EmailWatcher:
                 },
             )
 
+            # This route has no orchestrator, so the AgentOutput returned here is
+            # the only place the negotiation's result can be read. It used to be
+            # discarded, and the replies below were deleted whether the round had
+            # succeeded or not -- so a failed or raising negotiation destroyed the
+            # only record of what the supplier had offered, leaving nothing to
+            # retry from. A round is cleared down only once it has been processed.
+            negotiation_ok = True
             if self.negotiation_agent is not None:
+                negotiation_ok = False
                 try:
                     neg_context = AgentContext(
                         workflow_id=tracker.workflow_id,
@@ -1398,10 +1405,40 @@ class EmailWatcher:
                         user_id="system",
                         input_data=negotiation_payload,
                     )
-                    self.negotiation_agent.execute(neg_context)
+                    neg_result = self.negotiation_agent.execute(neg_context)
+                    negotiation_ok = (
+                        getattr(neg_result, "status", None) == AgentStatus.SUCCESS
+                    )
+                    if not negotiation_ok:
+                        logger.warning(
+                            "NegotiationAgent returned %s for workflow %s (%s); "
+                            "keeping %d supplier response(s) for retry",
+                            getattr(neg_result, "status", None),
+                            tracker.workflow_id,
+                            getattr(neg_result, "error", None),
+                            len(ids_from_agent),
+                        )
+                    elif isinstance(getattr(neg_result, "data", None), dict) and (
+                        neg_result.data.get("hitl_email_tasks")
+                    ):
+                        logger.info(
+                            "Negotiation round for workflow %s is held awaiting "
+                            "human approval; %d round(s) pending",
+                            tracker.workflow_id,
+                            len(neg_result.data["hitl_email_tasks"]),
+                        )
                 except Exception:
-                    logger.exception("NegotiationAgent failed for workflow %s", tracker.workflow_id)
+                    logger.exception(
+                        "NegotiationAgent failed for workflow %s; keeping %d "
+                        "supplier response(s) for retry",
+                        tracker.workflow_id,
+                        len(ids_from_agent),
+                    )
 
+            if not negotiation_ok:
+                continue
+
+            processed_ids.extend(ids_from_agent)
             if ids_from_agent:
                 supplier_response_repo.delete_responses(
                     workflow_id=tracker.workflow_id, unique_ids=ids_from_agent
