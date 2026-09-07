@@ -10,6 +10,11 @@ corrected in place under a **`↻ 2026-09-07`** marker, and §6 lists them toget
 baseline, same suites plus `tests/services/formulas/` and `tests/services/negotiation/`:
 **250 passed** in 188s.
 
+> **Superseded for remediation purposes, 2026-09-07.** This document establishes *what the agent
+> does*; [`docs/negotiation-agent-remediation.md`](negotiation-agent-remediation.md) establishes
+> *what it is wired to and what has to change*, and is the document to work from. §6 below still
+> applies and should be read before quoting anything from the 2026-09-05 body.
+
 ---
 
 ## 0. Finding that reframes the whole audit
