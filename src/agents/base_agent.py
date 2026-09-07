@@ -1572,7 +1572,6 @@ class AgentNick:
         self.settings = settings
         logger.info("Initializing shared clients...")
         self.device = configure_gpu()
-        os.environ.setdefault("OLLAMA_NUM_PARALLEL", "8")
         os.environ.setdefault("OMP_NUM_THREADS", "8")
         self._db_engine = None
         # The ONE production construction of a Qdrant client. Every other

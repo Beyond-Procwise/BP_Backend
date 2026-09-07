@@ -11,8 +11,6 @@ from starlette.responses import StreamingResponse
 
 # Ensure GPU utilisation by default on compatible hardware
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
-os.environ.setdefault("OLLAMA_USE_GPU", "1")
-os.environ.setdefault("OLLAMA_NUM_PARALLEL", "4")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 # Reduce peak CUDA-alloc fragmentation so a fresh start succeeds even when
 # the prior process hasn't finished releasing memory yet (per PyTorch's own

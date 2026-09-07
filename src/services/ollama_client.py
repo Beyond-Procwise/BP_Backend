@@ -24,7 +24,35 @@ DEFAULT_MODEL = os.getenv("PROCWISE_EXTRACTION_MODEL", "BeyondProcwise/AgentNick
 OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://api.ollama.com")
 OLLAMA_CLOUD_API_KEY = os.getenv("OLLAMA_CLOUD_API_KEY")
 
-# Max concurrent Ollama requests — match OLLAMA_NUM_PARALLEL (default 2)
+# ---------------------------------------------------------------------------
+# Which OLLAMA_* variable is read by whom
+#
+# Ollama's *server* is a separate systemd unit and takes its environment from
+# /etc/systemd/system/ollama.service.d/, NOT from this project's .env. Setting a
+# server variable in .env or via os.environ.setdefault() here therefore does
+# nothing at all, silently. That cost real debugging time: .env carried
+# OLLAMA_FLASH_ATTENTION="1" while the server's own startup log reported
+# `OLLAMA_FLASH_ATTENTION: false`, and OLLAMA_NUM_PARALLEL was setdefault() in
+# eight modules with three different values (4, 8, and .env's 8) while the
+# server ran with systemd's 2. Thirteen of those lines are now deleted; if you
+# are about to add another, this is the note that says not to.
+#
+#   Server-side, set ONLY in the systemd unit:
+#       OLLAMA_NUM_PARALLEL, OLLAMA_KEEP_ALIVE, OLLAMA_MAX_LOADED_MODELS,
+#       OLLAMA_FLASH_ATTENTION, OLLAMA_KV_CACHE_TYPE, OLLAMA_GPU_OVERHEAD
+#   Client-side, read here from .env and honoured:
+#       OLLAMA_MAX_CONCURRENT, OLLAMA_KEEP_ALIVE (per-request; see below),
+#       OLLAMA_TIMEOUT, OLLAMA_NUM_GPU_LAYERS, OLLAMA_CLOUD_*
+#
+# OLLAMA_KEEP_ALIVE is in both lists deliberately: we send it per request, and a
+# per-request value overrides the server's. That is why `ollama ps` reports
+# "Forever" even though the unit says 5m. The unit's value is dead as long as
+# this client sets one.
+# ---------------------------------------------------------------------------
+
+# Max concurrent Ollama requests. This is the real client-side limit; keep it
+# equal to the server's OLLAMA_NUM_PARALLEL (currently 2 in the systemd unit) so
+# we do not queue more work than it will run at once.
 _MAX_CONCURRENT = int(os.getenv("OLLAMA_MAX_CONCURRENT", "2"))
 _semaphore = threading.Semaphore(_MAX_CONCURRENT)
 
