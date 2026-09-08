@@ -295,6 +295,7 @@ class _Cursor:
         self._billed_rows = billed_rows
         self.description = None
         self._rows = []
+        self.writes = []          # every update this cursor was asked to make
 
     def _invoice_rows(self, rows):
         self.description = [(c,) for c in self._INV_COLS]
@@ -302,6 +303,10 @@ class _Cursor:
 
     def execute(self, sql, params=()):
         low = sql.lower()
+        if low.strip().startswith("update"):
+            self.writes.append((sql, params))
+            self.description, self._rows = None, []
+            return
         if "purchase_order" in low:
             cols = ("po_id", "supplier_id", "converted_amount_usd", "total_amount",
                     "currency")
@@ -312,6 +317,10 @@ class _Cursor:
             self._rows = []
         elif "is null" in low:
             self._invoice_rows(self._invoices)
+        elif "invoice_id = %s" in low:
+            # The single-document read the confirm path makes.
+            self._invoice_rows([r for r in self._invoices
+                                if str(r.get("invoice_id")) == str(params[0])])
         else:
             self._invoice_rows(self._billed_rows)
 
@@ -795,3 +804,31 @@ def test_a_run_that_proposes_nothing_still_reports_the_documents_it_read(monkeyp
 
     assert run.proposals == ()
     assert run.considered["scored"] == 1
+
+
+def test_a_proposal_obtained_at_a_lower_bar_cannot_be_confirmed(monkeypatch):
+    """The lock is only worth the floor it re-derives at.
+
+    `propose_parent_links` takes a min_score, so a caller can ask for weaker
+    matches than the engine would volunteer. If the confirm honoured that too,
+    anyone could lower the bar until the engine "proposed" the link they wanted
+    and then confirm it — the check would authorise whatever it was asked to.
+
+    So the confirm always re-derives at the CONFIGURED floor. Found by running
+    the two against bp_testdb with different floors and watching a proposal made
+    one moment be refused the next.
+    """
+    invoices = [{"invoice_id": "INV-1", "supplier_id": "SUP-A", "po_id": None}]
+    pos = [{"po_id": "PO-1", "supplier_id": "SUP-A"}]
+    # Below the shipped floor, above the lowered one the caller asked for.
+    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": lp.PROPOSAL_MIN_SCORE - 5})
+    cur = _CountingCursor(invoices, pos)
+    conn = _CountingConn(cur)
+
+    asked_low = lp.propose_parent_links(conn=conn, min_score=lp.PROPOSAL_MIN_SCORE - 10)
+    assert [(p.doc_pk, p.po_id) for p in asked_low] == [("INV-1", "PO-1")]
+
+    result = lp.confirm_parent_link("invoice", "INV-1", "PO-1", conn=conn)
+
+    assert result["status"] == "refused"
+    assert cur.writes == []
