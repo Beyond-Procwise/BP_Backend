@@ -173,15 +173,29 @@ class Scope(BaseModel):
             return f"{start_day}–{end_day} {end_year}"
         return f"{start_day} {start_year}–{end_day} {end_year}"
 
-    def line(self) -> str:
-        """The one line that opens every analytic answer."""
+    def _parts(self) -> List[str]:
         currency = self.currency if self.currency.strip() else "as billed"
-        parts = [
+        return [
             _MEASURE_LABELS[self.measure],
             f"{self.period_label} ({self.period_phrase()})",
             self.population.label(),
             currency,
         ]
+
+    def quotable_text(self) -> str:
+        """The parts of the scope a sentence may take a figure from.
+
+        Everything on the scope line except the rate stamp. "rates as of 07 Sep
+        2026, 09:53" carries 09 and 53, and neither is a finding — counting
+        them would let "53% of spend" through the one check that exists to stop
+        it. The stamp is provenance; the period, the population and the
+        currency are the answer.
+        """
+        return " · ".join(self._parts() + list(self.filters_applied))
+
+    def line(self) -> str:
+        """The one line that opens every analytic answer."""
+        parts = self._parts()
         if self.rate_note:
             parts.append(self.rate_note)
         parts.extend(self.filters_applied)
@@ -339,7 +353,7 @@ class AnalyticAnswer(BaseModel):
             # "the top 10" is quoting the payload, not inventing a figure.
             if fact.unit:
                 tokens.update(match.group(0) for match in _NUMBER.finditer(fact.unit))
-        tokens.update(match.group(0) for match in _NUMBER.finditer(self.scope.line()))
+        tokens.update(match.group(0) for match in _NUMBER.finditer(self.scope.quotable_text()))
         return tokens
 
     def unquoted_numbers(self, text: str) -> set[str]:

@@ -233,3 +233,15 @@ class TestTheNumbersASentenceMayCarry:
     def test_the_population_count_from_the_scope_line_is_quotable(self):
         answer = self._answer_with_facts()
         assert answer.unquoted_numbers("Across 3,510 suppliers, concentration is high.") == set()
+
+    def test_the_period_the_answer_covers_is_quotable(self):
+        answer = self._answer_with_facts()
+        assert answer.unquoted_numbers("Spend across FY26 YTD to 7 Sep 2026 is concentrated.") == set()
+
+    def test_the_clock_on_the_exchange_rates_licences_no_figure(self):
+        # The scope line ends "rates as of 07 Sep 2026, 09:53 (live)". Scanning
+        # it whole makes 09 and 53 quotable, so "53% of spend" would pass a
+        # check that exists to stop exactly that sentence. The rate stamp is
+        # provenance, not a finding.
+        answer = self._answer_with_facts()
+        assert answer.unquoted_numbers("Spend fell 53% against last year.") == {"53"}
