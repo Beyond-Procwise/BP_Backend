@@ -356,3 +356,60 @@ batch of one quote resolves to exactly the order the old argmax returned.
 resolver, so there is one tie-break rule rather than two. Its only behaviour
 change is on an exact tie, which now resolves to the lexicographically first
 `po_id` instead of whichever order the caller happened to pass the orders in.
+
+
+## Second caller: proposing a parent for documents that reference none
+
+`link_proposals` puts the documents nobody ever scored in front of the scorer.
+An invoice that cites a purchase order is matched against that order and nothing
+else, and one that cites nothing has never been matched against anything at all —
+1,964 sit in bp_testdb's `_trgt` linked to no order, with 194 more citing an order
+that does not exist. They are scored against their supplier's orders and resolved
+as a set under N:1, and the margin is what routing acts on: `suggested` where the
+evidence separates the chosen order from every alternative, `contested` where it
+does not.
+
+Two things this caller establishes about the layer, both measured.
+
+**The floor a caller applies is its own, not the promotion path's.** Blanking the
+reference on 400 invoices that DO name their order and re-scoring each against
+its supplier's whole order set:
+
+| | n | min | median | max |
+|---|---|---|---|---|
+| true order | 320 | 22.1 | 56.9 | 60.6 |
+| wrong order, same supplier | 305 | 0.3 | 1.7 | 21.4 |
+
+The populations do not overlap, and the true order ranked first for all 320 — so
+the layer's job here is not choosing an order, it is deciding whether to speak.
+The promotion path's review floor of 65 sits above *both* populations: reusing it
+returned an empty list on every run, which reads as "nothing to review" rather
+than "the bar is unreachable". A missing reference costs the profile's heaviest
+signal, so a document with no parent is simply scored on a different scale.
+
+**Capacity was the wrong constraint for this problem, and that is worth
+recording, because this looked like its first real user.** An order absorbing
+only the value it authorised is exactly the model, and enforcing it withheld 108
+of 253 known-true parents: an invoice that alone bills more than its order, or a
+set that together outruns it, lost its candidate and got no proposal.
+
+Over-billing is real — 617 of 10,251 same-currency invoice/order pairs in
+bp_testdb bill beyond their order — but it is a *finding*, not an impossibility.
+`three_way_match` already ruled on this shape: it raises `po_over_consumed` and
+never holds the document, because a buyer needs to see the over-billing. An
+unlinked invoice is not over-billing anything; it is invisible. So the value
+question is answered on the proposal (`claim`, `order_remaining`,
+`within_order_value`) and left out of the solve.
+
+What that costs is the ability to prefer an order with room over one without, for
+a document that has both — and no document in the corpus has two candidates above
+the floor, so the benefit was unmeasurable while the cost was measured. The
+capacity model is not wrong; a purchase order and its invoices is just not a
+resource that runs out. It still has no live caller.
+
+(A caveat on the corpus, since these numbers are only worth their provenance:
+bp_testdb is seeded, and the seeding shows — the median single invoice bills
+exactly 1.000x its order's total and the median order carries 2.03 invoices
+summing to 2.00x. It cannot say what real part-billing looks like. What it can
+say is which of the two designs withholds true parents, and that is what decided
+this.)
