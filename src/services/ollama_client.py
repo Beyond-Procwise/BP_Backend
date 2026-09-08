@@ -67,6 +67,61 @@ _semaphore = threading.Semaphore(_MAX_CONCURRENT)
 # Any number at or above the model's layer count means "all of them"; llama.cpp clamps.
 ALL_GPU_LAYERS = int(os.getenv("OLLAMA_NUM_GPU_LAYERS", "999"))
 
+# A pin, not a preference. Ollama refuses outright when the layout will not fit
+# — `500 {"error":"memory layout cannot be allocated with num_gpu = 999"}` — and
+# on 2026-09-08 that took out every model call in the product for as long as the
+# API held 3.8GB of a 23GB card. When the card refuses, the pin comes off and the
+# server picks the split: ten times slower, and an answer.
+#
+# The refusal sticks for a window rather than being rediscovered per call.
+# Ollama keys a loaded model on its load-affecting options, so alternating
+# between pinned and unpinned would load a second copy of a 20GB model and block
+# every caller while it did.
+LAYOUT_RETRY_SECONDS = int(os.getenv("OLLAMA_LAYOUT_RETRY_SECONDS", "600"))
+_LAYOUT_REJECTED_UNTIL = 0.0
+_layout_lock = threading.Lock()
+
+
+def is_layout_rejection(text: Any) -> bool:
+    """True for the server's own words when it cannot place the layers."""
+    body = str(text or "").lower()
+    return "memory layout cannot be allocated" in body
+
+
+def note_layout_rejection(detail: Any = "", now: Optional[float] = None) -> None:
+    """Record that the card will not take the whole model just now."""
+    global _LAYOUT_REJECTED_UNTIL
+    with _layout_lock:
+        was_pinned = _LAYOUT_REJECTED_UNTIL <= (now or time.time())
+        _LAYOUT_REJECTED_UNTIL = (now or time.time()) + LAYOUT_RETRY_SECONDS
+    if was_pinned:
+        logger.warning(
+            "Ollama refused the GPU layout (%s) — falling back to the server's own "
+            "split for %ds. Generation will be several times slower until there is "
+            "room for the whole model.", detail, LAYOUT_RETRY_SECONDS,
+        )
+
+
+def clear_layout_rejection() -> None:
+    """Forget the refusal. For tests, and for a caller that knows memory freed."""
+    global _LAYOUT_REJECTED_UNTIL
+    with _layout_lock:
+        _LAYOUT_REJECTED_UNTIL = 0.0
+
+
+def gpu_options(now: Optional[float] = None) -> Dict[str, Any]:
+    """``{"num_gpu": ...}``, or nothing at all while the card is refusing.
+
+    Every path to this server reads it from here, so one refusal moves all of
+    them at once and only one copy of the model is ever loaded.
+    """
+    with _layout_lock:
+        rejected_until = _LAYOUT_REJECTED_UNTIL
+    if (now or time.time()) < rejected_until:
+        return {}
+    return {"num_gpu": ALL_GPU_LAYERS}
+
+
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 10  # seconds
 RETRY_MAX_DELAY = 30  # seconds
@@ -99,7 +154,7 @@ def ollama_generate(
     timeout: int = DEFAULT_TIMEOUT,
     temperature: float = 0,
     num_predict: int = 8192,
-    num_gpu: int = ALL_GPU_LAYERS,
+    num_gpu: Optional[int] = None,
     retries: int = MAX_RETRIES,
     stop: Optional[list] = None,
     keep_alive: str | int = KEEP_ALIVE,
@@ -126,8 +181,13 @@ def ollama_generate(
     options: Dict[str, Any] = {
         "temperature": temperature,
         "num_predict": num_predict,
-        "num_gpu": num_gpu,
     }
+    # The caller may pin explicitly; otherwise the shared state decides, and a
+    # card that has just refused the layout is not asked again.
+    if num_gpu is not None:
+        options["num_gpu"] = num_gpu
+    else:
+        options.update(gpu_options())
     if stop:
         options["stop"] = stop
     payload: Dict[str, Any] = {
@@ -156,11 +216,11 @@ def ollama_generate(
             )
             return None
 
-        try:
-            response = egress.post(
+        def _send(body: Dict[str, Any]) -> Any:
+            return egress.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 purpose=egress.Purpose.MODEL_INFERENCE,
-                json=payload,
+                json=body,
                 timeout=timeout,
                 # The model daemon is on localhost by design, so the
                 # non-global address check does not apply here.
@@ -170,8 +230,25 @@ def ollama_generate(
                 # exception, not None.
                 raise_transport_errors=True,
             )
+
+        try:
+            response = _send(payload)
             if response is None:
                 return None
+            # The card will not take the whole model. That is not a transient
+            # failure to back off from — it is an answer, and the answer is
+            # "ask for less". Retrying here rather than in the loop is
+            # deliberate: a caller that asked for one attempt is asking for one
+            # real attempt, not one spent discovering how full the card is.
+            if getattr(response, "status_code", 0) == 500 and \
+                    is_layout_rejection(getattr(response, "text", "")) and \
+                    "num_gpu" in payload.get("options", {}):
+                note_layout_rejection(payload["options"].get("num_gpu"))
+                unpinned = {k: v for k, v in payload["options"].items() if k != "num_gpu"}
+                payload = {**payload, "options": unpinned}
+                response = _send(payload)
+                if response is None:
+                    return None
             response.raise_for_status()
             body = response.json()
             text = (body.get("response") or "").strip()
@@ -326,7 +403,7 @@ def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
                 "model": model,
                 "prompt": "",
                 "keep_alive": KEEP_ALIVE,
-                "options": {"num_gpu": ALL_GPU_LAYERS},
+                "options": gpu_options(),
             },
             timeout=timeout,
         )

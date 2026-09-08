@@ -40,6 +40,7 @@ from services.workflow_memory_service import WorkflowMemoryService
 from utils.gpu import configure_gpu
 # One shared GPU-layer count: a different value makes Ollama load a SECOND copy of
 # the model and blocks the caller for minutes while it does.
+from src.services import ollama_client as _ollama_client
 from src.services.ollama_client import ALL_GPU_LAYERS as _OLLAMA_ALL_GPU_LAYERS
 
 try:  # Optional imports used for dataset persistence
@@ -1266,6 +1267,14 @@ class BaseAgent:
             except ResponseError as exc:
                 message = exc.args[0] if exc.args else ""
                 status_code = exc.args[1] if len(exc.args) > 1 else None
+                # The card will not take the whole model. Ask for less and try
+                # the same model again rather than giving the caller an error:
+                # slower is an answer, this is not.
+                if _ollama_client.is_layout_rejection(message) and "num_gpu" in options:
+                    _ollama_client.note_layout_rejection(options.get("num_gpu"))
+                    options = {k: v for k, v in options.items() if k != "num_gpu"}
+                    idx -= 1
+                    continue
                 is_not_found = "not found" in str(message).lower() or status_code == 404
                 if is_quantized and is_not_found:
                     missing_models.add(model_to_use)
@@ -1780,9 +1789,14 @@ class AgentNick:
 
         Hence an explicit count rather than the -1 that reads as "all layers"
         everywhere else.
+
+        The count is read from ollama_client rather than named here, so a card
+        that has just refused the whole model moves every caller at once —
+        including this one. Two callers disagreeing about num_gpu means two
+        copies of a 20GB model loaded at the same time.
         """
         if self.device == "cuda":
-            return {"num_gpu": self._ALL_GPU_LAYERS, "keep_alive": "10m"}
+            return {**_ollama_client.gpu_options(), "keep_alive": "10m"}
         return {"keep_alive": "10m"}
 
     def _build_agent_model_registry(self) -> Dict[str, str]:

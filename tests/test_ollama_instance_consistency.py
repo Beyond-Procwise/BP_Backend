@@ -18,38 +18,55 @@ def test_all_gpu_layers_constant_is_exported():
     assert oc.ALL_GPU_LAYERS >= 99  # any value at/above the layer count means "all"
 
 
-def test_generate_defaults_to_the_shared_layer_count(monkeypatch):
-    seen = {}
+# The transport moved from `requests` to `services.egress` (the audited egress
+# path); these patched oc.requests, which stopped existing, and had been erroring
+# rather than asserting ever since.
 
-    class _Resp:
-        status_code = 200
-        def raise_for_status(self): pass
-        def json(self): return {"response": "ok"}
 
+class _Resp:
+    status_code = 200
+    text = ""
+    def raise_for_status(self): pass
+    def json(self): return {"response": "ok"}
+
+
+def _capture(seen):
     def fake_post(url, json=None, timeout=None, **kw):
         seen["url"] = url
         seen["payload"] = json
         return _Resp()
+    return fake_post
 
-    monkeypatch.setattr(oc.requests, "post", fake_post)
+
+def test_generate_defaults_to_the_shared_layer_count(monkeypatch):
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
     oc.ollama_generate("hello", model="m", retries=1)
     assert seen["payload"]["options"]["num_gpu"] == oc.ALL_GPU_LAYERS
 
 
 def test_preload_pins_the_same_configuration(monkeypatch):
     seen = {}
-
-    class _Resp:
-        status_code = 200
-        def raise_for_status(self): pass
-        def json(self): return {}
-
-    monkeypatch.setattr(oc.requests, "post",
-                        lambda url, json=None, timeout=None, **kw: (seen.update(payload=json), _Resp())[1])
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
     oc.preload_model("m")
     # Preloading WITHOUT the layer count pins a Modelfile-default instance that no
     # later request matches — the request then blocks loading a second runner.
     assert seen["payload"].get("options", {}).get("num_gpu") == oc.ALL_GPU_LAYERS
+
+
+def test_a_card_that_refused_moves_the_preload_too(monkeypatch):
+    # The fallback is only "one instance" if everything falls back together:
+    # a preload still pinning the whole model would load a second copy of it.
+    seen = {}
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.note_layout_rejection("full")
+    try:
+        oc.preload_model("m")
+        assert "num_gpu" not in seen["payload"].get("options", {})
+    finally:
+        oc.clear_layout_rejection()
 
 
 def test_agent_options_use_the_same_constant():
