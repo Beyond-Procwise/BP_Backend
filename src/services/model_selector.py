@@ -28,6 +28,7 @@ from agents.base_agent import AgentStatus
 from agents.rag_agent import RAGAgent
 from services.redis_client import get_redis_client
 from . import corpus_facts
+from .analytics import ask as analytics_ask
 from .json_field_stream import JsonFieldStreamer
 from .response_style import enforce_response_style
 from .rag_service import RAGService
@@ -2532,6 +2533,9 @@ class RAGPipeline:
         doc_type: Optional[str] = None,
         product_type: Optional[str] = None,
         screen_context: Optional[str] = None,
+        display_currency: Optional[str] = None,
+        persona: Optional[str] = None,
+        action_id: Optional[str] = None,
         on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict:
         """Answer a question against the retrieved corpus.
@@ -2585,6 +2589,29 @@ class RAGPipeline:
                     llm_to_use=model_name or llm_to_use,
                     emit=_emit,
                 )
+
+        # An analytic question ("what are the top 10 suppliers by spend?") is not
+        # a search. It has one exact answer, and services/analytics computes it —
+        # the figures, the period, the currency, the share each supplier holds and
+        # what to look at next — rather than handing a model a block of key=value
+        # text and letting it decide. Sent down the path below, that question came
+        # back ranked on raw mixed-currency amounts.
+        #
+        # None means "not one of mine", which covers the flag being off, every
+        # other question, and any failure inside that layer. The retrieval path
+        # then answers exactly as it always has.
+        analytic = analytics_ask.analytic_answer(
+            query,
+            display_currency=display_currency,
+            persona=persona or "default",
+            action_id=action_id,
+        )
+        if analytic is not None:
+            history.append({"query": self._redact_identifiers(query),
+                            "answer": analytic["answer"]})
+            self.history_manager.save_history(user_id, history)
+            _emit("stage", stage="answer_complete")
+            return analytic
 
         _emit("stage", stage="retrieving")
 

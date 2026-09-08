@@ -176,6 +176,27 @@ class TestTheFlaggedRows:
         assert "⚠" not in row
 
 
+class TestAChangeMeasuredFromNothing:
+    def _answer(self):
+        from src.services.analytics.period import Period
+        from src.services.analytics.supplier_spend import Lens
+
+        prior = Period(date(2025, 4, 1), date(2025, 9, 7), "FY25 YTD")
+        return _answer(rows=[_row("Kestrel Supplies 8", "1200000"),
+                             _row("Featherstone Ltd", "50000")],
+                       prior_rows=[_row("Kestrel Supplies 8", "1000000"),
+                                   _row("Featherstone Ltd", "10")],
+                       prior_period=prior, lens=Lens.TREND)
+
+    def test_the_row_is_marked(self):
+        assert "⚠" in _body_row(render_analytic_answer(self._answer()), "Featherstone")
+
+    def test_the_base_it_was_measured_from_is_under_the_table(self):
+        footnotes = render_analytic_answer(self._answer()).split("</table>")[1]
+        assert "Featherstone Ltd" in footnotes
+        assert "£10" in footnotes
+
+
 class TestTheInlineBar:
     def test_the_bar_is_measured_against_the_largest_figure_in_its_column(self):
         html = render_analytic_answer(_answer())

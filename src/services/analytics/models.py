@@ -104,6 +104,9 @@ class FactCode(str, Enum):
     CONCENTRATION_THRESHOLD_BREACHED = "CONCENTRATION_THRESHOLD_BREACHED"
     PERIOD_DELTA = "PERIOD_DELTA"
     CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+    # A percentage change taken off a base too small to mean anything. Live,
+    # one supplier's +345,261% was £26.72 the year before.
+    NEGLIGIBLE_BASE = "NEGLIGIBLE_BASE"
 
 
 class AnomalyCode(str, Enum):

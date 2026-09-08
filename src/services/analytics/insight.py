@@ -68,6 +68,9 @@ Rules:
 - Use only the figures printed in the facts, exactly as they are printed there.
   Any other number, or the same number rounded differently, is a fabrication.
 - State what is true. Do not recommend, advise or suggest anything.
+- Say nothing about suppliers that are not in the table. The figures were
+  measured for the ones listed, so "the largest of all suppliers" is a claim
+  nobody can check.
 - Do not hedge: no "may", "might", "could", "appears to", "likely".
 - No preamble, no restating the question, no offer to help further.
 """
@@ -94,6 +97,16 @@ _JUDGEMENTS = re.compile(
 _RECOMMENDATIONS = re.compile(
     r"\b(should|shouldn't|must|ought|recommend\w*|advise\w*|suggest|consider|"
     r"needs?\s+to|worth\s+\w+ing|we\s+can\s+help)\b", re.I)
+
+# A claim reaching past the table. Live, the writer produced "…the largest
+# period-over-period growth among all suppliers" on an answer that showed five
+# of 354 — the figure was real and the superlative was not, because growth was
+# only measured for the five. When every supplier is listed the same phrase is
+# checkable from the table, so the rule is about what is on screen, not about
+# the words.
+_BEYOND_THE_TABLE = re.compile(
+    r"\b(among|of|across|out of)\s+(all|every)\s+\w+|\b(than|as)\s+any\s+other\b|"
+    r"\bany\s+other\s+\w+|\bevery\s+other\s+\w+|\bin\s+the\s+(whole|entire)\b", re.I)
 
 MAX_SENTENCES = 2
 
@@ -144,6 +157,14 @@ def _answer_vocabulary(answer: AnalyticAnswer) -> str:
     return " ".join(parts).lower()
 
 
+def _reaches_past_the_table(answer: AnalyticAnswer, text: str) -> Optional[str]:
+    """A comparison against suppliers the answer did not measure, if any."""
+    if len(answer.table.rows) >= answer.scope.population.count:
+        return None
+    match = _BEYOND_THE_TABLE.search(text)
+    return match.group(0) if match else None
+
+
 def _unsupported_judgement(answer: AnalyticAnswer, text: str) -> Optional[str]:
     """The first judgement word the answer does not itself use, if any."""
     vocabulary = _answer_vocabulary(answer)
@@ -167,6 +188,9 @@ def validate_insight(answer: AnalyticAnswer, text: str) -> Optional[Rejection]:
     recommendation = _RECOMMENDATIONS.search(candidate)
     if recommendation:
         return Rejection("recommendation", recommendation.group(0))
+    overreach = _reaches_past_the_table(answer, candidate)
+    if overreach:
+        return Rejection("overreaching_claim", overreach)
     judgement = _unsupported_judgement(answer, candidate)
     if judgement:
         return Rejection("unsupported_claim", judgement)
@@ -199,6 +223,16 @@ def _parse(raw: Any) -> tuple[str, Optional[Rejection]]:
 WRITER_TIMEOUT_SECONDS = 45
 
 
+def _writer_timeout() -> int:
+    """The bound, settable — a cold model takes minutes to load on this box."""
+    try:
+        from config.settings import settings
+
+        return int(getattr(settings, "analytic_insight_timeout_seconds", WRITER_TIMEOUT_SECONDS))
+    except Exception:
+        return WRITER_TIMEOUT_SECONDS
+
+
 def _ollama_writer(prompt: str) -> Optional[str]:
     """The platform model, constrained to the schema. think=False: a reasoning
     model otherwise answers in a field this call does not read."""
@@ -206,7 +240,7 @@ def _ollama_writer(prompt: str) -> Optional[str]:
 
     return ollama_generate(prompt, format=INSIGHT_SCHEMA, temperature=0,
                            num_predict=256, think=False, retries=1,
-                           timeout=WRITER_TIMEOUT_SECONDS)
+                           timeout=_writer_timeout())
 
 
 def load_governed_instructions(conn: Any) -> Optional[str]:

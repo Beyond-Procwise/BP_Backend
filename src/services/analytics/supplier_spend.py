@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src.services.analytics.currency import DisplayCurrency
@@ -55,7 +56,28 @@ from src.services.analytics.models import (
 )
 from src.services.analytics.period import Period
 
-QUERY_REF = "supplier_spend_ranking/v1"
+class Lens(str, Enum):
+    """Which question this answer answers, over one measurement.
+
+    The three are not three builders: they are the same converted spend, seen
+    the way each question needs it. Splitting them would be three places for
+    the arithmetic to drift apart.
+    """
+
+    RANKING = "RANKING"
+    CONCENTRATION = "CONCENTRATION"
+    TREND = "TREND"
+
+
+# The rung each lens stands on, read back by the next-step engine so the ladder
+# advances instead of offering the reader the screen they are already on.
+QUERY_REFS = {
+    Lens.RANKING: "supplier_spend_ranking/v1",
+    Lens.CONCENTRATION: "supplier_concentration/v1",
+    Lens.TREND: "supplier_spend_trend/v1",
+}
+
+QUERY_REF = QUERY_REFS[Lens.RANKING]
 SOURCE_TABLE = "proc.bp_invoice_trgt"
 DEFAULT_TOP_N = 10
 DEFAULT_CONCENTRATION_THRESHOLD_PCT = Decimal("20")
@@ -63,6 +85,17 @@ DEFAULT_CONCENTRATION_THRESHOLD_PCT = Decimal("20")
 # Below this, the leader is level with the next supplier rather than ahead of
 # it, and the headline says nothing about the gap.
 MEANINGFUL_LEAD = Decimal("1.2")
+
+# A supplier with nothing to compare against sorts below every measured move
+# rather than being treated as a fall.
+_UNMOVED = Decimal("-1e12")
+
+# A change is only a finding if the base it was measured from was real. Live,
+# "Windrose Services 14 moved most, +345,261.1%" came off £26.72 of spend the
+# year before — arithmetically true, and no use to anyone. The floor is a share
+# of the leader's spend rather than a fixed amount, so it travels between
+# currencies and between a corpus of thousands and one of ten.
+MATERIAL_BASE_SHARE = Decimal("0.01")
 
 
 @dataclass(frozen=True)
@@ -138,8 +171,13 @@ def build_supplier_spend_ranking(
     concentration_threshold_pct: Decimal = DEFAULT_CONCENTRATION_THRESHOLD_PCT,
     measure: Measure = Measure.INVOICED,
     filters_applied: Optional[List[str]] = None,
+    lens: Lens = Lens.RANKING,
 ) -> AnalyticAnswer:
-    """The answer to "top N suppliers by spend", whole and self-describing."""
+    """The answer to "top N suppliers by spend", whole and self-describing.
+
+    ``lens`` chooses which of the three questions this answer answers; the
+    measurement underneath is identical in all three.
+    """
 
     suppliers = _group(rows)
     anomalies: List[Anomaly] = []
@@ -202,6 +240,10 @@ def build_supplier_spend_ranking(
 
     prior_by_id = {s.supplier_id: s for s in _group(prior_rows)}
     deltas: Dict[str, Decimal] = {}
+    prior_converted: Dict[str, Decimal] = {}
+    negligible: set = set()
+    leader_spend = visible[0].converted if visible else None
+    base_floor = (leader_spend or Decimal(0)) * MATERIAL_BASE_SHARE
     if prior_period is not None:
         for supplier in visible:
             previous = prior_by_id.get(supplier.supplier_id)
@@ -210,13 +252,36 @@ def build_supplier_spend_ranking(
             was = display.total(
                 [(amount, code) for code, amount in previous.by_currency.items()]
             ).value
+            if was is not None:
+                prior_converted[supplier.supplier_id] = was
             change = _pct(supplier.converted - was, was) if was else None
             if change is None:
                 continue
             deltas[supplier.supplier_id] = change
+            if was < base_floor:
+                negligible.add(supplier.supplier_id)
+                facts.append(Fact(code=FactCode.NEGLIGIBLE_BASE, entity=supplier.name,
+                                  entity_ref=supplier.supplier_id, value=was,
+                                  type=ColumnType.MONEY, currency=currency))
+                continue
             facts.append(Fact(code=FactCode.PERIOD_DELTA, entity=supplier.name,
                               entity_ref=supplier.supplier_id, value=change,
                               type=ColumnType.DELTA))
+
+    # How the book as a whole moved, which is the figure a mover is read
+    # against: +200% on one supplier means something different when everything
+    # else moved with it.
+    book_delta: Optional[Decimal] = None
+    if prior_period is not None and prior_rows:
+        prior_total = display.total(
+            [(amount, code) for supplier in _group(prior_rows)
+             for code, amount in supplier.by_currency.items()]
+        ).value
+        if prior_total:
+            book_delta = _pct((population_total or Decimal(0)) - prior_total, prior_total)
+            if book_delta is not None:
+                facts.append(Fact(code=FactCode.PERIOD_DELTA, value=book_delta,
+                                  type=ColumnType.DELTA, unit=prior_period.label))
 
     for supplier in visible:
         if len(supplier.currencies) > 1:
@@ -250,27 +315,52 @@ def build_supplier_spend_ranking(
         ))
 
     # -- table -------------------------------------------------------------
+    scope_filters = list(filters_applied or [])
+    listed = list(visible)
+    if lens is Lens.TREND:
+        # The movers are chosen from the top suppliers by spend, and the answer
+        # says so. Ranked across the whole book, the table fills with suppliers
+        # that went from £40 to £400 — true, and no use to anybody.
+        listed.sort(key=lambda s: (s.supplier_id in negligible,
+                                   -(deltas.get(s.supplier_id, _UNMOVED)), s.name))
+        if len(ranked) > len(listed):
+            scope_filters.append(f"top {len(listed)} by spend")
+
     columns = [
         Column(key="rank", label="#", type=ColumnType.INT),
         Column(key="supplier", label="Supplier", type=ColumnType.TEXT),
         Column(key="spend", label=f"{_MEASURE_NOUN[measure]} spend", type=ColumnType.MONEY,
                currency=currency, is_primary=True),
-        Column(key="share", label="Share", type=ColumnType.PCT),
     ]
+    if lens is Lens.TREND:
+        columns.append(Column(key="prior", label=f"{prior_period.label if prior_period else 'Prior'}",
+                              type=ColumnType.MONEY, currency=currency))
+    else:
+        columns.append(Column(key="share", label="Share", type=ColumnType.PCT))
+    if lens is Lens.CONCENTRATION:
+        columns.append(Column(key="cumulative", label="Running share", type=ColumnType.PCT))
     if deltas:
         columns.append(Column(key="delta", label=f"vs {prior_period.label}",
                               type=ColumnType.DELTA))
 
     table_rows: List[Dict[str, object]] = []
-    for index, supplier in enumerate(visible, start=1):
+    running = Decimal(0)
+    for index, supplier in enumerate(listed, start=1):
+        share = _pct(supplier.converted, population_total)
         row: Dict[str, object] = {
             "rank": index,
             "supplier": supplier.name,
             "entity_ref": supplier.supplier_id,
             "spend": supplier.converted,
-            "share": _pct(supplier.converted, population_total),
-            "_flags": ["CURRENCY_MISMATCH"] if len(supplier.currencies) > 1 else [],
+            "share": share,
+            "_flags": (["CURRENCY_MISMATCH"] if len(supplier.currencies) > 1 else [])
+                      + (["NEGLIGIBLE_BASE"] if supplier.supplier_id in negligible else []),
         }
+        if lens is Lens.CONCENTRATION and share is not None:
+            running += share
+            row["cumulative"] = running
+        if lens is Lens.TREND and supplier.supplier_id in prior_converted:
+            row["prior"] = prior_converted[supplier.supplier_id]
         if supplier.supplier_id in deltas:
             row["delta"] = deltas[supplier.supplier_id]
         table_rows.append(row)
@@ -279,6 +369,8 @@ def build_supplier_spend_ranking(
     if population_total is not None:
         totals = {"supplier": f"All {population_count:,} suppliers",
                   "spend": population_total, "share": Decimal(100)}
+        if book_delta is not None:
+            totals["delta"] = book_delta
 
     manual = display.is_manual(display.target)
     scope = Scope(
@@ -290,7 +382,7 @@ def build_supplier_spend_ranking(
         currency=currency,
         currency_basis=CurrencyBasis.MANUAL if manual else CurrencyBasis.CONVERTED,
         rate_note=display.rate_note(),
-        filters_applied=filters_applied or [],
+        filters_applied=scope_filters,
     )
 
     answer = AnalyticAnswer(
@@ -301,9 +393,9 @@ def build_supplier_spend_ranking(
         facts=facts,
         anomalies=anomalies,
         provenance=Provenance(source_counts={SOURCE_TABLE: invoice_count},
-                              refreshed_at=refreshed_at, query_ref=QUERY_REF),
+                              refreshed_at=refreshed_at, query_ref=QUERY_REFS[lens]),
     )
-    return _with_templated_headline(answer, manual=manual)
+    return _with_templated_headline(answer, manual=manual, lens=lens)
 
 
 _MEASURE_NOUN = {
@@ -381,20 +473,36 @@ def _as_billed_answer(
     )
 
 
-def _with_templated_headline(answer: AnalyticAnswer, *, manual: bool) -> AnalyticAnswer:
+def _with_templated_headline(answer: AnalyticAnswer, *, manual: bool,
+                             lens: "Lens" = None) -> AnalyticAnswer:
     """The headline the answer ships with until a model earns the right to write it.
 
     Built from the facts, so it passes the same grounding check the insight
     writer's sentence will face. A fallback held to a weaker standard than the
     thing it replaces is not a fallback.
+
+    One per lens, because a headline that describes the wrong table is worse
+    than none: a concentration answer led with its largest supplier says
+    nothing about concentration, and a movement answer led the same way names
+    the biggest supplier rather than the one that moved.
     """
     facts = {fact.code: fact for fact in answer.facts}
     rows = answer.table.rows
+    confidence = Confidence.UNASSESSED if manual else Confidence.ASSERTED
 
     if not rows:
         text = f"No {answer.scope.measure.value.lower()} spend in {answer.scope.period_label}."
         return answer.model_copy(update={
             "headline": Headline(text=text, confidence=Confidence.UNASSESSED)})
+
+    if lens is Lens.CONCENTRATION:
+        return answer.model_copy(update={
+            "headline": Headline(text=_concentration_headline(answer, facts),
+                                 confidence=confidence)})
+    if lens is Lens.TREND:
+        return answer.model_copy(update={
+            "headline": Headline(text=_trend_headline(answer, facts),
+                                 confidence=confidence)})
 
     leader = rows[0]["supplier"]
     share = facts.get(FactCode.TOP_1_SHARE)
@@ -416,5 +524,49 @@ def _with_templated_headline(answer: AnalyticAnswer, *, manual: bool) -> Analyti
         text += (f" The top {breach.unit} hold {breach.display} of it between them, "
                  "above the concentration threshold.")
 
-    confidence = Confidence.UNASSESSED if manual else Confidence.ASSERTED
     return answer.model_copy(update={"headline": Headline(text=text, confidence=confidence)})
+
+
+def _concentration_headline(answer: AnalyticAnswer, facts: Dict[FactCode, Fact]) -> str:
+    """Concentration is a property of the group, so the group leads the sentence."""
+    rows = answer.table.rows
+    group = facts.get(FactCode.TOP_N_SHARE_OF_TOTAL)
+    breach = facts.get(FactCode.CONCENTRATION_THRESHOLD_BREACHED)
+    top_1 = facts.get(FactCode.TOP_1_SHARE)
+    measure = answer.scope.measure.value.lower()
+
+    if group is None:
+        return f"The top {len(rows)} suppliers by {measure} spend."
+    text = (f"The top {group.unit or len(rows)} suppliers hold {group.display} of "
+            f"{measure} spend")
+    text += ", above the concentration threshold." if breach is not None else "."
+    if top_1 is not None and rows:
+        text += f" {rows[0]['supplier']} alone holds {top_1.display}."
+    return text
+
+
+def _trend_headline(answer: AnalyticAnswer, facts: Dict[FactCode, Fact]) -> str:
+    """The mover, read against how the book as a whole moved."""
+    rows = answer.table.rows
+    measure = answer.scope.measure.value.lower()
+    book = next((f for f in answer.facts
+                 if f.code is FactCode.PERIOD_DELTA and f.entity is None), None)
+    moved = [row for row in rows
+             if row.get("delta") is not None and "NEGLIGIBLE_BASE" not in (row.get("_flags") or [])]
+    if not moved:
+        return (f"No comparable {measure} spend in {answer.scope.filters_applied[0]}"
+                if answer.scope.filters_applied
+                else f"No comparable {measure} spend in the year before, so no change is shown.")
+
+    top = moved[0]
+    delta = next((f for f in answer.facts
+                  if f.code is FactCode.PERIOD_DELTA
+                  and f.entity_ref == top.get("entity_ref")), None)
+    text = f"{top['supplier']} moved most"
+    if delta is not None:
+        text += f", {delta.display}"
+    text += "."
+    if book is not None:
+        text += (f" Across all {answer.scope.population.label()}, {measure} spend "
+                 f"moved {book.display}.")
+    return text

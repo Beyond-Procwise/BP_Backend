@@ -148,6 +148,22 @@ class TestTheGate:
             text="Two suppliers carry an open risk finding.")]})
         assert validate_insight(answer, "Two suppliers carry an open risk finding.") is None
 
+    def test_a_claim_about_suppliers_not_in_the_table_is_refused(self):
+        # Live, from the top-5 answer: "Copperleaf Works 3 drove a 362.0%
+        # increase in invoiced spend, the largest period-over-period growth
+        # among all suppliers." The figure was real and the superlative was
+        # not: growth was measured for the five suppliers shown, out of 354.
+        answer = _answer(population_count=354)
+        text = ("Kestrel Supplies 8 holds 57.1% of invoiced spend, "
+                "the largest share among all suppliers.")
+        assert validate_insight(answer, text).reason == "overreaching_claim"
+
+    def test_the_same_claim_stands_when_every_supplier_is_in_the_table(self):
+        # Two suppliers, both listed: "any other supplier" is checkable from
+        # the table itself.
+        text = "Kestrel Supplies 8 holds 57.1%, more than any other supplier."
+        assert validate_insight(_answer(), text) is None
+
     def test_an_empty_sentence_is_refused(self):
         assert validate_insight(_answer(), "   ").reason == "empty"
 

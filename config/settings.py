@@ -298,6 +298,25 @@ class Settings(BaseSettings):
         default=60, env="EMAIL_INBOUND_INITIAL_WAIT_SECONDS"
     )
 
+    # The deterministic analytic answer ("top 10 suppliers by spend"): off until
+    # a tenant is switched over, so the ask path is unchanged by default. The
+    # threshold and the fiscal-year start are business facts, not laws, which is
+    # why they are settings rather than constants in the detector.
+    analytic_answer_v2_enabled: bool = Field(
+        default=False, env="ANALYTIC_ANSWER_V2_ENABLED"
+    )
+    analytic_concentration_threshold_pct: float = Field(
+        default=30.0, env="ANALYTIC_CONCENTRATION_THRESHOLD_PCT"
+    )
+    analytic_fiscal_year_start_month: int = Field(
+        default=4, env="ANALYTIC_FISCAL_YEAR_START_MONTH"
+    )
+    # One attempt at the headline, bounded: the templated headline is already
+    # written behind it, so a slow model costs a sentence, not the answer.
+    analytic_insight_timeout_seconds: int = Field(
+        default=45, env="ANALYTIC_INSIGHT_TIMEOUT_SECONDS"
+    )
+
     negotiation_multi_round_enabled: bool = Field(
         default=True, env="NEGOTIATION_MULTI_ROUND_ENABLED"
     )

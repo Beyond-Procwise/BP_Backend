@@ -199,10 +199,18 @@ def _currency_mismatch_note(fact: Fact) -> str:
             f"({fact.unit}); the figure shown is the converted total.")
 
 
+def _negligible_base_note(fact: Fact) -> str:
+    return (f"{FLAG_MARK} {fact.entity}'s change is measured from {fact.display} in the "
+            f"period before, so the percentage is arithmetic rather than a finding.")
+
+
 # A flag is only worth marking on a row if the reader can find out what it
 # means. Anything without a note here is not marked at all, rather than leaving
 # a warning glyph on screen with nothing under the table to explain it.
-_FLAG_NOTES = {FactCode.CURRENCY_MISMATCH: _currency_mismatch_note}
+_FLAG_NOTES = {
+    FactCode.CURRENCY_MISMATCH: _currency_mismatch_note,
+    FactCode.NEGLIGIBLE_BASE: _negligible_base_note,
+}
 
 
 def _footnoted_flags(row: Dict[str, Any], answer: AnalyticAnswer) -> List[Fact]:

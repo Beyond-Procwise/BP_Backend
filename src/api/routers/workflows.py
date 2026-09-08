@@ -66,8 +66,30 @@ class AskRequest(BaseModel):
         "user is currently viewing). Folded into the same redacted ad-hoc context slot as "
         "uploaded-file notes.",
     )
+    display_currency: Optional[str] = Field(
+        default=None,
+        max_length=12,
+        description="The currency the reader has selected on screen (the control on "
+        "Procurement Home's top bar), or 'native' for as-billed. An analytic answer is "
+        "stated in it, converted from the same rate batch GET /fx/rates serves the client, "
+        "so a figure in the answer and the same figure on the tile beside it agree.",
+    )
+    persona: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Who is reading — cpo, category manager, finance. Orders the next "
+        "steps offered under an analytic answer; ignored elsewhere.",
+    )
+    action_id: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="A next step the reader clicked, dispatched by id (e.g. "
+        "analytic.supplier_concentration). The chip's label is not a question and must "
+        "not be re-parsed as one; the id names the answer that was offered.",
+    )
 
-    @field_validator("doc_type", "product_type", "file_path", "session_id", "context", mode="before")
+    @field_validator("doc_type", "product_type", "file_path", "session_id", "context",
+                     "display_currency", "persona", "action_id", mode="before")
     @classmethod
     def _empty_to_none(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -877,6 +899,9 @@ async def ask_question(
         doc_type=req.doc_type,
         product_type=req.product_type,
         screen_context=req.context,
+        display_currency=req.display_currency,
+        persona=req.persona,
+        action_id=req.action_id,
     )
     return result
 
@@ -928,6 +953,9 @@ async def ask_question_stream(
                 doc_type=req.doc_type,
                 product_type=req.product_type,
                 screen_context=req.context,
+                display_currency=req.display_currency,
+                persona=req.persona,
+                action_id=req.action_id,
                 on_event=_on_event,
             )
             events.put(
@@ -936,6 +964,9 @@ async def ask_question_stream(
                     "answer": result.get("answer") or "",
                     "follow_ups": result.get("follow_ups") or [],
                     "retrieved_documents": result.get("retrieved_documents") or [],
+                    # An analytic answer's steps: an action and the ids it
+                    # applies to, so a chip dispatches rather than re-asks.
+                    "next_steps": result.get("next_steps") or [],
                 }
             )
         except Exception as exc:  # noqa: BLE001

@@ -97,7 +97,14 @@ ALL_DATA: FrozenSet[str] = frozenset(
 )
 
 # Which rung a given answer already stands on, so the ladder knows where it is.
-_QUERY_REF_RUNG: Dict[str, str] = {"supplier_spend_ranking/v1": "scope"}
+# A chip leads to an answer that stands one rung higher, and the next chip has
+# to start from there — otherwise the reader is offered the screen they are
+# already looking at.
+_QUERY_REF_RUNG: Dict[str, str] = {
+    "supplier_spend_ranking/v1": "scope",
+    "supplier_concentration/v1": "concentration",
+    "supplier_spend_trend/v1": "period_trend",
+}
 
 
 @dataclass(frozen=True)
