@@ -129,6 +129,11 @@ class TestWhatComesBack:
         assert payload["analytic_answer"]["scope"]["currency"] == "GBP"
         assert payload["analytic_answer"]["table"]["rows"][0]["supplier"] == "Kestrel Supplies 8"
 
+    def test_no_part_of_the_payload_names_an_internal_table(self):
+        # The middleware scrubs prose on the way out; a dictionary KEY is not
+        # prose, so a table name used as one travels to the browser untouched.
+        assert "bp_invoice_trgt" not in json.dumps(_answer(), default=str)
+
     def test_the_shape_is_the_one_the_ask_endpoint_already_returns(self):
         assert set(_answer()) >= {"answer", "follow_ups", "retrieved_documents"}
 

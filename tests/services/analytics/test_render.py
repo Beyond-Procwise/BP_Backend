@@ -229,10 +229,25 @@ class TestTheFootnotesAndProvenance:
 
     def test_the_reader_is_told_what_was_read_and_when(self):
         html = render_analytic_answer(_answer())
-        assert "proc.bp_invoice_trgt" in html
-        assert "100" in html
-        assert "supplier_spend_ranking/v1" in html
+        assert "100 invoices" in html
         assert "7 Sep 2026" in html
+
+    def test_what_was_read_is_named_as_the_product_names_it(self):
+        # Live, the first answer this layer ever served through the API came
+        # back as "I couldn't retrieve that. I've raised it with the team." —
+        # the output-safety gate replacing the whole thing, because the
+        # provenance line named proc.bp_invoice_trgt. It was right to: a table
+        # name is a description of the backend, and this line is read by a
+        # buyer. The calculation's own reference stays in the payload, where
+        # "how was this calculated" can reach it, and out of the prose.
+        html = render_analytic_answer(_answer())
+        assert "bp_invoice_trgt" not in html
+        assert "supplier_spend_ranking/v1" not in html
+
+    def test_the_whole_answer_passes_the_gate_that_stands_between_it_and_a_user(self):
+        from src.services import output_safety
+
+        assert output_safety.inspect(render_analytic_answer(_answer())) == []
 
     def test_a_refreshed_stamp_we_cannot_read_is_shown_as_it_came(self):
         html = render_analytic_answer(_answer(refreshed_at="just now"))

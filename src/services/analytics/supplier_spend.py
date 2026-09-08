@@ -78,7 +78,12 @@ QUERY_REFS = {
 }
 
 QUERY_REF = QUERY_REFS[Lens.RANKING]
-SOURCE_TABLE = "proc.bp_invoice_trgt"
+# What the answer was read from, named as the product names it. The table it
+# actually came from is a description of the backend: the output-safety gate
+# replaced an entire live answer with "I couldn't retrieve that" the first time
+# this line carried one, and it was right to. The internal reference lives in
+# repository.py's SQL and in the logs, where an operator reads it.
+SOURCE_LABEL = "invoices"
 DEFAULT_TOP_N = 10
 DEFAULT_CONCENTRATION_THRESHOLD_PCT = Decimal("20")
 
@@ -407,7 +412,7 @@ def build_supplier_spend_ranking(
         table=Table(columns=columns, rows=table_rows, totals=totals),
         facts=facts,
         anomalies=anomalies,
-        provenance=Provenance(source_counts={SOURCE_TABLE: invoice_count},
+        provenance=Provenance(source_counts={SOURCE_LABEL: invoice_count},
                               refreshed_at=refreshed_at, query_ref=QUERY_REFS[lens]),
     )
     return _with_templated_headline(answer, manual=manual, lens=lens)
@@ -483,7 +488,7 @@ def _as_billed_answer(
         table=Table(columns=columns, rows=rows, totals=None),
         facts=[],
         anomalies=[anomaly],
-        provenance=Provenance(source_counts={SOURCE_TABLE: invoice_count},
+        provenance=Provenance(source_counts={SOURCE_LABEL: invoice_count},
                               refreshed_at=refreshed_at, query_ref=QUERY_REF),
     )
 

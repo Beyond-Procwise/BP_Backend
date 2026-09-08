@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -137,11 +138,41 @@ SEMAPHORE_TIMEOUT = 600  # wait up to 10 min for a slot — Ollama queues intern
 # Ollama accepts keep_alive as an int (seconds; -1 = never unload) OR a duration
 # string ("24h"), but NOT a numeric string ("-1" → 400 Bad Request). Coerce a
 # numeric env value to int so both "-1" and "24h" are valid on the wire.
-def _coerce_keep_alive(v: str | int) -> str | int:
+DEFAULT_KEEP_ALIVE = -1
+
+# Ollama's own duration spelling. Anything else is not a keep_alive.
+_DURATION = re.compile(r"^\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h)$")
+
+
+def _coerce_keep_alive(v: str | int | None) -> str | int:
+    """The value Ollama will accept, whatever the environment handed us.
+
+    .env carries `OLLAMA_KEEP_ALIVE="-1"   # sent per-request; ...`. python-dotenv
+    strips that trailing comment; systemd's EnvironmentFile does not, so the
+    service ran with
+
+        OLLAMA_KEEP_ALIVE=-1# sent per-request; overrides the server's 5m
+
+    which went onto the wire verbatim and came back 400 Bad Request — every
+    single ollama_generate call the API made, instantly, with nothing in the log
+    but the status. The comment is off its own line in .env now; this is the
+    second lock, because a value this function cannot read must never become a
+    request the server refuses.
+    """
+    raw = "" if v is None else str(v).split("#", 1)[0].strip()
     try:
-        return int(v)
+        return int(raw)
     except (TypeError, ValueError):
-        return v
+        pass
+    if _DURATION.match(raw):
+        return raw
+    if raw:
+        logger.warning(
+            "OLLAMA_KEEP_ALIVE=%r is not a number or a duration; using %s instead. "
+            "Ollama rejects the whole request when this value is malformed.",
+            raw, DEFAULT_KEEP_ALIVE,
+        )
+    return DEFAULT_KEEP_ALIVE
 
 
 KEEP_ALIVE = _coerce_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", "-1"))
@@ -231,6 +262,7 @@ def ollama_generate(
                 raise_transport_errors=True,
             )
 
+        response = None
         try:
             response = _send(payload)
             if response is None:
@@ -282,7 +314,13 @@ def ollama_generate(
             if attempt < retries:
                 time.sleep(delay)
         except Exception as exc:
-            logger.exception("Ollama request failed (attempt %d/%d): %s", attempt, retries, exc)
+            # The status alone is not a diagnosis. A 400 from this server always
+            # carries a reason ("does not support thinking", "invalid options"),
+            # and without it the failure reads as "the model is broken" when it
+            # is the request that is wrong.
+            detail = (getattr(response, "text", "") or "")[:300]
+            logger.exception("Ollama request failed (attempt %d/%d): %s %s",
+                             attempt, retries, exc, detail)
             if attempt < retries:
                 time.sleep(RETRY_BASE_DELAY)
         finally:

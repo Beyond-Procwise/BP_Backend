@@ -272,10 +272,18 @@ def _stamp(raw: str) -> str:
 
 
 def _provenance(answer: AnalyticAnswer) -> str:
+    """What was read and when, in the words a buyer uses.
+
+    Not the table it came from, and not the calculation's own reference: this
+    line is read by a customer, and both of those are descriptions of the
+    backend. The output-safety gate replaced a whole live answer with "I
+    couldn't retrieve that" the first time this line named a table — the right
+    call, and the reason the counts are labelled rather than keyed by source.
+    ``query_ref`` still travels in the payload for "how was this calculated".
+    """
     provenance = answer.provenance
     sources = " · ".join(
-        f"{name} ({format_int(count)} rows)" for name, count in provenance.source_counts.items()
+        f"{format_int(count)} {label}" for label, count in provenance.source_counts.items()
     )
-    parts = [part for part in (sources, f"refreshed {_stamp(provenance.refreshed_at)}",
-                               provenance.query_ref) if part]
+    parts = [part for part in (sources, f"refreshed {_stamp(provenance.refreshed_at)}") if part]
     return f'<p class="agent-answer__provenance">{escape(" · ".join(parts))}</p>'

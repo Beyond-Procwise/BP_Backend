@@ -116,9 +116,13 @@ class TestScope:
     def test_scope_carries_the_rate_note_so_a_converted_figure_is_never_bare(self):
         assert "rates as of" in _build().scope.line()
 
-    def test_provenance_names_the_table_and_how_many_rows_it_read(self):
+    def test_provenance_says_what_was_read_in_the_words_the_product_uses(self):
+        # Not the table it came from: that name travels to a browser as a
+        # dictionary key, and the answer beside it was replaced wholesale by
+        # the output-safety gate the first time the rendered line carried one.
         provenance = _build().provenance
-        assert provenance.source_counts["proc.bp_invoice_trgt"] == 260
+        assert provenance.source_counts["invoices"] == 260
+        assert "bp_invoice_trgt" not in str(provenance.source_counts)
         assert provenance.query_ref
 
 

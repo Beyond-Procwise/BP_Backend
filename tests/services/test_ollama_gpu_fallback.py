@@ -126,6 +126,58 @@ class TestTheCallThatWasRefused:
         assert "num_gpu" in seen[0]["options"]
 
 
+class TestTheValueSystemdActuallyHandsUs:
+    """`keep_alive` arrives mangled from the unit file, and it 400s every call.
+
+    .env carries `OLLAMA_KEEP_ALIVE="-1"          # sent per-request; ...`.
+    python-dotenv strips that trailing comment, so every script and every test
+    sees a clean "-1" — and systemd's EnvironmentFile does not, so the service
+    was started with
+
+        OLLAMA_KEEP_ALIVE=-1# sent per-request; overrides the server's 5m
+
+    which went onto the wire verbatim and came back `400 Bad Request` from
+    Ollama. Every ollama_generate call the API made failed instantly, and the
+    log said only "400 Client Error" with no reason. The comment is off its own
+    line now; this is the belt to that pair of braces, because the next value
+    with a comment after it must not take the model layer down again.
+    """
+
+    def test_a_plain_number_is_a_number(self):
+        assert ollama_client._coerce_keep_alive("-1") == -1
+
+    def test_a_duration_is_left_as_it_is(self):
+        assert ollama_client._coerce_keep_alive("24h") == "24h"
+
+    def test_a_comment_that_came_along_for_the_ride_is_dropped(self):
+        assert ollama_client._coerce_keep_alive(
+            "-1# sent per-request; overrides the server's 5m") == -1
+
+    def test_a_value_this_server_would_reject_is_not_sent_at_all(self):
+        # Sending it costs every call in the product; the default costs a model
+        # eviction at worst.
+        assert ollama_client._coerce_keep_alive("what even is this") == \
+            ollama_client.DEFAULT_KEEP_ALIVE
+
+    def test_no_stray_comment_reaches_the_wire(self, monkeypatch):
+        seen = []
+
+        def _post(url, **kwargs):
+            seen.append(kwargs.get("json"))
+            class _R:
+                status_code = 200
+                text = ""
+                def raise_for_status(self): pass
+                def json(self): return {"response": "ok"}
+            return _R()
+
+        monkeypatch.setattr(egress, "post", _post)
+        monkeypatch.setattr(ollama_client, "KEEP_ALIVE",
+                            ollama_client._coerce_keep_alive("-1# a comment"))
+        ollama_client.ollama_generate("hi", retries=1)
+        assert seen[0]["keep_alive"] == -1
+
+
 class TestEveryCallerAgrees:
     """One value at a time, across every path that talks to this server.
 
