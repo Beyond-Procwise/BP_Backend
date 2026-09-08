@@ -20,6 +20,7 @@ import json
 import pytest
 
 from src.services.analytics.currency import DisplayCurrency
+from src.services.analytics.models import Anomaly, AnomalyCode, Severity
 from src.services.analytics.insight import (
     INSIGHT_SCHEMA,
     Rejection,
@@ -120,6 +121,32 @@ class TestTheGate:
     def test_a_recommendation_is_refused(self):
         text = "Kestrel Supplies 8 holds 57.1% of spend; you should renegotiate."
         assert validate_insight(_answer(), text).reason == "recommendation"
+
+    def test_a_judgement_the_facts_do_not_carry_is_refused(self):
+        # Live, the model wrote "...breaching the concentration threshold and
+        # indicating elevated supply risk." Nothing measured says the risk is
+        # elevated, or that there is risk at all. A claim nobody can check is
+        # the same defect as a figure nobody can check.
+        text = ("The top 2 suppliers hold 100.0% of invoiced spend, "
+                "indicating elevated supply risk.")
+        assert validate_insight(_answer(), text).reason == "unsupported_claim"
+
+    def test_an_adjective_standing_in_for_a_measurement_is_refused(self):
+        assert validate_insight(
+            _answer(), "Kestrel Supplies 8 holds a significant share of spend."
+        ).reason == "unsupported_claim"
+
+    def test_a_word_the_answer_itself_uses_is_not_a_judgement(self):
+        # The caveats under the table are written by this system, not by the
+        # model, so a sentence repeating one is quoting the answer rather than
+        # editorialising over it. Nothing in the corpus produces a risk caveat
+        # yet — the risk_exposure rung has no data behind it — so the answer
+        # here is given one, which is the shape that rung will take.
+        answer = _answer()
+        answer = answer.model_copy(update={"anomalies": [Anomaly(
+            code=AnomalyCode.MISSING_PERIOD_DATA, severity=Severity.LOW,
+            text="Two suppliers carry an open risk finding.")]})
+        assert validate_insight(answer, "Two suppliers carry an open risk finding.") is None
 
     def test_an_empty_sentence_is_refused(self):
         assert validate_insight(_answer(), "   ").reason == "empty"

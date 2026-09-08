@@ -78,6 +78,19 @@ Rules:
 _HEDGES = re.compile(
     r"\b(may|might|could|possibly|potentially|perhaps|probably|likely|seems?|"
     r"appears?|suggests?\s+that|roughly|approximately|around)\b", re.I)
+# Colour standing in for a measurement. "Elevated supply risk", "a significant
+# share", "healthy competition" — none of these is a figure, so the grounding
+# check cannot see them, and none of them is measured anywhere in the answer.
+# A claim the reader cannot check is the same defect as a number they cannot
+# check, so it is refused unless the answer itself uses the word: the caveats
+# under the table are written by this system, and a sentence repeating one is
+# quoting the answer rather than editorialising over it.
+_JUDGEMENTS = re.compile(
+    r"\b(risks?|risky|exposures?|significant\w*|substantial\w*|material(ly)?|"
+    r"concerning|worrying|troubling|alarming|healthy|unhealthy|strong\w*|weak\w*|"
+    r"poor|excellent|impressive|elevated|critical|severe|vulnerable|fragile|"
+    r"over-?rel\w+|over-?depend\w+|depend(ence|ency)|dominant|dominates?)\b", re.I)
+
 _RECOMMENDATIONS = re.compile(
     r"\b(should|shouldn't|must|ought|recommend\w*|advise\w*|suggest|consider|"
     r"needs?\s+to|worth\s+\w+ing|we\s+can\s+help)\b", re.I)
@@ -122,6 +135,25 @@ def _sentences(text: str) -> list[str]:
     return [part for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part]
 
 
+def _answer_vocabulary(answer: AnalyticAnswer) -> str:
+    """Everything the answer itself already says, for the judgement check."""
+    parts = [anomaly.text for anomaly in answer.anomalies]
+    parts.extend(fact.code.value.replace("_", " ") for fact in answer.facts)
+    parts.extend(fact.unit for fact in answer.facts if fact.unit)
+    parts.extend(column.label for column in answer.table.columns)
+    return " ".join(parts).lower()
+
+
+def _unsupported_judgement(answer: AnalyticAnswer, text: str) -> Optional[str]:
+    """The first judgement word the answer does not itself use, if any."""
+    vocabulary = _answer_vocabulary(answer)
+    for match in _JUDGEMENTS.finditer(text):
+        word = match.group(0).lower()
+        if word not in vocabulary:
+            return word
+    return None
+
+
 def validate_insight(answer: AnalyticAnswer, text: str) -> Optional[Rejection]:
     """``None`` if the sentence may be shown, otherwise why it may not."""
     candidate = (text or "").strip()
@@ -135,6 +167,9 @@ def validate_insight(answer: AnalyticAnswer, text: str) -> Optional[Rejection]:
     recommendation = _RECOMMENDATIONS.search(candidate)
     if recommendation:
         return Rejection("recommendation", recommendation.group(0))
+    judgement = _unsupported_judgement(answer, candidate)
+    if judgement:
+        return Rejection("unsupported_claim", judgement)
     unquoted = answer.unquoted_numbers(candidate)
     if unquoted:
         return Rejection("ungrounded_number", ", ".join(sorted(unquoted)))
