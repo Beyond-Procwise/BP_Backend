@@ -149,6 +149,26 @@ class LinkProposal:
     within_order_value: Optional[bool] = None
 
 
+@dataclass(frozen=True)
+class ProposalRun:
+    """One whole pass: what it proposes, and what it looked at to get there.
+
+    The counts are not decoration. A pass over bp_testdb proposes nothing at all,
+    and an empty list on its own reads as "every invoice has an order" when the
+    truth is that 1,964 have none and not one of them resembles an order their
+    supplier holds. ``considered`` is what lets a screen tell those two apart.
+    """
+
+    proposals: tuple[LinkProposal, ...]
+    considered: dict
+
+    def __iter__(self):
+        return iter(self.proposals)
+
+    def __len__(self):
+        return len(self.proposals)
+
+
 def _log_odds(f: float) -> float:
     """The engine's F score as log-odds, for the resolver's objective. Monotone
     in F, so the resolver's ranking is the scorer's ranking."""
@@ -215,7 +235,7 @@ def propose_links(documents: list[dict], purchase_orders: list[dict],
                   *, doc_type: str = "invoice", profile: Optional[str] = None,
                   min_score: Optional[float] = None,
                   max_candidates: Optional[int] = None,
-                  scorer: Callable = score_link) -> list[LinkProposal]:
+                  scorer: Optional[Callable] = None) -> list[LinkProposal]:
     """Score every document against every order and resolve the whole set at once.
 
     Pure: no database, no writes. ``documents`` and ``purchase_orders`` are rows
@@ -228,6 +248,9 @@ def propose_links(documents: list[dict], purchase_orders: list[dict],
     floor = PROPOSAL_MIN_SCORE if min_score is None else float(min_score)
     cap_n = MAX_CANDIDATES_PER_DOC if max_candidates is None else int(max_candidates)
     doc_lines, po_lines = doc_lines or {}, po_lines or {}
+    # Resolved at call time, not bound as a default, so the whole-corpus path can
+    # be driven by a stated evidence table in a test the way propose_links itself is.
+    scorer = scorer or score_link
 
     orders = sorted(purchase_orders, key=lambda p: str(p.get("po_id") or ""))
     scored: dict[str, list[tuple[float, str, Optional[float], Optional[float]]]] = {}
@@ -319,38 +342,57 @@ def unparented_documents(cur, doc_type: str = "invoice") -> list[dict]:
 
 
 def candidate_orders(cur, supplier_id: str) -> list[dict]:
-    """That supplier's purchase orders, each with what it has left to absorb.
+    """That supplier's purchase orders, each with what it has left to absorb."""
+    return orders_by_supplier(cur, [supplier_id]).get(supplier_id, [])
+
+
+def orders_by_supplier(cur, supplier_ids: list[str]) -> dict[str, list[dict]]:
+    """Every named supplier's orders, in a fixed number of reads.
+
+    Read one supplier at a time this cost 3,042 queries and 64.6s over bp_testdb,
+    which is not a thing a screen can wait for. The suppliers do not interact —
+    each one's documents only ever compete for that supplier's own orders — but
+    the READS do not have to be per-supplier to keep that true.
 
     An order that has already been billed to its limit has nothing to offer an
-    unreferenced invoice, and one billed halfway can only take half. Only
-    invoices that actually reference an order are counted against it — an
-    unreferenced one has not been billed against anything yet, which is the whole
-    reason it is here.
+    unreferenced invoice, and one billed halfway can only take half. Only invoices
+    that actually reference an order are counted against it — an unreferenced one
+    has not been billed against anything yet, which is the whole reason it is here.
     """
-    orders = _rows(cur, f"select * from {_PO['trgt']} where supplier_id = %s",
-                   (supplier_id,))
+    ids = sorted({str(s).strip() for s in supplier_ids if str(s or "").strip()})
+    if not ids:
+        return {}
+    orders = _rows(cur, f"select * from {_PO['trgt']} where supplier_id = any(%s)",
+                   (ids,))
     if not orders:
-        return []
+        return {}
     invoiced = _invoices_by_order(cur, [str(o.get("po_id") or "") for o in orders])
+    out: dict[str, list[dict]] = {}
     for po in orders:
-        total, unit = _order_capacity(po)
-        if total is None:
+        _apply_remaining(po, invoiced)
+        out.setdefault(str(po.get("supplier_id") or "").strip(), []).append(po)
+    return out
+
+
+def _apply_remaining(po: dict, invoiced: dict) -> None:
+    """What this order has left, in its own unit, and what could not be counted."""
+    total, unit = _order_capacity(po)
+    if total is None:
+        return
+    billed, uncounted = 0.0, 0
+    for inv in invoiced.get(_norm(po.get("po_id")), []):
+        amount = _claim(inv, unit, "invoice")
+        if amount is None:
+            # Billed in a currency this order is not stated in. Converting would
+            # mean inventing a rate, so it is not subtracted -- and the order says
+            # so, because a remaining figure that quietly omits part of the
+            # billing overstates what is left.
+            uncounted += 1
             continue
-        billed, uncounted = 0.0, 0
-        for inv in invoiced.get(_norm(po.get("po_id")), []):
-            amount = _claim(inv, unit, "invoice")
-            if amount is None:
-                # Billed in a currency this order is not stated in. Converting
-                # would mean inventing a rate, so it is not subtracted -- and the
-                # order says so, because a remaining figure that quietly omits
-                # part of the billing overstates what is left.
-                uncounted += 1
-                continue
-            billed += amount
-        po["capacity_unit"] = unit
-        po["remaining_capacity"] = max(0.0, total - billed)
-        po["billing_not_counted"] = uncounted
-    return orders
+        billed += amount
+    po["capacity_unit"] = unit
+    po["remaining_capacity"] = max(0.0, total - billed)
+    po["billing_not_counted"] = uncounted
 
 
 def _invoices_by_order(cur, po_ids: list[str]) -> dict[str, list[dict]]:
@@ -385,7 +427,7 @@ def _norm(po_id) -> str:
 # The whole pass
 # ---------------------------------------------------------------------------
 def propose_parent_links(conn: Any = None, doc_type: str = "invoice",
-                         min_score: Optional[float] = None) -> list[LinkProposal]:
+                         min_score: Optional[float] = None) -> ProposalRun:
     """Every unreferenced document's proposed parent, supplier by supplier.
 
     Read-only. Grouped by supplier because a candidate cannot cross a supplier —
@@ -403,19 +445,43 @@ def _propose(conn, doc_type: str, min_score: Optional[float]) -> list[LinkPropos
     cur = conn.cursor()
     docs = unparented_documents(cur, doc_type)
 
+    considered = {"documents": len(docs), "without_supplier": 0,
+                  "supplier_holds_no_order": 0, "scored": 0}
+
     by_supplier: dict[str, list[dict]] = {}
     for doc in docs:
         supplier = (doc.get("supplier_id") or "").strip()
         if not supplier:
             # Nothing to narrow the candidates by. Scoring one document against
             # every order in the corpus is not a proposal, it is a guess.
+            considered["without_supplier"] += 1
             continue
         by_supplier.setdefault(supplier, []).append(doc)
 
+    if not by_supplier:
+        return ProposalRun((), considered)
+
+    # Everything the whole pass needs, read once rather than once per supplier.
+    cfg = _DOC[doc_type]
+    pk = cfg["pk"]
+    orders = orders_by_supplier(cur, list(by_supplier))
+    doc_lines = _lines_for(cur, cfg["lines_trgt"], cfg["lines_stg"], pk,
+                           [str(d.get(pk)) for g in by_supplier.values() for d in g])
+    po_lines = _lines_for(cur, "proc.bp_po_line_items_stg",
+                          "proc.bp_po_line_items_stg", "po_id",
+                          [str(o.get("po_id")) for g in orders.values() for o in g])
+
     out: list[LinkProposal] = []
-    for _supplier, group in sorted(by_supplier.items()):
-        out.extend(_propose_for_supplier(cur, doc_type, group, min_score))
-    return out
+    for supplier, group in sorted(by_supplier.items()):
+        group_orders = orders.get(supplier)
+        if not group_orders:
+            considered["supplier_holds_no_order"] += len(group)
+            continue
+        considered["scored"] += len(group)
+        out.extend(_propose_for_supplier(cur, doc_type, group, min_score,
+                                         orders=group_orders, doc_lines=doc_lines,
+                                         po_lines=po_lines))
+    return ProposalRun(tuple(out), considered)
 
 
 def _lines_for(cur, trgt_table: str, stg_table: str, key: str,
@@ -441,21 +507,31 @@ def _lines_for(cur, trgt_table: str, stg_table: str, key: str,
 # What a person can do about a proposal
 # ---------------------------------------------------------------------------
 def _propose_for_supplier(cur, doc_type: str, group: list[dict],
-                          min_score: Optional[float] = None) -> list[LinkProposal]:
-    """One supplier's unreferenced documents against that supplier's orders."""
+                          min_score: Optional[float] = None,
+                          orders: Optional[list] = None,
+                          doc_lines: Optional[dict] = None,
+                          po_lines: Optional[dict] = None) -> list[LinkProposal]:
+    """One supplier's unreferenced documents against that supplier's orders.
+
+    The orders and line items are passed in by the whole-corpus pass, which reads
+    them once for everybody; asked for a single document they are fetched here.
+    """
     cfg = _DOC[doc_type]
     pk = cfg["pk"]
     supplier = (group[0].get("supplier_id") or "").strip() if group else ""
     if not supplier:
         return []
-    orders = candidate_orders(cur, supplier)
+    if orders is None:
+        orders = candidate_orders(cur, supplier)
     if not orders:
         return []
-    doc_lines = _lines_for(cur, cfg["lines_trgt"], cfg["lines_stg"], pk,
-                           [str(d.get(pk)) for d in group])
-    po_lines = _lines_for(cur, "proc.bp_po_line_items_stg",
-                          "proc.bp_po_line_items_stg", "po_id",
-                          [str(o.get("po_id")) for o in orders])
+    if doc_lines is None:
+        doc_lines = _lines_for(cur, cfg["lines_trgt"], cfg["lines_stg"], pk,
+                               [str(d.get(pk)) for d in group])
+    if po_lines is None:
+        po_lines = _lines_for(cur, "proc.bp_po_line_items_stg",
+                              "proc.bp_po_line_items_stg", "po_id",
+                              [str(o.get("po_id")) for o in orders])
     return propose_links(group, orders, doc_lines, po_lines,
                          doc_type=doc_type, min_score=min_score)
 

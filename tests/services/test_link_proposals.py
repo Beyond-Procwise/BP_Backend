@@ -647,3 +647,151 @@ def test_a_hair_over_the_order_is_not_called_over_claiming():
     # 0.5% of 1,000 is 5.00: 1,004 is inside the band, 1,006 is outside it.
     assert [(p.doc_pk, p.within_order_value) for p in proposals] == [
         ("INV-1", True), ("INV-2", False)]
+
+
+# ---------------------------------------------------------------------------
+# What the whole pass costs
+# ---------------------------------------------------------------------------
+class _CountingCursor(_Cursor):
+    """A cursor that remembers how many reads were made of it.
+
+    The first version of the pass read one supplier at a time: 3,042 queries and
+    64.6s against bp_testdb, which no screen can wait for.
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.queries = 0
+
+    def execute(self, sql, params=()):
+        self.queries += 1
+        super().execute(sql, params)
+
+
+class _CountingConn:
+    def __init__(self, cur):
+        self._cur = cur
+
+    def cursor(self):
+        return self._cur
+
+
+def _corpus(n_suppliers):
+    invoices = [{"invoice_id": f"INV-{i}", "supplier_id": f"SUP-{i}", "po_id": None,
+                 "invoice_amount": 100.0, "currency": "GBP"} for i in range(n_suppliers)]
+    pos = [{"po_id": f"PO-{i}", "supplier_id": f"SUP-{i}", "total_amount": 1000.0,
+            "currency": "GBP"} for i in range(n_suppliers)]
+    return invoices, pos
+
+
+def test_the_pass_does_not_read_once_per_supplier():
+    """Ten times the suppliers must not be ten times the reads. This is the test
+    that would have caught the original: it read the orders, the billing and the
+    line items again for every supplier in the corpus."""
+    small = _CountingCursor(*_corpus(3))
+    large = _CountingCursor(*_corpus(30))
+
+    lp._propose(_CountingConn(small), "invoice", None)
+    lp._propose(_CountingConn(large), "invoice", None)
+
+    assert large.queries == small.queries
+    assert large.queries <= 10
+
+
+def test_reading_the_corpus_at_once_proposes_exactly_what_reading_it_supplier_by_supplier_did(
+        monkeypatch):
+    """The speed-up must be a change of reads, not of answers. Both paths are run
+    over the same corpus and must agree — including that each supplier's documents
+    only ever see that supplier's orders, which is the property a shared prefetch
+    could quietly break."""
+    invoices = [
+        {"invoice_id": "INV-A1", "supplier_id": "SUP-A", "po_id": None,
+         "invoice_amount": 100.0, "currency": "GBP"},
+        {"invoice_id": "INV-A2", "supplier_id": "SUP-A", "po_id": None,
+         "invoice_amount": 200.0, "currency": "GBP"},
+        {"invoice_id": "INV-B1", "supplier_id": "SUP-B", "po_id": None,
+         "invoice_amount": 300.0, "currency": "GBP"},
+    ]
+    pos = [
+        {"po_id": "PO-A", "supplier_id": "SUP-A", "total_amount": 1000.0, "currency": "GBP"},
+        {"po_id": "PO-B", "supplier_id": "SUP-B", "total_amount": 1000.0, "currency": "GBP"},
+    ]
+
+    # Same evidence for every same-supplier pair, so what differs between the two
+    # paths can only be the reads.
+    monkeypatch.setattr(lp, "score_link", lambda doc, po, *a, **k: {
+        "F": 90.0 if doc["supplier_id"] == po["supplier_id"] else 0.0})
+
+    batched = lp._propose(_CountingConn(_CountingCursor(invoices, pos)), "invoice", None)
+
+    cur = _CountingCursor(invoices, pos)
+    one_at_a_time = []
+    for supplier in ("SUP-A", "SUP-B"):
+        group = [d for d in lp.unparented_documents(cur, "invoice")
+                 if d.get("supplier_id") == supplier]
+        one_at_a_time.extend(lp._propose_for_supplier(cur, "invoice", group))
+
+    assert [(p.doc_pk, p.po_id) for p in batched] == [("INV-A1", "PO-A"),
+                                                      ("INV-A2", "PO-A"),
+                                                      ("INV-B1", "PO-B")]
+    assert list(batched) == sorted(one_at_a_time, key=lambda p: p.doc_pk)
+
+
+def test_a_document_is_never_proposed_another_supplier_s_order(monkeypatch):
+    """The prefetch reads every supplier's orders in one go, so the only thing
+    keeping one supplier's documents away from another's orders is the grouping.
+
+    The evidence here is deliberately identical for EVERY pair — including
+    cross-supplier ones. A stub that scored those zero would let the score floor
+    do the excluding, and this test would pass against a prefetch that leaks."""
+    invoices = [{"invoice_id": "INV-A1", "supplier_id": "SUP-A", "po_id": None},
+                {"invoice_id": "INV-B1", "supplier_id": "SUP-B", "po_id": None}]
+    pos = [{"po_id": "PO-A", "supplier_id": "SUP-A"},
+           {"po_id": "PO-B", "supplier_id": "SUP-B"}]
+    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": 90.0})
+
+    proposals = lp._propose(_CountingConn(_CountingCursor(invoices, pos)), "invoice", None)
+
+    assert [(p.doc_pk, p.po_id) for p in proposals] == [("INV-A1", "PO-A"),
+                                                        ("INV-B1", "PO-B")]
+    # And the other supplier's order was never even a candidate to rank second.
+    assert all(p.alternatives == () for p in proposals)
+
+
+# ---------------------------------------------------------------------------
+# What the run says about itself
+# ---------------------------------------------------------------------------
+def test_the_pass_reports_what_it_considered(monkeypatch):
+    """A run that proposes nothing must be able to say whether it looked at
+    anything. Otherwise an empty queue reads as "every invoice has an order",
+    when the truth on this corpus is the opposite: 1,964 have none, and not one
+    of them resembles an order their supplier actually holds.
+
+    Three documents, three different reasons to end up with no proposal.
+    """
+    invoices = [
+        {"invoice_id": "INV-A", "supplier_id": "SUP-A", "po_id": None},   # scored
+        {"invoice_id": "INV-B", "supplier_id": "SUP-NONE", "po_id": None},  # supplier holds no order
+        {"invoice_id": "INV-C", "supplier_id": "", "po_id": None},        # nothing to narrow by
+    ]
+    pos = [{"po_id": "PO-A", "supplier_id": "SUP-A"}]
+    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": 90.0})
+
+    run = lp.propose_parent_links(conn=_CountingConn(_CountingCursor(invoices, pos)))
+
+    assert [(p.doc_pk, p.po_id) for p in run.proposals] == [("INV-A", "PO-A")]
+    assert run.considered == {"documents": 3, "without_supplier": 1,
+                              "supplier_holds_no_order": 1, "scored": 1}
+
+
+def test_a_run_that_proposes_nothing_still_reports_the_documents_it_read(monkeypatch):
+    """The distinction the empty state rests on: 'nothing was proposed' is not
+    'nothing was looked at'."""
+    invoices = [{"invoice_id": "INV-A", "supplier_id": "SUP-A", "po_id": None}]
+    pos = [{"po_id": "PO-A", "supplier_id": "SUP-A"}]
+    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": 1.0})
+
+    run = lp.propose_parent_links(conn=_CountingConn(_CountingCursor(invoices, pos)))
+
+    assert run.proposals == ()
+    assert run.considered["scored"] == 1

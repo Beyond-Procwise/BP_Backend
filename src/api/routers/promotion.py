@@ -115,11 +115,16 @@ def get_link_proposals(
     if dt not in ("invoice", "quote"):
         raise HTTPException(status_code=400, detail="doc_type must be 'invoice' or 'quote'")
     try:
-        items = propose_parent_links(doc_type=dt, min_score=min_score)
+        run = propose_parent_links(doc_type=dt, min_score=min_score)
     except Exception as exc:
         logger.exception("link-proposals failed")
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"count": len(items), "items": [asdict(i) for i in items]}
+    # `considered` is not decoration: this pass proposes nothing at all on the
+    # current corpus, and a bare empty list reads as "every document has an order"
+    # when the truth is that 1,964 have none. The counts are what let a screen say
+    # which of the two it is looking at.
+    return {"count": len(run.proposals), "considered": run.considered,
+            "items": [asdict(i) for i in run.proposals]}
 
 
 @router.post("/link-proposals/{doc_type}/{doc_pk}/confirm",

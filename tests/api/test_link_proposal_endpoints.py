@@ -24,9 +24,18 @@ def _proposal(doc_pk="INV-1", po_id="PO-1", routing="suggested"):
                         within_order_value=True)
 
 
+def _run(*proposals, **considered):
+    from src.services.link_proposals import ProposalRun
+    counts = {"documents": 2, "without_supplier": 0, "supplier_holds_no_order": 0,
+              "scored": 2}
+    counts.update(considered)
+    return ProposalRun(tuple(proposals), counts)
+
+
 def test_the_queue_reports_each_proposal_with_its_margin(monkeypatch):
     monkeypatch.setattr(f"{_MOD}.propose_parent_links",
-                        lambda **kw: [_proposal(), _proposal("INV-2", "PO-3", "contested")])
+                        lambda **kw: _run(_proposal(),
+                                          _proposal("INV-2", "PO-3", "contested")))
 
     r = client.get("/promotion/link-proposals")
 
@@ -40,6 +49,20 @@ def test_the_queue_reports_each_proposal_with_its_margin(monkeypatch):
         "within_order_value": True,
     }
     assert body["items"][1]["routing"] == "contested"
+
+
+def test_a_queue_with_nothing_in_it_still_says_what_was_read(monkeypatch):
+    """An empty list and an empty corpus are different facts, and a screen that
+    cannot tell them apart reports "nothing to link" when nothing was looked at."""
+    monkeypatch.setattr(f"{_MOD}.propose_parent_links",
+                        lambda **kw: _run(documents=1966, without_supplier=1,
+                                          supplier_holds_no_order=751, scored=1214))
+
+    r = client.get("/promotion/link-proposals")
+
+    assert r.json() == {"count": 0, "items": [],
+                        "considered": {"documents": 1966, "without_supplier": 1,
+                                       "supplier_holds_no_order": 751, "scored": 1214}}
 
 
 def test_only_invoices_and_quotes_are_accepted():
