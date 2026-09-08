@@ -178,6 +178,42 @@ class TestTheValueSystemdActuallyHandsUs:
         assert seen[0]["keep_alive"] == -1
 
 
+class TestTheStartupPreload:
+    """The discovery belongs at startup, not in the first reader's answer.
+
+    The API preloads the model when it boots. That preload was refused for the
+    same reason as everything else and only warned about it, so the shared state
+    was still "pinned" when the first question arrived — and that reader waited
+    47 seconds while the client found out what the preload already knew.
+    """
+
+    def _transport(self, responses, seen):
+        import copy
+
+        def _post(url, **kwargs):
+            seen.append(copy.deepcopy(kwargs.get("json")))
+            return responses[len(seen) - 1]
+        return _post
+
+    def test_a_refused_preload_tells_everyone_else(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(egress, "post", self._transport(
+            [_Response(500, text=REJECTION), _Response(200, {})], seen))
+
+        assert ollama_client.preload_model("m") is True
+        assert "num_gpu" not in ollama_client.gpu_options()
+        assert "num_gpu" not in seen[1]["options"]
+
+    def test_the_model_is_still_warmed_in_the_configuration_that_works(self, monkeypatch):
+        # Giving up on the preload would leave the first real request paying a
+        # two-minute cold load on top of everything else.
+        seen = []
+        monkeypatch.setattr(egress, "post", self._transport(
+            [_Response(500, text=REJECTION), _Response(200, {})], seen))
+        ollama_client.preload_model("m")
+        assert len(seen) == 2
+
+
 class TestEveryCallerAgrees:
     """One value at a time, across every path that talks to this server.
 

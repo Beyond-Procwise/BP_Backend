@@ -428,23 +428,46 @@ def ollama_cloud_generate(
 
 
 def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
-    """Preload model into Ollama VRAM with keep_alive."""
+    """Preload the model into VRAM, and find out here whether it fits.
+
+    This runs at startup, which is the right place to discover that the card
+    cannot hold the model whole: the alternative is the first reader's question
+    paying for the discovery, which live cost them 47 seconds. A refusal here
+    tells every other caller at once, and the preload then goes ahead in the
+    configuration those callers will actually use — giving up would leave the
+    first real request with a two-minute cold load on top of everything else.
+    """
     model = model or DEFAULT_MODEL
+
+    def _body() -> Dict[str, Any]:
+        return {
+            "model": model,
+            "prompt": "",
+            "keep_alive": KEEP_ALIVE,
+            # The layer count MUST match what callers ask for, or this pins an
+            # instance nothing else can use and the first real request stalls
+            # loading another.
+            "options": gpu_options(),
+        }
+
     try:
         response = egress.post(
             f"{OLLAMA_BASE_URL}/api/generate",
             purpose=egress.Purpose.MODEL_INFERENCE,
             require_global=False,
-            # The layer count MUST match what callers ask for, or this pins an instance
-            # nothing else can use and the first real request stalls loading another.
-            json={
-                "model": model,
-                "prompt": "",
-                "keep_alive": KEEP_ALIVE,
-                "options": gpu_options(),
-            },
+            json=_body(),
             timeout=timeout,
         )
+        if getattr(response, "status_code", 0) == 500 and \
+                is_layout_rejection(getattr(response, "text", "")):
+            note_layout_rejection(ALL_GPU_LAYERS)
+            response = egress.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                purpose=egress.Purpose.MODEL_INFERENCE,
+                require_global=False,
+                json=_body(),
+                timeout=timeout,
+            )
         response.raise_for_status()
         logger.info("Preloaded Ollama model '%s' with keep_alive=%s", model, KEEP_ALIVE)
         return True
