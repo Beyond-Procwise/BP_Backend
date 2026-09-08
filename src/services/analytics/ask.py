@@ -29,7 +29,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence
+from typing import Any, Callable, Dict, FrozenSet, Optional, Sequence
 
 from src.services.agent_actions import record_action
 from src.services.analytics.currency import DisplayCurrency
