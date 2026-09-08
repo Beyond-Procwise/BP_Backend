@@ -321,16 +321,31 @@ def build_supplier_spend_ranking(
         # The movers are chosen from the top suppliers by spend, and the answer
         # says so. Ranked across the whole book, the table fills with suppliers
         # that went from £40 to £400 — true, and no use to anybody.
-        listed.sort(key=lambda s: (s.supplier_id in negligible,
-                                   -(deltas.get(s.supplier_id, _UNMOVED)), s.name))
+        #
+        # Only the ones whose change was actually measured are listed. Live,
+        # nine of ten rows had no prior-year spend, so a table asking what moved
+        # answered with eight blanks — and a supplier that was never measured
+        # has not moved, it is unknown.
         if len(ranked) > len(listed):
             scope_filters.append(f"top {len(listed)} by spend")
+        listed = [s for s in listed if s.supplier_id in deltas]
+        listed.sort(key=lambda s: (s.supplier_id in negligible,
+                                   -(deltas.get(s.supplier_id, _UNMOVED)), s.name))
+        if not listed:
+            anomalies.append(Anomaly(
+                code=AnomalyCode.MISSING_PERIOD_DATA, severity=Severity.HIGH,
+                text=(f"No supplier here has comparable spend in "
+                      f"{prior_period.label if prior_period else 'the period before'}, "
+                      "so no change can be shown.")))
 
     columns = [
         Column(key="rank", label="#", type=ColumnType.INT),
         Column(key="supplier", label="Supplier", type=ColumnType.TEXT),
+        # The bar measures the primary column. In a movement table the order is
+        # the movement, so a bar drawn on spend would show the biggest supplier
+        # halfway down and read as a mistake.
         Column(key="spend", label=f"{_MEASURE_NOUN[measure]} spend", type=ColumnType.MONEY,
-               currency=currency, is_primary=True),
+               currency=currency, is_primary=lens is not Lens.TREND),
     ]
     if lens is Lens.TREND:
         columns.append(Column(key="prior", label=f"{prior_period.label if prior_period else 'Prior'}",
@@ -491,7 +506,12 @@ def _with_templated_headline(answer: AnalyticAnswer, *, manual: bool,
     confidence = Confidence.UNASSESSED if manual else Confidence.ASSERTED
 
     if not rows:
-        text = f"No {answer.scope.measure.value.lower()} spend in {answer.scope.period_label}."
+        # An empty movement table is not an empty period: there is spend, there
+        # is simply nothing to compare it with, and saying otherwise would be a
+        # false statement about the corpus.
+        text = (answer.anomalies[0].text if lens is Lens.TREND and answer.anomalies
+                else f"No {answer.scope.measure.value.lower()} spend in "
+                     f"{answer.scope.period_label}.")
         return answer.model_copy(update={
             "headline": Headline(text=text, confidence=Confidence.UNASSESSED)})
 

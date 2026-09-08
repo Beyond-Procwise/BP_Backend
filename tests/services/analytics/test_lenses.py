@@ -119,6 +119,30 @@ class TestTheTrendLens:
         assert "all 3 suppliers" in _answer(Lens.TREND).headline.text
 
 
+    def test_only_suppliers_whose_change_was_measured_are_listed(self):
+        # Live, nine of the ten rows had no prior-year spend at all, so a table
+        # asking "what moved" answered it with eight blanks. A supplier that
+        # was never measured has not moved; it is simply unknown, and it does
+        # not belong in a movement table.
+        answer = _answer(Lens.TREND, prior_rows=[_row("Kestrel", "900000")])
+        assert [row["supplier"] for row in answer.table.rows] == ["Kestrel"]
+
+    def test_no_bar_is_drawn_against_spend_in_a_movement_table(self):
+        # The bar measures the primary column, and the primary column here is
+        # not what the table is ordered by: a bar showing the biggest supplier
+        # at the bottom of a movement table reads as a mistake.
+        assert _column(_answer(Lens.TREND), "spend").is_primary is False
+
+    def test_a_period_with_nothing_to_compare_to_says_so(self):
+        answer = _answer(Lens.TREND, prior_rows=[])
+        assert any(a.code is AnomalyCode.MISSING_PERIOD_DATA for a in answer.anomalies)
+        assert "no change" in answer.headline.text.lower() or \
+               "no comparable" in answer.headline.text.lower()
+
+    def test_the_answer_says_which_question_it_answers(self):
+        assert _answer(Lens.TREND).provenance.query_ref == "supplier_spend_trend/v1"
+
+
 class TestAChangeMeasuredFromNothing:
     """Live: "Windrose Services 14 moved most, +345261.1%" — on £26.72 of spend
     the year before. The arithmetic is right and the finding is not: a
@@ -145,15 +169,6 @@ class TestAChangeMeasuredFromNothing:
         fact = next(f for f in self._answer().facts if f.code is FactCode.NEGLIGIBLE_BASE)
         assert fact.entity == "Featherstone"
         assert fact.display == "£10"
-
-    def test_a_period_with_nothing_to_compare_to_says_so(self):
-        answer = _answer(Lens.TREND, prior_rows=[])
-        assert any(a.code is AnomalyCode.MISSING_PERIOD_DATA for a in answer.anomalies)
-        assert "no change" in answer.headline.text.lower() or \
-               "no comparable" in answer.headline.text.lower()
-
-    def test_the_answer_says_which_question_it_answers(self):
-        assert _answer(Lens.TREND).provenance.query_ref == "supplier_spend_trend/v1"
 
 
 class TestTheLadderKnowsWhereItIs:

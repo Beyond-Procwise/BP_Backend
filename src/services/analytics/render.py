@@ -149,10 +149,24 @@ def _largest(answer: AnalyticAnswer, column: Column) -> Optional[Decimal]:
     return max(values) if values else None
 
 
+def _marked_column(columns: List[Column]) -> Optional[str]:
+    """Which cell carries the ⚠: the figure it is about, or failing that the name.
+
+    A movement table has no primary column — the bar would contradict its own
+    ordering — and a mark with nowhere to sit is a mark nobody sees.
+    """
+    primary = next((c for c in columns if c.is_primary), None)
+    if primary is not None:
+        return primary.key
+    text = next((c for c in columns if c.type is ColumnType.TEXT), None)
+    return text.key if text is not None else None
+
+
 def _row_html(row: Dict[str, Any], columns: List[Column], answer: AnalyticAnswer,
               largest: Dict[str, Optional[Decimal]], *, flagged: bool,
               css_class: Optional[str] = None) -> str:
     cells: List[str] = []
+    marked = _marked_column(columns)
     for column in columns:
         if column.key not in row:
             # Absent is not the same as empty: a totals row has no rank, and a
@@ -160,7 +174,7 @@ def _row_html(row: Dict[str, Any], columns: List[Column], answer: AnalyticAnswer
             cells.append(f'<td class="{_cell_class(column)}"></td>')
             continue
         content = escape(_rendered(row.get(column.key), column))
-        if flagged and column.is_primary:
+        if flagged and column.key == marked:
             content += f" {FLAG_MARK}"
         bucket = _bar_bucket(row.get(column.key), largest.get(column.key))
         if bucket is not None:
