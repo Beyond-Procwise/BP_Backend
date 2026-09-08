@@ -65,6 +65,9 @@ def test_cloud_generate_retries_on_empty_response(monkeypatch):
         def raise_for_status(self): pass
         def json(self): return next(bodies)
 
-    monkeypatch.setattr(oc.requests, "post", lambda *a, **k: _Resp())
+    # The transport is services.egress now, not `requests` — this patched a
+    # module attribute that stopped existing, and had been erroring rather than
+    # asserting ever since.
+    monkeypatch.setattr(oc.egress, "post", lambda *a, **k: _Resp())
     out = oc.ollama_cloud_generate("prompt", model="qwen3.5:397b", retries=3)
     assert out == "real summary"   # retried past the empty first response
