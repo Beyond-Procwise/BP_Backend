@@ -208,6 +208,58 @@ class TestWhatTheReaderEndsUpWith:
         assert written.headline.text == answer.headline.text
 
 
+class TestWhenThePlatformIsDegraded:
+    """A headline is optional; a 45-second wait for one is not acceptable.
+
+    Live: with the card too full to hold the model whole, Ollama runs it half
+    on the CPU and the sentence does not arrive inside the writer's bound. Every
+    ask then paid 45 seconds to end up with the templated headline it already
+    had. So while the card is refusing, the model is not asked at all — the
+    answer is the same, and it arrives in a second.
+    """
+
+    def test_the_model_is_not_asked_while_the_card_is_refusing(self):
+        from src.services import ollama_client
+
+        asked = []
+        ollama_client.note_layout_rejection("full")
+        try:
+            written = write_insight(_answer(), persona="cpo",
+                                    generate=lambda p: asked.append(p) or _says(GROUNDED)(p),
+                                    audit=_Spy())
+            assert asked == []
+            assert written.headline.text == _answer().headline.text
+        finally:
+            ollama_client.clear_layout_rejection()
+
+    def test_the_skip_is_recorded_rather_than_silent(self):
+        from src.services import ollama_client
+
+        spy = _Spy()
+        ollama_client.note_layout_rejection("full")
+        try:
+            write_insight(_answer(), persona="cpo", generate=_says(GROUNDED), audit=spy)
+        finally:
+            ollama_client.clear_layout_rejection()
+        details = spy.rows[0]["details"]
+        assert details["reason"] == "platform_degraded"
+        assert spy.rows[0]["status"] == "rejected"
+
+    def test_a_caller_may_insist(self):
+        # The skip is a default, not a law: a caller whose writer is not the
+        # local model — a batch job, a test, a hosted model — turns it off and
+        # the sentence is written as usual.
+        from src.services import ollama_client
+
+        ollama_client.note_layout_rejection("full")
+        try:
+            written = write_insight(_answer(), persona="cpo", generate=_says(GROUNDED),
+                                    audit=_Spy(), skip_when_degraded=False)
+            assert written.headline.text == GROUNDED
+        finally:
+            ollama_client.clear_layout_rejection()
+
+
 class TestTheAuditSpine:
     def test_an_accepted_sentence_is_recorded_with_what_produced_it(self):
         spy = _Spy()

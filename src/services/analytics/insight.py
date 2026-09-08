@@ -269,6 +269,20 @@ def load_governed_instructions(conn: Any) -> Optional[str]:
     return None
 
 
+def _platform_degraded() -> bool:
+    """True while the card is refusing to hold the model whole.
+
+    Ollama then runs it half on the CPU, and live the sentence does not arrive
+    inside this call's bound — so every answer paid the full 45 seconds to end
+    up with the headline it already had. The templated headline is built from
+    the same facts and is not a worse sentence for having been written by a
+    rule, so while the platform is in that state the model is not asked.
+    """
+    from src.services import ollama_client
+
+    return "num_gpu" not in ollama_client.gpu_options()
+
+
 def write_insight(
     answer: AnalyticAnswer,
     *,
@@ -276,21 +290,25 @@ def write_insight(
     generate: Optional[Callable[[str], Optional[str]]] = None,
     audit: Callable[..., None] = record_action,
     template: Optional[str] = None,
+    skip_when_degraded: bool = True,
 ) -> AnalyticAnswer:
     """The answer with a written headline, or exactly the answer it was given."""
     prompt = build_prompt(answer, persona, template)
     text = ""
     rejection: Optional[Rejection] = None
 
-    try:
-        raw = (generate or _ollama_writer)(prompt)
-    except Exception as exc:  # the model being down is not the reader's problem
-        logger.warning("analytic insight writer unavailable: %s", exc)
-        rejection = Rejection("model_unavailable", str(exc)[:200])
+    if skip_when_degraded and _platform_degraded():
+        rejection = Rejection("platform_degraded", "the GPU cannot hold the model whole")
     else:
-        text, rejection = _parse(raw)
-        if rejection is None:
-            rejection = validate_insight(answer, text)
+        try:
+            raw = (generate or _ollama_writer)(prompt)
+        except Exception as exc:  # the model being down is not the reader's problem
+            logger.warning("analytic insight writer unavailable: %s", exc)
+            rejection = Rejection("model_unavailable", str(exc)[:200])
+        else:
+            text, rejection = _parse(raw)
+            if rejection is None:
+                rejection = validate_insight(answer, text)
 
     written = answer if rejection else answer.model_copy(update={
         "headline": Headline(text=text, confidence=answer.headline.confidence)})
