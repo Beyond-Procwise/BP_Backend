@@ -446,7 +446,7 @@ def _num(value: Any) -> Optional[float]:
     golden=[
         GoldenVector(
             inputs={"anchor_value": 0.041, "current_value": 0.0447, "years": 4.0},
-            expected=2.1817, tolerance=0.001,
+            expected=2.1835, tolerance=0.001,
             note="THE CANONICAL FALSE POSITIVE: managed print, two 4% uplifts "
                  "2022-2026. Must stay inside a 3.8% index +/- 2pp band.",
         ),
@@ -666,13 +666,13 @@ Expected: 10 passed.
 
 - [ ] **Step 5: Prove the golden-vector guard fails**
 
-Change the canonical false positive's `expected` from `2.1817` to `9.0` in `critic.annualised_rate`, then run:
+Change the canonical false positive's `expected` from `2.1835` to `9.0` in `critic.annualised_rate`, then run:
 
 ```bash
-./venv/bin/python -c "from src.services.formulas import ensure_registered; ensure_registered()"
+PYTHONPATH=src ./venv/bin/python -c "from src.services.formulas import ensure_registered; ensure_registered()"
 ```
 
-Expected: `GoldenVectorFailure` at **import time** — the module refuses to load. This is the guard that stops someone widening the band and silently resurrecting false positives. Restore `2.1817`, re-run, confirm it imports clean. Record both outputs.
+Expected: `GoldenVectorFailure` at **import time** — the module refuses to load. This is the guard that stops someone widening the band and silently resurrecting false positives. Restore `2.1835`, re-run, confirm it imports clean. Record both outputs.
 
 - [ ] **Step 6: Commit**
 
@@ -1025,7 +1025,7 @@ Expected: 22 passed.
 In `addressable_value`, change `max(0.0, min(proposed, proposed - total))` to `max(0.0, proposed - total)`. Run the import check:
 
 ```bash
-./venv/bin/python -c "from src.services.formulas import ensure_registered; ensure_registered()"
+PYTHONPATH=src ./venv/bin/python -c "from src.services.formulas import ensure_registered; ensure_registered()"
 ```
 
 Expected: `GoldenVectorFailure` on the negative-haircut vector — the module refuses to import. Restore the clamp and confirm clean. Record both.
@@ -2395,13 +2395,23 @@ class OpportunityCriticAgent(BaseAgent):
             },
         }, default=str)
 
-        result = self.reason(task, extra_system=prompt_text)
-        critique = self._parse(
-            result.get("answer") if isinstance(result, dict) else result)
+        # reason() returns a ToolRunResult dataclass (services/tool_runtime.py:92),
+        # NOT a dict. Read .answer first; the dict branch exists only for tests and
+        # for any caller that hands back a plain mapping.
+        result = self.reason(task, extra_system=prompt_text, require_tool_use=False)
+        answer = getattr(result, "answer", None)
+        if answer is None and isinstance(result, dict):
+            answer = result.get("answer")
+        reason_error = getattr(result, "error", None)
+        if answer is None:
+            answer = result
+        critique = self._parse(answer)
         if critique is None:
+            detail = f" (reason error: {reason_error})" if reason_error else ""
             return AgentOutput(
                 status=AgentStatus.FAILED, data={},
-                error="critique could not be parsed as JSON; refusing to guess a verdict",
+                error=("critique could not be parsed as JSON; refusing to guess a "
+                       f"verdict{detail}"),
             )
 
         critique.setdefault("opportunity_ref_id", ref_id)
