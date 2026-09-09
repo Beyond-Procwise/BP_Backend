@@ -14,7 +14,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from src.services import approval_store, email_sensitivity, guardrail, rbac
+from src.services import (
+    approval_store,
+    email_sensitivity,
+    guardrail,
+    rbac,
+    supplier_contact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,26 +36,15 @@ class DispatchDenied(PermissionError):
 def _supplier_emails(conn: Any, supplier_id: Optional[str]) -> List[str]:
     """Addresses on the supplier master for this supplier.
 
-    A test connection may answer directly; a real one is queried.
+    The lookup itself lives in :mod:`services.supplier_contact`, because the
+    drafting path needs the same answer and used to reach for a different one --
+    an address carried on the ranking payload. One lookup, so a draft is
+    addressed from the master rather than merely checked against it afterwards.
+
+    A test connection may still answer directly; that seam is unchanged.
     """
 
-    if hasattr(conn, "lookup_supplier_emails"):
-        return list(conn.lookup_supplier_emails(supplier_id) or [])
-    if not supplier_id:
-        return []
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT contact_email_1, contact_email_2 FROM proc.bp_supplier "
-        "WHERE supplier_id = %s",
-        (supplier_id,),
-    )
-    out: List[str] = []
-    for row in cur.fetchall():
-        for value in row:
-            text = str(value or "").strip()
-            if text:
-                out.append(text)
-    return out
+    return supplier_contact.resolve_emails(conn, supplier_id)
 
 
 def _supplier_clearance(conn: Any, supplier_id: Optional[str]) -> Optional[str]:

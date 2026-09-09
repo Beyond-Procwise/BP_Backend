@@ -2517,8 +2517,14 @@ class SupplierRankingAgent(BaseAgent):
             "invoice_count": _json_safe(row.get("invoice_count")),
             "lead_time_days": _json_safe(row.get("avg_lead_time_days")),
             "justification": _json_safe(row.get("justification")),
-            "contact_name": _json_safe(row.get("contact_name_1")),
-            "contact_email": _json_safe(row.get("contact_email_1")),
+            # No contact_name / contact_email. A ranking result is a commercial
+            # comparison; republishing a person's address here put it on the
+            # shared workflow context, into every downstream prompt and every
+            # serialised run record -- and EmailDraftingAgent took it as the RFQ
+            # recipient, so an address that had travelled through the workflow
+            # decided where mail went. Drafting now resolves the address from
+            # proc.bp_supplier by supplier_id (services/supplier_contact), which
+            # is what policy #674 says the source must be.
             "weights": dict(weights),
         }
         coverage = _json_safe(row.get("flow_coverage"))

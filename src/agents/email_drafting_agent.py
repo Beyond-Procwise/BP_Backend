@@ -908,12 +908,19 @@ class EmailDraftingAgent(BaseAgent):
             sender_email, data.get("sender_title")
         )
 
+        # Who this supplier actually is, per proc.bp_supplier. Resolved once and
+        # reused for the salutation, the rendered address and the recipient, so
+        # all three agree and none of them comes from the carried payload.
+        master_contact = self._master_contact(supplier_id)
+
         fmt_args = {
-            "supplier_contact_name": supplier.get("contact_name")
+            "supplier_contact_name": master_contact.name
             or supplier_name
             or "Supplier",
             "supplier_company": supplier_name or supplier_id or "",
-            "supplier_contact_email": supplier.get("contact_email", ""),
+            "supplier_contact_email": (
+                master_contact.emails[0] if master_contact.emails else ""
+            ),
             "deadline": data.get("deadline")
             or data.get("submission_deadline", ""),
             "category_manager_name": data.get("category_manager_name", ""),
@@ -5058,27 +5065,52 @@ class EmailDraftingAgent(BaseAgent):
             current = 0
         return current + 1
 
+    def _master_contact(self, supplier_id: Optional[Any]):
+        """What proc.bp_supplier holds for this supplier. Never raises.
+
+        A lookup that cannot be performed resolves to nothing, which leaves the
+        draft unaddressed and held. That is the safe outcome: the alternative
+        is falling back to an address that arrived with the workflow payload,
+        which is the whole defect this closes.
+        """
+
+        from src.services import supplier_contact
+
+        if not supplier_id:
+            return supplier_contact.SupplierContact()
+        get_conn = getattr(self.agent_nick, "get_db_connection", None)
+        if get_conn is None:
+            return supplier_contact.SupplierContact()
+        try:
+            with get_conn() as conn:
+                return supplier_contact.resolve_contact(conn, str(supplier_id))
+        except Exception:  # noqa: BLE001 - an unaddressable draft, not a crash
+            logger.exception(
+                "could not resolve contact details for supplier %s", supplier_id
+            )
+            return supplier_contact.SupplierContact()
+
     def _resolve_receiver(self, supplier: Dict[str, Any], profile: Dict[str, Any]) -> Optional[str]:
-        """Determine the best receiver email for a supplier."""
+        """The RFQ address for a supplier, taken from the supplier master.
 
-        candidates: List[str] = []
+        This used to prefer ``supplier["contact_email"]`` -- a value
+        ``SupplierRankingAgent`` republished off the supplier data frame -- then
+        ``contact_email_1``/``_2`` off the same carried dict, then an address on
+        the supplier profile. Three routes to an outbound address, none of which
+        read ``proc.bp_supplier``, on a payload that has travelled through the
+        shared workflow context.
 
-        def _append_candidate(value: Optional[str]) -> None:
-            if not value:
-                return
-            candidate = str(value).strip()
-            if candidate and candidate.lower() not in {c.lower() for c in candidates}:
-                candidates.append(candidate)
+        Policy #674 already says the master is the only acceptable source and
+        the send path enforces it at dispatch. Resolving here from the same
+        lookup means a draft is addressed correctly in the first place rather
+        than being addressed from a payload and refused later.
 
-        _append_candidate(supplier.get("contact_email"))
-        _append_candidate(supplier.get("contact_email_1"))
-        _append_candidate(supplier.get("contact_email_2"))
+        ``profile`` is retained in the signature because callers pass it, but is
+        deliberately no longer consulted for an address: a fallback is how the
+        old path would survive.
+        """
 
-        contacts = profile.get("contacts") if isinstance(profile, dict) else None
-        if isinstance(contacts, Sequence):
-            for contact in contacts:
-                if isinstance(contact, dict):
-                    _append_candidate(contact.get("email"))
-                    _append_candidate(contact.get("contact_email"))
-
-        return candidates[0] if candidates else None
+        contact = self._master_contact(
+            supplier.get("supplier_id") if isinstance(supplier, dict) else None
+        )
+        return contact.emails[0] if contact.emails else None
