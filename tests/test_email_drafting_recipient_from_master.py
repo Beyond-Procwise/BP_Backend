@@ -86,3 +86,42 @@ def test_the_second_master_address_is_used_when_the_first_is_absent():
     receiver = agent._resolve_receiver({"supplier_id": "SUP-4"}, {})
 
     assert receiver == "second@supplier.test"
+
+
+def test_the_master_is_consulted_once_per_supplier(monkeypatch):
+    """One draft, one lookup.
+
+    The salutation, the rendered address and the recipient all come from the
+    same resolved contact. Resolving separately for the greeting and again for
+    the recipient is a second round-trip per supplier -- and per supplier is
+    exactly the shape that becomes N+1 on a batch.
+    """
+
+    from agents.base_agent import AgentContext
+    from src.services.supplier_contact import SupplierContact
+
+    calls = []
+
+    monkeypatch.setattr(
+        EmailDraftingAgent,
+        "_master_contact",
+        lambda self, supplier_id: (
+            calls.append(supplier_id),
+            SupplierContact(emails=["quotes@acme.test"], name="Acme Sales"),
+        )[1],
+    )
+
+    EmailDraftingAgent().run(
+        AgentContext(
+            workflow_id="W",
+            agent_id="email_drafting",
+            user_id="u",
+            input_data={
+                "ranking": [{"supplier_id": "SUP-1", "supplier_name": "Acme"}],
+                "supplier_profiles": {"SUP-1": {}},
+                "policies": [],
+            },
+        )
+    )
+
+    assert calls == ["SUP-1"], f"expected one lookup, got {len(calls)}: {calls}"

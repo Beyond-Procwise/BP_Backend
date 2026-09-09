@@ -1018,7 +1018,7 @@ class EmailDraftingAgent(BaseAgent):
 
         draft_action_id = resolve_action_id(supplier) or default_action_id
 
-        receiver = self._resolve_receiver(supplier, profile)
+        receiver = self._resolve_receiver(supplier, profile, master_contact)
         recipients: List[str] = []
         if receiver:
             recipients = self._normalise_recipients([receiver])
@@ -5090,7 +5090,12 @@ class EmailDraftingAgent(BaseAgent):
             )
             return supplier_contact.SupplierContact()
 
-    def _resolve_receiver(self, supplier: Dict[str, Any], profile: Dict[str, Any]) -> Optional[str]:
+    def _resolve_receiver(
+        self,
+        supplier: Dict[str, Any],
+        profile: Dict[str, Any],
+        contact: Optional[Any] = None,
+    ) -> Optional[str]:
         """The RFQ address for a supplier, taken from the supplier master.
 
         This used to prefer ``supplier["contact_email"]`` -- a value
@@ -5108,9 +5113,15 @@ class EmailDraftingAgent(BaseAgent):
         ``profile`` is retained in the signature because callers pass it, but is
         deliberately no longer consulted for an address: a fallback is how the
         old path would survive.
+
+        ``contact`` lets a caller that has already resolved the master pass it
+        in. ``_render_supplier_draft`` needs the same record for the salutation,
+        and resolving twice is a second database round-trip per supplier --
+        which is per-supplier, and so becomes N+1 across a batch.
         """
 
-        contact = self._master_contact(
-            supplier.get("supplier_id") if isinstance(supplier, dict) else None
-        )
+        if contact is None:
+            contact = self._master_contact(
+                supplier.get("supplier_id") if isinstance(supplier, dict) else None
+            )
         return contact.emails[0] if contact.emails else None
