@@ -25,6 +25,9 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 
 
+from api.auth import require_user
+from api.endpoint_gate import require as gate
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/document", tags=["Documents"])
@@ -227,8 +230,11 @@ def _download_s3_object(client: Any, bucket: str, key: str) -> bytes:
 def extract_document_from_s3(
     req: S3DocumentExtractionRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """Download a document from S3, extract it, and persist the structured payload."""
+
+    gate("document.extract", principal, agent="DocumentsRouter")
 
     bucket = getattr(agent_nick.settings, "s3_bucket_name", None)
     if not bucket:
@@ -346,8 +352,12 @@ async def embed_documents(
     user_id: Optional[str] = Form(None),
     pipeline: RAGPipeline = Depends(get_rag_pipeline),
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """Upload, extract, embed, and register user-provided documents for the RAG pipeline."""
+
+    gate("document.upload", principal, agent="DocumentsRouter",
+         context={"files": len(files or [])})
 
     if not files:
         raise HTTPException(status_code=400, detail="At least one document must be provided")

@@ -10,7 +10,7 @@ import logging
 from dataclasses import asdict
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from src.services.link_proposals import (
     confirm_parent_link, propose_parent_links, reject_parent_link,
@@ -18,6 +18,9 @@ from src.services.link_proposals import (
 from src.services.linking_engine import (
     promote_ready, review_queue, approve_promotion, quote_chains, canonicalize_po_references,
 )
+
+from api.auth import require_user
+from api.endpoint_gate import require as gate
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +31,10 @@ router = APIRouter(prefix="/promotion", tags=["Promotion"])
 def run_promotion(
     doc_type: Optional[str] = Query(None, description="invoice | quote (default: both)"),
     limit: Optional[int] = Query(None, description="max rows per doc type"),
+    principal=Depends(require_user),
 ) -> dict[str, Any]:
+    gate("document.promote", principal, agent="PromotionRouter",
+         context={"doc_type": doc_type})
     doc_types = (doc_type,) if doc_type else ("invoice", "quote")
     if any(d not in ("invoice", "quote") for d in doc_types):
         raise HTTPException(status_code=400, detail="doc_type must be 'invoice' or 'quote'")
@@ -82,12 +88,19 @@ def post_approve(
     doc_type: str,
     doc_pk: str,
     body: dict[str, Any] = Body(default_factory=dict),
+    principal=Depends(require_user),
 ) -> dict[str, Any]:
+    gate("document.promote", principal, agent="PromotionRouter",
+         context={"doc_type": doc_type, "doc_pk": doc_pk})
     if doc_type not in ("invoice", "quote"):
         raise HTTPException(status_code=400, detail="doc_type must be 'invoice' or 'quote'")
+    # The reviewer is who signed in, not who the caller says signed in. The
+    # body value survives only as a fallback while authentication is off --
+    # this row is the record that a human released a document into _trgt.
+    reviewer = getattr(principal, "subject", None) or body.get("reviewer")
     try:
         result = approve_promotion(doc_type, doc_pk,
-                                   reviewer=body.get("reviewer"), note=body.get("note"))
+                                   reviewer=reviewer, note=body.get("note"))
     except Exception as exc:
         logger.exception("approve failed for %s %s", doc_type, doc_pk)
         raise HTTPException(status_code=500, detail=str(exc))

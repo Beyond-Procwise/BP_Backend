@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from src.services.db import get_conn
@@ -16,6 +16,8 @@ from src.services.supplier_enrichment import research as R
 
 log = logging.getLogger(__name__)
 
+from api.auth import require_user
+from api.endpoint_gate import require as gate
 router = APIRouter(prefix="/suppliers", tags=["Supplier Research"])
 
 
@@ -28,7 +30,8 @@ class RejectBody(BaseModel):
 
 
 @router.post("/research/batch")
-def batch(limit: int = 10):
+def batch(limit: int = 10, principal=Depends(require_user)):
+    gate("research.web", principal, agent="SupplierResearchRouter")
     if not _enabled():
         raise HTTPException(status_code=403, detail="supplier research disabled")
     with get_conn() as c:
@@ -72,7 +75,9 @@ def enrichment_reviews(status: str = "pending", limit: int = 50):
 
 
 @router.post("/enrichment/{enrichment_id}/apply")
-def apply(enrichment_id: int, body: RejectBody):
+def apply(enrichment_id: int, body: RejectBody, principal=Depends(require_user)):
+    gate("supplier.write", principal, agent="SupplierResearchRouter",
+         context={"enrichment_id": enrichment_id})
     """Human-approve a pending enrichment (fills empty non-sensitive fields)."""
     with get_conn() as c:
         try:
@@ -91,7 +96,9 @@ def reject(enrichment_id: int, body: RejectBody):
 
 
 @router.post("/{supplier_id}/research")
-def research(supplier_id: str):
+def research(supplier_id: str, principal=Depends(require_user)):
+    gate("research.web", principal, agent="SupplierResearchRouter",
+         context={"supplier_id": supplier_id})
     if not _enabled():
         raise HTTPException(status_code=403, detail="supplier research disabled")
     with get_conn() as c:

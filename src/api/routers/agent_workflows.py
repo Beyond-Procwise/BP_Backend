@@ -14,7 +14,7 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from orchestration.elicitation import pending_requests
@@ -25,6 +25,8 @@ from orchestration.workflow_compiler import (
 from repositories import agent_workflow_repo as repo
 from repositories import workflow_input_request_repo as reqrepo
 
+from api.auth import require_user
+from api.endpoint_gate import require as gate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent-workflows", tags=["Agent Workflows"])
@@ -86,7 +88,10 @@ def list_workflows() -> Dict[str, Any]:
 
 
 @router.post("")
-def create_workflow(body: WorkflowBody) -> Dict[str, Any]:
+def create_workflow(
+    body: WorkflowBody, principal=Depends(require_user)
+) -> Dict[str, Any]:
+    gate("workflow.save", principal, agent="AgentWorkflowsRouter")
     try:
         validate_saved_graph(body.graph)
     except GraphValidationError as exc:
@@ -105,7 +110,11 @@ def get_workflow(workflow_id: int) -> Dict[str, Any]:
 
 
 @router.put("/{workflow_id}")
-def update_workflow(workflow_id: int, body: WorkflowBody) -> Dict[str, Any]:
+def update_workflow(
+    workflow_id: int, body: WorkflowBody, principal=Depends(require_user)
+) -> Dict[str, Any]:
+    gate("workflow.save", principal, agent="AgentWorkflowsRouter",
+         context={"workflow_id": workflow_id})
     try:
         validate_saved_graph(body.graph)
     except GraphValidationError as exc:
@@ -116,13 +125,22 @@ def update_workflow(workflow_id: int, body: WorkflowBody) -> Dict[str, Any]:
 
 
 @router.delete("/{workflow_id}")
-def delete_workflow(workflow_id: int) -> Dict[str, Any]:
+def delete_workflow(
+    workflow_id: int, principal=Depends(require_user)
+) -> Dict[str, Any]:
+    gate("workflow.save", principal, agent="AgentWorkflowsRouter",
+         context={"workflow_id": workflow_id, "deleting": True})
     repo.soft_delete(workflow_id)
     return {"ok": True}
 
 
 @router.post("/{workflow_id}/run")
-def run_workflow(workflow_id: int, body: RunBody, request: Request) -> Dict[str, Any]:
+def run_workflow(
+    workflow_id: int, body: RunBody, request: Request,
+    principal=Depends(require_user),
+) -> Dict[str, Any]:
+    gate("workflow.run", principal, agent="AgentWorkflowsRouter",
+         context={"workflow_id": workflow_id})
     wf = repo.get(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="No such workflow")
