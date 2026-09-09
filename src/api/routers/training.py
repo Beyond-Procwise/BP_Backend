@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from api.auth import require_user
+from api.endpoint_gate import require as gate
 from services.model_training_endpoint import ModelTrainingEndpoint
 
 router = APIRouter(prefix="/training", tags=["Model Training"])
@@ -99,8 +101,15 @@ def trigger_training_dispatch(
         description="Optional dispatch configuration",
     ),
     endpoint: ModelTrainingEndpoint = Depends(_get_training_endpoint),
+    principal=Depends(require_user),
 ) -> TrainingDispatchResponse:
-    """Trigger queued model training jobs on demand."""
+    """Trigger queued model training jobs on demand.
+
+    Gated: retraining changes what every agent in the product says next, and
+    until now nothing checked who asked for it.
+    """
+
+    gate("model.train", principal, agent="TrainingRouter")
 
     limit = request.limit
     result = endpoint.dispatch(force=True, limit=limit)

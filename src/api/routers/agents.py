@@ -14,6 +14,9 @@ from orchestration.orchestrator import Orchestrator
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 
+from api.auth import require_user
+from api.endpoint_gate import require as gate
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["Agents"])
@@ -114,8 +117,15 @@ async def get_agent_manifest(agent_name: str, orchestrator: Orchestrator = Depen
 
 
 @router.post("/reload-policies")
-async def reload_policies(agent_nick=Depends(get_agent_nick)):
-    """Reload policy configurations"""
+async def reload_policies(
+    agent_nick=Depends(get_agent_nick), principal=Depends(require_user)
+):
+    """Reload policy configurations.
+
+    Gated: this re-reads the rules that govern every other decision in the
+    product, so it is the sharpest configure action there is.
+    """
+    gate("policy.reload", principal, agent="AgentsRouter")
     try:
         agent_nick.policy_engine.reload_policies()
         return {"status": "success", "message": "Policies reloaded"}
@@ -138,8 +148,11 @@ def _do_reload_governance(agent_nick) -> Dict[str, Any]:
 
 
 @router.post("/reload-governance")
-async def reload_governance(agent_nick=Depends(get_agent_nick)):
+async def reload_governance(
+    agent_nick=Depends(get_agent_nick), principal=Depends(require_user)
+):
     """Reload both prompt and policy governance from the bp_ tables."""
+    gate("prompt.write", principal, agent="AgentsRouter")
     try:
         return {"status": "success", **_do_reload_governance(agent_nick)}
     except Exception as e:  # pragma: no cover - defensive
@@ -306,7 +319,10 @@ async def creatable_bases():
 
 @router.post("")
 async def create_agent(
-    body: CreateAgentBody, request: Request, agent_nick=Depends(get_agent_nick)
+    body: CreateAgentBody,
+    request: Request,
+    agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """Create a DERIVED agent: a new catalogue entry backed by an existing
     agent class, plus a bp_prompt row carrying its instructions.
@@ -315,6 +331,9 @@ async def create_agent(
     compiler validates, the engine resolves from the live registry, and
     governance links through prompt_linked_agents — all existing paths.
     """
+    gate("agent.create", principal, agent="AgentsRouter",
+         context={"name": (body.name or "").strip()})
+
     from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
 
     name = (body.name or "").strip()
@@ -528,7 +547,10 @@ async def create_agent(
 
 @router.delete("/{slug}")
 async def delete_agent(
-    slug: str, request: Request, agent_nick=Depends(get_agent_nick)
+    slug: str,
+    request: Request,
+    agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """Delete a DERIVED agent: the exact reverse of POST /agents.
 
@@ -538,6 +560,7 @@ async def delete_agent(
     A derived agent still referenced by a saved workflow 409s instead of
     cascade-deleting the workflow — workflows are never silently destroyed.
     """
+    gate("agent.delete", principal, agent="AgentsRouter", context={"slug": slug})
     from agents.definitions import DEFINITIONS_PATH, load_agent_definitions
 
     definitions = load_agent_definitions()

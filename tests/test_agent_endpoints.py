@@ -395,7 +395,7 @@ def test_email_dispatch_detects_workflow_mismatch(monkeypatch):
     assert detail["stored_workflow_id"] == "wf-stored"
 
 
-def test_reload_governance_reloads_both_engines():
+def test_reload_governance_reloads_both_engines(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from types import SimpleNamespace
@@ -414,6 +414,13 @@ def test_reload_governance_reloads_both_engines():
 
     app = FastAPI()
     app.include_router(agents_router.router)
+    # Reloading governance is now a `prompt.write`, so the endpoint resolves a
+    # principal and asks the gate. Both are pinned here the way the dispatch
+    # test below already does it: require_user's global `_mode` is
+    # test-order-sensitive, and the gate has its own suite
+    # (tests/guardrails/test_endpoint_gate.py). This test is about the reload.
+    app.dependency_overrides[require_user] = lambda: None
+    monkeypatch.setattr(agents_router, "gate", lambda *a, **k: None)
     app.state.agent_nick = SimpleNamespace(
         prompt_engine=prompt_engine,
         policy_engine=policy_engine,
