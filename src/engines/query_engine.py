@@ -38,7 +38,21 @@ configure_gpu()
 # Columns expected on ``proc.bp_supplier``. The list mirrors the schema so that the
 # query can explicitly project each field rather than relying on ``s.*`` which
 # tends to be brittle across database revisions.
-SUPPLIER_FIELDS = [
+#
+# Banking detail is held out of the default projection. The frame
+# ``fetch_supplier_data`` returns becomes ``input_data["supplier_data"]`` -- the
+# shared workflow blackboard every agent reads from -- so a column projected here
+# reaches every downstream prompt and every serialised run record. Ranking
+# competing quotes needs no account number. A caller that genuinely needs these
+# asks for them by name via ``include_restricted=True``.
+SUPPLIER_FIELDS_RESTRICTED = [
+    "bank_name",
+    "bank_account_number",
+    "bank_swift",
+    "bank_iban",
+]
+
+SUPPLIER_FIELDS_SAFE = [
     "supplier_id",
     "supplier_name",
     "trading_name",
@@ -62,10 +76,6 @@ SUPPLIER_FIELDS = [
     "insurance_coverage_type",
     "insurance_coverage_amount",
     "insurance_expiry_date",
-    "bank_name",
-    "bank_account_number",
-    "bank_swift",
-    "bank_iban",
     "default_currency",
     "incoterms",
     "delivery_lead_time_days",
@@ -91,6 +101,11 @@ SUPPLIER_FIELDS = [
     "last_modified_by",
     "last_modified_date",
 ]
+
+# The complete schema mirror. This is NOT the default projection -- see
+# ``SUPPLIER_FIELDS_SAFE``, which is what ``fetch_supplier_data`` selects unless
+# the caller opts in to the restricted columns.
+SUPPLIER_FIELDS = SUPPLIER_FIELDS_SAFE + SUPPLIER_FIELDS_RESTRICTED
 
 
 PROCUREMENT_CATEGORY_FIELDS = [
@@ -268,7 +283,9 @@ class QueryEngine(BaseEngine):
             logger.exception("quantity column detection failed")
         return "1"
 
-    def fetch_supplier_data(self, input_data: dict = None) -> pd.DataFrame:
+    def fetch_supplier_data(
+        self, input_data: dict = None, *, include_restricted: bool = False
+    ) -> pd.DataFrame:
         """Return up-to-date supplier metrics.
 
         ``input_data`` may contain ``supplier_candidates`` and
@@ -276,6 +293,11 @@ class QueryEngine(BaseEngine):
         ``OpportunityMinerAgent``.  When provided the result set is filtered so
         that downstream agents only receive rows linked to the opportunity flow
         and any missing suppliers are synthesised from the directory payload.
+
+        The projection defaults to :data:`SUPPLIER_FIELDS_SAFE`.  Banking detail
+        (:data:`SUPPLIER_FIELDS_RESTRICTED`) is returned only when
+        ``include_restricted`` is set, because this frame is placed on the shared
+        workflow context and is read by agents that have no use for it.
         """
 
         candidate_ids: set[str] = set()
@@ -329,7 +351,10 @@ class QueryEngine(BaseEngine):
                 for mandatory in ("supplier_id", "supplier_name"):
                     if mandatory not in supplier_projection:
                         supplier_projection.append(mandatory)
-                for field in SUPPLIER_FIELDS:
+                projected_fields = list(SUPPLIER_FIELDS_SAFE)
+                if include_restricted:
+                    projected_fields += SUPPLIER_FIELDS_RESTRICTED
+                for field in projected_fields:
                     if (
                         field in supplier_cols_set
                         and field not in {"supplier_id", "supplier_name"}

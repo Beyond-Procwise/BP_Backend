@@ -602,3 +602,111 @@ def test_fetch_invoice_data_survives_missing_supplier_name_column(monkeypatch):
 
     assert df.loc[0, "supplier_name"] == "Acme Ltd"
     assert "supplier_name_master" not in df.columns
+
+
+# ---------------------------------------------------------------------------
+# Restricted supplier columns
+#
+# ``fetch_supplier_data`` feeds ``input_data["supplier_data"]`` -- the shared
+# workflow blackboard every agent reads from. Ranking competing quotes needs no
+# banking detail, so the default projection must not carry it: an IBAN placed on
+# the blackboard is an IBAN in every agent's prompt context and every serialised
+# run record.
+# ---------------------------------------------------------------------------
+
+_BANK_COLUMNS = ("bank_name", "bank_account_number", "bank_swift", "bank_iban")
+
+# What ``proc.bp_supplier`` actually holds. Deliberately spelled out here rather
+# than imported from the engine, so these tests fail on the projection changing
+# rather than passing vacuously alongside it.
+_SUPPLIER_MASTER_COLUMNS = (
+    "supplier_id",
+    "supplier_name",
+    "trading_name",
+    "risk_score",
+    "delivery_lead_time_days",
+    "default_currency",
+    "bank_name",
+    "bank_account_number",
+    "bank_swift",
+    "bank_iban",
+    "contact_name_1",
+    "contact_email_1",
+)
+
+
+def _supplier_frame(monkeypatch, **kwargs):
+    """Build a supplier frame against a database that returns what was projected.
+
+    The fake reader answers with exactly the columns the generated SQL selects
+    from the supplier alias, which is what a real database would do -- so a
+    column reaching the frame means the projection asked for it.
+    """
+
+    import re
+
+    import engines.query_engine as qe_module
+
+    engine = QueryEngine(
+        agent_nick=types.SimpleNamespace(get_db_connection=lambda: DummyContext())
+    )
+    monkeypatch.setattr(engine, "_price_expression", lambda *a, **k: "0")
+    monkeypatch.setattr(engine, "_quantity_expression", lambda *a, **k: "1")
+    monkeypatch.setattr(
+        engine,
+        "_get_columns",
+        lambda conn, schema, table: list(_SUPPLIER_MASTER_COLUMNS),
+    )
+
+    captured = {}
+
+    def fake_read_sql(sql, conn, params=None):
+        captured["sql"] = sql
+        projected = list(dict.fromkeys(re.findall(r"\bs\.([a-z0-9_]+)", sql)))
+        return pd.DataFrame({column: [] for column in projected})
+
+    monkeypatch.setattr(qe_module, "read_sql_compat", fake_read_sql)
+
+    return engine.fetch_supplier_data(**kwargs), captured["sql"]
+
+
+def test_supplier_frame_omits_bank_columns_by_default(monkeypatch):
+    """The default frame carries no banking detail, and never asks for any."""
+
+    df, sql = _supplier_frame(monkeypatch)
+
+    leaked = [column for column in _BANK_COLUMNS if column in df.columns]
+    assert leaked == [], f"banking columns reached the shared frame: {leaked}"
+
+    # Not merely dropped after the fact -- the query must not select them.
+    projected = [column for column in _BANK_COLUMNS if column in sql]
+    assert projected == [], f"banking columns projected in SQL: {projected}"
+
+
+def test_supplier_frame_includes_bank_columns_when_explicitly_requested(monkeypatch):
+    """A caller that genuinely needs banking detail must ask for it by name."""
+
+    df, sql = _supplier_frame(monkeypatch, include_restricted=True)
+
+    missing = [column for column in _BANK_COLUMNS if column not in df.columns]
+    assert missing == [], f"opt-in did not return: {missing}"
+
+
+def test_supplier_frame_still_carries_contact_columns(monkeypatch):
+    """Contact columns stay in the default projection -- for now.
+
+    ``SupplierRankingAgent._prepare_ranking_entry`` reads ``contact_name_1`` /
+    ``contact_email_1`` off this frame and republishes them as ``contact_name`` /
+    ``contact_email`` on each ranking entry; ``EmailDraftingAgent._resolve_receiver``
+    then takes ``contact_email`` as the RFQ recipient address. Restricting them
+    here would silently blank out who RFQs are addressed to, so it waits on the
+    email path resolving its own recipient by ``supplier_id``.
+
+    This test exists to make that deferral visible: when the email path is fixed,
+    it should fail, and the columns should move to SUPPLIER_FIELDS_RESTRICTED.
+    """
+
+    df, _ = _supplier_frame(monkeypatch)
+
+    assert "contact_name_1" in df.columns
+    assert "contact_email_1" in df.columns
