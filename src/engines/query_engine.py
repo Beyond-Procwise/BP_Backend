@@ -39,17 +39,32 @@ configure_gpu()
 # query can explicitly project each field rather than relying on ``s.*`` which
 # tends to be brittle across database revisions.
 #
-# Banking detail is held out of the default projection. The frame
-# ``fetch_supplier_data`` returns becomes ``input_data["supplier_data"]`` -- the
-# shared workflow blackboard every agent reads from -- so a column projected here
-# reaches every downstream prompt and every serialised run record. Ranking
-# competing quotes needs no account number. A caller that genuinely needs these
-# asks for them by name via ``include_restricted=True``.
+# Banking detail and personal contact detail are held out of the default
+# projection. The frame ``fetch_supplier_data`` returns becomes
+# ``input_data["supplier_data"]`` -- the shared workflow blackboard every agent
+# reads from -- so a column projected here reaches every downstream prompt and
+# every serialised run record. Ranking competing quotes needs no account number
+# and no named individual's address. A caller that genuinely needs these asks
+# for them by name via ``include_restricted=True``.
+#
+# The contact columns joined this list once the email path stopped depending on
+# them: drafting resolves its recipient from proc.bp_supplier by supplier_id
+# (services/supplier_contact), which is the source policy #674 requires, and
+# ranking entries no longer republish an address they were only carrying so that
+# drafting could read it back.
 SUPPLIER_FIELDS_RESTRICTED = [
     "bank_name",
     "bank_account_number",
     "bank_swift",
     "bank_iban",
+    "contact_name_1",
+    "contact_role_1",
+    "contact_email_1",
+    "contact_phone_1",
+    "contact_name_2",
+    "contact_role_2",
+    "contact_email_2",
+    "contact_phone_2",
 ]
 
 SUPPLIER_FIELDS_SAFE = [
@@ -88,14 +103,6 @@ SUPPLIER_FIELDS_SAFE = [
     "edi_enabled",
     "api_enabled",
     "ariba_integrated",
-    "contact_name_1",
-    "contact_role_1",
-    "contact_email_1",
-    "contact_phone_1",
-    "contact_name_2",
-    "contact_role_2",
-    "contact_email_2",
-    "contact_phone_2",
     "created_date",
     "created_by",
     "last_modified_by",

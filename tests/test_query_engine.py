@@ -615,6 +615,7 @@ def test_fetch_invoice_data_survives_missing_supplier_name_column(monkeypatch):
 # ---------------------------------------------------------------------------
 
 _BANK_COLUMNS = ("bank_name", "bank_account_number", "bank_swift", "bank_iban")
+_CONTACT_COLUMNS = ("contact_name_1", "contact_email_1")
 
 # What ``proc.bp_supplier`` actually holds. Deliberately spelled out here rather
 # than imported from the engine, so these tests fail on the projection changing
@@ -692,21 +693,36 @@ def test_supplier_frame_includes_bank_columns_when_explicitly_requested(monkeypa
     assert missing == [], f"opt-in did not return: {missing}"
 
 
-def test_supplier_frame_still_carries_contact_columns(monkeypatch):
-    """Contact columns stay in the default projection -- for now.
+def test_supplier_frame_omits_contact_columns_by_default(monkeypatch):
+    """Personal contact detail is not on the shared blackboard either.
 
-    ``SupplierRankingAgent._prepare_ranking_entry`` reads ``contact_name_1`` /
-    ``contact_email_1`` off this frame and republishes them as ``contact_name`` /
-    ``contact_email`` on each ranking entry; ``EmailDraftingAgent._resolve_receiver``
-    then takes ``contact_email`` as the RFQ recipient address. Restricting them
-    here would silently blank out who RFQs are addressed to, so it waits on the
-    email path resolving its own recipient by ``supplier_id``.
+    This test used to assert the opposite, and said why: ranking republished
+    ``contact_name_1`` / ``contact_email_1`` off this frame, and drafting took
+    the republished address as the RFQ recipient, so restricting them here would
+    have blanked out who mail was addressed to. It named the condition for
+    lifting the deferral -- the email path resolving its own recipient by
+    ``supplier_id`` -- and that condition is now met: drafting resolves through
+    ``services/supplier_contact`` and ranking entries carry no contact fields.
 
-    This test exists to make that deferral visible: when the email path is fixed,
-    it should fail, and the columns should move to SUPPLIER_FIELDS_RESTRICTED.
+    So the deferral is over. ~5,000 supplier contact addresses no longer travel
+    through every downstream prompt and every serialised run record to reach a
+    consumer that no longer reads them.
     """
 
-    df, _ = _supplier_frame(monkeypatch)
+    df, sql = _supplier_frame(monkeypatch)
 
-    assert "contact_name_1" in df.columns
-    assert "contact_email_1" in df.columns
+    leaked = [column for column in _CONTACT_COLUMNS if column in df.columns]
+    assert leaked == [], f"contact columns reached the shared frame: {leaked}"
+
+    # Not merely dropped after the fact -- the query must not select them.
+    projected = [column for column in _CONTACT_COLUMNS if column in sql]
+    assert projected == [], f"contact columns projected in SQL: {projected}"
+
+
+def test_supplier_frame_includes_contact_columns_when_explicitly_requested(monkeypatch):
+    """The send path asks by name; it does not read them off a shared frame."""
+
+    df, _ = _supplier_frame(monkeypatch, include_restricted=True)
+
+    missing = [column for column in _CONTACT_COLUMNS if column not in df.columns]
+    assert missing == [], f"opt-in did not return: {missing}"
