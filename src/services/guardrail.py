@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from src.services import rbac
+from src.services import policy_observation, rbac
 
 logger = logging.getLogger(__name__)
 
@@ -97,14 +98,20 @@ def deny_from_policy(
     return Decision(allowed=False, reason=reason, evidence=dict(evidence), **attribution)
 
 
-def authorize(
+def _evaluate(
     action: str,
     action_class: str,
     principal: Optional[Any],
     context: Optional[Dict[str, Any]] = None,
     policy_engine: Optional[Any] = None,
 ) -> Decision:
-    """Decide whether ``principal`` may perform ``action``.
+    """The real decision, with no knowledge of shadow mode.
+
+    Split out of ``authorize`` unchanged. Shadow mode is decided once, at the
+    boundary, rather than threaded through the evaluation logic -- a mode check
+    scattered through here is how a deliberate hole becomes an accidental one.
+
+    Decide whether ``principal`` may perform ``action``.
 
     ``context`` is accepted for interface symmetry with callers that carry
     request-scoped data, but is not read by this function today. It is
@@ -236,9 +243,155 @@ def authorize(
         )
 
     except Exception as exc:  # noqa: BLE001 - a broken gate is a closed gate
-        logger.error("guardrail.authorize(%s) failed: %s", action, exc)
+        logger.error("guardrail evaluation of %s failed: %s", action, exc)
         return _deny(
             "policy evaluation failed; denying",
             action=action,
             error=str(exc),
         )
+
+
+# ---------------------------------------------------------------------------
+# Shadow mode
+#
+# A deliberate hole, so the rules around it are stated in code rather than left
+# to configuration:
+#
+#   * These two actions can never be shadowed. They are enforced today at four
+#     call sites and are the only things in this product that reliably refuse.
+#     A list in a policy row could enrol them by accident or by edit; this
+#     cannot.
+#   * An enrolment without an expiry is not an enrolment. Shadow mode must not
+#     become the permanent state because nobody got round to the next step.
+#   * No record, no shadow. Allowing without recording gives neither the safety
+#     of the refusal nor the data it was traded for.
+# ---------------------------------------------------------------------------
+
+NEVER_SHADOW = frozenset({"email.send", "approval.email"})
+
+_SHADOW_SLUG = "shadow_mode"
+
+
+def _shadow_expiry(action: str, engine: Optional[Any]) -> Optional[datetime]:
+    """When this action's shadow enrolment ends, or ``None`` if it is not enrolled."""
+
+    if action in NEVER_SHADOW or engine is None:
+        return None
+    try:
+        policy = engine.get_policy(_SHADOW_SLUG)
+        rules = ((policy or {}).get("details") or {}).get("rules") or {}
+        for entry in rules.get("shadow_actions") or []:
+            if not isinstance(entry, dict) or entry.get("action") != action:
+                continue
+            raw = entry.get("until")
+            if not raw:
+                # A missing expiry is not an unlimited one.
+                return None
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+    except Exception as exc:  # noqa: BLE001 - unreadable config means enforce
+        logger.error("shadow config unreadable for %s: %s", action, exc)
+    return None
+
+
+def shadow_status(engine: Optional[Any] = None) -> Dict[str, Any]:
+    """What is enrolled and until when. Surfaced on /health.
+
+    A control that is off must be visible, not something discovered by reading
+    code -- the same reason ``ask_auth`` is reported there.
+    """
+
+    resolved = engine if engine is not None else rbac.policy_engine()
+    out: Dict[str, Any] = {"enrolled": [], "never_shadowed": sorted(NEVER_SHADOW)}
+    try:
+        policy = resolved.get_policy(_SHADOW_SLUG) if resolved else None
+        rules = ((policy or {}).get("details") or {}).get("rules") or {}
+        now = datetime.now(timezone.utc)
+        for entry in rules.get("shadow_actions") or []:
+            if not isinstance(entry, dict):
+                continue
+            action = entry.get("action")
+            expiry = _shadow_expiry(str(action or ""), resolved)
+            out["enrolled"].append(
+                {
+                    "action": action,
+                    "until": entry.get("until"),
+                    "active": bool(expiry and expiry > now),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = str(exc)
+    return out
+
+
+def authorize(
+    action: str,
+    action_class: str,
+    principal: Optional[Any],
+    context: Optional[Dict[str, Any]] = None,
+    policy_engine: Optional[Any] = None,
+) -> Decision:
+    """Decide whether ``principal`` may perform ``action``, and write it down.
+
+    The decision itself is ``_evaluate``'s and is not influenced by anything
+    here. This function records what was decided and, for an action explicitly
+    enrolled in shadow mode with an unexpired entry, declines to apply a denial
+    so the effect of a rule can be measured before it is felt.
+
+    Every decision is recorded, allows included: "we observed no denials" and
+    "we were not observing" are otherwise the same observation.
+    """
+
+    decision = _evaluate(action, action_class, principal, context, policy_engine)
+
+    engine = policy_engine if policy_engine is not None else rbac.policy_engine()
+    expiry = _shadow_expiry(action, engine) if not decision.allowed else None
+    shadowed = bool(expiry and expiry > datetime.now(timezone.utc))
+
+    try:
+        recorded = policy_observation.record(
+            action=action,
+            action_class=action_class,
+            principal_subject=getattr(principal, "subject", None),
+            role=(decision.evidence or {}).get("role"),
+            would_have_denied=not decision.allowed,
+            shadowed=shadowed,
+            policy_id=decision.policy_id,
+            policy_name=decision.policy_name,
+            policy_version=decision.policy_version,
+            reason=decision.reason,
+            evidence=decision.evidence,
+        )
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not break the gate
+        logger.error("policy observation failed for %s: %s", action, exc)
+        recorded = False
+
+    if not shadowed:
+        return decision
+
+    if not recorded:
+        # No record, no shadow. Allowing here would spend the refusal and buy
+        # nothing with it.
+        logger.warning(
+            "shadow mode for %s could not be recorded; the denial stands", action
+        )
+        return decision
+
+    logger.info(
+        "SHADOW: %s would have been denied (%s) and was allowed through",
+        action,
+        decision.reason,
+    )
+    return Decision(
+        allowed=True,
+        reason=(
+            f"shadow mode: this would have been denied -- {decision.reason} -- "
+            f"and was allowed through so the effect could be measured"
+        ),
+        policy_id=decision.policy_id,
+        policy_name=decision.policy_name,
+        policy_version=decision.policy_version,
+        evidence={**(decision.evidence or {}), "shadowed": True},
+    )

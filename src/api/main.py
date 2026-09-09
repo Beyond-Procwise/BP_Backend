@@ -723,6 +723,21 @@ app.add_middleware(OutputSafetyMiddleware)
 def read_root(): return {"message": "Welcome to the ProcWise Agentic System API"}
 
 
+def _shadow_status():
+    """Shadow-mode enrolments, or why they could not be read.
+
+    Never raises: /health must answer even when the policy store cannot.
+    """
+
+    try:
+        from services import guardrail
+
+        return guardrail.shadow_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("shadow status unavailable: %s", exc)
+        return {"error": "unavailable"}
+
+
 @app.get("/health", tags=["General"])
 def health():
     state = app.state
@@ -744,6 +759,11 @@ def health():
         # deployment state someone must be able to see without probing the API.
         # No pool ids or issuer here — this endpoint needs no auth itself.
         "ask_auth": _ask_auth.auth_mode(),
+        # Which actions are being observed rather than enforced, and until when.
+        # Reported for the same reason ask_auth is: a control that is off is a
+        # deployment state someone must be able to see without reading code.
+        # Action names only — no policy content, no principals.
+        "shadow_mode": _shadow_status(),
         # Honest surface for features that lost a dependency they can never have. It stays
         # honest — the capability is still named, and it still says it is degraded — but the
         # *reason* no longer ships. It used to read "proc.agent table does not exist; …
