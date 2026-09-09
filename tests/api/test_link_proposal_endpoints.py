@@ -116,3 +116,62 @@ def test_confirming_an_unknown_document_is_a_404(monkeypatch):
                     json={"po_id": "PO-1"})
 
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Saying no
+# ---------------------------------------------------------------------------
+def test_rejecting_a_proposal_reports_what_was_recorded(monkeypatch):
+    monkeypatch.setattr(f"{_MOD}.reject_parent_link",
+                        lambda *a, **kw: {"status": "rejected", "doc_type": "invoice",
+                                          "doc_pk": "INV-1", "po_id": "PO-1",
+                                          "rejected_by": "ana"})
+
+    r = client.post("/promotion/link-proposals/invoice/INV-1/reject",
+                    json={"po_id": "PO-1", "reviewer": "ana", "note": "different site"})
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "rejected"
+
+
+def test_rejecting_without_naming_an_order_is_rejected():
+    """Rejecting a document rather than a pairing would suppress every order it
+    could ever be offered, which is not what the button says."""
+    r = client.post("/promotion/link-proposals/invoice/INV-1/reject", json={})
+
+    assert r.status_code == 400
+
+
+def test_a_refused_rejection_is_a_conflict(monkeypatch):
+    monkeypatch.setattr(f"{_MOD}.reject_parent_link",
+                        lambda *a, **kw: {"status": "refused",
+                                          "detail": "PO-9 was not proposed"})
+
+    r = client.post("/promotion/link-proposals/invoice/INV-1/reject",
+                    json={"po_id": "PO-9"})
+
+    assert r.status_code == 409
+
+
+def test_rejecting_an_unknown_document_is_a_404(monkeypatch):
+    monkeypatch.setattr(f"{_MOD}.reject_parent_link",
+                        lambda *a, **kw: {"status": "not_found", "detail": "no such invoice"})
+
+    r = client.post("/promotion/link-proposals/invoice/NOPE/reject",
+                    json={"po_id": "PO-1"})
+
+    assert r.status_code == 404
+
+
+def test_the_two_decisions_are_separate_endpoints(monkeypatch):
+    """A shared endpoint taking a verb is how a client ends up sending the wrong one.
+    Confirming writes a reference; rejecting must never be able to."""
+    called = []
+    monkeypatch.setattr(f"{_MOD}.confirm_parent_link",
+                        lambda *a, **kw: called.append("confirm") or {"status": "linked"})
+    monkeypatch.setattr(f"{_MOD}.reject_parent_link",
+                        lambda *a, **kw: called.append("reject") or {"status": "rejected"})
+
+    client.post("/promotion/link-proposals/invoice/INV-1/reject", json={"po_id": "PO-1"})
+
+    assert called == ["reject"]

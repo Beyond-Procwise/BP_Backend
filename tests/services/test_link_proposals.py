@@ -290,9 +290,10 @@ class _Cursor:
     _INV_COLS = ("invoice_id", "supplier_id", "po_id", "converted_amount_usd",
                  "invoice_amount", "currency")
 
-    def __init__(self, invoices, pos, billed_rows=()):
+    def __init__(self, invoices, pos, billed_rows=(), rejections=()):
         self._invoices, self._pos = invoices, pos
         self._billed_rows = billed_rows
+        self._rejections = rejections
         self.description = None
         self._rows = []
         self.writes = []          # every update this cursor was asked to make
@@ -307,7 +308,11 @@ class _Cursor:
             self.writes.append((sql, params))
             self.description, self._rows = None, []
             return
-        if "purchase_order" in low:
+        if "bp_link_rejection" in low:
+            cols = ("doc_type", "doc_pk", "po_id")
+            self.description = [(c,) for c in cols]
+            self._rows = list(self._rejections)
+        elif "purchase_order" in low:
             cols = ("po_id", "supplier_id", "converted_amount_usd", "total_amount",
                     "currency")
             self.description = [(c,) for c in cols]
@@ -416,8 +421,10 @@ class _ConfirmCursor:
         self._rows = []
 
     def execute(self, sql, params=()):
-        low = sql.lower()
-        if low.startswith("update"):
+        low = sql.lower().strip()
+        # Anything that changes the database, not only the confirm's UPDATE — a test
+        # asserting "nothing was written" must see an INSERT too.
+        if low.startswith(("update", "insert", "create", "delete")):
             self.writes.append((sql, params))
             self.description, self._rows = None, []
             return
@@ -704,7 +711,11 @@ def test_the_pass_does_not_read_once_per_supplier():
     lp._propose(_CountingConn(large), "invoice", None)
 
     assert large.queries == small.queries
-    assert large.queries <= 10
+    # A fixed budget, whatever the corpus: two reads for the unreferenced documents
+    # (both tiers), one for the orders, two for what is billed against them, two for
+    # the document line items, one for the order line items, and three for the
+    # savepoint-fenced rejection read.
+    assert large.queries <= 12
 
 
 def test_reading_the_corpus_at_once_proposes_exactly_what_reading_it_supplier_by_supplier_did(
@@ -832,3 +843,207 @@ def test_a_proposal_obtained_at_a_lower_bar_cannot_be_confirmed(monkeypatch):
 
     assert result["status"] == "refused"
     assert cur.writes == []
+
+
+# ---------------------------------------------------------------------------
+# Saying no
+# ---------------------------------------------------------------------------
+# Without this the queue could not be cleared: a proposal a person disagreed with came
+# back on every load, and the only way to make it stop was to accept it. Rejecting is
+# the other half of the decision, and the only part of it worth storing — the proposal
+# itself is derived and recomputed every pass.
+def _rejecting(monkeypatch, proposals=None, rows=()):
+    """Stub the two things the reject path reaches for outside itself."""
+    if proposals is not None:
+        monkeypatch.setattr(lp, "_proposals_for_document", lambda cur, dt, doc: proposals)
+    recorded = []
+    monkeypatch.setattr(lp, "record_action", lambda **kw: recorded.append(kw))
+    return recorded
+
+
+def test_a_rejected_pair_is_never_proposed_again():
+    """The whole point. A person said no, so the engine stops asking."""
+    invoices = [{"invoice_id": "INV-1", "supplier_id": "SUP-A", "po_id": None}]
+    pos = [{"po_id": "PO-1", "supplier_id": "SUP-A"}]
+
+    proposals = lp.propose_links(invoices, pos, min_score=40.0,
+                                 scorer=_scorer({("INV-1", "PO-1"): 90.0}),
+                                 rejected={("invoice", "INV-1", "PO-1")})
+
+    assert proposals == []
+
+
+def test_rejecting_one_order_does_not_reject_the_document():
+    """"Not this order" is not "this document belongs nowhere". The runner-up is
+    exactly what the person should be shown next."""
+    invoices = [{"invoice_id": "INV-1", "supplier_id": "SUP-A", "po_id": None}]
+    pos = [{"po_id": "PO-1", "supplier_id": "SUP-A"}, {"po_id": "PO-2", "supplier_id": "SUP-A"}]
+
+    proposals = lp.propose_links(invoices, pos, min_score=40.0,
+                                 scorer=_scorer({("INV-1", "PO-1"): 90.0,
+                                                 ("INV-1", "PO-2"): 70.0}),
+                                 rejected={("invoice", "INV-1", "PO-1")})
+
+    assert [(p.doc_pk, p.po_id) for p in proposals] == [("INV-1", "PO-2")]
+    # And the rejected order is not offered as an alternative either.
+    assert proposals[0].alternatives == ()
+
+
+def test_one_person_s_rejection_does_not_silence_another_document():
+    """The suppression is a pair, not a document and not an order."""
+    invoices = [{"invoice_id": "INV-1", "supplier_id": "SUP-A", "po_id": None},
+                {"invoice_id": "INV-2", "supplier_id": "SUP-A", "po_id": None}]
+    pos = [{"po_id": "PO-1", "supplier_id": "SUP-A"}]
+
+    proposals = lp.propose_links(invoices, pos, min_score=40.0,
+                                 scorer=_scorer({("INV-1", "PO-1"): 90.0,
+                                                 ("INV-2", "PO-1"): 88.0}),
+                                 rejected={("invoice", "INV-1", "PO-1")})
+
+    assert [(p.doc_pk, p.po_id) for p in proposals] == [("INV-2", "PO-1")]
+
+
+def test_rejecting_records_who_said_no_and_why(monkeypatch):
+    cur = _ConfirmCursor([{"invoice_id": "INV-1", "po_id": None, "supplier_id": "SUP-A"}], None)
+    recorded = _rejecting(monkeypatch, [_proposal("PO-1")])
+
+    result = lp.reject_parent_link("invoice", "INV-1", "PO-1", reviewer="ana",
+                                   note="different site", conn=_ConfirmConn(cur))
+
+    assert result["status"] == "rejected"
+    assert len(recorded) == 1
+    details = recorded[0]["details"]
+    assert details["rejected_by"] == "ana"
+    assert details["po_id"] == "PO-1"
+    assert details["note"] == "different site"
+    # The suppression is stored, not merely logged: an action row is an event, and the
+    # next pass has to be able to ASK whether this pair was refused.
+    assert any("bp_link_rejection" in w[0] for w in cur.writes)
+
+
+def test_rejecting_never_writes_a_reference(monkeypatch):
+    """Saying no must not touch the document. The one way this could go badly wrong
+    is a reject that shares the confirm's write by accident."""
+    cur = _ConfirmCursor([{"invoice_id": "INV-1", "po_id": None, "supplier_id": "SUP-A"}], None)
+    _rejecting(monkeypatch, [_proposal("PO-1")])
+
+    lp.reject_parent_link("invoice", "INV-1", "PO-1", conn=_ConfirmConn(cur))
+
+    assert not any("bp_invoice" in w[0] for w in cur.writes)
+
+
+def test_an_order_that_was_never_proposed_cannot_be_rejected(monkeypatch):
+    """The same lock as the confirm, for the same reason: you can only answer what
+    the engine actually put in front of you. Otherwise this is an open door for
+    suppressing links nobody ever suggested."""
+    cur = _ConfirmCursor([{"invoice_id": "INV-1", "po_id": None, "supplier_id": "SUP-A"}], None)
+    _rejecting(monkeypatch, [_proposal("PO-1")])
+
+    result = lp.reject_parent_link("invoice", "INV-1", "PO-999", conn=_ConfirmConn(cur))
+
+    assert result["status"] == "refused"
+    assert cur.writes == []
+
+
+def test_a_document_that_already_names_an_order_cannot_be_rejected(monkeypatch):
+    cur = _ConfirmCursor([{"invoice_id": "INV-1", "po_id": "PO-7", "supplier_id": "SUP-A"}], None)
+    _rejecting(monkeypatch, [_proposal("PO-1")])
+
+    result = lp.reject_parent_link("invoice", "INV-1", "PO-1", conn=_ConfirmConn(cur))
+
+    assert result["status"] == "refused"
+    assert cur.writes == []
+
+
+def test_rejecting_the_same_pair_twice_is_not_an_error(monkeypatch):
+    """A double-click, or two people reaching the same conclusion. The second one
+    must not blow up, and must not create a second row."""
+    cur = _ConfirmCursor([{"invoice_id": "INV-1", "po_id": None, "supplier_id": "SUP-A"}], None)
+    _rejecting(monkeypatch, [_proposal("PO-1")])
+
+    lp.reject_parent_link("invoice", "INV-1", "PO-1", conn=_ConfirmConn(cur))
+    inserts = [w[0] for w in cur.writes if w[0].lower().strip().startswith("insert")]
+
+    assert len(inserts) == 1
+    assert "on conflict" in inserts[0].lower()
+
+
+def test_the_pass_reads_the_rejections_once(monkeypatch):
+    """Not once per document, and not once per supplier — the mistake this module
+    already made with orders and line items."""
+    invoices, pos = _corpus(20)
+    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": 90.0})
+    small = _CountingCursor(*_corpus(3))
+    large = _CountingCursor(*_corpus(30))
+
+    lp._propose(_CountingConn(small), "invoice", None)
+    lp._propose(_CountingConn(large), "invoice", None)
+
+    assert large.queries == small.queries
+
+
+def test_the_whole_pass_drops_a_pair_a_person_refused(monkeypatch):
+    """The filter is only worth anything if the pass actually reads the store.
+    Reading it is a separate mistake from honouring it, and the query-count test
+    above would pass whether or not this one does."""
+    invoices = [{"invoice_id": "INV-1", "supplier_id": "SUP-A", "po_id": None}]
+    pos = [{"po_id": "PO-1", "supplier_id": "SUP-A"}, {"po_id": "PO-2", "supplier_id": "SUP-A"}]
+    monkeypatch.setattr(lp, "score_link",
+                        lambda doc, po, *a, **k: {"F": 90.0 if po["po_id"] == "PO-1" else 70.0})
+    cur = _CountingCursor(invoices, pos, rejections=[("invoice", "INV-1", "PO-1")])
+
+    run = lp.propose_parent_links(conn=_CountingConn(cur))
+
+    assert [(p.doc_pk, p.po_id) for p in run.proposals] == [("INV-1", "PO-2")]
+
+
+def test_a_refused_pair_cannot_then_be_confirmed(monkeypatch):
+    """The two doors have to agree. If the confirm re-derived without the
+    rejections, saying no and then clicking confirm would still write the link."""
+    invoices = [{"invoice_id": "INV-1", "supplier_id": "SUP-A", "po_id": None}]
+    pos = [{"po_id": "PO-1", "supplier_id": "SUP-A"}]
+    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": 90.0})
+    monkeypatch.setattr(lp, "record_action", lambda **kw: None)
+    cur = _CountingCursor(invoices, pos, rejections=[("invoice", "INV-1", "PO-1")])
+
+    result = lp.confirm_parent_link("invoice", "INV-1", "PO-1", conn=_CountingConn(cur))
+
+    assert result["status"] == "refused"
+    assert cur.writes == []
+
+
+def test_a_missing_rejection_store_does_not_poison_the_pass(monkeypatch):
+    """Postgres aborts the whole transaction on a failed statement, so a SELECT
+    against a table that does not exist yet takes every later read down with it —
+    and this table does not exist until somebody rejects something for the first
+    time. The read is fenced so the pass survives its absence.
+
+    Without the fence the symptom is not "no rejections", it is every subsequent
+    query failing with "current transaction is aborted".
+    """
+    invoices = [{"invoice_id": "INV-1", "supplier_id": "SUP-A", "po_id": None}]
+    pos = [{"po_id": "PO-1", "supplier_id": "SUP-A"}]
+    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": 90.0})
+
+    class _NoTable(_CountingCursor):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.statements = []
+
+        def execute(self, sql, params=()):
+            self.statements.append(sql)
+            if "bp_link_rejection" in sql.lower():
+                raise RuntimeError('relation "proc.bp_link_rejection" does not exist')
+            if "savepoint" in sql.lower():
+                self.description, self._rows = None, []
+                return
+            super().execute(sql, params)
+
+    cur = _NoTable(invoices, pos)
+    run = lp.propose_parent_links(conn=_CountingConn(cur))
+
+    assert [(p.doc_pk, p.po_id) for p in run.proposals] == [("INV-1", "PO-1")]
+    # Fenced, not merely swallowed: the failure is undone so the reads after it can run.
+    lowered = [x.lower() for x in cur.statements]
+    assert any(x.startswith("savepoint") for x in lowered)
+    assert any("rollback to savepoint" in x for x in lowered)

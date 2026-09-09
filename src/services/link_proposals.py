@@ -149,6 +149,82 @@ class LinkProposal:
     within_order_value: Optional[bool] = None
 
 
+# Rejections are the only part of this whole surface worth storing. The proposal is
+# derived and recomputed on every pass, so persisting it would only create something
+# that can go stale; a person saying "not that order" is a decision, and nothing else
+# in the system can re-derive it.
+#
+# The pair is the unit. "Not this order" is not "this document belongs nowhere" — the
+# runner-up is exactly what should be shown next — so a rejection suppresses one
+# (document, order) pair and nothing more.
+REJECTION_DDL = """
+CREATE SCHEMA IF NOT EXISTS proc;
+
+CREATE TABLE IF NOT EXISTS proc.bp_link_rejection (
+    rejection_id BIGSERIAL PRIMARY KEY,
+    doc_type     TEXT NOT NULL,
+    doc_pk       TEXT NOT NULL,
+    po_id        TEXT NOT NULL,
+    rejected_by  TEXT NOT NULL,
+    note         TEXT,
+    rejected_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- One row per pair. Two people reaching the same conclusion, or one person
+    -- clicking twice, is not two rejections.
+    UNIQUE (doc_type, doc_pk, po_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_bp_link_rejection_doc
+    ON proc.bp_link_rejection (doc_type, doc_pk);
+"""
+
+_REJECT_INSERT = """
+INSERT INTO proc.bp_link_rejection (doc_type, doc_pk, po_id, rejected_by, note)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (doc_type, doc_pk, po_id) DO NOTHING
+"""
+
+
+def _ensure_rejection_table(cur) -> None:
+    cur.execute(REJECTION_DDL)
+
+
+def rejected_pairs(cur, doc_type: str = "invoice") -> set:
+    """Every (doc_type, doc_pk, po_id) a person has refused.
+
+    Read ONCE for a whole pass. Reading it per document or per supplier is the
+    mistake this module already made with orders and line items.
+    """
+    # Fenced by a savepoint, not merely wrapped in try/except. The table does not
+    # exist until somebody rejects something for the first time, and in Postgres a
+    # failed statement aborts the WHOLE transaction: a bare except would return an
+    # empty set and then every later read in this pass would fail with "current
+    # transaction is aborted". The savepoint is what makes the absence survivable.
+    try:
+        cur.execute("SAVEPOINT link_rejection_read")
+    except Exception:  # noqa: BLE001 — no transaction to fence (autocommit); read plainly
+        log.debug("could not open a savepoint for the rejection read", exc_info=True)
+        return _rejections_or_empty(cur, doc_type)
+    try:
+        rows = _rows(cur, "select doc_type, doc_pk, po_id from proc.bp_link_rejection "
+                          "where doc_type = %s", (doc_type,))
+    except Exception:  # noqa: BLE001 — the store not existing yet is not a failure
+        log.debug("could not read link rejections", exc_info=True)
+        cur.execute("ROLLBACK TO SAVEPOINT link_rejection_read")
+        return set()
+    cur.execute("RELEASE SAVEPOINT link_rejection_read")
+    return {(str(r["doc_type"]), str(r["doc_pk"]), str(r["po_id"])) for r in rows}
+
+
+def _rejections_or_empty(cur, doc_type: str) -> set:
+    try:
+        rows = _rows(cur, "select doc_type, doc_pk, po_id from proc.bp_link_rejection "
+                          "where doc_type = %s", (doc_type,))
+    except Exception:  # noqa: BLE001
+        log.debug("could not read link rejections", exc_info=True)
+        return set()
+    return {(str(r["doc_type"]), str(r["doc_pk"]), str(r["po_id"])) for r in rows}
+
+
 @dataclass(frozen=True)
 class ProposalRun:
     """One whole pass: what it proposes, and what it looked at to get there.
@@ -235,6 +311,7 @@ def propose_links(documents: list[dict], purchase_orders: list[dict],
                   *, doc_type: str = "invoice", profile: Optional[str] = None,
                   min_score: Optional[float] = None,
                   max_candidates: Optional[int] = None,
+                  rejected: Optional[set] = None,
                   scorer: Optional[Callable] = None) -> list[LinkProposal]:
     """Score every document against every order and resolve the whole set at once.
 
@@ -248,6 +325,7 @@ def propose_links(documents: list[dict], purchase_orders: list[dict],
     floor = PROPOSAL_MIN_SCORE if min_score is None else float(min_score)
     cap_n = MAX_CANDIDATES_PER_DOC if max_candidates is None else int(max_candidates)
     doc_lines, po_lines = doc_lines or {}, po_lines or {}
+    rejected = rejected or set()
     # Resolved at call time, not bound as a default, so the whole-corpus path can
     # be driven by a stated evidence table in a test the way propose_links itself is.
     scorer = scorer or score_link
@@ -263,6 +341,10 @@ def propose_links(documents: list[dict], purchase_orders: list[dict],
         for po in orders:
             po_id = str(po.get("po_id") or "")
             if not po_id:
+                continue
+            if (doc_type, doc_pk, po_id) in rejected:
+                # A person has already said no to this pair. It is not a candidate, not
+                # an alternative, and not a tie-break — it is simply not on the table.
                 continue
             capacity, unit = _order_capacity(po)
             claim = _claim(doc, unit, doc_type)
@@ -465,6 +547,7 @@ def _propose(conn, doc_type: str, min_score: Optional[float]) -> list[LinkPropos
     cfg = _DOC[doc_type]
     pk = cfg["pk"]
     orders = orders_by_supplier(cur, list(by_supplier))
+    rejected = rejected_pairs(cur, doc_type)
     doc_lines = _lines_for(cur, cfg["lines_trgt"], cfg["lines_stg"], pk,
                            [str(d.get(pk)) for g in by_supplier.values() for d in g])
     po_lines = _lines_for(cur, "proc.bp_po_line_items_stg",
@@ -480,7 +563,7 @@ def _propose(conn, doc_type: str, min_score: Optional[float]) -> list[LinkPropos
         considered["scored"] += len(group)
         out.extend(_propose_for_supplier(cur, doc_type, group, min_score,
                                          orders=group_orders, doc_lines=doc_lines,
-                                         po_lines=po_lines))
+                                         po_lines=po_lines, rejected=rejected))
     return ProposalRun(tuple(out), considered)
 
 
@@ -510,7 +593,8 @@ def _propose_for_supplier(cur, doc_type: str, group: list[dict],
                           min_score: Optional[float] = None,
                           orders: Optional[list] = None,
                           doc_lines: Optional[dict] = None,
-                          po_lines: Optional[dict] = None) -> list[LinkProposal]:
+                          po_lines: Optional[dict] = None,
+                          rejected: Optional[set] = None) -> list[LinkProposal]:
     """One supplier's unreferenced documents against that supplier's orders.
 
     The orders and line items are passed in by the whole-corpus pass, which reads
@@ -532,8 +616,10 @@ def _propose_for_supplier(cur, doc_type: str, group: list[dict],
         po_lines = _lines_for(cur, "proc.bp_po_line_items_stg",
                               "proc.bp_po_line_items_stg", "po_id",
                               [str(o.get("po_id")) for o in orders])
+    if rejected is None:
+        rejected = rejected_pairs(cur, doc_type)
     return propose_links(group, orders, doc_lines, po_lines,
-                         doc_type=doc_type, min_score=min_score)
+                         doc_type=doc_type, min_score=min_score, rejected=rejected)
 
 
 def _proposals_for_document(cur, doc_type: str, doc: dict) -> list[LinkProposal]:
@@ -588,12 +674,16 @@ def confirm_parent_link(doc_type: str, doc_pk: str, po_id: str,
     return _confirm(conn, doc_type, doc_pk, po_id, reviewer, note)
 
 
-def _confirm(conn, doc_type: str, doc_pk: str, po_id: str, reviewer, note) -> dict:
-    if doc_type not in _DOC:
-        return {"status": "error", "detail": f"unknown doc_type {doc_type}"}
+def _decidable(cur, doc_type: str, doc_pk: str, po_id: str):
+    """The check both decisions make before either writes anything.
+
+    Returns (proposal, None) when this person may answer for this pair, or
+    (None, refusal) when they may not. Accepting and refusing a proposal have to
+    rest on exactly the same question — is this order one the engine actually put
+    in front of a person for this document — or the two doors have different locks.
+    """
     cfg = _DOC[doc_type]
     pk = cfg["pk"]
-    cur = conn.cursor()
 
     doc = None
     for table in (cfg["trgt"], cfg["stg"]):
@@ -604,22 +694,91 @@ def _confirm(conn, doc_type: str, doc_pk: str, po_id: str, reviewer, note) -> di
         if doc is not None:
             break
     if doc is None:
-        return {"status": "not_found", "detail": f"{doc_type} {doc_pk} not found"}
+        return None, {"status": "not_found", "detail": f"{doc_type} {doc_pk} not found"}
 
     existing = doc.get("po_id")
     if existing is not None and str(existing).strip():
-        return {"status": "refused",
-                "detail": f"{doc_type} {doc_pk} already references {str(existing).strip()}"}
+        return None, {"status": "refused",
+                      "detail": f"{doc_type} {doc_pk} already references "
+                                f"{str(existing).strip()}"}
 
-    proposals = _proposals_for_document(cur, doc_type, doc)
-    chosen = None
-    for p in proposals:
+    for p in _proposals_for_document(cur, doc_type, doc):
         if p.po_id == po_id or po_id in p.alternatives:
-            chosen = p
-            break
-    if chosen is None:
-        return {"status": "refused",
-                "detail": f"{po_id} was not proposed as a parent for {doc_type} {doc_pk}"}
+            return p, None
+    return None, {"status": "refused",
+                  "detail": f"{po_id} was not proposed as a parent for {doc_type} {doc_pk}"}
+
+
+def reject_parent_link(doc_type: str, doc_pk: str, po_id: str,
+                       reviewer: Optional[str] = None, note: Optional[str] = None,
+                       conn: Any = None) -> dict:
+    """A person says this is not the order, and the engine stops asking.
+
+    The other half of the decision, and the half that makes the queue finishable.
+    Without it a proposal somebody disagreed with returned on every load and the
+    only way to make it stop was to accept it — which is how a queue teaches people
+    to accept things.
+
+    It suppresses one (document, order) PAIR. The document may still be proposed a
+    different order next pass, which is exactly what should happen: "not this one"
+    is not "this belongs nowhere", and the runner-up is the next thing to look at.
+
+    Nothing about the document is written. The only fact recorded is that a named
+    person refused this pairing, in ``proc.bp_link_rejection`` — and because that
+    is a row rather than an event, undoing one is a delete rather than an
+    archaeology exercise.
+    """
+    if conn is None:
+        with get_conn() as own:
+            own.autocommit = False
+            try:
+                result = _reject(own, doc_type, doc_pk, po_id, reviewer, note)
+                own.commit()
+                return result
+            except Exception:
+                own.rollback()
+                raise
+    return _reject(conn, doc_type, doc_pk, po_id, reviewer, note)
+
+
+def _reject(conn, doc_type: str, doc_pk: str, po_id: str, reviewer, note) -> dict:
+    if doc_type not in _DOC:
+        return {"status": "error", "detail": f"unknown doc_type {doc_type}"}
+    cur = conn.cursor()
+
+    chosen, refusal = _decidable(cur, doc_type, doc_pk, po_id)
+    if refusal is not None:
+        return refusal
+
+    _ensure_rejection_table(cur)
+    cur.execute(_REJECT_INSERT,
+                (doc_type, str(doc_pk), po_id, reviewer or "human_review", note))
+
+    record_action(
+        phase=PHASE_CONSOLIDATION, action_type="parent_link_rejected",
+        doc_type=doc_type, doc_pk=str(doc_pk), agent=reviewer or "human_review",
+        status="ok", confidence=chosen.F,
+        summary=f"human-rejected {doc_type} {doc_pk} -> {po_id} "
+                f"(F={chosen.F}, margin={chosen.margin})",
+        details={"rejected_by": reviewer or "human_review", "note": note,
+                 "po_id": po_id, "F": chosen.F, "margin": chosen.margin,
+                 "routing": chosen.routing,
+                 "alternatives": list(chosen.alternatives)},
+        conn=conn)
+    return {"status": "rejected", "doc_type": doc_type, "doc_pk": doc_pk,
+            "po_id": po_id, "rejected_by": reviewer or "human_review"}
+
+
+def _confirm(conn, doc_type: str, doc_pk: str, po_id: str, reviewer, note) -> dict:
+    if doc_type not in _DOC:
+        return {"status": "error", "detail": f"unknown doc_type {doc_type}"}
+    cfg = _DOC[doc_type]
+    pk = cfg["pk"]
+    cur = conn.cursor()
+
+    chosen, refusal = _decidable(cur, doc_type, doc_pk, po_id)
+    if refusal is not None:
+        return refusal
 
     for table in (cfg["trgt"], cfg["stg"]):
         cur.execute(f"update {table} set po_id = %s "

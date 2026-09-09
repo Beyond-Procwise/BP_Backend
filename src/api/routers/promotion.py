@@ -12,7 +12,9 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from src.services.link_proposals import confirm_parent_link, propose_parent_links
+from src.services.link_proposals import (
+    confirm_parent_link, propose_parent_links, reject_parent_link,
+)
 from src.services.linking_engine import (
     promote_ready, review_queue, approve_promotion, quote_chains, canonicalize_po_references,
 )
@@ -127,6 +129,51 @@ def get_link_proposals(
             "items": [asdict(i) for i in run.proposals]}
 
 
+def _decision_result(result: dict) -> dict:
+    """One mapping for both decisions, so accepting and refusing a proposal cannot
+    drift into reporting the same outcome differently."""
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail=result["detail"])
+    if result.get("status") == "refused":
+        # The document's own state says no — it already names an order, or this one
+        # was never proposed for it. That is a conflict with what the caller believes,
+        # not a fault to retry.
+        raise HTTPException(status_code=409, detail=result["detail"])
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result["detail"])
+    return result
+
+
+@router.post("/link-proposals/{doc_type}/{doc_pk}/reject",
+             summary="Human-reject a proposed parent order, so it is not proposed again")
+def post_reject_link(
+    doc_type: str,
+    doc_pk: str,
+    body: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """Record that this order is NOT the parent of this document.
+
+    A separate endpoint from the confirm rather than one taking a verb: confirming
+    writes a reference onto a document and rejecting must never be able to, and a
+    shared route with a parameter is how a client eventually sends the wrong one.
+
+    It suppresses one pairing. The document may be proposed a different order next
+    pass — "not this one" is not "this belongs nowhere".
+    """
+    if doc_type not in ("invoice", "quote"):
+        raise HTTPException(status_code=400, detail="doc_type must be 'invoice' or 'quote'")
+    po_id = (body.get("po_id") or "").strip()
+    if not po_id:
+        raise HTTPException(status_code=400, detail="po_id is required")
+    try:
+        result = reject_parent_link(doc_type, doc_pk, po_id,
+                                    reviewer=body.get("reviewer"), note=body.get("note"))
+    except Exception as exc:
+        logger.exception("reject link failed for %s %s", doc_type, doc_pk)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return _decision_result(result)
+
+
 @router.post("/link-proposals/{doc_type}/{doc_pk}/confirm",
              summary="Human-confirm a proposed parent order for a document")
 def post_confirm_link(
@@ -148,10 +195,4 @@ def post_confirm_link(
     except Exception as exc:
         logger.exception("confirm link failed for %s %s", doc_type, doc_pk)
         raise HTTPException(status_code=500, detail=str(exc))
-    if result.get("status") == "not_found":
-        raise HTTPException(status_code=404, detail=result["detail"])
-    if result.get("status") == "refused":
-        raise HTTPException(status_code=409, detail=result["detail"])
-    if result.get("status") == "error":
-        raise HTTPException(status_code=400, detail=result["detail"])
-    return result
+    return _decision_result(result)
