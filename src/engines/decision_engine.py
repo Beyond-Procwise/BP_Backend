@@ -1681,3 +1681,97 @@ class DecisionEngine:
                 "audit entry rather than retrying only the part that failed."
             )
         return result
+
+
+# ---------------------------------------------------------------------------
+# Authorization deferrals
+#
+# The gate answers three ways: allow, deny, and "nobody's rule said". The third
+# is not a verdict, it is a question -- and a question belongs in front of a
+# person rather than being resolved by a default nobody chose.
+#
+# This is where those questions become visible. It writes the same
+# proc.bp_decision row every other escalation uses, so the Action Centre lists
+# them without a new endpoint: list_decisions already filters on subject_type
+# and status='open'.
+#
+# It is a module-level function rather than a DecisionEngine method because the
+# gate has no agent_nick and must not acquire one. What matters is that
+# escalations are created in one place, and this is that place.
+# ---------------------------------------------------------------------------
+
+AUTHORIZATION_SUBJECT_TYPE = "authorization"
+
+
+def escalate_authorization(
+    *,
+    action: str,
+    action_class: Optional[str] = None,
+    principal_subject: Optional[str] = None,
+    role: Optional[str] = None,
+    reason: str = "",
+    policy_id: Optional[Any] = None,
+    policy_name: Optional[str] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Put an unresolved authorization in front of a person. Returns the id.
+
+    Raised against the person who was stopped, so they can see why; resolving it
+    is a policy judgement and belongs to whoever can make one.
+
+    Never raises. A question that cannot be asked must not become permission --
+    the caller keeps refusing either way, and the failure is logged loudly
+    because an unasked question is a governance gap, not a hiccup.
+    """
+
+    try:
+        from src.services.db import get_conn
+
+        facts = {
+            "action": action,
+            "action_class": action_class,
+            "role": role,
+            "requested_by": principal_subject,
+        }
+        with get_conn() as conn:
+            conn.autocommit = False
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO proc.bp_decision (
+                        subject_type, subject_id, decision, resolution,
+                        rationale, policy_id, policy_name, facts, evidence,
+                        status, agent, created_by
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING decision_id
+                    """,
+                    (
+                        AUTHORIZATION_SUBJECT_TYPE,
+                        action,
+                        "clarify_policy",
+                        ESCALATED,
+                        reason,
+                        None,
+                        policy_name,
+                        json.dumps(facts, default=str),
+                        json.dumps(evidence or {}, default=str),
+                        "open",
+                        "guardrail",
+                        principal_subject or "system",
+                    ),
+                )
+                row = cur.fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return int(row[0]) if row else None
+    except Exception as exc:  # noqa: BLE001 - an unasked question is not consent
+        logger.error(
+            "could not raise an authorization question for %s: %s -- the action "
+            "stays refused, but nobody has been asked about it",
+            action,
+            exc,
+        )
+        return None

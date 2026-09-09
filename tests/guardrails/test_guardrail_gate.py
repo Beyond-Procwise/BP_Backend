@@ -22,7 +22,8 @@ ALLOW_SEND = {
         "policy_identifier": "email_dispatch_approval",
         "required_role": "Approver",
         "applies_to": ["email.send"],
-        "rules": {"approval_required": True},
+        # A permit is stated, not inferred from the absence of a denial.
+        "rules": {"effect": "allow", "approval_required": True},
     },
     "raw_row": {"version": 1},
 }

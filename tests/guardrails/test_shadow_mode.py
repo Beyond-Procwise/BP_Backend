@@ -63,9 +63,27 @@ def observations(monkeypatch):
     return captured
 
 
+DENY_READ = {
+    "policyId": "supplier_read_ban",
+    "policyName": "SupplierReadPolicy",
+    "details": {
+        "policy_identifier": "supplier_read_ban",
+        "applies_to": ["supplier.read", "report.export"],
+        "rules": {"effect": "deny", "reason": "not permitted yet"},
+    },
+    "raw_row": {"version": 1},
+}
+
+
 def _engine(entries):
-    engine = engine_with(_shadow_policy(entries))
-    return engine
+    """A gate that REFUSES supplier.read and report.export by a stated rule.
+
+    Shadow mode only ever softens a rule that said no. A deferral -- nobody's
+    rule spoke -- is never shadowed, so these tests need a real denial to shadow
+    rather than the default-deny they used to rely on.
+    """
+
+    return engine_with(_shadow_policy(entries), DENY_READ)
 
 
 def test_a_shadowed_denial_is_allowed_and_recorded_as_would_have_denied(observations):
@@ -163,8 +181,8 @@ def test_allow_decisions_are_recorded_too(observations):
     """Otherwise "we observed no denials" is indistinguishable from "we were not observing"."""
 
     decision = guardrail.authorize(
-        "supplier.read",
-        "read",  # reversible, nothing denies it
+        "deal.read",
+        "read",  # reversible, and no policy denies this one
         _as("bp-viewers"),
         policy_engine=_engine([]),
     )
@@ -205,7 +223,7 @@ def test_recording_never_breaks_the_gate(monkeypatch):
     monkeypatch.setattr(guardrail.policy_observation, "record", _boom)
 
     decision = guardrail.authorize(
-        "supplier.read",
+        "deal.read",
         "read",
         _as("bp-viewers"),
         policy_engine=_engine([]),
@@ -225,3 +243,22 @@ def test_shadow_config_absent_means_nothing_is_shadowed(observations):
     )
 
     assert decision.allowed is False
+
+
+def test_a_deferral_is_never_shadowed_even_when_enrolled(observations):
+    """Shadow mode softens a refusal. It must not soften a question.
+
+    Allowing something through while asking whether it is allowed grants the
+    very thing in question, and the answer arrives after the fact.
+    """
+
+    decision = guardrail.authorize(
+        "agent.create",  # nothing speaks to it -> unresolved, not denied
+        "configure",
+        _as("bp-admins"),
+        policy_engine=_engine([{"action": "agent.create", "until": _future()}]),
+    )
+
+    assert decision.allowed is False
+    assert decision.unresolved is True
+    assert observations[0]["shadowed"] is False

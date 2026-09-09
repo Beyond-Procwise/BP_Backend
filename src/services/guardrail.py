@@ -34,6 +34,17 @@ from src.services import policy_observation, rbac
 logger = logging.getLogger(__name__)
 
 
+# The gate's three answers. "resolved" means a rule spoke -- allow or deny, and
+# either way somebody's rule is accountable for it. "unresolved" means the rule
+# deferred to policy and policy did not settle it: nothing said yes and nothing
+# said no. That is a question, not a grant, and it goes to a person.
+#
+# DecisionEngine already uses this vocabulary for the same idea; the gate now
+# shares it rather than inventing a second one.
+RESOLVED = "resolved"
+UNRESOLVED = "unresolved"
+
+
 @dataclass(frozen=True)
 class Decision:
     allowed: bool
@@ -42,10 +53,38 @@ class Decision:
     policy_name: Optional[str] = None
     policy_version: Optional[int] = None
     evidence: Dict[str, Any] = field(default_factory=dict)
+    resolution: str = RESOLVED
+
+    @property
+    def unresolved(self) -> bool:
+        """Nobody's rule answered this. It needs a human, not a default."""
+
+        return self.resolution == UNRESOLVED
 
 
 def _deny(reason: str, **evidence: Any) -> Decision:
     return Decision(allowed=False, reason=reason, evidence=dict(evidence))
+
+
+def _unresolved(
+    reason: str, policy: Optional[Dict[str, Any]] = None, **evidence: Any
+) -> Decision:
+    """No rule settled this.
+
+    ``allowed`` is False so that a caller which only checks ``decision.allowed``
+    -- which is all four of today's call sites -- fails closed exactly as it did
+    before. The difference is that this one is also put in front of a person
+    instead of being refused in silence.
+    """
+
+    attribution = policy_attribution(policy)
+    return Decision(
+        allowed=False,
+        reason=reason,
+        evidence=dict(evidence),
+        resolution=UNRESOLVED,
+        **attribution,
+    )
 
 
 def _version_of(policy: Dict[str, Any]) -> Optional[int]:
@@ -165,6 +204,7 @@ def _evaluate(
             )
 
         allowing: Optional[Dict[str, Any]] = None
+        deferring: Optional[Dict[str, Any]] = None
         for policy in policies:
             details = policy.get("details") or {}
             rules = details.get("rules") or {}
@@ -196,7 +236,9 @@ def _evaluate(
                         role=role,
                     )
 
-            if str(rules.get("effect") or "").lower() == "deny":
+            effect = str(rules.get("effect") or "").lower()
+
+            if effect == "deny":
                 return deny_from_policy(
                     str(rules.get("reason") or "denied by policy"),
                     policy,
@@ -204,21 +246,46 @@ def _evaluate(
                     role=role,
                 )
 
-            if allowing is None:
+            # A permit must be STATED. This used to read "matched and did not
+            # deny" as consent, which meant a policy with nothing to say about
+            # permission -- a scoring config given an applies_to, say -- became
+            # the policy that authorised the action. Matching is applicability;
+            # it is not agreement.
+            if effect == "allow" and allowing is None:
                 allowing = policy
+            elif effect not in ("allow", "deny") and deferring is None:
+                deferring = policy
 
         if allowing is None:
-            if irreversible:
-                return _deny(
-                    f"no policy permits {action}; irreversible actions are "
-                    "default-deny",
+            if deferring is not None:
+                return _unresolved(
+                    f"{deferring.get('policyName')} applies to {action} but "
+                    "states no effect, so it has not permitted or refused it",
+                    deferring,
                     action=action,
                     action_class=action_class,
                     role=role,
                 )
+            if irreversible:
+                # Not a deny: nothing refused this, nothing permitted it, and
+                # refusing in silence is the gate deciding alone. Ask.
+                return _unresolved(
+                    f"no policy speaks to {action}, and {action_class} cannot "
+                    "be assumed safe",
+                    action=action,
+                    action_class=action_class,
+                    role=role,
+                )
+            # Resolved, and by a named rule: RoleDefinitionPolicy is what
+            # declares these classes reversible. Attributing it is the
+            # difference between an answer and a silence.
             return Decision(
                 allowed=True,
-                reason=f"{action_class} is not irreversible and no policy denies it",
+                reason=(
+                    f"{action_class} is a reversible class under "
+                    f"RoleDefinitionPolicy and no policy denies {action}"
+                ),
+                policy_name="RoleDefinitionPolicy",
                 evidence={"action": action, "role": role},
             )
 
@@ -347,7 +414,13 @@ def authorize(
     decision = _evaluate(action, action_class, principal, context, policy_engine)
 
     engine = policy_engine if policy_engine is not None else rbac.policy_engine()
-    expiry = _shadow_expiry(action, engine) if not decision.allowed else None
+
+    # Shadow mode softens a REFUSAL so its cost can be measured. It must never
+    # soften a deferral: allowing something through while simultaneously asking
+    # whether it is allowed grants the very thing in question. An unresolved
+    # decision is always refused and always asked.
+    refused_by_a_rule = not decision.allowed and not decision.unresolved
+    expiry = _shadow_expiry(action, engine) if refused_by_a_rule else None
     shadowed = bool(expiry and expiry > datetime.now(timezone.utc))
 
     try:
@@ -367,6 +440,25 @@ def authorize(
     except Exception as exc:  # noqa: BLE001 - bookkeeping must not break the gate
         logger.error("policy observation failed for %s: %s", action, exc)
         recorded = False
+
+    if decision.unresolved:
+        # A question, not a verdict. Ask it, and keep refusing while it is
+        # unanswered. An escalation that cannot be raised is logged loudly by
+        # the decision engine and changes nothing here: unasked is not consent.
+        try:
+            _raise_for_a_human(
+                action=action,
+                action_class=action_class,
+                principal_subject=getattr(principal, "subject", None),
+                role=(decision.evidence or {}).get("role"),
+                reason=decision.reason,
+                policy_id=decision.policy_id,
+                policy_name=decision.policy_name,
+                evidence=decision.evidence,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("could not raise %s for review: %s", action, exc)
+        return decision
 
     if not shadowed:
         return decision
@@ -395,3 +487,15 @@ def authorize(
         policy_version=decision.policy_version,
         evidence={**(decision.evidence or {}), "shadowed": True},
     )
+
+
+def _raise_for_a_human(**fields: Any) -> Optional[int]:
+    """Route an unresolved authorization to the decision engine.
+
+    Imported lazily: the gate is loaded by rbac and by every send path, and it
+    must not drag the decision engine's dependencies in behind it.
+    """
+
+    from src.engines.decision_engine import escalate_authorization
+
+    return escalate_authorization(**fields)
