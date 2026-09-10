@@ -23,6 +23,7 @@ REDACTED_SIGNALS = frozenset({"bank_account", "bank_iban", "bank_swift"})
 #: edges never reach auto_link, whatever F says, until a labelled sample exists.
 UNCALIBRATED_PROFILES = frozenset({
     "contract_coverage", "contract_succession", "supplier_identity",
+    "item_equivalence",
 })
 
 #: Cypher structural identifiers (labels, property keys, relationship types) are

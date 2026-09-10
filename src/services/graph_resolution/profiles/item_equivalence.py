@@ -8,44 +8,61 @@ string-matching into a graph question.
 UoM is RECORDED, never converted: a pack of 10 and 10 each are related, not
 equal, and bp_uom_canonical (38 rows) is the only UoM authority.
 
-Calibrated 2026-09-10 (Task 7, scripts/graph_resolution/calibrate_item_equivalence.py)
-against live proc.bp_invoice_line_items_trgt: 4,755 distinct item_id values
-appear on more than one of the 55,483 lines (measured). Sample: 379 lines --
-all lines (capped at 5/item) from 60 randomly chosen repeated-item_id groups,
-plus 150 random singleton-item_id lines for cross-item variety -- scored
-pairwise (item_id withheld from the scored records) = 71,631 pairs
-(n_same=562, n_diff=71,069). Grid swept in three passes, coarse to fine:
-p0 in {0.01,0.02,0.05,0.08} x alpha in {0.35..2.00} (12 pts), then
-p0 in {0.005,0.01} x alpha up to 10.0 to find where separation turns over,
-then p0 in {0.003,0.005,0.007,0.01} x alpha in {2.2..3.5} around the peak.
-Separation is not monotone in alpha: it peaks and then collapses (both
-same- and diff-pair scores saturate toward 1 as alpha grows, closing the
-gap; by alpha=6-10 same_F and diff_F invert). Chosen: p0=0.003, alpha=3.0.
+CALIBRATION ATTEMPTED 2026-09-10 (Task 7, fix round 2,
+scripts/graph_resolution/calibrate_item_equivalence.py) against live
+proc.bp_invoice_line_items_trgt -- NOT MEASURED. p0/alpha below are starting
+values, not a tuned result. Full arc, so a future reader cannot mistake this
+for an unattempted calibration or rediscover the leak the hard way:
 
-That sweep was run with supplier_same at weight=1, an attempt to route
-around this corpus's total absence of SAME_ENTITY edges. That weight was
-REVERTED to 3 (its brief-specified value) after review: C = floor +
-(1-floor)*rho is the same coverage multiplier for every pair regardless of
-label (supplier_same is MISSING for same- and different-item pairs alike),
-so downweighting it did not change which pairs separate from which -- it
-only raised the ceiling F could reach. Re-scoring the identical labelled
-sample at weight=3 (no re-sweep; p0/alpha are unaffected by a uniform
-per-pair coverage change) confirms the ordering and sign of separation are
-unchanged: separation=60.19 (min same_F=69.49, max diff_F=9.30, median
-same_F=77.50, median diff_F=0.0), still zero false auto_links. The measured
-figures differ slightly from a naive C-ratio projection (58.8) because rho's
-numerator (from desc/uom/price) also varies per pair, not just its
-denominator -- the coverage change is uniform in *direction*, not in exact
-magnitude, across all 71,631 pairs.
+4,755 distinct item_id values appear on more than one of the 55,483 lines
+(measured). Sample: 379 lines -- all lines (capped at 5/item) from 60
+randomly chosen repeated-item_id groups, plus 150 random singleton-item_id
+lines for cross-item variety -- scored pairwise (item_id withheld from the
+scored records) = 71,631 pairs (n_same=562, n_diff=71,069).
 
-Consequence, documented rather than tuned away (same discipline as
-supplier_identity's own structural ceiling): with supplier_same permanently
-MISSING on this corpus, C is capped at floor+(1-floor)*13/16 = 0.9156
-regardless of alpha, so F cannot exceed ~91.56 for ANY pair -- not even a
-perfect item_id + description + uom + price match. This profile can reach
-auto_link_with_warning here but never auto_link, until a SAME_ENTITY edge
-exists to make supplier_same observable. See
-test_auto_link_is_structurally_unreachable_for_this_profile.
+FIRST ATTEMPT scored separation=60.19 (p0=0.003, alpha=3.0, weight=3).
+That number was a label leak, not evidence: item_description in this corpus
+embeds item_id as a literal substring on 100% of lines ("Heavy-Duty
+Excavation Kit ITM000015"), so the desc signal (weight 4, second only to
+item_id) was scoring a near-perfect textual proxy for the very label held
+out. The apparent decisiveness -- separation peaking sharply near alpha=3.0
+then collapsing as both distributions saturated toward 1 -- was itself an
+artifact of that leak, not a property of this profile's real signal set;
+it does not generalise and is not used.
+
+DE-LEAKED ATTEMPT: build_labelled_pairs_by_item_id now also strips any
+occurrence of item_id embedded in item_description from both scored records
+(calibration-only transform -- the production comparators below are
+untouched, since real documents legitimately carry item codes in
+descriptions and the profile should keep using them at inference time). On
+the identical 71,631-pair sample, re-swept over p0 in
+{0.005,0.01,0.02,0.03,0.05,0.08} x alpha in {0.05..2.0} (49 grid points):
+0 of 49 achieved positive separation. Best (least-bad) point:
+p0=0.01, alpha=0.35, separation=-0.4836 (min same_F=2.058, max
+diff_F=2.5416) -- the worst true pair scores below the best false pair, so
+no threshold divides the classes cleanly. See task-7-report.md for the full
+sweep and a distributional diagnostic (median/percentile view) recorded
+there as context, NOT as a replacement metric: this profile is unmeasured
+under the min/max separation criterion this project uses throughout, the
+same criterion supplier_identity, contract_coverage and contract_succession
+were judged against, and item_equivalence is now the fourth profile to ship
+that way. p0=0.01/alpha=0.35 is kept as the starting value -- the least-bad
+point found, and in the same 0.30-0.55 range every other profile in this
+codebase starts from -- rather than any number touched by the leak.
+
+supplier_same keeps its full weight=3 (a symmetric-identity signal
+genuinely deserves it): on this corpus it is permanently MISSING (no
+SAME_ENTITY edge exists anywhere), which taxes coverage C for every pair
+and caps F at ~91.56 regardless of alpha -- this profile can reach
+auto_link_with_warning here but never auto_link
+(test_auto_link_is_structurally_unreachable_for_this_profile). That ceiling
+is documented, not routed around, for the same reason supplier_identity's
+own structural ceiling is: on a tenant corpus where SAME_ENTITY edges
+exist, this signal becomes real evidence, and downweighting it to chase
+today's ceiling would throw that away for a corpus artifact. It is now a
+second, independent reason (alongside the unmeasured p0/alpha) this
+profile is in edge_writer.UNCALIBRATED_PROFILES and cannot emit
+band=auto_link.
 """
 from __future__ import annotations
 
@@ -162,7 +179,13 @@ SIGNALS = [
 ]
 
 _le.register_profile(PROFILE, {
-    "p0": 0.003, "alpha": 3.0, "floor": 0.55,
+    # NOT measured -- see module docstring. Calibration was attempted and
+    # found no separation once the description-embeds-item_id leak was
+    # removed. p0=0.01/alpha=0.35 is the least-bad grid point from that
+    # attempt, in the same range every other profile in this codebase
+    # starts from; edge_writer.UNCALIBRATED_PROFILES keeps this profile
+    # capped at review regardless of what these numbers produce.
+    "p0": 0.01, "alpha": 0.35, "floor": 0.55,
     "signals": SIGNALS, "date_field": "delivery_date",
 })
 

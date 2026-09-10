@@ -12,26 +12,54 @@ This is a SEPARATE function/sweep from calibrate.py's supplier-shaped
 build_labelled_pairs/sweep: Task 5's tests pin that module's exact behaviour
 on vat_number, so this module does not touch it. The mutate-then-restore-in-
 finally discipline on the global PROFILES dict is copied exactly.
+
+LEAK FIX (2026-09-10, fix round 2): item_description embeds the item_id as a
+literal substring on 100% of lines measured ("Heavy-Duty Excavation Kit
+ITM000015"), so merely stripping item_id from the scored record left the
+`desc` signal (weight 4) scoring a near-perfect textual proxy for the
+withheld label -- circular, the same failure mode VAT-on-supplier would have
+been. build_labelled_pairs_by_item_id now also strips the item_id substring
+out of item_description on BOTH records before scoring. This is a
+calibration-only transform: the production comparator in item_equivalence.py
+is untouched, because real documents legitimately carry item codes in their
+descriptions and the profile should keep using them at inference time.
 """
 from __future__ import annotations
 
 import itertools
 import random
-from typing import Iterable, List
+import re
+from typing import Iterable, List, Optional
 
 from src.services import linking_engine as _le
 from src.services.graph_resolution.profiles import item_equivalence as ie
 
 
+def _strip_embedded_code(description: Optional[str], item_id: Optional[str]) -> Optional[str]:
+    """Remove a literal item_id substring from a description, then collapse
+    whatever whitespace/punctuation that leaves behind so no double space or
+    dangling separator remains. Calibration-only -- see module docstring."""
+    if not description or not item_id:
+        return description
+    cleaned = re.sub(re.escape(str(item_id)), "", str(description), flags=re.IGNORECASE)
+    cleaned = re.sub(r"[ \t]*\(\s*\)", "", cleaned)   # empty parens the code left behind
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -,")
+    return cleaned or None
+
+
 def build_labelled_pairs_by_item_id(rows: Iterable[dict]) -> List[tuple]:
     """Label a pair 'same' iff the two lines share a non-null item_id, then
-    strip item_id from both scored records so scoring cannot see the label."""
+    strip item_id -- and any occurrence of it embedded in item_description --
+    from both scored records so scoring cannot see the label, directly or
+    through the description's leaked copy of it."""
     rows = list(rows)
     out = []
     for a, b in itertools.combinations(rows, 2):
         same = (a.get("item_id") is not None and a.get("item_id") == b.get("item_id"))
         sa = {k: v for k, v in a.items() if k != "item_id"}
         sb = {k: v for k, v in b.items() if k != "item_id"}
+        sa["item_description"] = _strip_embedded_code(a.get("item_description"), a.get("item_id"))
+        sb["item_description"] = _strip_embedded_code(b.get("item_description"), b.get("item_id"))
         out.append((sa, sb, same))
     return out
 
@@ -144,11 +172,12 @@ def main() -> None:
     n_diff = len(pairs) - n_same
     print(f"pairs={len(pairs)} n_same={n_same} n_diff={n_diff}")
 
-    if len(sys.argv) > 1 and sys.argv[1] == "refine2":
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode == "refine2":
         grid = [(p0, alpha)
                 for p0 in (0.003, 0.005, 0.007, 0.01)
                 for alpha in (2.2, 2.5, 2.7, 3.0, 3.3, 3.5)]
-    elif len(sys.argv) > 1 and sys.argv[1] == "refine":
+    elif mode == "refine":
         grid = [(0.01, a) for a in (2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0)] + \
                [(0.005, a) for a in (2.0, 3.0, 4.0, 6.0, 10.0)]
     else:

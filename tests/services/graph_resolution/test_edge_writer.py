@@ -83,6 +83,18 @@ def test_supplier_identity_cannot_emit_auto_link():
         cypher_for(e)
 
 
+def test_item_equivalence_is_uncalibrated():
+    """Measured 2026-09-10 against proc.bp_invoice_line_items_trgt: a first
+    calibration attempt scored separation=60.19, but item_description embeds
+    item_id as a literal substring on 100% of lines, so that number was the
+    label leaking through the desc signal, not evidence. With the leak
+    removed, 0 of 49 grid points swept produced positive separation. See
+    scripts/graph_resolution/calibrate_item_equivalence.py and the docstring
+    in src/services/graph_resolution/profiles/item_equivalence.py.
+    """
+    assert "item_equivalence" in UNCALIBRATED_PROFILES
+
+
 # --- structural-identifier validation ---------------------------------------
 
 def test_malformed_from_label_is_refused_not_interpolated():
