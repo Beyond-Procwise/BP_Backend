@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -21,6 +22,21 @@ REDACTED_SIGNALS = frozenset({"bank_account", "bank_iban", "bank_swift"})
 #: Profiles whose parameters are declared unmeasured (spec section 9). Their
 #: edges never reach auto_link, whatever F says, until a labelled sample exists.
 UNCALIBRATED_PROFILES = frozenset({"contract_coverage", "contract_succession"})
+
+#: Cypher structural identifiers (labels, property keys, relationship types) are
+#: interpolated into the query text -- they cannot be bound as parameters. This
+#: module is the only writer specifically so that this validation happens in one
+#: place, rather than trusting every future caller to only ever pass hardcoded
+#: strings.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _validate_identifier(field_name: str, value: str) -> None:
+    if not _IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(
+            f"invalid Cypher identifier for {field_name}: {value!r} "
+            f"(refusing to interpolate into query text)"
+        )
 
 
 @dataclass(frozen=True)
@@ -54,6 +70,14 @@ def redact_signals(signals: List[dict]) -> List[dict]:
 
 
 def cypher_for(edge: DerivedEdge) -> tuple[str, dict]:
+    for field_name, value in (
+        ("rel_type", edge.rel_type),
+        ("from_label", edge.from_label),
+        ("from_key", edge.from_key),
+        ("to_label", edge.to_label),
+        ("to_key", edge.to_key),
+    ):
+        _validate_identifier(field_name, value)
     if edge.profile in UNCALIBRATED_PROFILES and edge.band == "auto_link":
         raise ValueError(
             f"{edge.profile} is capped at review until calibrated "
@@ -81,15 +105,32 @@ def cypher_for(edge: DerivedEdge) -> tuple[str, dict]:
 
 def write_edges(driver: Any, edges: List[DerivedEdge]) -> int:
     """Write derived edges. Never raises: the graph is a downstream side effect
-    and _trgt remains the source of truth for documents."""
+    and _trgt remains the source of truth for documents.
+
+    A `ValueError` out of `cypher_for` (the uncalibrated-profile guard, or the
+    structural-identifier validation) is a *refusal*, not a fault: it is
+    logged distinctly at ERROR and that one edge is skipped, but the rest of
+    the batch still gets written. Anything else (a driver/session error, a
+    Neo4j connectivity failure) is a transport-level fault, logged at
+    WARNING, and aborts whatever remains of the batch -- it says nothing
+    about whether the remaining edges themselves are safe to write.
+    """
     written = 0
     try:
         with driver.session() as session:
             for edge in edges:
-                q, params = cypher_for(edge)
+                try:
+                    q, params = cypher_for(edge)
+                except ValueError as exc:
+                    log.error(
+                        "edge_writer: refusing edge %s(%s)->%s(%s): %s",
+                        edge.from_label, edge.from_value,
+                        edge.to_label, edge.to_value, exc,
+                    )
+                    continue
                 result = session.run(q, **params)
                 written += (result.single() or {}).get("cnt", 0)
     except Exception as exc:  # noqa: BLE001
-        log.warning("edge_writer: %d/%d written before failure: %s",
+        log.warning("edge_writer: %d/%d written before transport failure: %s",
                     written, len(edges), exc)
     return written
