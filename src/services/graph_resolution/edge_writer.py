@@ -51,19 +51,33 @@ class DerivedEdge:
     to_label: str
     to_key: str
     to_value: str
-    F: float
-    band: str
-    P_raw: float
-    L_evidence: float
+    # Optional, not merely nullable: a membership can arise without ever being
+    # scored (item_key's exact-match consolidation -- see `basis` below). F,
+    # band, P_raw, L_evidence and signals are a *measurement*; None means no
+    # measurement was taken, and cypher_for must write that as an absent
+    # property, never a fabricated 0.0/"[]" that would misrepresent a real
+    # (if low) score.
+    F: Optional[float]
+    band: Optional[str]
+    P_raw: Optional[float]
+    L_evidence: Optional[float]
     profile: str
     profile_version: str
-    signals: List[dict]
+    signals: Optional[List[dict]]
     observations: str
     resolution: Optional[str] = None
     margin: Optional[float] = None
+    #: How this edge's membership was established. "scored" -- the profile's
+    #: pairwise scorer linked the two lines. "exact_item_id" -- the class's
+    #: item_key matched this line's own item_id exactly, independent of any
+    #: score (deterministic, not inferred). None for edge kinds that predate
+    #: this distinction (e.g. SAME_ENTITY), which are always scored.
+    basis: Optional[str] = None
 
 
-def redact_signals(signals: List[dict]) -> List[dict]:
+def redact_signals(signals: Optional[List[dict]]) -> Optional[List[dict]]:
+    if signals is None:
+        return None
     out = []
     for s in signals:
         if s.get("id") in REDACTED_SIGNALS and "value" in s:
@@ -87,12 +101,19 @@ def cypher_for(edge: DerivedEdge) -> tuple[str, dict]:
             f"(spec section 9); refusing to write band=auto_link"
         )
     props = {
+        # F/band/P_raw/L_evidence/signals stay explicit None, never a
+        # fabricated default, when the edge carries no measurement -- Cypher's
+        # `SET r += $props` removes a property whose value is null, so a
+        # rewrite genuinely clears a stale score rather than leaving one
+        # stranded from an earlier run.
         "F": edge.F, "band": edge.band, "P_raw": edge.P_raw,
         "L_evidence": edge.L_evidence, "profile": edge.profile,
         "profile_version": edge.profile_version,
-        "signals": json.dumps(redact_signals(edge.signals)),
+        "signals": (json.dumps(redact_signals(edge.signals))
+                    if edge.signals is not None else None),
         "observations": edge.observations,
         "resolution": edge.resolution, "margin": edge.margin,
+        "basis": edge.basis,
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }
     q = (

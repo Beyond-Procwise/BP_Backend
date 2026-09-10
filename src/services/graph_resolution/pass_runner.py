@@ -155,15 +155,23 @@ def run_item_equivalence(conn: Any, driver: Any, limit: Optional[int] = None) ->
 
     item_equivalence is registered uncalibrated (edge_writer.UNCALIBRATED_PROFILES
     -- spec section 9): write_edges refuses band="auto_link" for it outright, no
-    matter what F comes out of the scorer. A line that links to nothing is a
-    class of one and was never scored against anything, so it carries no
-    pairwise result to report. That absence must not be papered over with a
-    fabricated F=100/auto_link -- doing so would not just misstate the
-    evidence, it would make write_edges refuse the edge and the class would
-    silently vanish from the graph even though equivalence_classes correctly
-    placed the line. It is reported as block_or_exception (F=0, zero
-    evidence), which is both the honest reading of "no pair matched" and
-    exactly what write_edges will accept.
+    matter what F comes out of the scorer. A line that links to nothing was
+    never scored against anything, so it carries no pairwise result to report.
+
+    A member's OF_ITEM edge is written one of two ways, told apart by `basis`:
+    "scored" when the profile actually linked this line to another member of
+    the class (F/band/P_raw/L_evidence/signals are that pairwise result, and
+    that result alone -- one member's evidence is not smeared across a whole
+    class); "exact_item_id" when the line's membership comes only from
+    item_key's own exact-match rule (its item_id literally equals the class's
+    canonical item_id) with no scored link behind it at all -- in which case
+    F/band/P_raw/L_evidence/signals are left as None, not a fabricated
+    F=0.0/band="block_or_exception". A score of 0.0 would assert a
+    measurement that was never taken; edge_writer.cypher_for writes None
+    through as an absent Cypher property (and, on a rewrite, actively clears
+    any stale value a previous run left there -- see its `SET r += $props`
+    null-removes-the-property semantics), which is what "no scoring
+    occurred" actually looks like on the edge.
     """
     import psycopg2.extras
     from .profiles import item_equivalence as ie
@@ -199,14 +207,18 @@ def run_item_equivalence(conn: Any, driver: Any, limit: Optional[int] = None) ->
             pair = next((p for p in scored_by_pair if m in p), None)
             r = scored_by_pair.get(pair)
             if r is None:
-                # No pairwise evidence links this line to anything else in
-                # its class (it IS its class) -- see docstring above.
-                F, band, P_raw, L_evidence = 0.0, "block_or_exception", 0.0, 0.0
-                signals: List[dict] = []
+                # No pairwise evidence links this line to anything else in its
+                # class -- membership here is item_key's exact-id match, not a
+                # score. Leave the score fields as None (no measurement was
+                # taken); see the docstring above and edge_writer.cypher_for.
+                F = band = P_raw = L_evidence = None
+                signals: Optional[List[dict]] = None
+                basis = "exact_item_id"
             else:
                 F, band = r["F"], r["decision"]
                 P_raw, L_evidence = r["P_raw"], r["L_evidence"]
                 signals = r["signals"]
+                basis = "scored"
             edges.append(DerivedEdge(
                 rel_type="OF_ITEM",
                 from_label="InvoiceLine", from_key="invoice_line_id", from_value=m,
@@ -215,7 +227,7 @@ def run_item_equivalence(conn: Any, driver: Any, limit: Optional[int] = None) ->
                 profile=ie.PROFILE, profile_version=ie.VERSION,
                 signals=signals,
                 observations=observation_digest([(m, "item_id")]),
-                resolution=None, margin=None,
+                resolution=None, margin=None, basis=basis,
             ))
 
     written = write_edges(driver, edges)

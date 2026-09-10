@@ -207,7 +207,14 @@ def test_run_item_equivalence_singleton_classes_never_carry_the_refused_band(
     make write_edges silently refuse every such edge, so a correctly-placed
     class of one would vanish from the graph while run_item_equivalence
     reported success. Pin that it does not: every unlinked line still reaches
-    the driver, honestly labelled with no evidence.
+    the driver.
+
+    It must also not default to a fabricated F=0.0/band="block_or_exception"
+    -- that asserts a measurement that was never taken. No score field is
+    written at all (None, which cypher_for/Neo4j treats as "no property"),
+    and the membership is instead told apart by basis="exact_item_id": this
+    line's own item_id is the class's canonical id, not a scored link to
+    anything else.
     """
     monkeypatch.setattr(ie, "score", lambda a, b: {
         "F": 37.63, "decision": "block_or_exception", "P_raw": 0.05,
@@ -227,11 +234,17 @@ def test_run_item_equivalence_singleton_classes_never_carry_the_refused_band(
     edge_calls = [c for c in driver.calls if "props" in c]
     assert len(edge_calls) == 2
     for call in edge_calls:
-        assert call["props"]["band"] != "auto_link", \
+        props = call["props"]
+        assert props["band"] != "auto_link", \
             "write_edges refuses auto_link for an uncalibrated profile -- this would vanish"
-        assert call["props"]["band"] == "block_or_exception"
-        assert call["props"]["F"] == 0.0
-        assert call["props"]["P_raw"] == 0.0
+        # No scoring occurred for these lines -- assert absence, not a
+        # fabricated zero/empty value standing in for "no evidence".
+        assert props["F"] is None
+        assert props["band"] is None
+        assert props["P_raw"] is None
+        assert props["L_evidence"] is None
+        assert props["signals"] is None
+        assert props["basis"] == "exact_item_id"
 
 
 def test_run_item_equivalence_links_a_pair_that_clears_the_threshold(monkeypatch):
@@ -262,6 +275,8 @@ def test_run_item_equivalence_links_a_pair_that_clears_the_threshold(monkeypatch
         assert call["props"]["P_raw"] == 0.9
         assert call["props"]["L_evidence"] == 1.2, \
             "L_evidence must come from the prior-free L_evidence field, not L"
+        assert call["props"]["basis"] == "scored", \
+            "this membership came from a pairwise link, not item_key's exact-id rule"
 
     merge_calls = [c for c in driver.calls if "k" in c]
     assert len(merge_calls) == 1, "one Item MERGE per class, not per line"

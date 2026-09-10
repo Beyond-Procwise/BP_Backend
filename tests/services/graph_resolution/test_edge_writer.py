@@ -51,7 +51,7 @@ def test_cypher_carries_every_required_property():
     _, params = cypher_for(_edge())
     for key in ("F", "band", "P_raw", "L_evidence", "profile",
                 "profile_version", "signals", "observations",
-                "resolution", "margin"):
+                "resolution", "margin", "basis"):
         assert key in params["props"], f"{key} missing from edge properties"
 
 
@@ -59,6 +59,44 @@ def test_signals_are_serialised_as_json_text():
     _, params = cypher_for(_edge())
     assert isinstance(params["props"]["signals"], str)
     assert json.loads(params["props"]["signals"])[0]["id"] == "vat"
+
+
+def test_unscored_edge_omits_score_fields_as_null_not_fabricated_defaults():
+    """A membership that arose from exact-key consolidation (item_key text
+    equality), not from the scorer, must not assert F=0.0/P_raw=0.0/etc --
+    those would be measurements that were never taken (absent-data-stays-
+    absent). cypher_for must pass them through as an explicit None so
+    `SET r += $props` treats them as "remove this property" on a rewrite,
+    not a fabricated zero that looks like a real (if unconfident) score.
+    """
+    e = _edge(F=None, band=None, P_raw=None, L_evidence=None, signals=None,
+              basis="exact_item_id")
+    _, params = cypher_for(e)
+    props = params["props"]
+    assert props["F"] is None
+    assert props["band"] is None
+    assert props["P_raw"] is None
+    assert props["L_evidence"] is None
+    assert props["signals"] is None
+    assert props["basis"] == "exact_item_id"
+
+
+def test_basis_defaults_to_none_for_existing_scored_callers():
+    """basis is new and optional; a caller that never sets it (every existing
+    SAME_ENTITY write) must be unaffected."""
+    e = _edge()
+    assert e.basis is None
+    _, params = cypher_for(e)
+    assert params["props"]["basis"] is None
+
+
+def test_uncalibrated_guard_is_unaffected_by_a_null_band():
+    """None is not the string "auto_link" -- an unscored edge on an
+    uncalibrated profile must not trip the auto_link refusal."""
+    e = _edge(profile="item_equivalence", band=None, F=None, P_raw=None,
+              L_evidence=None, signals=None, basis="exact_item_id")
+    q, params = cypher_for(e)  # must not raise
+    assert params["props"]["band"] is None
 
 
 def test_capped_profile_cannot_emit_auto_link():
