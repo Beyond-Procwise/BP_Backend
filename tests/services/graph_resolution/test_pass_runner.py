@@ -159,3 +159,109 @@ def test_run_supplier_identity_writes_edges_keyed_in_the_graphs_supplier_keyspac
         r"|x\.bp_supplier_id\s*=\s*s\.supplier_id",
         normalised,
     ), "bp_supplier's supplier_id must be equated with the crosswalk's bp_supplier_id"
+
+
+# --- Task 8: equivalence_classes / run_item_equivalence --------------------
+
+from src.services.graph_resolution.pass_runner import equivalence_classes
+
+
+def test_equivalence_classes_are_transitive():
+    linked = [("L1", "L2"), ("L2", "L3"), ("L9", "L10")]
+    classes = equivalence_classes(["L1", "L2", "L3", "L9", "L10", "L11"], linked)
+    as_sets = sorted([sorted(c) for c in classes])
+    assert ["L1", "L2", "L3"] in as_sets
+    # Lexicographic sort of ["L9", "L10"] is ["L10", "L9"] ("1" < "9"), not
+    # ["L9", "L10"] -- compare sorted-to-sorted so the check is order-
+    # independent instead of pinned to a string-sort artefact.
+    assert sorted(["L9", "L10"]) in [sorted(c) for c in classes]
+    assert ["L11"] in as_sets, "a line linked to nothing is its own class"
+
+
+def test_every_line_appears_in_exactly_one_class():
+    lines = ["A", "B", "C"]
+    classes = equivalence_classes(lines, [("A", "B")])
+    flat = [m for c in classes for m in c]
+    assert sorted(flat) == sorted(lines)
+    assert len(flat) == len(set(flat))
+
+
+from src.services.graph_resolution.pass_runner import run_item_equivalence
+from src.services.graph_resolution.profiles import item_equivalence as ie
+
+_ITEM_ROWS = [
+    {"invoice_line_id": "IL1", "item_id": "ITM1", "item_description": "Widget A",
+     "unit_of_measure": "EA", "unit_price": 10.0, "invoice_id": "INV1"},
+    {"invoice_line_id": "IL2", "item_id": "ITM2", "item_description": "Widget B",
+     "unit_of_measure": "EA", "unit_price": 20.0, "invoice_id": "INV2"},
+]
+
+
+def test_run_item_equivalence_singleton_classes_never_carry_the_refused_band(
+    monkeypatch,
+):
+    """item_equivalence is uncalibrated (edge_writer.UNCALIBRATED_PROFILES) and
+    write_edges refuses band="auto_link" for it outright. A singleton (a line
+    matched to nothing) has no pairwise score to report -- defaulting that
+    absence to F=100/band="auto_link" (as a naive implementation might) would
+    make write_edges silently refuse every such edge, so a correctly-placed
+    class of one would vanish from the graph while run_item_equivalence
+    reported success. Pin that it does not: every unlinked line still reaches
+    the driver, honestly labelled with no evidence.
+    """
+    monkeypatch.setattr(ie, "score", lambda a, b: {
+        "F": 37.63, "decision": "block_or_exception", "P_raw": 0.05,
+        "L": -2.0, "L_evidence": -1.0, "signals": [],
+    })
+
+    conn = _FakeConn(_ITEM_ROWS)
+    driver = _FakeDriver()
+
+    result = run_item_equivalence(conn, driver, limit=200)
+
+    assert result["lines"] == 2
+    assert result["classes"] == 2, "no pair reaches F>=80, so both lines are singletons"
+    assert result["multi_member_classes"] == 0
+    assert result["written"] == 2, "singleton edges must still reach the graph"
+
+    edge_calls = [c for c in driver.calls if "props" in c]
+    assert len(edge_calls) == 2
+    for call in edge_calls:
+        assert call["props"]["band"] != "auto_link", \
+            "write_edges refuses auto_link for an uncalibrated profile -- this would vanish"
+        assert call["props"]["band"] == "block_or_exception"
+        assert call["props"]["F"] == 0.0
+        assert call["props"]["P_raw"] == 0.0
+
+
+def test_run_item_equivalence_links_a_pair_that_clears_the_threshold(monkeypatch):
+    """When the profile does score a pair at or above 80 (auto_link_with_warning
+    and up), the two lines land in one class, sharing one item_key, and the
+    edges carry the real pairwise evidence rather than the no-evidence default.
+    """
+    monkeypatch.setattr(ie, "score", lambda a, b: {
+        "F": 85.0, "decision": "auto_link_with_warning", "P_raw": 0.9,
+        "L": 1.5, "L_evidence": 1.2, "signals": [{"id": "item_id"}],
+    })
+
+    conn = _FakeConn(_ITEM_ROWS)
+    driver = _FakeDriver()
+
+    result = run_item_equivalence(conn, driver, limit=200)
+
+    assert result["classes"] == 1
+    assert result["multi_member_classes"] == 1
+    assert result["written"] == 2, "both lines get an OF_ITEM edge to the same Item"
+
+    edge_calls = [c for c in driver.calls if "props" in c]
+    to_values = {c["to_value"] for c in edge_calls}
+    assert len(to_values) == 1, "both lines must point at the same minted Item"
+    for call in edge_calls:
+        assert call["props"]["band"] == "auto_link_with_warning"
+        assert call["props"]["F"] == 85.0
+        assert call["props"]["P_raw"] == 0.9
+        assert call["props"]["L_evidence"] == 1.2, \
+            "L_evidence must come from the prior-free L_evidence field, not L"
+
+    merge_calls = [c for c in driver.calls if "k" in c]
+    assert len(merge_calls) == 1, "one Item MERGE per class, not per line"

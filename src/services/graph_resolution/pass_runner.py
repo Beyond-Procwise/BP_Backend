@@ -125,3 +125,102 @@ def run_supplier_identity(conn: Any, driver: Any, limit: Optional[int] = None) -
     log.info("supplier_identity: scored=%d kept=%d written=%d status=%s",
              len(scored), len(edges), written, outcome.status)
     return {"scored": len(scored), "written": written, "status": outcome.status}
+
+
+def equivalence_classes(members: List[str], linked: List[tuple]) -> List[List[str]]:
+    """Transitive closure over confirmed links. Every member lands in exactly
+    one class; an unlinked member is a class of one."""
+    parent = {m: m for m in members}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in linked:
+        if a in parent and b in parent:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+
+    groups: dict = {}
+    for m in members:
+        groups.setdefault(find(m), []).append(m)
+    return list(groups.values())
+
+
+def run_item_equivalence(conn: Any, driver: Any, limit: Optional[int] = None) -> dict:
+    """Resolve line items into Items and write OF_ITEM edges.
+
+    item_equivalence is registered uncalibrated (edge_writer.UNCALIBRATED_PROFILES
+    -- spec section 9): write_edges refuses band="auto_link" for it outright, no
+    matter what F comes out of the scorer. A line that links to nothing is a
+    class of one and was never scored against anything, so it carries no
+    pairwise result to report. That absence must not be papered over with a
+    fabricated F=100/auto_link -- doing so would not just misstate the
+    evidence, it would make write_edges refuse the edge and the class would
+    silently vanish from the graph even though equivalence_classes correctly
+    placed the line. It is reported as block_or_exception (F=0, zero
+    evidence), which is both the honest reading of "no pair matched" and
+    exactly what write_edges will accept.
+    """
+    import psycopg2.extras
+    from .profiles import item_equivalence as ie
+
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """SELECT invoice_line_id, item_id, item_description, unit_of_measure,
+                  unit_price, invoice_id
+           FROM proc.bp_invoice_line_items_trgt
+           WHERE item_id IS NOT NULL
+           ORDER BY invoice_line_id""" + (f" LIMIT {int(limit)}" if limit else "")
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    by_id = {r["invoice_line_id"]: r for r in rows}
+
+    linked, scored_by_pair = [], {}
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            r = ie.score(a, b)
+            if r["F"] >= 80.0:      # auto_link_with_warning and above
+                pair = (a["invoice_line_id"], b["invoice_line_id"])
+                linked.append(pair)
+                scored_by_pair[pair] = r
+
+    classes = equivalence_classes(list(by_id), linked)
+
+    edges = []
+    for members in classes:
+        key = ie.item_key([by_id[m] for m in members])
+        with driver.session() as session:
+            session.run("MERGE (i:Item {item_key: $k})", k=key)
+        for m in members:
+            pair = next((p for p in scored_by_pair if m in p), None)
+            r = scored_by_pair.get(pair)
+            if r is None:
+                # No pairwise evidence links this line to anything else in
+                # its class (it IS its class) -- see docstring above.
+                F, band, P_raw, L_evidence = 0.0, "block_or_exception", 0.0, 0.0
+                signals: List[dict] = []
+            else:
+                F, band = r["F"], r["decision"]
+                P_raw, L_evidence = r["P_raw"], r["L_evidence"]
+                signals = r["signals"]
+            edges.append(DerivedEdge(
+                rel_type="OF_ITEM",
+                from_label="InvoiceLine", from_key="invoice_line_id", from_value=m,
+                to_label="Item", to_key="item_key", to_value=key,
+                F=F, band=band, P_raw=P_raw, L_evidence=L_evidence,
+                profile=ie.PROFILE, profile_version=ie.VERSION,
+                signals=signals,
+                observations=observation_digest([(m, "item_id")]),
+                resolution=None, margin=None,
+            ))
+
+    written = write_edges(driver, edges)
+    multi_member = sum(1 for c in classes if len(c) > 1)
+    log.info("item_equivalence: lines=%d classes=%d multi_member=%d written=%d",
+             len(rows), len(classes), multi_member, written)
+    return {"lines": len(rows), "classes": len(classes), "written": written,
+            "multi_member_classes": multi_member}
