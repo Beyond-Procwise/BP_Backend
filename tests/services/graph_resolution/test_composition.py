@@ -2,6 +2,7 @@ import pytest
 
 from src.services import linking_engine as _le
 from src.services.graph_resolution.composition import remap_clusters
+from src.services.graph_resolution.profiles import supplier_identity  # noqa: F401  registers the profile
 
 SPECS = [
     {"id": "vat", "cluster": "registration"},
@@ -33,7 +34,6 @@ def test_signals_sharing_an_observation_are_merged_into_one_cluster():
     assert out["reg_no"] == "registration"
 
 
-@pytest.mark.xfail(reason="profile lands in Task 4", strict=False)
 def test_merged_cluster_scores_no_higher_than_the_correlated_truth():
     """The double-counting regression test (spec section 10.3)."""
     src = {"supplier_id": "SUP-A", "vat_number": "GB1", "registration_number": "R1"}
