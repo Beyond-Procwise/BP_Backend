@@ -231,6 +231,51 @@ def negotiation_workflow_exists(*, workflow_id: Optional[str], conn: Any = None)
         return _run(own)
 
 
+def workflow_initiator(workflow_id: Optional[str], conn: Any = None) -> Optional[str]:
+    """Who started ``workflow_id``, or ``None``.
+
+    Used to stop a person approving a round of a negotiation they started
+    themselves. A negotiation round has no artefact carrying a requester, so
+    the workflow's own initiator is the nearest thing the record holds.
+
+    Read HONESTLY: today ``proc.workflow_execution.user_id`` holds 'AgentNick',
+    'system', 'human' or NULL and never a Cognito subject, because the
+    orchestrator falls back to ``settings.script_user`` for anything not started
+    by a named person. So this returns something that cannot equal an approver's
+    subject, and the self-approval bar does not fire on that path yet. It will,
+    unchanged, as soon as workflow initiators are real people — which is the
+    point of resolving it from the record rather than hardcoding "no requester".
+    """
+
+    workflow = str(workflow_id or "").strip()
+    if not workflow:
+        return None
+
+    def _run(connection: Any) -> Optional[str]:
+        cur = connection.cursor()
+        cur.execute(
+            "SELECT user_id FROM proc.workflow_execution "
+            " WHERE workflow_id = %s AND user_id IS NOT NULL "
+            " ORDER BY created_at DESC LIMIT 1",
+            (workflow,),
+        )
+        row = cur.fetchone()
+        value = (row[0] if row else None) or None
+        return str(value).strip() or None if value else None
+
+    try:
+        if conn is not None:
+            return _run(conn)
+        with get_conn() as own:
+            return _run(own)
+    except Exception:  # noqa: BLE001
+        # Unknown, not "nobody". The caller treats unknown as "not a match" and
+        # a lookup failure must not silently become a permit for a collision it
+        # could not check, so it is logged loudly rather than swallowed quietly.
+        logger.exception("could not resolve the initiator of workflow %s", workflow)
+        raise
+
+
 def find_round_approval(
     *,
     workflow_id: Optional[str],

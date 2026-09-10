@@ -1347,6 +1347,7 @@ def _reply_thread_headers(
 def prepare_email_draft(
     payload: EmailPrepareRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> EmailPrepareResponse:
     """Persist ``payload`` into ``proc.draft_rfq_emails`` and return its identifier.
 
@@ -1407,12 +1408,21 @@ def prepare_email_draft(
         else f"report-panel:{uuid.uuid4().hex[:12]}"
     )
 
+    # This is the human path into proc.draft_rfq_emails, so the row records who
+    # asked. The approvals surface reads it back to refuse an approval signed by
+    # the person who requested it (P3) -- which it could not do while no draft
+    # named a requester at all. Taken from the principal and never from
+    # ``payload``: a caller who could name the requester could name someone else
+    # and approve their own draft freely.
+    requested_by = str(getattr(principal, "subject", "") or "").strip() or None
+
     draft: Dict[str, Any] = {
         "supplier_id": supplier_id,
         "subject": payload.subject,
         "body": payload.body,
         "recipients": recipients,
         "receiver": recipients[0],
+        "requested_by": requested_by,
         "metadata": {
             "source": "report_email_panel",
             "deal_id": payload.deal_id,

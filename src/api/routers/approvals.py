@@ -38,6 +38,12 @@ _REVOKE_SCOPE_OWN_ONLY = "own_only"
 _REVOKE_SCOPE_OWN_OR_HIGHER = "own_or_higher_rank"
 _REVOKE_SCOPES = {_REVOKE_SCOPE_ANY, _REVOKE_SCOPE_OWN_ONLY, _REVOKE_SCOPE_OWN_OR_HIGHER}
 
+# self_approval values EmailApprovalCapabilityPolicy may set. Absent, unreadable
+# or unrecognised all mean deny -- see _self_approval_rule.
+_SELF_APPROVAL_DENY = "deny"
+_SELF_APPROVAL_ALLOW = "allow"
+_SELF_APPROVAL_VALUES = {_SELF_APPROVAL_DENY, _SELF_APPROVAL_ALLOW}
+
 # _required_role_rank's fail-restrictive sentinel: higher than any real
 # role's rank can ever be, so `role_rank(role) > _RANK_DENY_ALL` is False for
 # every role and own_or_higher_rank's override never fires. An unreadable
@@ -161,6 +167,85 @@ def _require_capability(
     return decision
 
 
+def _self_approval_rule(policy_engine: Any) -> str:
+    """Whether a person may approve their own request. A policy row, not code.
+
+    Absent, unreadable and unrecognised all resolve to ``deny`` — the rule this
+    surface already applies to ``revoke_scope``, for the same reason. The August
+    migration ``i6_fix_remove_self_approval_allowed`` removed a key nothing read;
+    if a missing key meant permission, every deployment that had not yet run the
+    migration adding it back would silently be running without the bar, and the
+    guard would look identical to one that works.
+    """
+
+    policy = _capability_policy(policy_engine)
+    rules = ((policy or {}).get("details") or {}).get("rules") or {}
+    value = str(rules.get("self_approval") or "").strip().lower()
+    return value if value in _SELF_APPROVAL_VALUES else _SELF_APPROVAL_DENY
+
+
+def _refuse_self_approval(
+    policy_engine: Any,
+    *,
+    approver: str,
+    requester: Optional[str],
+    context: Dict[str, Any],
+) -> None:
+    """Refuse when the person signing is the person who asked (M18.72).
+
+    ``requester`` must come from the STORED record — the draft row, the workflow
+    row. Never from the request body: a caller who can name the requester can
+    name somebody else and approve freely, which is the same forgery the
+    approver field was locked down to prevent, one field along.
+
+    A requester that is absent is not a match. Agents draft most of these and an
+    agent-created draft has no human requester to collide with; treating unknown
+    as a collision would make every such draft unapprovable, which is not a
+    stricter version of this rule, it is a broken surface.
+    """
+
+    if _self_approval_rule(policy_engine) == _SELF_APPROVAL_ALLOW:
+        return
+
+    requested_by = str(requester or "").strip()
+    if not requested_by or requested_by != str(approver or "").strip():
+        return
+
+    policy = _capability_policy(policy_engine) or {}
+    raw_row = policy.get("raw_row") or {}
+    decision = guardrail.Decision(
+        allowed=False,
+        reason=(
+            "an approval cannot be signed by the person who requested it; "
+            "someone else must approve this"
+        ),
+        policy_id=_CAPABILITY_POLICY_SLUG,
+        policy_name=policy.get("policyName") or "EmailApprovalCapabilityPolicy",
+        policy_version=raw_row.get("version") if isinstance(raw_row, dict) else None,
+        evidence={"rule": "self_approval", "requested_by": requested_by,
+                  "actioned_by": approver},
+    )
+    record_action_or_fail(
+        phase="approve",
+        action_type=_ACTION,
+        agent="ApprovalsRouter",
+        status="denied",
+        summary=decision.reason,
+        details={
+            **context,
+            "principal": approver,
+            "policy_id": decision.policy_id,
+            "policy_name": decision.policy_name,
+            "policy_version": decision.policy_version,
+            "decision": "deny",
+            "evidence": decision.evidence,
+        },
+    )
+    logger.info("self-approval refused: %s tried to approve their own request (%s)",
+                approver, context)
+    raise HTTPException(status_code=403, detail=decision.reason)
+
+
 def _subject(principal: Any) -> str:
     subject = str(getattr(principal, "subject", "") or "").strip()
     if not subject:
@@ -203,6 +288,16 @@ def approve_dispatch(
         raise HTTPException(
             status_code=404, detail=f"no unsent draft with unique_id {unique_id}"
         )
+
+    # Who asked for this draft, off the stored row. `POST /workflows/email/prepare`
+    # lets a person persist an edited email; without this, the same person could
+    # then approve it.
+    _refuse_self_approval(
+        rbac.policy_engine(),
+        approver=actioned_by,
+        requester=draft.get("requested_by"),
+        context={"unique_id": unique_id},
+    )
 
     # Hash the resolved material a send with no overrides would transmit
     # right now -- the same computation the send path uses (see C1), so an
@@ -257,6 +352,16 @@ def approve_round(
         raise HTTPException(
             status_code=404, detail=f"no negotiation workflow {workflow_id}"
         )
+
+    # A round carries no artefact, so the workflow's recorded initiator is the
+    # requester. See approval_store.workflow_initiator for why this cannot fire
+    # yet, and why it is still resolved from the record rather than assumed.
+    _refuse_self_approval(
+        rbac.policy_engine(),
+        approver=actioned_by,
+        requester=approval_store.workflow_initiator(workflow_id),
+        context={"workflow_id": workflow_id, "round": int(round_num)},
+    )
 
     approval_id = approval_store.record_approval(
         rfq_id=None,

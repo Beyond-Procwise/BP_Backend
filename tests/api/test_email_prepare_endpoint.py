@@ -421,3 +421,60 @@ def test_an_unknown_thread_404s_rather_than_preparing_an_unthreaded_reply(monkey
         mod.prepare_email_draft(payload, agent_nick=_make_agent_nick(conn))
     assert exc_info.value.status_code == 404
     assert conn.calls == []
+
+
+# ---------------------------------------------------------------------------
+# who asked for the draft (P3)
+# ---------------------------------------------------------------------------
+class _Principal:
+    def __init__(self, subject):
+        self.subject = subject
+        self.email = f"{subject}@ourcompany.com"
+
+
+def test_the_draft_records_the_person_who_prepared_it():
+    """This endpoint is the human path into proc.draft_rfq_emails, and the
+    approvals surface has to be able to tell whether the person approving is
+    the person who asked. It could not: the row recorded no requester at all.
+
+    See tests/approvals/test_self_approval_barred.py for the bar this feeds.
+    """
+    conn = _FakeConn()
+    agent_nick = _make_agent_nick(conn)
+
+    payload = mod.EmailPrepareRequest(
+        deal_id="DEAL-770",
+        to=["supplier@example.com"],
+        subject="Request for quote",
+        body="Please quote.",
+    )
+
+    mod.prepare_email_draft(payload, agent_nick=agent_nick,
+                            principal=_Principal("sub-buyer-001"))
+
+    sql, params = _insert_call(conn)
+    assert "requested_by" in sql, "the draft row does not record who asked for it"
+    persisted_payload = json.loads(params[11])
+    assert persisted_payload["requested_by"] == "sub-buyer-001"
+    assert "sub-buyer-001" in params, f"requested_by never reached the INSERT: {params}"
+
+
+def test_a_draft_prepared_with_no_principal_names_nobody():
+    """With ASK_AUTH_MODE=off there is no principal. The row must then say
+    nobody asked -- NOT some placeholder that a later approver might match, and
+    not a value taken from the request body."""
+    conn = _FakeConn()
+    agent_nick = _make_agent_nick(conn)
+
+    payload = mod.EmailPrepareRequest(
+        deal_id="DEAL-771",
+        to=["supplier@example.com"],
+        subject="Request for quote",
+        body="Please quote.",
+    )
+
+    mod.prepare_email_draft(payload, agent_nick=agent_nick, principal=None)
+
+    _, params = _insert_call(conn)
+    persisted_payload = json.loads(params[11])
+    assert persisted_payload.get("requested_by") in (None, "")
