@@ -52,14 +52,29 @@ def band_for_resolution(band: str, status: Optional[str]) -> str:
 
 
 def run_supplier_identity(conn: Any, driver: Any, limit: Optional[int] = None) -> dict:
-    """Score supplier pairs, resolve globally, write SAME_ENTITY edges."""
+    """Score supplier pairs, resolve globally, write SAME_ENTITY edges.
+
+    bp_supplier_master is keyed SI###### (the uicanvas keyspace); the graph's
+    Supplier nodes are keyed SUP-* (bp_supplier's keyspace). Those are
+    different tables with different ids for the same company, so every row
+    is bridged through bp_supplier_id_crosswalk to carry bp_supplier's id as
+    `supplier_id` -- that is the identifier this function must put on
+    source_id/target_id and therefore on the written edge, or write_edges's
+    MATCH finds no node and silently writes nothing. The master's own
+    attributes (name, VAT, etc.) still come from bp_supplier_master; only the
+    identifier is swapped for the one the graph actually uses.
+    """
     import psycopg2.extras
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        """SELECT supplier_id, supplier_name, vat_number, registration_number,
-                  duns_number, postal_code, country, bank_account_number
-           FROM proc.bp_supplier_master
-           ORDER BY supplier_id""" + (f" LIMIT {int(limit)}" if limit else "")
+        """SELECT s.supplier_id AS supplier_id, m.supplier_name, m.vat_number,
+                  m.registration_number, m.duns_number, m.postal_code,
+                  m.country, m.bank_account_number
+           FROM proc.bp_supplier_master m
+           JOIN proc.bp_supplier_id_crosswalk x
+             ON x.uicanvas_supplier_id = m.supplier_id
+           JOIN proc.bp_supplier s ON s.supplier_id = x.bp_supplier_id
+           ORDER BY m.supplier_id""" + (f" LIMIT {int(limit)}" if limit else "")
     )
     rows = [dict(r) for r in cur.fetchall()]
 
