@@ -50,6 +50,7 @@ an order or merely tolerated one.
 from __future__ import annotations
 
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import math
 import os
 from dataclasses import dataclass
@@ -102,14 +103,20 @@ log = logging.getLogger(__name__)
 # It is calibrated on this corpus and must be re-derived on another -- most of
 # all where converted_amount_usd is populated, which it is not here, so the
 # amount signal contributes nothing to either population above.
-PROPOSAL_MIN_SCORE = float(os.getenv("PROPOSE_MIN_LINK_SCORE", "40"))
+def PROPOSAL_MIN_SCORE() -> float:
+    """PromotionThresholdPolicy (P9)."""
+    return _governed_limit("promotion_thresholds", "propose_min_link_score",
+                           env="PROPOSE_MIN_LINK_SCORE")
 
 # Every candidate pair is a variable in the model, so a supplier with 40 orders
 # and 30 unreferenced invoices would be 1,200 of them. Each document competes for
 # its best few orders instead, which is linear in the document count. The best
 # candidate is never dropped, so a document whose orders do not compete is
 # unaffected by the bound.
-MAX_CANDIDATES_PER_DOC = int(os.getenv("PROPOSE_MAX_CANDIDATES", "5"))
+def MAX_CANDIDATES_PER_DOC() -> int:
+    """PromotionThresholdPolicy (P9)."""
+    return _governed_limit("promotion_thresholds", "propose_max_candidates",
+                           env="PROPOSE_MAX_CANDIDATES", cast=int)
 
 # An invoice may bill against one purchase order; an order carries many invoices.
 _PROFILE_ID = "unreferenced_doc_po"
@@ -322,8 +329,8 @@ def propose_links(documents: list[dict], purchase_orders: list[dict],
     """
     pk = _DOC[doc_type]["pk"]
     profile = profile or _DOC[doc_type]["profile"]
-    floor = PROPOSAL_MIN_SCORE if min_score is None else float(min_score)
-    cap_n = MAX_CANDIDATES_PER_DOC if max_candidates is None else int(max_candidates)
+    floor = PROPOSAL_MIN_SCORE() if min_score is None else float(min_score)
+    cap_n = MAX_CANDIDATES_PER_DOC() if max_candidates is None else int(max_candidates)
     doc_lines, po_lines = doc_lines or {}, po_lines or {}
     rejected = rejected or set()
     # Resolved at call time, not bound as a default, so the whole-corpus path can

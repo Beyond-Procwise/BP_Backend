@@ -30,6 +30,8 @@ import re
 import unicodedata
 from urllib.parse import urlparse
 
+from src.services.governed_limits import limit as _governed_limit
+
 from src.services import egress
 
 from src.services.supplier_enrichment.web_tools import fetch_url, web_search
@@ -38,37 +40,33 @@ log = logging.getLogger(__name__)
 
 _OLLAMA_CHAT = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
 _MODEL = os.getenv("SUPPLIER_RESEARCH_MODEL", "BeyondProcwise/AgentNick:unified")
-_MAX_ROUNDS = int(os.getenv("SUPPLIER_RESEARCH_MAX_ROUNDS", "4"))
-def _propose_conf() -> float:
+def _MAX_ROUNDS() -> int:
+    """AgentReachPolicy (P9): how many tool rounds one research run may take."""
+    return _governed_limit("agent_reach", "supplier_research_max_rounds",
+                           env="SUPPLIER_RESEARCH_MAX_ROUNDS", cast=int)
+def _PROPOSE_CONF() -> float:
     """Confidence at which a researched fact is worth putting in front of a person.
 
     This was SUPPLIER_RESEARCH_APPLY_CONF, and it decided what got written to the
-    supplier master. Nothing is auto-written any more, so the number was either
-    retired or repurposed; it is repurposed, deliberately.
-
+    supplier master. Nothing is auto-written any more (P5), so the number was
+    either retired or repurposed; it is repurposed, as the threshold to PROPOSE.
     Retiring it would have meant every grounded fact reaching the queue, and a
-    reviewer approves an enrichment record as a whole — so a fact the model
-    itself rated 0.1 would ride into the supplier master on the back of a good
-    one. Keeping it as the threshold to PROPOSE puts the weak facts where they
-    belong: recorded in ``fields`` for anyone reading the record, and not in the
-    set the approve button acts on.
+    reviewer approves a record as a whole — so a fact the model itself rated 0.1
+    would ride into the supplier master on the back of a good one.
 
-    The old name is still honoured for one release so a tuned deployment does not
-    silently revert to the default. P9 moves this into policy, where a governance
-    limit belongs — it is on that prompt's list by its old name.
+    It lives in SupplierIdentityPolicy now (P9). Two deprecated environment
+    spellings still override it for one release, newest first, each saying so.
     """
-    new = os.getenv("SUPPLIER_RESEARCH_PROPOSE_CONF")
-    old = os.getenv("SUPPLIER_RESEARCH_APPLY_CONF")
-    if new is None and old is not None:
-        log.warning(
-            "SUPPLIER_RESEARCH_APPLY_CONF is deprecated (nothing is auto-applied "
-            "any more); it is being read as SUPPLIER_RESEARCH_PROPOSE_CONF=%s", old,
-        )
-        return float(old)
-    return float(new if new is not None else "0.75")
-
-
-_PROPOSE_CONF = _propose_conf()
+    for name in ("SUPPLIER_RESEARCH_PROPOSE_CONF", "SUPPLIER_RESEARCH_APPLY_CONF"):
+        if os.getenv(name):
+            if name.endswith("APPLY_CONF"):
+                log.warning(
+                    "SUPPLIER_RESEARCH_APPLY_CONF is deprecated twice over: "
+                    "nothing is auto-applied any more, and the limit is policy. "
+                    "Reading it as the propose threshold.")
+            return _governed_limit("supplier_identity", "research_propose_conf",
+                                   env=name)
+    return _governed_limit("supplier_identity", "research_propose_conf")
 # Entity match: fact-confidence is NOT entity-match. A well-cited, high-confidence
 # fact about a DIFFERENT company of the same name looks identical to a good one,
 # so the official name the model reports is scored against the supplier's.
@@ -77,7 +75,10 @@ _PROPOSE_CONF = _propose_conf()
 # now — a mismatch is exactly the thing a reviewer should see and reject, so a
 # low score is proposed like any other, carrying its score. It survives as the
 # flag on the record: `entity_confirmed`.
-_ENTITY_MATCH_FLOOR = float(os.getenv("SUPPLIER_RESEARCH_NAME_MATCH", "85"))
+def _ENTITY_MATCH_FLOOR() -> float:
+    """SupplierIdentityPolicy (P9)."""
+    return _governed_limit("supplier_identity", "research_name_match",
+                           env="SUPPLIER_RESEARCH_NAME_MATCH")
 
 # bp_supplier columns we will auto-fill (descriptive, low-harm). business_summary
 # is researched but kept in the sidecar only (no column).
@@ -159,7 +160,7 @@ def _run_loop(supplier_name: str) -> tuple[str, dict[str, str]]:
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": f"Research this supplier and return the JSON: {supplier_name}"},
     ]
-    for _ in range(_MAX_ROUNDS):
+    for _ in range(_MAX_ROUNDS()):
         msg = _chat(messages)
         messages.append(msg)
         tool_calls = msg.get("tool_calls") or []
@@ -391,7 +392,7 @@ def fillable(cur, supplier_id: str, fields: dict) -> dict:
         if col in _SENSITIVE:
             continue
         f = fields.get(col)
-        if not f or float(f.get("confidence") or 0.0) < _PROPOSE_CONF:
+        if not f or float(f.get("confidence") or 0.0) < _PROPOSE_CONF():
             continue
         # Only content-verified facts are ever written. Today the unverified entries are
         # prose, which has no column here — this makes that a rule rather than a coincidence
@@ -469,7 +470,7 @@ def research_and_enrich(supplier_id: str, conn) -> dict:
     if matched_name and matched_name.strip().lower() != "unknown":
         name_match = float(fuzz.WRatio(_strip_biz_suffix(supplier_name) or supplier_name,
                                        _strip_biz_suffix(matched_name) or matched_name))
-    entity_ok = name_match >= _ENTITY_MATCH_FLOOR
+    entity_ok = name_match >= _ENTITY_MATCH_FLOOR()
 
     with conn.cursor() as cur:
         # What a person would be approving. Computed, recorded, NOT written.

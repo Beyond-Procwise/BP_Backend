@@ -25,7 +25,12 @@ router = APIRouter(prefix="/suppliers", tags=["Supplier Research"])
 
 
 def _enabled() -> bool:
-    return os.getenv("SUPPLIER_RESEARCH_ENABLED", "1") not in ("0", "false", "False")
+    """AutonomousOperationPolicy (P9): whether queries about a supplier may
+    leave the tenant at all."""
+    from src.services.governed_limits import limit as _governed_limit
+
+    return bool(_governed_limit("autonomous_operation", "supplier_research_enabled",
+                                env="SUPPLIER_RESEARCH_ENABLED", cast=bool))
 
 
 class RejectBody(BaseModel):

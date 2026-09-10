@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import math
 import os
 import re
@@ -59,7 +60,10 @@ logger = logging.getLogger(__name__)
 # -----------------------------
 # Tunables & feature toggles
 # -----------------------------
-MAX_SUPPLIER_REPLIES = int(os.getenv("NEG_MAX_SUPPLIER_REPLIES", "3"))
+def MAX_SUPPLIER_REPLIES() -> int:
+    """NegotiationBoundsPolicy (P9)."""
+    return _governed_limit("negotiation_bounds", "max_supplier_replies",
+                           env="NEG_MAX_SUPPLIER_REPLIES", cast=int)
 LLM_ENABLED = os.getenv("NEG_ENABLE_LLM", "1").strip() not in {"0", "false", "False"}
 # AgentNick, like every other non-extraction caller. The old default was
 # "llama3.2:latest", which is not a model this host has ever had installed, so the one
@@ -70,14 +74,23 @@ LLM_ENABLED = os.getenv("NEG_ENABLE_LLM", "1").strip() not in {"0", "false", "Fa
 LLM_MODEL = os.getenv("NEG_LLM_MODEL") or os.getenv(
     "AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified"
 )
-COST_OF_CAPITAL_APR = float(os.getenv("NEG_COST_OF_CAPITAL_APR", "0.12"))
-LEAD_TIME_VALUE_PCT_PER_WEEK = float(os.getenv("NEG_LT_VALUE_PCT_PER_WEEK", "0.01"))
+def COST_OF_CAPITAL_APR() -> float:
+    """NegotiationBoundsPolicy (P9)."""
+    return _governed_limit("negotiation_bounds", "cost_of_capital_apr",
+                           env="NEG_COST_OF_CAPITAL_APR")
+def LEAD_TIME_VALUE_PCT_PER_WEEK() -> float:
+    """NegotiationBoundsPolicy (P9)."""
+    return _governed_limit("negotiation_bounds", "lt_value_pct_per_week",
+                           env="NEG_LT_VALUE_PCT_PER_WEEK")
 def _resolve_thread_transcript_limit() -> Optional[int]:
     """Return the configured transcript limit or ``None`` for full history."""
 
+    # AgentReachPolicy (P9). Policy states null for "no limit", which is a
+    # decision somebody made -- not the same as the key being absent.
     raw_limit = os.getenv("NEG_THREAD_TRANSCRIPT_LIMIT")
     if raw_limit is None:
-        return None
+        return _governed_limit("agent_reach", "neg_thread_transcript_limit",
+                               cast=int)
 
     raw_limit = raw_limit.strip()
     if not raw_limit:
@@ -99,7 +112,10 @@ def _resolve_thread_transcript_limit() -> Optional[int]:
 
 
 THREAD_HISTORY_TRANSCRIPT_LIMIT = _resolve_thread_transcript_limit()
-AGGRESSIVE_FIRST_COUNTER_PCT = float(os.getenv("NEG_FIRST_COUNTER_AGGR_PCT", "0.12"))
+def AGGRESSIVE_FIRST_COUNTER_PCT() -> float:
+    """NegotiationBoundsPolicy (P9)."""
+    return _governed_limit("negotiation_bounds", "first_counter_aggr_pct",
+                           env="NEG_FIRST_COUNTER_AGGR_PCT")
 FINAL_OFFER_PATTERNS = (
     "best and final",
     "best final",
@@ -494,10 +510,27 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
 # PLAYBOOK_PATH moved to services.negotiation_advice.ranking with the loader that
 # reads it (re-rooted there: parents[2], not parent.parent).
 
-MARKET_REVIEW_THRESHOLD = float(os.getenv("NEG_MARKET_REVIEW_PCT", "0.2"))
-MARKET_ESCALATION_THRESHOLD = float(os.getenv("NEG_MARKET_ESCALATION_PCT", "0.4"))
-MAX_VOLUME_LIMIT = float(os.getenv("NEG_MAX_VOLUME_LIMIT", "1000"))
-MAX_TERM_DAYS = int(os.getenv("NEG_MAX_TERM_DAYS", "120"))
+# NegotiationBoundsPolicy (P9): what this agent may put to a supplier. An agent
+# allowed to concede 40% instead of 20% is a different agent, so these are rules
+# rather than settings, and a missing one refuses rather than assuming.
+def MARKET_REVIEW_THRESHOLD() -> float:
+    return _governed_limit("negotiation_bounds", "market_review_pct",
+                           env="NEG_MARKET_REVIEW_PCT")
+
+
+def MARKET_ESCALATION_THRESHOLD() -> float:
+    return _governed_limit("negotiation_bounds", "market_escalation_pct",
+                           env="NEG_MARKET_ESCALATION_PCT")
+
+
+def MAX_VOLUME_LIMIT() -> float:
+    return _governed_limit("negotiation_bounds", "max_volume_limit",
+                           env="NEG_MAX_VOLUME_LIMIT")
+
+
+def MAX_TERM_DAYS() -> int:
+    return _governed_limit("negotiation_bounds", "max_term_days",
+                           env="NEG_MAX_TERM_DAYS", cast=int)
 
 DEFAULT_NEGOTIATION_MESSAGE_TEMPLATE = "{header}\n{details}{context_sections}"
 
@@ -6692,7 +6725,7 @@ class NegotiationAgent(BaseAgent):
             price_candidates.append(round(entry, 2))
         if price and target:
             price_candidates.append(
-                round(max(supplier_floor or 0, price * (1 - AGGRESSIVE_FIRST_COUNTER_PCT)), 2)
+                round(max(supplier_floor or 0, price * (1 - AGGRESSIVE_FIRST_COUNTER_PCT())), 2)
             )
 
         sanitized: List[float] = []
@@ -6707,7 +6740,7 @@ class NegotiationAgent(BaseAgent):
             sanitized.append(round(value, 2))
         price_candidates = sorted(set(sanitized))
 
-        daily_rate = COST_OF_CAPITAL_APR / 365.0
+        daily_rate = COST_OF_CAPITAL_APR() / 365.0
         term_pkgs = [
             {"label": "Net15 with 2% disc", "apr_equiv": -0.02},
             {"label": "Net30 std", "apr_equiv": 0.0},
@@ -6748,7 +6781,7 @@ class NegotiationAgent(BaseAgent):
 
             delivery_score = 0.0
             weeks_gain = float(option["lead"].get("weeks_gain") or 0)
-            delivery_score = weeks_gain * LEAD_TIME_VALUE_PCT_PER_WEEK
+            delivery_score = weeks_gain * LEAD_TIME_VALUE_PCT_PER_WEEK()
 
             risk_score = 0.0
             performance = signals.get("performance") or {}
@@ -8564,7 +8597,7 @@ class NegotiationAgent(BaseAgent):
         if final_offer_reason:
             return False, "COMPLETED", final_offer_reason
         replies = int(state.get("supplier_reply_count", 0))
-        if replies >= MAX_SUPPLIER_REPLIES:
+        if replies >= MAX_SUPPLIER_REPLIES():
             return False, "EXHAUSTED", "Supplier reply cap reached."
         if state.get("awaiting_response") and not supplier_reply_registered:
             return False, "AWAITING_SUPPLIER", "Awaiting supplier response."
@@ -10957,20 +10990,20 @@ class NegotiationAgent(BaseAgent):
         market_gap = _percentage_gap(market_floor, supplier_offer)
         walkaway_gap = _percentage_gap(walkaway_price, supplier_offer)
 
-        if market_gap is not None and market_gap >= MARKET_REVIEW_THRESHOLD:
+        if market_gap is not None and market_gap >= MARKET_REVIEW_THRESHOLD():
             requires_review = True
             review_recommendation = "query_for_human_review"
             alerts.append(
                 f"Supplier offer is {market_gap * 100:.1f}% below market reference {market_floor:.2f}."
             )
             rationale_notes.append("Requested price is materially below market benchmarks; seek justification.")
-            if market_gap >= MARKET_ESCALATION_THRESHOLD:
+            if market_gap >= MARKET_ESCALATION_THRESHOLD():
                 human_override = True
                 rationale_notes.append(
                     "Supplier offer breaches escalation threshold relative to market floor."
                 )
 
-        if walkaway_gap is not None and walkaway_gap >= MARKET_REVIEW_THRESHOLD:
+        if walkaway_gap is not None and walkaway_gap >= MARKET_REVIEW_THRESHOLD():
             requires_review = True
             review_recommendation = review_recommendation or "query_for_human_review"
             alerts.append(
@@ -10979,31 +11012,31 @@ class NegotiationAgent(BaseAgent):
             rationale_notes.append(
                 "Requested price undercuts internal walk-away guardrail; confirm intent before proceeding."
             )
-            if walkaway_gap >= MARKET_ESCALATION_THRESHOLD:
+            if walkaway_gap >= MARKET_ESCALATION_THRESHOLD():
                 human_override = True
                 rationale_notes.append(
                     "The requested price is more than 20% below our walk-away price; escalation required."
                 )
 
-        if volume_units is not None and volume_units > MAX_VOLUME_LIMIT:
+        if volume_units is not None and volume_units > MAX_VOLUME_LIMIT():
             requires_review = True
             review_recommendation = review_recommendation or "query_for_human_review"
             alerts.append(
-                f"Requested volume {volume_units:.0f} exceeds configured limit {MAX_VOLUME_LIMIT:.0f}."
+                f"Requested volume {volume_units:.0f} exceeds configured limit {MAX_VOLUME_LIMIT():.0f}."
             )
             rationale_notes.append("Request supplier rationale for above-capacity volume.")
-            if volume_units > MAX_VOLUME_LIMIT * 1.5:
+            if volume_units > MAX_VOLUME_LIMIT() * 1.5:
                 human_override = True
                 rationale_notes.append("Volume exceeds escalation ceiling; seek human approval.")
 
-        if term_days is not None and term_days > MAX_TERM_DAYS:
+        if term_days is not None and term_days > MAX_TERM_DAYS():
             requires_review = True
             review_recommendation = review_recommendation or "query_for_human_review"
             alerts.append(
-                f"Requested payment term {term_days} days exceeds policy limit {MAX_TERM_DAYS} days."
+                f"Requested payment term {term_days} days exceeds policy limit {MAX_TERM_DAYS()} days."
             )
             rationale_notes.append("Payment term exceeds policy; confirm via human review.")
-            if term_days > MAX_TERM_DAYS * 2:
+            if term_days > MAX_TERM_DAYS() * 2:
                 human_override = True
                 rationale_notes.append("Payment term far exceeds tolerance; human intervention required.")
 

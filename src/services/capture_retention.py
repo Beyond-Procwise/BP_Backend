@@ -35,6 +35,7 @@ document text was accumulating on local disk with no policy at all.
 from __future__ import annotations
 
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import os
 import time
 from pathlib import Path
@@ -61,9 +62,12 @@ def retention_days() -> int:
     to zero: a typo in an environment variable must not become "delete
     everything on the next scheduler tick".
     """
+    # AutonomousOperationPolicy (P9): how long captured data is kept is a
+    # data-protection commitment, not a tuning knob.
     raw = os.getenv("CAPTURE_RETENTION_DAYS", "").strip()
     if not raw:
-        return DEFAULT_RETENTION_DAYS
+        return _governed_limit("autonomous_operation", "capture_retention_days",
+                               cast=int)
     try:
         value = int(raw)
     except ValueError:

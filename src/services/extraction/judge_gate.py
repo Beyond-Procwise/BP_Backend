@@ -20,6 +20,7 @@ candidates) and coherence are deferred until that base case is closed.
 from __future__ import annotations
 
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import os
 import time
 from typing import Any
@@ -68,8 +69,12 @@ def run_grounded_judge_for_gaps(
     # authoritative context_layer runs AFTER this and fills any skipped fields,
     # so bounding the judge is safe. Configurable via env; never silently
     # truncate — skipped fields are logged.
-    max_calls = int(os.getenv("EXTRACTION_JUDGE_MAX_CALLS", "12"))
-    budget_s = float(os.getenv("EXTRACTION_JUDGE_BUDGET_S", "25"))
+    # ExtractionEffortPolicy (P9): when the judge stops checking whether a
+    # figure was read correctly is a governance decision, not a tuning knob.
+    max_calls = _governed_limit("extraction_effort", "judge_max_calls",
+                                env="EXTRACTION_JUDGE_MAX_CALLS", cast=int)
+    budget_s = _governed_limit("extraction_effort", "judge_budget_s",
+                               env="EXTRACTION_JUDGE_BUDGET_S")
     started = time.monotonic()
     skipped: list[str] = []
 

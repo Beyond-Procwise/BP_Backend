@@ -31,6 +31,7 @@ from services.process_routing_service import ProcessRoutingService
 from services.backend_scheduler import BackendScheduler
 from services.event_bus import get_event_bus, workflow_scope
 from services.agent_manifest import AgentManifestService
+from src.services.governed_limits import limit as _governed_limit
 # Imported by its `src.`-prefixed name, matching every other governance_tools
 # import in this file. Both names resolve, but to two DIFFERENT module objects
 # and therefore two different exception classes -- so an `except` on one silently
@@ -114,7 +115,13 @@ class Orchestrator:
     # Bounded signal-driven feedback: at most this many SUGGEST_AGENT additions
     # per sequential chain, so a misbehaving agent can never expand a workflow
     # without limit.
-    MAX_DYNAMIC_AGENTS: int = int(os.getenv("MAX_DYNAMIC_AGENTS", "3"))
+    # AgentReachPolicy (P9). A property rather than a class attribute: the value
+    # is resolved when it is used, so a missing limit refuses instead of being
+    # baked in at import from a number the code carried.
+    @property
+    def MAX_DYNAMIC_AGENTS(self) -> int:
+        return _governed_limit("agent_reach", "max_dynamic_agents",
+                               env="MAX_DYNAMIC_AGENTS", cast=int)
 
     def __init__(self, agent_nick, *, training_endpoint=None):
         # Ensure GPU environment is initialised before any agent execution.
