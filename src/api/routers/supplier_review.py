@@ -7,6 +7,7 @@ canonical supplier_id link is governed.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -75,11 +76,16 @@ def reviews_queue(limit: int = 100):
         enrich_rows = cur.fetchall()
         for eid, sid, sname, matched, nm, conf, fields, citations, created in enrich_rows:
             fields = fields or {}
+            if isinstance(fields, str):
+                fields = json.loads(fields or "{}")
             cur.execute("SELECT " + ", ".join(R._APPLY_COLUMNS) + " FROM proc.bp_supplier WHERE supplier_id = %s", (sid,))
             sv = cur.fetchone()
             current = dict(zip(R._APPLY_COLUMNS, sv)) if sv else {}
-            would_fill = [col for col in R._APPLY_COLUMNS
-                          if fields.get(col) and (current.get(col) is None or str(current.get(col)).strip() == "")]
+            # The proposal itself, from the same function the approve button runs.
+            # This was a third local re-derivation of "researched and currently
+            # empty", which ignored content verification and column widths and so
+            # could offer a fill that the approval would then decline to make.
+            would_fill = sorted(R.fillable(cur, sid, fields))
             items.append({
                 "review_type": "supplier_enrichment",
                 "id": eid,
