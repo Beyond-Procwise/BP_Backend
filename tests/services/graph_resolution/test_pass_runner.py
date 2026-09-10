@@ -142,3 +142,20 @@ def test_run_supplier_identity_writes_edges_keyed_in_the_graphs_supplier_keyspac
     assert "bp_supplier_id_crosswalk" in sql
     assert "uicanvas_supplier_id" in sql
     assert "bp_supplier_id" in sql
+
+    # Presence of those tokens alone doesn't prove the join runs the right
+    # way round -- x.bp_supplier_id = m.supplier_id (the reversed, wrong-way
+    # join that returns 0 rows against the real database) would satisfy every
+    # substring check above too. Pin the actual equality pairing instead, with
+    # whitespace normalised so reformatting the SQL can't break the regex.
+    normalised = re.sub(r"\s+", " ", sql)
+    assert re.search(
+        r"x\.uicanvas_supplier_id\s*=\s*m\.supplier_id"
+        r"|m\.supplier_id\s*=\s*x\.uicanvas_supplier_id",
+        normalised,
+    ), "crosswalk's uicanvas_supplier_id must be equated with the master's supplier_id"
+    assert re.search(
+        r"s\.supplier_id\s*=\s*x\.bp_supplier_id"
+        r"|x\.bp_supplier_id\s*=\s*s\.supplier_id",
+        normalised,
+    ), "bp_supplier's supplier_id must be equated with the crosswalk's bp_supplier_id"
