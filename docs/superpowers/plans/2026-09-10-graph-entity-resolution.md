@@ -325,6 +325,21 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
         clusters.setdefault(name, []).append(sig)
 ```
 
+**Also return the prior-free evidence term.** `L` includes `log(p0/(1-p0))`; a caller
+persisting it as "evidence" would bake in exactly the double-counting the spec forbids.
+Add one key to `score_link`'s return dict, beside the existing `"L"`:
+
+```python
+        "L": round(L, 6),
+        # The evidence term WITHOUT the prior. Persisted on derived edges so a
+        # later composition can reuse the evidence without inheriting a prior it
+        # did not intend (spec 4.2). L itself keeps the prior, unchanged.
+        "L_evidence": round(profile["alpha"] * total_cluster_score, 6),
+```
+
+Adding a key is safe: a golden vector compares only the keys present in its `expected`
+mapping. Step 5 verifies that.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `./venv/bin/python -m pytest tests/services/graph_resolution/test_composition.py -v`
@@ -618,10 +633,22 @@ def test_identical_records_score_auto_link():
 
 
 def test_same_company_across_keyspaces_still_resolves():
-    """The whole point: SUP-* and S#### never join on id."""
-    b = {**A, "supplier_id": "S9251"}
-    r = si.score(A, b)
-    assert r["F"] >= 80.0, f"VAT+reg+DUNS agreement should carry it: {r['F']}"
+    """The whole point: SUP-* and S#### never join on id.
+
+    Asserts SEPARATION, not an absolute band: p0/alpha are uncalibrated until
+    Task 5, and asserting a calibrated outcome from uncalibrated parameters
+    tests the starting constants rather than the profile.
+    """
+    same = {**A, "supplier_id": "S9251"}
+    other = {"supplier_id": "S9252", "supplier_name": "Globex plc",
+             "vat_number": "GB999", "registration_number": "R2",
+             "duns_number": "D2", "postal_code": "M1 1AA", "country": "GB"}
+    r_same, r_other = si.score(A, same), si.score(A, other)
+    assert r_same["F"] > r_other["F"], "agreement must outscore disagreement"
+    assert r_same["decision"] != "block_or_exception", (
+        f"a company agreeing on VAT, registration and DUNS must at least be "
+        f"reported: {r_same['F']}"
+    )
 
 
 def test_different_company_is_not_linked():
@@ -1022,10 +1049,10 @@ from src.services.resolution import CandidateEdge
 
 def test_candidate_edges_carry_log_odds_not_F():
     scored = [{"source_id": "SUP-A", "target_id": "S1",
-               "result": {"L": 3.2, "P_raw": 0.96, "F": 94.0}}]
+               "result": {"L": 3.2, "L_evidence": 7.1, "P_raw": 0.96, "F": 94.0}}]
     edges = to_candidate_edges(scored, profile_id="supplier_identity")
     assert isinstance(edges[0], CandidateEdge)
-    assert edges[0].log_odds == 3.2
+    assert edges[0].log_odds == 3.2   # L, prior included: the solver wants full log-odds
     assert edges[0].confidence == 0.96
 
 
@@ -1150,7 +1177,7 @@ def run_supplier_identity(conn: Any, driver: Any, limit: Optional[int] = None) -
             from_label="Supplier", from_key="supplier_id", from_value=s["source_id"],
             to_label="Supplier", to_key="supplier_id", to_value=s["target_id"],
             F=r["F"], band=band_for_resolution(r["decision"], outcome.status),
-            P_raw=r["P_raw"], L_evidence=r["L"], profile=si.PROFILE,
+            P_raw=r["P_raw"], L_evidence=r["L_evidence"], profile=si.PROFILE,
             profile_version=si.VERSION, signals=r["signals"],
             observations=observation_digest(
                 o for obs in si.observations_for(s["src"], s["tgt"]).values() for o in obs
@@ -1244,9 +1271,13 @@ def test_identical_item_id_auto_links():
 
 
 def test_descriptive_drift_still_resolves_without_item_id():
+    """Separation, not an absolute band: alpha is calibrated in Step 5."""
     a = {**L1, "item_id": None}
     b = {**L2, "item_id": None}
-    assert ie.score(a, b)["F"] >= 65.0
+    unrelated = {**L2, "item_id": None,
+                 "item_description": "Office chair, mesh back",
+                 "unit_price": 120.0}
+    assert ie.score(a, b)["F"] > ie.score(a, unrelated)["F"]
 
 
 def test_different_products_do_not_link():
@@ -1814,8 +1845,11 @@ CON = {"contract_id": "C-1", "supplier_id": "S9251",
 
 
 def test_in_term_with_resolved_supplier_is_covered():
-    r = cc.score(INV, CON)
-    assert r["F"] >= 65.0, r["F"]
+    """Separation, not an absolute band: this profile ships DECLARED
+    UNMEASURED (spec section 9), so an absolute threshold here would assert a
+    calibration that deliberately does not exist yet."""
+    out_of_term = {**INV, "invoice_date": "2026-06-15"}
+    assert cc.score(INV, CON)["F"] > cc.score(out_of_term, CON)["F"]
 
 
 def test_outside_every_term_window_is_not_covered():
