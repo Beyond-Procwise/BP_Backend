@@ -27,6 +27,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/promotion", tags=["Promotion"])
 
 
+
+def _reviewer(principal: Any) -> str | None:
+    """Who signed this, which is the token and only the token.
+
+    Every decision endpoint in this router used to accept `body["reviewer"]`,
+    and one of them still preferred the principal but fell back to it. A
+    fallback is the forgery taken conditionally: it is exactly the request a
+    caller sends when they want somebody else's name on a decision that writes
+    a reference into the financial record.
+
+    None when there is no principal (ASK_AUTH_MODE=off). A decision recorded
+    against nobody is honest; one recorded against a name that was typed is not.
+    """
+
+    return getattr(principal, "subject", None) or None
+
 @router.post("/run", summary="Promote eligible _stg rows to _trgt via the linking engine")
 def run_promotion(
     doc_type: Optional[str] = Query(None, description="invoice | quote (default: both)"),
@@ -97,7 +113,7 @@ def post_approve(
     # The reviewer is who signed in, not who the caller says signed in. The
     # body value survives only as a fallback while authentication is off --
     # this row is the record that a human released a document into _trgt.
-    reviewer = getattr(principal, "subject", None) or body.get("reviewer")
+    reviewer = _reviewer(principal)
     try:
         result = approve_promotion(doc_type, doc_pk,
                                    reviewer=reviewer, note=body.get("note"))
@@ -163,6 +179,7 @@ def post_reject_link(
     doc_type: str,
     doc_pk: str,
     body: dict[str, Any] = Body(default_factory=dict),
+    principal=Depends(require_user),
 ) -> dict[str, Any]:
     """Record that this order is NOT the parent of this document.
 
@@ -180,7 +197,7 @@ def post_reject_link(
         raise HTTPException(status_code=400, detail="po_id is required")
     try:
         result = reject_parent_link(doc_type, doc_pk, po_id,
-                                    reviewer=body.get("reviewer"), note=body.get("note"))
+                                    reviewer=_reviewer(principal), note=body.get("note"))
     except Exception as exc:
         logger.exception("reject link failed for %s %s", doc_type, doc_pk)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -193,6 +210,7 @@ def post_confirm_link(
     doc_type: str,
     doc_pk: str,
     body: dict[str, Any] = Body(default_factory=dict),
+    principal=Depends(require_user),
 ) -> dict[str, Any]:
     """Accept one of the orders proposed for this document, and write the
     reference on the reviewer's authority. Only an order this engine proposed —
@@ -204,7 +222,7 @@ def post_confirm_link(
         raise HTTPException(status_code=400, detail="po_id is required")
     try:
         result = confirm_parent_link(doc_type, doc_pk, po_id,
-                                     reviewer=body.get("reviewer"), note=body.get("note"))
+                                     reviewer=_reviewer(principal), note=body.get("note"))
     except Exception as exc:
         logger.exception("confirm link failed for %s %s", doc_type, doc_pk)
         raise HTTPException(status_code=500, detail=str(exc))

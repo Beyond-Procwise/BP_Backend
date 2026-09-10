@@ -103,10 +103,12 @@ def apply(enrichment_id: int, body: RejectBody, principal=Depends(require_user))
 
 
 @router.post("/enrichment/{enrichment_id}/reject")
-def reject(enrichment_id: int, body: RejectBody):
+def reject(enrichment_id: int, body: RejectBody, principal=Depends(require_user)):
+    """Reject a proposed enrichment. Signed by the token, not by `body.reviewer`."""
     with get_conn() as c:
         try:
-            return R.reject_enrichment(enrichment_id, body.reviewer, c)
+            reviewer = getattr(principal, "subject", None) or None
+            return R.reject_enrichment(enrichment_id, reviewer, c)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 

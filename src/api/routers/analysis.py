@@ -8,7 +8,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from api.auth import require_user
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from services.db import get_conn
@@ -40,11 +41,13 @@ class AnalysisStartIn(BaseModel):
 
 
 @router.post("", summary="Start an analysis event for an upload session")
-def post_analysis(body: AnalysisStartIn) -> dict:
+def post_analysis(body: AnalysisStartIn, principal=Depends(require_user)) -> dict:
     try:
+        # The token, never body.created_by -- which stays on the model because
+        # clients send it, and is simply not read as identity any more.
         analysis_id = analysis_store.start(
             session_id=body.session_id, name=body.name, mode=body.mode,
-            created_by=body.created_by)
+            created_by=getattr(principal, "subject", None) or None)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

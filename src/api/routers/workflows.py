@@ -1070,19 +1070,26 @@ def reject_opportunity(
     opportunity_id: str,
     req: OpportunityRejectionRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     if not opportunity_id or not opportunity_id.strip():
         raise HTTPException(status_code=400, detail="opportunity_id must be provided")
 
     try:
+        # Who rejected it is the token. `req.user_id` is kept -- clients send
+        # it and it sometimes carries something a person meant -- but as a
+        # label inside metadata, where nothing reads it as identity.
+        metadata = dict(req.metadata or {})
+        if req.user_id:
+            metadata["user_id_label"] = req.user_id
         record = record_opportunity_feedback(
             agent_nick,
             opportunity_id.strip(),
             opportunity_ref_id=req.opportunity_ref_id,
             status="rejected",
             reason=req.reason,
-            user_id=req.user_id,
-            metadata=req.metadata,
+            user_id=getattr(principal, "subject", None) or None,
+            metadata=metadata,
         )
     except Exception as exc:  # pragma: no cover - database/network
         logger.exception("Failed to record rejection for opportunity %s", opportunity_id)
@@ -1890,6 +1897,7 @@ async def add_email_attachments(
     files: List[UploadFile] = File(...),
     user_id: str = Form(default="api"),
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Store attachments against a draft, in S3 plus a record on the draft row.
 
@@ -1962,7 +1970,12 @@ async def add_email_attachments(
                 "content_type": upload.content_type or "application/octet-stream",
                 "bytes": len(data),
                 "s3_key": key,
-                "added_by": user_id,
+                # These attachments ride out to a supplier on a real email, so
+                # who added one is the token. The Form field stays as a label:
+                # it defaults to the literal string "api", which was being
+                # written as though it named somebody.
+                "added_by": getattr(principal, "subject", None) or None,
+                "added_by_label": user_id or None,
                 "added_at": datetime.now(timezone.utc).isoformat(),
             }
         )

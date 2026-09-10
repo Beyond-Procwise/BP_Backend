@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth import require_user
 from src.services.db import get_conn
 from src.services.extraction_v3 import supplier_resolver as SR
 
@@ -28,6 +29,12 @@ _COLS = (
 
 
 class ReviewBody(BaseModel):
+    """What is being decided. The `reviewer` field is NOT who decided it.
+
+    It is kept because clients send it and because it sometimes carries
+    something a person meant, but the actor is the token -- see `_reviewer`.
+    """
+
     reviewer: str = "api"
 
 
@@ -127,21 +134,28 @@ def sweep_duplicates(min_score: float | None = None):
         return SR.sweep_supplier_duplicates(c, min_score=min_score)
 
 
+def _reviewer(principal) -> str | None:
+    """The token, never `body.reviewer`. A merge into the supplier master is not
+    something a caller gets to sign in somebody else's name."""
+
+    return getattr(principal, "subject", None) or None
+
+
 @router.post("/reviews/{review_id}/confirm")
-def confirm_review(review_id: int, body: ReviewBody):
+def confirm_review(review_id: int, body: ReviewBody, principal=Depends(require_user)):
     """The extracted name IS the candidate supplier — merge (alias to canonical)."""
     with get_conn() as c:
         try:
-            return SR.confirm_review(review_id, body.reviewer, c)
+            return SR.confirm_review(review_id, _reviewer(principal), c)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post("/reviews/{review_id}/reject")
-def reject_review(review_id: int, body: ReviewBody):
+def reject_review(review_id: int, body: ReviewBody, principal=Depends(require_user)):
     """The extracted name is a DISTINCT supplier — keep it separate (alias to its own id)."""
     with get_conn() as c:
         try:
-            return SR.reject_review(review_id, body.reviewer, c)
+            return SR.reject_review(review_id, _reviewer(principal), c)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
