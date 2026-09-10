@@ -329,7 +329,8 @@ def _band(F: float) -> str:
 
 def score_link(source_row: dict, target_row: dict, profile_name: str,
                source_lines: Optional[list] = None, target_lines: Optional[list] = None,
-               set_amount_usd: Optional[float] = None) -> dict:
+               set_amount_usd: Optional[float] = None,
+               cluster_overrides: Optional[dict] = None) -> dict:
     """Deterministically score the relationship source→target. Returns the full
     auditable result (PDF stages 1A..7C).
 
@@ -370,9 +371,15 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
         signals.append({**spec, "s": s, "q": q, "r": r, "c": c, "status": status})
 
     # Stage 2: cluster dampening
+    #
+    # `cluster_overrides` lets a composing caller route signals that drew on the
+    # same observation into one cluster, so the dampening below discounts them as
+    # the correlated evidence they are. Absent (the default), every existing
+    # caller and golden vector is byte-identical.
     clusters: dict[str, list[dict]] = {}
     for sig in signals:
-        clusters.setdefault(sig["cluster"], []).append(sig)
+        name = (cluster_overrides or {}).get(sig["id"], sig["cluster"])
+        clusters.setdefault(name, []).append(sig)
     total_cluster_score = 0.0
     for sigs in clusters.values():
         n_active = sum(1 for x in sigs if x["status"] != "MISSING")
@@ -417,6 +424,10 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
         "Q": round(Q, 4),
         "F_cap": F_cap,
         "L": round(L, 6),
+        # The evidence term WITHOUT the prior. Persisted on derived edges so a
+        # later composition can reuse the evidence without inheriting a prior it
+        # did not intend (spec 4.2). L itself keeps the prior, unchanged.
+        "L_evidence": round(profile["alpha"] * total_cluster_score, 6),
         "signals": [
             {"id": s["id"], "cluster": s["cluster"], "tier": s["tier"], "weight": s["weight"],
              "s": round(s["s"], 4), "q": round(s["q"], 4), "r": round(s["r"], 4),
