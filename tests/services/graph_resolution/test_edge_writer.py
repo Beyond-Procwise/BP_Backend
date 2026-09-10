@@ -3,6 +3,7 @@ import logging
 import pytest
 from src.services.graph_resolution.edge_writer import (
     DerivedEdge, redact_signals, cypher_for, write_edges, REDACTED_SIGNALS,
+    UNCALIBRATED_PROFILES,
 )
 
 
@@ -11,7 +12,11 @@ def _edge(**kw):
         rel_type="SAME_ENTITY", from_label="Supplier", from_key="supplier_id",
         from_value="SUP-A", to_label="Supplier", to_key="supplier_id",
         to_value="SUP-B", F=94.2, band="auto_link", P_raw=0.97,
-        L_evidence=3.4, profile="supplier_identity", profile_version="1.0.0",
+        # A generic, uncapped placeholder profile: supplier_identity itself
+        # joined UNCALIBRATED_PROFILES in Task 5 (no labelled ground truth --
+        # see edge_writer.UNCALIBRATED_PROFILES), so the default fixture used
+        # to exercise the *uncapped* path can no longer use that name.
+        L_evidence=3.4, profile="test_profile", profile_version="1.0.0",
         signals=[{"id": "vat", "s": 1.0, "status": "OK"}],
         observations="abc123", resolution="RESOLVED", margin=0.42,
     )
@@ -58,6 +63,22 @@ def test_signals_are_serialised_as_json_text():
 
 def test_capped_profile_cannot_emit_auto_link():
     e = _edge(profile="contract_coverage", band="auto_link", F=97.0)
+    with pytest.raises(ValueError, match="capped at review"):
+        cypher_for(e)
+
+
+def test_supplier_identity_is_uncalibrated():
+    """Measured 2026-09-10 against proc.bp_supplier_master (1,009 rows):
+    every vat_number is distinct, so n_same == 0 -- no labelled ground truth
+    exists to calibrate p0/alpha against. See
+    scripts/graph_resolution/calibrate.py and the docstring in
+    src/services/graph_resolution/profiles/supplier_identity.py.
+    """
+    assert "supplier_identity" in UNCALIBRATED_PROFILES
+
+
+def test_supplier_identity_cannot_emit_auto_link():
+    e = _edge(profile="supplier_identity", band="auto_link", F=97.0)
     with pytest.raises(ValueError, match="capped at review"):
         cypher_for(e)
 

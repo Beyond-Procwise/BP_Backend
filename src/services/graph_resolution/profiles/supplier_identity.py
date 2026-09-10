@@ -86,9 +86,15 @@ SIGNALS = [
      "reads": ["bank_account_number"]},
 ]
 
-# p0/alpha are MEASURED in Task 5 against bp_supplier_master. These are the
-# starting values the calibration script refines; they are not a borrowed guess
-# left in place.
+# Calibration ATTEMPTED 2026-09-10 (Task 5, scripts/graph_resolution/calibrate.py)
+# against the live proc.bp_supplier_master (1,009 rows, 300-row sample scored:
+# 44,850 pairs). Ground truth was to be "two rows share a vat_number" -- but
+# every one of the 1,009 rows carries a distinct, non-null vat_number, so
+# n_same == 0: zero labelled positive pairs exist in this table. There is
+# nothing to measure separation against, so p0/alpha below are left at their
+# pre-Task-5 starting values, NOT a measured result -- this profile is
+# uncalibrated (see edge_writer.UNCALIBRATED_PROFILES) until a real source of
+# "same company" ground truth turns up. Do not read these numbers as tuned.
 _le.register_profile(PROFILE, {
     "p0": 0.02, "alpha": 0.30, "floor": 0.55,
     "signals": SIGNALS, "date_field": "created_date",
