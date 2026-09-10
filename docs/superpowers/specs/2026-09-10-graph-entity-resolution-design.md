@@ -260,9 +260,31 @@ laundering, and it would not be visible in any single score.
 
 ### 5.1 `supplier_identity` → `SAME_ENTITY`
 
-Resolves `SUP-*` (transactions, 3,510 distinct), `S####` (contracts, 2,545) and
-`SI######` (crosswalk) into equivalence classes. **Overlap between the first two is
-currently zero**, which is why nothing joins today.
+Resolves supplier records into equivalence classes.
+
+> **CORRECTION, measured 2026-09-10.** This section originally claimed the profile
+> resolves `SUP-*` (transactions), `S####` (contracts) and `SI######` (crosswalk)
+> into one set of classes. **That is not achievable, and the claim was wrong.**
+>
+> The `S####` contract keyspace exists in exactly two places — `proc.bp_contract_master`
+> and its FDW mirror `canonical.bp_contracts` — holding **2,527 distinct supplier ids
+> and no attributes whatsoever**: no name, no VAT, no registration number, no address,
+> no bank detail. No row anywhere in either schema describes a contract supplier. Every
+> signal below is therefore `MISSING` for one, so **no `SAME_ENTITY` edge can ever reach
+> a contract supplier.**
+>
+> What the profile *can* do is resolve transaction-side suppliers to each other:
+> `bp_supplier_master` carries the attributes and bridges to the graph's `SUP-*` nodes
+> through `bp_supplier_id_crosswalk` (`uicanvas_supplier_id` → `bp_supplier_id`,
+> resolving 1,009/1,009).
+>
+> **Consequence for §5.3, and it is a safety requirement, not a caveat:** supplier
+> identity is a **precondition** for contract coverage, not one signal among several.
+> With `supplier_same` `MISSING`, coverage would rest on `date_in_term` and
+> `amount_within_value` alone — which would report an invoice as covered by a contract
+> belonging to an entirely unrelated supplier whenever the dates overlap and the value
+> fits. That is a false finding, not a weak one. **When the identity cluster is entirely
+> `MISSING`, `contract_coverage` must not report coverage at all.**
 
 | Signal | Cluster | Tier | Notes |
 |---|---|---|---|
@@ -315,6 +337,14 @@ full term window, 892 distinct suppliers, 958 with a spend category.**
 **A document outside every active term window for a matched supplier is off-contract
 spend** — and the per-signal breakdown says which evidence was absent, so the finding
 can be defended rather than merely asserted.
+
+**`supplier_same` is a precondition, not a contributor.** If the identity cluster is
+entirely `MISSING` — no `SAME_ENTITY` edge and no contract reference on the document —
+`contract_coverage` reports nothing, whatever `date_in_term` and `amount_within_value`
+say. Dates and amounts alone would match an invoice to an unrelated supplier's contract.
+On the current corpus this means contract coverage yields no findings at all, because
+contract suppliers carry no attributes to resolve against (see the correction in §5.1).
+That is the correct outcome: silence, rather than confident nonsense.
 
 ### 5.4 `contract_succession` → `SUCCEEDS`
 
