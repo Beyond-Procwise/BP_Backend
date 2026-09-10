@@ -61,6 +61,10 @@ KG_WORKBOOK_PATH = os.getenv(
 ENTITY_TABLE_MAP = {
     "Supplier": ("proc.bp_supplier", "supplier_id", "Supplier"),
     "Contract": ("proc.bp_contracts", "contract_id", "Contract"),
+    # 3,051 seeded reference contracts on a different keyspace (S#### suppliers).
+    # Loaded as Contract nodes too, distinguished by `origin` so a finding can
+    # say whether it rests on a document or on reference data.
+    "ContractReference": ("proc.bp_contract_master", "contract_id", "Contract"),
     "Invoice": ("proc.bp_invoice_trgt", "invoice_id", "Invoice"),
     "InvoiceLine": ("proc.bp_invoice_line_items_trgt", "invoice_line_id", "InvoiceLine"),
     "PurchaseOrder": ("proc.bp_purchase_order_trgt", "po_id", "PurchaseOrder"),
@@ -68,6 +72,17 @@ ENTITY_TABLE_MAP = {
     "Quote": ("proc.bp_quote_trgt", "quote_id", "Quote"),
     "QuoteLine": ("proc.bp_quote_line_items_trgt", "quote_line_id", "QuoteLine"),
     "Policy": ("proc.bp_policy", "policy_id", "Policy"),
+}
+
+# Contract is the only label fed by two source tables (Contract itself, and
+# ContractReference below it). Both MERGE onto Contract.contract_id, so if a
+# contract_id ever existed in both proc.bp_contracts and proc.bp_contract_master
+# the two rows would fuse into one node — see the ENTITY_TABLE_MAP comment.
+# ORIGIN_BY_ENTITY records which source an entity's nodes came from; entities
+# with no entry here are extracted document data, so "extracted" is the default.
+ORIGIN_BY_ENTITY = {
+    "Contract": "extracted",
+    "ContractReference": "reference",
 }
 
 # FK-based relationships: (from_label, rel_type, to_label, from_fk, to_pk)
@@ -151,7 +166,10 @@ class ProcurementKGBuilder:
         # later phases add.
         self._run_tag = uuid.uuid4().hex
         for entity_name, (table, pk, label) in ENTITY_TABLE_MAP.items():
-            counts[entity_name] = self._load_entity(table, pk, label)
+            counts[entity_name] = self._load_entity(
+                table, pk, label,
+                origin=ORIGIN_BY_ENTITY.get(entity_name, "extracted"),
+            )
 
         # 3. Create FK-based relationships
         for from_label, rel_type, to_label, from_fk, to_pk in FK_RELATIONSHIPS:
@@ -237,7 +255,7 @@ class ProcurementKGBuilder:
     # success.
     _PAGE = 5000
 
-    def _load_entity(self, table: str, pk: str, label: str) -> int:
+    def _load_entity(self, table: str, pk: str, label: str, *, origin: str = "extracted") -> int:
         """Load every row from a source table as Neo4j nodes. Paged, not capped."""
         try:
             conn = self._agent_nick.get_db_connection()
@@ -298,10 +316,11 @@ class ProcurementKGBuilder:
                 # parameter to ask which ones to keep.
                 session.run(
                     f"MERGE (n:{label} {{{pk}: $pk_val}}) "
-                    f"SET n += $props, n._kg_run = $run",
+                    f"SET n += $props, n._kg_run = $run, n.origin = $origin",
                     pk_val=str(pk_val),
                     props=props,
                     run=getattr(self, "_run_tag", None),
+                    origin=origin,
                 )
                 count += 1
 

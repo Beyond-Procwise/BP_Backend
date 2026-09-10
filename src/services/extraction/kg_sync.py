@@ -36,11 +36,16 @@ _TRGT_TABLE = {
     "invoice": "proc.bp_invoice_trgt",
     "purchase_order": "proc.bp_purchase_order_trgt",
     "quote": "proc.bp_quote_trgt",
+    # Contracts do not go through _stg/_trgt: contract.yaml writes straight to
+    # proc.bp_contracts. Without this entry a contract could be extracted and
+    # still never reach the graph.
+    "contract": "proc.bp_contracts",
 }
 _PK_COL = {
     "invoice": "invoice_id",
     "purchase_order": "po_id",
     "quote": "quote_id",
+    "contract": "contract_id",
 }
 
 
