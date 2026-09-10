@@ -1,3 +1,4 @@
+from src.services import linking_engine as _le
 from src.services.graph_resolution.profiles import item_equivalence as ie
 
 L1 = {"invoice_line_id": "L1", "item_id": "ITM001",
@@ -8,8 +9,29 @@ L2 = {"invoice_line_id": "L2", "item_id": "ITM001",
       "unit_price": 782.0, "_same_entity_p": None}
 
 
-def test_identical_item_id_auto_links():
-    assert ie.score(L1, L2)["decision"] == "auto_link"
+def test_identical_item_id_reaches_the_strongest_band_this_profile_can_produce():
+    """Full agreement on item_id, description, uom and price -- everything
+    this profile can ever observe except supplier_same (see
+    test_auto_link_is_structurally_unreachable_for_this_profile) -- lands in
+    auto_link_with_warning, the ceiling for this corpus, not block/weak/review."""
+    assert ie.score(L1, L2)["decision"] == "auto_link_with_warning"
+
+
+def test_auto_link_is_structurally_unreachable_for_this_profile():
+    """The maximal case: identical item_id, description, uom and price --
+    the most evidence this profile can ever see with supplier_same MISSING
+    (no SAME_ENTITY edge exists anywhere in this corpus). Measured ceiling:
+    F=91.5625 (auto_link_with_warning), never auto_link (_BAND_AUTO=92).
+
+    supplier_same keeps its full weight=3 (see item_equivalence.SIGNALS):
+    this documents a genuine consequence of the signal being unobservable
+    on this corpus, not a defect to be tuned away by downweighting it --
+    the same discipline test_supplier_identity.py applies to its own
+    structural ceiling.
+    """
+    r = ie.score(L1, L2)
+    assert r["decision"] == "auto_link_with_warning", r["F"]
+    assert r["F"] < _le._BAND_AUTO
 
 
 def test_descriptive_drift_still_resolves_without_item_id():

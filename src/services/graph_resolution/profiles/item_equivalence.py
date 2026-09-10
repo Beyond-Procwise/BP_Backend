@@ -20,13 +20,32 @@ p0 in {0.005,0.01} x alpha up to 10.0 to find where separation turns over,
 then p0 in {0.003,0.005,0.007,0.01} x alpha in {2.2..3.5} around the peak.
 Separation is not monotone in alpha: it peaks and then collapses (both
 same- and diff-pair scores saturate toward 1 as alpha grows, closing the
-gap; by alpha=6-10 same_F and diff_F invert). Chosen: p0=0.003, alpha=3.0 --
-separation=62.13 (min same_F=71.83, max diff_F=9.69, median same_F=80.71,
-median diff_F=0.0), zero false auto_links across the whole grid tested.
-supplier_same carries weight=1, not a symmetric-identity 3: no SAME_ENTITY
-edge exists anywhere in this corpus, so the signal is permanently MISSING in
-practice, and a heavier weight would permanently tax coverage C for every
-pair regardless of alpha (see SIGNALS comment below for the worked ceiling).
+gap; by alpha=6-10 same_F and diff_F invert). Chosen: p0=0.003, alpha=3.0.
+
+That sweep was run with supplier_same at weight=1, an attempt to route
+around this corpus's total absence of SAME_ENTITY edges. That weight was
+REVERTED to 3 (its brief-specified value) after review: C = floor +
+(1-floor)*rho is the same coverage multiplier for every pair regardless of
+label (supplier_same is MISSING for same- and different-item pairs alike),
+so downweighting it did not change which pairs separate from which -- it
+only raised the ceiling F could reach. Re-scoring the identical labelled
+sample at weight=3 (no re-sweep; p0/alpha are unaffected by a uniform
+per-pair coverage change) confirms the ordering and sign of separation are
+unchanged: separation=60.19 (min same_F=69.49, max diff_F=9.30, median
+same_F=77.50, median diff_F=0.0), still zero false auto_links. The measured
+figures differ slightly from a naive C-ratio projection (58.8) because rho's
+numerator (from desc/uom/price) also varies per pair, not just its
+denominator -- the coverage change is uniform in *direction*, not in exact
+magnitude, across all 71,631 pairs.
+
+Consequence, documented rather than tuned away (same discipline as
+supplier_identity's own structural ceiling): with supplier_same permanently
+MISSING on this corpus, C is capped at floor+(1-floor)*13/16 = 0.9156
+regardless of alpha, so F cannot exceed ~91.56 for ANY pair -- not even a
+perfect item_id + description + uom + price match. This profile can reach
+auto_link_with_warning here but never auto_link, until a SAME_ENTITY edge
+exists to make supplier_same observable. See
+test_auto_link_is_structurally_unreachable_for_this_profile.
 """
 from __future__ import annotations
 
@@ -129,13 +148,16 @@ SIGNALS = [
      "reads": ["unit_of_measure"]},
     {"id": "price",         "cluster": "commercial",  "tier": 3, "weight": 2, "appl": 1.0, "cap": 0.90, "kind": "ie_price",
      "reads": ["unit_price"]},
-    # weight=1, not the 3 a symmetric identity signal would otherwise carry:
-    # no SAME_ENTITY edge exists anywhere in this corpus (see module docstring),
-    # so this signal is permanently MISSING in practice. A heavier weight would
-    # permanently tax the coverage term C for every pair ever scored -- pairs
-    # that agree on every other signal would still be capped under the
-    # auto_link band because of a comparator that never has anything to say.
-    {"id": "supplier_same", "cluster": "identity",    "tier": 2, "weight": 1, "appl": 1.0, "cap": 0.70, "kind": "ie_supplier",
+    # weight=3, as a symmetric-identity signal genuinely deserves: on THIS
+    # corpus it is permanently MISSING (no SAME_ENTITY edge exists anywhere,
+    # see module docstring), which taxes coverage C for every pair and caps
+    # F at ~91.56 regardless of alpha -- this profile can reach
+    # auto_link_with_warning but never auto_link here (see
+    # test_auto_link_is_structurally_unreachable_for_this_profile). That is
+    # documented, not routed around: on a tenant corpus where SAME_ENTITY
+    # edges exist, this signal becomes real evidence, and downweighting it
+    # to chase today's ceiling would throw that away for a corpus artifact.
+    {"id": "supplier_same", "cluster": "identity",    "tier": 2, "weight": 3, "appl": 1.0, "cap": 0.70, "kind": "ie_supplier",
      "reads": ["_same_entity_p"]},
 ]
 
