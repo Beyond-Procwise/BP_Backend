@@ -705,7 +705,7 @@ def test_a_score_below_the_anchor_bar_is_never_a_candidate(monkeypatch):
     pos = [{"po_id": "P1", "supplier_id": "SUP-T", "supplier_name": "T", "deal_id": None}]
     quotes = [{"quote_id": "Q1", "po_id": None, "supplier_id": "SUP-T", "deal_id": None}]
     monkeypatch.setattr(das, "score_link",
-                        _table_scorer({("P1", "Q1"): das.QUOTE_ANCHOR_MIN_SCORE - 0.1}))
+                        _table_scorer({("P1", "Q1"): das.QUOTE_ANCHOR_MIN_SCORE() - 0.1}))
     cur = _anchor_batch(pos, quotes)
 
     anchors = das._quote_anchors(cur, pos, cache=das._AnchorCache(cur))
