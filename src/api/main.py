@@ -69,6 +69,8 @@ from api.routers import fx as fx_router
 from api.routers import value_summary as value_summary_router
 from api.routers import analysis as analysis_router
 from api.routers import approvals as approvals_router
+from api.routers import catalog as catalog_router
+from api.routers import sales as sales_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -574,6 +576,8 @@ _AUTHENTICATED_ROUTERS = [
     value_summary_router.router,
     analysis_router.router,
     approvals_router.router,
+    catalog_router.router,
+    sales_router.router,
 ]
 
 for _router in _AUTHENTICATED_ROUTERS:
