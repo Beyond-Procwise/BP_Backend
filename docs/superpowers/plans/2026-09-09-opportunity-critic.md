@@ -1666,6 +1666,14 @@ def assemble_candidate(finding: Dict[str, Any], conn) -> Dict[str, Any]:
     }
 ```
 
+> **Decision (2026-09-11) — the detector's own evidence reaches the critic.**
+> Live, 300 of the 308 findings are Duplicate Invoice Recovery, whose evidence is
+> `duplicate_of` / `payment_confirmed` / `amount_gbp` — none of it a price. The
+> assembler above reads only price fields, so the critic would have judged them on
+> nothing. The shipped assembler also passes `calculation_details` through, unread, as
+> `evidence.detector_details`, tagged with the finding's own confidence (RESOLVED ->
+> ASSERTED, anything else -> UNASSESSED). Nothing is inferred; three tests pin it.
+
 - [ ] **Step 4: Write the subagent**
 
 Create `src/agents/opportunity_evidence_agent.py`:
@@ -2184,6 +2192,10 @@ def check_invariants(critique: Dict[str, Any]) -> List[str]:
 ```
 
 Expected: 7 passed.
+
+> **Correction (2026-09-11):** as written this is 6 passed, 1 failed. The UNASSESSED
+> message says "carries no blocking gap" while its test looks for "at least one blocking
+> gap". The shipped message states the rule as the prompt does; behaviour unchanged.
 
 - [ ] **Step 5: Prove each of the three guards fails**
 
@@ -2748,6 +2760,13 @@ Then replace the `record_critique(critique, shadowed=False)` call with:
                                  "critique": critique})
 ```
 
+> **Correction (2026-09-11) — Step 5's snippet cannot run.** `health()` returns a dict
+> literal: there is no `payload` variable and no `policy_engine` name in scope, so the
+> `try/except` would report a NameError for good. Shipped instead: `_critic_shadow_status()`
+> reads `app.state.agent_nick.policy_engine` and calls `shadow.health_status()`, which
+> reports `unavailable` when the policy cannot be resolved — never an empty enrolment
+> list, because an outage must not read as "nothing is in shadow".
+
 - [ ] **Step 5: Surface it in `/health`**
 
 In `src/api/main.py`, find the `/health` handler and add the critic's shadow status beside the existing `ask_auth` and `shadow_status` entries:
@@ -2806,6 +2825,16 @@ can be edited."
 **Interfaces:**
 - Consumes: everything above.
 - Produces: a runnable report; an `opportunity_critic` node in `build_opportunity_workflow()`.
+
+> **Decision (2026-09-11) — no workflow node yet; Steps 1-4 are superseded.**
+> Verified in `src/orchestration/workflow_engine.py`: `WorkflowNode` has no `depends_on`
+> field (order comes from `graph.add_edge(source, target)`), and `opportunity_mining` is
+> the GRAPH's name, not a node (the miner node is `mine_opportunities`), so the snippet
+> and test below cannot work. Deeper: the engine has no fan-out, the critic takes ONE
+> `finding` while the miner emits a `findings` list, and each critique is a ~2-4 min GPU
+> tool loop — 308 findings would add 10-20 h to every mining run. Shipped instead:
+> `scripts/critic_run.py`, a bounded, resumable, shadow-only batch runner that refuses to
+> start unless every detector in the batch is actively enrolled in shadow.
 
 - [ ] **Step 1: Write the failing workflow test**
 

@@ -89,6 +89,16 @@ def shadow_status(thresholds) -> Dict[str, Any]:
     }
 
 
+def unenrolled_detectors(detectors, thresholds) -> list:
+    """The detectors in ``detectors`` that are NOT actively in shadow right now.
+
+    A batch that calls itself an observation run refuses to start on a
+    non-empty answer. An expired enrolment counts as unenrolled, exactly as
+    is_shadowed treats it.
+    """
+    return [d for d in detectors if not is_shadowed(d, thresholds)]
+
+
 def health_status(policy_engine: Any) -> Dict[str, Any]:
     """shadow_status for /health, refusing to report an outage as "none enrolled".
 

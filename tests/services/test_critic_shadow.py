@@ -93,6 +93,31 @@ def test_health_reports_the_enrolment_when_the_policy_resolves():
     assert status["enrolled"][0]["active"] is True
 
 
+def test_a_run_over_enrolled_detectors_has_nothing_unenrolled():
+    from src.services.opportunity_critic.shadow import unenrolled_detectors
+    t = _thresholds([{"detector": "Price Benchmark Variance", "until": _FUTURE},
+                     {"detector": "Invoice Overbilling", "until": _FUTURE}])
+    assert unenrolled_detectors(
+        ["Price Benchmark Variance", "Invoice Overbilling"], t) == []
+
+
+def test_a_run_touching_an_unenrolled_detector_names_it():
+    # The live runner refuses on a non-empty answer, so a detector outside
+    # shadow can never be critiqued by a batch that claims to be shadow-only.
+    from src.services.opportunity_critic.shadow import unenrolled_detectors
+    t = _thresholds([{"detector": "Price Benchmark Variance", "until": _FUTURE}])
+    assert unenrolled_detectors(
+        ["Price Benchmark Variance", "Duplicate Invoice Recovery"], t
+    ) == ["Duplicate Invoice Recovery"]
+
+
+def test_an_expired_enrolment_counts_as_unenrolled_for_a_run():
+    from src.services.opportunity_critic.shadow import unenrolled_detectors
+    t = _thresholds([{"detector": "Price Benchmark Variance", "until": _PAST}])
+    assert unenrolled_detectors(["Price Benchmark Variance"], t) == [
+        "Price Benchmark Variance"]
+
+
 def test_status_reports_the_enrolment_and_its_expiry():
     t = _thresholds([{"detector": "Price Benchmark Variance", "until": _FUTURE}])
     status = shadow_status(t)
