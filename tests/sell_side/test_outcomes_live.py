@@ -56,9 +56,24 @@ def test_a_lost_reason_on_a_win_is_refused(live_db):
                                 outcome_date=TODAY, recorded_by="sub-b")
 
 
+def _skip_if_the_wider_corpus_would_be_mutated(conn):
+    """Finding 7: calibrate() updates every open opportunity of a type,
+    database-wide -- not just LIVETEST rows -- and clean() does not revert
+    them. Running this against a corpus that already has non-LIVETEST open
+    opportunities would leave a permanent side effect, so refuse instead."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM proc.bp_sales_opportunity "
+                    "WHERE account_id NOT LIKE 'LIVETEST-%' AND outcome = 'open'")
+        n = cur.fetchone()[0]
+    if n:
+        pytest.skip(f"{n} non-LIVETEST open opportunities exist; calibrate() "
+                    "would mutate them database-wide and clean() cannot undo it")
+
+
 def test_below_the_threshold_win_probability_stays_null(live_db):
     """Acceptance criterion 7."""
     conn, dist = live_db
+    _skip_if_the_wider_corpus_would_be_mutated(conn)
     qid, _ = _issued_quote(conn, dist, n=1)
     outcomes.record_outcome(conn, sales_quote_id=qid, outcome="won",
                             outcome_date=TODAY, recorded_by="sub-b")
@@ -70,6 +85,7 @@ def test_below_the_threshold_win_probability_stays_null(live_db):
 
 def test_at_the_threshold_open_opportunities_are_calibrated(live_db, monkeypatch):
     conn, dist = live_db
+    _skip_if_the_wider_corpus_would_be_mutated(conn)
     monkeypatch.setattr(calibration, "_MIN_CLOSED", lambda: 1)
     qid, _ = _issued_quote(conn, dist, n=1)
     outcomes.record_outcome(conn, sales_quote_id=qid, outcome="won",
