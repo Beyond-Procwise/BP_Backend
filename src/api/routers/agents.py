@@ -71,7 +71,8 @@ async def list_tools(agent_nick=Depends(get_agent_nick)):
 
 
 @router.post("/reason")
-async def agent_nick_reason(req: ReasonRequest, agent_nick=Depends(get_agent_nick)):
+async def agent_nick_reason(req: ReasonRequest, agent_nick=Depends(get_agent_nick),
+                            principal=Depends(require_user)):
     """Let AgentNick plan and act on a task by calling tools.
 
     Returns the answer AND the full trace — every tool call, its arguments, and
@@ -710,7 +711,8 @@ class DocumentProcessRequest(BaseModel):
 
 @router.post("/process-document")
 def process_document(
-    req: DocumentProcessRequest, orchestrator: Orchestrator = Depends(get_orchestrator)
+    req: DocumentProcessRequest, orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Convenience endpoint to run the document extraction workflow."""
     payload = {"s3_prefix": req.s3_prefix, "s3_object_key": req.s3_object_key}
@@ -721,6 +723,7 @@ def process_document(
 def execute_agent(
     req: AgentExecutionRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Execute a specified agent workflow."""
     if orchestrator.agent_nick is None:
@@ -728,9 +731,14 @@ def execute_agent(
     prs = orchestrator.agent_nick.process_routing_service
     if prs is None:
         raise HTTPException(status_code=503, detail="Process routing service unavailable")
+    # A person started this, so the routing row names them. Without it the
+    # service filled created_by with settings.script_user ("AgentNick").
+    subject = getattr(principal, "subject", None) or None
     process_id = prs.log_process(
         process_name=req.agent_type,
         process_details=req.payload,
+        created_by=subject,
+        user_id=subject,
     )
     if process_id is None:
         raise HTTPException(status_code=500, detail="Failed to log process")
