@@ -679,6 +679,51 @@
         "candidate"
       ],
       "version": "1.0.0"
+    },
+    {
+      "agentId": 17,
+      "agentType": "OpportunityCriticAgent",
+      "slug": "opportunity_critic",
+      "class_path": "agents.opportunity_critic_agent.OpportunityCriticAgent",
+      "description": "Decides whether a detected opportunity would survive a negotiator's scrutiny, and records what would decide it when it cannot.",
+      "role": "validator",
+      "capabilities": [
+        "opportunity_critique"
+      ],
+      "required_inputs": [
+        "finding"
+      ],
+      "output_fields": [
+        "verdict",
+        "critique_id"
+      ],
+      "dependencies": [
+        "policy_engine",
+        "prompt_engine"
+      ],
+      "inputs": {
+        "required": [
+          "finding"
+        ],
+        "optional": [
+          "policy_context"
+        ]
+      },
+      "outputs": [
+        "verdict",
+        "critique_id"
+      ],
+      "version": "1.0.0",
+      "elicit": [
+        {
+          "any_of": [
+            "finding",
+            "opportunity_ref_id"
+          ],
+          "type": "text",
+          "prompt": "Which opportunity should I critique? Give its ref id."
+        }
+      ]
     }
   ]
 }
