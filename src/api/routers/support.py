@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
+from api.auth import require_user
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/support", tags=["Support"])
@@ -33,6 +35,7 @@ class SupportRequest(BaseModel):
 async def contact_support(
     req: SupportRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Greet the user, try to solve their problem, and escalate if it can't.
 
@@ -59,6 +62,7 @@ async def contact_support(
 async def contact_support_stream(
     req: SupportRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     """The same support agent, streamed as SSE.
 
@@ -130,6 +134,7 @@ def confirm_support(
     reference: str,
     body: ConfirmRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Did the guidance actually fix it?
 
