@@ -858,6 +858,10 @@ class BackendScheduler:
             self._chain_opportunity_mining(result)
         except Exception:
             logger.exception("chained opportunity mining failed")
+        try:
+            self._chain_graph_resolution(result)
+        except Exception:
+            logger.exception("chained graph resolution failed")
 
     def _chain_opportunity_mining(self, deal_result: Any) -> None:
         """Run opportunity mining iff deal-assignment changed something. Mining is
@@ -876,6 +880,45 @@ class BackendScheduler:
             return
         logger.info("deals changed -> chaining opportunity mining")
         self._run_opportunity_mining()
+
+    def _chain_graph_resolution(self, deal_result: Any) -> None:
+        """Resolve entities in the graph iff deal-assignment changed something.
+
+        The pass reads the same rows deal assignment just touched, so it runs on
+        the same trigger rather than on a timer of its own. Set
+        GRAPH_RESOLUTION_ENABLED=0 to disable the chain (default on).
+
+        Every stage runs in PASS_ORDER: a later profile reads earlier edges as
+        signals, so the order is a correctness requirement, not a preference.
+        """
+        import os
+        if os.environ.get("GRAPH_RESOLUTION_ENABLED", "1").strip() in ("0", "false", "False"):
+            return
+        changed = isinstance(deal_result, dict) and any(
+            int(deal_result.get(k) or 0) for k in self._DEAL_CHANGE_KEYS)
+        if not changed:
+            logger.debug("graph resolution chain skipped — no deal changes")
+            return
+
+        from services.procurement_kg_builder import ProcurementKGBuilder
+        from src.services.db import get_conn
+        from src.services.graph_resolution.pass_runner import run_all
+
+        builder = ProcurementKGBuilder(self.agent_nick)
+        if not builder._driver:
+            logger.error("graph resolution skipped — Neo4j is not reachable")
+            return
+        try:
+            limit = os.environ.get("GRAPH_RESOLUTION_LIMIT")
+            with get_conn() as conn:
+                counts = run_all(conn, builder._driver,
+                                 int(limit) if limit else None)
+            # The review backlog is logged at INFO on every run on purpose:
+            # bp_supplier_review already holds 727 rows nobody has looked at,
+            # and adding to it silently is how that happened.
+            logger.info("graph resolution completed: %s", counts)
+        finally:
+            builder.close()
 
     def _run_opportunity_mining(self) -> None:
         """Run opportunity mining; the miner upserts findings into bp_opportunity."""

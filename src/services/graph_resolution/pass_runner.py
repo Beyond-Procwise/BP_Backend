@@ -236,3 +236,65 @@ def run_item_equivalence(conn: Any, driver: Any, limit: Optional[int] = None) ->
              len(rows), len(classes), multi_member, written)
     return {"lines": len(rows), "classes": len(classes), "written": written,
             "multi_member_classes": multi_member}
+
+
+#: Dependency order (spec section 4.5). A later profile reads earlier edges as
+#: signals, so this order is a correctness requirement, not a preference.
+PASS_ORDER = ("supplier_identity", "item_equivalence",
+              "contract_succession", "contract_coverage")
+
+#: Which edge each profile produces.
+_PRODUCES = {
+    "supplier_identity": "SAME_ENTITY",
+    "item_equivalence": "OF_ITEM",
+    "contract_succession": "SUCCEEDS",
+    "contract_coverage": "UNDER_CONTRACT",
+}
+
+
+def assert_dag_safe(profile: str, reads: List[str]) -> None:
+    """Refuse a profile that reads an edge produced at or after its own stage.
+
+    A cycle here would be evidence laundering -- a conclusion re-entering as
+    its own support -- and it would not be visible in any single score.
+    """
+    own = PASS_ORDER.index(profile)
+    for rel in reads:
+        producer = next((p for p, r in _PRODUCES.items() if r == rel), None)
+        if producer is None:
+            continue
+        if PASS_ORDER.index(producer) >= own:
+            raise ValueError(
+                f"{profile} reads {rel}, which is produced downstream by "
+                f"{producer}; that is a cycle, not corroboration"
+            )
+
+
+def run_all(conn: Any, driver: Any, limit: Optional[int] = None) -> dict:
+    """Run every stage in dependency order, then size the review band."""
+    out = {}
+    out["supplier_identity"] = run_supplier_identity(conn, driver, limit)
+    out["item_equivalence"] = run_item_equivalence(conn, driver, limit)
+    out["review_backlog"] = review_backlog(driver)
+    return out
+
+
+def review_backlog(driver: Any) -> dict:
+    """How many edges landed in the review band, and therefore need a person.
+
+    bp_supplier_review already holds 727 pending rows that nobody has reviewed.
+    Reporting this number is how the choice to leave it unactioned stays a
+    choice rather than an accident.
+    """
+    counts = {}
+    try:
+        with driver.session() as session:
+            for rel in _PRODUCES.values():
+                r = session.run(
+                    f"MATCH ()-[e:{rel}]->() WHERE e.band = 'review' "
+                    f"RETURN count(e) AS c"
+                ).single()
+                counts[rel] = (r or {}).get("c", 0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("review_backlog unavailable: %s", exc)
+    return counts
