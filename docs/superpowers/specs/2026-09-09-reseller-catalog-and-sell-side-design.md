@@ -4,7 +4,7 @@
 **Branch target:** `Development`
 **Status:** Draft for review
 **Scope:** Gaps 1–3 of the reseller capability audit (2026-09-09). Gaps 4–10 are out of scope and named as such in §8.
-**DDL:** `sql/bp_catalog.sql`, `sql/bp_sell_side.sql`
+**DDL:** `deploy/sql/2026-09-11_bp_catalog.sql`, `deploy/sql/2026-09-11_bp_sell_side.sql`
 
 ---
 
@@ -99,7 +99,7 @@ Two supporting facts, both verified: `unspsc_code` carries the reference because
 
 ## 6. What the DDL delivers
 
-**`sql/bp_catalog.sql`** — gaps 1 and 2.
+**`deploy/sql/2026-09-11_bp_catalog.sql`** — gaps 1 and 2.
 
 | Table | Purpose |
 |---|---|
@@ -110,7 +110,7 @@ Two supporting facts, both verified: `unspsc_code` carries the reference because
 | `bp_catalog_item_relation` | `replaced_by`, `upgrade_of`, `refill_of`, `accessory_of`, `requires` — **distributor-asserted only**. |
 | `bp_catalog_item_match` | Catalog SKU ↔ purchase-history `item_id`, proposed / confirmed / rejected. |
 
-**`sql/bp_sell_side.sql`** — gap 3.
+**`deploy/sql/2026-09-11_bp_sell_side.sql`** — gap 3.
 
 | Table | Purpose |
 |---|---|

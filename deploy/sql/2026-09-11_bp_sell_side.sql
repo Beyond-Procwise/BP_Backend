@@ -1,5 +1,6 @@
 -- Sell-side data model: accounts, sales opportunities, outbound quotes. Gap 3.
 -- Spec: docs/superpowers/specs/2026-09-09-reseller-catalog-and-sell-side-design.md
+-- Apply AFTER 2026-09-11_bp_catalog.sql: bp_sales_opportunity and bp_sales_quote_line reference bp_catalog_item.
 --
 -- The buy-side model already here answers "what did we pay, and could we have paid less".
 -- Its value axis is bp_opportunity.financial_impact_gbp -- money NOT spent. A reseller's
@@ -9,6 +10,8 @@
 -- The phase vocabulary is NOT invented here. It is the ladder already seeded in the UI at
 -- src/lib/processTaxonomy/salesLifecycle.js (Opportunity -> Margin -> Approval, nine
 -- sub-processes). These columns are the backend that ladder has never had.
+
+BEGIN;
 
 -- The customer we sell TO.
 --
@@ -235,3 +238,5 @@ CREATE TABLE IF NOT EXISTS proc.bp_sales_quote_outcome (
 
 CREATE INDEX IF NOT EXISTS ix_bp_sales_quote_outcome_date
     ON proc.bp_sales_quote_outcome (outcome_date);
+
+COMMIT;

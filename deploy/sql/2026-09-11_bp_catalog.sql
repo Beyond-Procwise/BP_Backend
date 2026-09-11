@@ -6,6 +6,8 @@
 -- the confidence machinery exists to decide whether a model read a document correctly,
 -- and there is no such question to answer about a column in a price file.
 
+BEGIN;
+
 -- PREREQUISITE. proc.bp_supplier is a local base table with 5,028 rows and 5,028 distinct
 -- supplier_id, and no declared key. Everything below that points at a supplier needs one.
 -- Guarded: ADD CONSTRAINT has no IF NOT EXISTS, and this file must re-apply cleanly.
@@ -208,3 +210,5 @@ CREATE TABLE IF NOT EXISTS proc.bp_catalog_item_match (
 
 CREATE INDEX IF NOT EXISTS ix_bp_catalog_item_match_item
     ON proc.bp_catalog_item_match (item_id) WHERE status = 'confirmed';
+
+COMMIT;
