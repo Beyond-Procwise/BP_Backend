@@ -651,6 +651,34 @@
           "prompt": "Which deal do you want negotiation advice for?"
         }
       ]
+    },
+    {
+      "agentId": 16,
+      "agentType": "OpportunityEvidenceAgent",
+      "slug": "opportunity_evidence",
+      "class_path": "agents.opportunity_evidence_agent.OpportunityEvidenceAgent",
+      "description": "Assembles the evidence behind one opportunity: anchor, contract context and confidence tags. Judges nothing.",
+      "role": "researcher",
+      "capabilities": [
+        "evidence_assembly"
+      ],
+      "required_inputs": [
+        "finding"
+      ],
+      "output_fields": [
+        "candidate"
+      ],
+      "dependencies": [],
+      "inputs": {
+        "required": [
+          "finding"
+        ],
+        "optional": []
+      },
+      "outputs": [
+        "candidate"
+      ],
+      "version": "1.0.0"
     }
   ]
 }
