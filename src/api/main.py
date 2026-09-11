@@ -746,6 +746,24 @@ def _shadow_status():
         return {"error": "unavailable"}
 
 
+def _critic_shadow_status():
+    """The Opportunity Critic's shadow enrolments, or why they could not be read.
+
+    Never raises. health_status reports "unavailable" rather than an empty list
+    when the policy cannot be resolved -- an outage must not read as "nothing
+    is enrolled".
+    """
+
+    try:
+        from src.services.opportunity_critic.shadow import health_status
+
+        engine = getattr(getattr(app.state, "agent_nick", None), "policy_engine", None)
+        return health_status(engine)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("critic shadow status unavailable: %s", exc)
+        return {"error": "unavailable"}
+
+
 @app.get("/health", tags=["General"])
 def health():
     state = app.state
@@ -772,6 +790,9 @@ def health():
         # deployment state someone must be able to see without reading code.
         # Action names only — no policy content, no principals.
         "shadow_mode": _shadow_status(),
+        # The Opportunity Critic's per-detector shadow enrolments, with expiries.
+        # "unavailable" when its policy cannot be read -- never an empty list.
+        "critic_shadow": _critic_shadow_status(),
         # Honest surface for features that lost a dependency they can never have. It stays
         # honest — the capability is still named, and it still says it is degraded — but the
         # *reason* no longer ships. It used to read "proc.agent table does not exist; …

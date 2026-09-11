@@ -26,6 +26,7 @@ from agents.base_agent import AgentContext, AgentOutput, AgentStatus, BaseAgent
 from src.services.opportunity_critic import governed
 from src.services.opportunity_critic.assemble import assemble_candidate
 from src.services.opportunity_critic.invariants import check_invariants
+from src.services.opportunity_critic.shadow import may_suppress
 from src.services.opportunity_critic.store import record_critique
 
 logger = logging.getLogger(__name__)
@@ -137,7 +138,8 @@ class OpportunityCriticAgent(BaseAgent):
             return AgentOutput(status=AgentStatus.FAILED, data={"violations": violations},
                                error="; ".join(violations))
 
-        critique_id = record_critique(critique, shadowed=False)
+        allowed, shadow_reason = may_suppress(finding, thresholds)
+        critique_id = record_critique(critique, shadowed=not allowed)
         if critique_id is None:
             return AgentOutput(
                 status=AgentStatus.FAILED, data={},
@@ -147,6 +149,7 @@ class OpportunityCriticAgent(BaseAgent):
         return AgentOutput(status=AgentStatus.SUCCESS,
                            data={"critique_id": critique_id,
                                  "verdict": critique.get("verdict"),
+                                 "suppression": shadow_reason,
                                  "critique": critique})
 
     @staticmethod
