@@ -174,6 +174,8 @@ class Orchestrator:
             else:
                 _wf_get_conn = None
             wf_state_manager = StateManager(get_connection=_wf_get_conn) if _wf_get_conn else None
+            # The same run trail for workflows the engine does not run.
+            self._run_trail = wf_state_manager
 
             self._workflow_engine = WorkflowEngine(
                 agent_registry=self.agents,
@@ -485,6 +487,7 @@ class Orchestrator:
 
         context: Optional[AgentContext] = None
         enriched_input: Dict[str, Any] = {}
+        trail_id: Optional[int] = None
 
         try:
             # Create initial context
@@ -502,7 +505,7 @@ class Orchestrator:
             context = AgentContext(
                 workflow_id=workflow_id,
                 agent_id=workflow_name,
-                user_id=user_id or self.settings.script_user,
+                user_id=user_id,
                 input_data=enriched_input,
                 task_profile=manifest.get("task", {}),
                 policy_context=manifest.get("policies", []),
@@ -580,13 +583,20 @@ class Orchestrator:
                 and not workflow_config
                 and enriched_input.get("use_workflow_engine", True)
             )
+            # The engine records its own run in proc.workflow_execution. No other
+            # path recorded anything -- negotiation among them, and the
+            # self-approval bar on a negotiation round reads exactly that row
+            # to learn who started it.
+            if not use_engine:
+                trail_id = self._open_run_trail(workflow_id, workflow_name, user_id)
+
             if use_engine:
                 from orchestration.workflow_definitions import get_workflow
                 graph = get_workflow(workflow_name)
                 engine_state = self._workflow_engine.execute(
                     graph,
                     input_data=enriched_input,
-                    user_id=user_id or self.settings.script_user,
+                    user_id=user_id,
                     workflow_id=workflow_id,
                 )
                 result = {
@@ -611,6 +621,8 @@ class Orchestrator:
             # Attach the governance that shaped this run (traceability).
             if governance_applied and isinstance(result, dict):
                 result.setdefault("governance_applied", governance_applied)
+
+            self._close_run_trail(trail_id, "completed")
 
             self._publish_workflow_complete(
                 workflow_name=workflow_name,
@@ -665,6 +677,7 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"Workflow {workflow_id} failed: {e}")
+            self._close_run_trail(trail_id, "failed")
             if context is None:
                 fallback_input: Dict[str, Any] = {}
                 if isinstance(enriched_input, dict):
@@ -674,7 +687,7 @@ class Orchestrator:
                 context = AgentContext(
                     workflow_id=workflow_id,
                     agent_id=workflow_name,
-                    user_id=user_id or self.settings.script_user,
+                    user_id=user_id,
                     input_data=fallback_input,
                 )
             self._publish_workflow_complete(
@@ -699,6 +712,38 @@ class Orchestrator:
         finally:
             # Drop the shared blackboard for this run so the registry stays bounded.
             self._release_wf_context(workflow_id)
+
+    def _open_run_trail(
+        self, workflow_id: str, workflow_name: str, user_id: Optional[str]
+    ) -> Optional[int]:
+        """Record a non-engine run in proc.workflow_execution, with who started it.
+
+        Tolerant in the same way the engine's own write is (_safe_persist): a
+        run is not refused because its trail could not be written. What that
+        costs is stated rather than hidden -- with no row, the self-approval
+        bar on this run's negotiation rounds finds no initiator, and an unknown
+        initiator is not a match.
+        """
+        trail = getattr(self, "_run_trail", None)
+        if trail is None:
+            return None
+        try:
+            return trail.create_workflow_execution(workflow_id, workflow_name, user_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("could not record workflow %s (%s) in the run trail",
+                             workflow_id, workflow_name)
+            return None
+
+    def _close_run_trail(self, trail_id: Optional[int], status: str) -> None:
+        trail = getattr(self, "_run_trail", None)
+        if trail is None or trail_id is None:
+            return
+        try:
+            from datetime import datetime as _dt
+
+            trail.update_workflow_status(trail_id, status, _dt.utcnow())
+        except Exception:  # noqa: BLE001
+            logger.exception("could not close run-trail row %s as %s", trail_id, status)
 
     @staticmethod
     @lru_cache(maxsize=1)
@@ -1112,14 +1157,19 @@ class Orchestrator:
         payload: Optional[Dict[str, Any]] = None,
         process_id: Optional[int] = None,
         prs: Any = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Execute a flow either in new JSON form or legacy tree structure."""
+        """Execute a flow either in new JSON form or legacy tree structure.
+
+        ``user_id`` is the subject of whoever started the flow, or None. Every
+        node's context carries it; it used to be settings.script_user.
+        """
 
         if isinstance(flow, dict) and "entrypoint" in flow and "steps" in flow:
-            return self._execute_json_flow(flow, payload or {}, process_id, prs)
+            return self._execute_json_flow(flow, payload or {}, process_id, prs, user_id)
 
         # Fallback to previous onSuccess/onFailure style graphs
-        return self._execute_legacy_flow(flow, process_id, prs)
+        return self._execute_legacy_flow(flow, process_id, prs, user_id)
 
     # ------------------------------------------------------------------
     # New JSON flow executor
@@ -1244,6 +1294,7 @@ class Orchestrator:
         payload: Dict[str, Any],
         process_id: Optional[int] = None,
         prs: Any = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a flow defined with ``entrypoint`` and ``steps`` fields."""
 
@@ -1465,7 +1516,7 @@ class Orchestrator:
                 context = AgentContext(
                     workflow_id=str(uuid.uuid4()),
                     agent_id=agent_key,
-                    user_id=self.settings.script_user,
+                    user_id=user_id,
                     input_data=agent_input,
                     task_profile=manifest.get("task", {}),
                     policy_context=manifest.get("policies", []),
@@ -1521,7 +1572,8 @@ class Orchestrator:
         return {"status": flow_status, "ctx": run_ctx}
 
     def _execute_legacy_flow(
-        self, flow: Dict[str, Any], process_id: Optional[int] = None, prs: Any = None
+        self, flow: Dict[str, Any], process_id: Optional[int] = None, prs: Any = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute legacy tree-based flows with ``onSuccess``/``onFailure`` links."""
 
@@ -1606,7 +1658,7 @@ class Orchestrator:
             context = AgentContext(
                 workflow_id=_new_id(),
                 agent_id=agent_key,
-                user_id=self.settings.script_user,
+                user_id=user_id,
                 input_data=input_data,
                 task_profile=manifest.get("task", {}),
                 policy_context=manifest.get("policies", []),

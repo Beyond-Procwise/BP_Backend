@@ -716,7 +716,9 @@ def process_document(
 ):
     """Convenience endpoint to run the document extraction workflow."""
     payload = {"s3_prefix": req.s3_prefix, "s3_object_key": req.s3_object_key}
-    return orchestrator.execute_workflow("document_extraction", payload)
+    return orchestrator.execute_workflow(
+        "document_extraction", payload,
+        user_id=getattr(principal, "subject", None) or None)
 
 
 @router.post("/execute")
@@ -749,7 +751,7 @@ def execute_agent(
         status="started",
     )
     try:
-        result = orchestrator.execute_workflow(req.agent_type, req.payload)
+        result = orchestrator.execute_workflow(req.agent_type, req.payload, user_id=subject)
         prs.log_action(
             process_id=process_id,
             agent_type=req.agent_type,

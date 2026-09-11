@@ -102,7 +102,10 @@ def _launch_workflow(app_state: Any, payload: Dict[str, Any], job_id: str) -> No
 
     def _run() -> None:
         try:
-            result = orchestrator.execute_workflow("requirements_to_ranking", dict(payload))
+            # _payload put the token's subject in created_by, and only there.
+            result = orchestrator.execute_workflow(
+                "requirements_to_ranking", dict(payload),
+                user_id=payload.get("created_by") or None)
             _set_job(job_id, status="completed", result=result)
         except Exception as exc:  # pragma: no cover - background failure path
             logger.exception("async requirements workflow failed")

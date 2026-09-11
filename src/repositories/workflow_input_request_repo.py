@@ -72,14 +72,21 @@ CREATE TABLE IF NOT EXISTS proc.bp_workflow_run (
     payload           JSONB NOT NULL DEFAULT '{}'::jsonb,
     status            TEXT NOT NULL DEFAULT 'pending',
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- The subject of the person who STARTED the run, or NULL when nobody did.
+    -- A run that stops to ask a question is resumed by whoever answers, so the
+    -- starter has to be kept here or it is lost at the pause.
+    initiated_by      TEXT
 );
 """
 
-# Older deployments of this table predate the agent_workflow_id column.
+# Older deployments of these tables predate the agent_workflow_id and
+# initiated_by columns.
 _MIGRATE = """
 ALTER TABLE proc.bp_workflow_input_request
     ADD COLUMN IF NOT EXISTS agent_workflow_id BIGINT;
+ALTER TABLE proc.bp_workflow_run
+    ADD COLUMN IF NOT EXISTS initiated_by TEXT;
 """
 
 
@@ -95,23 +102,38 @@ def ensure_schema() -> None:
 
 def create_run(
     run_id: str, *, agent_workflow_id: Optional[int], payload: Dict[str, Any],
-    status: str = "pending",
+    status: str = "pending", initiated_by: Optional[str] = None,
 ) -> None:
     """Persist the run's original payload (and starting status) exactly once.
 
     Idempotent: if the run row already exists (e.g. this is called again on
     the same run_id) the existing payload/status are left untouched — the
-    ORIGINAL payload must never be overwritten by a later call.
+    ORIGINAL payload must never be overwritten by a later call. The same holds
+    for ``initiated_by``: whoever started the run stays who started it.
     """
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO proc.bp_workflow_run (run_id, agent_workflow_id, payload, status)
-                   VALUES (%s, %s, %s::jsonb, %s)
+            """INSERT INTO proc.bp_workflow_run
+                   (run_id, agent_workflow_id, payload, status, initiated_by)
+                   VALUES (%s, %s, %s::jsonb, %s, %s)
                ON CONFLICT (run_id) DO NOTHING""",
-            (run_id, agent_workflow_id, json.dumps(payload or {}), status),
+            (run_id, agent_workflow_id, json.dumps(payload or {}), status, initiated_by),
         )
         cur.close()
+
+
+def initiator_for(run_id: str) -> Optional[str]:
+    """Who started ``run_id``: a principal's subject, or None when nobody did."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT initiated_by FROM proc.bp_workflow_run WHERE run_id = %s",
+            (run_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+    return (row[0] or None) if row else None
 
 
 def get_run(run_id: str) -> Optional[Dict[str, Any]]:

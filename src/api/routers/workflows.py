@@ -1019,7 +1019,8 @@ def evaluate_quotes(
     principal=Depends(require_user),
 ):
     """Evaluate and compare supplier quotes."""
-    return orchestrator.execute_workflow("quote_evaluation", req.model_dump())
+    return orchestrator.execute_workflow("quote_evaluation", req.model_dump(),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/opportunities")
@@ -1049,7 +1050,7 @@ def mine_opportunities(
     )
     try:
         result = orchestrator.execute_workflow(
-            "opportunity_mining", req.model_dump()
+            "opportunity_mining", req.model_dump(), user_id=subject
         )
         prs.log_action(
             process_id=process_id,
@@ -2144,6 +2145,11 @@ def _payload_as_caller(req: BaseModel, principal: Any) -> Dict[str, Any]:
     return payload
 
 
+def _started_by(principal: Any) -> Optional[str]:
+    """Who started a workflow: the token's subject, or nobody. Never a stand-in."""
+    return getattr(principal, "subject", None) or None
+
+
 @router.post("/negotiate")
 def negotiate(
     req: NegotiationRequest,
@@ -2151,7 +2157,8 @@ def negotiate(
     principal=Depends(require_user),
 ):
     """Execute the negotiation agent."""
-    return orchestrator.execute_workflow("negotiation", _payload_as_caller(req, principal))
+    return orchestrator.execute_workflow("negotiation", _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/approvals")
@@ -2161,7 +2168,8 @@ def approvals(
     principal=Depends(require_user),
 ):
     """Run the approvals agent."""
-    return orchestrator.execute_workflow("approvals", _payload_as_caller(req, principal))
+    return orchestrator.execute_workflow("approvals", _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/supplier-interaction")
@@ -2172,7 +2180,8 @@ def supplier_interaction(
 ):
     """Trigger the supplier interaction agent."""
     return orchestrator.execute_workflow("supplier_interaction",
-                                         _payload_as_caller(req, principal))
+                                         _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/discrepancy")
@@ -2183,7 +2192,8 @@ def detect_discrepancy(
 ):
     """Expose the discrepancy detection agent."""
     return orchestrator.execute_workflow("discrepancy_detection",
-                                         _payload_as_caller(req, principal))
+                                         _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.get(

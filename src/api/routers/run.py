@@ -62,12 +62,13 @@ def run_agents(
     # Persist the initial details so that callers can poll for updates while
     # the workflow executes. The top-level status remains ``saved`` until the
     # entire flow succeeds or fails.
+    # The person who started the run, not settings.script_user, which the
+    # service writes into modified_by when it is told nobody -- and which every
+    # node's context used to carry as its user.
+    started_by = getattr(principal, "subject", None) or None
     try:
-        # The person who started the run, not settings.script_user, which the
-        # service writes into modified_by when it is told nobody.
         prs.update_process_details(
-            req.process_id, details,
-            modified_by=getattr(principal, "subject", None) or None)
+            req.process_id, details, modified_by=started_by)
     except Exception:
         logger.exception(
             "Failed to mark process %s as started", req.process_id
@@ -79,7 +80,7 @@ def run_agents(
         logger.info("Starting background run for process %s", process_id)
         try:
             result = orchestrator.execute_agent_flow(
-                flow_obj, payload, process_id=process_id, prs=prs
+                flow_obj, payload, process_id=process_id, prs=prs, user_id=started_by
             )
             if inspect.iscoroutine(result):
                 result = asyncio.run(result)
