@@ -40,6 +40,7 @@ Spec: docs/superpowers/specs/2026-09-09-reseller-catalog-and-sell-side-design.md
 
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import logging
 import re
@@ -90,6 +91,21 @@ _REQUIRED_COLUMNS = ("distributor_sku", "item_description", "currency")
 _DECIMAL_COLUMNS = frozenset({"pack_size", "list_price", "cost_price", "stock_qty"})
 _INT_COLUMNS = frozenset({"lead_time_days"})
 _DATE_COLUMNS = frozenset({"end_of_sale_date", "end_of_life_date"})
+
+TRANSFORMS = frozenset({"trim_currency", "pence_to_major", "pack_split"})
+
+# The DDL comments enumerate these and nothing in the schema enforces them, so
+# the importer does. A value outside the vocabulary is a mapping problem the
+# operator must see, not a new status the product silently learns.
+VOCABULARIES: Dict[str, frozenset] = {
+    "cost_basis": frozenset({"contract", "spot", "promotion", "unknown"}),
+    "availability_status": frozenset(
+        {"in_stock", "backorder", "special_order", "discontinued"}),
+    "lifecycle_status": frozenset(
+        {"active", "end_of_sale", "end_of_life", "superseded"}),
+}
+
+_ISO_CURRENCY = re.compile(r"[A-Z]{3}")
 
 # The columns whose change makes a new version. source_id is excluded on
 # purpose: re-sending the same prices in a differently-named file is not a
@@ -151,6 +167,9 @@ def _apply_transform(target: str, raw: str, transform: Optional[str]) -> Any:
     if not text:
         return None
 
+    if transform and transform not in TRANSFORMS:
+        raise ValueError(f"{target}: unknown transform {transform!r}")
+
     if transform == "pence_to_major":
         digits = _NUM_KEEP.sub("", text)
         if not digits:
@@ -173,9 +192,6 @@ def _apply_transform(target: str, raw: str, transform: Optional[str]) -> Any:
             return None
         return _decimal(found[0])
 
-    if transform:
-        raise ValueError(f"{target}: unknown transform {transform!r}")
-
     if target in _DECIMAL_COLUMNS:
         try:
             return _decimal(text)
@@ -184,15 +200,37 @@ def _apply_transform(target: str, raw: str, transform: Optional[str]) -> Any:
 
     if target in _INT_COLUMNS:
         try:
-            return int(_decimal(text))
-        except (InvalidOperation, ValueError):
+            number = _decimal(text)
+        except InvalidOperation:
             raise ValueError(f"{target}: {text!r} is not a whole number") from None
+        if number != number.to_integral_value():
+            # Truncating 5.5 days to 5 is a guess that reaches a delivery promise.
+            raise ValueError(f"{target}: {text!r} is not a whole number")
+        return int(number)
 
     if target in _DATE_COLUMNS:
-        # psycopg2 casts an ISO string; anything else is the feed's problem to fix.
+        # A date, not the string: Postgres returns a date for the current row,
+        # and a string never compares equal to one -- every dated row would
+        # re-version on every import.
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
             raise ValueError(f"{target}: {text!r} is not an ISO date")
-        return text
+        try:
+            return _dt.date.fromisoformat(text)
+        except ValueError:
+            raise ValueError(f"{target}: {text!r} is not a real date") from None
+
+    if target == "currency":
+        code = text.upper()
+        if not _ISO_CURRENCY.fullmatch(code):
+            raise ValueError(f"currency: {text!r} is not a three-letter ISO code")
+        return code
+
+    if target in VOCABULARIES:
+        value = "_".join(text.casefold().replace("-", " ").split())
+        if value not in VOCABULARIES[target]:
+            raise ValueError(
+                f"{target}: {text!r} is not one of {sorted(VOCABULARIES[target])}")
+        return value
 
     return text
 
@@ -211,11 +249,11 @@ class _MappingEntry:
     is_required: bool
 
 
-def _load_mapping(cur, mapping_profile: str) -> List[_MappingEntry]:
+def _load_mapping(cur, mapping_profile: str, distributor_id: str) -> List[_MappingEntry]:
     cur.execute(
         "SELECT target_column, source_header, transform, is_required "
-        "FROM proc.bp_catalog_mapping WHERE mapping_profile = %s",
-        (mapping_profile,),
+        "FROM proc.bp_catalog_mapping WHERE mapping_profile = %s AND distributor_id = %s",
+        (mapping_profile, distributor_id),
     )
     entries: List[_MappingEntry] = []
     for row in cur.fetchall() or []:
@@ -409,10 +447,11 @@ def import_catalog(
 
             parsed = parse(file_path)
 
-        mapping = _load_mapping(cur, mapping_profile)
+        mapping = _load_mapping(cur, mapping_profile, distributor_id)
         if not mapping:
             raise ValueError(
-                f"no mapping profile {mapping_profile!r} in proc.bp_catalog_mapping; "
+                f"no mapping profile {mapping_profile!r} for distributor "
+                f"{distributor_id!r} in proc.bp_catalog_mapping; "
                 "a distributor's headings are declared, not inferred"
             )
 
@@ -454,6 +493,7 @@ def _read_sheets(
     cur, parsed, mapping, valid_unspsc, result, *,
     source_id: int, tenant_id: Optional[str], distributor_id: str,
 ) -> None:
+    seen_skus: Dict[str, Tuple[int, int]] = {}
     for page in parsed.pages:
         for table in page.tables:
             rows = _sheet_rows(table)
@@ -475,13 +515,14 @@ def _read_sheets(
                     cur, raw_row, index, mapping, valid_unspsc, result,
                     sheet=page.index, row_no=row_no, source_id=source_id,
                     tenant_id=tenant_id, distributor_id=distributor_id,
+                    seen_skus=seen_skus,
                 )
 
 
 def _read_row(
     cur, raw_row, index, mapping, valid_unspsc, result, *,
     sheet: int, row_no: int, source_id: int, tenant_id: Optional[str],
-    distributor_id: str,
+    distributor_id: str, seen_skus: Dict[str, Tuple[int, int]],
 ) -> None:
     values: Dict[str, Any] = {c: None for c in ITEM_COLUMNS}
     values.update(
@@ -511,6 +552,15 @@ def _read_row(
             reject(f"{col} is empty, and the column is NOT NULL")
             return
 
+    sku = values["distributor_sku"]
+    first = seen_skus.get(sku)
+    if first is not None:
+        # Loading both would version the SKU against itself inside one import.
+        reject(f"distributor_sku {sku!r} appears twice in this file "
+               f"(first at sheet {first[0]} row {first[1]})")
+        return
+    seen_skus[sku] = (sheet, row_no)
+
     code = values.get("unspsc_code")
     if code and code not in valid_unspsc:
         reject(f"unspsc_code {code!r} is not in the live category master")
@@ -529,3 +579,64 @@ def _read_row(
 
     cur.execute(_INSERT_ITEM, tuple(values[c] for c in ITEM_COLUMNS))
     result.rows_loaded += 1
+
+
+# --- mapping administration -------------------------------------------------
+
+def get_mapping(conn: Any, mapping_profile: str) -> List[Dict[str, Any]]:
+    cur = _dict_cursor(conn)
+    cur.execute(
+        "SELECT mapping_profile, distributor_id, target_column, source_header, "
+        "transform, is_required FROM proc.bp_catalog_mapping "
+        "WHERE mapping_profile = %s ORDER BY target_column",
+        (mapping_profile,),
+    )
+    return [dict(r) for r in (cur.fetchall() or [])]
+
+
+def save_mapping(
+    conn: Any, *, mapping_profile: str, distributor_id: str,
+    entries: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Replace a profile's column map. The map is a row a human owns, so this is
+    the only way one is written, and it validates what the importer would
+    otherwise discover row by row."""
+    if not entries:
+        raise ValueError("a mapping profile needs at least one entry")
+    seen = set()
+    for e in entries:
+        target = e.get("target_column")
+        if target not in MAPPABLE_COLUMNS:
+            raise ValueError(f"{target!r} is not a column a feed may set")
+        if target in seen:
+            raise ValueError(f"{target!r} is mapped twice")
+        seen.add(target)
+        if not (e.get("source_header") or "").strip():
+            raise ValueError(f"{target}: source_header is empty")
+        if e.get("transform") and e["transform"] not in TRANSFORMS:
+            raise ValueError(f"{target}: unknown transform {e['transform']!r}")
+    missing = [c for c in _REQUIRED_COLUMNS if c not in seen]
+    if missing:
+        raise ValueError(f"mapping must cover the NOT NULL columns: {missing}")
+
+    cur = _dict_cursor(conn)
+    cur.execute(
+        "SELECT DISTINCT distributor_id FROM proc.bp_catalog_mapping "
+        "WHERE mapping_profile = %s", (mapping_profile,))
+    owners = {r["distributor_id"] for r in (cur.fetchall() or [])}
+    if owners and owners != {distributor_id}:
+        raise ValueError(
+            f"mapping profile {mapping_profile!r} belongs to {sorted(owners)}")
+    cur.execute("DELETE FROM proc.bp_catalog_mapping WHERE mapping_profile = %s",
+                (mapping_profile,))
+    for e in entries:
+        cur.execute(
+            "INSERT INTO proc.bp_catalog_mapping (mapping_profile, distributor_id, "
+            "target_column, source_header, transform, is_required) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (mapping_profile, distributor_id, e["target_column"],
+             e["source_header"].strip(), e.get("transform") or None,
+             bool(e.get("is_required")) or e["target_column"] in _REQUIRED_COLUMNS),
+        )
+    conn.commit()
+    return get_mapping(conn, mapping_profile)

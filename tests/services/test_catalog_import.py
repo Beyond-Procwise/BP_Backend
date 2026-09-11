@@ -422,3 +422,98 @@ def test_a_real_csv_through_the_real_parser_loads(tmp_path):
     rows = [dict(zip(catalog_import.ITEM_COLUMNS, p)) for p in _inserted_items(conn)]
     assert rows[0]["cost_price"] == Decimal("1420.00")
     assert rows[1]["lifecycle_status"] == "end_of_sale"
+
+
+import datetime as _dt
+
+
+# --- review fixes (2026-09-11) ---------------------------------------------
+
+def test_an_unchanged_dated_row_creates_no_new_version():
+    """Postgres hands back a date; the feed carries text. Comparing the two as
+    strings re-versioned every dated row on every import."""
+    conn = FakeConn(
+        mapping=_map(extra=[{"target_column": "end_of_sale_date",
+                             "source_header": "EOS", "transform": None,
+                             "is_required": False}]),
+        current={"A1": {"catalog_item_id": 900, "distributor_sku": "A1",
+                        "item_description": "Widget", "currency": "GBP",
+                        "end_of_sale_date": _dt.date(2026, 6, 30)}},
+    )
+    res = _run(conn, [[["SKU", "Description", "Ccy", "EOS"],
+                       ["A1", "Widget", "GBP", "2026-06-30"]]])
+
+    assert _inserted_items(conn) == []
+    assert res.rows_unchanged == 1
+
+
+def test_a_sku_twice_in_one_file_rejects_the_second_occurrence():
+    conn = FakeConn(mapping=_map())
+    res = _run(conn, [[["SKU", "Description", "Ccy"],
+                       ["A1", "Widget", "GBP"],
+                       ["A1", "Widget v2", "GBP"]]])
+
+    assert res.rows_loaded == 1
+    assert res.rows_rejected == 1
+    assert any("twice" in r.reason for r in res.rejects)
+
+
+def test_a_fractional_lead_time_is_rejected_not_truncated():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "lead_time_days", "source_header": "Lead",
+         "transform": None, "is_required": False}]))
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Lead"],
+                       ["A1", "Widget", "GBP", "5.5"]]])
+
+    assert res.rows_loaded == 0
+    assert any("lead_time_days" in r.reason for r in res.rejects)
+
+
+def test_currency_is_upper_cased_and_a_non_iso_value_rejects_the_row():
+    conn = FakeConn(mapping=_map())
+    res = _run(conn, [[["SKU", "Description", "Ccy"],
+                       ["A1", "Widget", "gbp"],
+                       ["A2", "Gadget", "Pounds"]]])
+
+    (params,) = _inserted_items(conn)
+    assert dict(zip(catalog_import.ITEM_COLUMNS, params))["currency"] == "GBP"
+    assert res.rows_rejected == 1
+    assert any("currency" in r.reason for r in res.rejects)
+
+
+def test_lifecycle_is_normalised_and_an_unknown_value_is_rejected():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "lifecycle_status", "source_header": "Life",
+         "transform": None, "is_required": False}]))
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Life"],
+                       ["A1", "Widget", "GBP", "End of Sale"],
+                       ["A2", "Gadget", "GBP", "EOL"]]])
+
+    (params,) = _inserted_items(conn)
+    assert dict(zip(catalog_import.ITEM_COLUMNS, params))["lifecycle_status"] == "end_of_sale"
+    assert any("lifecycle_status" in r.reason for r in res.rejects)
+
+
+def test_the_mapping_is_read_for_this_distributor_only():
+    conn = FakeConn(mapping=_map())
+    _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    (params,) = [p for sql, p in conn.calls if "FROM proc.bp_catalog_mapping" in sql]
+    assert params == ("ingram_v1", "SUP-001")
+
+
+def test_save_mapping_refuses_a_column_a_feed_may_not_set():
+    conn = FakeConn(mapping=[])
+    with pytest.raises(ValueError, match="distributor_id"):
+        catalog_import.save_mapping(conn, mapping_profile="p", distributor_id="SUP-001",
+                                    entries=[{"target_column": "distributor_id",
+                                              "source_header": "X"}])
+
+
+def test_save_mapping_refuses_an_unknown_transform():
+    conn = FakeConn(mapping=[])
+    with pytest.raises(ValueError, match="transform"):
+        catalog_import.save_mapping(conn, mapping_profile="p", distributor_id="SUP-001",
+                                    entries=[{"target_column": "cost_price",
+                                              "source_header": "Cost",
+                                              "transform": "guess"}])
