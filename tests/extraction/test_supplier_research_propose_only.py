@@ -162,7 +162,7 @@ def test_an_entity_mismatch_is_still_recorded_for_the_reviewer(monkeypatch):
         res = R.research_and_enrich(sid, c)
 
     assert res["entity_confirmed"] is False
-    assert res["name_match"] < R._ENTITY_MATCH_FLOOR
+    assert res["name_match"] < R._ENTITY_MATCH_FLOOR()
     assert _supplier(sid, ["website_url"])["website_url"] in (None, "")
 
 
