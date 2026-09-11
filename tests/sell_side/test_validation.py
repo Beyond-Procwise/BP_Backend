@@ -60,6 +60,11 @@ OPPORTUNITY_GUARDS = [
                                        expected_unit_price=D("-1")),
         "expected_unit_price", id="create_opportunity-negative-unit-price"),
     pytest.param(
+        lambda: opp.create_opportunity(None, account_id="LIVETEST-X",
+                                       opportunity_type="upsell", currency="GBP",
+                                       expected_unit_price=D("1.23456")),
+        "more than 4 decimal", id="create_opportunity-unit-price-too-precise"),
+    pytest.param(
         lambda: opp.add_justification(None, 1, kind="bogus", claim="hi"),
         "kind", id="add_justification-invalid-kind"),
 ]
@@ -77,6 +82,13 @@ QUOTE_GUARDS = [
             None, account_id="X", currency="GBP",
             valid_until=dt.date.today() + dt.timedelta(days=1), lines=[], created_by="a"),
         "at least one line", id="create_draft-no-lines"),
+    pytest.param(
+        lambda: quotes.create_draft(
+            None, account_id="X", currency="GBP",
+            valid_until=dt.date.today() + dt.timedelta(days=1), created_by="a",
+            lines=[{"catalog_item_id": 1, "quantity": D("1"),
+                    "unit_price": D("1.23456")}]),
+        "more than 4 decimal", id="create_draft-unit-price-too-precise"),
 ]
 
 

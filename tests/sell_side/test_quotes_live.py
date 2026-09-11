@@ -3,7 +3,7 @@ from decimal import Decimal as D
 
 import pytest
 
-from src.services.sell_side import accounts, quotes
+from src.services.sell_side import accounts, money, opportunities as opp, outcomes, quotes
 from src.services.sell_side._db import StateConflict
 from tests.sell_side.conftest import live, seed_item
 
@@ -172,3 +172,133 @@ def test_a_quote_cannot_supersede_another_accounts(live_db):
     with pytest.raises(ValueError, match="same account"):
         _draft(conn, item, supersedes_id=other["sales_quote_id"])
     assert quotes.get_quote(conn, other["sales_quote_id"])["status"] == "draft"
+
+
+# --- final review fixes (2026-09-11) ----------------------------------------
+
+def test_a_line_cannot_claim_another_accounts_opportunity(live_db):
+    """Finding 1: without the account check a customer_safe claim written for
+    customer B could render on customer A's quote via /customer and .html."""
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    accounts.create_account(conn, account_id="LIVETEST-Q2", account_name="Livetest Two Ltd")
+    other_item = seed_item(conn, dist, "LIVETEST-Q2-SKU")
+    other_opp = opp.create_opportunity(conn, account_id="LIVETEST-Q2", opportunity_type="upsell",
+                                       catalog_item_id=other_item)
+    with pytest.raises(ValueError, match="line 1"):
+        quotes.create_draft(
+            conn, account_id="LIVETEST-Q", currency="GBP",
+            valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+            lines=[{"catalog_item_id": item, "quantity": D("4"), "unit_price": D("14.00"),
+                    "sales_opportunity_id": other_opp["sales_opportunity_id"]}])
+
+
+def test_a_line_cannot_claim_another_accounts_justification(live_db):
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    accounts.create_account(conn, account_id="LIVETEST-Q2", account_name="Livetest Two Ltd")
+    other_item = seed_item(conn, dist, "LIVETEST-Q2-SKU")
+    other_opp = opp.create_opportunity(conn, account_id="LIVETEST-Q2", opportunity_type="upsell",
+                                       catalog_item_id=other_item)
+    other_just = opp.add_justification(conn, other_opp["sales_opportunity_id"],
+                                       kind="price_gap", claim="a claim about customer B")
+    with pytest.raises(ValueError, match="line 1"):
+        quotes.create_draft(
+            conn, account_id="LIVETEST-Q", currency="GBP",
+            valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+            lines=[{"catalog_item_id": item, "quantity": D("4"), "unit_price": D("14.00"),
+                    "justification_id": other_just["justification_id"]}])
+
+
+def test_a_lines_justification_must_belong_to_the_lines_own_opportunity(live_db):
+    """Same account, but the justification is attached to a *different*
+    opportunity than the one the line names -- also refused."""
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    opp1 = opp.create_opportunity(conn, account_id="LIVETEST-Q", opportunity_type="upsell",
+                                  catalog_item_id=item)
+    item2 = seed_item(conn, dist, "LIVETEST-Q-SKU2")
+    opp2 = opp.create_opportunity(conn, account_id="LIVETEST-Q", opportunity_type="upsell",
+                                  catalog_item_id=item2)
+    just2 = opp.add_justification(conn, opp2["sales_opportunity_id"],
+                                  kind="price_gap", claim="belongs to opp2, not opp1")
+    with pytest.raises(ValueError, match="line 1"):
+        quotes.create_draft(
+            conn, account_id="LIVETEST-Q", currency="GBP",
+            valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+            lines=[{"catalog_item_id": item, "quantity": D("4"), "unit_price": D("14.00"),
+                    "sales_opportunity_id": opp1["sales_opportunity_id"],
+                    "justification_id": just2["justification_id"]}])
+
+
+def test_a_matching_opportunity_and_justification_on_the_same_account_are_accepted(live_db):
+    """The positive case the three guards above must not break."""
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    o = opp.create_opportunity(conn, account_id="LIVETEST-Q", opportunity_type="upsell",
+                               catalog_item_id=item)
+    j = opp.add_justification(conn, o["sales_opportunity_id"], kind="price_gap", claim="ok")
+    q = quotes.create_draft(
+        conn, account_id="LIVETEST-Q", currency="GBP",
+        valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+        lines=[{"catalog_item_id": item, "quantity": D("4"), "unit_price": D("14.00"),
+                "sales_opportunity_id": o["sales_opportunity_id"],
+                "justification_id": j["justification_id"]}])
+    (line,) = q["lines"]
+    assert (line["sales_opportunity_id"], line["justification_id"]) == \
+        (o["sales_opportunity_id"], j["justification_id"])
+
+
+def test_a_4dp_unit_price_is_accepted_and_multiplies_out_exactly(live_db):
+    """Finding 2: a price at the column's own precision must store and total
+    exactly -- qty 1000 x 1.2346 = 1234.60, not a rounded-down other number."""
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    q = quotes.create_draft(
+        conn, account_id="LIVETEST-Q", currency="GBP",
+        valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+        lines=[{"catalog_item_id": item, "quantity": D("1000"), "unit_price": D("1.2346")}])
+    (line,) = q["lines"]
+    assert line["unit_price"] == D("1.2346")
+    assert line["line_total"] == money.q2(D("1000") * line["unit_price"])
+    assert line["line_total"] == D("1234.60")
+
+
+def test_a_5dp_unit_price_is_refused_live(live_db):
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    with pytest.raises(ValueError, match="more than 4 decimal"):
+        quotes.create_draft(
+            conn, account_id="LIVETEST-Q", currency="GBP",
+            valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+            lines=[{"catalog_item_id": item, "quantity": D("1000"),
+                    "unit_price": D("1.23456")}])
+
+
+def test_a_quote_with_an_outcome_cannot_be_superseded(live_db):
+    """Finding 4: superseding an issued quote that already has a recorded
+    outcome would silently erase its won/lost state."""
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    q = _draft(conn, item)
+    quotes.submit(conn, q["sales_quote_id"], actor="sub-author")
+    quotes.approve(conn, q["sales_quote_id"], approver="sub-approver")
+    quotes.issue(conn, q["sales_quote_id"], actor="sub-approver")
+    outcomes.record_outcome(conn, sales_quote_id=q["sales_quote_id"], outcome="won",
+                            outcome_date=TODAY, recorded_by="sub-approver")
+    with pytest.raises(StateConflict):
+        _draft(conn, item, supersedes_id=q["sales_quote_id"])
+    assert quotes.get_quote(conn, q["sales_quote_id"])["status"] == "issued"
+
+
+def test_a_discount_percentage_that_would_overflow_the_column_is_refused(live_db):
+    """Finding 5: numeric(7,4) tops out at 999.9999; list 1.00 vs price 2000
+    computes discount_pct -1999, which must be refused before it ever reaches
+    the INSERT and becomes a 500."""
+    conn, dist = live_db
+    item = _setup(conn, dist, cost="1.0000", list_price="1.0000")
+    with pytest.raises(ValueError, match="line 1"):
+        quotes.create_draft(
+            conn, account_id="LIVETEST-Q", currency="GBP",
+            valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+            lines=[{"catalog_item_id": item, "quantity": D("1"), "unit_price": D("2000")}])

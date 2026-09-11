@@ -34,6 +34,10 @@ def create_opportunity(
         raise ValueError("expected_quantity must be greater than zero")
     if expected_unit_price is not None and expected_unit_price < 0:
         raise ValueError("expected_unit_price cannot be negative")
+    if expected_unit_price is not None:
+        exponent = expected_unit_price.as_tuple().exponent
+        if isinstance(exponent, int) and exponent < -4:
+            raise ValueError("expected_unit_price has more than 4 decimal places")
     wanted = iso_currency(currency) if currency is not None else None
 
     cur = dict_cursor(conn)
@@ -58,6 +62,8 @@ def create_opportunity(
                     cost = q2(expected_quantity * c.unit_cost)
         elif expected_quantity is not None and expected_unit_price is not None:
             revenue = q2(expected_quantity * expected_unit_price)
+        if margin_pct is not None and abs(margin_pct) >= 1000:
+            raise ValueError(f"margin_pct {margin_pct} is out of range")
         if wanted is None:
             raise ValueError("currency is required when no catalog item is named")
 

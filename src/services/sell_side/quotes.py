@@ -36,6 +36,10 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
         raise ValueError("valid_until is before the quote date")
     if not lines:
         raise ValueError("a quote needs at least one line")
+    for n, line in enumerate(lines, start=1):
+        exponent = Decimal(line["unit_price"]).as_tuple().exponent
+        if isinstance(exponent, int) and exponent < -4:
+            raise ValueError(f"line {n}: unit_price has more than 4 decimal places")
 
     cur = dict_cursor(conn)
     try:
@@ -50,6 +54,34 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
                 raise ValueError(f"line {n}: quantity must be greater than zero")
             if price < 0:
                 raise ValueError(f"line {n}: unit_price cannot be negative")
+
+            opp_id = line.get("sales_opportunity_id")
+            just_id = line.get("justification_id")
+            if opp_id is not None:
+                cur.execute("SELECT account_id FROM proc.bp_sales_opportunity "
+                            "WHERE sales_opportunity_id = %s", (opp_id,))
+                orow = cur.fetchone()
+                if orow is None:
+                    raise ValueError(f"line {n}: opportunity {opp_id} does not exist")
+                if orow["account_id"] != account_id:
+                    raise ValueError(f"line {n}: opportunity {opp_id} belongs to a "
+                                     "different account")
+            if just_id is not None:
+                cur.execute(
+                    "SELECT j.sales_opportunity_id, o.account_id FROM "
+                    "proc.bp_sales_justification j JOIN proc.bp_sales_opportunity o "
+                    "ON o.sales_opportunity_id = j.sales_opportunity_id "
+                    "WHERE j.justification_id = %s", (just_id,))
+                jrow = cur.fetchone()
+                if jrow is None:
+                    raise ValueError(f"line {n}: justification {just_id} does not exist")
+                if jrow["account_id"] != account_id:
+                    raise ValueError(f"line {n}: justification {just_id} belongs to a "
+                                     "different account")
+                if opp_id is not None and jrow["sales_opportunity_id"] != opp_id:
+                    raise ValueError(f"line {n}: justification {just_id} belongs to a "
+                                     "different opportunity than the line's")
+
             c = cost_at(cur, int(line["catalog_item_id"]), qty)
             if not c.is_current:
                 raise ValueError(f"line {n}: catalog item {c.catalog_item_id} is a closed "
@@ -58,6 +90,10 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
                 raise ValueError(f"line {n}: catalog item is priced in {c.currency}, the "
                                  f"quote is in {currency}; no FX conversion is performed")
             p = price_line(qty, price, c.unit_cost, c.list_price)
+            for pct_name, pct_val in (("discount_pct", p.discount_pct),
+                                      ("line_margin_pct", p.line_margin_pct)):
+                if pct_val is not None and abs(pct_val) >= 1000:
+                    raise ValueError(f"line {n}: {pct_name} {pct_val} is out of range")
             priced.append(p)
             snapshots.append((line, n, qty, price, c, p))
         totals = total_quote(priced)
@@ -72,6 +108,11 @@ def create_draft(conn: Any, *, account_id: str, currency: str, valid_until: dt.d
                 raise ValueError("a quote can only supersede one for the same account")
             if old["status"] not in _SUPERSEDABLE:
                 raise StateConflict(f"quote {supersedes_id} is {old['status']} and cannot be superseded")
+            cur.execute("SELECT 1 FROM proc.bp_sales_quote_outcome "
+                        "WHERE sales_quote_id = %s", (supersedes_id,))
+            if cur.fetchone() is not None:
+                raise StateConflict(f"quote {supersedes_id} already has a recorded outcome "
+                                    "and cannot be superseded")
             cur.execute("UPDATE proc.bp_sales_quote SET status = 'superseded', "
                         "last_modified_date = now() WHERE sales_quote_id = %s", (supersedes_id,))
 
