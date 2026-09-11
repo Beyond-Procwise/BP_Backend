@@ -12,8 +12,13 @@ GOLDEN = Path(__file__).parent / "fixtures" / "benchmark" / "golden.json"
 
 
 def _client() -> TestClient:
+    from api.auth import require_user
+
     app = FastAPI()
     app.include_router(benchmark_router.router)
+    # /benchmark/preview resolves the caller (P8 phase 2); these tests are about
+    # the engine, not authentication, so the principal is pinned: nobody.
+    app.dependency_overrides[require_user] = lambda: None
     return TestClient(app)
 
 

@@ -229,7 +229,8 @@ def get_run(run_id: str) -> Dict[str, Any]:
 
 
 @router.post("/runs/{run_id}/input")
-def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, Any]:
+def submit_input(run_id: str, body: AnswerBody, request: Request,
+                 principal=Depends(require_user)) -> Dict[str, Any]:
     """The human answers. If nothing else is outstanding, the run proceeds.
 
     request_id is scoped to run_id: a request_id that belongs to a
@@ -253,7 +254,14 @@ def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, A
     # A no-op if this request was already answered (e.g. a replayed final
     # answer) -- idempotent, not an error, so a client retry still gets a
     # 200 with the run's current state instead of failing.
-    reqrepo.answer(run_id, body.request_id, body.answer, body.answered_by)
+    #
+    # Who answered is the token. This row is the HITL audit trail -- what a
+    # person was asked and what they said -- and `body.answered_by` (default
+    # "human") is a name the caller types. It stays on the model because
+    # clients send it; it is not read as identity, and with no principal the
+    # answer is recorded against nobody.
+    reqrepo.answer(run_id, body.request_id, body.answer,
+                   getattr(principal, "subject", None) or None)
 
     still_open = reqrepo.open_requests(run_id)
     if still_open:

@@ -221,7 +221,10 @@ def apply_turn(deal_id: str, message: dict, *, conn=None,
         state_fact(conn, advice_id=advice_id,
                    fact_key=message.get("fact_key"),
                    fact_value=message.get("fact_value"),
-                   stated_by=created_by or "buyer")
+                   # Whoever the caller resolved to, or nobody. "buyer" is a
+                   # role, and it was written into stated_by as though it
+                   # named one.
+                   stated_by=created_by or None)
     elif action == "withdraw_fact" and advice_id:
         withdraw_fact(conn, advice_id=advice_id,
                       fact_key=message.get("fact_key"))

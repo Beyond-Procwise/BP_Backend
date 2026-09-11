@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 import threading
 import asyncio
 import inspect
+from api.auth import require_user
 from orchestration.orchestrator import Orchestrator
 from utils.gpu import configure_gpu
 
@@ -39,6 +40,7 @@ def get_orchestrator(request: Request) -> Orchestrator:
 def run_agents(
     req: RunRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Execute an agent flow fetched from the routing table."""
     prs = getattr(orchestrator.agent_nick, "process_routing_service", None)
@@ -61,7 +63,11 @@ def run_agents(
     # the workflow executes. The top-level status remains ``saved`` until the
     # entire flow succeeds or fails.
     try:
-        prs.update_process_details(req.process_id, details)
+        # The person who started the run, not settings.script_user, which the
+        # service writes into modified_by when it is told nobody.
+        prs.update_process_details(
+            req.process_id, details,
+            modified_by=getattr(principal, "subject", None) or None)
     except Exception:
         logger.exception(
             "Failed to mark process %s as started", req.process_id
