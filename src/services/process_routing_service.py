@@ -989,7 +989,9 @@ class ProcessRoutingService:
                             process_name,
                             resolved_workflow_id,
                             self._safe_dumps(normalised_details),
-                            created_by or self.settings.script_user,
+                            # Who created it, or nobody. Not the service's own
+                            # name: that sat beside real people in this column.
+                            created_by,
                             user_id,
                             user_name,
                             process_status,
@@ -1103,7 +1105,7 @@ class ProcessRoutingService:
                         """,
                         (
                             self._safe_dumps(self.normalize_process_details(process_details)),
-                            modified_by or self.settings.script_user,
+                            modified_by,
                             process_id,
                         ),
                     )
@@ -1265,7 +1267,7 @@ class ProcessRoutingService:
                         (
                             numeric_status,
                             self._safe_dumps(self.normalize_process_details(details)),
-                            modified_by or self.settings.script_user,
+                            modified_by,
                             process_id,
                         ),
                     )
@@ -1588,7 +1590,7 @@ class ProcessRoutingService:
             "process_end_ts": process_end_ts.isoformat(),
             "duration": duration.total_seconds() if duration else None,
             "status": status_text,
-            "triggered_by": triggered_by or self.settings.script_user,
+            "triggered_by": triggered_by,
         }
 
         try:
@@ -1608,7 +1610,7 @@ class ProcessRoutingService:
                             status_int,
                             self._safe_dumps(annotated_details) if annotated_details is not None else None,
                             self._safe_dumps(raw_payload),
-                            triggered_by or self.settings.script_user,
+                            triggered_by,
                             process_id,
                         ),
                     )

@@ -558,7 +558,8 @@ class BaseAgent:
                 process_name=self.__class__.__name__,
                 process_details={"input": logged_input, "output": logged_output},
                 user_id=context.user_id,
-                user_name=self.agent_nick.settings.script_user,
+                # No user_name: the gateway fills this column with a person's
+                # display name, and the service's own name there read as one.
                 process_status=0,
                 workflow_id=context.workflow_id,
             )

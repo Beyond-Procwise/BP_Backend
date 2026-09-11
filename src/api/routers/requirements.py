@@ -70,7 +70,7 @@ def _run_requirements_turn(app_state: Any, payload: Dict[str, Any]) -> Dict[str,
         agent_id="requirements",
         # Whoever the route resolved from the token, or nobody -- not "api",
         # which the agent then wrote to bp_requirement.created_by as a person.
-        user_id=payload.get("created_by") or "",
+        user_id=payload.get("created_by") or None,
         input_data=dict(payload),
     )
     output = agent.run(ctx)
