@@ -1123,7 +1123,8 @@ class DecisionEngine:
         *,
         workflow_id: Optional[str] = None,
         agent: Optional[str] = None,
-        created_by: str = "system",
+        # Who decided: a principal's subject, or None. Never "system".
+        created_by: Optional[str] = None,
     ) -> Optional[int]:
         """Persist the decision and its evidence. Returns the new decision_id."""
         try:

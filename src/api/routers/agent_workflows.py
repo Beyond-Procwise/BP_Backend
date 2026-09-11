@@ -99,7 +99,10 @@ def create_workflow(
     except GraphValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     wid = repo.create(name=body.name, graph=body.graph, entry_node=_entry_of(body.graph),
-                      description=body.description)
+                      description=body.description,
+                      # Who saved it: the token, or nobody. It was never passed,
+                      # so the repo's "system" default named every author.
+                      created_by=getattr(principal, "subject", None) or None)
     return {"workflow_id": wid}
 
 

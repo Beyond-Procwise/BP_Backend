@@ -62,7 +62,10 @@ _SELECT = """SELECT workflow_id, name, description, graph, entry_node, created_b
 
 
 def create(name: str, graph: Dict[str, Any], entry_node: str,
-           description: str = "", created_by: str = "system") -> int:
+           description: str = "", created_by: Optional[str] = None) -> int:
+    """``created_by`` is who saved it (a principal's subject), or None. It
+    defaulted to "system", and the canvas never passed one, so every saved
+    workflow claimed to be created by somebody called "system"."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
