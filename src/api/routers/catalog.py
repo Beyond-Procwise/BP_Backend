@@ -96,7 +96,7 @@ async def import_feed(
     data = await file.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise HTTPException(status_code=413, detail=f"feed exceeds {max_bytes} bytes")
-    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+    with http_errors(), tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
         tmp.write(data)
         tmp.flush()
         result = await run_in_threadpool(

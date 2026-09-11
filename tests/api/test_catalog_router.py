@@ -82,3 +82,13 @@ def test_service_errors_map_to_status_codes(client, monkeypatch, exc, code):
         raise exc
     monkeypatch.setattr(cr.catalog_match, "reject_match", _raise)
     assert client.post("/catalog/matches/5/reject").status_code == code
+
+
+def test_an_unknown_distributor_import_is_a_422_not_a_500(client, monkeypatch):
+    """Finding 6: import_catalog now raises ValueError for an unknown
+    distributor_id, and the router must map that to 422, not let it fall
+    through to the unhandled-exception 500 handler."""
+    def _raise(**k):
+        raise ValueError("distributor 'SUP-1' is not a supplier")
+    monkeypatch.setattr(cr.catalog_import, "import_catalog", _raise)
+    assert _upload(client).status_code == 422
