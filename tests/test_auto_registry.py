@@ -95,6 +95,7 @@ class TestAgentIds:
             "negotiation", "supplier_interaction", "email_dispatch",
             "approvals", "discrepancy_detection", "rag", "email_watcher",
             "requirements", "negotiation_advisor",
+            "opportunity_evidence", "opportunity_critic",
         }
         assert expected == set(registry.agent_ids)
 
