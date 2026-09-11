@@ -826,9 +826,9 @@ class BackendScheduler:
 
     def _run_sales_calibration(self) -> None:
         try:
-            from src.services.db import get_conn
+            from src.services.sell_side._db import transactional_conn
             from src.services.sell_side.calibration import calibrate
-            with get_conn() as conn:
+            with transactional_conn() as conn:
                 applied = [c for c in calibrate(conn) if c.applied]
             if applied:
                 logger.info("sales calibration: %s", ", ".join(

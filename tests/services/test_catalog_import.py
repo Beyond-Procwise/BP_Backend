@@ -548,3 +548,12 @@ def test_save_mapping_rolls_back_when_an_insert_fails():
 
     assert conn.rolled_back is True
     assert conn.committed is False
+
+
+def test_import_refuses_an_autocommit_connection():
+    conn = FakeConn(mapping=_map())
+    conn.autocommit = True
+    with pytest.raises(RuntimeError, match="transactional"):
+        _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    assert conn.calls == []

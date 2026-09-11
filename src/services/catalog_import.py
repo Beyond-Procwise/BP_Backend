@@ -376,6 +376,14 @@ def _dict_cursor(conn: Any):
         return conn.cursor()
 
 
+def _require_transactional(conn: Any) -> None:
+    """Refuse an autocommit connection: under it rollback() is a no-op and this
+    module's multi-statement writes would not be atomic."""
+    if getattr(conn, "autocommit", False):
+        raise RuntimeError("sell-side services need a transactional connection "
+                           "(autocommit is on); use sell_side._db.transactional_conn()")
+
+
 # --- entry point ------------------------------------------------------------
 
 def import_catalog(
@@ -402,12 +410,15 @@ def import_catalog(
         from src.services.db import get_conn
 
         with get_conn() as owned:
+            owned.autocommit = False
             return import_catalog(
                 distributor_id=distributor_id, feed_name=feed_name,
                 mapping_profile=mapping_profile, price_effective=price_effective,
                 imported_by=imported_by, file_bytes=file_bytes, file_name=file_name,
                 file_path=file_path, parsed=parsed, tenant_id=tenant_id, conn=owned,
             )
+
+    _require_transactional(conn)
 
     if file_bytes is None and file_path is None:
         raise ValueError("import_catalog needs file_bytes or file_path")
@@ -619,6 +630,7 @@ def save_mapping(
     if missing:
         raise ValueError(f"mapping must cover the NOT NULL columns: {missing}")
 
+    _require_transactional(conn)
     cur = _dict_cursor(conn)
     try:
         cur.execute(

@@ -84,3 +84,13 @@ QUOTE_GUARDS = [
 def test_a_quotes_guard_raises_before_any_cursor_use(call, match):
     with pytest.raises(ValueError, match=match):
         call()
+
+
+def test_dict_cursor_refuses_an_autocommit_connection():
+    from src.services.sell_side._db import dict_cursor
+
+    class _AutocommitConn:
+        autocommit = True
+
+    with pytest.raises(RuntimeError, match="transactional"):
+        dict_cursor(_AutocommitConn())

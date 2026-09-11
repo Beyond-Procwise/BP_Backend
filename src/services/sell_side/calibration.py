@@ -43,19 +43,23 @@ def rates(counts: Mapping[str, Tuple[int, int]], min_closed: int) -> List[Calibr
 
 def calibrate(conn: Any) -> List[Calibration]:
     cur = dict_cursor(conn)
-    cur.execute(
-        "SELECT opportunity_type, count(*) FILTER (WHERE outcome = 'won') AS won, "
-        "count(*) FILTER (WHERE outcome = 'lost') AS lost "
-        "FROM proc.bp_sales_opportunity GROUP BY opportunity_type")
-    counts = {r["opportunity_type"]: (r["won"], r["lost"]) for r in cur.fetchall()}
-    result = rates(counts, _MIN_CLOSED())
-    for c in result:
-        if c.applied:
-            cur.execute(
-                "UPDATE proc.bp_sales_opportunity SET win_probability = %s, "
-                "win_probability_basis = 'calibrated', last_modified_date = now() "
-                "WHERE opportunity_type = %s AND outcome = 'open' "
-                "AND (win_probability_basis IS NULL OR win_probability_basis = 'calibrated')",
-                (c.rate, c.opportunity_type))
+    try:
+        cur.execute(
+            "SELECT opportunity_type, count(*) FILTER (WHERE outcome = 'won') AS won, "
+            "count(*) FILTER (WHERE outcome = 'lost') AS lost "
+            "FROM proc.bp_sales_opportunity GROUP BY opportunity_type")
+        counts = {r["opportunity_type"]: (r["won"], r["lost"]) for r in cur.fetchall()}
+        result = rates(counts, _MIN_CLOSED())
+        for c in result:
+            if c.applied:
+                cur.execute(
+                    "UPDATE proc.bp_sales_opportunity SET win_probability = %s, "
+                    "win_probability_basis = 'calibrated', last_modified_date = now() "
+                    "WHERE opportunity_type = %s AND outcome = 'open' "
+                    "AND (win_probability_basis IS NULL OR win_probability_basis = 'calibrated')",
+                    (c.rate, c.opportunity_type))
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()
     return result
