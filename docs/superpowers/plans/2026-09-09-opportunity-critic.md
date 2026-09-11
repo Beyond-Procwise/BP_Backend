@@ -1223,6 +1223,21 @@ DELETE FROM proc.bp_prompt WHERE prompt_name = 'opportunity_critic_system';
 COMMIT;
 ```
 
+> **Pre-flight correction (2026-09-11) — the loader below reads nothing in production.**
+> Verified against `src/engines/policy_engine.py` and `src/orchestration/prompt_engine.py`:
+> 1. `PolicyEngine.get_policy()` returns a *normalised* policy: rules under `details`, the
+>    original row under `raw_row`. The loader reads `policy_details`, `policy_id` and
+>    `version` from the top level, so every live threshold resolves to `None`.
+> 2. `PromptEngine.get_prompt(prompt_id)` does `int(prompt_id)` and returns `None` for a
+>    name, so `load_system_prompt` always returns `(None, None)` — and the critic refuses
+>    to run without its prompt. Find the row by `promptName` in `all_prompts()`; its text
+>    is under `template`.
+>
+> The Step 1 tests stayed green over both because `_FakeEngine` returns a raw row. The
+> shipped loader reads both shapes, and `test_critic_governed.py` adds four tests that
+> drive the REAL engines from in-memory rows. Proven live: the seed, dry-run inside a
+> rolled-back transaction on bp_testdb, resolves through both real engines.
+
 - [ ] **Step 4: Write the loader**
 
 Create `src/services/opportunity_critic/__init__.py`:
