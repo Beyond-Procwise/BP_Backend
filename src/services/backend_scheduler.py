@@ -781,8 +781,8 @@ class BackendScheduler:
         Registered unconditionally, with no enable switch. The other jobs here
         do something; this one stops something accumulating, and a retention
         sweep that can be turned off is a retention policy that quietly is not
-        one. The window is tunable via CAPTURE_RETENTION_DAYS; the sweep itself
-        is not optional.
+        one. The window is AutonomousOperationPolicy's capture_retention_days
+        (P9); the sweep itself is not optional.
 
         Daily, and on boot: these directories had four months of content in them
         when the job was written, so the first run has real work to do and there

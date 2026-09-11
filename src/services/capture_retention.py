@@ -35,11 +35,13 @@ document text was accumulating on local disk with no policy at all.
 from __future__ import annotations
 
 import logging
-from src.services.governed_limits import limit as _governed_limit
 import os
 import time
 from pathlib import Path
 from typing import Iterable
+
+from src.services.governed_limits import LimitUnavailable
+from src.services.governed_limits import limit as _governed_limit
 
 logger = logging.getLogger(__name__)
 
@@ -52,37 +54,37 @@ CAPTURE_DIRS: tuple[Path, ...] = (
     _ROOT / "data" / "conversations",
 )
 
-DEFAULT_RETENTION_DAYS = 30
-
-
 def retention_days() -> int:
-    """Days to keep a capture. ``CAPTURE_RETENTION_DAYS`` overrides the default.
+    """Days to keep a capture, as AutonomousOperationPolicy states it (P9).
 
-    An unparseable or non-positive value falls back to the default rather than
-    to zero: a typo in an environment variable must not become "delete
-    everything on the next scheduler tick".
+    How long captured data is kept is a data-protection commitment, not a
+    tuning knob, so there is no number for it in this module. A policy that
+    states none, or states zero or less, refuses: zero would mean "delete every
+    capture" and null "keep them forever", and neither is acted on.
+
+    ``CAPTURE_RETENTION_DAYS`` still overrides for one release, through
+    governed_limits, which warns when it disagrees with policy. An override
+    that is not a positive number gives way to POLICY -- not to a default kept
+    here, which would be the value P9 removed -- because a typo must not become
+    "delete everything on the next scheduler tick".
     """
-    # AutonomousOperationPolicy (P9): how long captured data is kept is a
-    # data-protection commitment, not a tuning knob.
-    raw = os.getenv("CAPTURE_RETENTION_DAYS", "").strip()
-    if not raw:
-        return _governed_limit("autonomous_operation", "capture_retention_days",
-                               cast=int)
-    try:
-        value = int(raw)
-    except ValueError:
+    stated = _governed_limit("autonomous_operation", "capture_retention_days",
+                             cast=int)
+    if stated is None or stated <= 0:
+        raise LimitUnavailable(
+            f"autonomous_operation states capture_retention_days = {stated!r}; "
+            f"a retention must be a positive number of days")
+
+    days = _governed_limit("autonomous_operation", "capture_retention_days",
+                           env="CAPTURE_RETENTION_DAYS", cast=int)
+    if days is None or days <= 0:
         logger.warning(
-            "CAPTURE_RETENTION_DAYS=%r is not a number; using %d days",
-            raw, DEFAULT_RETENTION_DAYS,
+            "CAPTURE_RETENTION_DAYS=%r is not a positive number of days and is "
+            "ignored; using %d from policy",
+            os.getenv("CAPTURE_RETENTION_DAYS"), stated,
         )
-        return DEFAULT_RETENTION_DAYS
-    if value <= 0:
-        logger.warning(
-            "CAPTURE_RETENTION_DAYS=%d is not positive; using %d days",
-            value, DEFAULT_RETENTION_DAYS,
-        )
-        return DEFAULT_RETENTION_DAYS
-    return value
+        return stated
+    return days
 
 
 def _is_known_capture_dir(directory: Path) -> bool:

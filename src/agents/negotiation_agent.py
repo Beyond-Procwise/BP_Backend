@@ -83,35 +83,30 @@ def LEAD_TIME_VALUE_PCT_PER_WEEK() -> float:
     return _governed_limit("negotiation_bounds", "lt_value_pct_per_week",
                            env="NEG_LT_VALUE_PCT_PER_WEEK")
 def _resolve_thread_transcript_limit() -> Optional[int]:
-    """Return the configured transcript limit or ``None`` for full history."""
+    """How many thread entries the agent reads before it counters, or ``None``
+    for the full history. AgentReachPolicy (P9).
 
-    # AgentReachPolicy (P9). Policy states null for "no limit", which is a
-    # decision somebody made -- not the same as the key being absent.
-    raw_limit = os.getenv("NEG_THREAD_TRANSCRIPT_LIMIT")
-    if raw_limit is None:
-        return _governed_limit("agent_reach", "neg_thread_transcript_limit",
-                               cast=int)
+    Policy states null for "no limit", which is a decision somebody made -- not
+    the same as the key being absent, which refuses. Zero or less also means the
+    full history, as it always has.
 
-    raw_limit = raw_limit.strip()
-    if not raw_limit:
+    NEG_THREAD_TRANSCRIPT_LIMIT overrides for one release through
+    governed_limits, which warns when it disagrees with policy and ignores it in
+    favour of policy when it is not a number. It used to turn an unreadable
+    value into "full history": how much the agent sees before making an offer,
+    decided by a typo.
+
+    Read on every use rather than once at import, where it ran before anything
+    knew whether the governance store had answered, and pinned the value until
+    the process restarted.
+    """
+    limit = _governed_limit("agent_reach", "neg_thread_transcript_limit",
+                            env="NEG_THREAD_TRANSCRIPT_LIMIT", cast=int)
+    if limit is None or limit <= 0:
         return None
-
-    try:
-        parsed = int(raw_limit)
-    except ValueError:
-        logger.warning(
-            "Invalid NEG_THREAD_TRANSCRIPT_LIMIT=%s; defaulting to full history",
-            raw_limit,
-        )
-        return None
-
-    if parsed <= 0:
-        return None
-
-    return parsed
+    return limit
 
 
-THREAD_HISTORY_TRANSCRIPT_LIMIT = _resolve_thread_transcript_limit()
 def AGGRESSIVE_FIRST_COUNTER_PCT() -> float:
     """NegotiationBoundsPolicy (P9)."""
     return _governed_limit("negotiation_bounds", "first_counter_aggr_pct",
@@ -12016,7 +12011,7 @@ class NegotiationAgent(BaseAgent):
         if not entries:
             return []
 
-        limit = THREAD_HISTORY_TRANSCRIPT_LIMIT
+        limit = _resolve_thread_transcript_limit()
         if isinstance(limit, int) and limit > 0:
             return list(entries)[-limit:]
 

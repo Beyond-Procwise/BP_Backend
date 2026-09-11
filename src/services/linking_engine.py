@@ -705,7 +705,7 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
     if conf < MIN_CONFIDENCE():
         return po, link, "low_extraction_confidence"
 
-    if link["F"] < MIN_LINK_SCORE:
+    if link["F"] < MIN_LINK_SCORE():
         # "Does this document belong to this PO?" and "is this document correct?" are two
         # different questions, and the F score was answering them as one.
         #
@@ -1040,7 +1040,7 @@ def _review_queue(conn, doc_types, floor, all_held: bool = False,
                     item["amount_usd"] = _to_float(row.get("converted_amount_usd"))
                 out.append(item)
                 continue
-            if link is None or not (floor <= link["F"] < MIN_LINK_SCORE):
+            if link is None or not (floor <= link["F"] < MIN_LINK_SCORE()):
                 continue
             # gap report: signals sorted by impact = |w * r * (2s-1)| (PDF Stage 8)
             gaps = sorted(link["signals"], key=lambda s: abs(s["c"]), reverse=True)

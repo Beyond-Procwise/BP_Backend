@@ -168,16 +168,19 @@ def test_a_zero_or_negative_window_is_refused_rather_than_deleting_everything(
     assert old.exists() and new.exists()
 
 
-def test_the_default_window_comes_from_the_environment(monkeypatch):
+def test_the_environment_still_overrides_the_window_for_one_release(monkeypatch):
     monkeypatch.setenv("CAPTURE_RETENTION_DAYS", "14")
     assert R.retention_days() == 14
 
 
-def test_an_unparseable_window_falls_back_to_the_default_rather_than_zero(
+def test_an_unparseable_window_falls_back_to_policy_rather_than_zero(
     monkeypatch,
 ):
+    # The seeded policy (tests/conftest.py) states 30. Policy-first behaviour,
+    # with a value distinct from the old in-code default, is pinned in
+    # tests/governance/test_p9_tail.py.
     monkeypatch.setenv("CAPTURE_RETENTION_DAYS", "not-a-number")
-    assert R.retention_days() == R.DEFAULT_RETENTION_DAYS
+    assert R.retention_days() == 30
 
 
 def test_purge_all_reports_each_directory(monkeypatch, captures):

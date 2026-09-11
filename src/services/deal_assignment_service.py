@@ -10,6 +10,7 @@ deal_date is the order's expected delivery date stamped on every doc.
 from __future__ import annotations
 
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import math
 import os
 from typing import Any, Optional
@@ -32,10 +33,21 @@ from src.services.resolution.model import DEGENERACY_FLOOR
 
 log = logging.getLogger(__name__)
 
-MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))
-# Bar for a quote to ANCHOR a PO (form/complete a deal). Defaults to the link bar.
-QUOTE_ANCHOR_MIN_SCORE = float(os.getenv("QUOTE_ANCHOR_MIN_SCORE",
-                                         os.getenv("PROMOTE_MIN_LINK_SCORE", "80")))
+# PromotionThresholdPolicy (P9). See linking_engine for why these are functions.
+def MIN_LINK_SCORE() -> float:
+    return _governed_limit("promotion_thresholds", "promote_min_link_score",
+                           env="PROMOTE_MIN_LINK_SCORE")
+
+
+def QUOTE_ANCHOR_MIN_SCORE() -> float:
+    """Bar for a quote to ANCHOR a PO (form/complete a deal).
+
+    Policy states it separately rather than defaulting to the link bar in code:
+    "the same as the other one" is a decision, and it should be written down
+    where it can be changed independently.
+    """
+    return _governed_limit("promotion_thresholds", "quote_anchor_min_score",
+                           env="QUOTE_ANCHOR_MIN_SCORE")
 
 # One quote anchors one purchase order: a quote is raised for a single sourcing
 # event, and an order is placed against a single quote.
@@ -592,7 +604,7 @@ def _quote_anchors(cur, pos, cache=None) -> dict:
                                   source_lines=_anchor_quote_lines(cur, q, cache),
                                   target_lines=po_lines)
                 f = float(link.get("F", 0) or 0)
-                if f < QUOTE_ANCHOR_MIN_SCORE:
+                if f < QUOTE_ANCHOR_MIN_SCORE():
                     continue
                 quote_rows[qid] = q
                 edges.append(CandidateEdge(
