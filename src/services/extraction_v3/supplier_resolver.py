@@ -16,6 +16,7 @@ persist supplier_id = NULL and put the row into the review queue.
 from __future__ import annotations
 
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import os
 import re
 from pathlib import Path
@@ -130,8 +131,16 @@ _FUZZY_THRESHOLD = 92
 #   [_REVIEW_LOW, 92)  → auto-CREATED a supplier, but it's a possible duplicate.
 #   [92, _REVIEW_HIGH) → auto-LINKED to a supplier, but it's a possible false merge.
 # Outside the band the auto-decision is confident and no review is raised.
-_REVIEW_LOW = float(os.getenv("SUPPLIER_REVIEW_LOW", "82"))
-_REVIEW_HIGH = float(os.getenv("SUPPLIER_REVIEW_HIGH", "96"))
+# SupplierIdentityPolicy (P9): these bands decide when two names are one
+# company, and therefore whose bank details an invoice is paid against.
+def _REVIEW_LOW() -> float:
+    return _governed_limit("supplier_identity", "review_low",
+                           env="SUPPLIER_REVIEW_LOW")
+
+
+def _REVIEW_HIGH() -> float:
+    return _governed_limit("supplier_identity", "review_high",
+                           env="SUPPLIER_REVIEW_HIGH")
 _REVIEW_ENABLED = os.getenv("SUPPLIER_REVIEW_ENABLED", "1") not in ("0", "false", "False")
 
 
@@ -764,7 +773,7 @@ def resolve_or_create_supplier(name: str, conn, *, doc_type: str | None = None,
                 chosen, decision = _create_supplier(cur, display_name), "created"
 
             # --- 4. Flag close calls for human review (best-effort) ---
-            if chosen and best_id and _REVIEW_LOW <= best_score < _REVIEW_HIGH:
+            if chosen and best_id and _REVIEW_LOW() <= best_score < _REVIEW_HIGH():
                 _emit_review(
                     cur, extracted_name=display_name, decision=decision,
                     chosen_id=chosen, candidate_id=best_id, candidate_name=best_name,
@@ -865,7 +874,8 @@ def sweep_supplier_duplicates(conn, min_score: float | None = None) -> dict:
     """
     import datetime as _dt
     if min_score is None:
-        min_score = float(os.getenv("SUPPLIER_SWEEP_MIN_SCORE", "88"))
+        min_score = _governed_limit("supplier_identity", "sweep_min_score",
+                                    env="SUPPLIER_SWEEP_MIN_SCORE")
     try:
         from rapidfuzz import fuzz
     except ImportError:

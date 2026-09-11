@@ -4814,11 +4814,11 @@ class EmailDraftingAgent(BaseAgent):
                         INSERT INTO proc.draft_rfq_emails
                         (rfq_id, unique_id, supplier_id, supplier_name, subject, body, created_on, sent,
                          recipient_email, contact_level, thread_index, sender, payload,
-                         workflow_id, run_id, mailbox,
+                         workflow_id, run_id, mailbox, requested_by,
                          style_user_ref, style_intent, style_mode, style_profile_id,
                          style_profile_version, style_fallback_level, style_exemplar_ids,
                          style_exemplar_set_hash)
-                        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                                 %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (workflow_id, unique_id) DO UPDATE SET
                             rfq_id = EXCLUDED.rfq_id,
@@ -4836,6 +4836,14 @@ class EmailDraftingAgent(BaseAgent):
                             workflow_id = EXCLUDED.workflow_id,
                             run_id = EXCLUDED.run_id,
                             mailbox = EXCLUDED.mailbox,
+                            -- COALESCE, not EXCLUDED: a re-store must never
+                            -- blank out who asked. _store_draft is an upsert and
+                            -- the agent paths pass nothing here, so plain
+                            -- EXCLUDED would let any later write erase the
+                            -- requester and quietly retire the self-approval bar
+                            -- for that row.
+                            requested_by = COALESCE(EXCLUDED.requested_by,
+                                                    proc.draft_rfq_emails.requested_by),
                             style_user_ref = EXCLUDED.style_user_ref,
                             style_intent = EXCLUDED.style_intent,
                             style_mode = EXCLUDED.style_mode,
@@ -4862,6 +4870,9 @@ class EmailDraftingAgent(BaseAgent):
                             workflow_id,
                             run_id,
                             mailbox_hint,
+                            # Only a person sets this; agent paths leave it None.
+                            (str(draft.get("requested_by")).strip()
+                             if draft.get("requested_by") else None),
                             style_columns["style_user_ref"],
                             style_columns["style_intent"],
                             style_columns["style_mode"],

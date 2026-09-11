@@ -1,0 +1,300 @@
+"""The ordered resolution pass.
+
+Stages run in the dependency order the spec declares (section 4.5): identity
+first, then items, then contract succession and coverage. Each stage writes its
+edges before the next reads them, because a later profile reads earlier edges as
+signals.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, List, Optional
+
+from src.services.resolution import (
+    CandidateEdge, CardinalityRule, ResolutionRequest, resolve,
+)
+from .edge_writer import DerivedEdge, write_edges
+from .observations import observation_digest
+from .profiles import supplier_identity as si
+
+log = logging.getLogger(__name__)
+
+
+def to_candidate_edges(scored: List[dict], profile_id: str) -> tuple:
+    """Pairwise verdicts as MILP input. log_odds travels; F does not.
+
+    CandidateEdge documents log_odds as "from the existing scorer, pre-sigmoid"
+    and confidence as "post-sigmoid, for reporting only". Honour that: the
+    solver reasons in log-odds.
+    """
+    return tuple(
+        CandidateEdge(
+            source_id=s["source_id"], target_id=s["target_id"],
+            log_odds=s["result"]["L"], confidence=s["result"]["P_raw"],
+            profile_id=profile_id,
+        )
+        for s in scored
+    )
+
+
+def band_for_resolution(band: str, status: Optional[str]) -> str:
+    """A near-tie is not an auto-link, however high F went.
+
+    DEGENERATE means the solver found the assignment barely forced -- another
+    answer was nearly as good. Recording that as a certainty would be the
+    precise thing this layer exists to prevent.
+    """
+    if status == "INFEASIBLE":
+        return "weak_relation"
+    if status == "DEGENERATE" and band == "auto_link":
+        return "review"
+    return band
+
+
+def run_supplier_identity(conn: Any, driver: Any, limit: Optional[int] = None) -> dict:
+    """Score supplier pairs, resolve globally, write SAME_ENTITY edges.
+
+    bp_supplier_master is keyed SI###### (the uicanvas keyspace); the graph's
+    Supplier nodes are keyed SUP-* (bp_supplier's keyspace). Those are
+    different tables with different ids for the same company, so every row
+    is bridged through bp_supplier_id_crosswalk to carry bp_supplier's id as
+    `supplier_id` -- that is the identifier this function must put on
+    source_id/target_id and therefore on the written edge, or write_edges's
+    MATCH finds no node and silently writes nothing. The master's own
+    attributes (name, VAT, etc.) still come from bp_supplier_master; only the
+    identifier is swapped for the one the graph actually uses.
+    """
+    import psycopg2.extras
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """SELECT s.supplier_id AS supplier_id, m.supplier_name, m.vat_number,
+                  m.registration_number, m.duns_number, m.postal_code,
+                  m.country, m.bank_account_number
+           FROM proc.bp_supplier_master m
+           JOIN proc.bp_supplier_id_crosswalk x
+             ON x.uicanvas_supplier_id = m.supplier_id
+           JOIN proc.bp_supplier s ON s.supplier_id = x.bp_supplier_id
+           ORDER BY m.supplier_id""" + (f" LIMIT {int(limit)}" if limit else "")
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+
+    scored = []
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            result = si.score(a, b)
+            if result["F"] < 45.0:      # block_or_exception: nothing is said
+                continue
+            scored.append({"source_id": a["supplier_id"],
+                           "target_id": b["supplier_id"],
+                           "result": result, "src": a, "tgt": b})
+
+    if not scored:
+        return {"scored": 0, "written": 0, "status": None}
+
+    request = ResolutionRequest(
+        request_id="supplier_identity",
+        edges=to_candidate_edges(scored, si.PROFILE),
+        capacities=(),
+        rules=(CardinalityRule(profile_id=si.PROFILE, shape="N:1",
+                               max_targets_per_source=1),),
+        profile_registry_version=si.VERSION,
+    )
+    outcome = resolve(request)
+    kept = {(l.source_id, l.target_id): l for l in outcome.links}
+
+    edges = []
+    for s in scored:
+        link = kept.get((s["source_id"], s["target_id"]))
+        if link is None:
+            continue
+        r = s["result"]
+        edges.append(DerivedEdge(
+            rel_type="SAME_ENTITY",
+            from_label="Supplier", from_key="supplier_id", from_value=s["source_id"],
+            to_label="Supplier", to_key="supplier_id", to_value=s["target_id"],
+            F=r["F"], band=band_for_resolution(r["decision"], outcome.status),
+            P_raw=r["P_raw"], L_evidence=r["L_evidence"], profile=si.PROFILE,
+            profile_version=si.VERSION, signals=r["signals"],
+            observations=observation_digest(
+                o for obs in si.observations_for(s["src"], s["tgt"]).values() for o in obs
+            ),
+            resolution=outcome.status, margin=link.margin_normalised,
+        ))
+
+    written = write_edges(driver, edges)
+    log.info("supplier_identity: scored=%d kept=%d written=%d status=%s",
+             len(scored), len(edges), written, outcome.status)
+    return {"scored": len(scored), "written": written, "status": outcome.status}
+
+
+def equivalence_classes(members: List[str], linked: List[tuple]) -> List[List[str]]:
+    """Transitive closure over confirmed links. Every member lands in exactly
+    one class; an unlinked member is a class of one."""
+    parent = {m: m for m in members}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in linked:
+        if a in parent and b in parent:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+
+    groups: dict = {}
+    for m in members:
+        groups.setdefault(find(m), []).append(m)
+    return list(groups.values())
+
+
+def run_item_equivalence(conn: Any, driver: Any, limit: Optional[int] = None) -> dict:
+    """Resolve line items into Items and write OF_ITEM edges.
+
+    item_equivalence is registered uncalibrated (edge_writer.UNCALIBRATED_PROFILES
+    -- spec section 9): write_edges refuses band="auto_link" for it outright, no
+    matter what F comes out of the scorer. A line that links to nothing was
+    never scored against anything, so it carries no pairwise result to report.
+
+    A member's OF_ITEM edge is written one of two ways, told apart by `basis`:
+    "scored" when the profile actually linked this line to another member of
+    the class (F/band/P_raw/L_evidence/signals are that pairwise result, and
+    that result alone -- one member's evidence is not smeared across a whole
+    class); "exact_item_id" when the line's membership comes only from
+    item_key's own exact-match rule (its item_id literally equals the class's
+    canonical item_id) with no scored link behind it at all -- in which case
+    F/band/P_raw/L_evidence/signals are left as None, not a fabricated
+    F=0.0/band="block_or_exception". A score of 0.0 would assert a
+    measurement that was never taken; edge_writer.cypher_for writes None
+    through as an absent Cypher property (and, on a rewrite, actively clears
+    any stale value a previous run left there -- see its `SET r += $props`
+    null-removes-the-property semantics), which is what "no scoring
+    occurred" actually looks like on the edge.
+    """
+    import psycopg2.extras
+    from .profiles import item_equivalence as ie
+
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """SELECT invoice_line_id, item_id, item_description, unit_of_measure,
+                  unit_price, invoice_id
+           FROM proc.bp_invoice_line_items_trgt
+           WHERE item_id IS NOT NULL
+           ORDER BY invoice_line_id""" + (f" LIMIT {int(limit)}" if limit else "")
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    by_id = {r["invoice_line_id"]: r for r in rows}
+
+    linked, scored_by_pair = [], {}
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            r = ie.score(a, b)
+            if r["F"] >= 80.0:      # auto_link_with_warning and above
+                pair = (a["invoice_line_id"], b["invoice_line_id"])
+                linked.append(pair)
+                scored_by_pair[pair] = r
+
+    classes = equivalence_classes(list(by_id), linked)
+
+    edges = []
+    for members in classes:
+        key = ie.item_key([by_id[m] for m in members])
+        with driver.session() as session:
+            session.run("MERGE (i:Item {item_key: $k})", k=key)
+        for m in members:
+            pair = next((p for p in scored_by_pair if m in p), None)
+            r = scored_by_pair.get(pair)
+            if r is None:
+                # No pairwise evidence links this line to anything else in its
+                # class -- membership here is item_key's exact-id match, not a
+                # score. Leave the score fields as None (no measurement was
+                # taken); see the docstring above and edge_writer.cypher_for.
+                F = band = P_raw = L_evidence = None
+                signals: Optional[List[dict]] = None
+                basis = "exact_item_id"
+            else:
+                F, band = r["F"], r["decision"]
+                P_raw, L_evidence = r["P_raw"], r["L_evidence"]
+                signals = r["signals"]
+                basis = "scored"
+            edges.append(DerivedEdge(
+                rel_type="OF_ITEM",
+                from_label="InvoiceLine", from_key="invoice_line_id", from_value=m,
+                to_label="Item", to_key="item_key", to_value=key,
+                F=F, band=band, P_raw=P_raw, L_evidence=L_evidence,
+                profile=ie.PROFILE, profile_version=ie.VERSION,
+                signals=signals,
+                observations=observation_digest([(m, "item_id")]),
+                resolution=None, margin=None, basis=basis,
+            ))
+
+    written = write_edges(driver, edges)
+    multi_member = sum(1 for c in classes if len(c) > 1)
+    log.info("item_equivalence: lines=%d classes=%d multi_member=%d written=%d",
+             len(rows), len(classes), multi_member, written)
+    return {"lines": len(rows), "classes": len(classes), "written": written,
+            "multi_member_classes": multi_member}
+
+
+#: Dependency order (spec section 4.5). A later profile reads earlier edges as
+#: signals, so this order is a correctness requirement, not a preference.
+PASS_ORDER = ("supplier_identity", "item_equivalence",
+              "contract_succession", "contract_coverage")
+
+#: Which edge each profile produces.
+_PRODUCES = {
+    "supplier_identity": "SAME_ENTITY",
+    "item_equivalence": "OF_ITEM",
+    "contract_succession": "SUCCEEDS",
+    "contract_coverage": "UNDER_CONTRACT",
+}
+
+
+def assert_dag_safe(profile: str, reads: List[str]) -> None:
+    """Refuse a profile that reads an edge produced at or after its own stage.
+
+    A cycle here would be evidence laundering -- a conclusion re-entering as
+    its own support -- and it would not be visible in any single score.
+    """
+    own = PASS_ORDER.index(profile)
+    for rel in reads:
+        producer = next((p for p, r in _PRODUCES.items() if r == rel), None)
+        if producer is None:
+            continue
+        if PASS_ORDER.index(producer) >= own:
+            raise ValueError(
+                f"{profile} reads {rel}, which is produced downstream by "
+                f"{producer}; that is a cycle, not corroboration"
+            )
+
+
+def run_all(conn: Any, driver: Any, limit: Optional[int] = None) -> dict:
+    """Run every stage in dependency order, then size the review band."""
+    out = {}
+    out["supplier_identity"] = run_supplier_identity(conn, driver, limit)
+    out["item_equivalence"] = run_item_equivalence(conn, driver, limit)
+    out["review_backlog"] = review_backlog(driver)
+    return out
+
+
+def review_backlog(driver: Any) -> dict:
+    """How many edges landed in the review band, and therefore need a person.
+
+    bp_supplier_review already holds 727 pending rows that nobody has reviewed.
+    Reporting this number is how the choice to leave it unactioned stays a
+    choice rather than an accident.
+    """
+    counts = {}
+    try:
+        with driver.session() as session:
+            for rel in _PRODUCES.values():
+                r = session.run(
+                    f"MATCH ()-[e:{rel}]->() WHERE e.band = 'review' "
+                    f"RETURN count(e) AS c"
+                ).single()
+                counts[rel] = (r or {}).get("c", 0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("review_backlog unavailable: %s", exc)
+    return counts

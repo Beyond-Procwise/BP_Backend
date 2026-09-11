@@ -384,3 +384,23 @@ def test_the_default_lane_is_shared_so_concurrency_is_opt_in(monkeypatch):
     assert scheduler._jobs["a"].lane == scheduler._jobs["b"].lane
     scheduler.stop()
     backend_scheduler.BackendScheduler._instance = None
+
+
+# The graph-resolution chain opens a database connection and a Neo4j driver, so
+# a scheduler built with object.__new__ carries none of what the body needs: if
+# either gate stops holding, these fail loudly instead of running the pass.
+_CHANGED = {"forward_linked": 3}
+
+
+def test_graph_resolution_does_not_run_when_no_deal_changed(monkeypatch):
+    monkeypatch.setenv("GRAPH_RESOLUTION_ENABLED", "1")
+    scheduler = object.__new__(backend_scheduler.BackendScheduler)
+
+    assert scheduler._chain_graph_resolution({"forward_linked": 0}) is None
+
+
+def test_graph_resolution_can_be_switched_off(monkeypatch):
+    monkeypatch.setenv("GRAPH_RESOLUTION_ENABLED", "0")
+    scheduler = object.__new__(backend_scheduler.BackendScheduler)
+
+    assert scheduler._chain_graph_resolution(_CHANGED) is None

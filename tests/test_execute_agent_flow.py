@@ -12,6 +12,22 @@ from agents.base_agent import AgentContext, AgentOutput, AgentStatus
 from services.process_routing_service import ProcessRoutingService
 
 
+# A workflow whose governance the orchestrator cannot read is now blocked rather
+# than run ungoverned (P6). These tests are about workflow mechanics and have no
+# governance database behind them, so their fake policy engine has to answer the
+# question one way or the other -- and answers it the supported way, by naming
+# the workflows as exempt, rather than by having a failure ignored.
+_TEST_WORKFLOWS = [
+    "supplier_ranking", "quote_evaluation", "opportunity_mining",
+    "document_extraction", "negotiation", "supplier_interaction",
+    "requirements_to_ranking",
+]
+
+
+def _governance_exemption(slug=None):
+    return {"details": {"rules": {"ungoverned_workflows": list(_TEST_WORKFLOWS)}}}
+
+
 class EchoAgent:
     def execute(self, context):
         return AgentOutput(status=AgentStatus.SUCCESS, data={"result": context.input_data.get("number")})
@@ -406,6 +422,8 @@ def test_ranking_workflow_runs_full_supplier_flow():
         def validate_workflow(self, *args, **kwargs):
             return {"allowed": True}
 
+        get_policy = staticmethod(_governance_exemption)
+
     class StubQueryEngine:
         def fetch_supplier_data(self, *_):
             return [{"supplier_id": "S1"}, {"supplier_id": "S2"}]
@@ -585,6 +603,8 @@ def test_supplier_ranking_flow_applies_agent_prompts_and_policies():
     class AllowAllPolicy:
         def validate_workflow(self, *_, **__):  # pragma: no cover - simple stub
             return {"allowed": True}
+
+        get_policy = staticmethod(_governance_exemption)
 
     class StubQueryEngine:
         def fetch_supplier_data(self, *_):  # pragma: no cover - simple stub
@@ -934,7 +954,8 @@ def test_execute_workflow_promotes_falsy_workflow_value():
             )
 
     policy_engine = SimpleNamespace(
-        validate_workflow=lambda *args, **kwargs: {"allowed": True}
+        validate_workflow=lambda *args, **kwargs: {"allowed": True},
+        get_policy=_governance_exemption,
     )
     nick = SimpleNamespace(
         settings=SimpleNamespace(script_user="tester", max_workers=1),

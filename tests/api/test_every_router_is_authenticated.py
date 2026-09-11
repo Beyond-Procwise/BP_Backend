@@ -37,7 +37,15 @@ _PUBLIC: dict[str, str] = {
 }
 
 # A browser cannot set headers on a WebSocket upgrade, so ws.py authenticates on
-# a token= query parameter instead. Excluded by protocol, not by exemption.
+# a token= query parameter instead. Excluded from THIS test by protocol — an
+# HTTP request to a WebSocket route says nothing about who may open one — not by
+# exemption from authentication.
+#
+# When this note was written it was an assumption, and the assumption was wrong:
+# ws.py verified nothing at all. It is now covered by its own suite,
+# tests/api/test_ws_authentication.py, which connects as the protocol actually
+# does. If a second WebSocket route is ever added, it belongs in that suite —
+# this exclusion is not a place to put one.
 _WEBSOCKET_PREFIX = "/ws/"
 
 # Returned when the caller is not identified. 403 is included because a

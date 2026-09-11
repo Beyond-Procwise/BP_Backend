@@ -1,10 +1,25 @@
-"""AgentNick supplier research: agentic web tool-use loop → grounded enrichment.
+"""AgentNick supplier research: agentic web tool-use loop → grounded proposal.
 
 AgentNick (local, via Ollama tool-calling) drives the research; the backend
 executes the web_search/fetch_url tools. Every reported fact must cite a source
 URL that the tools actually returned — uncited facts are DROPPED (anti-
-hallucination). Only EMPTY, non-sensitive bp_supplier fields are auto-filled;
-conflicts stay pending for review. Nothing is ever overwritten or fabricated.
+hallucination).
+
+PROPOSE-ONLY (A19.39). Research writes nothing to ``proc.bp_supplier``. It
+records a grounded proposal in ``proc.bp_supplier_enrichment`` and leaves it
+pending; ``apply_enrichment`` — a person, through the review queue — is the only
+path that touches the supplier master.
+
+It used to auto-apply, on two numbers: the model's self-reported confidence
+clearing 0.75, and a fuzzy name match clearing 85. The first is the model
+marking its own homework and the second is a similarity score, so between them a
+web page could edit the supplier master with nobody in the loop. Both numbers
+are still computed and still carried — as evidence a reviewer sees — they simply
+no longer decide anything on their own.
+
+What has NOT changed, and must not: bank, tax, VAT, registration and credit
+fields are never researched, never grounded and never proposed (``_SENSITIVE``,
+and the system prompt tells the model not to report them).
 """
 from __future__ import annotations
 
@@ -15,6 +30,8 @@ import re
 import unicodedata
 from urllib.parse import urlparse
 
+from src.services.governed_limits import limit as _governed_limit
+
 from src.services import egress
 
 from src.services.supplier_enrichment.web_tools import fetch_url, web_search
@@ -23,13 +40,45 @@ log = logging.getLogger(__name__)
 
 _OLLAMA_CHAT = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
 _MODEL = os.getenv("SUPPLIER_RESEARCH_MODEL", "BeyondProcwise/AgentNick:unified")
-_MAX_ROUNDS = int(os.getenv("SUPPLIER_RESEARCH_MAX_ROUNDS", "4"))
-_APPLY_CONF = float(os.getenv("SUPPLIER_RESEARCH_APPLY_CONF", "0.75"))
-# Entity-match gate: fact-confidence is NOT entity-match. The official name the
-# model found must fuzzy-match the supplier name before we auto-apply, so we
-# never fill Supplier A's record with a same-industry different company's data.
-# Below this, the enrichment stays PENDING for human review.
-_APPLY_NAME_MATCH = float(os.getenv("SUPPLIER_RESEARCH_NAME_MATCH", "85"))
+def _MAX_ROUNDS() -> int:
+    """AgentReachPolicy (P9): how many tool rounds one research run may take."""
+    return _governed_limit("agent_reach", "supplier_research_max_rounds",
+                           env="SUPPLIER_RESEARCH_MAX_ROUNDS", cast=int)
+def _PROPOSE_CONF() -> float:
+    """Confidence at which a researched fact is worth putting in front of a person.
+
+    This was SUPPLIER_RESEARCH_APPLY_CONF, and it decided what got written to the
+    supplier master. Nothing is auto-written any more (P5), so the number was
+    either retired or repurposed; it is repurposed, as the threshold to PROPOSE.
+    Retiring it would have meant every grounded fact reaching the queue, and a
+    reviewer approves a record as a whole — so a fact the model itself rated 0.1
+    would ride into the supplier master on the back of a good one.
+
+    It lives in SupplierIdentityPolicy now (P9). Two deprecated environment
+    spellings still override it for one release, newest first, each saying so.
+    """
+    for name in ("SUPPLIER_RESEARCH_PROPOSE_CONF", "SUPPLIER_RESEARCH_APPLY_CONF"):
+        if os.getenv(name):
+            if name.endswith("APPLY_CONF"):
+                log.warning(
+                    "SUPPLIER_RESEARCH_APPLY_CONF is deprecated twice over: "
+                    "nothing is auto-applied any more, and the limit is policy. "
+                    "Reading it as the propose threshold.")
+            return _governed_limit("supplier_identity", "research_propose_conf",
+                                   env=name)
+    return _governed_limit("supplier_identity", "research_propose_conf")
+# Entity match: fact-confidence is NOT entity-match. A well-cited, high-confidence
+# fact about a DIFFERENT company of the same name looks identical to a good one,
+# so the official name the model reports is scored against the supplier's.
+#
+# This used to be the gate that decided whether to auto-apply. It decides nothing
+# now — a mismatch is exactly the thing a reviewer should see and reject, so a
+# low score is proposed like any other, carrying its score. It survives as the
+# flag on the record: `entity_confirmed`.
+def _ENTITY_MATCH_FLOOR() -> float:
+    """SupplierIdentityPolicy (P9)."""
+    return _governed_limit("supplier_identity", "research_name_match",
+                           env="SUPPLIER_RESEARCH_NAME_MATCH")
 
 # bp_supplier columns we will auto-fill (descriptive, low-harm). business_summary
 # is researched but kept in the sidecar only (no column).
@@ -111,7 +160,7 @@ def _run_loop(supplier_name: str) -> tuple[str, dict[str, str]]:
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": f"Research this supplier and return the JSON: {supplier_name}"},
     ]
-    for _ in range(_MAX_ROUNDS):
+    for _ in range(_MAX_ROUNDS()):
         msg = _chat(messages)
         messages.append(msg)
         tool_calls = msg.get("tool_calls") or []
@@ -317,8 +366,20 @@ def _col_limits(cur) -> dict:
     return {name: lim for name, lim in cur.fetchall() if lim}
 
 
-def _apply(cur, supplier_id: str, fields: dict) -> dict:
-    """Fill only EMPTY, non-sensitive columns. Returns applied {col:{value,source_url}}."""
+def fillable(cur, supplier_id: str, fields: dict) -> dict:
+    """Which columns this enrichment could fill. Decides; never writes.
+
+    THE one rule set. It is what a proposal is, what the review queue offers,
+    and what an approval applies — because a queue that promises a fill it will
+    not perform is worse than no queue, and two copies of these rules would
+    drift into exactly that.
+
+    A column qualifies when it is non-sensitive, currently EMPTY (nothing is
+    ever overwritten), content-verified against the page it cites, confident
+    enough to be worth a person's attention, and short enough for the column.
+
+    Returns {col: {value, source_url}}.
+    """
     limits = _col_limits(cur)
     cur.execute(
         "SELECT " + ", ".join(_APPLY_COLUMNS) + " FROM proc.bp_supplier WHERE supplier_id = %s",
@@ -326,12 +387,12 @@ def _apply(cur, supplier_id: str, fields: dict) -> dict:
     )
     row = cur.fetchone()
     current = dict(zip(_APPLY_COLUMNS, row)) if row else {}
-    applied: dict = {}
+    out: dict = {}
     for col in _APPLY_COLUMNS:
         if col in _SENSITIVE:
             continue
         f = fields.get(col)
-        if not f or float(f.get("confidence") or 0.0) < _APPLY_CONF:
+        if not f or float(f.get("confidence") or 0.0) < _PROPOSE_CONF():
             continue
         # Only content-verified facts are ever written. Today the unverified entries are
         # prose, which has no column here — this makes that a rule rather than a coincidence
@@ -356,14 +417,28 @@ def _apply(cur, supplier_id: str, fields: dict) -> dict:
                 log.info("skipping %s for %s: %d chars exceeds column limit %d",
                          col, supplier_id, len(val), lim)
                 continue
-            cur.execute(
-                f"UPDATE proc.bp_supplier SET {col} = %s, last_modified_by = 'agentnick_web', "
-                "last_modified_date = now() WHERE supplier_id = %s",
-                (val, supplier_id),
-            )
-            applied[col] = {"value": f["value"], "source_url": f.get("source_url")}
-        # else: differs from an existing value → leave pending for human review
-    return applied
+            out[col] = {"value": f["value"], "source_url": f.get("source_url")}
+        # else: differs from an existing value → the reviewer decides, not us
+    return out
+
+
+def _apply(cur, supplier_id: str, fields: dict, reviewer: str) -> dict:
+    """Write the fillable columns. The ONLY path that touches bp_supplier.
+
+    Reached from ``apply_enrichment`` and nowhere else — research does not call
+    this, which is the whole of P5. ``reviewer`` is required rather than
+    defaulted precisely so a future caller cannot write anonymously: the column
+    used to be stamped 'agentnick_web' unconditionally, and now that no agent
+    writes here that string would be false on every row.
+    """
+    proposed = fillable(cur, supplier_id, fields)
+    for col, entry in proposed.items():
+        cur.execute(
+            f"UPDATE proc.bp_supplier SET {col} = %s, last_modified_by = %s, "
+            "last_modified_date = now() WHERE supplier_id = %s",
+            (str(entry["value"])[:500], reviewer, supplier_id),
+        )
+    return proposed
 
 
 def research_and_enrich(supplier_id: str, conn) -> dict:
@@ -385,18 +460,21 @@ def research_and_enrich(supplier_id: str, conn) -> dict:
     confs = [f["confidence"] for f in fields.values() if f.get("verified")]
     overall = round(sum(confs) / len(confs), 3) if confs else 0.0
 
-    # Entity-match gate: only auto-apply if the found company name matches the
-    # supplier name. Otherwise keep everything pending for human review.
+    # Entity match, as evidence for the reviewer. A well-cited, confident fact
+    # about a DIFFERENT company of the same name is indistinguishable from a good
+    # one without this, so it is still computed and still shown — it just no
+    # longer decides anything, because nothing here decides any more.
     from rapidfuzz import fuzz
     from src.services.extraction_v3.supplier_resolver import _strip_biz_suffix
     name_match = 0.0
     if matched_name and matched_name.strip().lower() != "unknown":
         name_match = float(fuzz.WRatio(_strip_biz_suffix(supplier_name) or supplier_name,
                                        _strip_biz_suffix(matched_name) or matched_name))
-    entity_ok = name_match >= _APPLY_NAME_MATCH
+    entity_ok = name_match >= _ENTITY_MATCH_FLOOR()
 
     with conn.cursor() as cur:
-        applied = _apply(cur, supplier_id, fields) if entity_ok else {}
+        # What a person would be approving. Computed, recorded, NOT written.
+        proposed = fillable(cur, supplier_id, fields)
         cur.execute(
             "INSERT INTO proc.bp_supplier_enrichment "
             "(supplier_id, model, fields, citations, confidence, raw, apply_status, applied_fields) "
@@ -404,22 +482,29 @@ def research_and_enrich(supplier_id: str, conn) -> dict:
             (supplier_id, _MODEL, json.dumps(fields), json.dumps(sorted(seen)), overall,
              json.dumps({"content": content[:4000], "matched_name": matched_name,
                          "name_match": name_match}),
-             "applied" if applied else "pending", json.dumps(applied)),
+             "pending", json.dumps({})),
         )
         eid = cur.fetchone()[0]
     conn.commit()
-    log.info("supplier research %s: matched=%r name_match=%.0f, %d cited fields, %d auto-applied (enrichment %d)",
-             supplier_id, matched_name, name_match, len(fields), len(applied), eid)
+    log.info("supplier research %s: matched=%r name_match=%.0f, %d cited fields, "
+             "%d proposed for review, 0 written (enrichment %d)",
+             supplier_id, matched_name, name_match, len(fields), len(proposed), eid)
     return {"enrichment_id": eid, "supplier_id": supplier_id, "supplier_name": supplier_name,
             "matched_name": matched_name, "name_match": name_match, "entity_confirmed": entity_ok,
-            "fields": fields, "applied": applied, "confidence": overall, "citations": sorted(seen)}
+            "fields": fields, "proposed": proposed,
+            # Kept and always empty: callers read this key, and an absent key
+            # would read as "unknown" where the answer is "nothing, by design".
+            "applied": {},
+            "confidence": overall, "citations": sorted(seen)}
 
 
 def apply_enrichment(enrichment_id: int, reviewer: str, conn) -> dict:
-    """Human-approve a pending enrichment: apply its cited facts to EMPTY, non-
-    sensitive supplier columns (the reviewer is the entity confirmation, so this
-    bypasses the auto name-match gate — but still never overwrites and never
-    touches sensitive fields)."""
+    """Human-approve a pending enrichment: the only write path to bp_supplier.
+
+    The reviewer IS the entity confirmation — that is what a person is for here —
+    so no name-match score is consulted. Everything else still holds: empty
+    columns only, never an overwrite, never a sensitive field.
+    """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT supplier_id, fields, apply_status FROM proc.bp_supplier_enrichment "
@@ -434,7 +519,7 @@ def apply_enrichment(enrichment_id: int, reviewer: str, conn) -> dict:
             raise ValueError("enrichment was rejected")
         if isinstance(fields, str):
             fields = json.loads(fields or "{}")
-        applied = _apply(cur, supplier_id, fields or {})
+        applied = _apply(cur, supplier_id, fields or {}, reviewer)
         cur.execute(
             "UPDATE proc.bp_supplier_enrichment SET apply_status='applied', applied_fields=%s::jsonb, "
             "reviewed_by=%s, reviewed_date=now() WHERE enrichment_id=%s",

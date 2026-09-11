@@ -73,7 +73,7 @@ def test_suggest_agent_signal_adds_bounded_next_step():
     assert target.ran == 1
 
 
-def test_dynamic_additions_are_capped():
+def test_dynamic_additions_are_capped(monkeypatch):
     # one source that re-suggests every time it runs would loop; the cap stops it.
     src = _SignallingAgent(suggest="target")
     # 'target' itself also suggests another agent each run
@@ -84,7 +84,20 @@ def test_dynamic_additions_are_capped():
     agents = {"src": src, "target": target, "target2": target2,
               "target3": target3, "target4": target4}
     orch = Orchestrator(_nick(agents))
-    orch.MAX_DYNAMIC_AGENTS = 2  # only 2 dynamic additions allowed
+
+    # The cap is AgentReachPolicy now (P9), not an attribute a caller can raise
+    # on the instance -- which is the point of moving it. The test states the
+    # governed value the same way the product reads one.
+    from src.services import governed_limits
+
+    class _Reach:
+        def get_policy(self, slug):
+            if slug != "agent_reach":
+                return None
+            return {"details": {"rules": {"max_dynamic_agents": 2}}}
+
+    governed_limits.reset_cache()
+    monkeypatch.setattr(governed_limits, "_engine", lambda: _Reach())
 
     results = orch._execute_sequential_agents(["src"], _ctx(orch), {})
 

@@ -31,6 +31,13 @@ from services.process_routing_service import ProcessRoutingService
 from services.backend_scheduler import BackendScheduler
 from services.event_bus import get_event_bus, workflow_scope
 from services.agent_manifest import AgentManifestService
+from src.services.governed_limits import limit as _governed_limit
+# Imported by its `src.`-prefixed name, matching every other governance_tools
+# import in this file. Both names resolve, but to two DIFFERENT module objects
+# and therefore two different exception classes -- so an `except` on one silently
+# fails to catch the other, and a governance block arrives as an anonymous
+# workflow crash. Change one of these and you must change the other.
+from src.services.governance_tools.envelope import GovernanceUnavailable
 from services.supplier_response_workflow import SupplierResponseWorkflow
 from utils.gpu import configure_gpu
 from services.redis_client import get_workflow_redis_client
@@ -108,7 +115,13 @@ class Orchestrator:
     # Bounded signal-driven feedback: at most this many SUGGEST_AGENT additions
     # per sequential chain, so a misbehaving agent can never expand a workflow
     # without limit.
-    MAX_DYNAMIC_AGENTS: int = int(os.getenv("MAX_DYNAMIC_AGENTS", "3"))
+    # AgentReachPolicy (P9). A property rather than a class attribute: the value
+    # is resolved when it is used, so a missing limit refuses instead of being
+    # baked in at import from a number the code carried.
+    @property
+    def MAX_DYNAMIC_AGENTS(self) -> int:
+        return _governed_limit("agent_reach", "max_dynamic_agents",
+                               env="MAX_DYNAMIC_AGENTS", cast=int)
 
     def __init__(self, agent_nick, *, training_endpoint=None):
         # Ensure GPU environment is initialised before any agent execution.
@@ -290,42 +303,113 @@ class Orchestrator:
         """Backward compatible alias for :meth:`execute_extraction_flow`."""
         return self.execute_extraction_flow(s3_prefix, s3_object_key, **kwargs)
 
+    #: Policy naming the workflows that may run with no governance envelope.
+    #: Read by identifier, deliberately WITHOUT an ``applies_to``: that field is
+    #: how ``guardrail.authorize`` selects policies, and this row is
+    #: configuration the orchestrator reads by name, not an authority statement
+    #: the gate should weigh (P7 draws exactly this line).
+    _GOVERNANCE_POLICY = "workflow_governance"
+
+    def _workflows_exempt_from_governance(self) -> frozenset:
+        """Workflow names policy says may run without a governance envelope.
+
+        This was a hardcoded ``if workflow_name == "document_extraction"``. The
+        exemption is a governance decision, so it belongs where the other
+        governance decisions are — visible, versioned and attributable, rather
+        than discoverable only by reading the orchestrator.
+
+        A missing policy exempts NOTHING. An exemption that was never written
+        down does not exist.
+        """
+        policy = self.policy_engine.get_policy(self._GOVERNANCE_POLICY)
+        if not policy:
+            logger.warning(
+                "no %s policy: no workflow is exempt from governance resolution",
+                self._GOVERNANCE_POLICY,
+            )
+            return frozenset()
+        rules = (policy.get("details") or {}).get("rules") or {}
+        names = rules.get("ungoverned_workflows") or []
+        if isinstance(names, str):
+            names = [names]
+        return frozenset(str(n).strip() for n in names if str(n).strip())
+
     def _apply_governance_envelope(self, workflow_name, context, enriched_input):
         """Resolve + inject the governed policy/prompt for an agentic workflow.
 
-        Deterministic (no LLM). Excludes document_extraction (must stay
-        deterministic). Flag-gated (WORKFLOW_GOVERNANCE_ENABLED) and fail-open —
-        any error → return None and the workflow runs exactly as before.
+        Deterministic (no LLM). FAIL-CLOSED: if the governance cannot be read,
+        this raises and the workflow does not run. It used to return None and
+        let the workflow run exactly as before, which meant a governance outage
+        was indistinguishable from governance being satisfied — the one thing a
+        control must never be.
+
+        Three outcomes, kept apart on purpose:
+
+          * exempt   — policy names this workflow as one that runs without an
+                       envelope (document_extraction, which must stay
+                       deterministic). Returns None.
+          * resolved — an envelope. Injected if it governs anything; if it
+                       governs nothing, the workflow runs and the log says so,
+                       because "nothing governs this" is an answer, not a
+                       failure, and three live workflows are in that state.
+          * failed   — GovernanceUnavailable. The caller stops the workflow.
         """
-        import os
-        if os.getenv("WORKFLOW_GOVERNANCE_ENABLED", "1") in ("0", "false", "False"):
-            return None
-        if workflow_name == "document_extraction":
-            return None
+        from src.services.governance_tools.envelope import (
+            GovernanceUnavailable,
+            resolve_governance,
+        )
+
         try:
-            from src.services.governance_tools.envelope import resolve_governance
-            env = resolve_governance(workflow_name)
-            if not env or (not env.get("policies") and not env.get("prompts")):
-                return None
-            if isinstance(enriched_input, dict):
-                enriched_input["governed"] = env
-            try:
-                context.input_data["governed"] = env
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                from src.services.agent_actions import record_action
-                record_action(phase="governance", action_type="governance_applied",
-                              agent=env.get("agent"),
-                              summary=f"governance envelope for {workflow_name}", details=env)
-            except Exception:  # noqa: BLE001
-                pass
-            logger.info("governance envelope applied for %s: %d policies, %d prompts",
-                        workflow_name, len(env.get("policies", [])), len(env.get("prompts", [])))
-            return env
-        except Exception:  # noqa: BLE001 - fail open
-            logger.debug("governance envelope failed for %s", workflow_name, exc_info=True)
+            exempt = self._workflows_exempt_from_governance()
+        except Exception as exc:  # noqa: BLE001 - unreadable policy is not consent
+            raise GovernanceUnavailable(
+                f"could not read the {self._GOVERNANCE_POLICY} policy: {exc}"
+            ) from exc
+
+        if workflow_name in exempt:
+            logger.info("governance: %s is exempt by %s policy — no envelope",
+                        workflow_name, self._GOVERNANCE_POLICY)
             return None
+
+        try:
+            env = resolve_governance(workflow_name)
+        except GovernanceUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Any other exception out of the resolver still means the governance
+            # is unknown. Classifying that here rather than trusting the
+            # resolver to raise the right type keeps "we don't know what governs
+            # this" from arriving as an anonymous workflow crash.
+            raise GovernanceUnavailable(
+                f"governance resolution for {workflow_name} failed: {exc}"
+            ) from exc
+
+        if not env or (not env.get("policies") and not env.get("prompts")):
+            # Resolved, and nothing governs it. Said out loud rather than
+            # returned silently: an ungoverned workflow should be visible in
+            # the log of the run that was ungoverned.
+            logger.warning(
+                "governance: %s ran ungoverned — no active policy or prompt is "
+                "linked to it", workflow_name,
+            )
+            return None
+
+        if isinstance(enriched_input, dict):
+            enriched_input["governed"] = env
+        try:
+            context.input_data["governed"] = env
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from src.services.agent_actions import record_action
+            record_action(phase="governance", action_type="governance_applied",
+                          agent=env.get("agent"),
+                          summary=f"governance envelope for {workflow_name}", details=env)
+        except Exception:  # noqa: BLE001
+            pass
+        logger.info("governance envelope applied for %s: %d policies, %d prompts",
+                    workflow_name, len(env.get("policies", [])), len(env.get("prompts", [])))
+        return env
 
     # Workflows whose agents can put mail in front of a supplier. Extraction is
     # excluded for the same reason the governance envelope excludes it: it must
@@ -427,8 +511,9 @@ class Orchestrator:
             context.apply_manifest(manifest)
 
             # --- Governance envelope: resolve + inject the governed policy/prompt
-            # for agentic workflows (deterministic; extraction excluded; flag-gated;
-            # fail-open). Additive — agents unaffected unless they read `governed`.
+            # for agentic workflows (deterministic; exemptions read from policy).
+            # FAIL-CLOSED: a resolution failure raises GovernanceUnavailable and
+            # is caught below as a block, not run ungoverned.
             governance_applied = self._apply_governance_envelope(
                 workflow_name, context, enriched_input)
 
@@ -552,6 +637,30 @@ class Orchestrator:
                 "workflow_id": workflow_id,
                 "result": result,
                 "execution_path": context.routing_history,
+            }
+
+        except GovernanceUnavailable as exc:
+            # Not a crash and not a completion: the governance that was supposed
+            # to shape this run could not be read, so the run does not happen.
+            # Kept ahead of the generic handler so it cannot be reported as a
+            # workflow failure -- "blocked" is reviewable, "failed" is noise.
+            logger.error("Workflow %s (%s) blocked: %s", workflow_id, workflow_name, exc)
+            evidence = str(exc)
+            try:
+                from src.services.agent_actions import record_action
+                record_action(
+                    phase="governance", action_type="governance_blocked",
+                    agent=workflow_name, status="blocked",
+                    summary=f"{workflow_name} blocked: governance could not be resolved",
+                    details={"workflow_id": workflow_id, "error": evidence},
+                )
+            except Exception:  # noqa: BLE001 - the block stands either way
+                logger.debug("could not record the governance block", exc_info=True)
+            return {
+                "status": "blocked",
+                "reason": "governance could not be resolved",
+                "evidence": evidence,
+                "workflow_id": workflow_id,
             }
 
         except Exception as e:

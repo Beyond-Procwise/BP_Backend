@@ -36,6 +36,79 @@ router = APIRouter(prefix="/document", tags=["Documents"])
 DEFAULT_S3_BUCKET_NAME = "procwisemvp"
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".pptx", ".txt"}
 
+# The content type a caller DECLARES for each extension it is allowed to carry.
+#
+# Read this for what it is: a declaration, not evidence. It catches a mismatch --
+# a .pdf announced as text/html -- and it cannot catch a lie, because a caller
+# who wants past it simply declares the right string. The empty and
+# octet-stream cases are admitted because browsers and curl genuinely send them
+# for files they cannot classify, and refusing those would break ordinary
+# uploads to close nothing. Proving a file is what it claims means reading its
+# leading bytes, which this deliberately does not do.
+_DECLARED_TYPES_BY_SUFFIX = {
+    ".pdf": {"application/pdf"},
+    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/msword"},
+    ".pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              "application/vnd.ms-powerpoint"},
+    ".txt": {"text/plain", "text/markdown", "text/csv"},
+}
+_UNDECLARED_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
+
+_INTAKE_POLICY_SLUG = "document_intake_authority"
+
+
+def _intake_policy() -> Optional[Dict[str, Any]]:
+    """The DocumentIntakeAuthorityPolicy row, or None if it cannot be read."""
+
+    try:
+        from src.services import rbac
+
+        engine = rbac.policy_engine()
+        policy = engine.get_policy(_INTAKE_POLICY_SLUG) if engine else None
+    except Exception as exc:  # noqa: BLE001 - the caller refuses either way
+        logger.error("documents: could not read %s: %s", _INTAKE_POLICY_SLUG, exc)
+        return None
+    return policy if isinstance(policy, dict) else None
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _intake_limits() -> Tuple[int, int]:
+    """(files per request, bytes per file) from policy. Refuses if unset.
+
+    These are governance limits on what may enter the product, so they live in
+    bp_policy beside the rule about who may put it there -- not in a constant
+    and not in an environment variable, either of which changes what the product
+    accepts with nothing versioned and nobody asked.
+
+    A missing or unusable value REFUSES. An unconfigured cap is not an unlimited
+    one, and a deployment that has not run the migration should notice by being
+    unable to upload rather than by being unable to stop an upload.
+    """
+
+    rules = ((_intake_policy() or {}).get("details") or {}).get("rules") or {}
+    max_files = _positive_int(rules.get("max_files_per_request"))
+    max_bytes = _positive_int(rules.get("max_bytes_per_file"))
+    if not max_files or not max_bytes:
+        logger.error(
+            "documents: %s does not state usable intake limits "
+            "(max_files_per_request=%r, max_bytes_per_file=%r) — refusing uploads",
+            _INTAKE_POLICY_SLUG, rules.get("max_files_per_request"),
+            rules.get("max_bytes_per_file"),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="document intake limits are not configured, so no upload is accepted",
+        )
+    return max_files, max_bytes
+
 
 def get_agent_nick(request: Request):
     agent_nick = getattr(request.app.state, "agent_nick", None)
@@ -362,6 +435,14 @@ async def embed_documents(
     if not files:
         raise HTTPException(status_code=400, detail="At least one document must be provided")
 
+    max_files, max_bytes = _intake_limits()
+    if len(files) > max_files:
+        raise HTTPException(
+            status_code=413,
+            detail=(f"{len(files)} files in one request exceeds the limit of "
+                    f"{max_files}"),
+        )
+
     def _clean(value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
@@ -374,11 +455,27 @@ async def embed_documents(
     header_session = _clean(request.headers.get("x-session-id"))
     query_user = _clean(request.query_params.get("user_id"))
 
-    resolved_user: Optional[str] = None
+    # WHO OWNS THIS UPLOAD is the token and nothing else. The three fields below
+    # -- a Form value, an x-user-id header, a query parameter -- are all things
+    # the caller types, and they used to BE the owner, so an upload could be
+    # filed under anybody's name by asking.
+    #
+    # They are still accepted, because they carry something a person meant
+    # ("finance-team"), and something a person meant is worth keeping. It is
+    # kept as `uploaded_by_label`, and nothing reads it as identity.
+    owner = _clean(getattr(principal, "subject", None))
+    caller_label: Optional[str] = None
     for candidate in (_clean(user_id), header_user, query_user):
         if candidate:
-            resolved_user = candidate
+            caller_label = candidate
             break
+
+    # Retrieval scope, NOT identity: RAGService.search narrows the uploaded
+    # collection on this token, and it is not an authorisation boundary (any
+    # caller may pass any session id). The caller's own label stays ahead of the
+    # subject here on purpose -- changing the token would orphan documents an
+    # existing session already scoped by it.
+    session_scope = header_session or caller_label or owner
 
     rag_service = pipeline.rag
     collection_name = getattr(rag_service, "uploaded_collection", "uploaded_documents")
@@ -415,8 +512,38 @@ async def embed_documents(
             )
             continue
 
+        declared = (upload.content_type or "").strip().lower()
+        if declared not in _UNDECLARED_TYPES and declared not in _DECLARED_TYPES_BY_SUFFIX[suffix]:
+            failures.append(
+                DocumentEmbeddingError(
+                    filename=filename,
+                    reason=(
+                        f"Declared content type '{declared}' does not match "
+                        f"'{suffix}'."
+                    ),
+                )
+            )
+            continue
+
         try:
-            data = await upload.read()
+            # Bounded: one byte past the cap is enough to know it is over, and
+            # stops this handler holding an arbitrarily large file in memory.
+            #
+            # It does NOT mean the bytes were not received. FastAPI has already
+            # parsed the multipart body by the time this function runs, so the
+            # upload has been read and spooled before anything here can object.
+            # A bound that actually refuses early belongs in middleware or at
+            # the ingress; this one refuses the file, not the transfer.
+            data = await upload.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                failures.append(
+                    DocumentEmbeddingError(
+                        filename=filename,
+                        reason=(f"File exceeds the {max_bytes} byte limit for a "
+                                f"single document."),
+                    )
+                )
+                continue
         except Exception as exc:
             failures.append(
                 DocumentEmbeddingError(
@@ -439,8 +566,11 @@ async def embed_documents(
             "mime_type": upload.content_type or "",
             "ingestion_source": "document_embed_endpoint",
         }
-        if resolved_user:
-            metadata["uploaded_by"] = resolved_user
+        if owner:
+            metadata["uploaded_by"] = owner
+        if caller_label:
+            # Named so it cannot be mistaken for the line above.
+            metadata["uploaded_by_label"] = caller_label
 
         # RAGService.search() narrows the uploaded collection with a
         # FieldCondition(key="session_id") whenever a session is in play. Without
@@ -448,7 +578,6 @@ async def embed_documents(
         # is embedded successfully and then never retrieved -- the answer falls
         # back to "couldn't find that information". Must match the token passed
         # to activate_uploaded_context() below.
-        session_scope = header_session or resolved_user
         if session_scope:
             metadata["session_id"] = session_scope
 
@@ -494,14 +623,16 @@ async def embed_documents(
         ],
         "total_chunks": total_chunks,
     }
-    if resolved_user:
-        upload_metadata["uploaded_by"] = resolved_user
+    if owner:
+        upload_metadata["uploaded_by"] = owner
+    if caller_label:
+        upload_metadata["uploaded_by_label"] = caller_label
 
     try:
         pipeline.activate_uploaded_context(
             uploaded_document_ids,
             metadata=upload_metadata,
-            session_id=header_session or resolved_user,
+            session_id=session_scope,
         )
     except AttributeError:
         logger.debug(

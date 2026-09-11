@@ -557,8 +557,8 @@ def test_the_floor_sits_in_the_gap_between_true_and_wrong_pairs():
     """The constant is not a guess and not a borrowed one. It fails if either
     population is ever measured onto it."""
     assert _WRONG_PAIR_MAX < _TRUE_PAIR_MIN          # the populations do not overlap
-    assert lp.PROPOSAL_MIN_SCORE > _WRONG_PAIR_MAX   # admits no wrong pair
-    assert lp.PROPOSAL_MIN_SCORE < _TRUE_PAIR_P05    # keeps all but the weakest true ones
+    assert lp.PROPOSAL_MIN_SCORE() > _WRONG_PAIR_MAX   # admits no wrong pair
+    assert lp.PROPOSAL_MIN_SCORE() < _TRUE_PAIR_P05    # keeps all but the weakest true ones
 
 
 def test_the_promotion_review_floor_would_have_proposed_nothing():
@@ -572,8 +572,8 @@ def test_the_promotion_review_floor_would_have_proposed_nothing():
     'the bar is unreachable'."""
     from src.services.linking_engine import MIN_LINK_SCORE, REVIEW_MIN
 
-    assert REVIEW_MIN > _TRUE_PAIR_MAX
-    assert MIN_LINK_SCORE > _TRUE_PAIR_MAX   # and a proposal can never auto-promote
+    assert REVIEW_MIN() > _TRUE_PAIR_MAX
+    assert MIN_LINK_SCORE() > _TRUE_PAIR_MAX   # and a proposal can never auto-promote
 
 
 # ---------------------------------------------------------------------------
@@ -832,11 +832,11 @@ def test_a_proposal_obtained_at_a_lower_bar_cannot_be_confirmed(monkeypatch):
     invoices = [{"invoice_id": "INV-1", "supplier_id": "SUP-A", "po_id": None}]
     pos = [{"po_id": "PO-1", "supplier_id": "SUP-A"}]
     # Below the shipped floor, above the lowered one the caller asked for.
-    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": lp.PROPOSAL_MIN_SCORE - 5})
+    monkeypatch.setattr(lp, "score_link", lambda *a, **k: {"F": lp.PROPOSAL_MIN_SCORE() - 5})
     cur = _CountingCursor(invoices, pos)
     conn = _CountingConn(cur)
 
-    asked_low = lp.propose_parent_links(conn=conn, min_score=lp.PROPOSAL_MIN_SCORE - 10)
+    asked_low = lp.propose_parent_links(conn=conn, min_score=lp.PROPOSAL_MIN_SCORE() - 10)
     assert [(p.doc_pk, p.po_id) for p in asked_low] == [("INV-1", "PO-1")]
 
     result = lp.confirm_parent_link("invoice", "INV-1", "PO-1", conn=conn)

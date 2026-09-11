@@ -44,6 +44,12 @@ class StubNick:
         self.policy_engine = SimpleNamespace(
             supplier_policies=[],
             validate_workflow=lambda *a, **k: {"allowed": True},
+            # The orchestrator now reads the governance exemption list from
+            # policy before running anything (P6), and blocks when it cannot.
+            # This suite is about the engine, not about governance, so it says
+            # so explicitly instead of relying on a failure being swallowed.
+            get_policy=lambda slug: {"details": {"rules": {"ungoverned_workflows":
+                ["supplier_interaction", "negotiation"]}}},
         )
         self.query_engine = SimpleNamespace(fetch_supplier_data=lambda *_: {})
         self.routing_engine = SimpleNamespace(

@@ -501,8 +501,16 @@ _origins = [o.strip() for o in os.getenv("PROCWISE_CORS_ORIGINS", "*").split(","
 _allow_creds = _origins != ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_allow_creds, allow_methods=["*"], allow_headers=["*"])
 
-# WebSocket router: no auth dependency — browsers cannot send custom headers
-# during WebSocket upgrade. Auth handled inside ws.py via token= query param.
+# WebSocket router: no auth DEPENDENCY, because a dependency that raises
+# HTTPException cannot answer a WebSocket upgrade. Browsers also cannot set
+# headers on that upgrade, so the token arrives as ?token= and ws.py verifies it
+# in the handler, through the same api.auth verifier and the same ASK_AUTH_MODE
+# semantics as require_user, before accepting the handshake.
+#
+# This comment previously described that arrangement as already existing. It did
+# not: the handler took session_id and websocket, and nothing else. Anyone who
+# could reach the port and knew a session id was served its outcomes.
+# tests/api/test_ws_authentication.py is what now holds this to be true.
 app.include_router(ws_router_mod.router)
 
 # --------------------------------------------------------------------------

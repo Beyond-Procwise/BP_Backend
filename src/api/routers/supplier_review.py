@@ -7,11 +7,13 @@ canonical supplier_id link is governed.
 """
 from __future__ import annotations
 
+import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth import require_user
 from src.services.db import get_conn
 from src.services.extraction_v3 import supplier_resolver as SR
 
@@ -27,6 +29,12 @@ _COLS = (
 
 
 class ReviewBody(BaseModel):
+    """What is being decided. The `reviewer` field is NOT who decided it.
+
+    It is kept because clients send it and because it sometimes carries
+    something a person meant, but the actor is the token -- see `_reviewer`.
+    """
+
     reviewer: str = "api"
 
 
@@ -75,11 +83,16 @@ def reviews_queue(limit: int = 100):
         enrich_rows = cur.fetchall()
         for eid, sid, sname, matched, nm, conf, fields, citations, created in enrich_rows:
             fields = fields or {}
+            if isinstance(fields, str):
+                fields = json.loads(fields or "{}")
             cur.execute("SELECT " + ", ".join(R._APPLY_COLUMNS) + " FROM proc.bp_supplier WHERE supplier_id = %s", (sid,))
             sv = cur.fetchone()
             current = dict(zip(R._APPLY_COLUMNS, sv)) if sv else {}
-            would_fill = [col for col in R._APPLY_COLUMNS
-                          if fields.get(col) and (current.get(col) is None or str(current.get(col)).strip() == "")]
+            # The proposal itself, from the same function the approve button runs.
+            # This was a third local re-derivation of "researched and currently
+            # empty", which ignored content verification and column widths and so
+            # could offer a fill that the approval would then decline to make.
+            would_fill = sorted(R.fillable(cur, sid, fields))
             items.append({
                 "review_type": "supplier_enrichment",
                 "id": eid,
@@ -121,21 +134,28 @@ def sweep_duplicates(min_score: float | None = None):
         return SR.sweep_supplier_duplicates(c, min_score=min_score)
 
 
+def _reviewer(principal) -> str | None:
+    """The token, never `body.reviewer`. A merge into the supplier master is not
+    something a caller gets to sign in somebody else's name."""
+
+    return getattr(principal, "subject", None) or None
+
+
 @router.post("/reviews/{review_id}/confirm")
-def confirm_review(review_id: int, body: ReviewBody):
+def confirm_review(review_id: int, body: ReviewBody, principal=Depends(require_user)):
     """The extracted name IS the candidate supplier — merge (alias to canonical)."""
     with get_conn() as c:
         try:
-            return SR.confirm_review(review_id, body.reviewer, c)
+            return SR.confirm_review(review_id, _reviewer(principal), c)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post("/reviews/{review_id}/reject")
-def reject_review(review_id: int, body: ReviewBody):
+def reject_review(review_id: int, body: ReviewBody, principal=Depends(require_user)):
     """The extracted name is a DISTINCT supplier — keep it separate (alias to its own id)."""
     with get_conn() as c:
         try:
-            return SR.reject_review(review_id, body.reviewer, c)
+            return SR.reject_review(review_id, _reviewer(principal), c)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))

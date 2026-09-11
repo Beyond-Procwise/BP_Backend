@@ -1070,19 +1070,26 @@ def reject_opportunity(
     opportunity_id: str,
     req: OpportunityRejectionRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ):
     if not opportunity_id or not opportunity_id.strip():
         raise HTTPException(status_code=400, detail="opportunity_id must be provided")
 
     try:
+        # Who rejected it is the token. `req.user_id` is kept -- clients send
+        # it and it sometimes carries something a person meant -- but as a
+        # label inside metadata, where nothing reads it as identity.
+        metadata = dict(req.metadata or {})
+        if req.user_id:
+            metadata["user_id_label"] = req.user_id
         record = record_opportunity_feedback(
             agent_nick,
             opportunity_id.strip(),
             opportunity_ref_id=req.opportunity_ref_id,
             status="rejected",
             reason=req.reason,
-            user_id=req.user_id,
-            metadata=req.metadata,
+            user_id=getattr(principal, "subject", None) or None,
+            metadata=metadata,
         )
     except Exception as exc:  # pragma: no cover - database/network
         logger.exception("Failed to record rejection for opportunity %s", opportunity_id)
@@ -1347,6 +1354,7 @@ def _reply_thread_headers(
 def prepare_email_draft(
     payload: EmailPrepareRequest,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> EmailPrepareResponse:
     """Persist ``payload`` into ``proc.draft_rfq_emails`` and return its identifier.
 
@@ -1407,12 +1415,21 @@ def prepare_email_draft(
         else f"report-panel:{uuid.uuid4().hex[:12]}"
     )
 
+    # This is the human path into proc.draft_rfq_emails, so the row records who
+    # asked. The approvals surface reads it back to refuse an approval signed by
+    # the person who requested it (P3) -- which it could not do while no draft
+    # named a requester at all. Taken from the principal and never from
+    # ``payload``: a caller who could name the requester could name someone else
+    # and approve their own draft freely.
+    requested_by = str(getattr(principal, "subject", "") or "").strip() or None
+
     draft: Dict[str, Any] = {
         "supplier_id": supplier_id,
         "subject": payload.subject,
         "body": payload.body,
         "recipients": recipients,
         "receiver": recipients[0],
+        "requested_by": requested_by,
         "metadata": {
             "source": "report_email_panel",
             "deal_id": payload.deal_id,
@@ -1880,6 +1897,7 @@ async def add_email_attachments(
     files: List[UploadFile] = File(...),
     user_id: str = Form(default="api"),
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     """Store attachments against a draft, in S3 plus a record on the draft row.
 
@@ -1952,7 +1970,12 @@ async def add_email_attachments(
                 "content_type": upload.content_type or "application/octet-stream",
                 "bytes": len(data),
                 "s3_key": key,
-                "added_by": user_id,
+                # These attachments ride out to a supplier on a real email, so
+                # who added one is the token. The Form field stays as a label:
+                # it defaults to the literal string "api", which was being
+                # written as though it named somebody.
+                "added_by": getattr(principal, "subject", None) or None,
+                "added_by_label": user_id or None,
                 "added_at": datetime.now(timezone.utc).isoformat(),
             }
         )

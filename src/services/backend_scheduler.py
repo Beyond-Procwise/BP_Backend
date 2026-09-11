@@ -1,4 +1,5 @@
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
@@ -224,7 +225,12 @@ class BackendScheduler:
         # Found headline with nobody having looked. Review the historical set first
         # (scripts/backfill_duplicate_invoices.py, dry run by default), then set
         # DUPLICATE_INVOICE_DETECTOR_ENABLED=1 so new arrivals are flagged as they land.
-        if os.environ.get("DUPLICATE_INVOICE_DETECTOR_ENABLED", "0").strip() in ("1", "true", "True"):
+        # AutonomousOperationPolicy (P9). A fraud control that is off by default
+        # and switchable with no record is the most consequential kind of
+        # setting to leave in the environment.
+        if _governed_limit("autonomous_operation",
+                           "duplicate_invoice_detector_enabled",
+                           env="DUPLICATE_INVOICE_DETECTOR_ENABLED", cast=bool):
             try:
                 from src.services.duplicate_invoice_detector import run_detector
                 logger.info("downstream chain: duplicate invoices %s new finding(s)",
@@ -852,6 +858,10 @@ class BackendScheduler:
             self._chain_opportunity_mining(result)
         except Exception:
             logger.exception("chained opportunity mining failed")
+        try:
+            self._chain_graph_resolution(result)
+        except Exception:
+            logger.exception("chained graph resolution failed")
 
     def _chain_opportunity_mining(self, deal_result: Any) -> None:
         """Run opportunity mining iff deal-assignment changed something. Mining is
@@ -871,13 +881,54 @@ class BackendScheduler:
         logger.info("deals changed -> chaining opportunity mining")
         self._run_opportunity_mining()
 
+    def _chain_graph_resolution(self, deal_result: Any) -> None:
+        """Resolve entities in the graph iff deal-assignment changed something.
+
+        The pass reads the same rows deal assignment just touched, so it runs on
+        the same trigger rather than on a timer of its own. Set
+        GRAPH_RESOLUTION_ENABLED=0 to disable the chain (default on).
+
+        Every stage runs in PASS_ORDER: a later profile reads earlier edges as
+        signals, so the order is a correctness requirement, not a preference.
+        """
+        import os
+        if os.environ.get("GRAPH_RESOLUTION_ENABLED", "1").strip() in ("0", "false", "False"):
+            return
+        changed = isinstance(deal_result, dict) and any(
+            int(deal_result.get(k) or 0) for k in self._DEAL_CHANGE_KEYS)
+        if not changed:
+            logger.debug("graph resolution chain skipped — no deal changes")
+            return
+
+        from services.procurement_kg_builder import ProcurementKGBuilder
+        from src.services.db import get_conn
+        from src.services.graph_resolution.pass_runner import run_all
+
+        builder = ProcurementKGBuilder(self.agent_nick)
+        if not builder._driver:
+            logger.error("graph resolution skipped — Neo4j is not reachable")
+            return
+        try:
+            limit = os.environ.get("GRAPH_RESOLUTION_LIMIT")
+            with get_conn() as conn:
+                counts = run_all(conn, builder._driver,
+                                 int(limit) if limit else None)
+            # The review backlog is logged at INFO on every run on purpose:
+            # bp_supplier_review already holds 727 rows nobody has looked at,
+            # and adding to it silently is how that happened.
+            logger.info("graph resolution completed: %s", counts)
+        finally:
+            builder.close()
+
     def _run_opportunity_mining(self) -> None:
         """Run opportunity mining; the miner upserts findings into bp_opportunity."""
         import os
         try:
             workflow = os.environ.get("OPPORTUNITY_MINING_WORKFLOW", "all")
             try:
-                min_impact = float(os.environ.get("OPPORTUNITY_MINING_MIN_IMPACT", "100"))
+                min_impact = _governed_limit(
+                    "autonomous_operation", "opportunity_mining_min_impact",
+                    env="OPPORTUNITY_MINING_MIN_IMPACT")
             except ValueError:
                 min_impact = 100.0
             result = self._orchestrator.execute_workflow(

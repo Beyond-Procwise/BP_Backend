@@ -18,6 +18,7 @@ score, field quality, reliability, signed contribution, and status.
 from __future__ import annotations
 
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import math
 import os
 import re
@@ -50,9 +51,27 @@ log = logging.getLogger(__name__)
 # `missing_required` discrepancy and the row never reaches _stg. So the floor's only job is
 # to catch a near-empty extraction, and 50 -- the score of a document with all its required
 # fields and no optional ones -- is where that line actually sits.
-MIN_CONFIDENCE = float(os.getenv("PROMOTE_MIN_CONFIDENCE", "50"))   # _stg extraction conf
-MIN_LINK_SCORE = float(os.getenv("PROMOTE_MIN_LINK_SCORE", "80"))   # F auto-promote gate
-REVIEW_MIN = float(os.getenv("PROMOTE_REVIEW_MIN", "65"))           # F floor for human review
+# Read from PromotionThresholdPolicy, not from the environment (P9). Functions
+# rather than constants because the value has to be resolved when it is used: a
+# module-level read happens at import, before anything can tell whether the
+# governance store answered, and a missing limit has to REFUSE rather than fall
+# back to a number carried in the code.
+def MIN_CONFIDENCE() -> float:
+    """_stg extraction confidence floor."""
+    return _governed_limit("promotion_thresholds", "promote_min_confidence",
+                           env="PROMOTE_MIN_CONFIDENCE")
+
+
+def MIN_LINK_SCORE() -> float:
+    """F auto-promote gate."""
+    return _governed_limit("promotion_thresholds", "promote_min_link_score",
+                           env="PROMOTE_MIN_LINK_SCORE")
+
+
+def REVIEW_MIN() -> float:
+    """F floor for human review."""
+    return _governed_limit("promotion_thresholds", "promote_review_min",
+                           env="PROMOTE_REVIEW_MIN")
 
 # Decision band thresholds (PDF Stage 7C)
 _BAND_AUTO = 92.0
@@ -329,7 +348,8 @@ def _band(F: float) -> str:
 
 def score_link(source_row: dict, target_row: dict, profile_name: str,
                source_lines: Optional[list] = None, target_lines: Optional[list] = None,
-               set_amount_usd: Optional[float] = None) -> dict:
+               set_amount_usd: Optional[float] = None,
+               cluster_overrides: Optional[dict] = None) -> dict:
     """Deterministically score the relationship source→target. Returns the full
     auditable result (PDF stages 1A..7C).
 
@@ -370,9 +390,15 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
         signals.append({**spec, "s": s, "q": q, "r": r, "c": c, "status": status})
 
     # Stage 2: cluster dampening
+    #
+    # `cluster_overrides` lets a composing caller route signals that drew on the
+    # same observation into one cluster, so the dampening below discounts them as
+    # the correlated evidence they are. Absent (the default), every existing
+    # caller and golden vector is byte-identical.
     clusters: dict[str, list[dict]] = {}
     for sig in signals:
-        clusters.setdefault(sig["cluster"], []).append(sig)
+        name = (cluster_overrides or {}).get(sig["id"], sig["cluster"])
+        clusters.setdefault(name, []).append(sig)
     total_cluster_score = 0.0
     for sigs in clusters.values():
         n_active = sum(1 for x in sigs if x["status"] != "MISSING")
@@ -417,6 +443,10 @@ def score_link(source_row: dict, target_row: dict, profile_name: str,
         "Q": round(Q, 4),
         "F_cap": F_cap,
         "L": round(L, 6),
+        # The evidence term WITHOUT the prior. Persisted on derived edges so a
+        # later composition can reuse the evidence without inheriting a prior it
+        # did not intend (spec 4.2). L itself keeps the prior, unchanged.
+        "L_evidence": round(profile["alpha"] * total_cluster_score, 6),
         "signals": [
             {"id": s["id"], "cluster": s["cluster"], "tier": s["tier"], "weight": s["weight"],
              "s": round(s["s"], 4), "q": round(s["q"], 4), "r": round(s["r"], 4),
@@ -662,7 +692,7 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
         # Invoices still require their PO: that reference is the three-way match, and an
         # invoice without one is a genuine exception for a human to look at.
         if doc_type == "quote":
-            if conf < MIN_CONFIDENCE:
+            if conf < MIN_CONFIDENCE():
                 return None, None, "low_extraction_confidence"
             return None, None, None
         return None, None, "no_parent_reference"
@@ -672,7 +702,7 @@ def _evaluate(cur, doc_type: str, row: dict) -> tuple[Optional[dict], Optional[d
     tgt_lines = _rows(cur, "select * from proc.bp_po_line_items_stg where po_id = %s", (po["po_id"],))
     set_amount = _set_amount_for_invoice(cur, po["po_id"]) if doc_type == "invoice" else None
     link = score_link(row, po, cfg["profile"], src_lines, tgt_lines, set_amount_usd=set_amount)
-    if conf < MIN_CONFIDENCE:
+    if conf < MIN_CONFIDENCE():
         return po, link, "low_extraction_confidence"
 
     if link["F"] < MIN_LINK_SCORE:
@@ -750,7 +780,7 @@ def _promote_purchase_orders(cur) -> tuple[int, int]:
                  f"and not exists (select 1 from {_PO['trgt']} t where t.po_id = s.po_id)")
     for row in rows:
         conf = _to_float(row.get("confidence_score")) or 0.0
-        if conf < MIN_CONFIDENCE:
+        if conf < MIN_CONFIDENCE():
             held += 1
             record_action(
                 phase=PHASE_CONSOLIDATION, action_type="promote_held",
@@ -975,7 +1005,7 @@ def review_queue(conn: Any = None, doc_types=("invoice", "quote"),
     ``deal_id`` filters to one deal (matched on the stg row's own deal_id
     column). Applies to both modes.
     """
-    floor = REVIEW_MIN if min_score is None else float(min_score)
+    floor = REVIEW_MIN() if min_score is None else float(min_score)
     if conn is None:
         with get_conn() as own:
             return _review_queue(own, doc_types, floor, all_held, deal_id)
