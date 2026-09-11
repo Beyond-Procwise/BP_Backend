@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import os
 import time
 from dataclasses import dataclass, field
@@ -36,7 +37,10 @@ _OLLAMA_CHAT = (
 )
 # AgentNick is the only base model. Never repoint this at another family.
 _DEFAULT_MODEL = os.getenv("AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified")
-_DEFAULT_MAX_ROUNDS = int(os.getenv("TOOL_RUNTIME_MAX_ROUNDS", "6"))
+def _DEFAULT_MAX_ROUNDS() -> int:
+    """AgentReachPolicy (P9): how far one agent may go before it must answer."""
+    return _governed_limit("agent_reach", "tool_runtime_max_rounds",
+                           env="TOOL_RUNTIME_MAX_ROUNDS", cast=int)
 _DEFAULT_TIMEOUT_S = int(os.getenv("TOOL_RUNTIME_TIMEOUT_S", "180"))
 
 # Results are fed back to the model as text. A tool that returns a huge blob
@@ -238,7 +242,7 @@ def run_tools_stream(
     system: str,
     *,
     model: Optional[str] = None,
-    max_rounds: int = _DEFAULT_MAX_ROUNDS,
+    max_rounds: int = _DEFAULT_MAX_ROUNDS(),
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     on_tool: Optional[Callable[[ToolCall], None]] = None,
     on_delta: Optional[Callable[[str], None]] = None,
@@ -364,7 +368,7 @@ def run_tools(
     system: str,
     *,
     model: Optional[str] = None,
-    max_rounds: int = _DEFAULT_MAX_ROUNDS,
+    max_rounds: int = _DEFAULT_MAX_ROUNDS(),
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     require_tool_use: bool = False,
     nudge: Optional[str] = None,

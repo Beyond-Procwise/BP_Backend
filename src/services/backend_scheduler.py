@@ -1,4 +1,5 @@
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
@@ -224,7 +225,12 @@ class BackendScheduler:
         # Found headline with nobody having looked. Review the historical set first
         # (scripts/backfill_duplicate_invoices.py, dry run by default), then set
         # DUPLICATE_INVOICE_DETECTOR_ENABLED=1 so new arrivals are flagged as they land.
-        if os.environ.get("DUPLICATE_INVOICE_DETECTOR_ENABLED", "0").strip() in ("1", "true", "True"):
+        # AutonomousOperationPolicy (P9). A fraud control that is off by default
+        # and switchable with no record is the most consequential kind of
+        # setting to leave in the environment.
+        if _governed_limit("autonomous_operation",
+                           "duplicate_invoice_detector_enabled",
+                           env="DUPLICATE_INVOICE_DETECTOR_ENABLED", cast=bool):
             try:
                 from src.services.duplicate_invoice_detector import run_detector
                 logger.info("downstream chain: duplicate invoices %s new finding(s)",
@@ -877,7 +883,9 @@ class BackendScheduler:
         try:
             workflow = os.environ.get("OPPORTUNITY_MINING_WORKFLOW", "all")
             try:
-                min_impact = float(os.environ.get("OPPORTUNITY_MINING_MIN_IMPACT", "100"))
+                min_impact = _governed_limit(
+                    "autonomous_operation", "opportunity_mining_min_impact",
+                    env="OPPORTUNITY_MINING_MIN_IMPACT")
             except ValueError:
                 min_impact = 100.0
             result = self._orchestrator.execute_workflow(

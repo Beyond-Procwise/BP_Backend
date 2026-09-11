@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from src.services.governed_limits import limit as _governed_limit
 import os
 import re
 
@@ -19,7 +20,10 @@ log = logging.getLogger(__name__)
 
 _OLLAMA_CHAT = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/chat"
 _MODEL = os.getenv("GOVERNED_REASONING_MODEL", "BeyondProcwise/AgentNick:unified")
-_MAX_ROUNDS = int(os.getenv("GOVERNED_REASONING_MAX_ROUNDS", "5"))
+def _MAX_ROUNDS() -> int:
+    """AgentReachPolicy (P9)."""
+    return _governed_limit("agent_reach", "governed_reasoning_max_rounds",
+                           env="GOVERNED_REASONING_MAX_ROUNDS", cast=int)
 
 _TOOLS = [
     {"type": "function", "function": {
@@ -241,7 +245,7 @@ def govern(task: str, agent: str | None = None) -> dict:
         {"role": "user", "content": (f"Agent: {agent}\n" if agent else "") + f"Task: {task}"},
     ]
     rounds = 0
-    for _ in range(_MAX_ROUNDS):
+    for _ in range(_MAX_ROUNDS()):
         rounds += 1
         try:
             msg = _chat(messages)
