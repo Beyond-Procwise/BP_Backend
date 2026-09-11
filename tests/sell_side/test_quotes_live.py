@@ -126,3 +126,16 @@ def test_superseding_retires_the_old_quote(live_db):
     assert quotes.get_quote(conn, old["sales_quote_id"])["status"] == "superseded"
     with pytest.raises(StateConflict):
         _draft(conn, item, supersedes_id=old["sales_quote_id"])
+
+
+def test_a_real_approved_quote_renders_with_no_internal_field(live_db):
+    from src.services.sell_side import quote_render as qr
+
+    conn, dist = live_db
+    q = _draft(conn, _setup(conn, dist))
+    quotes.submit(conn, q["sales_quote_id"], actor="sub-author")
+    quotes.approve(conn, q["sales_quote_id"], approver="sub-approver")
+    view = qr.customer_view(quotes.get_quote(conn, q["sales_quote_id"]))
+    flat = repr(view)
+    assert not any(f"'{f}'" in flat for f in qr.INTERNAL_FIELDS)
+    assert "10.0000" not in qr.render_html(view)
