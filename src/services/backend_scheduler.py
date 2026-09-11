@@ -420,6 +420,7 @@ class BackendScheduler:
         self._register_price_outlier_job()
         self._register_value_digest_job()
         self._register_capture_retention_job()
+        self._register_sales_calibration_job()
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
@@ -809,6 +810,31 @@ class BackendScheduler:
                 )
         except Exception:
             logger.exception("capture retention sweep failed")
+
+    SALES_CALIBRATION_JOB_NAME = "sales_win_probability_calibration"
+
+    def _register_sales_calibration_job(self) -> None:
+        """Daily: set win_probability from closed quote outcomes (spec §4.5).
+        Writes nothing until a type has the governed minimum of closed outcomes."""
+        if self.SALES_CALIBRATION_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.SALES_CALIBRATION_JOB_NAME,
+            self._run_sales_calibration,
+            interval=timedelta(days=1),
+        )
+
+    def _run_sales_calibration(self) -> None:
+        try:
+            from src.services.db import get_conn
+            from src.services.sell_side.calibration import calibrate
+            with get_conn() as conn:
+                applied = [c for c in calibrate(conn) if c.applied]
+            if applied:
+                logger.info("sales calibration: %s", ", ".join(
+                    f"{c.opportunity_type}={c.rate} ({c.won}/{c.won + c.lost})" for c in applied))
+        except Exception:
+            logger.exception("sales win-probability calibration failed")
 
     def _register_price_outlier_job(self) -> None:
         """Scan for extreme prices and raise them for review."""
