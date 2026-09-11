@@ -30,3 +30,14 @@ def test_a_missing_item_is_not_found(live_db):
     conn, _ = live_db
     with pytest.raises(NotFound):
         costing.cost_at(dict_cursor(conn), -1, D("1"))
+
+
+def test_a_tier_in_another_currency_is_refused_not_converted(live_db):
+    conn, dist = live_db
+    item = seed_item(conn, dist, "LIVETEST-T3", currency="GBP")
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO proc.bp_catalog_cost_tier VALUES (%s, %s, %s, %s)",
+                    (item, D("10"), D("8.0000"), "EUR"))
+    conn.commit()
+    with pytest.raises(ValueError, match="EUR"):
+        costing.cost_at(dict_cursor(conn), item, D("10"))
