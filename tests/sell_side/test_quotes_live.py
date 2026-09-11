@@ -139,3 +139,36 @@ def test_a_real_approved_quote_renders_with_no_internal_field(live_db):
     flat = repr(view)
     assert not any(f"'{f}'" in flat for f in qr.INTERNAL_FIELDS)
     assert "10.0000" not in qr.render_html(view)
+
+
+def test_a_zero_quantity_is_refused(live_db):
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    with pytest.raises(ValueError, match="quantity"):
+        quotes.create_draft(
+            conn, account_id="LIVETEST-Q", currency="GBP",
+            valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+            lines=[{"catalog_item_id": item, "quantity": D("0"), "unit_price": D("14.00")}])
+
+
+def test_a_negative_price_is_refused(live_db):
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    with pytest.raises(ValueError, match="unit_price"):
+        quotes.create_draft(
+            conn, account_id="LIVETEST-Q", currency="GBP",
+            valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+            lines=[{"catalog_item_id": item, "quantity": D("1"), "unit_price": D("-1")}])
+
+
+def test_a_quote_cannot_supersede_another_accounts(live_db):
+    conn, dist = live_db
+    item = _setup(conn, dist)
+    accounts.create_account(conn, account_id="LIVETEST-Q2", account_name="Livetest Two Ltd")
+    other = quotes.create_draft(
+        conn, account_id="LIVETEST-Q2", currency="GBP",
+        valid_until=TODAY + dt.timedelta(days=30), created_by="sub-author",
+        lines=[{"catalog_item_id": item, "quantity": D("4"), "unit_price": D("14.00")}])
+    with pytest.raises(ValueError, match="same account"):
+        _draft(conn, item, supersedes_id=other["sales_quote_id"])
+    assert quotes.get_quote(conn, other["sales_quote_id"])["status"] == "draft"

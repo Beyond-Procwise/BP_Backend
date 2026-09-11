@@ -5,11 +5,12 @@ first `dict_cursor(conn)` / `conn.cursor(...)` call, the test would blow up with
 AttributeError on None rather than the ValueError it asserts -- that failure mode is itself
 proof the guard runs first.
 """
+import datetime as dt
 from decimal import Decimal as D
 
 import pytest
 
-from src.services.sell_side import accounts, opportunities as opp
+from src.services.sell_side import accounts, opportunities as opp, quotes
 
 ACCOUNT_GUARDS = [
     pytest.param(
@@ -66,5 +67,20 @@ OPPORTUNITY_GUARDS = [
 
 @pytest.mark.parametrize("call, match", OPPORTUNITY_GUARDS)
 def test_an_opportunities_guard_raises_before_any_cursor_use(call, match):
+    with pytest.raises(ValueError, match=match):
+        call()
+
+
+QUOTE_GUARDS = [
+    pytest.param(
+        lambda: quotes.create_draft(
+            None, account_id="X", currency="GBP",
+            valid_until=dt.date.today() + dt.timedelta(days=1), lines=[], created_by="a"),
+        "at least one line", id="create_draft-no-lines"),
+]
+
+
+@pytest.mark.parametrize("call, match", QUOTE_GUARDS)
+def test_a_quotes_guard_raises_before_any_cursor_use(call, match):
     with pytest.raises(ValueError, match=match):
         call()
