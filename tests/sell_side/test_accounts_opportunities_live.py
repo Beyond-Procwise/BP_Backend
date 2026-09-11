@@ -110,3 +110,22 @@ def test_a_missing_opportunity_is_not_found(live_db):
 def test_win_probability_cannot_be_passed_in():
     import inspect
     assert "win_probability" not in inspect.signature(opp.create_opportunity).parameters
+
+
+def test_currency_is_required_without_a_catalog_item(live_db):
+    conn, _ = live_db
+    a = _acct(conn)
+    with pytest.raises(ValueError, match="currency"):
+        opp.create_opportunity(conn, account_id=a["account_id"], opportunity_type="upsell")
+
+
+def test_list_opportunities_filters_by_account(live_db):
+    conn, _ = live_db
+    a = _acct(conn, "A")
+    b = _acct(conn, "B")
+    oa = opp.create_opportunity(conn, account_id=a["account_id"], opportunity_type="upsell",
+                                currency="GBP")
+    opp.create_opportunity(conn, account_id=b["account_id"], opportunity_type="refill",
+                           currency="GBP")
+    got = opp.list_opportunities(conn, account_id=a["account_id"])
+    assert [o["sales_opportunity_id"] for o in got] == [oa["sales_opportunity_id"]]
