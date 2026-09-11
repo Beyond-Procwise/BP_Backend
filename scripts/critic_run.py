@@ -111,8 +111,10 @@ def main() -> int:
     tally: dict = {}
     for i, finding in enumerate(findings, 1):
         started = time.monotonic()
+        # A batch has no human starter, so it has no subject: user_id is None,
+        # never a stand-in name that would read as someone's identity.
         ctx = AgentContext(workflow_id=run_id, agent_id="opportunity_critic",
-                           user_id="critic_run", input_data={"finding": finding})
+                           user_id=None, input_data={"finding": finding})
         try:
             out = agent.run(ctx)
             status = getattr(out.status, "value", out.status)

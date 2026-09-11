@@ -35,7 +35,7 @@ _WELL_FORMED = {
 
 def _context():
     return AgentContext(workflow_id="wf-1", agent_id="opportunity_critic",
-                        user_id="tester", input_data={"finding": _FINDING})
+                        user_id=None, input_data={"finding": _FINDING})
 
 
 def _agent(reason_result):
