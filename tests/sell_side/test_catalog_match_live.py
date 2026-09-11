@@ -43,3 +43,31 @@ def test_a_human_match_is_confirmed_with_no_confidence(live_db):
     row = cm.record_human_match(conn, distributor_id=dist, distributor_sku="LIVETEST-M3",
                                 item_id="ANY-ID", reviewer="sub-reviewer")
     assert (row["match_method"], row["status"], row["confidence"]) == ("human", "confirmed", None)
+
+
+def test_a_human_match_cannot_overwrite_a_confirmed_one(live_db):
+    conn, dist = live_db
+    seed_item(conn, dist, "LIVETEST-M4")
+    cm.record_human_match(conn, distributor_id=dist, distributor_sku="LIVETEST-M4",
+                          item_id="ANY-ID", reviewer="sub-first")
+    with pytest.raises(StateConflict, match="sub-first"):
+        cm.record_human_match(conn, distributor_id=dist, distributor_sku="LIVETEST-M4",
+                              item_id="ANY-ID", reviewer="sub-second")
+    cur = dict_cursor(conn)
+    cur.execute("SELECT confirmed_by FROM proc.bp_catalog_item_match WHERE distributor_id = %s "
+                "AND distributor_sku = %s AND item_id = %s", (dist, "LIVETEST-M4", "ANY-ID"))
+    assert cur.fetchone()["confirmed_by"] == "sub-first"
+
+
+def test_a_human_match_overrides_a_rejection(live_db):
+    conn, dist = live_db
+    real = _a_real_history_item(conn)
+    seed_item(conn, dist, "LIVETEST-M5", mpn=real["item_id"])
+    cm.propose_matches(conn, dist)
+    (m,) = [r for r in cm.list_matches(conn, distributor_id=dist)
+            if r["distributor_sku"] == "LIVETEST-M5"]
+    cm.reject_match(conn, m["match_id"], "sub-reviewer")
+    row = cm.record_human_match(conn, distributor_id=dist, distributor_sku="LIVETEST-M5",
+                                item_id=real["item_id"], reviewer="sub-second")
+    assert (row["status"], row["match_method"], row["confirmed_by"]) == (
+        "confirmed", "human", "sub-second")

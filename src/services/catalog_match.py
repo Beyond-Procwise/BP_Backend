@@ -150,8 +150,10 @@ def reject_match(conn: Any, match_id: int, reviewer: Optional[str]) -> Dict[str,
 
 def record_human_match(conn: Any, *, distributor_id: str, distributor_sku: str,
                        item_id: str, reviewer: Optional[str]) -> Dict[str, Any]:
-    """A person asserts a match no method found. Confirmed on write; replaces any
-    earlier machine proposal or rejection for the same pair."""
+    """A person asserts a match no method found. Confirmed on write; replaces an
+    earlier machine PROPOSAL or a REJECTION for the same pair, but refuses to
+    overwrite a pair that is already confirmed -- confirm_match/reject_match both
+    refuse to re-decide, and this path must be consistent with that."""
     cur = dict_cursor(conn)
     cur.execute("SELECT 1 FROM proc.bp_catalog_item WHERE distributor_id = %s "
                 "AND distributor_sku = %s AND valid_to IS NULL", (distributor_id, distributor_sku))
@@ -164,8 +166,20 @@ def record_human_match(conn: Any, *, distributor_id: str, distributor_sku: str,
         "VALUES (%s, %s, %s, 'human', NULL, 'confirmed', %s, now()) "
         "ON CONFLICT (distributor_id, distributor_sku, item_id) DO UPDATE SET "
         "match_method = 'human', confidence = NULL, status = 'confirmed', "
-        "confirmed_by = EXCLUDED.confirmed_by, confirmed_at = now() RETURNING *",
+        "confirmed_by = EXCLUDED.confirmed_by, confirmed_at = now() "
+        "WHERE proc.bp_catalog_item_match.status <> 'confirmed' RETURNING *",
         (distributor_id, distributor_sku, item_id, reviewer))
-    out = dict(cur.fetchone())
+    row = cur.fetchone()
+    if row is None:
+        cur.execute(
+            "SELECT confirmed_by FROM proc.bp_catalog_item_match WHERE distributor_id = %s "
+            "AND distributor_sku = %s AND item_id = %s",
+            (distributor_id, distributor_sku, item_id))
+        who = cur.fetchone()
+        who = who["confirmed_by"] if who else None
+        conn.rollback()
+        raise StateConflict(
+            f"{distributor_id}/{distributor_sku} -> {item_id} is already confirmed by {who}")
+    out = dict(row)
     conn.commit()
     return out
