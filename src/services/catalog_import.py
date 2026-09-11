@@ -620,23 +620,29 @@ def save_mapping(
         raise ValueError(f"mapping must cover the NOT NULL columns: {missing}")
 
     cur = _dict_cursor(conn)
-    cur.execute(
-        "SELECT DISTINCT distributor_id FROM proc.bp_catalog_mapping "
-        "WHERE mapping_profile = %s", (mapping_profile,))
-    owners = {r["distributor_id"] for r in (cur.fetchall() or [])}
-    if owners and owners != {distributor_id}:
-        raise ValueError(
-            f"mapping profile {mapping_profile!r} belongs to {sorted(owners)}")
-    cur.execute("DELETE FROM proc.bp_catalog_mapping WHERE mapping_profile = %s",
-                (mapping_profile,))
-    for e in entries:
+    try:
         cur.execute(
-            "INSERT INTO proc.bp_catalog_mapping (mapping_profile, distributor_id, "
-            "target_column, source_header, transform, is_required) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (mapping_profile, distributor_id, e["target_column"],
-             e["source_header"].strip(), e.get("transform") or None,
-             bool(e.get("is_required")) or e["target_column"] in _REQUIRED_COLUMNS),
-        )
+            "SELECT DISTINCT distributor_id FROM proc.bp_catalog_mapping "
+            "WHERE mapping_profile = %s", (mapping_profile,))
+        owners = {r["distributor_id"] for r in (cur.fetchall() or [])}
+        if owners and owners != {distributor_id}:
+            raise ValueError(
+                f"mapping profile {mapping_profile!r} belongs to {sorted(owners)}")
+        cur.execute("DELETE FROM proc.bp_catalog_mapping WHERE mapping_profile = %s",
+                    (mapping_profile,))
+        for e in entries:
+            cur.execute(
+                "INSERT INTO proc.bp_catalog_mapping (mapping_profile, distributor_id, "
+                "target_column, source_header, transform, is_required) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (mapping_profile, distributor_id, e["target_column"],
+                 e["source_header"].strip(), e.get("transform") or None,
+                 bool(e.get("is_required")) or e["target_column"] in _REQUIRED_COLUMNS),
+            )
+    except Exception:
+        # A partial DELETE/INSERT loop left uncommitted on the caller's
+        # connection would poison whatever transaction comes next.
+        conn.rollback()
+        raise
     conn.commit()
     return get_mapping(conn, mapping_profile)

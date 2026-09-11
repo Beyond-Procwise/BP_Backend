@@ -517,3 +517,34 @@ def test_save_mapping_refuses_an_unknown_transform():
                                     entries=[{"target_column": "cost_price",
                                               "source_header": "Cost",
                                               "transform": "guess"}])
+
+
+def test_save_mapping_refuses_a_profile_owned_by_another_distributor():
+    conn = FakeConn(mapping=[{"distributor_id": "SUP-OTHER"}])
+    with pytest.raises(ValueError, match="belongs to"):
+        catalog_import.save_mapping(
+            conn, mapping_profile="p", distributor_id="SUP-001",
+            entries=[
+                {"target_column": "distributor_sku", "source_header": "SKU"},
+                {"target_column": "item_description", "source_header": "Description"},
+                {"target_column": "currency", "source_header": "Ccy"},
+            ],
+        )
+
+    assert not any("DELETE" in sql for sql, _ in conn.calls)
+
+
+def test_save_mapping_rolls_back_when_an_insert_fails():
+    conn = FakeConn(mapping=[], fail_on="INSERT INTO proc.bp_catalog_mapping")
+    with pytest.raises(RuntimeError):
+        catalog_import.save_mapping(
+            conn, mapping_profile="p", distributor_id="SUP-001",
+            entries=[
+                {"target_column": "distributor_sku", "source_header": "SKU"},
+                {"target_column": "item_description", "source_header": "Description"},
+                {"target_column": "currency", "source_header": "Ccy"},
+            ],
+        )
+
+    assert conn.rolled_back is True
+    assert conn.committed is False
