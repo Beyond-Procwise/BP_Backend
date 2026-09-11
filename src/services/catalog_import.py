@@ -45,7 +45,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import psycopg2.extras
@@ -157,7 +157,25 @@ def _decimal(raw: str) -> Decimal:
     return Decimal(raw)
 
 
+# The two money columns the schema stores as numeric(18,4). A feed price with
+# more than 4 decimals never compares equal to what the DB actually stored, so
+# an unchanged row would re-version on every import (_same_as_current compares
+# the feed value to the value Postgres hands back, already rounded to 4dp). A
+# catalog feed is asserted reference data, and 4dp is the column's own
+# precision, so quantizing here -- once, at the point the value is produced --
+# makes the value equal to what the DB will store.
+_MONEY_COLUMNS = frozenset({"list_price", "cost_price"})
+_MONEY_QUANT = Decimal("0.0001")
+
+
 def _apply_transform(target: str, raw: str, transform: Optional[str]) -> Any:
+    value = _apply_transform_raw(target, raw, transform)
+    if target in _MONEY_COLUMNS and isinstance(value, Decimal):
+        value = value.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
+    return value
+
+
+def _apply_transform_raw(target: str, raw: str, transform: Optional[str]) -> Any:
     """Return the value to write, or raise ValueError with a readable reason.
 
     A blank cell is always None -- for every target, transform and type. That is
@@ -439,6 +457,14 @@ def import_catalog(
             distributor_id, prior["source_id"],
         )
         return ImportResult(status=_STATUS_DUPLICATE, source_id=prior["source_id"])
+
+    # 1b. An unknown distributor must fail as a readable ValueError, not as the
+    #     receipt upsert's foreign-key violation -- that FK fires below, outside
+    #     this function's try/except, so it would otherwise surface as an
+    #     unhandled 500 instead of the 422 a bad distributor_id deserves.
+    cur.execute("SELECT 1 FROM proc.bp_supplier WHERE supplier_id = %s", (distributor_id,))
+    if cur.fetchone() is None:
+        raise ValueError(f"distributor {distributor_id!r} is not a supplier")
 
     # 2. The receipt exists BEFORE any item work and starts as 'failed'. That is
     #    the honest initial state, and it is why a crash mid-import can never

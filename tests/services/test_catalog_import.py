@@ -70,12 +70,13 @@ class FakeCursor:
 
 class FakeConn:
     def __init__(self, *, mapping, existing_source=None, unspsc=(), current=None,
-                 fail_on=None):
+                 fail_on=None, distributor_exists=True):
         self.mapping = mapping
         self.existing_source = existing_source
         self.unspsc = list(unspsc)
         self.current = dict(current or {})     # distributor_sku -> current row dict
         self.fail_on = fail_on
+        self.distributor_exists = distributor_exists
         self.calls = []
         self.committed = False
         self.rolled_back = False
@@ -84,6 +85,8 @@ class FakeConn:
     def answer(self, flat, params):
         if self.fail_on and self.fail_on in flat:
             raise RuntimeError("boom: simulated database failure")
+        if "FROM proc.bp_supplier" in flat and "SELECT" in flat:
+            return [{"?column?": 1}] if self.distributor_exists else []
         if "FROM proc.bp_catalog_source" in flat and "SELECT" in flat:
             return [self.existing_source] if self.existing_source else []
         if "FROM proc.bp_catalog_mapping" in flat:
@@ -557,3 +560,64 @@ def test_import_refuses_an_autocommit_connection():
         _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
 
     assert conn.calls == []
+
+
+# --- final review fixes (2026-09-11) ----------------------------------------
+
+def test_a_feed_price_with_5_decimals_is_seen_as_unchanged_against_the_stored_4dp_row():
+    """Finding 3: a feed price with more than 4 decimals must quantize to the
+    column's own precision before comparison, or an unchanged SKU re-versions
+    on every import."""
+    conn = FakeConn(
+        mapping=_map(extra=[{"target_column": "cost_price", "source_header": "Cost",
+                             "transform": None, "is_required": False}]),
+        current={"A1": {"catalog_item_id": 900, "distributor_sku": "A1",
+                        "item_description": "Widget", "currency": "GBP",
+                        "cost_price": Decimal("12.3457")}},
+    )
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Cost"],
+                       ["A1", "Widget", "GBP", "12.34567"]]])
+
+    assert _inserted_items(conn) == []
+    assert res.rows_unchanged == 1
+    assert res.rows_versioned == 0
+
+
+def test_a_new_rows_5_decimal_price_is_inserted_quantized_to_4dp():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "cost_price", "source_header": "Cost",
+         "transform": None, "is_required": False}]))
+    _run(conn, [[["SKU", "Description", "Ccy", "Cost"],
+                 ["A1", "Widget", "GBP", "12.34567"]]])
+
+    row = dict(zip(catalog_import.ITEM_COLUMNS, _inserted_items(conn)[0]))
+    assert row["cost_price"] == Decimal("12.3457")
+
+
+def test_a_5_decimal_list_price_from_trim_currency_is_also_quantized():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "list_price", "source_header": "RRP",
+         "transform": "trim_currency", "is_required": False}]))
+    _run(conn, [[["SKU", "Description", "Ccy", "RRP"],
+                 ["A1", "Widget", "GBP", "£12.345670"]]])
+
+    row = dict(zip(catalog_import.ITEM_COLUMNS, _inserted_items(conn)[0]))
+    assert row["list_price"] == Decimal("12.3457")
+
+
+def test_an_unknown_distributor_is_refused_before_the_receipt_is_written():
+    """Finding 6: the receipt upsert's FK to bp_supplier fires outside
+    import_catalog's try/except, so an unknown distributor must be caught
+    first, as a readable ValueError, with no receipt row written at all."""
+    conn = FakeConn(mapping=_map(), distributor_exists=False)
+    with pytest.raises(ValueError, match="not a supplier"):
+        _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    assert not any("INSERT INTO proc.bp_catalog_source" in sql for sql, _ in conn.calls)
+    assert conn.committed is False
+
+
+def test_a_known_distributor_still_imports_normally():
+    conn = FakeConn(mapping=_map(), distributor_exists=True)
+    res = _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+    assert res.status == "imported"
