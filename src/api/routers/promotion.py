@@ -62,7 +62,7 @@ def run_promotion(
 
 
 @router.post("/canonicalize-po", summary="Align po_id across _trgt to the bare PO number")
-def post_canonicalize_po() -> dict[str, Any]:
+def post_canonicalize_po(principal=Depends(require_user)) -> dict[str, Any]:
     try:
         return canonicalize_po_references()
     except Exception as exc:
