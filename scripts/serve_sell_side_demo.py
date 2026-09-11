@@ -15,5 +15,14 @@ from api import auth as _auth
 from api.routers import catalog, sales
 
 app = FastAPI(title="Sell-side walk (catalog + sales routers only)")
+
+# api.main configures auth at import (its `_ASK_AUTH_MODE = _ask_auth.configure(_settings)`,
+# near the bottom of src/api/main.py) — this app must do the same before mounting the
+# routers below, or api.auth stays "unconfigured" and require_user answers every request
+# with 503 "authentication is not configured".
+from config.settings import settings as _settings  # noqa: E402
+
+_ASK_AUTH_MODE = _auth.configure(_settings)
+
 for _router in (catalog.router, sales.router):
     app.include_router(_router, dependencies=[Depends(_auth.require_user)])
