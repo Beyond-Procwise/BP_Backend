@@ -130,6 +130,13 @@ def assemble_candidate(finding: Dict[str, Any], conn) -> Dict[str, Any]:
             "anchor_confidence": "UNASSESSED",
             "contract_resolution": resolution,
             "facts_state": finding.get("facts_state"),
+            # The detector's own evidence, passed through unread. 300 of the 308
+            # live findings are duplicates whose evidence is duplicate_of /
+            # payment_confirmed / amount_gbp -- none of it a price -- so without
+            # this the critic would judge them on nothing. It is the detector's
+            # claim, so it carries the finding's confidence and is never upgraded.
+            "detector_details": dict(calc),
+            "detector_details_confidence": _confidence_for(finding.get("facts_state")),
         },
         "contract_context": contract_context,
         "category_context": {

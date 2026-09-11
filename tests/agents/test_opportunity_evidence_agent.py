@@ -99,6 +99,46 @@ def test_no_index_is_reported_as_absent_rather_than_omitted():
     assert out["category_context"]["index_source"] == "NONE_AVAILABLE"
 
 
+_DUPLICATE = {
+    "opportunity_ref_id": "ref-dup",
+    "detector_type": "Duplicate Invoice Recovery",
+    "supplier_id": "SUP-Acme",
+    "financial_impact_gbp": 1200.0,
+    "facts_state": "RESOLVED",
+    "source_records": ["INV-9", "INV-9-DUP"],
+    "calculation_details": {
+        "amount_gbp": 1200.0, "currency": "GBP", "duplicate_of": "INV-9",
+        "payment_confirmed": True, "relationship_score": 0.97,
+    },
+}
+
+
+def test_the_detectors_own_evidence_reaches_the_critic():
+    # 300 of the 308 live findings are duplicates. Their evidence is
+    # duplicate_of / payment_confirmed / amount_gbp -- none of it a price --
+    # so an envelope built from price fields alone hands the critic nothing.
+    out = assemble_candidate(_DUPLICATE, _FakeConn({}))
+    details = out["evidence"]["detector_details"]
+    assert details["duplicate_of"] == "INV-9"
+    assert details["payment_confirmed"] is True
+
+
+def test_detector_evidence_carries_the_findings_own_confidence():
+    # The detector's numbers are the detector's claim: ASSERTED when parsed
+    # from a document, never upgraded, and UNASSESSED when the facts are not.
+    out = assemble_candidate(_DUPLICATE, _FakeConn({}))
+    assert out["evidence"]["detector_details_confidence"] == "ASSERTED"
+    shaky = dict(_DUPLICATE, facts_state="INDETERMINATE")
+    out = assemble_candidate(shaky, _FakeConn({}))
+    assert out["evidence"]["detector_details_confidence"] == "UNASSESSED"
+
+
+def test_detector_evidence_is_a_copy_not_the_findings_own_dict():
+    out = assemble_candidate(_DUPLICATE, _FakeConn({}))
+    out["evidence"]["detector_details"]["duplicate_of"] = "tampered"
+    assert _DUPLICATE["calculation_details"]["duplicate_of"] == "INV-9"
+
+
 def test_the_assembler_never_returns_a_verdict_field():
     out = assemble_candidate(_FINDING, _FakeConn({}))
     for judged in ("verdict", "tests", "critic_claim", "value"):
