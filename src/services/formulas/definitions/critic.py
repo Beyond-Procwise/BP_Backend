@@ -236,3 +236,203 @@ def fabricated_anchor(unit_price=None, line_value=None, quantity=None):
     if price is None or value is None or qty is None:
         return UNASSESSED
     return abs(qty - 1.0) < 1e-9 and abs(price - value) < 1e-9
+
+
+@formula(
+    "critic.normalise_unit_rate",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="Reduce a line to a per-unit rate so anchor and current can be compared like for like",
+    effective_from=_FROM,
+    inputs=[
+        Term("total_value", MONEY, "the line total"),
+        Term("quantity", COUNT, "units on the line"),
+    ],
+    output=Output("float", MONEY, "value per unit, or UNASSESSED"),
+    notes="Zero or absent quantity is UNASSESSED. Dividing by a defaulted 1.0 is "
+          "how the miner produced fabricated anchors in the first place.",
+    golden=[
+        GoldenVector(inputs={"total_value": 500.0, "quantity": 10.0}, expected=50.0),
+        GoldenVector(inputs={"total_value": 500.0, "quantity": 0.0}, expected=UNASSESSED,
+                     note="fail-closed: never divide by a defaulted quantity"),
+        GoldenVector(inputs={"total_value": 500.0, "quantity": None}, expected=UNASSESSED),
+    ],
+)
+def normalise_unit_rate(total_value=None, quantity=None):
+    value, qty = _num(total_value), _num(quantity)
+    if value is None or not qty or qty <= 0:
+        return UNASSESSED
+    return value / qty
+
+
+@formula(
+    "critic.volume_delta",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="Proportional change in volume between anchor and current, to test like-for-like",
+    effective_from=_FROM,
+    inputs=[
+        Term("anchor_qty", COUNT, "volume at the anchor", required=False),
+        Term("current_qty", COUNT, "volume now", required=False),
+    ],
+    output=Output("float", RATIO, "signed fraction of the anchor volume, or UNASSESSED"),
+    golden=[
+        GoldenVector(inputs={"anchor_qty": 100.0, "current_qty": 130.0}, expected=0.30,
+                     tolerance=0.001),
+        GoldenVector(inputs={"anchor_qty": 100.0, "current_qty": 100.0}, expected=0.0),
+        GoldenVector(inputs={"anchor_qty": 100.0, "current_qty": 70.0}, expected=-0.30,
+                     tolerance=0.001),
+        GoldenVector(inputs={"anchor_qty": 0.0, "current_qty": 70.0}, expected=UNASSESSED,
+                     note="fail-closed: no anchor volume, no proportion"),
+    ],
+)
+def volume_delta(anchor_qty=None, current_qty=None):
+    anchor, current = _num(anchor_qty), _num(current_qty)
+    if not anchor or anchor <= 0 or current is None:
+        return UNASSESSED
+    return (current - anchor) / anchor
+
+
+@formula(
+    "critic.addressable_value",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="What is left of the detector's number after every haircut the tests justified",
+    effective_from=_FROM,
+    inputs=[
+        Term("detector_proposed", MONEY, "the detector's claimed impact"),
+        Term("haircuts", TEXT, "list of {reason, amount} deductions", required=False),
+    ],
+    output=Output("float", MONEY, "addressable value, floored at 0 and capped at the "
+                                  "detector's own figure"),
+    notes=(
+        "Clamped at BOTH ends, and the upper clamp is the load-bearing one. The "
+        "prompt forbids ever emitting VALID with a value above the detector's, "
+        "so a negative haircut must not be able to raise it. Enforcing that here "
+        "as well as in the invariant guard means a bad policy row cannot inflate "
+        "a number even if the guard is bypassed."
+    ),
+    golden=[
+        GoldenVector(inputs={"detector_proposed": 48000.0,
+                             "haircuts": [{"reason": "inflation", "amount": 30000.0},
+                                          {"reason": "friction", "amount": 8000.0}]},
+                     expected=10000.0),
+        GoldenVector(inputs={"detector_proposed": 1000.0,
+                             "haircuts": [{"reason": "inflation", "amount": 5000.0}]},
+                     expected=0.0, note="worth nothing, not worth minus something"),
+        GoldenVector(inputs={"detector_proposed": 1000.0,
+                             "haircuts": [{"reason": "friction", "amount": -5000.0}]},
+                     expected=1000.0,
+                     note="PINS THE INVARIANT: a haircut can never raise the value"),
+        GoldenVector(inputs={"detector_proposed": 1000.0, "haircuts": None},
+                     expected=1000.0),
+    ],
+)
+def addressable_value(detector_proposed=None, haircuts=None):
+    proposed = _num(detector_proposed)
+    if proposed is None:
+        return UNASSESSED
+    total = 0.0
+    for cut in haircuts or []:
+        amount = _num(cut.get("amount") if isinstance(cut, dict) else cut)
+        if amount:
+            total += amount
+    return max(0.0, min(proposed, proposed - total))
+
+
+@formula(
+    "critic.relative_gap",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="The gap as a proportion of its base -- 40% of GBP 3k is not 4% of GBP 3m",
+    effective_from=_FROM,
+    inputs=[
+        Term("gap_value", MONEY, "the gap"),
+        Term("base_value", MONEY, "what it is a gap against"),
+    ],
+    output=Output("float", RATIO, "fraction of base, or UNASSESSED on a negligible base"),
+    notes="A percentage off a base too small to mean anything is noise. Live, one "
+          "supplier's +345,261% was GBP 26.72 the year before.",
+    golden=[
+        GoldenVector(inputs={"gap_value": 1200.0, "base_value": 3000.0}, expected=0.40,
+                     tolerance=0.001),
+        GoldenVector(inputs={"gap_value": 120000.0, "base_value": 3000000.0},
+                     expected=0.04, tolerance=0.001),
+        GoldenVector(inputs={"gap_value": 1200.0, "base_value": 0.0}, expected=UNASSESSED,
+                     note="fail-closed: negligible base"),
+    ],
+)
+def relative_gap(gap_value=None, base_value=None):
+    gap, base = _num(gap_value), _num(base_value)
+    if gap is None or not base or base <= 0:
+        return UNASSESSED
+    return gap / base
+
+
+@formula(
+    "critic.friction_haircut",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="Deduction for the real cost of switching or renegotiating",
+    effective_from=_FROM,
+    inputs=[
+        Term("gross_value", MONEY, "value before friction"),
+        Term("friction_pct", PERCENT, "governed friction band for this situation",
+             required=False, minimum=0.0, maximum=100.0),
+    ],
+    output=Output("float", MONEY, "the amount to deduct, or UNASSESSED without a band"),
+    notes="No default band. An invented friction percentage is an invented number, "
+          "and the governed policy row is the only source.",
+    golden=[
+        GoldenVector(inputs={"gross_value": 10000.0, "friction_pct": 20.0},
+                     expected=2000.0),
+        GoldenVector(inputs={"gross_value": 10000.0, "friction_pct": 0.0}, expected=0.0),
+        GoldenVector(inputs={"gross_value": 10000.0, "friction_pct": None},
+                     expected=UNASSESSED,
+                     note="fail-closed: no governed band, no haircut invented"),
+    ],
+)
+def friction_haircut(gross_value=None, friction_pct=None):
+    gross, pct = _num(gross_value), _num(friction_pct)
+    if gross is None or pct is None:
+        return UNASSESSED
+    return gross * (pct / 100.0)
+
+
+@formula(
+    "critic.min_confidence",
+    version="1.0.0",
+    owner=_OWNER,
+    purpose="A claim inherits the weakest confidence of the evidence it rests on",
+    effective_from=_FROM,
+    inputs=[Term("confidences", TEXT, "the confidence tag of every load-bearing fact",
+                 required=False)],
+    output=Output("str", TEXT, "ASSERTED | CORROBORATED | UNASSESSED"),
+    notes=(
+        "Nothing upgrades evidence. An empty list is UNASSESSED, not CORROBORATED: "
+        "'we checked nothing' and 'we checked and it was fine' must not return the "
+        "same answer. Ladder matches services/analytics/models.py:70."
+    ),
+    golden=[
+        GoldenVector(inputs={"confidences": ["CORROBORATED", "CORROBORATED"]},
+                     expected="CORROBORATED"),
+        GoldenVector(inputs={"confidences": ["CORROBORATED", "ASSERTED"]},
+                     expected="ASSERTED", note="weakest wins"),
+        GoldenVector(inputs={"confidences": ["CORROBORATED", "UNASSESSED", "ASSERTED"]},
+                     expected="UNASSESSED",
+                     note="any unassessed load-bearing fact forces the verdict"),
+        GoldenVector(inputs={"confidences": []}, expected="UNASSESSED",
+                     note="fail-closed: no evidence is not good evidence"),
+        GoldenVector(inputs={"confidences": None}, expected="UNASSESSED"),
+    ],
+)
+def min_confidence(confidences=None):
+    # Weakest first. Anything unrecognised is treated as UNASSESSED.
+    ladder = {"UNASSESSED": 0, "ASSERTED": 1, "CORROBORATED": 2}
+    names = ["UNASSESSED", "ASSERTED", "CORROBORATED"]
+    if not confidences:
+        return "UNASSESSED"
+    worst = 2
+    for item in confidences:
+        worst = min(worst, ladder.get(str(item).strip().upper(), 0))
+    return names[worst]
