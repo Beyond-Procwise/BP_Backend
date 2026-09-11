@@ -14,8 +14,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+
+from api.auth import require_user
 
 from src.services.opportunity_dashboard import build_opportunities_dashboard, detailed_opportunities
 from src.services.opportunity_linkage import link_opportunities_to_deals
@@ -75,7 +77,7 @@ def get_opportunities_by_deal(deal_id: str) -> dict:
 
 
 @router.post("/link-deals", summary="Link opportunities to their deal via anchoring quote")
-def post_link_deals() -> dict[str, Any]:
+def post_link_deals(principal=Depends(require_user)) -> dict[str, Any]:
     try:
         n = link_opportunities_to_deals()
     except Exception as exc:  # noqa: BLE001
@@ -85,7 +87,8 @@ def post_link_deals() -> dict[str, Any]:
 
 
 @router.post("/{opportunity_id}/stage", summary="Advance an opportunity's lifecycle stage")
-def post_stage(opportunity_id: str, body: StageUpdate) -> dict[str, Any]:
+def post_stage(opportunity_id: str, body: StageUpdate,
+               principal=Depends(require_user)) -> dict[str, Any]:
     try:
         set_stage(opportunity_id, body.stage, body.realised_savings)
     except ValueError as exc:
@@ -97,7 +100,7 @@ def post_stage(opportunity_id: str, body: StageUpdate) -> dict[str, Any]:
 
 
 @router.post("/sync", summary="Sync miner JSON findings into proc.bp_opportunity")
-def post_sync(path: Optional[str] = None) -> dict[str, Any]:
+def post_sync(path: Optional[str] = None, principal=Depends(require_user)) -> dict[str, Any]:
     findings_path = path or os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
         "opportunity_findings.json")

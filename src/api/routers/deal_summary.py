@@ -12,8 +12,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from api.auth import require_user
 from src.services.deal_lifecycle import promote_deal, save_reference
 from src.services.reconciliation import reconcile_deal
 
@@ -120,7 +121,7 @@ def get_analysis_summary(deal_id: str) -> dict[str, Any]:
 
 
 @router.post("/analysis-summary/sync", summary="Backfill analysis summaries for all linked deals")
-def post_analysis_summary_sync() -> dict[str, Any]:
+def post_analysis_summary_sync(principal=Depends(require_user)) -> dict[str, Any]:
     from src.services.deal_analysis_service import sync_deal_summaries
     try:
         result = sync_deal_summaries()
@@ -132,7 +133,7 @@ def post_analysis_summary_sync() -> dict[str, Any]:
 
 
 @router.post("/{deal_id}/reconcile", summary="Reconcile a deal's documents")
-def post_deal_reconcile(deal_id: str) -> dict[str, Any]:
+def post_deal_reconcile(deal_id: str, principal=Depends(require_user)) -> dict[str, Any]:
     try:
         result = reconcile_deal(deal_id)
     except Exception as exc:  # DB or unexpected error
@@ -145,7 +146,7 @@ def post_deal_reconcile(deal_id: str) -> dict[str, Any]:
 
 
 @router.post("/{deal_id}/promote", summary="Commit a draft analysis into a tracked Pipeline deal")
-def post_promote_deal(deal_id: str) -> dict:
+def post_promote_deal(deal_id: str, principal=Depends(require_user)) -> dict:
     try:
         promote_deal(deal_id)
     except Exception as exc:  # noqa: BLE001
@@ -155,7 +156,7 @@ def post_promote_deal(deal_id: str) -> dict:
 
 
 @router.post("/{deal_id}/save-reference", summary="Keep an analysis as a saved (untracked) reference")
-def post_save_reference(deal_id: str) -> dict:
+def post_save_reference(deal_id: str, principal=Depends(require_user)) -> dict:
     try:
         save_reference(deal_id)
     except Exception as exc:  # noqa: BLE001

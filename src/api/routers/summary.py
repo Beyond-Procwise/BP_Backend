@@ -11,9 +11,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth import require_user
 import src.services.summary_agent as summary_agent
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class PrecomputeRequest(BaseModel):
 
 
 @router.post("", summary="Generate (refresh) a persona summary")
-def post_summary(req: SummaryRequest) -> dict[str, Any]:
+def post_summary(req: SummaryRequest, principal=Depends(require_user)) -> dict[str, Any]:
     try:
         result = summary_agent.generate_summary(
             req.persona, deal_id=req.deal_id, as_of=req.as_of
@@ -78,7 +79,7 @@ def get_history(persona: str, deal_id: Optional[str] = None) -> dict[str, Any]:
 
 
 @router.post("/precompute", summary="Warm the summary cache")
-def post_precompute(req: PrecomputeRequest) -> dict[str, Any]:
+def post_precompute(req: PrecomputeRequest, principal=Depends(require_user)) -> dict[str, Any]:
     try:
         return summary_agent.precompute_summaries(
             personas=req.personas, deal_ids=req.deal_ids

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth import require_user
 from src.services.db import get_conn
 from src.services.extraction_feedback import apply, proposer
 
@@ -27,8 +28,22 @@ _COLS = (
 
 
 class ReviewBody(BaseModel):
+    """What is being decided. `approver` is NOT who decided it.
+
+    It defaulted to the literal "api", which was written into proc.bp_prompt --
+    the governance table whose prompts override the code -- as the hint's
+    author. It stays on the model because clients send it; the approver is the
+    token (see `_approver`).
+    """
+
     approver: str = "api"
     reason: str | None = None
+
+
+def _approver(principal) -> str | None:
+    """The token, never `body.approver`. None when there is no principal."""
+
+    return getattr(principal, "subject", None) or None
 
 
 def _rows(cur):
@@ -62,24 +77,25 @@ def get_proposal(proposal_id: int):
 
 
 @router.post("/proposals/{proposal_id}/approve")
-def approve_proposal(proposal_id: int, body: ReviewBody):
+def approve_proposal(proposal_id: int, body: ReviewBody, principal=Depends(require_user)):
     try:
-        return apply.approve(proposal_id, body.approver)
+        return apply.approve(proposal_id, _approver(principal))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post("/proposals/{proposal_id}/reject")
-def reject_proposal(proposal_id: int, body: ReviewBody):
+def reject_proposal(proposal_id: int, body: ReviewBody, principal=Depends(require_user)):
     try:
-        apply.reject(proposal_id, body.approver, body.reason)
+        apply.reject(proposal_id, _approver(principal), body.reason)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"status": "rejected", "proposal_id": proposal_id}
 
 
 @router.post("/proposals/run")
-def run_proposer(window_days: int = 14, draft: bool = True):
+def run_proposer(window_days: int = 14, draft: bool = True,
+                 principal=Depends(require_user)):
     """Trigger the proposer on demand (ops/validation)."""
     ids = proposer.propose_all(window_days=window_days, draft=draft)
     return {"created": ids, "count": len(ids)}

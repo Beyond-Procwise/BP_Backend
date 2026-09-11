@@ -61,7 +61,8 @@ class WorkflowState:
 
     workflow_id: str
     workflow_name: str
-    user_id: str
+    # Who started the run (a principal's subject), or None. Never a stand-in.
+    user_id: Optional[str]
     status: str = "running"
     current_node: Optional[str] = None
     node_statuses: Dict[str, NodeStatus] = field(default_factory=dict)
@@ -103,7 +104,7 @@ class WorkflowState:
         state = cls(
             workflow_id=data["workflow_id"],
             workflow_name=data["workflow_name"],
-            user_id=data.get("user_id", "system"),
+            user_id=data.get("user_id"),
         )
         state.status = data.get("status", "running")
         state.current_node = data.get("current_node")
@@ -381,7 +382,7 @@ class WorkflowEngine:
         graph: WorkflowGraph,
         *,
         input_data: Optional[Dict[str, Any]] = None,
-        user_id: str = "system",
+        user_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
         resume_state: Optional[WorkflowState] = None,
     ) -> WorkflowState:

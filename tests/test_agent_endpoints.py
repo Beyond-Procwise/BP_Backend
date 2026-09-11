@@ -94,6 +94,11 @@ def test_agent_execute_endpoint():
     orchestrator = DummyOrchestrator()
     app.state.orchestrator = orchestrator
     app.state.agent_nick = orchestrator.agent_nick
+    # /agents/execute now resolves the caller (P8 phase 2). This test is about
+    # the execution, not authentication, so it pins the principal the way
+    # test_reload_governance_reloads_both_engines below already does:
+    # require_user's global `_mode` is test-order-sensitive.
+    app.dependency_overrides[require_user] = lambda: None
     client = TestClient(app)
 
     resp = client.post(

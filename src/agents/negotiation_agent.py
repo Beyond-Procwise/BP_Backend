@@ -2527,11 +2527,12 @@ class NegotiationAgent(BaseAgent):
         self, parent_context: AgentContext, payload: Dict[str, Any]
     ) -> AgentOutput:
         workflow_id = payload.get("workflow_id") or parent_context.workflow_id or "negotiation-batch"
-        user_id = payload.get("user_id") or parent_context.user_id or "system"
+        user_id = payload.get("user_id") or parent_context.user_id or None
         sub_context = AgentContext(
             workflow_id=str(workflow_id),
             agent_id=parent_context.agent_id,
-            user_id=str(user_id),
+            # str(None) would be the name "None" -- a stand-in by accident.
+            user_id=str(user_id) if user_id else None,
             input_data=dict(payload),
             parent_agent=parent_context.agent_id,
             routing_history=list(parent_context.routing_history),

@@ -45,7 +45,9 @@ class WorkflowBody(BaseModel):
 
 class RunBody(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
-    user_id: str = "system"
+    # Accepted because clients send it; never read. The run is started by the
+    # token. It defaulted to "system" and was passed straight in as the user.
+    user_id: Optional[str] = None
 
 
 class AnswerBody(BaseModel):
@@ -147,6 +149,9 @@ def run_workflow(
 
     run_id = f"awf-{workflow_id}-{uuid.uuid4().hex[:8]}"
     answers = reqrepo.answers_for(run_id)          # empty on a fresh run
+    # Recorded on the run row, because a run that stops to ask a question is
+    # resumed by whoever ANSWERS -- who is not necessarily who started it.
+    started_by = getattr(principal, "subject", None) or None
 
     missing = pending_requests(wf["graph"], body.payload, answers)
     if missing:
@@ -157,7 +162,7 @@ def run_workflow(
         # submit_input can resolve this run back to its saved workflow later
         # without parsing the run_id string.
         reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=body.payload,
-                            status="awaiting_input")
+                            status="awaiting_input", initiated_by=started_by)
         reqrepo.raise_requests(run_id, missing, agent_workflow_id=workflow_id)
         return {
             "run_id": run_id, "status": "awaiting_input",
@@ -169,8 +174,8 @@ def run_workflow(
     # before it executes, exactly like the resume path in submit_input, so a
     # replay of this same request can never execute the workflow twice.
     reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=body.payload,
-                        status="pending")
-    return _claim_and_execute(request, run_id, wf, {**body.payload, **answers}, body.user_id)
+                        status="pending", initiated_by=started_by)
+    return _claim_and_execute(request, run_id, wf, {**body.payload, **answers}, started_by)
 
 
 @router.get("/runs/{run_id}")
@@ -229,7 +234,8 @@ def get_run(run_id: str) -> Dict[str, Any]:
 
 
 @router.post("/runs/{run_id}/input")
-def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, Any]:
+def submit_input(run_id: str, body: AnswerBody, request: Request,
+                 principal=Depends(require_user)) -> Dict[str, Any]:
     """The human answers. If nothing else is outstanding, the run proceeds.
 
     request_id is scoped to run_id: a request_id that belongs to a
@@ -253,7 +259,14 @@ def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, A
     # A no-op if this request was already answered (e.g. a replayed final
     # answer) -- idempotent, not an error, so a client retry still gets a
     # 200 with the run's current state instead of failing.
-    reqrepo.answer(run_id, body.request_id, body.answer, body.answered_by)
+    #
+    # Who answered is the token. This row is the HITL audit trail -- what a
+    # person was asked and what they said -- and `body.answered_by` (default
+    # "human") is a name the caller types. It stays on the model because
+    # clients send it; it is not read as identity, and with no principal the
+    # answer is recorded against nobody.
+    reqrepo.answer(run_id, body.request_id, body.answer,
+                   getattr(principal, "subject", None) or None)
 
     still_open = reqrepo.open_requests(run_id)
     if still_open:
@@ -276,7 +289,11 @@ def submit_input(run_id: str, body: AnswerBody, request: Request) -> Dict[str, A
     # nothing the human already gave up front is ever dropped.
     original_payload = reqrepo.payload_for(run_id)
     answers = reqrepo.answers_for(run_id)
-    return _claim_and_execute(request, run_id, wf, {**original_payload, **answers}, "human")
+    # Started by whoever started it -- not "human", and not whoever answered
+    # last. The answerer is on the answer row; a self-approval check needs the
+    # two kept apart.
+    return _claim_and_execute(request, run_id, wf, {**original_payload, **answers},
+                              reqrepo.initiator_for(run_id))
 
 
 # A run gets this long to finish in-request before the caller is answered
@@ -302,7 +319,7 @@ def _remember_live_run(run_id: str, state: Any) -> None:
 
 
 def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
-                        input_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+                        input_data: Dict[str, Any], user_id: Optional[str]) -> Dict[str, Any]:
     """Atomically claim this run, then execute it exactly once — in the
     background.
 
@@ -381,7 +398,7 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
 
 
 def _run_to_completion(engine: Any, graph: Any, state: Any, run_id: str,
-                       user_id: str) -> None:
+                       user_id: Optional[str]) -> None:
     """The background body of a run. Owns the terminal status of the run row:
     whatever happens — a clean finish, agent-level errors, or the engine
     itself raising — the row leaves "executing"."""

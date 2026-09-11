@@ -1126,7 +1126,7 @@ def _process_record_with_agent(
     context = AgentContext(
         workflow_id=str(workflow_id),
         agent_id="SupplierInteractionAgent",
-        user_id="system",
+        user_id=None,  # a watcher, not a person
         input_data={
             "subject": record.get("subject"),
             "message": record.get("body"),

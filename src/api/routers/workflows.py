@@ -1004,6 +1004,7 @@ async def ask_question_stream(
 def rank_suppliers(
     req: RankingRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     # Use execute_ranking_flow which derives criteria from the query text
     # before calling execute_workflow. This satisfies the policy engine's
@@ -1015,20 +1016,28 @@ def rank_suppliers(
 def evaluate_quotes(
     req: QuoteEvaluationRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Evaluate and compare supplier quotes."""
-    return orchestrator.execute_workflow("quote_evaluation", req.model_dump())
+    return orchestrator.execute_workflow("quote_evaluation", req.model_dump(),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/opportunities")
 def mine_opportunities(
     req: OpportunityMiningRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     prs = orchestrator.agent_nick.process_routing_service
+    # A person started this run; without the principal the service filled
+    # created_by with settings.script_user ("AgentNick").
+    subject = getattr(principal, "subject", None) or None
     process_id = prs.log_process(
         process_name="opportunity_mining",
         process_details=req.model_dump(),
+        created_by=subject,
+        user_id=subject,
     )
     if process_id is None:
         raise HTTPException(status_code=500, detail="Failed to log process")
@@ -1041,7 +1050,7 @@ def mine_opportunities(
     )
     try:
         result = orchestrator.execute_workflow(
-            "opportunity_mining", req.model_dump()
+            "opportunity_mining", req.model_dump(), user_id=subject
         )
         prs.log_action(
             process_id=process_id,
@@ -1119,8 +1128,10 @@ def reject_opportunity(
 async def extract_documents(
     req: ExtractRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     prs = orchestrator.agent_nick.process_routing_service
+    subject = getattr(principal, "subject", None) or None
     process_id = prs.log_process(
         process_name="document_extraction",
         process_details={
@@ -1128,6 +1139,8 @@ async def extract_documents(
             "s3_object_key": req.s3_object_key,
         },
         # process_status=1,
+        created_by=subject,
+        user_id=subject,
     )
     if process_id is None:
         raise HTTPException(status_code=500, detail="Failed to log process")
@@ -1992,6 +2005,7 @@ def remove_email_attachment(
     unique_id: str,
     index: int,
     agent_nick=Depends(get_agent_nick),
+    principal=Depends(require_user),
 ) -> Dict[str, Any]:
     draft = draft_rfq_emails_repo.load_by_unique_id(unique_id)
     if not draft:
@@ -2118,40 +2132,68 @@ async def dispatch_workflow_drafts(
 
 
 
+def _payload_as_caller(req: BaseModel, principal: Any) -> Dict[str, Any]:
+    """The request as the agent's payload, with `user_id` taken from the token.
+
+    These four request models carry a `user_id` the caller types, and it rode
+    into the agent payload as though it were the user -- a negotiation batch
+    entry reads it as its sub-run's user. It stays on the models because
+    clients send it; the payload carries the token's subject, or nobody.
+    """
+    payload = req.model_dump()
+    payload["user_id"] = getattr(principal, "subject", None) or None
+    return payload
+
+
+def _started_by(principal: Any) -> Optional[str]:
+    """Who started a workflow: the token's subject, or nobody. Never a stand-in."""
+    return getattr(principal, "subject", None) or None
+
+
 @router.post("/negotiate")
 def negotiate(
     req: NegotiationRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Execute the negotiation agent."""
-    return orchestrator.execute_workflow("negotiation", req.model_dump())
+    return orchestrator.execute_workflow("negotiation", _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/approvals")
 def approvals(
     req: ApprovalRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Run the approvals agent."""
-    return orchestrator.execute_workflow("approvals", req.model_dump())
+    return orchestrator.execute_workflow("approvals", _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/supplier-interaction")
 def supplier_interaction(
     req: SupplierInteractionRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Trigger the supplier interaction agent."""
-    return orchestrator.execute_workflow("supplier_interaction", req.model_dump())
+    return orchestrator.execute_workflow("supplier_interaction",
+                                         _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.post("/discrepancy")
 def detect_discrepancy(
     req: DiscrepancyRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
+    principal=Depends(require_user),
 ):
     """Expose the discrepancy detection agent."""
-    return orchestrator.execute_workflow("discrepancy_detection", req.model_dump())
+    return orchestrator.execute_workflow("discrepancy_detection",
+                                         _payload_as_caller(req, principal),
+                                         user_id=_started_by(principal))
 
 
 @router.get(

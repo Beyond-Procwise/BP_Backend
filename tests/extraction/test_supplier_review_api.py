@@ -32,7 +32,13 @@ def around():
 
 @pytest.fixture
 def client():
+    from api.auth import require_user
+
     app = FastAPI(); app.include_router(supplier_review.router)
+    # confirm/reject resolve the caller since P8 phase 1, and this app never
+    # configures auth, so both tests had been getting 503. They are about the
+    # merge/split, not authentication: the principal is pinned, nobody.
+    app.dependency_overrides[require_user] = lambda: None
     return TestClient(app)
 
 

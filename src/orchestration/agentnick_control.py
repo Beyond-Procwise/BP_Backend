@@ -108,7 +108,7 @@ def _agent_tools(
                 ctx = AgentContext(
                     workflow_id=workflow_id or uuid.uuid4().hex,
                     agent_id=slug,
-                    user_id=user_id or "AgentNick",
+                    user_id=user_id,
                     input_data=payload,
                 )
                 output = agent.run(ctx)
