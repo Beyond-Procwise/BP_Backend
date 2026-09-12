@@ -435,7 +435,7 @@ class DummyOrchestrator:
     def __init__(self, agent):
         self.agent = agent
 
-    def execute_workflow(self, workflow_name, input_data):
+    def execute_workflow(self, workflow_name, input_data, user_id=None):
         assert workflow_name == "quote_evaluation"
         context = AgentContext(
             workflow_id="wf2",
@@ -452,9 +452,15 @@ def test_quote_evaluation_endpoint(monkeypatch):
     agent = QuoteEvaluationAgent(nick)
     monkeypatch.setattr(agent, "_fetch_quotes_from_database", lambda *_, **__: [])
     monkeypatch.setattr(agent, "_fetch_quotes", _mock_quotes)
+    from api.auth import require_user
+
     app = FastAPI()
     app.include_router(router)
     app.state.orchestrator = DummyOrchestrator(agent)
+    # The endpoint resolves the caller (P8 phase 2) and this app configures no
+    # auth, so require_user answers 503 -- and its global mode is set by
+    # whichever test ran first. This test is about the evaluation: pin nobody.
+    app.dependency_overrides[require_user] = lambda: None
     client = TestClient(app)
     resp = client.post("/workflows/quotes/evaluate", json={})
     assert resp.status_code == 200

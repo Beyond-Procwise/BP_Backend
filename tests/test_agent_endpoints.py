@@ -60,7 +60,7 @@ class DummyOrchestrator:
     def __init__(self):
         self.agent_nick = SimpleNamespace(process_routing_service=DummyPRS())
 
-    def execute_workflow(self, workflow_name, input_data):
+    def execute_workflow(self, workflow_name, input_data, user_id=None):
         if workflow_name == "email_drafting":
             output = {
                 **input_data,
