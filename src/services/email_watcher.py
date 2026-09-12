@@ -1324,7 +1324,7 @@ class EmailWatcher:
             context = AgentContext(
                 workflow_id=workflow_id,
                 agent_id="EmailWatcher",
-                user_id="system",
+                user_id=None,  # a watcher, not a person
                 input_data={**input_payload, "email_headers": headers},
             )
 
@@ -1402,7 +1402,7 @@ class EmailWatcher:
                     neg_context = AgentContext(
                         workflow_id=tracker.workflow_id,
                         agent_id="NegotiationAgent",
-                        user_id="system",
+                        user_id=None,  # started by a supplier's reply, not a person
                         input_data=negotiation_payload,
                     )
                     neg_result = self.negotiation_agent.execute(neg_context)

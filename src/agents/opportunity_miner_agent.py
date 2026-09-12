@@ -3032,7 +3032,7 @@ class OpportunityMinerAgent(BaseAgent):
             data["policy_id"] = policy_id
         logger.warning("OpportunityMinerAgent blocked execution: %s", message)
         dummy_context = AgentContext(
-            workflow_id="blocked", agent_id="opportunity_miner", user_id="system", input_data={}
+            workflow_id="blocked", agent_id="opportunity_miner", user_id=None, input_data={}
         )
         dummy_context.routing_history = ["opportunity_miner"]
         return self._with_plan(

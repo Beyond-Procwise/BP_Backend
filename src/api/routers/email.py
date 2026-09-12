@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
+from api.auth import require_user
 from services.email_watcher import run_email_watcher_for_workflow
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ async def _run_email_watcher(
 async def trigger_email_watcher(
     payload: EmailWatcherTriggerRequest,
     request: Request,
+    principal=Depends(require_user),
 ) -> EmailWatcherTriggerResponse:
     """Trigger the EmailWatcher for a specific workflow."""
 

@@ -11,8 +11,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from api.auth import require_user
 from src.services.negotiate_dashboard import build_negotiate_dashboard
 from src.services.negotiation_advice import apply_turn, build_advice
 
@@ -53,9 +54,13 @@ def get_negotiate_advice(deal_id: str) -> dict[str, Any]:
 
 @router.post("/{deal_id}/advice/message", summary="One advice conversation turn")
 def post_negotiate_advice_message(deal_id: str,
-                                  body: dict[str, Any]) -> dict[str, Any]:
+                                  body: dict[str, Any],
+                                  principal=Depends(require_user)) -> dict[str, Any]:
+    # A stated fact changes the advice, and its stated_by was the literal
+    # "buyer". Who stated it is the token, or nobody.
     try:
-        result = apply_turn(deal_id, body or {})
+        result = apply_turn(deal_id, body or {},
+                            created_by=getattr(principal, "subject", None) or None)
     except Exception as exc:
         logger.exception("advice turn failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -66,10 +71,13 @@ def post_negotiate_advice_message(deal_id: str,
 
 @router.delete("/{deal_id}/advice/fact/{fact_key}",
                summary="Withdraw a buyer-stated fact")
-def delete_negotiate_advice_fact(deal_id: str, fact_key: str) -> dict[str, Any]:
+def delete_negotiate_advice_fact(deal_id: str, fact_key: str,
+                                 principal=Depends(require_user)) -> dict[str, Any]:
+    # Withdrawing can seed the advice row first, and that row has a created_by.
     try:
         result = apply_turn(deal_id, {"action": "withdraw_fact",
-                                      "fact_key": fact_key})
+                                      "fact_key": fact_key},
+                            created_by=getattr(principal, "subject", None) or None)
     except Exception as exc:
         logger.exception("fact withdrawal failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))

@@ -1123,7 +1123,8 @@ class DecisionEngine:
         *,
         workflow_id: Optional[str] = None,
         agent: Optional[str] = None,
-        created_by: str = "system",
+        # Who decided: a principal's subject, or None. Never "system".
+        created_by: Optional[str] = None,
     ) -> Optional[int]:
         """Persist the decision and its evidence. Returns the new decision_id."""
         try:
@@ -1191,7 +1192,9 @@ class DecisionEngine:
         finding_id: str,
         action: str,
         *,
-        user_id: str = "api",
+        # Who acted: a principal's subject. No stand-in -- "api" was written to
+        # resolved_by / actioned_by as though it were a person.
+        user_id: Optional[str] = None,
         value: Optional[str] = None,
         override_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -1502,7 +1505,7 @@ class DecisionEngine:
         decision_id: int,
         action: str,
         *,
-        user_id: str = "api",
+        user_id: Optional[str] = None,
         override_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record the human's send/reject on an already-decided email reply.

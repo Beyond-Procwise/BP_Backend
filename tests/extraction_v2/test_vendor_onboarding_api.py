@@ -24,11 +24,15 @@ AQUARIUS = FIXTURE_DIR / "AQUARIUS INV-25-050 for PO508084 .pdf"
 
 def _build_app() -> tuple[FastAPI, InMemoryTemplateStore]:
     """Build a FastAPI app with the onboarding router + a fresh store."""
+    from api.auth import require_user
     from src.api.routers.vendors import build_router
 
     store = InMemoryTemplateStore()
     app = FastAPI()
     app.include_router(build_router(store=store))
+    # The onboarding writes resolve the caller (P8 phase 2); this app never
+    # configures auth, and the tests are about onboarding: pinned, nobody.
+    app.dependency_overrides[require_user] = lambda: None
     return app, store
 
 

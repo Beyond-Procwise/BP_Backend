@@ -1,4 +1,5 @@
 import logging
+from src.services.governed_limits import LimitUnavailable
 from src.services.governed_limits import limit as _governed_limit
 import threading
 from datetime import datetime, timedelta, timezone
@@ -951,12 +952,18 @@ class BackendScheduler:
         import os
         try:
             workflow = os.environ.get("OPPORTUNITY_MINING_WORKFLOW", "all")
+            # What counts as worth telling a buyer about is policy (P9). It used
+            # to fall back to 100.0 when the policy value could not be read as a
+            # number -- a threshold decided by a constant nobody could see. No
+            # governed threshold now means no mining, and the log says why.
             try:
                 min_impact = _governed_limit(
                     "autonomous_operation", "opportunity_mining_min_impact",
                     env="OPPORTUNITY_MINING_MIN_IMPACT")
-            except ValueError:
-                min_impact = 100.0
+            except (LimitUnavailable, ValueError, TypeError) as exc:
+                logger.error("opportunity mining skipped: no governed "
+                             "opportunity_mining_min_impact (%s)", exc)
+                return
             result = self._orchestrator.execute_workflow(
                 "opportunity_mining",
                 {"workflow": workflow, "conditions": {}, "min_financial_impact": min_impact},

@@ -68,7 +68,7 @@ _SELECT = """SELECT group_id, name, members, links, created_by, created_at, upda
 
 
 def create(name: str, members: List[Dict[str, Any]], links: List[Dict[str, Any]],
-           created_by: str = "system") -> int:
+           created_by: Optional[str] = None) -> int:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(

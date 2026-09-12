@@ -128,7 +128,7 @@ def list_reviews(status: str = "pending", limit: int = 100):
 
 
 @router.post("/reviews/sweep")
-def sweep_duplicates(min_score: float | None = None):
+def sweep_duplicates(min_score: float | None = None, principal=Depends(require_user)):
     """Scan existing suppliers for likely duplicates and flag them for review."""
     with get_conn() as c:
         return SR.sweep_supplier_duplicates(c, min_score=min_score)

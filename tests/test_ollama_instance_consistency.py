@@ -49,6 +49,9 @@ def test_generate_defaults_to_the_shared_layer_count(monkeypatch):
 def test_preload_pins_the_same_configuration(monkeypatch):
     seen = {}
     oc.clear_layout_rejection()
+    # Nothing resident, so there is a cold load to pay for. A preload against an
+    # ALREADY-loaded model is skipped entirely (test_ollama_preload_does_not_reload).
+    monkeypatch.setattr(oc, "loaded_models", lambda: [])
     monkeypatch.setattr(oc.egress, "post", _capture(seen))
     oc.preload_model("m")
     # Preloading WITHOUT the layer count pins a Modelfile-default instance that no
@@ -60,6 +63,7 @@ def test_a_card_that_refused_moves_the_preload_too(monkeypatch):
     # The fallback is only "one instance" if everything falls back together:
     # a preload still pinning the whole model would load a second copy of it.
     seen = {}
+    monkeypatch.setattr(oc, "loaded_models", lambda: [])
     monkeypatch.setattr(oc.egress, "post", _capture(seen))
     oc.note_layout_rejection("full")
     try:
