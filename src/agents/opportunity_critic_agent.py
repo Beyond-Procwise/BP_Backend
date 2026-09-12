@@ -26,6 +26,7 @@ from agents.base_agent import AgentContext, AgentOutput, AgentStatus, BaseAgent
 from src.services.opportunity_critic import governed
 from src.services.opportunity_critic.assemble import assemble_candidate
 from src.services.opportunity_critic.invariants import check_invariants
+from src.services.opportunity_critic.llm import ask_for_critique
 from src.services.opportunity_critic.shadow import may_suppress
 from src.services.opportunity_critic.store import record_critique
 
@@ -102,19 +103,17 @@ class OpportunityCriticAgent(BaseAgent):
             },
         }, default=str)
 
-        # reason() returns a ToolRunResult dataclass (services/tool_runtime.py:96),
-        # NOT a dict. Read .answer first; the dict branch exists only for tests and
-        # for any caller that hands back a plain mapping.
-        result = self.reason(task, extra_system=prompt_text, require_tool_use=False)
-        answer = getattr(result, "answer", None)
-        if answer is None and isinstance(result, dict):
-            answer = result.get("answer")
-        reason_error = getattr(result, "error", None)
-        if answer is None:
-            answer = result
+        # Not self.reason(): that prepends AgentNick's controller prompt ("You
+        # establish facts by calling tools") to a prompt that says "Return JSON
+        # only" -- live, the model spent all six rounds calling tools and never
+        # answered -- and it returns the answer through output_safety, which
+        # flags this agent's own vocabulary and would replace a valid critique
+        # with a canned reply. The egress audit is kept; see llm.py.
+        system = "\n\n".join(p for p in (self.instructions(), prompt_text) if p)
+        answer, model_error = ask_for_critique(system, task)
         critique = self._parse(answer)
         if critique is None:
-            detail = f" (reason error: {reason_error})" if reason_error else ""
+            detail = f" (model error: {model_error})" if model_error else ""
             return AgentOutput(
                 status=AgentStatus.FAILED, data={},
                 error=("critique could not be parsed as JSON; refusing to guess a "

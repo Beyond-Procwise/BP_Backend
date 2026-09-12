@@ -2314,6 +2314,20 @@ def test_unparseable_model_output_fails_rather_than_guessing():
 
 Expected: `ModuleNotFoundError: src.agents.opportunity_critic_agent`.
 
+> **Correction (2026-09-12) — the agent must not reach the model through
+> `BaseAgent.reason()`.** Measured live: with AgentNick's controller prompt
+> ("You establish facts by calling tools") prepended to a prompt that says
+> "Return JSON only", the model spent all six rounds calling tools and never
+> answered (`max_rounds (6) exhausted`). Worse, every answer from `run_tools`
+> returns through `_gate` = `services.output_safety`, and `is_safe()` is FALSE
+> for a realistic critique: it flags `SUPPLIER_NOT_IN_CONTRACT_MASTER` as an env
+> var and "repository" as a mechanism, so a correct critique would be sent back
+> to be re-framed and then replaced by a canned reply that parses as nothing.
+> That gate is right for prose shown to a person; a critique is a machine record.
+> Shipped instead: `opportunity_critic/llm.ask_for_critique()` — one round, no
+> tools, no output gate, and the SAME audited `egress.post(purpose=
+> MODEL_INFERENCE)` every other inference uses.
+
 - [ ] **Step 8: Write the agent**
 
 Create `src/agents/opportunity_critic_agent.py`:
