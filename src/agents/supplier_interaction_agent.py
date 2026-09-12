@@ -1458,7 +1458,13 @@ class SupplierInteractionAgent(BaseAgent):
             else:
                 context_ids = context_expectations.get("expected_unique_ids", set()) if isinstance(context_expectations, dict) else set()
                 if context_ids:
-                    expected_ids = [self._coerce_text(uid) for uid in context_ids if self._coerce_text(uid)]
+                    # sorted, because context_ids is a SET: Python randomises
+                    # string hashing per process, so the order of the ids this
+                    # gate reports (and the order every caller then dispatches
+                    # in) changed from run to run. The gate's own test failed on
+                    # 5 of 8 hash seeds.
+                    expected_ids = [self._coerce_text(uid) for uid in sorted(context_ids)
+                                    if self._coerce_text(uid)]
                     expected_ids = [uid for uid in expected_ids if uid]
                     if expected_ids:
                         count_hint = max(count_hint, len(expected_ids), context_expectations.get("expected_count", 0))
@@ -1542,7 +1548,7 @@ class SupplierInteractionAgent(BaseAgent):
                     if context_ids:
                         expected_ids = [
                             self._coerce_text(uid)
-                            for uid in context_ids
+                            for uid in sorted(context_ids)  # a set: see above
                             if self._coerce_text(uid)
                         ]
                         expected_ids = [uid for uid in expected_ids if uid]
