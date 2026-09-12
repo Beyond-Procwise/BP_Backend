@@ -11,7 +11,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from src.services import egress
 
@@ -427,6 +427,34 @@ def ollama_cloud_generate(
     return None
 
 
+def loaded_models() -> List[str]:
+    """The models Ollama is holding in memory right now, or [] if it cannot say.
+
+    Unreadable means empty on purpose: the caller then behaves exactly as it did
+    before this existed, and a server that cannot be asked does not stop a
+    preload.
+    """
+    try:
+        response = egress.get(
+            f"{OLLAMA_BASE_URL}/api/ps",
+            purpose=egress.Purpose.MODEL_INFERENCE,
+            require_global=False,
+            timeout=10,
+        )
+        if getattr(response, "status_code", 0) != 200:
+            return []
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - unreadable is "nothing known", not an error
+        logger.debug("could not read Ollama's loaded models", exc_info=True)
+        return []
+
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return []
+    return [str(m.get("name")) for m in models
+            if isinstance(m, dict) and m.get("name")]
+
+
 def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
     """Preload the model into VRAM, and find out here whether it fits.
 
@@ -436,8 +464,22 @@ def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
     tells every other caller at once, and the preload then goes ahead in the
     configuration those callers will actually use — giving up would leave the
     first real request with a two-minute cold load on top of everything else.
+
+    A model that is ALREADY loaded is left alone. Ollama keys a runner on its
+    load-affecting options, so asking for a different num_gpu than the resident
+    runner was loaded with does not reuse it: it loads another ~20GB copy, and
+    on 2026-09-11 that alternation (999 refused, fall back to the Modelfile's
+    25, back-off expires, 999 again) left the product with no model at all for
+    minutes at a time. There is no cold load left to pay for here, which is the
+    only thing this function exists to do.
     """
     model = model or DEFAULT_MODEL
+
+    if model in loaded_models():
+        logger.info(
+            "Ollama already holds '%s'; not preloading, because asking for a "
+            "different layout would reload it", model)
+        return True
 
     def _body() -> Dict[str, Any]:
         return {
@@ -472,5 +514,11 @@ def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
         logger.info("Preloaded Ollama model '%s' with keep_alive=%s", model, KEEP_ALIVE)
         return True
     except Exception as exc:
+        # Whatever the words -- killed, timed out, runner never came up -- the
+        # card would not take this layout now. Only the server's own "memory
+        # layout cannot be allocated" used to take the pin off, so a load that
+        # died any other way left every later caller still demanding the whole
+        # card, and the next one started the same failing load again.
+        note_layout_rejection(f"preload failed: {exc}")
         logger.warning("Ollama model preload failed (non-critical): %s", exc)
         return False
