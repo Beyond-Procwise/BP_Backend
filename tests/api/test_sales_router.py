@@ -73,7 +73,9 @@ def test_approval_asks_the_transact_gate_and_uses_the_token(client, monkeypatch)
 
 def test_issuing_asks_the_communicate_gate(client, monkeypatch):
     monkeypatch.setattr(sr.quotes, "issue", lambda conn, qid, actor: _quote("issued"))
-    client.post("/sales/quotes/9/issue")
+    r = client.post("/sales/quotes/9/issue")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "issued"
     assert client.gates == ["sales_quote.issue"]
 
 

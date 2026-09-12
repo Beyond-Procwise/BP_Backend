@@ -1,9 +1,11 @@
 """A governance limit comes from policy, and a missing one refuses.
 
-Thirty-three limits deciding what reaches the financial record, what counts as a
+Thirty-five limits — the thirty-three P9 moved, plus the two the reseller
+catalog added — deciding what reaches the financial record, what counts as a
 match on money, who a supplier is, what an agent may offer and how far it may
-reach were read from `os.getenv` with a hardcoded default. Changeable with no
-code change AND no policy edit, versioned by nothing, on no governance screen.
+reach. The original thirty-three were read from `os.getenv` with a hardcoded
+default: changeable with no code change AND no policy edit, versioned by
+nothing, on no governance screen.
 
 This is the one place that reads them now. The env var keeps working for one
 release so a tuned deployment does not silently revert during rollout, but it
