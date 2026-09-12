@@ -74,12 +74,17 @@ def main() -> int:
     from src.agents.opportunity_critic_agent import OpportunityCriticAgent
     from src.services.db import get_conn
     from src.services.opportunity_critic.governed import load_thresholds
-    from src.services.opportunity_critic.batch import skip_model_preload
+    from src.services.opportunity_critic.batch import (
+        skip_embedding_model, skip_model_preload,
+    )
     from src.services.opportunity_critic.shadow import unenrolled_detectors
 
-    # Before AgentNick(): its preload asks Ollama for all 49 layers on a card
-    # that holds 25, and the failed load plus reload is what stalled the model.
+    # Both before AgentNick(). Its preload asks Ollama for all 49 layers on a
+    # card that holds 25, and the failed load plus reload is what stalled the
+    # model; its sentence-transformer lands in RAM once the GPU is hidden, and
+    # that is what the OOM killer took the last run for.
     skip_model_preload()
+    skip_embedding_model()
     nick = AgentNick()
     thresholds = load_thresholds(nick.policy_engine)
     if thresholds.source is None:
