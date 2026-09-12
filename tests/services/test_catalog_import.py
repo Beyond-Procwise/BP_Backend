@@ -1,0 +1,623 @@
+"""CatalogImportService. Every test drives a fake psycopg2 connection, so the suite
+never needs a database; one test drives a real CSV through the real spreadsheet
+parser, because a mapping that only ever sees a hand-built table proves nothing
+about the cells the parser actually emits.
+
+Spec: docs/superpowers/specs/2026-09-09-reseller-catalog-and-sell-side-design.md
+"""
+from __future__ import annotations
+
+import hashlib
+from decimal import Decimal
+
+import pytest
+
+from src.services import catalog_import
+from src.services.extraction_v3.schemas.parsed_document import (
+    Cell, Page, ParsedDocument, Table,
+)
+
+_ZERO = (0.0, 0.0, 0.0, 0.0)
+
+
+# --- fakes ------------------------------------------------------------------
+
+def _table(rows: list[list[str]]) -> Table:
+    cells = [
+        [Cell(page=0, bbox=_ZERO, text=v, row_index=r, col_index=c)
+         for c, v in enumerate(row)]
+        for r, row in enumerate(rows)
+    ]
+    return Table(page=0, bbox=_ZERO, rows=cells, header_row_index=0)
+
+
+def _parsed(sheets: list[list[list[str]]]) -> ParsedDocument:
+    return ParsedDocument(
+        source_path="feed.csv", file_format="spreadsheet",
+        pages=[Page(index=i, width=1000.0, height=1000.0, rotation=0,
+                    regions=[], tables=[_table(rows)], tokens=[])
+               for i, rows in enumerate(sheets)],
+        full_text="", parser_backend="spreadsheet", parser_confidence=1.0,
+    )
+
+
+class FakeCursor:
+    """Dispatches on the statement rather than replaying a fixed queue: the
+    importer issues several different reads and their order is an implementation
+    detail no test should be pinned to."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, sql, params=None):
+        flat = " ".join(sql.split())
+        self.conn.calls.append((flat, params))
+        self._result = self.conn.answer(flat, params)
+
+    def fetchone(self):
+        r = self._result
+        return r[0] if isinstance(r, list) and r else (r if not isinstance(r, list) else None)
+
+    def fetchall(self):
+        return self._result if isinstance(self._result, list) else []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class FakeConn:
+    def __init__(self, *, mapping, existing_source=None, unspsc=(), current=None,
+                 fail_on=None, distributor_exists=True):
+        self.mapping = mapping
+        self.existing_source = existing_source
+        self.unspsc = list(unspsc)
+        self.current = dict(current or {})     # distributor_sku -> current row dict
+        self.fail_on = fail_on
+        self.distributor_exists = distributor_exists
+        self.calls = []
+        self.committed = False
+        self.rolled_back = False
+        self._next_source_id = 7001
+
+    def answer(self, flat, params):
+        if self.fail_on and self.fail_on in flat:
+            raise RuntimeError("boom: simulated database failure")
+        if "FROM proc.bp_supplier" in flat and "SELECT" in flat:
+            return [{"?column?": 1}] if self.distributor_exists else []
+        if "FROM proc.bp_catalog_source" in flat and "SELECT" in flat:
+            return [self.existing_source] if self.existing_source else []
+        if "FROM proc.bp_catalog_mapping" in flat:
+            return list(self.mapping)
+        if "FROM proc.bp_category_master" in flat:
+            return [{"unspsc_code": c} for c in self.unspsc]
+        if "INSERT INTO proc.bp_catalog_source" in flat:
+            sid = self._next_source_id
+            self._next_source_id += 1
+            return {"source_id": sid}
+        if "FROM proc.bp_catalog_item" in flat and "SELECT" in flat:
+            sku = params[1] if params and len(params) > 1 else None
+            row = self.current.get(sku)
+            return [row] if row else []
+        return []
+
+    def cursor(self, *a, **k):
+        return FakeCursor(self)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _map(**overrides):
+    """A minimal viable mapping profile: the three columns the schema makes NOT NULL."""
+    base = [
+        {"target_column": "distributor_sku", "source_header": "SKU",
+         "transform": None, "is_required": True},
+        {"target_column": "item_description", "source_header": "Description",
+         "transform": None, "is_required": True},
+        {"target_column": "currency", "source_header": "Ccy",
+         "transform": None, "is_required": True},
+    ]
+    extra = overrides.pop("extra", [])
+    return base + list(extra)
+
+
+def _run(conn, sheets, **kw):
+    kw.setdefault("distributor_id", "SUP-001")
+    kw.setdefault("feed_name", "March list")
+    kw.setdefault("mapping_profile", "ingram_v1")
+    kw.setdefault("price_effective", "2026-03-01")
+    kw.setdefault("imported_by", "am@example.com")
+    return catalog_import.import_catalog(
+        file_bytes=b"irrelevant-when-parse-is-patched",
+        file_name="feed.csv",
+        parsed=_parsed(sheets),
+        conn=conn,
+        **kw,
+    )
+
+
+def _inserted_items(conn):
+    return [p for sql, p in conn.calls if "INSERT INTO proc.bp_catalog_item" in sql]
+
+
+def _receipt_updates(conn):
+    return [p for sql, p in conn.calls if "UPDATE proc.bp_catalog_source" in sql]
+
+
+# --- idempotency ------------------------------------------------------------
+
+def test_the_same_file_twice_loads_nothing_the_second_time():
+    conn = FakeConn(mapping=_map(),
+                    existing_source={"source_id": 42, "status": "imported"})
+    res = _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    assert res.status == "duplicate"
+    assert res.source_id == 42
+    assert _inserted_items(conn) == []
+
+
+def test_content_hash_is_of_the_file_not_the_parse():
+    payload = b"SKU,Description,Ccy\nA1,Widget,GBP\n"
+    conn = FakeConn(mapping=_map())
+    catalog_import.import_catalog(
+        file_bytes=payload, file_name="f.csv",
+        parsed=_parsed([[["SKU", "Description", "Ccy"], ["A1", "W", "GBP"]]]),
+        distributor_id="SUP-001", feed_name="f", mapping_profile="ingram_v1",
+        price_effective="2026-03-01", imported_by="x", conn=conn,
+    )
+    expected = hashlib.sha256(payload).hexdigest()
+    dup_check = [p for sql, p in conn.calls
+                 if "FROM proc.bp_catalog_source" in sql and "SELECT" in sql][0]
+    assert expected in dup_check
+
+
+# --- mapping guards ---------------------------------------------------------
+
+def test_no_mapping_profile_fails_the_import_loudly():
+    conn = FakeConn(mapping=[])
+    res = _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    assert res.status == "failed"
+    assert "mapping" in (res.error or "").lower()
+    assert _inserted_items(conn) == []
+
+
+def test_a_sheet_missing_a_required_heading_is_skipped_not_guessed():
+    conn = FakeConn(mapping=_map())
+    # First sheet is a cover page; the second carries the data.
+    res = _run(conn, [
+        [["Distributor price file", "March 2026"]],
+        [["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]],
+    ])
+
+    assert res.rows_loaded == 1
+    assert res.sheets_skipped == 1
+
+
+def test_no_sheet_matching_the_mapping_is_a_failure_not_an_empty_success():
+    conn = FakeConn(mapping=_map())
+    res = _run(conn, [[["Part", "Name"], ["A1", "Widget"]]])
+
+    assert res.status == "failed"
+    assert res.rows_loaded == 0
+    assert _receipt_updates(conn), "a failed import must still leave a receipt"
+
+
+# --- absence stays absent ---------------------------------------------------
+
+def test_an_absent_cost_column_yields_null_not_zero():
+    conn = FakeConn(mapping=_map())
+    _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    (params,) = _inserted_items(conn)
+    cols = catalog_import.ITEM_COLUMNS
+    row = dict(zip(cols, params[: len(cols)]))
+    assert row["cost_price"] is None
+    assert row["list_price"] is None
+    assert row["stock_qty"] is None
+    assert row["lifecycle_status"] is None
+
+
+def test_a_blank_cell_in_a_mapped_optional_column_is_null():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "cost_price", "source_header": "Cost",
+         "transform": None, "is_required": False}]))
+    _run(conn, [[["SKU", "Description", "Ccy", "Cost"], ["A1", "Widget", "GBP", "  "]]])
+
+    (params,) = _inserted_items(conn)
+    row = dict(zip(catalog_import.ITEM_COLUMNS, params))
+    assert row["cost_price"] is None
+
+
+# --- row-level rejection ----------------------------------------------------
+
+def test_a_row_with_no_sku_is_rejected_and_the_import_continues():
+    conn = FakeConn(mapping=_map())
+    res = _run(conn, [[["SKU", "Description", "Ccy"],
+                       ["", "Orphan", "GBP"],
+                       ["A2", "Widget", "GBP"]]])
+
+    assert res.rows_loaded == 1
+    assert res.rows_rejected == 1
+    assert res.status == "partial"
+    assert any("distributor_sku" in r.reason for r in res.rejects)
+
+
+def test_a_row_with_no_currency_is_rejected_because_the_column_is_not_null():
+    conn = FakeConn(mapping=_map())
+    res = _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", ""]]])
+
+    assert res.rows_loaded == 0
+    assert res.rows_rejected == 1
+    assert any("currency" in r.reason for r in res.rejects)
+
+
+def test_an_unknown_unspsc_rejects_the_row_not_the_file():
+    conn = FakeConn(
+        mapping=_map(extra=[{"target_column": "unspsc_code",
+                             "source_header": "UNSPSC", "transform": None,
+                             "is_required": False}]),
+        unspsc=["43211503"],
+    )
+    res = _run(conn, [[["SKU", "Description", "Ccy", "UNSPSC"],
+                       ["A1", "Widget", "GBP", "43211503"],
+                       ["A2", "Gadget", "GBP", "99999999"]]])
+
+    assert res.rows_loaded == 1
+    assert res.rows_rejected == 1
+    assert any("unspsc" in r.reason.lower() for r in res.rejects)
+
+
+def test_an_unparseable_price_rejects_the_row():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "cost_price", "source_header": "Cost",
+         "transform": None, "is_required": False}]))
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Cost"],
+                       ["A1", "Widget", "GBP", "call us"]]])
+
+    assert res.rows_rejected == 1
+    assert any("cost_price" in r.reason for r in res.rejects)
+
+
+# --- transforms -------------------------------------------------------------
+
+def test_pence_to_major_divides_by_one_hundred_exactly():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "cost_price", "source_header": "CostPence",
+         "transform": "pence_to_major", "is_required": False}]))
+    _run(conn, [[["SKU", "Description", "Ccy", "CostPence"],
+                 ["A1", "Widget", "GBP", "12345"]]])
+
+    row = dict(zip(catalog_import.ITEM_COLUMNS, _inserted_items(conn)[0]))
+    assert row["cost_price"] == Decimal("123.45")
+
+
+def test_trim_currency_strips_symbols_and_separators():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "list_price", "source_header": "RRP",
+         "transform": "trim_currency", "is_required": False}]))
+    _run(conn, [[["SKU", "Description", "Ccy", "RRP"],
+                 ["A1", "Widget", "GBP", "£1,234.50"]]])
+
+    row = dict(zip(catalog_import.ITEM_COLUMNS, _inserted_items(conn)[0]))
+    assert row["list_price"] == Decimal("1234.50")
+
+
+def test_pack_split_takes_the_only_number_and_refuses_ambiguity():
+    """A guessed pack size reaches a margin calculation, so two numbers in the
+    cell yield NULL rather than whichever one appeared first."""
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "pack_size", "source_header": "Pack",
+         "transform": "pack_split", "is_required": False}]))
+    _run(conn, [[["SKU", "Description", "Ccy", "Pack"],
+                 ["A1", "Widget", "GBP", "Box of 10"],
+                 ["A2", "Gadget", "GBP", "10 per pack"],
+                 ["A3", "Doodad", "GBP", "no pack info"],
+                 ["A4", "Thing", "GBP", "Box of 10 x 5"]]])
+
+    rows = [dict(zip(catalog_import.ITEM_COLUMNS, p)) for p in _inserted_items(conn)]
+    assert [r["pack_size"] for r in rows] == [
+        Decimal("10"), Decimal("10"), None, None,
+    ]
+
+
+# --- versioning -------------------------------------------------------------
+
+def test_a_repriced_row_closes_the_prior_version_and_opens_a_new_one():
+    conn = FakeConn(
+        mapping=_map(extra=[{"target_column": "cost_price", "source_header": "Cost",
+                             "transform": None, "is_required": False}]),
+        current={"A1": {"catalog_item_id": 900, "distributor_sku": "A1",
+                        "item_description": "Widget", "currency": "GBP",
+                        "cost_price": Decimal("10.00")}},
+    )
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Cost"],
+                       ["A1", "Widget", "GBP", "11.00"]]])
+
+    closes = [p for sql, p in conn.calls
+              if "UPDATE proc.bp_catalog_item" in sql and "valid_to" in sql]
+    assert closes == [(900,)], "the prior version must be closed by id"
+    assert len(_inserted_items(conn)) == 1
+    assert res.rows_versioned == 1
+
+
+def test_an_unchanged_row_creates_no_new_version():
+    conn = FakeConn(
+        mapping=_map(extra=[{"target_column": "cost_price", "source_header": "Cost",
+                             "transform": None, "is_required": False}]),
+        current={"A1": {"catalog_item_id": 900, "distributor_sku": "A1",
+                        "item_description": "Widget", "currency": "GBP",
+                        "cost_price": Decimal("10.00")}},
+    )
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Cost"],
+                       ["A1", "Widget", "GBP", "10.00"]]])
+
+    assert _inserted_items(conn) == []
+    assert res.rows_unchanged == 1
+    assert res.rows_versioned == 0
+
+
+# --- the receipt ------------------------------------------------------------
+
+def test_a_clean_import_is_recorded_as_imported_with_its_counts():
+    conn = FakeConn(mapping=_map())
+    res = _run(conn, [[["SKU", "Description", "Ccy"],
+                       ["A1", "Widget", "GBP"], ["A2", "Gadget", "GBP"]]])
+
+    assert (res.status, res.rows_seen, res.rows_loaded, res.rows_rejected) == \
+        ("imported", 2, 2, 0)
+    (params,) = _receipt_updates(conn)
+    assert "imported" in params
+
+
+def test_a_database_failure_mid_import_still_leaves_a_receipt():
+    """The green zero this guards against: 'we hold no catalog for this
+    distributor' and 'the import died' must never look the same."""
+    conn = FakeConn(mapping=_map(), fail_on="INSERT INTO proc.bp_catalog_item")
+    res = _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    assert res.status == "failed"
+    assert res.error and "boom" in res.error
+    assert _receipt_updates(conn), "the receipt is the whole point"
+    assert conn.rolled_back
+
+
+# --- through the real parser ------------------------------------------------
+
+def test_a_real_csv_through_the_real_parser_loads(tmp_path):
+    csv = tmp_path / "ingram.csv"
+    csv.write_text(
+        "SKU,Description,Ccy,Cost,RRP,Lifecycle\n"
+        "IN-1001,Cisco Catalyst 9200 24-port,GBP,1420.00,1899.00,active\n"
+        "IN-1002,Cisco Catalyst 2960X 24-port,GBP,610.00,899.00,end_of_sale\n"
+    )
+    from src.services.extraction_v3.parsers.router import parse
+
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "cost_price", "source_header": "Cost",
+         "transform": None, "is_required": False},
+        {"target_column": "list_price", "source_header": "RRP",
+         "transform": None, "is_required": False},
+        {"target_column": "lifecycle_status", "source_header": "Lifecycle",
+         "transform": None, "is_required": False},
+    ]))
+    res = catalog_import.import_catalog(
+        file_bytes=csv.read_bytes(), file_name="ingram.csv",
+        parsed=parse(str(csv)),
+        distributor_id="SUP-001", feed_name="March list",
+        mapping_profile="ingram_v1", price_effective="2026-03-01",
+        imported_by="am@example.com", conn=conn,
+    )
+
+    assert (res.status, res.rows_seen, res.rows_loaded) == ("imported", 2, 2)
+    rows = [dict(zip(catalog_import.ITEM_COLUMNS, p)) for p in _inserted_items(conn)]
+    assert rows[0]["cost_price"] == Decimal("1420.00")
+    assert rows[1]["lifecycle_status"] == "end_of_sale"
+
+
+import datetime as _dt
+
+
+# --- review fixes (2026-09-11) ---------------------------------------------
+
+def test_an_unchanged_dated_row_creates_no_new_version():
+    """Postgres hands back a date; the feed carries text. Comparing the two as
+    strings re-versioned every dated row on every import."""
+    conn = FakeConn(
+        mapping=_map(extra=[{"target_column": "end_of_sale_date",
+                             "source_header": "EOS", "transform": None,
+                             "is_required": False}]),
+        current={"A1": {"catalog_item_id": 900, "distributor_sku": "A1",
+                        "item_description": "Widget", "currency": "GBP",
+                        "end_of_sale_date": _dt.date(2026, 6, 30)}},
+    )
+    res = _run(conn, [[["SKU", "Description", "Ccy", "EOS"],
+                       ["A1", "Widget", "GBP", "2026-06-30"]]])
+
+    assert _inserted_items(conn) == []
+    assert res.rows_unchanged == 1
+
+
+def test_a_sku_twice_in_one_file_rejects_the_second_occurrence():
+    conn = FakeConn(mapping=_map())
+    res = _run(conn, [[["SKU", "Description", "Ccy"],
+                       ["A1", "Widget", "GBP"],
+                       ["A1", "Widget v2", "GBP"]]])
+
+    assert res.rows_loaded == 1
+    assert res.rows_rejected == 1
+    assert any("twice" in r.reason for r in res.rejects)
+
+
+def test_a_fractional_lead_time_is_rejected_not_truncated():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "lead_time_days", "source_header": "Lead",
+         "transform": None, "is_required": False}]))
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Lead"],
+                       ["A1", "Widget", "GBP", "5.5"]]])
+
+    assert res.rows_loaded == 0
+    assert any("lead_time_days" in r.reason for r in res.rejects)
+
+
+def test_currency_is_upper_cased_and_a_non_iso_value_rejects_the_row():
+    conn = FakeConn(mapping=_map())
+    res = _run(conn, [[["SKU", "Description", "Ccy"],
+                       ["A1", "Widget", "gbp"],
+                       ["A2", "Gadget", "Pounds"]]])
+
+    (params,) = _inserted_items(conn)
+    assert dict(zip(catalog_import.ITEM_COLUMNS, params))["currency"] == "GBP"
+    assert res.rows_rejected == 1
+    assert any("currency" in r.reason for r in res.rejects)
+
+
+def test_lifecycle_is_normalised_and_an_unknown_value_is_rejected():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "lifecycle_status", "source_header": "Life",
+         "transform": None, "is_required": False}]))
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Life"],
+                       ["A1", "Widget", "GBP", "End of Sale"],
+                       ["A2", "Gadget", "GBP", "EOL"]]])
+
+    (params,) = _inserted_items(conn)
+    assert dict(zip(catalog_import.ITEM_COLUMNS, params))["lifecycle_status"] == "end_of_sale"
+    assert any("lifecycle_status" in r.reason for r in res.rejects)
+
+
+def test_the_mapping_is_read_for_this_distributor_only():
+    conn = FakeConn(mapping=_map())
+    _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    (params,) = [p for sql, p in conn.calls if "FROM proc.bp_catalog_mapping" in sql]
+    assert params == ("ingram_v1", "SUP-001")
+
+
+def test_save_mapping_refuses_a_column_a_feed_may_not_set():
+    conn = FakeConn(mapping=[])
+    with pytest.raises(ValueError, match="distributor_id"):
+        catalog_import.save_mapping(conn, mapping_profile="p", distributor_id="SUP-001",
+                                    entries=[{"target_column": "distributor_id",
+                                              "source_header": "X"}])
+
+
+def test_save_mapping_refuses_an_unknown_transform():
+    conn = FakeConn(mapping=[])
+    with pytest.raises(ValueError, match="transform"):
+        catalog_import.save_mapping(conn, mapping_profile="p", distributor_id="SUP-001",
+                                    entries=[{"target_column": "cost_price",
+                                              "source_header": "Cost",
+                                              "transform": "guess"}])
+
+
+def test_save_mapping_refuses_a_profile_owned_by_another_distributor():
+    conn = FakeConn(mapping=[{"distributor_id": "SUP-OTHER"}])
+    with pytest.raises(ValueError, match="belongs to"):
+        catalog_import.save_mapping(
+            conn, mapping_profile="p", distributor_id="SUP-001",
+            entries=[
+                {"target_column": "distributor_sku", "source_header": "SKU"},
+                {"target_column": "item_description", "source_header": "Description"},
+                {"target_column": "currency", "source_header": "Ccy"},
+            ],
+        )
+
+    assert not any("DELETE" in sql for sql, _ in conn.calls)
+
+
+def test_save_mapping_rolls_back_when_an_insert_fails():
+    conn = FakeConn(mapping=[], fail_on="INSERT INTO proc.bp_catalog_mapping")
+    with pytest.raises(RuntimeError):
+        catalog_import.save_mapping(
+            conn, mapping_profile="p", distributor_id="SUP-001",
+            entries=[
+                {"target_column": "distributor_sku", "source_header": "SKU"},
+                {"target_column": "item_description", "source_header": "Description"},
+                {"target_column": "currency", "source_header": "Ccy"},
+            ],
+        )
+
+    assert conn.rolled_back is True
+    assert conn.committed is False
+
+
+def test_import_refuses_an_autocommit_connection():
+    conn = FakeConn(mapping=_map())
+    conn.autocommit = True
+    with pytest.raises(RuntimeError, match="transactional"):
+        _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    assert conn.calls == []
+
+
+# --- final review fixes (2026-09-11) ----------------------------------------
+
+def test_a_feed_price_with_5_decimals_is_seen_as_unchanged_against_the_stored_4dp_row():
+    """Finding 3: a feed price with more than 4 decimals must quantize to the
+    column's own precision before comparison, or an unchanged SKU re-versions
+    on every import."""
+    conn = FakeConn(
+        mapping=_map(extra=[{"target_column": "cost_price", "source_header": "Cost",
+                             "transform": None, "is_required": False}]),
+        current={"A1": {"catalog_item_id": 900, "distributor_sku": "A1",
+                        "item_description": "Widget", "currency": "GBP",
+                        "cost_price": Decimal("12.3457")}},
+    )
+    res = _run(conn, [[["SKU", "Description", "Ccy", "Cost"],
+                       ["A1", "Widget", "GBP", "12.34567"]]])
+
+    assert _inserted_items(conn) == []
+    assert res.rows_unchanged == 1
+    assert res.rows_versioned == 0
+
+
+def test_a_new_rows_5_decimal_price_is_inserted_quantized_to_4dp():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "cost_price", "source_header": "Cost",
+         "transform": None, "is_required": False}]))
+    _run(conn, [[["SKU", "Description", "Ccy", "Cost"],
+                 ["A1", "Widget", "GBP", "12.34567"]]])
+
+    row = dict(zip(catalog_import.ITEM_COLUMNS, _inserted_items(conn)[0]))
+    assert row["cost_price"] == Decimal("12.3457")
+
+
+def test_a_5_decimal_list_price_from_trim_currency_is_also_quantized():
+    conn = FakeConn(mapping=_map(extra=[
+        {"target_column": "list_price", "source_header": "RRP",
+         "transform": "trim_currency", "is_required": False}]))
+    _run(conn, [[["SKU", "Description", "Ccy", "RRP"],
+                 ["A1", "Widget", "GBP", "£12.345670"]]])
+
+    row = dict(zip(catalog_import.ITEM_COLUMNS, _inserted_items(conn)[0]))
+    assert row["list_price"] == Decimal("12.3457")
+
+
+def test_an_unknown_distributor_is_refused_before_the_receipt_is_written():
+    """Finding 6: the receipt upsert's FK to bp_supplier fires outside
+    import_catalog's try/except, so an unknown distributor must be caught
+    first, as a readable ValueError, with no receipt row written at all."""
+    conn = FakeConn(mapping=_map(), distributor_exists=False)
+    with pytest.raises(ValueError, match="not a supplier"):
+        _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+
+    assert not any("INSERT INTO proc.bp_catalog_source" in sql for sql, _ in conn.calls)
+    assert conn.committed is False
+
+
+def test_a_known_distributor_still_imports_normally():
+    conn = FakeConn(mapping=_map(), distributor_exists=True)
+    res = _run(conn, [[["SKU", "Description", "Ccy"], ["A1", "Widget", "GBP"]]])
+    assert res.status == "imported"

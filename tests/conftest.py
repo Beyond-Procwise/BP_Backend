@@ -49,6 +49,7 @@ GOVERNED_LIMIT_SEED = {
         "opportunity_mining_min_impact": 100, "capture_retention_days": 30,
         "duplicate_invoice_detector_enabled": False,
         "supplier_research_enabled": True},
+    "reseller_catalog": {"fuzzy_propose_min": 88, "calibration_min_closed": 30},
 }
 
 

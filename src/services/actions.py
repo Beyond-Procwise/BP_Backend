@@ -40,6 +40,7 @@ ACTIONS: Dict[str, str] = {
     "quote.compare": "compute",
     "opportunity.mine": "compute",
     "document.extract": "compute",
+    "sales.calibrate": "compute",
     # --- writing ---------------------------------------------------------
     "supplier.write": "write",
     "contract.write": "write",
@@ -48,12 +49,17 @@ ACTIONS: Dict[str, str] = {
     "document.upload": "write",
     "document.promote": "write",
     "email.draft": "write",
+    "catalog.write": "write",
+    "account.write": "write",
+    "sales.write": "write",
     # --- communicating ---------------------------------------------------
     "email.send": "communicate",
     "email.reply": "communicate",
+    "sales_quote.issue": "communicate",
     # --- transacting -----------------------------------------------------
     "spend.approve": "transact",
     "negotiation.counter": "transact",
+    "sales_quote.approve": "transact",
     # --- approving -------------------------------------------------------
     "approval.email": "approve_email",
     "approval.record": "approve_email",

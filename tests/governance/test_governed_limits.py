@@ -1,9 +1,11 @@
 """A governance limit comes from policy, and a missing one refuses.
 
-Thirty-three limits deciding what reaches the financial record, what counts as a
+Thirty-five limits — the thirty-three P9 moved, plus the two the reseller
+catalog added — deciding what reaches the financial record, what counts as a
 match on money, who a supplier is, what an agent may offer and how far it may
-reach were read from `os.getenv` with a hardcoded default. Changeable with no
-code change AND no policy edit, versioned by nothing, on no governance screen.
+reach. The original thirty-three were read from `os.getenv` with a hardcoded
+default: changeable with no code change AND no policy edit, versioned by
+nothing, on no governance screen.
 
 This is the one place that reads them now. The env var keeps working for one
 release so a tuned deployment does not silently revert during rollout, but it
@@ -202,9 +204,9 @@ def test_every_governed_limit_is_present_in_the_live_policy_set():
         live = {slug: rules for slug, rules in cur.fetchall()}
     conn.close()
 
-    assert len(live) == 7, f"expected seven limit rows, found {sorted(live)}"
-    assert sum(len(r) for r in live.values()) == 33, (
-        f"expected 33 governed values, found "
+    assert len(live) == 8, f"expected eight limit rows, found {sorted(live)}"
+    assert sum(len(r) for r in live.values()) == 35, (
+        f"expected 35 governed values, found "
         f"{ {k: len(v) for k, v in live.items()} }")
     for slug, rules in live.items():
         assert rules, f"{slug} states no limits at all"
