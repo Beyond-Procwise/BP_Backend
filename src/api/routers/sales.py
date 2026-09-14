@@ -5,6 +5,12 @@ nothing else; no body here has a field for it. Approving a quote is a transact
 action and issuing one is communicate, so both need a stated permit
 (deploy/sql/2026-09-11_reseller_governance.sql). The customer endpoints go
 through quote_render, which is the control on cost and margin.
+
+Every read that returns cost or margin -- the internal quote view and both
+opportunity reads -- asks margin.read and must be permitted by a stated policy
+(deploy/sql/2026-09-14_sales_margin_read_authority.sql). require_user alone is
+not a control here: with ASK_AUTH_MODE=off it yields no principal rather than
+refusing.
 """
 from __future__ import annotations
 
@@ -22,8 +28,10 @@ from src.services.sell_side._db import transactional_conn as get_conn
 from src.services.sell_side import (accounts, calibration, opportunities, outcomes,
                                     quote_render, quotes)
 
+from src.services import agent_actions
+
 from api.auth import require_user
-from api.endpoint_gate import require as gate
+from api.endpoint_gate import NotPermitted, require as gate
 from api.sell_side_http import http_errors, money_json
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
@@ -34,6 +42,27 @@ MARGIN_NOTE = ("This is front-end margin only: distributor back-end rebates are 
 
 def _subject(principal) -> Optional[str]:
     return getattr(principal, "subject", None) or None
+
+
+def _require_margin_permit(principal, context: dict) -> None:
+    """Cost and margin go only to a caller a STATED policy permits.
+
+    margin.read is a read, and a read no policy speaks to is allowed for every
+    role -- the anonymous caller included. An allow from that default carries no
+    policy_id, so it is refused here: a missing SalesMarginReadAuthorityPolicy row
+    withholds margin from everyone rather than handing it to anyone.
+    """
+    decision = gate("margin.read", principal, agent=_AGENT, context=context)
+    if decision.policy_id:
+        return
+    agent_actions.record_action_or_fail(
+        phase="authorize", action_type="margin.read", agent=_AGENT, status="denied",
+        summary="no stated permit for margin.read; the reversible-read default does "
+                "not extend to cost and margin",
+        details={**context, "principal": _subject(principal),
+                 "allowed_by": decision.policy_name})
+    raise NotPermitted("margin.read needs a stated permit and none is active, so "
+                       "cost and margin are withheld.")
 
 
 class AccountBody(BaseModel):
@@ -158,14 +187,16 @@ def create_opportunity(body: OpportunityBody, principal=Depends(require_user)):
 
 @router.get("/opportunities")
 def list_opportunities(account_id: Optional[str] = None, outcome: Optional[str] = None,
-                       limit: int = 100):
+                       limit: int = 100, principal=Depends(require_user)):
+    _require_margin_permit(principal, {"account_id": account_id})
     with get_conn() as c:
         rows = opportunities.list_opportunities(c, account_id=account_id, outcome=outcome, limit=limit)
     return money_json({"count": len(rows), "opportunities": rows})
 
 
 @router.get("/opportunities/{opportunity_id}")
-def get_opportunity(opportunity_id: int):
+def get_opportunity(opportunity_id: int, principal=Depends(require_user)):
+    _require_margin_permit(principal, {"sales_opportunity_id": opportunity_id})
     with http_errors(), get_conn() as c:
         return money_json(opportunities.get_opportunity(c, opportunity_id))
 
@@ -196,8 +227,9 @@ def create_quote(body: QuoteBody, principal=Depends(require_user)):
 
 
 @router.get("/quotes/{quote_id}")
-def get_quote(quote_id: int):
+def get_quote(quote_id: int, principal=Depends(require_user)):
     """INTERNAL view: carries cost and margin. Never hand this to a customer."""
+    _require_margin_permit(principal, {"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
         return money_json({**quotes.get_quote(c, quote_id), "margin_note": MARGIN_NOTE})
 
@@ -224,13 +256,15 @@ def issue(quote_id: int, principal=Depends(require_user)):
 
 
 @router.get("/quotes/{quote_id}/customer")
-def customer_view(quote_id: int):
+def customer_view(quote_id: int, principal=Depends(require_user)):
+    gate("quote.read", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
         return money_json(quote_render.customer_view(quotes.get_quote(c, quote_id)))
 
 
 @router.get("/quotes/{quote_id}/customer.html", response_class=HTMLResponse)
-def customer_html(quote_id: int):
+def customer_html(quote_id: int, principal=Depends(require_user)):
+    gate("quote.read", principal, agent=_AGENT, context={"sales_quote_id": quote_id})
     with http_errors(), get_conn() as c:
         return HTMLResponse(quote_render.render_html(
             quote_render.customer_view(quotes.get_quote(c, quote_id))))

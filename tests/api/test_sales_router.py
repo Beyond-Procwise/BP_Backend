@@ -7,9 +7,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.routers import sales as sr
+from src.services import guardrail
 from src.services.sell_side import quote_render as qr
 
 CALLER, OTHER = "sub-real-caller", "sub-someone-else"
+
+# What the gate returns when a stated policy permits the action.
+_PERMITTED = guardrail.Decision(allowed=True, reason="permitted",
+                                policy_id="sales_margin_read_authority",
+                                policy_name="SalesMarginReadAuthorityPolicy")
+# What it returns when nothing spoke to a read and the reversible-class default let it through.
+_DEFAULTED = guardrail.Decision(allowed=True, reason="read is a reversible class",
+                                policy_name="RoleDefinitionPolicy")
 
 
 class _P:
@@ -19,7 +28,12 @@ class _P:
 @pytest.fixture
 def client(monkeypatch):
     gates = []
-    monkeypatch.setattr(sr, "gate", lambda action, *a, **k: gates.append(action))
+
+    def _gate(action, *a, **k):
+        gates.append(action)
+        return _PERMITTED
+
+    monkeypatch.setattr(sr, "gate", _gate)
     monkeypatch.setattr(sr, "get_conn", lambda: contextlib.nullcontext("CONN"))
     app = FastAPI()
     app.include_router(sr.router)
@@ -104,6 +118,46 @@ def test_the_internal_view_says_margin_is_front_end_only(client, monkeypatch):
     body = client.get("/sales/quotes/9").json()
     assert body["total_margin"] == "16.00"
     assert "front-end" in body["margin_note"]
+
+
+def test_the_internal_view_asks_the_margin_gate(client, monkeypatch):
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
+    assert client.get("/sales/quotes/9").status_code == 200
+    assert client.gates == ["margin.read"]
+
+
+@pytest.mark.parametrize("path, service, fn", [
+    ("/sales/opportunities", "opportunities", "list_opportunities"),
+    ("/sales/opportunities/7", "opportunities", "get_opportunity"),
+])
+def test_opportunity_reads_carry_margin_so_they_ask_the_margin_gate(client, monkeypatch, path, service, fn):
+    monkeypatch.setattr(getattr(sr, service), fn,
+                        lambda *a, **k: [] if fn.startswith("list") else {"expected_margin": D("1")})
+    assert client.get(path).status_code == 200
+    assert client.gates == ["margin.read"]
+
+
+@pytest.mark.parametrize("path", ["/sales/quotes/9/customer", "/sales/quotes/9/customer.html"])
+def test_the_customer_views_ask_the_quote_read_gate(client, monkeypatch, path):
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda conn, qid: _quote())
+    assert client.get(path).status_code == 200
+    assert client.gates == ["quote.read"]
+
+
+@pytest.mark.parametrize("path", ["/sales/quotes/9", "/sales/opportunities", "/sales/opportunities/7"])
+def test_margin_is_withheld_when_only_the_reversible_default_allowed_it(client, monkeypatch, path):
+    """A read nobody's policy spoke to is allowed for every role, anonymous included.
+    Margin must not ride that default: no stated permit, no margin -- and no query."""
+    fetched, audit = [], []
+    monkeypatch.setattr(sr, "gate", lambda action, *a, **k: _DEFAULTED)
+    monkeypatch.setattr(sr.quotes, "get_quote", lambda *a, **k: fetched.append(a))
+    monkeypatch.setattr(sr.opportunities, "get_opportunity", lambda *a, **k: fetched.append(a))
+    monkeypatch.setattr(sr.opportunities, "list_opportunities", lambda *a, **k: fetched.append(a))
+    monkeypatch.setattr(sr.agent_actions, "record_action_or_fail", lambda **k: audit.append(k))
+    r = client.get(path)
+    assert r.status_code == 403, r.text
+    assert fetched == []
+    assert [(a["action_type"], a["status"]) for a in audit] == [("margin.read", "denied")]
 
 
 def test_an_outcome_is_recorded_by_the_token_holder(client, monkeypatch):

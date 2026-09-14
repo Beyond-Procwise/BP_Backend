@@ -30,6 +30,10 @@ ACTIONS: Dict[str, str] = {
     "supplier.read": "read",
     "contract.read": "read",
     "quote.read": "read",
+    # Internal cost and margin. A read, but restricted by required_role in
+    # SalesMarginReadAuthorityPolicy -- and the sales router refuses it unless
+    # that stated permit, not the reversible-read default, is what allowed it.
+    "margin.read": "read",
     "invoice.read": "read",
     "deal.read": "read",
     "finding.read": "read",
