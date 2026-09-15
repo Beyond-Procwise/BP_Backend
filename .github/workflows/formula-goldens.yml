@@ -13,6 +13,22 @@ on:
 jobs:
   goldens:
     runs-on: ubuntu-latest
+    # config/settings.py refuses to load without these, and the formula modules
+    # import it. Nothing below connects to any of them: these are placeholders so
+    # the import succeeds, not credentials. Governed limits come from the test
+    # seed (scripts/formulas/seeded_limits.py), not a database.
+    env:
+      DB_HOST: ci-placeholder
+      DB_PORT: "5432"
+      DB_NAME: ci-placeholder
+      DB_USER: ci-placeholder
+      DB_PASSWORD: ci-placeholder
+      S3_BUCKET_NAME: ci-placeholder
+      S3_PREFIXES: '["ci"]'
+      QDRANT_URL: http://127.0.0.1:9
+      QDRANT_API_KEY: ci-placeholder
+      SES_DEFAULT_SENDER: ci-placeholder
+      CUDA_VISIBLE_DEVICES: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -22,24 +38,36 @@ jobs:
           cache: pip
 
       - name: Install dependencies
+        # paddlepaddle-gpu==3.1.0 is published only on Paddle's own CUDA index, not
+        # on PyPI, so `pip install -r requirements.txt` has failed here on every run
+        # since this workflow was added. It is the GPU OCR runtime, imported lazily
+        # inside the PaddleOCR backend; nothing these steps check touches it, and a
+        # hosted runner has no GPU to run it on. Everything else installs as pinned.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          grep -v -E '^paddlepaddle-gpu([=<>!~ ]|$)' requirements.txt > /tmp/requirements-ci.txt
+          pip install -r /tmp/requirements-ci.txt pytest
 
       - name: Verify every golden vector reproduces
-        run: python -m scripts.formulas.check_goldens
+        run: python -m scripts.formulas.seeded_limits scripts.formulas.check_goldens
 
       - name: Registry unit tests
-        run: python -m pytest tests/services/formulas -q
+        run: python -m scripts.formulas.seeded_limits pytest tests/services/formulas -q
 
       - name: Model inventory is current
         run: |
-          python -m src.services.formulas.inventory > /tmp/model-inventory.md
+          python -m scripts.formulas.seeded_limits src.services.formulas.inventory > /tmp/model-inventory.md
           # The generated-at line and last-validated timestamps move every run;
           # everything else must match what is committed.
+          # No backslash before the backtick: inside single quotes bash keeps it,
+          # and '^| \`' matched nothing, so every timestamped table row was diffed.
           strip() { grep -v -e '^Generated from the formula registry' \
-                            -e '^| \`' ; }
-          diff <(strip < docs/model-inventory.md) <(strip < /tmp/model-inventory.md) \
+                            -e '^| `' ; }
+          # The document starts at its heading. A library can print to stdout on
+          # import before it (pymupdf >= 1.28 warns that `fitz` is deprecated), and
+          # that line is not part of the inventory.
+          doc() { sed -n '/^# Model Inventory/,$p' "$1"; }
+          diff <(doc docs/model-inventory.md | strip) <(doc /tmp/model-inventory.md | strip) \
             || { echo "docs/model-inventory.md is stale. Regenerate it with:"; \
                  echo "  python -m src.services.formulas.inventory > docs/model-inventory.md"; \
                  exit 1; }
