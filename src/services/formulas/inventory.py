@@ -28,7 +28,10 @@ def _python_files() -> List[Path]:
         if not root.is_dir():
             continue
         for p in root.rglob("*.py"):
-            if _SKIP_PARTS & set(p.parts):
+            # Relative to the repo, not absolute: run from a checkout that itself
+            # lives under a `worktrees` directory, the absolute parts matched every
+            # file, and the inventory reported all formulas as having no call site.
+            if _SKIP_PARTS & set(p.relative_to(_REPO).parts):
                 continue
             files.append(p)
     return files

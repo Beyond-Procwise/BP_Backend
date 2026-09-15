@@ -1,75 +1,75 @@
 # Model Inventory
 
-Generated from the formula registry by `model_inventory()` — 2026-09-15 16:45 UTC.
+Generated from the formula registry by `model_inventory()` — 2026-09-15 17:33 UTC.
 Do not hand-edit: regenerate with `python -m src.services.formulas.inventory`.
 
 **61 registered formulas.**
 
-**61 with no call site outside their own module** — either not yet migrated onto `evaluate`, or dead: `benchmark.adjusted_price`, `benchmark.evidence_confidence`, `benchmark.excel_round`, `critic.addressable_value`, `critic.anchor_age_days`, `critic.annualised_rate`, `critic.excess_over_index`, `critic.fabricated_anchor`, `critic.friction_haircut`, `critic.min_confidence`, `critic.normalise_unit_rate`, `critic.relative_gap`, `critic.unit_basis_match`, `critic.volume_delta`, `deal.pct_change`, `deal.realised_savings`, `deal.weighted_unit_price`, `deal_clustering.awarded_po`, `deal_clustering.cluster_confidence`, `duplicate_invoice.date_proximity`, `duplicate_invoice.pair_score`, `duplicate_invoice.reference_proximity`, `extraction.amount_agreement`, `extraction.completeness_score`, `extraction.line_arithmetic_state`, `linking.amount_agreement`, `linking.cluster_dampening`, `linking.decision_band`, `linking.line_pair_score`, `linking.line_set_composite`, `linking.location_agreement`, `linking.relationship_confidence`, `linking.temporal_plausibility`, `negotiation.batna_strength`, `negotiation.counter_plan`, `negotiation.kraljic_quadrant`, `negotiation.market_context_score`, `negotiation.outlier_rails`, `negotiation.play_rank`, `negotiation.play_readiness`, `negotiation.policy_alignment_score`, `negotiation.supplier_performance_score`, `negotiation.threshold_confidence`, `negotiation.zopa_estimate`, `opportunity.finding_weight_factor`, `opportunity.price_variance_impact`, `opportunity.risk_normalisation`, `opportunity.weightage_shares`, `price_outlier.verdict`, `quote.weighting_score`, `requirement.completeness_score`, `risk.predictive_supplier_score`, `rivalry.correlation`, `rivalry.description_overlap`, `rivalry.price_proximity`, `rivalry.volume_agreement`, `supplier.composite_score`, `supplier.criterion_normalisation`, `supplier.deal_price_score`, `supplier.payment_terms_score`, `supplier.weight_renormalisation`
+**34 with no call site outside their own module** — either not yet migrated onto `evaluate`, or dead: `benchmark.evidence_confidence`, `benchmark.excel_round`, `deal_clustering.awarded_po`, `deal_clustering.cluster_confidence`, `duplicate_invoice.date_proximity`, `duplicate_invoice.reference_proximity`, `extraction.amount_agreement`, `extraction.completeness_score`, `extraction.line_arithmetic_state`, `linking.amount_agreement`, `linking.cluster_dampening`, `linking.decision_band`, `linking.line_pair_score`, `linking.line_set_composite`, `linking.location_agreement`, `linking.temporal_plausibility`, `negotiation.batna_strength`, `negotiation.market_context_score`, `negotiation.outlier_rails`, `negotiation.play_readiness`, `negotiation.policy_alignment_score`, `negotiation.supplier_performance_score`, `negotiation.threshold_confidence`, `negotiation.zopa_estimate`, `opportunity.price_variance_impact`, `opportunity.risk_normalisation`, `quote.weighting_score`, `requirement.completeness_score`, `risk.predictive_supplier_score`, `rivalry.description_overlap`, `rivalry.price_proximity`, `rivalry.volume_agreement`, `supplier.criterion_normalisation`, `supplier.weight_renormalisation`
 
 | Formula | Ver | Owner | Purpose | GPSS | Last validated | Vectors | Dependents |
 |---|---|---|---|---|---|---|---|
-| `benchmark.adjusted_price` | 1.0.0+d0939572 | commercial | Fair benchmark unit price for one quote line, and the variance against it | — | 2026-09-15 16:44:52 | 2 | — |
-| `benchmark.evidence_confidence` | 1.0.0+8a74bdde | commercial | Confidence label for a benchmark, from how many comparable points backed it | — | 2026-09-15 16:44:52 | 5 | — |
-| `benchmark.excel_round` | 1.0.0+b600c6e4 | commercial | Excel ROUND semantics: half away from zero | — | 2026-09-15 16:44:52 | 2 | — |
-| `critic.addressable_value` | 1.0.0+5ea664fc | opportunity_critic | What is left of the detector's number after every haircut the tests justified | — | 2026-09-15 16:44:53 | 4 | — |
-| `critic.anchor_age_days` | 1.0.0+84414816 | opportunity_critic | How old the comparator is, so staleness can be tested against a governed rule | — | 2026-09-15 16:44:53 | 3 | — |
-| `critic.annualised_rate` | 1.0.0+82e26cae | opportunity_critic | Compound annual rate of change between an anchor price and the current one | — | 2026-09-15 16:44:53 | 5 | — |
-| `critic.excess_over_index` | 1.0.0+07b239a9 | opportunity_critic | The part of a price rise that is above index -- the only part that is an opportunity | — | 2026-09-15 16:44:53 | 4 | — |
-| `critic.fabricated_anchor` | 1.0.0+39078c99 | opportunity_critic | Whether an anchor price is an artefact of the miner's missing-data fallbacks | — | 2026-09-15 16:44:53 | 4 | — |
-| `critic.friction_haircut` | 1.0.0+0de054cd | opportunity_critic | Deduction for the real cost of switching or renegotiating | — | 2026-09-15 16:44:53 | 3 | — |
-| `critic.min_confidence` | 1.0.0+1d197c09 | opportunity_critic | A claim inherits the weakest confidence of the evidence it rests on | — | 2026-09-15 16:44:53 | 5 | — |
-| `critic.normalise_unit_rate` | 1.0.0+2b9e905a | opportunity_critic | Reduce a line to a per-unit rate so anchor and current can be compared like for like | — | 2026-09-15 16:44:53 | 3 | — |
-| `critic.relative_gap` | 1.0.0+ead52e09 | opportunity_critic | The gap as a proportion of its base -- 40% of GBP 3k is not 4% of GBP 3m | — | 2026-09-15 16:44:53 | 3 | — |
-| `critic.unit_basis_match` | 1.0.0+622ed8ee | opportunity_critic | Whether anchor and current are priced on the same basis -- mismatch invalidates outright | — | 2026-09-15 16:44:53 | 4 | — |
-| `critic.volume_delta` | 1.0.0+b847708d | opportunity_critic | Proportional change in volume between anchor and current, to test like-for-like | — | 2026-09-15 16:44:53 | 4 | — |
-| `deal.pct_change` | 1.0.0+39441e5c | analytics | Percentage change of a value against a baseline | — | 2026-09-15 16:44:53 | 4 | — |
-| `deal.realised_savings` | 1.0.0+09ac2b97 | analytics | Money actually saved: the quote-to-invoice unit price gap times invoiced volume | — | 2026-09-15 16:44:53 | 3 | — |
-| `deal.weighted_unit_price` | 1.0.0+08d83ed7 | analytics | Volume-weighted unit price across a document type's line items | — | 2026-09-15 16:44:53 | 2 | — |
-| `deal_clustering.awarded_po` | 1.0.0+7b0692e8 | linkage | Which purchase order a bid won, by continuity scoring rather than name matching | — | 2026-09-15 16:44:53 | 1 | — |
-| `deal_clustering.cluster_confidence` | 1.0.0+54d2f472 | linkage | Confidence that every member of a cluster belongs to the same sourcing event | — | 2026-09-15 16:44:53 | 2 | — |
-| `duplicate_invoice.date_proximity` | 1.0.0+a120547b | assurance | How close two invoice dates are, on a graded ladder | — | 2026-09-15 16:44:53 | 3 | — |
-| `duplicate_invoice.pair_score` | 1.0.0+bc300d89 | assurance | How likely two invoices are the same invoice billed twice | — | 2026-09-15 16:44:53 | 2 | — |
-| `duplicate_invoice.reference_proximity` | 1.0.0+ef75b67d | assurance | Whether two invoice references are the same reference | — | 2026-09-15 16:44:53 | 3 | — |
-| `extraction.amount_agreement` | 1.0.0+d7f5c294 | extraction | Whether two money amounts agree within the three-way-match tolerance | — | 2026-09-15 16:44:53 | 3 | — |
-| `extraction.completeness_score` | 1.0.0+facea3ec | extraction | How much of a document's schema the extraction actually filled (0-100) | — | 2026-09-15 16:44:53 | 3 | — |
-| `extraction.line_arithmetic_state` | 1.0.0+93f89c05 | extraction | Whether quantity x unit rate = extended line corroborates the assigned roles | — | 2026-09-15 16:44:53 | 4 | — |
-| `linking.amount_agreement` | 1.0.0+9136b135 | linkage | Whether two amounts agree, decaying linearly to zero at 10% drift | — | 2026-09-15 16:44:53 | 4 | — |
-| `linking.cluster_dampening` | 1.0.0+89fdee3d | linkage | Correlated-signal dampening factor within one evidence cluster | — | 2026-09-15 16:44:53 | 3 | — |
-| `linking.decision_band` | 1.0.0+4f959f09 | linkage | Which action band a relationship confidence F falls into | — | 2026-09-15 16:44:53 | 5 | — |
-| `linking.line_pair_score` | 1.0.0+cb656046 | linkage | Similarity of two individual line items (description / qty / unit price) | — | 2026-09-15 16:44:53 | 2 | — |
-| `linking.line_set_composite` | 1.0.0+b4cdfa68 | linkage | Best-match line-set agreement with a source-extra coverage penalty | — | 2026-09-15 16:44:53 | 3 | — |
-| `linking.location_agreement` | 1.0.0+eac1a040 | linkage | Country and region agreement between two documents | — | 2026-09-15 16:44:53 | 2 | — |
-| `linking.relationship_confidence` | 1.0.0+3e3c340e | linkage | How confidently two procurement documents are the same relationship (F, 0-100) | — | 2026-09-15 16:44:53 | 2 | — |
-| `linking.temporal_plausibility` | 1.0.0+ba1d1b32 | linkage | Whether a child document's date is plausible against its parent's order date | — | 2026-09-15 16:44:53 | 4 | — |
-| `negotiation.batna_strength` | 1.0.0+aeabae8b | negotiation | The buyer's walk-away position from alternative quotes and trading history | — | 2026-09-15 16:45:03 | 5 | — |
-| `negotiation.counter_plan` | 1.0.0+39f65e1a | negotiation | What to counter at, and whether to counter at all, given the round and the gap | — | 2026-09-15 16:45:03 | 8 | — |
-| `negotiation.kraljic_quadrant` | 1.0.0+82ee8709 | negotiation | Kraljic quadrant and suggested negotiation style for a deal | — | 2026-09-15 16:45:03 | 5 | — |
-| `negotiation.market_context_score` | 1.0.0+60b018ae | negotiation | How far market conditions argue for one lever | — | 2026-09-15 16:45:03 | 2 | — |
-| `negotiation.outlier_rails` | 1.0.0+35afd9c8 | negotiation | Whether an offer breaches a review or escalation rail on price, volume or term | — | 2026-09-15 16:45:03 | 5 | — |
-| `negotiation.play_rank` | 1.0.0+9c252e65 | negotiation | Rank playbook plays for a (supplier type, style) pair against live signals | — | 2026-09-15 16:45:03 | 2 | — |
-| `negotiation.play_readiness` | 1.0.0+3936fa3b | negotiation | Whether a play's precondition actually holds on this deal's evidence | — | 2026-09-15 16:45:03 | 4 | — |
-| `negotiation.policy_alignment_score` | 1.0.0+6224b68c | negotiation | How far governed policy pushes for or against one negotiation lever | — | 2026-09-15 16:45:03 | 3 | — |
-| `negotiation.supplier_performance_score` | 1.0.0+fad2575a | negotiation | How far a supplier's measured performance argues for one lever | — | 2026-09-15 16:45:03 | 3 | — |
-| `negotiation.threshold_confidence` | 1.0.0+08a1494e | negotiation | How far a value sits from a classification bar, as a 0.5-1.0 confidence | — | 2026-09-15 16:45:03 | 3 | — |
-| `negotiation.zopa_estimate` | 2.0.0+3f03aa12 | negotiation | Buyer's ceiling, the supplier's cost floor if any evidence exists, and an entry counter | — | 2026-09-15 16:45:03 | 3 | — |
-| `opportunity.finding_weight_factor` | 1.0.0+c361a830 | opportunity | One finding's unnormalised weight: money at stake, amplified by risk and coverage | — | 2026-09-15 16:45:03 | 2 | — |
-| `opportunity.price_variance_impact` | 1.0.0+5527a64c | opportunity | Money at stake when a paid price sits above a benchmark | — | 2026-09-15 16:45:03 | 2 | — |
-| `opportunity.risk_normalisation` | 1.0.0+bf07873b | opportunity | Coerce a supplier risk value onto 0-1, whatever scale it arrived on | — | 2026-09-15 16:45:03 | 5 | — |
-| `opportunity.weightage_shares` | 1.0.0+b908dedf | opportunity | Turn a run's weight factors into shares of that run | — | 2026-09-15 16:45:03 | 2 | — |
-| `price_outlier.verdict` | 1.0.0+5f72312b | assurance | Whether a unit price is both statistically extreme and commercially material | — | 2026-09-15 16:45:03 | 5 | — |
-| `quote.weighting_score` | 1.0.0+903ffe16 | sourcing | Weighted 0-100 comparison score across competing quotes | — | 2026-09-15 16:45:03 | 2 | — |
-| `requirement.completeness_score` | 1.0.0+b744edd2 | analytics | Proportion of a requirement's required fields that are genuinely filled | — | 2026-09-15 16:44:53 | 2 | — |
-| `risk.predictive_supplier_score` | 1.0.0+573d6ee2 | risk | Forward-looking supplier risk 0-1 from decayed incident signals and performance | — | 2026-09-15 16:45:03 | 2 | — |
-| `rivalry.correlation` | 1.0.0+955cbb2c | linkage | How strongly two bids look like rivals for the same sourcing event | — | 2026-09-15 16:45:03 | 2 | — |
-| `rivalry.description_overlap` | 1.0.0+0565dc1f | linkage | Token Jaccard over two bids' aggregated line descriptions | — | 2026-09-15 16:45:03 | 2 | — |
-| `rivalry.price_proximity` | 1.0.0+1580e47b | linkage | Graded price closeness between two bids (proximity, never equality) | — | 2026-09-15 16:45:03 | 2 | — |
-| `rivalry.volume_agreement` | 1.0.0+d7b35f94 | linkage | Quantity-total ratio between two bids | — | 2026-09-15 16:45:03 | 2 | — |
-| `supplier.composite_score` | 1.0.0+488a3cd8 | sourcing | Weighted composite supplier score over only the criteria we hold for them | — | 2026-09-15 16:45:03 | 2 | — |
-| `supplier.criterion_normalisation` | 1.0.0+2bc2ceb8 | sourcing | Min-max normalise one raw criterion to 0-100 across the suppliers being compared | — | 2026-09-15 16:45:03 | 4 | — |
-| `supplier.deal_price_score` | 1.0.0+d877d447 | sourcing | Price scored against the cheapest RIVAL bid on the same deal (100 = cheapest) | — | 2026-09-15 16:45:03 | 3 | — |
-| `supplier.payment_terms_score` | 1.0.0+36b959b6 | sourcing | Payment terms in days scored 0-100, longer terms being better for the buyer | — | 2026-09-15 16:45:03 | 6 | — |
-| `supplier.weight_renormalisation` | 1.0.0+cca0ca38 | sourcing | Drop criteria nobody can be scored on, and renormalise the rest to sum to 1 | — | 2026-09-15 16:45:03 | 2 | — |
+| `benchmark.adjusted_price` | 1.0.0+d0939572 | commercial | Fair benchmark unit price for one quote line, and the variance against it | — | 2026-09-15 17:33:32 | 2 | 3 |
+| `benchmark.evidence_confidence` | 1.0.0+8a74bdde | commercial | Confidence label for a benchmark, from how many comparable points backed it | — | 2026-09-15 17:33:32 | 5 | — |
+| `benchmark.excel_round` | 1.0.0+b600c6e4 | commercial | Excel ROUND semantics: half away from zero | — | 2026-09-15 17:33:32 | 2 | — |
+| `critic.addressable_value` | 1.0.0+5ea664fc | opportunity_critic | What is left of the detector's number after every haircut the tests justified | — | 2026-09-15 17:33:32 | 4 | 1 |
+| `critic.anchor_age_days` | 1.0.0+84414816 | opportunity_critic | How old the comparator is, so staleness can be tested against a governed rule | — | 2026-09-15 17:33:32 | 3 | 1 |
+| `critic.annualised_rate` | 1.0.0+82e26cae | opportunity_critic | Compound annual rate of change between an anchor price and the current one | — | 2026-09-15 17:33:32 | 5 | 2 |
+| `critic.excess_over_index` | 1.0.0+07b239a9 | opportunity_critic | The part of a price rise that is above index -- the only part that is an opportunity | — | 2026-09-15 17:33:32 | 4 | 1 |
+| `critic.fabricated_anchor` | 1.0.0+39078c99 | opportunity_critic | Whether an anchor price is an artefact of the miner's missing-data fallbacks | — | 2026-09-15 17:33:32 | 4 | 1 |
+| `critic.friction_haircut` | 1.0.0+0de054cd | opportunity_critic | Deduction for the real cost of switching or renegotiating | — | 2026-09-15 17:33:32 | 3 | 1 |
+| `critic.min_confidence` | 1.0.0+1d197c09 | opportunity_critic | A claim inherits the weakest confidence of the evidence it rests on | — | 2026-09-15 17:33:32 | 5 | 1 |
+| `critic.normalise_unit_rate` | 1.0.0+2b9e905a | opportunity_critic | Reduce a line to a per-unit rate so anchor and current can be compared like for like | — | 2026-09-15 17:33:32 | 3 | 1 |
+| `critic.relative_gap` | 1.0.0+ead52e09 | opportunity_critic | The gap as a proportion of its base -- 40% of GBP 3k is not 4% of GBP 3m | — | 2026-09-15 17:33:32 | 3 | 1 |
+| `critic.unit_basis_match` | 1.0.0+622ed8ee | opportunity_critic | Whether anchor and current are priced on the same basis -- mismatch invalidates outright | — | 2026-09-15 17:33:32 | 4 | 1 |
+| `critic.volume_delta` | 1.0.0+b847708d | opportunity_critic | Proportional change in volume between anchor and current, to test like-for-like | — | 2026-09-15 17:33:32 | 4 | 1 |
+| `deal.pct_change` | 1.0.0+39441e5c | analytics | Percentage change of a value against a baseline | — | 2026-09-15 17:33:32 | 4 | 1 |
+| `deal.realised_savings` | 1.0.0+09ac2b97 | analytics | Money actually saved: the quote-to-invoice unit price gap times invoiced volume | — | 2026-09-15 17:33:32 | 3 | 1 |
+| `deal.weighted_unit_price` | 1.0.0+08d83ed7 | analytics | Volume-weighted unit price across a document type's line items | — | 2026-09-15 17:33:32 | 2 | 1 |
+| `deal_clustering.awarded_po` | 1.0.0+7b0692e8 | linkage | Which purchase order a bid won, by continuity scoring rather than name matching | — | 2026-09-15 17:33:32 | 1 | — |
+| `deal_clustering.cluster_confidence` | 1.0.0+54d2f472 | linkage | Confidence that every member of a cluster belongs to the same sourcing event | — | 2026-09-15 17:33:32 | 2 | — |
+| `duplicate_invoice.date_proximity` | 1.0.0+a120547b | assurance | How close two invoice dates are, on a graded ladder | — | 2026-09-15 17:33:32 | 3 | — |
+| `duplicate_invoice.pair_score` | 1.0.0+bc300d89 | assurance | How likely two invoices are the same invoice billed twice | — | 2026-09-15 17:33:32 | 2 | 1 |
+| `duplicate_invoice.reference_proximity` | 1.0.0+ef75b67d | assurance | Whether two invoice references are the same reference | — | 2026-09-15 17:33:32 | 3 | — |
+| `extraction.amount_agreement` | 1.0.0+d7f5c294 | extraction | Whether two money amounts agree within the three-way-match tolerance | — | 2026-09-15 17:33:32 | 3 | — |
+| `extraction.completeness_score` | 1.0.0+facea3ec | extraction | How much of a document's schema the extraction actually filled (0-100) | — | 2026-09-15 17:33:32 | 3 | — |
+| `extraction.line_arithmetic_state` | 1.0.0+93f89c05 | extraction | Whether quantity x unit rate = extended line corroborates the assigned roles | — | 2026-09-15 17:33:32 | 4 | — |
+| `linking.amount_agreement` | 1.0.0+9136b135 | linkage | Whether two amounts agree, decaying linearly to zero at 10% drift | — | 2026-09-15 17:33:32 | 4 | — |
+| `linking.cluster_dampening` | 1.0.0+89fdee3d | linkage | Correlated-signal dampening factor within one evidence cluster | — | 2026-09-15 17:33:32 | 3 | — |
+| `linking.decision_band` | 1.0.0+4f959f09 | linkage | Which action band a relationship confidence F falls into | — | 2026-09-15 17:33:32 | 5 | — |
+| `linking.line_pair_score` | 1.0.0+cb656046 | linkage | Similarity of two individual line items (description / qty / unit price) | — | 2026-09-15 17:33:32 | 2 | — |
+| `linking.line_set_composite` | 1.0.0+b4cdfa68 | linkage | Best-match line-set agreement with a source-extra coverage penalty | — | 2026-09-15 17:33:32 | 3 | — |
+| `linking.location_agreement` | 1.0.0+eac1a040 | linkage | Country and region agreement between two documents | — | 2026-09-15 17:33:32 | 2 | — |
+| `linking.relationship_confidence` | 1.0.0+3e3c340e | linkage | How confidently two procurement documents are the same relationship (F, 0-100) | — | 2026-09-15 17:33:32 | 2 | 1 |
+| `linking.temporal_plausibility` | 1.0.0+ba1d1b32 | linkage | Whether a child document's date is plausible against its parent's order date | — | 2026-09-15 17:33:32 | 4 | — |
+| `negotiation.batna_strength` | 1.0.0+aeabae8b | negotiation | The buyer's walk-away position from alternative quotes and trading history | — | 2026-09-15 17:33:48 | 5 | — |
+| `negotiation.counter_plan` | 1.0.0+39f65e1a | negotiation | What to counter at, and whether to counter at all, given the round and the gap | — | 2026-09-15 17:33:48 | 8 | 2 |
+| `negotiation.kraljic_quadrant` | 1.0.0+82ee8709 | negotiation | Kraljic quadrant and suggested negotiation style for a deal | — | 2026-09-15 17:33:48 | 5 | 1 |
+| `negotiation.market_context_score` | 1.0.0+60b018ae | negotiation | How far market conditions argue for one lever | — | 2026-09-15 17:33:48 | 2 | — |
+| `negotiation.outlier_rails` | 1.0.0+35afd9c8 | negotiation | Whether an offer breaches a review or escalation rail on price, volume or term | — | 2026-09-15 17:33:48 | 5 | — |
+| `negotiation.play_rank` | 1.0.0+9c252e65 | negotiation | Rank playbook plays for a (supplier type, style) pair against live signals | — | 2026-09-15 17:33:48 | 2 | 1 |
+| `negotiation.play_readiness` | 1.0.0+3936fa3b | negotiation | Whether a play's precondition actually holds on this deal's evidence | — | 2026-09-15 17:33:48 | 4 | — |
+| `negotiation.policy_alignment_score` | 1.0.0+6224b68c | negotiation | How far governed policy pushes for or against one negotiation lever | — | 2026-09-15 17:33:48 | 3 | — |
+| `negotiation.supplier_performance_score` | 1.0.0+fad2575a | negotiation | How far a supplier's measured performance argues for one lever | — | 2026-09-15 17:33:48 | 3 | — |
+| `negotiation.threshold_confidence` | 1.0.0+08a1494e | negotiation | How far a value sits from a classification bar, as a 0.5-1.0 confidence | — | 2026-09-15 17:33:48 | 3 | — |
+| `negotiation.zopa_estimate` | 2.0.0+3f03aa12 | negotiation | Buyer's ceiling, the supplier's cost floor if any evidence exists, and an entry counter | — | 2026-09-15 17:33:48 | 3 | — |
+| `opportunity.finding_weight_factor` | 1.0.0+c361a830 | opportunity | One finding's unnormalised weight: money at stake, amplified by risk and coverage | — | 2026-09-15 17:33:48 | 2 | 2 |
+| `opportunity.price_variance_impact` | 1.0.0+5527a64c | opportunity | Money at stake when a paid price sits above a benchmark | — | 2026-09-15 17:33:48 | 2 | — |
+| `opportunity.risk_normalisation` | 1.0.0+bf07873b | opportunity | Coerce a supplier risk value onto 0-1, whatever scale it arrived on | — | 2026-09-15 17:33:48 | 5 | — |
+| `opportunity.weightage_shares` | 1.0.0+b908dedf | opportunity | Turn a run's weight factors into shares of that run | — | 2026-09-15 17:33:48 | 2 | 1 |
+| `price_outlier.verdict` | 1.0.0+5f72312b | assurance | Whether a unit price is both statistically extreme and commercially material | — | 2026-09-15 17:33:48 | 5 | 2 |
+| `quote.weighting_score` | 1.0.0+903ffe16 | sourcing | Weighted 0-100 comparison score across competing quotes | — | 2026-09-15 17:33:48 | 2 | — |
+| `requirement.completeness_score` | 1.0.0+b744edd2 | analytics | Proportion of a requirement's required fields that are genuinely filled | — | 2026-09-15 17:33:32 | 2 | — |
+| `risk.predictive_supplier_score` | 1.0.0+573d6ee2 | risk | Forward-looking supplier risk 0-1 from decayed incident signals and performance | — | 2026-09-15 17:33:48 | 2 | — |
+| `rivalry.correlation` | 1.0.0+955cbb2c | linkage | How strongly two bids look like rivals for the same sourcing event | — | 2026-09-15 17:33:48 | 2 | 1 |
+| `rivalry.description_overlap` | 1.0.0+0565dc1f | linkage | Token Jaccard over two bids' aggregated line descriptions | — | 2026-09-15 17:33:48 | 2 | — |
+| `rivalry.price_proximity` | 1.0.0+1580e47b | linkage | Graded price closeness between two bids (proximity, never equality) | — | 2026-09-15 17:33:48 | 2 | — |
+| `rivalry.volume_agreement` | 1.0.0+d7b35f94 | linkage | Quantity-total ratio between two bids | — | 2026-09-15 17:33:48 | 2 | — |
+| `supplier.composite_score` | 1.0.0+488a3cd8 | sourcing | Weighted composite supplier score over only the criteria we hold for them | — | 2026-09-15 17:33:48 | 2 | 2 |
+| `supplier.criterion_normalisation` | 1.0.0+2bc2ceb8 | sourcing | Min-max normalise one raw criterion to 0-100 across the suppliers being compared | — | 2026-09-15 17:33:48 | 4 | — |
+| `supplier.deal_price_score` | 1.0.0+d877d447 | sourcing | Price scored against the cheapest RIVAL bid on the same deal (100 = cheapest) | — | 2026-09-15 17:33:48 | 3 | 2 |
+| `supplier.payment_terms_score` | 1.0.0+36b959b6 | sourcing | Payment terms in days scored 0-100, longer terms being better for the buyer | — | 2026-09-15 17:33:48 | 6 | 2 |
+| `supplier.weight_renormalisation` | 1.0.0+cca0ca38 | sourcing | Drop criteria nobody can be scored on, and renormalise the rest to sum to 1 | — | 2026-09-15 17:33:48 | 2 | — |
 
 ---
 
@@ -91,7 +91,7 @@ Rounding is contractual: every intermediate is rounded exactly where the prototy
 
 **Output:** `BenchmarkResult` in GBP — adjusted benchmark, the five factors, variance and evidence
 
-**Dependents:** *none*
+**Dependents:** `src/api/routers/benchmark.py`, `src/services/benchmark_live.py`, `tests/services/formulas/test_registered_formulas.py`
 
 ### `benchmark.evidence_confidence`
 
@@ -136,7 +136,7 @@ Clamped at BOTH ends, and the upper clamp is the load-bearing one. The prompt fo
 
 **Output:** `float` in money — addressable value, floored at 0 and capped at the detector's own figure
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_value.py`
 
 ### `critic.anchor_age_days`
 
@@ -151,7 +151,7 @@ An undated anchor is UNASSESSED, not age zero. The live detector emits no anchor
 
 **Output:** `int` in days — days between, or UNASSESSED if either is undated
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_anchor.py`
 
 ### `critic.annualised_rate`
 
@@ -167,7 +167,7 @@ Returns UNASSESSED rather than a number when the anchor is zero or the span is z
 
 **Output:** `float` in percent — percent per year, or UNASSESSED
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_anchor.py`, `tests/services/test_critic_store.py`
 
 ### `critic.excess_over_index`
 
@@ -183,7 +183,7 @@ UNASSESSED with no index is the whole point. The prompt forbids guessing a rate,
 
 **Output:** `float` in percent — excess percentage points, 0.0 if inside band, or UNASSESSED with no index
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_anchor.py`
 
 ### `critic.fabricated_anchor`
 
@@ -199,7 +199,7 @@ THIS RULE IS NOT IN THE ORIGINAL PROMPT. It exists because of what the live dete
 
 **Output:** `bool` in boolean — True if the anchor is an artefact, not a price
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_anchor.py`
 
 ### `critic.friction_haircut`
 
@@ -214,7 +214,7 @@ No default band. An invented friction percentage is an invented number, and the 
 
 **Output:** `float` in money — the amount to deduct, or UNASSESSED without a band
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_value.py`
 
 ### `critic.min_confidence`
 
@@ -228,7 +228,7 @@ Nothing upgrades evidence. An empty list is UNASSESSED, not CORROBORATED: 'we ch
 
 **Output:** `str` in text — ASSERTED | CORROBORATED | UNASSESSED
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_value.py`
 
 ### `critic.normalise_unit_rate`
 
@@ -243,7 +243,7 @@ Zero or absent quantity is UNASSESSED. Dividing by a defaulted 1.0 is how the mi
 
 **Output:** `float` in money — value per unit, or UNASSESSED
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_value.py`
 
 ### `critic.relative_gap`
 
@@ -258,7 +258,7 @@ A percentage off a base too small to mean anything is noise. Live, one supplier'
 
 **Output:** `float` in ratio — fraction of base, or UNASSESSED on a negligible base
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_value.py`
 
 ### `critic.unit_basis_match`
 
@@ -273,7 +273,7 @@ Compared after case-folding and separator-stripping only. No synonym table: deci
 
 **Output:** `bool` in boolean — True if comparable, False if not, UNASSESSED if unknown
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_anchor.py`
 
 ### `critic.volume_delta`
 
@@ -286,7 +286,7 @@ Compared after case-folding and separator-stripping only. No synonym table: deci
 
 **Output:** `float` in ratio — signed fraction of the anchor volume, or UNASSESSED
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_critic_value.py`
 
 ### `deal.pct_change`
 
@@ -305,7 +305,7 @@ None against a zero or absent baseline: there is no percentage change from nothi
 
 **Output:** `float` in percent — percentage points, 2dp; None against a zero baseline
 
-**Dependents:** *none*
+**Dependents:** `src/services/deal_analysis_service.py`
 
 ### `deal.realised_savings`
 
@@ -323,7 +323,7 @@ One name for a quantity previously computed twice: `efficiency_score` in the dea
 
 **Output:** `float` in money — positive = saved against the quote; None if unknowable
 
-**Dependents:** *none*
+**Dependents:** `src/services/deal_analysis_service.py`
 
 ### `deal.weighted_unit_price`
 
@@ -337,7 +337,7 @@ Returns None, not 0.0, when no line carries both a quantity and a unit price. Se
 
 **Output:** `float` in money — total line value / total quantity; None if unknowable
 
-**Dependents:** *none*
+**Dependents:** `src/services/deal_analysis_service.py`
 
 ### `deal_clustering.awarded_po`
 
@@ -398,7 +398,7 @@ Consecutive reference numbers score CONFLICT on ref_prox, not OK: INV-0455 and I
 
 **Output:** `dict` in score_0_100 — F plus the full signal breakdown and band
 
-**Dependents:** *none*
+**Dependents:** `src/services/duplicate_invoice_detector.py`
 
 ### `duplicate_invoice.reference_proximity`
 
@@ -562,7 +562,7 @@ S (separation) and Q (evidence quality) are pinned to 1.0 in the engine. See doc
 
 **Output:** `dict` in score_0_100 — F plus the full per-signal breakdown, band decision and stage values
 
-**Dependents:** *none*
+**Dependents:** `tests/services/formulas/test_registered_formulas.py`
 
 ### `linking.temporal_plausibility`
 
@@ -614,7 +614,7 @@ Salvaged from NegotiationStrategyEngine._build_batna and select_strategy before 
 
 **Output:** `dict` in money — decision, counter_price, asks, lead_time_request, message, log
 
-**Dependents:** *none*
+**Dependents:** `src/agents/negotiation_agent.py`, `tests/services/formulas/test_registered_formulas.py`
 
 ### `negotiation.kraljic_quadrant`
 
@@ -629,7 +629,7 @@ Default bars `high_spend = 98,175` and `many_alternatives = 93` are the live dea
 
 **Output:** `dict` in label — quadrant, reasons, confidence, style, style_reasons, indeterminate
 
-**Dependents:** *none*
+**Dependents:** `src/services/negotiation_advice/advisor.py`
 
 ### `negotiation.market_context_score`
 
@@ -682,7 +682,7 @@ Score = 1.0 + index x 0.01 + policy + performance + market. The index term is a 
 
 **Output:** `dict` in ratio — ranked plays with scores, rationale and trade-offs
 
-**Dependents:** *none*
+**Dependents:** `src/services/negotiation_advice/advisor.py`
 
 ### `negotiation.play_readiness`
 
@@ -775,7 +775,7 @@ The guard is load-bearing: a finding with real money behind it must never fall t
 
 **Output:** `float` in GBP — unnormalised weight factor
 
-**Dependents:** *none*
+**Dependents:** `src/agents/opportunity_miner_agent.py`, `tests/services/formulas/test_registered_formulas.py`
 
 ### `opportunity.price_variance_impact`
 
@@ -819,7 +819,7 @@ Population-scoped: a share only means anything relative to the rest of the run. 
 
 **Output:** `list[float]` in ratio — shares summing to 1.0, or all zeros
 
-**Dependents:** *none*
+**Dependents:** `src/agents/opportunity_miner_agent.py`
 
 ### `price_outlier.verdict`
 
@@ -835,7 +835,7 @@ Both tests must pass. Either alone is useless: the statistical test flags trivia
 
 **Output:** `Verdict` in money — flagged, peer_count, median, ratio, robust_score, severity
 
-**Dependents:** *none*
+**Dependents:** `src/services/price_outlier/detector.py`, `tests/services/formulas/test_registered_formulas.py`
 
 ### `quote.weighting_score`
 
@@ -901,7 +901,7 @@ The quote_rival profile deliberately carries NO supplier_id and NO exact-amount 
 
 **Output:** `dict` in ratio — score_link's full result plus `correlation` = F/100 in [0,1]
 
-**Dependents:** *none*
+**Dependents:** `src/services/deal_clustering.py`
 
 ### `rivalry.description_overlap`
 
@@ -957,7 +957,7 @@ Each supplier's weights are renormalised over the criteria they actually have, s
 
 **Output:** `list[float]` in score_0_100 — composite per supplier; NaN when no criterion was measurable
 
-**Dependents:** *none*
+**Dependents:** `src/agents/supplier_ranking_agent.py`, `tests/services/formulas/test_registered_formulas.py`
 
 ### `supplier.criterion_normalisation`
 
@@ -986,7 +986,7 @@ Ratio-to-best, not min-max. Min-max stretched whatever gap existed across the fu
 
 **Output:** `list[float]` in score_0_100 — 100 x cheapest / price, 2dp; NaN for every bid when fewer than two bid
 
-**Dependents:** *none*
+**Dependents:** `src/agents/supplier_ranking_agent.py`, `tests/services/formulas/test_registered_formulas.py`
 
 ### `supplier.payment_terms_score`
 
@@ -1002,7 +1002,7 @@ Returns None, not 0.0, for a supplier with no terms recorded. Zero would assert 
 
 **Output:** `float` in score_0_100 — 0-100, 2dp; None when no terms are on file
 
-**Dependents:** *none*
+**Dependents:** `src/services/formulas/__init__.py`, `tests/services/formulas/test_registered_formulas.py`
 
 ### `supplier.weight_renormalisation`
 

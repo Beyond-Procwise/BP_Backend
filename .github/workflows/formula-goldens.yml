@@ -59,8 +59,10 @@ jobs:
           python -m scripts.formulas.seeded_limits src.services.formulas.inventory > /tmp/model-inventory.md
           # The generated-at line and last-validated timestamps move every run;
           # everything else must match what is committed.
+          # No backslash before the backtick: inside single quotes bash keeps it,
+          # and '^| \`' matched nothing, so every timestamped table row was diffed.
           strip() { grep -v -e '^Generated from the formula registry' \
-                            -e '^| \`' ; }
+                            -e '^| `' ; }
           # The document starts at its heading. A library can print to stdout on
           # import before it (pymupdf >= 1.28 warns that `fitz` is deprecated), and
           # that line is not part of the inventory.
