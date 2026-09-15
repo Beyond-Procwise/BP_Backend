@@ -1184,6 +1184,47 @@ class DecisionEngine:
 
     # Verbs that close a finding. `flag` is deliberately absent: flagging something is
     # how you ask for attention, not how you make it go away.
+    #: action -> (status, resolution_action) as the TABLE defines them.
+    #:
+    #: proc.bp_extraction_discrepancy constrains both columns (see scripts/migrations/
+    #: 2026-05-16-extraction-discrepancy-hitl.sql):
+    #:
+    #:     status            IN ('open', 'resolved', 'ignored', 'superseded')
+    #:     resolution_action IS NULL OR IN ('apply_value', 'keep_null', 'dismiss')
+    #:
+    #: This used to write 'flagged', 'on_hold' and 'escalated' into status, and the
+    #: human's verb into resolution_action. Neither is permitted, so 9 of the 11
+    #: actions raised CheckViolation, were swallowed below, and reached the user as
+    #: "could not update the finding" -- the buttons simply did not work.
+    #:
+    #: resolution_action is NOT "what the human clicked". services/extraction/
+    #: promotion.py switches on it to decide what happens to the RAW extracted value:
+    #: 'apply_value' writes the corrected figure, 'keep_null' nulls the field,
+    #: 'dismiss' touches nothing. A verb with no honest fit records NULL rather than
+    #: claiming a raw-value action that never happened. What the human clicked is
+    #: recorded on proc.bp_decision by _record_human_action, which keeps the real verb.
+    #:
+    #: The same mapping is used by the Node gateway against this same table
+    #: (beyond-procwaise-Api spendiq.service.ts RESOLUTION_STATUS), so the two
+    #: writers agree rather than each inventing a vocabulary.
+    STATUS_FOR_ACTION: Dict[str, tuple] = {
+        # Settled: the finding is dealt with.
+        "apply_value": ("resolved", "apply_value"),
+        "confirm": ("resolved", None),
+        "approve": ("resolved", None),
+        # Deliberately set aside -- a decision, but not a fix to the extracted value.
+        "dismiss": ("ignored", "dismiss"),
+        "reject": ("ignored", "dismiss"),
+        # Escalating: a request for a human. It MUST stay open, or it vanishes from
+        # the queue it was raised into -- the one outcome the click was preventing.
+        "flag": ("open", None),
+        "hold": ("open", None),
+        "escalate": ("open", None),
+        "assign": ("open", None),
+        "investigate": ("open", None),
+        "query": ("open", None),
+    }
+
     CLOSING_ACTIONS = {"apply_value", "confirm", "approve", "reject", "dismiss"}
     KNOWN_ACTIONS = CLOSING_ACTIONS | {"flag", "escalate", "hold", "assign", "investigate", "query"}
 
@@ -1247,7 +1288,10 @@ class DecisionEngine:
                 ),
             }
 
-        # Work out the new state of the finding.
+        # Work out the new state of the finding. STATUS_FOR_ACTION is the authority on
+        # what may be written; only the resolved VALUE is derived per action here.
+        new_status, resolution_action = self.STATUS_FOR_ACTION[action]
+        resolved = None
         if action == "apply_value":
             # THE fix: actually carry the expected value across. Closing this without
             # writing resolved_value is what "Apply value" has always done.
@@ -1261,24 +1305,15 @@ class DecisionEngine:
                     ),
                     "recommendation": recommendation.to_dict(),
                 }
-            new_status, resolved = "resolved", str(resolved_value)
+            resolved = str(resolved_value)
         elif action == "confirm":
             # Confirming says "what we extracted was right" — so the resolved value is
             # the extracted one, not the expected one.
-            new_status, resolved = "resolved", str(
+            resolved = str(
                 row.get("computed_value") or row.get("raw_value") or ""
             ) or None
-        elif action in ("dismiss", "reject"):
-            new_status, resolved = "ignored", None
         elif action == "approve":
-            new_status, resolved = "resolved", value
-        elif action == "flag":
-            # Stays OPEN. A flag is a request for a human, not a resolution.
-            new_status, resolved = "flagged", None
-        elif action == "hold":
-            new_status, resolved = "on_hold", None
-        else:  # escalate | assign | investigate | query
-            new_status, resolved = "escalated", None
+            resolved = value
 
         try:
             with self.agent_nick.get_db_connection() as conn:
@@ -1294,18 +1329,23 @@ class DecisionEngine:
                                    resolved_at = NOW()
                              WHERE discrepancy_id::text = %s
                             """,
-                            (new_status, action, resolved, user_id, str(finding_id)),
+                            (new_status, resolution_action, resolved, user_id,
+                             str(finding_id)),
                         )
                     else:
                         # Open states keep resolved_* NULL — they are not resolved.
+                        # resolved_at is cleared explicitly: a finding that was
+                        # resolved and is now flagged back open would otherwise keep
+                        # the stamp saying it was closed, and read as both at once.
                         cur.execute(
                             """
                             UPDATE proc.bp_extraction_discrepancy
                                SET status = %s,
-                                   resolution_action = %s
+                                   resolution_action = %s,
+                                   resolved_at = NULL
                              WHERE discrepancy_id::text = %s
                             """,
-                            (new_status, action, str(finding_id)),
+                            (new_status, resolution_action, str(finding_id)),
                         )
                 conn.commit()
         except Exception:
