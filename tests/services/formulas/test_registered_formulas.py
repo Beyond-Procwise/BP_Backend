@@ -237,3 +237,24 @@ class TestModelInventory:
         text = render_markdown(model_inventory(include_dependents=False))
         assert "# Model Inventory" in text
         assert "linking.relationship_confidence" in text
+
+    def test_a_checkout_under_a_worktrees_directory_still_finds_call_sites(
+        self, tmp_path, monkeypatch
+    ):
+        """The skip list applies inside the repo, not to the path above it.
+
+        Matched against absolute parts, a checkout at .claude/worktrees/<name>
+        skipped every file, and the committed inventory claimed that no formula
+        had a single call site -- which CI then correctly called stale.
+        """
+        from src.services.formulas import inventory
+
+        repo = tmp_path / "worktrees" / "checkout"
+        (repo / "src" / "services").mkdir(parents=True)
+        (repo / "src" / "services" / "caller.py").write_text('evaluate("x")\n')
+        (repo / "src" / "venv").mkdir()
+        (repo / "src" / "venv" / "vendored.py").write_text("")
+        monkeypatch.setattr(inventory, "_REPO", repo)
+
+        found = {p.relative_to(repo).as_posix() for p in inventory._python_files()}
+        assert found == {"src/services/caller.py"}
