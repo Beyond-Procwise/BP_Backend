@@ -3,10 +3,11 @@ acted is load-bearing -- and it was taken from the request body.
 
 The router has seven endpoints: four writes (decide/act on a finding,
 decide/act on an email reply) and three reads (list decisions, fetch one,
-read the supplier message behind an escalated email decision). All seven must
-refuse an unauthenticated caller. The three reads need authentication only --
-no capability check -- so they are proven separately from the writes, which
-must also record the actor from the token and never from the body.
+read the supplier message behind an escalated email decision). The four writes
+must refuse any caller they cannot name, even with auth switched off, and
+record the actor from the token and never from the body. The three reads need
+authentication only when auth is enforced -- they record no actor, so with
+auth off they serve -- and are proven separately below.
 
 Every write test asserts that nothing was written when the principal is
 absent, not merely that a 401 came back. Each engine entry point a route
@@ -156,31 +157,72 @@ def test_acting_on_an_email_reply_requires_authentication(anonymous_client):
 
 
 # ---------------------------------------------------------------------------
-# The three reads: authentication is enough, no capability check. Nothing is
-# read from the database either -- the guard fires before get_db_connection.
+# The three reads: authentication is enough, no capability check, and no NAME.
+#
+# A read records nothing against anyone, so it does not need an actor -- only
+# the four writes do. With ASK_AUTH_MODE=off, require_user returns None (it
+# cannot identify anyone, by configuration), and the reads must still serve:
+# refusing them there left the Action Centre showing "Supplier replies could
+# not be loaded -- this action must be attributed to a person" instead of the
+# queue. The Approvals router already reads this way (approvals.py list_pending).
+#
+# With auth ENFORCED, an unidentified caller never gets that far: require_user
+# itself refuses, before the DB is touched. Proven against the real dependency
+# below, not an override, so the claim is about what production does.
 # ---------------------------------------------------------------------------
 
 
-def test_listing_decisions_requires_authentication(anonymous_client):
+def test_listing_decisions_is_served_when_auth_is_off(anonymous_client):
     response = anonymous_client.get("/decisions")
-    assert response.status_code in (401, 403)
-    assert anonymous_client.calls == [], (
-        "the queue must never be read without a principal"
+    assert response.status_code not in (401, 403)
+    assert "get_db_connection" in anonymous_client.calls, (
+        "with auth off the queue must be read, not refused for want of a name"
     )
 
 
-def test_fetching_a_decision_requires_authentication(anonymous_client):
+def test_fetching_a_decision_is_served_when_auth_is_off(anonymous_client):
     response = anonymous_client.get("/decisions/7")
-    assert response.status_code in (401, 403)
-    assert anonymous_client.calls == [], "trace must never run without a principal"
+    assert response.status_code == 200
+    assert anonymous_client.calls == ["trace"]
 
 
-def test_reading_an_email_reply_message_requires_authentication(anonymous_client):
+def test_reading_an_email_reply_message_is_served_when_auth_is_off(anonymous_client):
     response = anonymous_client.get("/decisions/email-reply/7/message")
-    assert response.status_code in (401, 403)
-    assert anonymous_client.calls == [], (
-        "the supplier message must never be read without a principal"
+    assert response.status_code not in (401, 403)
+    assert "get_db_connection" in anonymous_client.calls
+
+
+@pytest.fixture
+def enforced_client(monkeypatch):
+    """The REAL require_user, with auth enforced and no token sent."""
+
+    import sys
+
+    auth = sys.modules[decisions_router.require_user.__module__]
+    monkeypatch.setattr(auth, "_mode", "enforce")
+    monkeypatch.setattr(auth, "_verifier", object())  # never reached: no token
+
+    calls: list = []
+    monkeypatch.setattr(
+        "engines.decision_engine.DecisionEngine.trace",
+        _spy(calls, "trace", {"decision_id": 1}),
+        raising=True,
     )
+    app = FastAPI()
+    app.include_router(decisions_router.router)
+    app.state.agent_nick = _agent_nick(calls)
+    client = TestClient(app)
+    client.calls = calls  # type: ignore[attr-defined]
+    return client
+
+
+@pytest.mark.parametrize(
+    "path", ["/decisions", "/decisions/7", "/decisions/email-reply/7/message"]
+)
+def test_reads_refuse_a_caller_without_a_token_when_auth_is_enforced(enforced_client, path):
+    response = enforced_client.get(path)
+    assert response.status_code == 401
+    assert enforced_client.calls == [], "nothing may be read for an unidentified caller"
 
 
 # ---------------------------------------------------------------------------

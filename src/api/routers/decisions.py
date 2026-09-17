@@ -59,6 +59,20 @@ def _actor(principal: Any) -> str:
     return subject
 
 
+def _reader(principal: Any) -> None:
+    """Gate a read. Unlike a write, a read records no actor, so it needs no name.
+
+    ``require_user`` has already refused an unidentified caller when auth is
+    enforced; it returns ``None`` only when auth is switched off by
+    configuration. Demanding a name there (via ``_actor``) refused every read,
+    and the Action Centre showed "Supplier replies could not be loaded" instead
+    of the queue. A principal that IS present must still carry a subject.
+    """
+
+    if principal is not None:
+        _actor(principal)
+
+
 class DecideRequest(BaseModel):
     # What the human clicked, if anything. Recorded alongside the engine's own view
     # so a call that went against the evidence is visible afterwards.
@@ -275,7 +289,7 @@ def get_email_reply_message(
     gates this route -- no capability check on top of it, which would lock out
     roles that legitimately need visibility.
     """
-    _actor(principal)  # authenticated caller required; no capability check for a read
+    _reader(principal)  # no capability check, and no actor: a read records nothing
 
     # Taken from the engine rather than repeated as a literal here: the scoping value
     # and the value the decision was WRITTEN with must be the same string, always.
@@ -412,7 +426,7 @@ def list_decisions(
     Reading the queue is not an approval-class action: authentication alone
     gates this route, no capability check.
     """
-    _actor(principal)  # authenticated caller required; no capability check for a read
+    _reader(principal)  # no capability check, and no actor: a read records nothing
 
     where = ["d.resolution = 'escalated'"]
     params: List[Any] = []
@@ -490,7 +504,7 @@ def get_decision(
     Reading a decision is not an approval-class action: authentication alone
     gates this route, no capability check.
     """
-    _actor(principal)  # authenticated caller required; no capability check for a read
+    _reader(principal)  # no capability check, and no actor: a read records nothing
 
     from engines.decision_engine import DecisionEngine
 
