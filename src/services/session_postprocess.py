@@ -40,7 +40,9 @@ UPDATE proc.bp_extraction_discrepancy d
        notes = coalesce(d.notes, '')
                || ' [auto-resolved: the cited purchase order has since reached the system]'
  WHERE d.issue_type IN ('po_not_found', 'po_pending_review')
-   AND coalesce(d.status, 'open') <> 'resolved'
+   -- Only open findings. One a person ignored stays ignored: the PO arriving later is
+   -- not a reason to overrule them, and the lifecycle trigger would refuse the move.
+   AND d.status = 'open'
    AND d.raw_value IS NOT NULL
    AND (EXISTS (SELECT 1 FROM proc.bp_purchase_order_stg p
                  WHERE {_NORM_STG} = {_NORM_D})

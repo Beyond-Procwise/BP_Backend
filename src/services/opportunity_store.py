@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 from src.services.db import get_conn
 from src.services.facts.deprecation import read_calculation_detail
+from src.services.lifecycle import IllegalTransition, refusal
 
 log = logging.getLogger(__name__)
 
@@ -69,8 +70,15 @@ def upsert_opportunity(cur, rec: dict) -> None:
           -- a detector that already knows its deal_id wins; never blank out a
           -- value the quote-anchored backfill (opportunity_linkage.py) set earlier.
           deal_id=coalesce(excluded.deal_id, proc.bp_opportunity.deal_id),
-          -- only force stage to 'rejected'; otherwise keep the progressed stage
-          stage=case when excluded.stage='rejected' then 'rejected'
+          -- only force stage to 'rejected', and only where that is a legal move:
+          -- a realised/closed opportunity keeps its stage (the lifecycle trigger
+          -- would otherwise refuse, aborting the whole sync)
+          stage=case when excluded.stage='rejected' and exists (
+                         select 1 from proc.bp_lifecycle_transition t
+                          where t.object_type='opportunity'
+                            and t.from_state=proc.bp_opportunity.stage
+                            and t.to_state='rejected')
+                     then 'rejected'
                      else proc.bp_opportunity.stage end,
           updated_at=now()
         """,
@@ -149,11 +157,17 @@ def set_stage(opportunity_id: str, stage: str, realised_savings: Optional[float]
 
     def _run(c):
         cur = c.cursor()
-        cur.execute(
-            "update proc.bp_opportunity set stage=%s, "
-            "realised_savings_gbp=coalesce(%s, realised_savings_gbp), "
-            "stage_updated_at=now(), updated_at=now() where opportunity_id=%s",
-            (stage, realised_savings, str(opportunity_id)))
+        try:
+            cur.execute(
+                "update proc.bp_opportunity set stage=%s, "
+                "realised_savings_gbp=coalesce(%s, realised_savings_gbp), "
+                "stage_updated_at=now(), updated_at=now() where opportunity_id=%s",
+                (stage, realised_savings, str(opportunity_id)))
+        except Exception as exc:
+            reason = refusal(exc)
+            if reason:
+                raise IllegalTransition(reason) from exc
+            raise
 
     if conn is None:
         with get_conn() as own:
@@ -166,6 +180,22 @@ def set_stage(opportunity_id: str, stage: str, realised_savings: Optional[float]
         _run(conn)
 
 
+def _fold_in_rejections(cur) -> int:
+    """Reject opportunities a person rejected in proc.opportunity_feedback.
+
+    Only where rejection is a legal move: feedback does not unwind a realised saving,
+    and the lifecycle trigger would refuse the whole statement if it tried.
+    """
+    cur.execute(
+        "update proc.bp_opportunity o set stage='rejected', updated_at=now() "
+        "from proc.opportunity_feedback f "
+        "where f.opportunity_id=o.opportunity_id and f.status='rejected' "
+        "and exists (select 1 from proc.bp_lifecycle_transition t "
+        "where t.object_type='opportunity' and t.from_state=o.stage "
+        "and t.to_state='rejected')")
+    return cur.rowcount or 0
+
+
 def sync_findings_from_json(path: str, conn: Any = None) -> dict:
     """Upsert all findings from a miner JSON file into proc.bp_opportunity, then
     fold in reject feedback. Returns {"synced": n, "rejected": m}. Idempotent."""
@@ -176,15 +206,9 @@ def sync_findings_from_json(path: str, conn: Any = None) -> dict:
         cur = c.cursor()
         for rec in findings:
             upsert_opportunity(cur, rec)
-        # fold in reject feedback (opportunity_feedback.status='rejected')
         rejected = 0
         try:
-            cur.execute(
-                "update proc.bp_opportunity o set stage='rejected', updated_at=now() "
-                "from proc.opportunity_feedback f "
-                "where f.opportunity_id=o.opportunity_id and f.status='rejected' "
-                "and o.stage<>'rejected'")
-            rejected = cur.rowcount or 0
+            rejected = _fold_in_rejections(cur)
         except Exception:  # feedback table optional
             log.debug("opportunity_feedback fold-in skipped", exc_info=True)
         return {"synced": len(findings), "rejected": rejected}

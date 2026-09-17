@@ -1348,7 +1348,21 @@ class DecisionEngine:
                             (new_status, resolution_action, str(finding_id)),
                         )
                 conn.commit()
-        except Exception:
+        except Exception as exc:
+            from src.services.lifecycle import refusal
+
+            reason = refusal(exc)
+            if reason:
+                # Not an outage: someone else moved this finding first (or it is
+                # closed a different way and must be re-opened). Say so, or the
+                # person reads a failure and clicks again.
+                logger.info("action %s on finding %s refused: %s", action, finding_id, reason)
+                return {
+                    "applied": False,
+                    "conflict": True,
+                    "error": reason,
+                    "recommendation": recommendation.to_dict(),
+                }
             logger.exception("failed to apply action %s to finding %s", action, finding_id)
             return {
                 "applied": False,

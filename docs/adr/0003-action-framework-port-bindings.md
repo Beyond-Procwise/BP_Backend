@@ -297,8 +297,13 @@ Build it in this order, each step small and independently useful:
    - ~~Fix the discrepancy CHECK / status mismatch (§3.5).~~ **DONE — `db746c2`.**
    - Make `bp_agent_actions` immutable ~~and give it a returned ref~~ (§3.1).
      **Immutability DONE — `c17c1a3`.** The returned `AuditRef` is still outstanding.
-   - **NEXT:** add a from-state transition guard to the discrepancy and opportunity stores,
-     copying sell-side quotes (§3.5).
+   - ~~Add a from-state transition guard to the discrepancy and opportunity stores (§3.5).~~
+     **DONE 2026-09-17** — `deploy/sql/2026-09-17_bp_lifecycle_transitions.sql`, applied to both
+     DBs. Enforced by a trigger over one declared table, `proc.bp_lifecycle_transition`, not by a
+     Python `_transition` per store: the Node gateway writes finding statuses too, so a Python
+     guard would not bind it. `src/services/lifecycle.can_apply` reads the same table; a refusal
+     is SQLSTATE `BP409`, surfaced as HTTP 409 / a clear Action Centre message.
+   - **NEXT:** the returned `AuditRef` (§3.1 gap 2).
 2. **Policy-engine extensions, on your rulings:**
    - `require_approval` effect (§3.3)
    - `rules.autonomy` (§3.4.1)
@@ -336,8 +341,8 @@ returned `AuditRef`, lifecycle transition guards) comes next, then the step-2 po
   trial keeps learning. Revisit when enrolment lapses on 2026-10-09.
 - **D7 — Rules home.** Make the formula registry the rules catalogue (predicate formulas)?
 - **D8 — Entitlements and learned ranking.** Confirm both are out of v1.
-- **D9 — Lifecycle.** Approve transition guards in the discrepancy and opportunity stores as
-  engine work preceding the framework?
+- **D9 — Lifecycle. DONE (2026-09-17).** Transition guards for findings and opportunities, as a
+  database trigger over `proc.bp_lifecycle_transition` (see §4 step 1).
 - **D10 — ADR location. DONE (2026-09-16).** Kept in `docs/adr/`, force-added like 0001 and 0002;
   `.gitignore` is unchanged.
 - **D11 — Discrepancy CHECK defect. DONE (commit `db746c2`).** Fixed by mapping the actions onto

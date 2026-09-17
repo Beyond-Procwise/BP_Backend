@@ -225,3 +225,35 @@ def test_every_action_survives_the_real_constraints():
             finally:
                 conn.rollback()
         assert not rejected, "the live table rejected:\n" + "\n".join(rejected)
+
+
+class _Refused(Exception):
+    """Stands in for the psycopg2 error the lifecycle trigger raises (SQLSTATE BP409)."""
+
+    pgcode = "BP409"
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.diag = SimpleNamespace(message_primary=message)
+
+
+def test_a_refused_move_tells_the_person_why():
+    """Two people act on one finding: the second click is refused by the database.
+
+    The person must hear that the finding already moved, not the generic "could not
+    update the finding" that reads like an outage and invites them to click again.
+    """
+    eng, cur = _engine()
+    message = "finding 4242 is resolved; it cannot move to ignored"
+
+    def _execute(sql, params=None, _orig=cur.execute):
+        if " ".join(sql.split()).startswith("UPDATE proc.bp_extraction_discrepancy"):
+            raise _Refused(message)
+        return _orig(sql, params)
+
+    cur.execute = _execute
+    result = eng.execute(4242, "dismiss", user_id="second", override_reason="under test")
+
+    assert result["applied"] is False
+    assert result["error"] == message
+    assert result.get("conflict") is True

@@ -21,6 +21,7 @@ from api.auth import require_user
 
 from src.services.opportunity_dashboard import build_opportunities_dashboard, detailed_opportunities
 from src.services.opportunity_linkage import link_opportunities_to_deals
+from src.services.lifecycle import IllegalTransition
 from src.services.opportunity_store import set_stage, sync_findings_from_json
 from src.services.db import get_conn
 
@@ -91,6 +92,8 @@ def post_stage(opportunity_id: str, body: StageUpdate,
                principal=Depends(require_user)) -> dict[str, Any]:
     try:
         set_stage(opportunity_id, body.stage, body.realised_savings)
+    except IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
