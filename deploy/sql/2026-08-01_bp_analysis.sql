@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS proc.bp_analysis_document (
 CREATE TABLE IF NOT EXISTS proc.bp_analysis_deal (
     analysis_id  UUID NOT NULL
                  REFERENCES proc.bp_analysis(analysis_id) ON DELETE CASCADE,
-    deal_id      VARCHAR(25) NOT NULL,
+    deal_id      TEXT NOT NULL,        -- as proc.bp_deal.deal_id; see 2026-09-19_bp_analysis_deal_id_text.sql
     version      INTEGER NOT NULL,
     is_latest    BOOLEAN NOT NULL DEFAULT true,
     linked_at    TIMESTAMPTZ NOT NULL DEFAULT now(),

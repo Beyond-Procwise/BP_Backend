@@ -703,7 +703,8 @@ class BackendScheduler:
     def _register_analysis_sweep_job(self) -> None:
         """Safety net for analysis events the listener path missed. Toggle
         ANALYSIS_SWEEP_ENABLED (default on), interval
-        ANALYSIS_SWEEP_INTERVAL_MINUTES (default 15)."""
+        ANALYSIS_SWEEP_INTERVAL_MINUTES (default 2) -- a report whose live freeze
+        failed waits on this job, and the UI stops narrating after 6 minutes."""
         import os
         if os.environ.get("ANALYSIS_SWEEP_ENABLED", "1").strip() not in ("1", "true", "True"):
             logger.info("analysis sweep job disabled by ANALYSIS_SWEEP_ENABLED")
@@ -711,9 +712,9 @@ class BackendScheduler:
         if self.ANALYSIS_SWEEP_JOB_NAME in self._jobs:
             return
         try:
-            minutes = int(os.environ.get("ANALYSIS_SWEEP_INTERVAL_MINUTES", "15"))
+            minutes = int(os.environ.get("ANALYSIS_SWEEP_INTERVAL_MINUTES", "2"))
         except ValueError:
-            minutes = 15
+            minutes = 2
         self.register_job(
             self.ANALYSIS_SWEEP_JOB_NAME,
             self._run_analysis_sweep,

@@ -61,13 +61,15 @@ def test_job_skipped_when_disabled(monkeypatch):
     assert BackendScheduler.ANALYSIS_SWEEP_JOB_NAME not in s._jobs
 
 
-def test_job_defaults_to_a_fifteen_minute_interval(monkeypatch):
+def test_job_defaults_to_a_two_minute_interval(monkeypatch):
+    """A report whose live freeze failed waits for this job. At 15 minutes the
+    user sat on "Reading your documents..." far past the UI's 6-minute cap."""
     monkeypatch.delenv("ANALYSIS_SWEEP_INTERVAL_MINUTES", raising=False)
     s = _bare_scheduler()
     s._register_analysis_sweep_job()
     job = s._jobs[BackendScheduler.ANALYSIS_SWEEP_JOB_NAME]
     from datetime import timedelta
-    assert job.interval == timedelta(minutes=15)
+    assert job.interval == timedelta(minutes=2)
 
 
 def test_job_honours_the_interval_env_var(monkeypatch):

@@ -309,6 +309,7 @@ def _close_as_history(session_id: str, resolved_at: Any, conn: Any) -> Optional[
 
 
 def sweep(*, stale_minutes: int = 60, history_after_minutes: int = 60,
+          adopt_after_minutes: int = 5,
           conn: Optional[Any] = None) -> dict:
     """Safety net for everything the listener path can miss.
 
@@ -325,6 +326,12 @@ def sweep(*, stale_minutes: int = 60, history_after_minutes: int = 60,
     every session that predates this feature is in that bucket — and is closed
     immediately with findings NULL rather than handed to pass 2, which would
     capture today's data and present it as what that analysis found.
+
+    Pass 1 only adopts a session whose first outcome is older than
+    adopt_after_minutes. The browser registers its analysis (name, new/amend)
+    12-20s after the documents land; adopting inside that gap would file the
+    session under the sweep's defaults, and start()'s ON CONFLICT would then
+    keep them over the browser's own.
 
     stale_minutes defaults to 60 - deliberately far beyond the UI's 6-minute
     patience cap, because a large upload legitimately takes minutes and must
@@ -365,8 +372,9 @@ def sweep(*, stale_minutes: int = 60, history_after_minutes: int = 60,
                AND NOT EXISTS (SELECT 1 FROM proc.bp_analysis a
                                 WHERE a.session_id = pm.session_id)
              GROUP BY pm.session_id
+            HAVING MIN(sdo.created_at) < now() - (%s || ' minutes')::interval
             """,
-            (str(int(history_after_minutes)),),
+            (str(int(history_after_minutes)), str(int(adopt_after_minutes))),
         )
         for (session_id, deal_name, true_started_at,
              resolved_at, is_history) in (cur.fetchall() or []):

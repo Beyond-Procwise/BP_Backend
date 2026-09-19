@@ -300,7 +300,28 @@ def test_sweep_pass1_asks_whether_the_session_is_already_history(monkeypatch):
     assert "MAX(pm.end_ts AT TIME ZONE 'UTC')" in pass1_sql
     assert "bool_and(pm.action_status IS NOT NULL)" in pass1_sql
     assert "minutes" in pass1_sql
-    assert params == ("60",), "the history cut-off must be a bound parameter"
+    assert params == ("60", "5"), "the history cut-off must be a bound parameter"
+
+
+def test_sweep_pass1_leaves_a_fresh_session_for_the_browser_to_register():
+    """The UI registers an analysis (name, new/amend) 12-20s AFTER its documents
+    reach their outcomes. Pass 1 adopting the session inside that gap would file
+    it under the sweep's defaults and the UI's own details would be dropped on
+    conflict. A session is only adopted once its first outcome is older than the
+    grace period, so a closed browser is still caught, just never mid-upload."""
+    conn = FakeConn(results=[[], [], []])
+
+    analysis_store.sweep(conn=conn, adopt_after_minutes=7)
+
+    pass1_sql, params = conn.cur.calls[0]
+    assert "HAVING MIN(sdo.created_at)" in pass1_sql
+    assert params == ("60", "7"), "the grace period must be a bound parameter"
+
+
+def test_sweep_adoption_grace_defaults_to_five_minutes():
+    import inspect
+    sig = inspect.signature(analysis_store.sweep)
+    assert sig.parameters["adopt_after_minutes"].default == 5
 
 
 def test_sweep_closes_a_historical_session_without_inventing_findings(monkeypatch):
