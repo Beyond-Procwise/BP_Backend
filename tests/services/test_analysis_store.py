@@ -179,6 +179,7 @@ def test_freeze_copies_session_documents_onto_the_analysis():
     conn = FakeConn(results=[
         (aid,),          # SELECT the running analysis
         # (the documents INSERT has no RETURNING, so it never fetches)
+        [],              # _RESOLVE_DOCUMENTS: nothing traced
         [("D-1",)],      # SELECT DISTINCT deal_id
         (2,),            # _allocate_version -> next version for D-1
     ])
@@ -195,6 +196,7 @@ def test_freeze_allocates_version_per_deal_not_globally():
     aid = uuid.uuid4()
     conn = FakeConn(results=[
         (aid,),
+        [],
         [("D-1",), ("D-2",)],
         (3,),            # D-1 already had two analyses
         (1,),            # D-2 has none
@@ -209,13 +211,36 @@ def test_freeze_allocates_version_per_deal_not_globally():
 
 def test_freeze_clears_is_latest_on_the_deals_previous_versions():
     aid = uuid.uuid4()
-    conn = FakeConn(results=[(aid,), [("D-1",)], (2,)])
+    conn = FakeConn(results=[(aid,), [], [("D-1",)], (2,)])
 
     analysis_store.freeze("ses-1", findings={}, conn=conn)
 
     sqls = [s for s, _ in conn.cur.calls]
     assert any("SET is_latest = false" in s and "deal_id = %s" in s
                for s in sqls)
+
+
+def test_freeze_names_each_document_and_links_the_deal_holding_it_first():
+    """A duplicate re-upload's documents live on an earlier deal. freeze()
+    fills each file's document number and links that deal ahead of the
+    (empty) deal the upload was filed under."""
+    aid = uuid.uuid4()
+    conn = FakeConn(results=[
+        (aid,),
+        [("documents/po/PO-1.xlsx", "PO-1", "D-OLD")],   # _RESOLVE_DOCUMENTS
+        [("D-NEW",)],                                    # the upload's own deal
+        (4,),            # D-OLD next version
+        (1,),            # D-NEW next version
+    ])
+
+    analysis_store.freeze("ses-1", findings={}, conn=conn)
+
+    fills = [p for s, p in conn.cur.calls
+             if s.startswith("UPDATE proc.bp_analysis_document SET doc_pk")]
+    assert fills == [("PO-1", aid, "documents/po/PO-1.xlsx")]
+    link_params = [p for s, p in conn.cur.calls
+                   if "INSERT INTO proc.bp_analysis_deal" in s]
+    assert [(p[1], p[2]) for p in link_params] == [("D-OLD", 4), ("D-NEW", 1)]
 
 
 def test_freeze_is_a_noop_when_nothing_is_running():

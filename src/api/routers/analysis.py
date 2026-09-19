@@ -137,8 +137,12 @@ def _hydrate(row: dict) -> dict:
         "SELECT doc_type, doc_pk, file_path, file_name, outcome "
         "  FROM proc.bp_analysis_document WHERE analysis_id = %s "
         " ORDER BY file_name", (aid,))
+    # The UI reads deals[0]. A deal that holds documents comes before one that
+    # holds none — a duplicate re-upload's own deal is empty, and reading it
+    # makes the report blank.
     row["deals"] = _query(
         "SELECT deal_id, version, is_latest, linked_at "
-        "  FROM proc.bp_analysis_deal WHERE analysis_id = %s "
-        " ORDER BY deal_id", (aid,))
+        "  FROM proc.bp_analysis_deal x WHERE analysis_id = %s "
+        " ORDER BY NOT EXISTS (SELECT 1 FROM proc.bp_deal_document_map m "
+        "                       WHERE m.deal_id = x.deal_id), deal_id", (aid,))
     return row

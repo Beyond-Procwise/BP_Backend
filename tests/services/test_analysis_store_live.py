@@ -247,3 +247,74 @@ def test_start_writes_all_columns():
             print(f"Cleanup failed for {session_id}: {e}")
         finally:
             conn.close()
+
+
+def _a_promoted_upload(cur):
+    """Any upload whose extracted PO already sits on a deal in _trgt — the
+    'original' a duplicate re-upload points back to. Borrowed read-only."""
+    cur.execute(
+        "SELECT p.id, p.file_path, r.po_id, r.deal_id "
+        "  FROM proc.process_monitor p "
+        "  JOIN proc.bp_purchase_order_raw r ON r.process_monitor_id = p.id "
+        "  JOIN proc.bp_purchase_order_trgt t "
+        "    ON t.po_id = r.po_id AND t.deal_id = r.deal_id "
+        " WHERE p.file_path IS NOT NULL "
+        " ORDER BY p.id LIMIT 1"
+    )
+    row = cur.fetchone()
+    if row is None:
+        pytest.skip("no promoted PO upload in this database to borrow")
+    return row
+
+
+def test_freeze_resolves_a_duplicate_upload_to_the_deal_that_holds_it():
+    """A re-upload of a file the system already holds is not re-read (that
+    would count its spend twice). Its analysis must still name the document
+    and link the deal the document lives on — otherwise the report reads an
+    empty deal and shows nothing at all.
+
+    Everything is written inside one transaction that is rolled back.
+    """
+    session_id = f"pytest-{uuid.uuid4().hex[:12]}"
+    empty_deal = f"pytest-deal-{uuid.uuid4().hex[:12]}"
+    conn = get_db_conn()
+    try:
+        cur = conn.cursor()
+        original_id, file_path, po_id, holding_deal = _a_promoted_upload(cur)
+
+        cur.execute(
+            "INSERT INTO proc.process_monitor "
+            "       (process_name, type, status, file_path, category, deal_id, "
+            "        session_id, doc_action, duplicate_of_id) "
+            "VALUES ('Upload', 'Upload', 'Extracted', %s, 'po', %s, %s, "
+            "        'duplicate', %s)",
+            (file_path, empty_deal, session_id, original_id),
+        )
+        cur.execute(
+            "INSERT INTO proc.session_document_outcome "
+            "       (session_id, file_path, document_type, outcome) "
+            "VALUES (%s, %s, 'po', 'target')",
+            (session_id, file_path),
+        )
+        analysis_id = analysis_store.start(session_id=session_id, conn=conn)
+
+        assert holding_deal in analysis_store.deal_ids_for_session(
+            session_id, conn=conn)
+
+        analysis_store.freeze(session_id, findings={}, conn=conn)
+
+        cur.execute(
+            "SELECT doc_pk FROM proc.bp_analysis_document WHERE analysis_id = %s",
+            (analysis_id,))
+        assert [r[0] for r in cur.fetchall()] == [po_id]
+
+        cur.execute(
+            "SELECT deal_id FROM proc.bp_analysis_deal WHERE analysis_id = %s",
+            (analysis_id,))
+        linked = {r[0] for r in cur.fetchall()}
+        assert holding_deal in linked, (
+            f"the analysis must link {holding_deal}, where the document "
+            f"lives, not only the empty upload deal; got {linked}")
+    finally:
+        conn.rollback()
+        conn.close()

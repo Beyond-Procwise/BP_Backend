@@ -68,20 +68,85 @@ def _txn(conn: Optional[Any]) -> Iterator[Any]:
             raise
 
 
-def deal_ids_for_session(session_id: str, *, conn: Optional[Any] = None) -> list:
-    """Which deals this session's documents landed on.
+# Which document each file in a session is, and which deal it sits on.
+#
+# A duplicate re-upload is never re-read (its spend would be counted twice),
+# so it has no extraction of its own: follow duplicate_of_id back to the
+# upload that WAS read. process_monitor_id on the raw tables then names the
+# document exactly, per upload, where a file path would not (the same S3 key
+# is reused by every re-upload). deal_id is only reported when that document
+# really is on that deal in _trgt; otherwise the file still gets its number
+# but no deal is claimed for it.
+_RESOLVE_DOCUMENTS = """
+WITH pm AS (
+  SELECT p.file_path,
+         CASE WHEN p.doc_action = 'duplicate' AND p.duplicate_of_id IS NOT NULL
+              THEN p.duplicate_of_id ELSE p.id END AS source_id
+    FROM proc.process_monitor p
+   WHERE p.session_id = %s
+), raw AS (
+  SELECT 'quote' AS doc_type, process_monitor_id, quote_id AS doc_pk,
+         deal_id, extracted_at
+    FROM proc.bp_quote_raw
+  UNION ALL
+  SELECT 'invoice', process_monitor_id, invoice_id, deal_id, extracted_at
+    FROM proc.bp_invoice_raw
+  UNION ALL
+  SELECT 'po', process_monitor_id, po_id, deal_id, extracted_at
+    FROM proc.bp_purchase_order_raw
+), hit AS (
+  SELECT pm.file_path, r.doc_pk, r.deal_id, r.extracted_at,
+         CASE r.doc_type
+           WHEN 'quote' THEN EXISTS (
+             SELECT 1 FROM proc.bp_quote_trgt t
+              WHERE t.deal_id = r.deal_id AND t.quote_id = r.doc_pk)
+           WHEN 'invoice' THEN EXISTS (
+             SELECT 1 FROM proc.bp_invoice_trgt t
+              WHERE t.deal_id = r.deal_id AND t.invoice_id = r.doc_pk)
+           ELSE EXISTS (
+             SELECT 1 FROM proc.bp_purchase_order_trgt t
+              WHERE t.deal_id = r.deal_id AND t.po_id = r.doc_pk)
+         END AS on_deal
+    FROM pm JOIN raw r ON r.process_monitor_id = pm.source_id
+   WHERE r.doc_pk IS NOT NULL
+)
+SELECT DISTINCT ON (file_path) file_path, doc_pk,
+       CASE WHEN on_deal THEN deal_id END AS deal_id
+  FROM hit
+ ORDER BY file_path, on_deal DESC, extracted_at DESC NULLS LAST
+"""
 
-    process_monitor already carries deal_id, so this is a direct lookup rather
-    than a walk through the _trgt tables.
-    """
+
+def _resolved_documents(cur: Any, session_id: str) -> list:
+    """(file_path, doc_pk, deal_id-or-None) for each file in the session that
+    an extraction can be traced to."""
+    cur.execute(_RESOLVE_DOCUMENTS, (session_id,))
+    return list(cur.fetchall() or [])
+
+
+def _deal_ids(cur: Any, session_id: str,
+              resolved: Optional[list] = None) -> list:
+    """The deals holding this session's documents first, then the deal the
+    upload was filed under when that is a different one.
+
+    The upload's own deal alone is not enough: when every file was a duplicate
+    it received no documents, and a report read off it shows nothing."""
+    if resolved is None:
+        resolved = _resolved_documents(cur, session_id)
+    holding = sorted({d for (_, _, d) in resolved if d})
+    cur.execute(
+        "SELECT DISTINCT deal_id FROM proc.process_monitor "
+        "WHERE session_id = %s AND deal_id IS NOT NULL ORDER BY deal_id",
+        (session_id,),
+    )
+    filed = [r[0] for r in (cur.fetchall() or [])]
+    return holding + [d for d in filed if d not in holding]
+
+
+def deal_ids_for_session(session_id: str, *, conn: Optional[Any] = None) -> list:
+    """Which deals this session's documents are on — see _deal_ids."""
     with _txn(conn) as c:
-        cur = c.cursor()
-        cur.execute(
-            "SELECT DISTINCT deal_id FROM proc.process_monitor "
-            "WHERE session_id = %s AND deal_id IS NOT NULL",
-            (session_id,),
-        )
-        return [r[0] for r in (cur.fetchall() or [])]
+        return _deal_ids(c.cursor(), session_id)
 
 
 def document_count_for_session(session_id: str, *, conn: Optional[Any] = None) -> Optional[int]:
@@ -242,15 +307,17 @@ def freeze(session_id: str, *, findings: Optional[dict] = None,
             """,
             (analysis_id, sid),
         )
+        resolved = _resolved_documents(cur, sid)
+        for file_path, doc_pk, _deal in resolved:
+            cur.execute(
+                "UPDATE proc.bp_analysis_document SET doc_pk = %s "
+                "WHERE analysis_id = %s AND file_path = %s AND doc_pk IS NULL",
+                (doc_pk, analysis_id, file_path),
+            )
 
-        # 2. Which deals it produced. process_monitor already carries deal_id.
-        cur.execute(
-            "SELECT DISTINCT deal_id FROM proc.process_monitor "
-            "WHERE session_id = %s AND deal_id IS NOT NULL ORDER BY deal_id",
-            (sid,),
-        )
-        deal_ids = [deal_id for (deal_id,) in (cur.fetchall() or [])]
-        _link_deals(cur, analysis_id, deal_ids)
+        # 2. Which deals it produced — including, for a duplicate re-upload,
+        #    the deal its documents already live on.
+        _link_deals(cur, analysis_id, _deal_ids(cur, sid, resolved))
 
         # 3. Freeze.
         cur.execute(
