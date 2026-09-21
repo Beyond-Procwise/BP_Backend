@@ -16,8 +16,34 @@ having to query the database directly. Three endpoints:
       with their hint counts and success counts.
 
 All queries are READ-ONLY against the existing tables; no new schema is
-introduced. The endpoints are unauthenticated for parity with the rest
-of the API; an upstream reverse-proxy is expected to gate access.
+introduced. The router is mounted in `_AUTHENTICATED_ROUTERS` (api/main.py),
+so every endpoint here requires a verified principal under ASK_AUTH_MODE
+-- the docstring previously claimed the opposite and had been wrong since
+that list was introduced.
+
+WHICH TABLES, AND WHY IT MATTERS
+
+The document queries read the `_trgt` tables. The pipeline writes
+`bp_<doc>_raw` -> `bp_<doc>_stg` -> `bp_<doc>_trgt`, and `_trgt` is the
+final, deal-keyed destination -- the only stage that represents what the
+product actually believes about a document.
+
+These queries originally named `proc.bp_invoice`, `proc.bp_quote` and
+`proc.bp_purchase_order`, which have never existed in this schema, so two
+of the three endpoints returned 500 for months. Nothing caught it: there
+was no test for this router, and the output-safety layer turned the
+`UndefinedTable` error into a generic message, so it read as a transient
+server fault rather than a query naming a table that is not there.
+
+WHY THE LINE COUNTS ARE PRE-AGGREGATED
+
+`lines` used to be a correlated subquery evaluated once per document. None
+of the `*_line_items_trgt` tables carries an index, so each of ~38.5k parent
+rows sequentially scanned a 55k-116k row table: EXPLAIN cost 161,402,845,
+and the query had not returned after 175 seconds. Counting once per table in
+a CTE and LEFT JOINing costs 10,324 and returns in 0.2s. Keep it that way --
+and note that adding the missing indexes would make the old shape *look*
+acceptable while remaining quadratic in the corpus.
 """
 from __future__ import annotations
 
@@ -46,38 +72,47 @@ def _query(sql: str, params: tuple = ()) -> list[tuple]:
 )
 def extraction_quality_summary() -> dict[str, Any]:
     """Aggregate quality metrics, grouped by supplier_id, across all
-    invoices, quotes, and POs in proc.bp_*."""
+    invoices, quotes, and POs in the proc.bp_*_trgt tables."""
     sql = """
     WITH
+    invoice_lines AS (
+        SELECT invoice_id, COUNT(*) AS lines
+          FROM proc.bp_invoice_line_items_trgt GROUP BY invoice_id
+    ),
+    quote_lines AS (
+        SELECT quote_id, COUNT(*) AS lines
+          FROM proc.bp_quote_line_items_trgt GROUP BY quote_id
+    ),
+    po_lines AS (
+        SELECT po_id, COUNT(*) AS lines
+          FROM proc.bp_po_line_items_trgt GROUP BY po_id
+    ),
     invoices AS (
-        SELECT supplier_id,
-               invoice_id::text AS pk,
-               COALESCE(invoice_total_incl_tax, 0)::float AS total,
-               (SELECT COUNT(*) FROM proc.bp_invoice_line_items li
-                  WHERE li.invoice_id = bp.invoice_id) AS lines,
+        SELECT bp.supplier_id,
+               COALESCE(bp.invoice_total_incl_tax, 0)::float AS total,
+               COALESCE(l.lines, 0) AS lines,
                'Invoice' AS doc_type,
-               GREATEST(created_date, last_modified_date) AS seen_at
-          FROM proc.bp_invoice bp
+               GREATEST(bp.created_date, bp.last_modified_date) AS seen_at
+          FROM proc.bp_invoice_trgt bp
+          LEFT JOIN invoice_lines l ON l.invoice_id = bp.invoice_id
     ),
     quotes AS (
-        SELECT supplier_id,
-               quote_id::text AS pk,
-               COALESCE(total_amount, 0)::float AS total,
-               (SELECT COUNT(*) FROM proc.bp_quote_line_items li
-                  WHERE li.quote_id = bp.quote_id) AS lines,
+        SELECT bp.supplier_id,
+               COALESCE(bp.total_amount, 0)::float AS total,
+               COALESCE(l.lines, 0) AS lines,
                'Quote' AS doc_type,
-               GREATEST(created_date, last_modified_date) AS seen_at
-          FROM proc.bp_quote bp
+               GREATEST(bp.created_date, bp.last_modified_date) AS seen_at
+          FROM proc.bp_quote_trgt bp
+          LEFT JOIN quote_lines l ON l.quote_id = bp.quote_id
     ),
     pos AS (
-        SELECT supplier_id,
-               po_id::text AS pk,
-               COALESCE(total_amount, 0)::float AS total,
-               (SELECT COUNT(*) FROM proc.bp_po_line_items li
-                  WHERE li.po_id = bp.po_id) AS lines,
+        SELECT bp.supplier_id,
+               COALESCE(bp.total_amount, 0)::float AS total,
+               COALESCE(l.lines, 0) AS lines,
                'Purchase_Order' AS doc_type,
-               GREATEST(created_date, last_modified_date) AS seen_at
-          FROM proc.bp_purchase_order bp
+               GREATEST(bp.created_date, bp.last_modified_date) AS seen_at
+          FROM proc.bp_purchase_order_trgt bp
+          LEFT JOIN po_lines l ON l.po_id = bp.po_id
     ),
     union_all AS (
         SELECT * FROM invoices
@@ -142,27 +177,40 @@ def recent_extractions(
     limit: int = Query(default=20, ge=1, le=200),
 ) -> dict[str, Any]:
     sql = """
-    WITH unioned AS (
-        SELECT 'Invoice' AS doc_type, invoice_id::text AS pk, supplier_id,
-               COALESCE(invoice_total_incl_tax, 0)::float AS total,
-               (SELECT COUNT(*) FROM proc.bp_invoice_line_items li
-                  WHERE li.invoice_id = bp.invoice_id) AS lines,
-               GREATEST(created_date, last_modified_date) AS seen_at
-          FROM proc.bp_invoice bp
+    WITH
+    invoice_lines AS (
+        SELECT invoice_id, COUNT(*) AS lines
+          FROM proc.bp_invoice_line_items_trgt GROUP BY invoice_id
+    ),
+    quote_lines AS (
+        SELECT quote_id, COUNT(*) AS lines
+          FROM proc.bp_quote_line_items_trgt GROUP BY quote_id
+    ),
+    po_lines AS (
+        SELECT po_id, COUNT(*) AS lines
+          FROM proc.bp_po_line_items_trgt GROUP BY po_id
+    ),
+    unioned AS (
+        SELECT 'Invoice' AS doc_type, bp.invoice_id::text AS pk, bp.supplier_id,
+               COALESCE(bp.invoice_total_incl_tax, 0)::float AS total,
+               COALESCE(l.lines, 0) AS lines,
+               GREATEST(bp.created_date, bp.last_modified_date) AS seen_at
+          FROM proc.bp_invoice_trgt bp
+          LEFT JOIN invoice_lines l ON l.invoice_id = bp.invoice_id
         UNION ALL
-        SELECT 'Quote', quote_id::text, supplier_id,
-               COALESCE(total_amount, 0)::float,
-               (SELECT COUNT(*) FROM proc.bp_quote_line_items li
-                  WHERE li.quote_id = bp.quote_id),
-               GREATEST(created_date, last_modified_date)
-          FROM proc.bp_quote bp
+        SELECT 'Quote', bp.quote_id::text, bp.supplier_id,
+               COALESCE(bp.total_amount, 0)::float,
+               COALESCE(l.lines, 0),
+               GREATEST(bp.created_date, bp.last_modified_date)
+          FROM proc.bp_quote_trgt bp
+          LEFT JOIN quote_lines l ON l.quote_id = bp.quote_id
         UNION ALL
-        SELECT 'Purchase_Order', po_id::text, supplier_id,
-               COALESCE(total_amount, 0)::float,
-               (SELECT COUNT(*) FROM proc.bp_po_line_items li
-                  WHERE li.po_id = bp.po_id),
-               GREATEST(created_date, last_modified_date)
-          FROM proc.bp_purchase_order bp
+        SELECT 'Purchase_Order', bp.po_id::text, bp.supplier_id,
+               COALESCE(bp.total_amount, 0)::float,
+               COALESCE(l.lines, 0),
+               GREATEST(bp.created_date, bp.last_modified_date)
+          FROM proc.bp_purchase_order_trgt bp
+          LEFT JOIN po_lines l ON l.po_id = bp.po_id
     )
     SELECT doc_type, pk, supplier_id, total, lines, seen_at
       FROM unioned
