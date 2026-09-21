@@ -44,3 +44,16 @@ backups/neo4j/
 
 # Supervised KG rebuild transcripts (scripts/kg_full_rebuild.py)
 logs/kg_rebuild*.log
+
+# Runtime logs. logs/ held five finetune transcripts that were committed and
+# then never touched again; src/logs/ is already ignored above and had grown a
+# 175MB procwise.log. A log is a thing you read once and rotate, not a thing
+# you version.
+logs/*.log
+
+# Outputs of the opportunity miner. api/routers/opportunities.py reads the JSON
+# back on /opportunities/sync, so these DO exist at the repo root in production
+# -- they are just not something to version. Both were tracked, so every
+# production run dirtied the working tree with a regenerated artifact.
+/opportunity_findings.json
+/opportunity_findings.xlsx
