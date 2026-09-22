@@ -1596,11 +1596,21 @@ class AgentNick:
         # (The two other QdrantClient constructions in the tree are one-off
         # migration scripts.)
         from src.services import egress as _egress
+        # A blank key means "no auth" (the local container). Passing "" makes
+        # qdrant_client send an empty api-key header and warn about an insecure
+        # connection on every boot.
+        _qdrant_key = (self.settings.qdrant_api_key or "").strip() or None
         self.qdrant_client = _egress.vector_client(
             purpose=_egress.Purpose.VECTOR_INDEX,
             url=self.settings.qdrant_url,
-            api_key=self.settings.qdrant_api_key,
+            api_key=_qdrant_key,
         )
+        # Nothing below may touch Qdrant until it answers. The learning
+        # repository and the static policy sync both run inside this
+        # constructor and both swallow their own failures, so without this
+        # gate a boot that overtakes the Qdrant container comes up looking
+        # healthy with nothing in the vector store.
+        self._await_qdrant_ready()
         self.embedding_model = SentenceTransformer(self.settings.embedding_model, device=self.device)
         self.learning_repository = LearningRepository(self)
         self.static_policy_loader: Optional[StaticPolicyLoader] = None
@@ -1670,6 +1680,46 @@ class AgentNick:
         from orchestration.agentnick_control import build_tools
 
         return build_tools(self)
+
+    def _await_qdrant_ready(self) -> None:
+        """Hold startup until the vector store answers, or say so plainly."""
+
+        wait = int(getattr(self.settings, "qdrant_startup_wait_seconds", 90) or 0)
+        if wait <= 0:
+            logger.debug("Qdrant startup wait is disabled")
+            return
+
+        grace = int(getattr(self.settings, "qdrant_startup_grace_seconds", 30) or 0)
+        url = getattr(self.settings, "qdrant_url", "http://localhost:6333")
+
+        try:
+            from src.services.qdrant_health import await_qdrant_ready
+
+            ready = await_qdrant_ready(
+                url,
+                api_key=(getattr(self.settings, "qdrant_api_key", None) or "").strip() or None,
+                wait_seconds=wait,
+                grace_seconds=grace,
+            )
+        except Exception:  # pragma: no cover - the gate must never block a boot
+            logger.exception("Qdrant readiness check failed; continuing startup")
+            return
+
+        if ready:
+            logger.info("Qdrant is ready at %s", url)
+            return
+
+        # Loud on purpose. Everything downstream degrades silently, so this
+        # line is the only warning anyone gets that the box is about to serve
+        # an empty vector store.
+        logger.error(
+            "Qdrant did not answer at %s within %ss — the learning collection "
+            "and the static policy corpus will NOT be ingested this boot, and "
+            "policy and document search will return nothing until the vector "
+            "store is reachable and the service is restarted",
+            url,
+            wait,
+        )
 
     def _initialise_static_policy_corpus(self) -> None:
         """Ensure the static policy knowledge base is synchronised."""

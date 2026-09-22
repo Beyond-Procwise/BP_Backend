@@ -37,17 +37,24 @@ services:
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:v1.9.1
+    # Kept in step with the qdrant-client in .venv (1.17.x). The server was
+    # pinned at 1.9.1 while the client moved on, and the client refuses to
+    # talk to a server more than one minor behind.
+    image: qdrant/qdrant:v1.17.1
     restart: unless-stopped
     ports:
       - "6333:6333"
     volumes:
       - qdrant-storage:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      # The image ships no curl or wget, so the old CMD could only ever fail:
+      # the container reported "unhealthy" for months while Qdrant was fine.
+      # bash is present, and /dev/tcp needs nothing else.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
 
   ollama:
     image: ollama/ollama:0.1.47

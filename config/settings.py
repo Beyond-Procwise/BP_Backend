@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     qdrant_collection_name: str = Field(
         default="procwise_document_embeddings", env="QDRANT_COLLECTION_NAME"
     )
+    # How long startup may wait for Qdrant to answer before giving up and
+    # coming up without a vector store. 0 disables the wait entirely.
+    qdrant_startup_wait_seconds: int = Field(
+        default=90, env="QDRANT_STARTUP_WAIT_SECONDS"
+    )
+    qdrant_startup_grace_seconds: int = Field(
+        default=30, env="QDRANT_STARTUP_GRACE_SECONDS"
+    )
     uploaded_documents_collection_name: str = Field(
         default="uploaded_documents", env="UPLOADED_DOCUMENTS_COLLECTION_NAME"
     )

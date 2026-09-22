@@ -164,6 +164,72 @@ def ensure_qdrant_available(
     return is_qdrant_healthy(url, api_key=api_key)
 
 
+def await_qdrant_ready(
+    url: str = "http://localhost:6333",
+    *,
+    api_key: Optional[str] = None,
+    wait_seconds: float = 90.0,
+    grace_seconds: float = 30.0,
+    poll_interval: float = 2.0,
+) -> bool:
+    """Block on the startup path until Qdrant answers.
+
+    This exists because of a race that has no loud failure. On a cold boot the
+    API and the Qdrant container start at the same moment, and the API wins:
+    it builds its client, creates the learning collection and syncs the static
+    policy corpus against a socket nothing is listening on yet. Every one of
+    those failures is caught and logged, so the box finishes booting, reports
+    itself healthy, and serves an empty vector store. Nothing retries, so the
+    corpus stays missing until somebody restarts the service by hand.
+
+    The wait is in two stages. A container that is merely still booting arrives
+    within seconds, so we poll for ``grace_seconds`` before escalating; only
+    then do we spend the rest of the budget on
+    :func:`ensure_qdrant_available`, which will restart a local container.
+    That ordering matters: restarting a container that was already on its way
+    up just makes the wait longer.
+
+    Returns ``True`` if Qdrant is answering by the time the budget is spent.
+    The caller decides what to do about ``False`` — this function never raises,
+    because a vector store that is down must not stop the API from starting.
+    """
+    if wait_seconds <= 0:
+        logger.debug("Qdrant startup wait disabled (wait_seconds=%s)", wait_seconds)
+        return is_qdrant_healthy(url, api_key=api_key)
+
+    if is_qdrant_healthy(url, api_key=api_key):
+        return True
+
+    deadline = time.monotonic() + wait_seconds
+    grace_deadline = time.monotonic() + min(grace_seconds, wait_seconds)
+
+    logger.warning(
+        "Qdrant is not answering at %s yet — holding startup for up to %.0fs",
+        url,
+        wait_seconds,
+    )
+
+    while time.monotonic() < grace_deadline:
+        time.sleep(poll_interval)
+        if is_qdrant_healthy(url, api_key=api_key):
+            logger.info("Qdrant became ready during the startup grace period")
+            return True
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        logger.error(
+            "Qdrant did not become ready within %.0fs at %s", wait_seconds, url
+        )
+        return False
+
+    logger.warning(
+        "Qdrant still down after the grace period — attempting recovery "
+        "(%.0fs of budget left)",
+        remaining,
+    )
+    return ensure_qdrant_available(url=url, max_wait=int(remaining), api_key=api_key)
+
+
 def reconnect_qdrant_client(
     agent_nick,
     *,
