@@ -15,7 +15,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import require_user
-from src.services.deal_lifecycle import promote_deal, save_reference
+from pydantic import BaseModel, Field
+
+from src.services.deal_lifecycle import promote_deal, save_deal, save_reference
 from src.services.reconciliation import reconcile_deal
 
 _NOT_AVAILABLE = "Summary not available"
@@ -153,6 +155,25 @@ def post_promote_deal(deal_id: str, principal=Depends(require_user)) -> dict:
         logger.exception("promote failed for %s", deal_id)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "ok", "deal_id": deal_id, "is_tracked": True}
+
+
+class DealSaveIn(BaseModel):
+    name: str = Field(max_length=200)
+
+
+@router.post("/{deal_id}/save", summary="Name a deal and confirm it as a tracked deal")
+def post_save_deal(deal_id: str, body: DealSaveIn, principal=Depends(require_user)) -> dict:
+    try:
+        save_deal(deal_id, body.name, actor=getattr(principal, "subject", None))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("save failed for %s", deal_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "ok", "deal_id": deal_id, "name": " ".join(body.name.split()),
+            "is_tracked": True}
 
 
 @router.post("/{deal_id}/save-reference", summary="Keep an analysis as a saved (untracked) reference")
