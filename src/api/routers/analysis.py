@@ -152,4 +152,14 @@ def _hydrate(row: dict) -> dict:
         "  FROM proc.bp_analysis_deal x WHERE analysis_id = %s "
         " ORDER BY NOT EXISTS (SELECT 1 FROM proc.bp_deal_document_map m "
         "                       WHERE m.deal_id = x.deal_id), deal_id", (aid,))
+    # Files in this upload the system already held: which deal they are on and
+    # when they first came in, so the user can be told and offered that deal.
+    # None means "could not check" -- [] would claim nothing was a repeat.
+    try:
+        row["already_uploaded"] = (
+            analysis_store.already_uploaded_for_session(row["session_id"])
+            if row.get("session_id") else [])
+    except Exception:
+        log.exception("already-uploaded lookup failed for analysis=%s", aid)
+        row["already_uploaded"] = None
     return row

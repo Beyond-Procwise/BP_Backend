@@ -167,6 +167,58 @@ def document_count_for_session(session_id: str, *, conn: Optional[Any] = None) -
         return None
 
 
+# One row per file in the session that was skipped as a content duplicate,
+# joined to the upload it matched. duplicate_of_id is the EARLIEST matching
+# upload (the watcher orders by id), so its start_ts is when the document
+# first came in.
+_ALREADY_UPLOADED = """
+SELECT pm.file_path, orig.deal_id, orig.deal_name, orig.start_ts
+  FROM proc.process_monitor pm
+  JOIN proc.process_monitor orig ON orig.id = pm.duplicate_of_id
+ WHERE pm.session_id = %s AND pm.doc_action = 'duplicate'
+ ORDER BY pm.file_path
+"""
+
+_DEAL_NAME = """
+SELECT deal_name FROM proc.bp_deal_document_map
+ WHERE deal_id = %s AND deal_name IS NOT NULL LIMIT 1
+"""
+
+
+def already_uploaded_for_session(session_id: str, *,
+                                 conn: Optional[Any] = None) -> list:
+    """The files in this upload the system already held, each with the deal
+    it is on and when it was first uploaded -- so the user can be told, and
+    offered that deal.
+
+    The deal is the one the document is verified on in _trgt when that can be
+    traced (deal assignment may have moved it since); otherwise the deal the
+    first upload was filed under."""
+    with _txn(conn) as c:
+        cur = c.cursor()
+        holding = {fp: deal for (fp, _, deal) in _resolved_documents(cur, session_id)
+                   if deal}
+        cur.execute(_ALREADY_UPLOADED, (session_id,))
+        rows = list(cur.fetchall() or [])
+        names: dict = {}
+        out = []
+        for file_path, filed_deal, filed_name, first_ts in rows:
+            deal_id = holding.get(file_path) or filed_deal
+            if deal_id and deal_id not in names:
+                cur.execute(_DEAL_NAME, (deal_id,))
+                hit = cur.fetchone()
+                names[deal_id] = hit[0] if hit else None
+            deal_name = names.get(deal_id) or (
+                filed_name if deal_id == filed_deal else None)
+            out.append({
+                "file_name": str(file_path or "").split("/")[-1] or None,
+                "deal_id": deal_id,
+                "deal_name": deal_name,
+                "first_uploaded_at": first_ts,
+            })
+        return out
+
+
 def file_paths_for_session(session_id: str, *, conn: Optional[Any] = None) -> list:
     """The file paths this session's documents were read from — discrepancies
     are scoped by file path, not deal_id (bp_extraction_discrepancy has no

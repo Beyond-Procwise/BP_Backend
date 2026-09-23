@@ -318,3 +318,51 @@ def test_freeze_resolves_a_duplicate_upload_to_the_deal_that_holds_it():
     finally:
         conn.rollback()
         conn.close()
+
+
+def test_a_duplicate_upload_names_the_deal_it_is_already_on_and_when():
+    """A re-uploaded file is not read again, and the user has to be told so:
+    which deal already holds it, by name, and when it first came in -- so
+    they can choose to go there, or keep it in this analysis.
+
+    Everything is written inside one transaction that is rolled back.
+    """
+    session_id = f"pytest-{uuid.uuid4().hex[:12]}"
+    empty_deal = f"pytest-deal-{uuid.uuid4().hex[:12]}"
+    conn = get_db_conn()
+    try:
+        cur = conn.cursor()
+        original_id, file_path, _po_id, holding_deal = _a_promoted_upload(cur)
+        cur.execute("SELECT start_ts FROM proc.process_monitor WHERE id = %s",
+                    (original_id,))
+        first_uploaded = cur.fetchone()[0]
+
+        cur.execute(
+            "INSERT INTO proc.process_monitor "
+            "       (process_name, type, status, file_path, category, deal_id, "
+            "        session_id, doc_action, duplicate_of_id) "
+            "VALUES ('Upload', 'Upload', 'Extracted', %s, 'po', %s, %s, "
+            "        'duplicate', %s)",
+            (file_path, empty_deal, session_id, original_id),
+        )
+        # A file that was new in the same upload is not "already uploaded".
+        cur.execute(
+            "INSERT INTO proc.process_monitor "
+            "       (process_name, type, status, file_path, category, deal_id, "
+            "        session_id) "
+            "VALUES ('Upload', 'Upload', 'Extracted', 'documents/po/new.pdf', "
+            "        'po', %s, %s)",
+            (empty_deal, session_id),
+        )
+
+        rows = analysis_store.already_uploaded_for_session(session_id, conn=conn)
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["file_name"] == file_path.split("/")[-1]
+        assert row["deal_id"] == holding_deal
+        assert row["deal_name"]                     # a name the user recognises
+        assert row["first_uploaded_at"] == first_uploaded
+    finally:
+        conn.rollback()
+        conn.close()
