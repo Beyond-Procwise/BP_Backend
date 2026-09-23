@@ -230,6 +230,32 @@ _TAX_PERCENT_TRIPLE = {
     "purchase_order": ("total_amount", "tax_percent", "tax_amount"),
     "quote": ("total_amount", "tax_percent", "tax_amount"),
 }
+
+# A re-read of the same document REFRESHES its open finding rather than stacking
+# a second one: the open finding is unique on (doc_type, doc_pk, issue_type,
+# field_name) -- ix_bp_extraction_discrepancy_open_key -- and a plain INSERT raised
+# UniqueViolation there, failing the whole promotion and leaving the stale first
+# read in _trgt. Same identity and refresh as persistence.write_discrepancies.
+_DISCREPANCY_UPSERT = """
+    INSERT INTO proc.bp_extraction_discrepancy
+        (doc_type, raw_id, source_file, doc_pk_candidate,
+         field_name, raw_value, expected_value, computed_value,
+         issue_type, severity, status, notes, blocks_promotion)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (doc_type, coalesce(doc_pk_candidate, ''),
+                 issue_type, coalesce(field_name, ''))
+    WHERE coalesce(status, 'open') <> 'resolved'
+    DO UPDATE SET
+      raw_id = EXCLUDED.raw_id,
+      source_file = EXCLUDED.source_file,
+      raw_value = EXCLUDED.raw_value,
+      expected_value = EXCLUDED.expected_value,
+      computed_value = EXCLUDED.computed_value,
+      severity = EXCLUDED.severity,
+      notes = EXCLUDED.notes,
+      blocks_promotion = EXCLUDED.blocks_promotion
+"""
+
 _DEFAULT_DISCREPANCY_TOLERANCE = Decimal("0.50")
 
 
@@ -308,13 +334,7 @@ def _log_derived_money(
         present = derived.get(f) not in (None, "")
         if present and not _money_on_page(derived.get(f), full_text):
             cur.execute(
-                """
-                INSERT INTO proc.bp_extraction_discrepancy
-                    (doc_type, raw_id, source_file, doc_pk_candidate,
-                     field_name, raw_value, expected_value, computed_value,
-                     issue_type, severity, status, notes, blocks_promotion)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
+                _DISCREPANCY_UPSERT,
                 (
                     doc_type, raw_id, source_file, str(doc_pk) if doc_pk else None,
                     f, None, None, str(derived.get(f)),
@@ -391,13 +411,7 @@ def _log_imprecise_dates(
                                         f"1 {calendar.month_name[mth]} {y}")):
             continue
         cur.execute(
-            """
-            INSERT INTO proc.bp_extraction_discrepancy
-                (doc_type, raw_id, source_file, doc_pk_candidate,
-                 field_name, raw_value, expected_value, computed_value,
-                 issue_type, severity, status, notes, blocks_promotion)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+            _DISCREPANCY_UPSERT,
             (
                 doc_type, raw_id, source_file, str(doc_pk) if doc_pk else None,
                 f, str(v), f"{calendar.month_name[mth]} {y}", iso,
@@ -437,13 +451,7 @@ def _check_tax_total_consistency(
     def _log(field_name: str, issue: str, expected, computed, notes,
              severity: str = "warning"):
         cur.execute(
-            """
-            INSERT INTO proc.bp_extraction_discrepancy
-                (doc_type, raw_id, source_file, doc_pk_candidate,
-                 field_name, raw_value, expected_value, computed_value,
-                 issue_type, severity, status, notes, blocks_promotion)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
+            _DISCREPANCY_UPSERT,
             (
                 doc_type, raw_id, source_file, str(doc_pk) if doc_pk else None,
                 field_name,
