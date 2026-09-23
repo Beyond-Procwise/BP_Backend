@@ -79,13 +79,19 @@ def _save(c: Any, deal_id: str, name: str, actor: str | None) -> None:
         cur.execute(f"update {table} set deal_name=%s where deal_id=%s "
                     f"and deal_name is distinct from %s", (name, deal_id, name))
         renamed[table] = cur.rowcount or 0
-    _promote(c, deal_id)
+    cur.execute("select is_tracked from proc.bp_deal where deal_id=%s", (deal_id,))
+    was_tracked = bool((cur.fetchall() or [[False]])[0][0])
+    if not was_tracked:
+        # Confirm only once: _promote resets tracked_at and advances the deal's
+        # 'identified' opportunities, which a rename of a tracked deal must not do.
+        _promote(c, deal_id)
     agent_actions.record_action_or_fail(
         phase="consolidation", action_type="deal.save", agent="user", conn=c,
         deal_id=deal_id, status="saved",
-        summary=f"Deal saved as '{name}' and confirmed (was '{before}')",
+        summary=(f"Deal renamed to '{name}' (was '{before}')" if was_tracked else
+                 f"Deal saved as '{name}' and confirmed (was '{before}')"),
         details={"principal": actor, "name_before": before, "name_after": name,
-                 "rows_renamed": renamed},
+                 "rows_renamed": renamed, "confirmed_now": not was_tracked},
     )
 
 

@@ -76,3 +76,24 @@ def test_a_deal_with_no_documents_is_not_invented():
                 save_deal("NO-SUCH-DEAL-test_deal_save_live", _NAME, actor="t", conn=conn)
         finally:
             conn.rollback()
+
+
+def test_renaming_a_deal_that_is_already_confirmed_does_not_confirm_it_again():
+    # Confirming resets tracked_at and advances 'identified' opportunities; a rename
+    # of a tracked deal must do neither.
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            save_deal(_DEAL, _NAME, actor="test-user", conn=conn)
+            cur = conn.cursor()
+            cur.execute("update proc.bp_deal set tracked_at = now() - interval '3 days' "
+                        "where deal_id=%s returning tracked_at", (_DEAL,))
+            first = cur.fetchall()[0][0]
+            save_deal(_DEAL, _NAME + " again", actor="test-user", conn=conn)
+            assert _scalar(cur, "select tracked_at from proc.bp_deal where deal_id=%s",
+                           (_DEAL,)) == [(first,)]
+            assert {r[0] for r in _scalar(
+                cur, "select distinct deal_name from proc.bp_quote_trgt where deal_id=%s",
+                (_DEAL,))} == {_NAME + " again"}
+        finally:
+            conn.rollback()
