@@ -111,7 +111,9 @@ def _agent_tools(
                     user_id=user_id,
                     input_data=payload,
                 )
-                output = agent.run(ctx)
+                # execute(), not run(): a tool call is an agent run like any other
+                # and must leave the same proc.routing / bp_action record.
+                output = agent.execute(ctx)
                 data = dict(output.data or {})
                 # The agentic_plan is narration for a human reader; feeding it back
                 # into the loop just burns context the model needs for facts.

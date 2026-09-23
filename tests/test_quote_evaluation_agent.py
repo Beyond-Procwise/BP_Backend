@@ -888,3 +888,20 @@ def test_process_handles_empty_product_type(monkeypatch):
     )
     agent.run(context)
     assert capture_fetch.captured is None
+
+
+def test_supplier_responses_are_read_from_the_table_replies_are_filed_in():
+    """Supplier replies are stored in proc.supplier_response (the email
+    watcher's table). The agent read proc.supplier_responses, which has never
+    existed, so every RFQ evaluated as if no supplier had answered."""
+    nick = DummyNick()
+    conn = build_quote_connection([], [], [], [])
+    nick.get_db_connection = lambda: conn
+    agent = QuoteEvaluationAgent(nick)
+
+    agent._get_responses_from_db("RFQ-1")
+
+    sql, params = conn.queries[-1]
+    assert "FROM proc.supplier_response " in sql + " "
+    assert "supplier_responses" not in sql
+    assert params == ("RFQ-1",)

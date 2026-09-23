@@ -46,6 +46,9 @@ class _Backing:
         self.contexts.append(ctx)
         return base_agent.AgentOutput(status=AgentStatus.SUCCESS, data={"ranked": []})
 
+    def execute(self, ctx, **kw):
+        return self.run(ctx)
+
 
 def _agent_nick():
     prompt_rows = [{
@@ -149,3 +152,52 @@ def test_agents_called_as_tools_run_under_the_workflow():
     ctx = nick.agents["supplier_ranking"].contexts[0]
     assert ctx.workflow_id == "wf-9"
     assert ctx.user_id == "u1"
+
+
+class _RoutingLog:
+    """Records what an agent run writes to proc.routing / proc.bp_action."""
+
+    def __init__(self):
+        self.processes = []
+
+    def validate_workflow_id(self, process_id, workflow_id):
+        return True
+
+    def log_process(self, **kw):
+        self.processes.append(kw)
+        return len(self.processes)
+
+    def log_run_detail(self, **kw):
+        return "run-1"
+
+    def log_action(self, **kw):
+        return "action-1"
+
+
+class _Ranking(base_agent.BaseAgent):
+    """A real registered agent class, called as a tool."""
+
+    def run(self, ctx):
+        return base_agent.AgentOutput(status=AgentStatus.SUCCESS, data={"ranked": []})
+
+
+def test_agents_called_as_tools_leave_the_same_audit_trail_as_any_run(monkeypatch):
+    """An agent AgentNick chooses to run is still an agent run: it must write
+    its proc.routing / bp_action rows like every other invocation, or a tool
+    call — including one that reaches an outward-facing agent — leaves no
+    record that it happened."""
+    monkeypatch.setattr(base_agent.BaseAgent, "_record_context_example",
+                        lambda self, ctx, out: None)
+    nick = _agent_nick()
+    nick.process_routing_service = _RoutingLog()
+    nick._context_dataset_writer = object()
+    nick.agents["supplier_ranking"] = _Ranking(nick)
+
+    tools = {t.name: t for t in agentnick_control.build_tools(nick, workflow_id="wf-9", user_id="u1")}
+    out = tools["run_supplier_ranking"].handler()
+
+    assert out["status"] == "success"
+    logged = nick.process_routing_service.processes
+    assert [p["process_name"] for p in logged] == ["_Ranking"]
+    assert logged[0]["workflow_id"] == "wf-9"
+    assert logged[0]["user_id"] == "u1"

@@ -380,6 +380,7 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
     worker = threading.Thread(
         target=_run_to_completion,
         args=(engine, graph, state, run_id, user_id),
+        kwargs={"release": getattr(orchestrator, "_release_wf_context", None)},
         name=f"agent-workflow-{run_id}",
         daemon=True,
     )
@@ -401,10 +402,14 @@ def _claim_and_execute(request: Request, run_id: str, wf: Dict[str, Any],
 
 
 def _run_to_completion(engine: Any, graph: Any, state: Any, run_id: str,
-                       user_id: Optional[str]) -> None:
+                       user_id: Optional[str], release: Any = None) -> None:
     """The background body of a run. Owns the terminal status of the run row:
     whatever happens — a clean finish, agent-level errors, or the engine
-    itself raising — the row leaves "executing"."""
+    itself raising — the row leaves "executing".
+
+    ``release`` drops the run's shared blackboard from the orchestrator, as
+    execute_workflow does for its own runs; without it every canvas run's
+    WorkflowContext stays resident until the FIFO cap evicts it."""
     try:
         engine.execute(graph, input_data=dict(state.shared_data),
                        user_id=user_id, workflow_id=run_id, resume_state=state)
@@ -414,6 +419,12 @@ def _run_to_completion(engine: Any, graph: Any, state: Any, run_id: str,
         state.status = "failed"
         state.errors.append({"error": str(exc)})
         final = "failed"
+    finally:
+        if release is not None:
+            try:
+                release(run_id)
+            except Exception:  # noqa: BLE001 — never strand the run row over housekeeping
+                logger.debug("releasing blackboard for run %s failed", run_id, exc_info=True)
     reqrepo.finish_run(run_id, final)
 
 

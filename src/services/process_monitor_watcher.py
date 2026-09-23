@@ -191,61 +191,55 @@ class ProcessMonitorWatcher:
             logger.exception("Failed to claim record %s", record_id)
             return None
 
-    @staticmethod
-    def _data_needs_reextraction(cur, file_path: str, category: str) -> bool:
-        """Check if extracted data is missing from the target bp_ table.
+    # doc type → (_raw table, pk column, downstream tables that hold the promoted row)
+    _REEXTRACT_TABLES = {
+        "invoice": ("proc.bp_invoice_raw", "invoice_id",
+                    ("proc.bp_invoice_stg", "proc.bp_invoice_trgt")),
+        "purchase_order": ("proc.bp_purchase_order_raw", "po_id",
+                           ("proc.bp_purchase_order_stg", "proc.bp_purchase_order_trgt")),
+        "quote": ("proc.bp_quote_raw", "quote_id",
+                  ("proc.bp_quote_stg", "proc.bp_quote_trgt")),
+        # Contracts promote into bp_contracts, not a _stg/_trgt pair.
+        "contract": ("proc.bp_contract_raw", "contract_id", ("proc.bp_contracts",)),
+    }
+    _REEXTRACT_CATEGORY = {
+        "invoice": "invoice", "po": "purchase_order", "purchase_order": "purchase_order",
+        "purchaseorder": "purchase_order", "quote": "quote", "quotes": "quote",
+        "contract": "contract",
+    }
 
-        Returns True when the process_monitor says 'Extracted' but the
-        actual business data was deleted (e.g. during cleanup), meaning
-        the document must be re-extracted.
+    @classmethod
+    def _data_needs_reextraction(cls, cur, prior_id: int, category: str) -> bool:
+        """True only when the earlier upload's data is provably gone.
+
+        The earlier upload is traced by its process_monitor id to the _raw row
+        it produced. If that row was promoted and its document is now in none of
+        the tables a promoted row lives in (e.g. removed by a cleanup), the
+        re-upload must be extracted again. Anything short of that proof — a row
+        held for review, no PK, nothing traceable — stays a duplicate: extracting
+        it again would only queue the same review a second time.
         """
-        import re as _re
-
-        fname = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
-        cat = (category or "").lower()
-
-        # Extract expected PK from filename
-        pk_val = None
-        table = None
-        pk_col = None
-        if cat == "po":
-            m = _re.search(r"PO\s*(\d{4,})", fname)
-            if m:
-                pk_val, table, pk_col = m.group(1), "proc.bp_purchase_order", "po_id"
-        elif cat == "invoice":
-            m = _re.search(r"(INV[\-]?\s*[\w\-]+)", fname, _re.I)
-            if m:
-                pk_val = _re.sub(r"\s+", "", m.group(1))
-                table, pk_col = "proc.bp_invoice", "invoice_id"
-        elif cat in ("quote", "quotes"):
-            # Try QUT first, then QTE, then bare numeric
-            for pat in (r"QUT[\-\s]*([\d][\d\-]{2,})", r"QTE[\-\s]*([\d][\d\-]{2,})", r"(\d{5,})"):
-                m = _re.search(pat, fname, _re.I)
-                if m:
-                    pk_val, table, pk_col = _re.sub(r"\s+", "", m.group(1)), "proc.bp_quote", "quote_id"
-                    break
-
-        if not pk_val or not table:
-            return False  # can't determine — assume no re-extraction needed
-
-        # Allowlist guard — table and pk_col must be one of the known bp_ pairs
-        # (they are derived from hardcoded branches above, but guard defensively)
-        _ALLOWED_TABLE_PK: dict = {
-            "proc.bp_purchase_order": "po_id",
-            "proc.bp_invoice": "invoice_id",
-            "proc.bp_quote": "quote_id",
-        }
-        if _ALLOWED_TABLE_PK.get(table) != pk_col:
-            logger.warning(
-                "_data_needs_reextraction: rejected disallowed table=%r pk_col=%r",
-                table, pk_col,
-            )
+        doc_type = cls._REEXTRACT_CATEGORY.get((category or "").lower())
+        if doc_type is None:
             return False
-
+        raw_table, pk_col, held_in = cls._REEXTRACT_TABLES[doc_type]
         try:
-            cur.execute(f"SELECT 1 FROM {table} WHERE {pk_col} = %s LIMIT 1", (pk_val,))
-            return cur.fetchone() is None  # True = data missing, needs re-extraction
+            cur.execute(
+                f"SELECT {pk_col} FROM {raw_table} "
+                "WHERE process_monitor_id = %s AND promotion_status = 'promoted' "
+                f"AND {pk_col} IS NOT NULL ORDER BY extracted_at DESC NULLS LAST LIMIT 1",
+                (prior_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            for table in held_in:
+                cur.execute(f"SELECT 1 FROM {table} WHERE {pk_col} = %s LIMIT 1", (row[0],))
+                if cur.fetchone():
+                    return False
+            return True
         except Exception:
+            logger.warning("re-extraction check failed for record %s", prior_id, exc_info=True)
             return False
 
     def _mark_extracted(self, record_id: int) -> None:
@@ -449,7 +443,7 @@ class ProcessMonitorWatcher:
                             )
                             prior = cur.fetchone()
                             if prior and not self._data_needs_reextraction(
-                                cur, prior[1], prior[2] or ""
+                                cur, prior[0], prior[2] or ""
                             ):
                                 logger.info(
                                     "Content duplicate: record %s identical to %s — marking duplicate",
@@ -574,9 +568,6 @@ class ProcessMonitorWatcher:
             pk = result.get("pk") or result.get("doc_pk") or ""
             doc_type = result.get("doc_type") or category or ""
 
-            # AgentNick → Knowledge Graph refresh: after a successful
-            # stg promotion, push the row into Neo4j so the graph stays
-            # in lock-step with the relational truth. KG sync is a
             # KG sync used to fire here. It does not any more, and the reason is
             # a tier, not a preference: `status == "promoted"` at this point
             # means the row reached _stg. The graph mirrors _trgt — the final,
@@ -623,40 +614,6 @@ class ProcessMonitorWatcher:
                     "ZERO_LINE_ITEMS for record %s: %s pk=%s persisted with 0 line items — verify against source PDF",
                     record_id, doc_type, pk,
                 )
-
-            # --- PRE-KG VALIDATION GATE ---
-            # Only sync to Knowledge Graph when extraction meets quality bar.
-            # Bad data must not propagate to the graph where it would affect
-            # downstream agents (ranking, opportunities, negotiation).
-            kg_eligible = True
-            if not pk:
-                logger.warning(
-                    "KG BLOCKED for record %s: missing primary key — data not synced to graph",
-                    record_id,
-                )
-                kg_eligible = False
-            elif confidence < 0.70:
-                logger.warning(
-                    "KG BLOCKED for record %s: confidence %.2f below 0.70 threshold — data not synced to graph",
-                    record_id, confidence,
-                )
-                kg_eligible = False
-            elif error_count > 2:
-                logger.warning(
-                    "KG BLOCKED for record %s: %d errors — data not synced to graph",
-                    record_id, error_count,
-                )
-                kg_eligible = False
-
-            if kg_eligible:
-                try:
-                    from services.procurement_kg_builder import ProcurementKGBuilder
-                    builder = ProcurementKGBuilder(self._agent_nick)
-                    builder.build_full_graph()
-                    builder.close()
-                    logger.info("KG synced after extraction of record %s", record_id)
-                except Exception:
-                    logger.debug("KG sync after extraction failed", exc_info=True)
 
             # --- TRAINING DATA COLLECTION ---
             # High-confidence, error-free extractions are automatically
