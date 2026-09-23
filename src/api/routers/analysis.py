@@ -133,10 +133,17 @@ def get_analysis(analysis_id: str) -> dict:
 
 def _hydrate(row: dict) -> dict:
     aid = row["analysis_id"]
+    # The supplier is read from the deal the document landed on, so the report
+    # can name each bid. NULL when the document never reached a deal.
     row["documents"] = _query(
-        "SELECT doc_type, doc_pk, file_path, file_name, outcome "
-        "  FROM proc.bp_analysis_document WHERE analysis_id = %s "
-        " ORDER BY file_name", (aid,))
+        "SELECT d.doc_type, d.doc_pk, d.file_path, d.file_name, d.outcome, "
+        "       (SELECT dd.supplier_name FROM proc.bp_deal_documents dd "
+        "         WHERE dd.doc_type = d.doc_type AND dd.doc_pk = d.doc_pk "
+        "           AND dd.deal_id IN (SELECT deal_id FROM proc.bp_analysis_deal "
+        "                               WHERE analysis_id = d.analysis_id) "
+        "         LIMIT 1) AS supplier_name "
+        "  FROM proc.bp_analysis_document d WHERE d.analysis_id = %s "
+        " ORDER BY d.file_name", (aid,))
     # The UI reads deals[0]. A deal that holds documents comes before one that
     # holds none — a duplicate re-upload's own deal is empty, and reading it
     # makes the report blank.
