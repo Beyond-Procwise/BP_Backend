@@ -1364,6 +1364,19 @@ def _as_float(v: Any) -> float | None:
         return None
 
 
+def _number_printed(value: float, text: str) -> bool:
+    """Is this amount printed on the page as a whole number, not a digit run inside one?
+
+    Accepts 1116000, 1,116,000 and either with .00; rejects 11160000 and 1116000.5.
+    """
+    if value is None or value <= 0:
+        return False
+    whole, cents = f"{value:.2f}".split(".")
+    digits = r",?".join(whole[max(0, i - 3):i] for i in range(len(whole), 0, -3)[::-1])
+    frac = r"(?:\.00?)?" if cents == "00" else rf"\.{cents}"
+    return re.search(rf"(?<![\d.,]){digits}{frac}(?![\d]|\.\d|,\d)", text) is not None
+
+
 def _money_closes(sub: float | None, tax: float | None, tot: float | None,
                   extras: float = 0.0, tol: float = 0.02) -> bool:
     """Does subtotal + extras (shipping/fees) + tax add up to the grand total?
@@ -1540,6 +1553,14 @@ def _reconcile_money(row: dict[str, Any], full_text: str, doc_type: str) -> dict
         chosen, why = (m_sub, m_tax, m_tot), "model (its figures add up)"
     elif printed_closes:
         chosen, why = (p_sub, p_tax, p_tot), "document's printed totals (the model's did not add up)"
+    elif (m_tax is not None and m_tot is not None
+          and _number_printed(round(m_tot - m_tax, 2), full_text)):
+        # The model's tax and total agree with a net the page prints; its net is some
+        # other figure. Orbis ORB-Q-6612 (V1) prints a 3-year contract value beside a
+        # Year 1 net / VAT / total as spreadsheet rows (no colon, so the labelled
+        # reader above sees nothing) and the model took the contract value as the net.
+        chosen = (round(m_tot - m_tax, 2), m_tax, m_tot)
+        why = "the net the page prints that closes the model's tax and total"
     else:
         # Nobody is self-consistent. Prefer a printed value over a model guess field by
         # field — a printed value is at least literally on the page — and leave the rest
