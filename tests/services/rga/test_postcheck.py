@@ -280,3 +280,12 @@ class TestThePrintablePage:
         art = dataclasses.replace(self._page(ast, pack, brief), renderer="pdf")
         with pytest.raises(ValueError):
             extract_text_for(art)
+
+
+def test_an_untagged_figure_on_the_page_still_blocks(ast, pack, brief):
+    """The same, end to end: a figure drawn outside any data-chunk element is still checked."""
+    from src.services.rga.render import html as page_renderer
+    art = page_renderer.render(ast, pack, brief)
+    bad = art.content.decode("utf-8").replace("</body>", "<div>A spare £9,999.</div></body>")
+    art = dataclasses.replace(art, content=bad.encode("utf-8"))
+    assert "REPORT_UNTRACED_FIGURE" in codes(check(ast, pack, brief, artefact=art))

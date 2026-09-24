@@ -111,3 +111,28 @@ def test_a_chart_value_is_never_clipped_at_the_margin(ast, pack, brief):
     css = _css(page.render(ast, pack, brief).content)
     assert "grid-template-columns:34%minmax(0,1fr)auto" in css
     assert ".bar-row.fig{white-space:nowrap" in css
+
+
+def test_the_page_carries_its_own_script_ban(ast, pack, brief):
+    """Final review: the /page response's CSP header does not reach the tab people open -- the
+    UI loads the page as a blob, and a blob (or a downloaded .html) gets no response headers.
+    So the page states the policy itself, first thing in <head>."""
+    text = page.render(ast, pack, brief).content.decode("utf-8")
+    head = text[text.index("<head>"):text.index("<style>")]
+    assert ('<meta http-equiv="Content-Security-Policy" '
+            "content=\"default-src 'none'; style-src 'unsafe-inline'\">") in head
+    assert head.index("Content-Security-Policy") < head.index("<title>")
+
+
+def test_text_outside_any_chunk_is_still_read(ast, pack, brief):
+    """Final review: extract_text read only data-chunk elements, so text drawn without the
+    tag was invisible to the post-check. It now reads all visible body text, failing closed."""
+    chunks = page.extract_text(b'<html><head><title>T 2026</title><style>p{margin:9mm}</style></head>'
+                               b'<body><p data-chunk>a</p><div>outside 12345</div></body></html>')
+    assert "outside 12345" in chunks
+    assert not any("9mm" in c or "T 2026" in c for c in chunks)
+
+
+def test_a_void_tag_inside_a_chunk_does_not_swallow_the_rest(ast, pack, brief):
+    chunks = page.extract_text(b'<body><p data-chunk>a<br>b</p><p data-chunk>9,999 later</p></body>')
+    assert chunks == ["a b", "9,999 later"] or chunks == ["ab", "9,999 later"]

@@ -272,7 +272,7 @@ def get_job(job_id: str):
 # The printable page is served inline, to be read and printed in a browser tab. It is
 # self-contained and every text in it is escaped; the policy below makes sure that even a
 # mistake in that escaping could not run anything: no scripts, no fetches, inline style only.
-_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'"
+from src.services.rga.render.html import PAGE_CSP as _PAGE_CSP  # one policy, header and page
 
 
 def _serve(job_id: str, principal: Any, fmt: str) -> Response:
