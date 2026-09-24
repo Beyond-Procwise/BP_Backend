@@ -18,21 +18,25 @@ pytestmark = pytest.mark.skipif(os.environ.get("PROCWISE_TEST_LIVE_DB") != "1",
                                 reason="needs PROCWISE_TEST_LIVE_DB=1")
 
 
+def _cleanup(conn, deal_id, runs):
+    cur = conn.cursor()
+    cur.execute("DELETE FROM proc.bp_detection_finding WHERE deal_id = %s", (deal_id,))
+    cur.execute("DELETE FROM proc.bp_extraction_discrepancy "
+                "WHERE source_file IN ('triage:' || %s, 'test:' || %s)", (deal_id, deal_id))
+    cur.execute("DELETE FROM proc.bp_triage_finding WHERE deal_id = %s", (deal_id,))
+    cur.execute("DELETE FROM proc.bp_triage_result WHERE deal_id = %s", (deal_id,))
+    cur.execute("DELETE FROM proc.bp_triage_deal_state WHERE deal_id = %s", (deal_id,))
+    for run_id in runs:
+        cur.execute("DELETE FROM proc.bp_triage_run WHERE run_id = %s", (run_id,))
+
+
 @pytest.fixture
 def ctx():
     deal_id = f"TRIAGE-TEST-{uuid.uuid4().hex[:8]}"
     runs = []
     with get_conn() as conn:
         yield SimpleNamespace(conn=conn, deal_id=deal_id, runs=runs)
-        cur = conn.cursor()
-        cur.execute("DELETE FROM proc.bp_detection_finding WHERE deal_id = %s", (deal_id,))
-        cur.execute("DELETE FROM proc.bp_extraction_discrepancy "
-                    "WHERE source_file IN ('triage:' || %s, 'test:' || %s)", (deal_id, deal_id))
-        cur.execute("DELETE FROM proc.bp_triage_finding WHERE deal_id = %s", (deal_id,))
-        cur.execute("DELETE FROM proc.bp_triage_result WHERE deal_id = %s", (deal_id,))
-        cur.execute("DELETE FROM proc.bp_triage_deal_state WHERE deal_id = %s", (deal_id,))
-        for run_id in runs:
-            cur.execute("DELETE FROM proc.bp_triage_run WHERE run_id = %s", (run_id,))
+        _cleanup(conn, deal_id, runs)
 
 
 @pytest.fixture
@@ -158,3 +162,74 @@ def test_the_engine_still_supersedes_both_sides(ctx, pair):
     assert counts["superseded"] == 1
     assert _finding(ctx, fid)[:2] == ("superseded", "resolved")
     assert _mirror(ctx, mid)[0] == "superseded"
+
+
+# A finding can move straight from one closed state to the other (the gateway's
+# POST /discrepancies/resolve writes 'resolved' or 'ignored' whatever the current state),
+# but the mirror's lifecycle guard only allows closed -> open -> closed. The trigger takes
+# the mirror there in those two legal steps, with an echo guard so the mirror's own
+# trigger never reopens the finding along the way.
+def test_an_ignored_finding_switched_to_resolved_moves_the_mirror(ctx, pair):
+    fid, mid = pair
+    _detection_service_resolve(ctx, fid, "ignored", "accepted_risk", "buyer@x")
+    assert _mirror(ctx, mid)[0] == "ignored"             # it closed, so the switch is real
+    _detection_service_resolve(ctx, fid, "resolved", "resolved", "boss@x")
+    assert _mirror(ctx, mid) == ("resolved", "boss@x", True)
+
+
+def test_a_resolved_finding_switched_to_ignored_moves_the_mirror(ctx, pair):
+    fid, mid = pair
+    _detection_service_resolve(ctx, fid, "resolved", "resolved", "buyer@x")
+    assert _mirror(ctx, mid)[0] == "resolved"
+    _detection_service_resolve(ctx, fid, "ignored", "accepted_risk", "boss@x")
+    assert _mirror(ctx, mid) == ("ignored", "boss@x", True)
+
+
+def test_the_switch_leaves_the_finding_exactly_as_set(ctx, pair):
+    fid, mid = pair
+    _detection_service_resolve(ctx, fid, "ignored", "accepted_risk", "buyer@x")
+    _detection_service_resolve(ctx, fid, "resolved", "resolved", "boss@x")
+    assert _finding(ctx, fid) == ("resolved", "resolved", "boss@x", True)
+    assert _mirror(ctx, mid)[0] == "resolved"
+
+
+def test_the_switch_does_not_echo_the_mirror_back_onto_the_finding(ctx, pair):
+    """The PATCH never sets resolved_by, so the finding's stays NULL while the mirror's
+    becomes 'detection-finding'. Were the mirror's own trigger to run during the two
+    steps it would reopen the finding and then close it again as 'detection-finding'."""
+    fid, mid = pair
+    _pipeline_patch(ctx, fid, "accepted_risk")
+    assert _mirror(ctx, mid)[0] == "ignored"
+    _pipeline_patch(ctx, fid, "resolved")
+    assert _finding(ctx, fid) == ("resolved", "resolved", None, True)
+    assert _mirror(ctx, mid) == ("resolved", "detection-finding", True)
+
+
+@pytest.fixture
+def other(ctx):
+    """A second, unrelated finding and mirror on its own deal: (finding_id, mirror_id)."""
+    o = SimpleNamespace(conn=ctx.conn, deal_id=f"TRIAGE-TEST-{uuid.uuid4().hex[:8]}", runs=[])
+    try:
+        _write(o, _currency_deal(o))
+        (fid, *_rest), = _findings(o)
+        (mirror,) = _mirrors(o)
+        yield fid, mirror[0]
+    finally:
+        _cleanup(ctx.conn, o.deal_id, o.runs)
+
+
+def test_a_later_decision_in_the_same_transaction_still_syncs(ctx, pair, other):
+    """The echo guard is transaction-local; it must be switched off again after each
+    sync, or every later decision in the transaction would be skipped."""
+    fid_a, mid_a = pair
+    fid_b, mid_b = other
+    _detection_service_resolve(ctx, fid_a, "ignored", "accepted_risk", "buyer@x")
+    # Two statements sent together run as one implicit transaction.
+    ctx.conn.cursor().execute(
+        """UPDATE proc.bp_detection_finding SET status = 'resolved', lifecycle_status = 'resolved',
+                  resolved_by = 'boss@x', resolved_at = now() WHERE finding_id = %s;
+           UPDATE proc.bp_detection_finding SET status = 'resolved', lifecycle_status = 'resolved',
+                  resolved_by = 'boss@x', resolved_at = now() WHERE finding_id = %s""",
+        (fid_a, fid_b))
+    assert _mirror(ctx, mid_a) == ("resolved", "boss@x", True)
+    assert _mirror(ctx, mid_b) == ("resolved", "boss@x", True)

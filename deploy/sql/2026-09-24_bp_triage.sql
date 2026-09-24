@@ -118,22 +118,52 @@ SELECT 'TriageTolerancePolicy', 'limit',
 
 -- A decision made on either side reaches the other straight away: on the finding (the
 -- gateway's resolve and pipeline PATCH) it moves the Action Centre mirror row; on the
--- mirror (SpendIQ resolve / ignore / flag) it moves the finding. Each side is written
--- only when its status differs and the move is legal for it, so the echo from the other
--- trigger finds nothing to do (no ping-pong). A superseded row is never touched.
+-- mirror (SpendIQ resolve / ignore / flag) it moves the finding. A superseded row is
+-- never touched.
+--
+-- Echo guard: while one trigger writes the other table it sets the transaction-local
+-- setting bp.triage_sync to 'on', and the other trigger returns at once when it sees it,
+-- so a sync never bounces back (and cannot reopen the side that started it). It is set
+-- back to 'off' straight after, so a later decision in the same transaction still syncs.
+-- If the UPDATE raises, the whole transaction aborts and set_config(..., true) is undone
+-- with it, so a stale 'on' can never survive into a commit.
+--
+-- A finding can move straight from one closed state to the other (the gateway's
+-- POST /discrepancies/resolve writes 'resolved' or 'ignored' whatever the current state),
+-- but the mirror's lifecycle guard only allows closed -> open -> closed, so the mirror is
+-- taken there in those two legal steps.
 CREATE OR REPLACE FUNCTION proc.bp_triage_finding_decision_to_mirror() RETURNS trigger
 LANGUAGE plpgsql AS $$
+DECLARE
+    r record;
 BEGIN
-    UPDATE proc.bp_extraction_discrepancy d
-       SET status = NEW.status,
-           resolved_by = CASE WHEN NEW.status = 'open' THEN d.resolved_by
-                              ELSE coalesce(NEW.resolved_by, 'detection-finding') END,
-           resolved_at = CASE WHEN NEW.status = 'open' THEN NULL
-                              ELSE coalesce(NEW.resolved_at, now()) END
-      FROM proc.bp_triage_finding m
-     WHERE m.finding_id = NEW.finding_id AND d.discrepancy_id = m.mirror_id
-       AND ((NEW.status IN ('resolved', 'ignored') AND d.status = 'open')
-            OR (NEW.status = 'open' AND d.status IN ('resolved', 'ignored')));
+    IF current_setting('bp.triage_sync', true) = 'on' THEN
+        RETURN NULL;
+    END IF;
+    FOR r IN
+        SELECT d.discrepancy_id, d.status
+          FROM proc.bp_triage_finding m
+          JOIN proc.bp_extraction_discrepancy d ON d.discrepancy_id = m.mirror_id
+         WHERE m.finding_id = NEW.finding_id
+           AND d.status IN ('open', 'resolved', 'ignored')    -- never a superseded mirror
+           AND d.status <> NEW.status
+    LOOP
+        PERFORM set_config('bp.triage_sync', 'on', true);
+        IF NEW.status IN ('resolved', 'ignored') AND r.status IN ('resolved', 'ignored') THEN
+            -- closed -> closed: reopen first (resolved_by kept), then close the other way.
+            UPDATE proc.bp_extraction_discrepancy
+               SET status = 'open', resolved_at = NULL
+             WHERE discrepancy_id = r.discrepancy_id;
+        END IF;
+        UPDATE proc.bp_extraction_discrepancy d
+           SET status = NEW.status,
+               resolved_by = CASE WHEN NEW.status = 'open' THEN d.resolved_by
+                                  ELSE coalesce(NEW.resolved_by, 'detection-finding') END,
+               resolved_at = CASE WHEN NEW.status = 'open' THEN NULL
+                                  ELSE coalesce(NEW.resolved_at, now()) END
+         WHERE d.discrepancy_id = r.discrepancy_id;
+        PERFORM set_config('bp.triage_sync', 'off', true);
+    END LOOP;
     RETURN NULL;
 END;
 $$;
@@ -148,6 +178,10 @@ CREATE TRIGGER tr_bp_triage_finding_decision_to_mirror
 CREATE OR REPLACE FUNCTION proc.bp_triage_mirror_decision_to_finding() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+    IF current_setting('bp.triage_sync', true) = 'on' THEN
+        RETURN NULL;
+    END IF;
+    PERFORM set_config('bp.triage_sync', 'on', true);
     UPDATE proc.bp_detection_finding f
        SET status = NEW.status,
            lifecycle_status = CASE NEW.status WHEN 'resolved' THEN 'resolved'
@@ -161,6 +195,7 @@ BEGIN
      WHERE m.mirror_id = NEW.discrepancy_id AND f.finding_id = m.finding_id
        AND ((NEW.status IN ('resolved', 'ignored') AND f.status = 'open')
             OR (NEW.status = 'open' AND f.status IN ('resolved', 'ignored')));
+    PERFORM set_config('bp.triage_sync', 'off', true);
     RETURN NULL;
 END;
 $$;
@@ -172,13 +207,37 @@ CREATE TRIGGER tr_bp_triage_mirror_decision_to_finding
           AND NEW.status IN ('resolved', 'ignored', 'open'))
     EXECUTE FUNCTION proc.bp_triage_mirror_decision_to_finding();
 
--- One-time catch-up for decisions made before the triggers existed (idempotent: a second
--- apply finds nothing open whose other side is closed).
+-- One-time catch-up for decisions made before the triggers existed, or before they
+-- handled a closed -> closed switch (idempotent: a second apply finds every mapped pair
+-- already in step). The echo guard is on throughout so none of these writes bounces.
 DO $$
 DECLARE
-    mirrors_closed  integer;
-    findings_closed integer;
+    mirrors_switched integer;
+    mirrors_closed   integer;
+    findings_closed  integer;
 BEGIN
+    PERFORM set_config('bp.triage_sync', 'on', true);
+    -- Finding closed one way, mirror closed the other: reopen the mirror, then close it
+    -- to match (the two moves its lifecycle guard allows).
+    CREATE TEMP TABLE bp_triage_switch ON COMMIT DROP AS
+    SELECT d.discrepancy_id, f.status, f.resolved_by, f.resolved_at
+      FROM proc.bp_triage_finding m
+      JOIN proc.bp_detection_finding f ON f.finding_id = m.finding_id
+      JOIN proc.bp_extraction_discrepancy d ON d.discrepancy_id = m.mirror_id
+     WHERE f.status IN ('resolved', 'ignored') AND d.status IN ('resolved', 'ignored')
+       AND d.status <> f.status;
+    UPDATE proc.bp_extraction_discrepancy d
+       SET status = 'open', resolved_at = NULL
+      FROM bp_triage_switch s
+     WHERE d.discrepancy_id = s.discrepancy_id;
+    UPDATE proc.bp_extraction_discrepancy d
+       SET status = s.status,
+           resolved_by = coalesce(s.resolved_by, 'detection-finding'),
+           resolved_at = coalesce(s.resolved_at, now())
+      FROM bp_triage_switch s
+     WHERE d.discrepancy_id = s.discrepancy_id;
+    GET DIAGNOSTICS mirrors_switched = ROW_COUNT;
+    DROP TABLE bp_triage_switch;
     UPDATE proc.bp_extraction_discrepancy d
        SET status = f.status,
            resolved_by = coalesce(f.resolved_by, 'detection-finding'),
@@ -199,8 +258,9 @@ BEGIN
      WHERE f.finding_id = m.finding_id
        AND f.status = 'open' AND d.status IN ('resolved', 'ignored');
     GET DIAGNOSTICS findings_closed = ROW_COUNT;
-    RAISE NOTICE 'triage decision sync: % mirror row(s) closed, % finding(s) closed',
-        mirrors_closed, findings_closed;
+    PERFORM set_config('bp.triage_sync', 'off', true);
+    RAISE NOTICE 'triage decision sync: % mirror row(s) switched, % mirror row(s) closed, % finding(s) closed',
+        mirrors_switched, mirrors_closed, findings_closed;
 END;
 $$;
 
