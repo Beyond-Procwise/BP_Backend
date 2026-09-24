@@ -37,7 +37,7 @@ def get_service():
             s = load_settings()
             _service = TranslationService(
                 provider=build_provider(s), store=PgTranslationStore(),
-                memory=MemoryLayer(s.memory_cache_size), registry=registry,
+                memory=MemoryLayer(s.memory_cache_size, ttl=s.memory_ttl), registry=registry,
                 system_prompt=load_ui_prompt(), batch_size=s.batch_size,
                 batch_chars=s.batch_chars, failure_backoff=s.failure_backoff,
                 on_generated=audit.record_generated,

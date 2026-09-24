@@ -127,3 +127,8 @@ def test_batch_validates_against_the_target_language():
     raw = json.dumps({"s01": "{n, plural, one {# трейд} few {# трейда} many {# трейдов} other {# трейда}}"})
     good, bad = validate_batch(sent, raw, "ru")
     assert set(good) == {"s01"} and bad == {}
+
+
+def test_link_target_quote_style_does_not_matter():
+    assert check_pair("<a href='/help'>Help</a>", '<a href="/help">Ayuda</a>') is None
+    assert check_pair("<a href='/help'>Help</a>", '<a href="/other">Ayuda</a>') is not None

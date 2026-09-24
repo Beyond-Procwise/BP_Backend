@@ -152,7 +152,7 @@ def placeholders(text: str) -> Counter:
     rest: Counter = Counter()
     rest.update(_PRINTF.findall(text.replace("%%", "")))
     rest.update(f"<{slash}{name.lower()}>" for slash, name in _TAG.findall(text))
-    rest.update(f"{attr}={val}" for attr, val in _URL_ATTR.findall(text))
+    rest.update(f"{attr}={val[1:-1]}" for attr, val in _URL_ATTR.findall(text))  # quote style is not content
     return rest
 
 

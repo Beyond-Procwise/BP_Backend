@@ -155,3 +155,27 @@ def test_reviewed_import_is_refused_when_it_cannot_be_audited(tmp_path, monkeypa
     monkeypatch.setattr(imp.audit, "record_reviewed_import", down)
     assert imp.main(["--lang", "es", "--catalog", str(en), "--translations", str(tr)]) == 2
     assert store.reviewed == {}
+
+
+def test_reviewed_import_canonicalises_the_language_and_refuses_unknown(tmp_path, monkeypatch):
+    en, tr = tmp_path / "en.json", tmp_path / "es.json"
+    en.write_text(json.dumps({"a": "Save"}))
+    tr.write_text(json.dumps({"a": "Guardar"}))
+    store, events = _Store(), []
+    monkeypatch.setattr(imp, "PgTranslationStore", lambda: store)
+    monkeypatch.setattr(imp.audit, "record_reviewed_import", lambda **kw: events.append(kw))
+    assert imp.main(["--lang", "ES", "--catalog", str(en), "--translations", str(tr)]) == 0
+    assert events[0]["lang"] == "es"
+    assert imp.main(["--lang", "qq-zz", "--catalog", str(en), "--translations", str(tr)]) == 2
+
+
+def test_reviewed_import_skips_human_text_that_breaks_placeholders(tmp_path, monkeypatch, capsys):
+    en, tr = tmp_path / "en.json", tmp_path / "es.json"
+    en.write_text(json.dumps({"a": "Save", "b": "Show all {n} tools"}))
+    tr.write_text(json.dumps({"a": "Guardar", "b": "Ver todas las herramientas"}))
+    store, events = _Store(), []
+    monkeypatch.setattr(imp, "PgTranslationStore", lambda: store)
+    monkeypatch.setattr(imp.audit, "record_reviewed_import", lambda **kw: events.append(kw))
+    assert imp.main(["--lang", "es", "--catalog", str(en), "--translations", str(tr)]) == 0
+    assert list(store.reviewed.values()) == ["Guardar"] and events[0]["added"] == 1
+    assert "b" in capsys.readouterr().out

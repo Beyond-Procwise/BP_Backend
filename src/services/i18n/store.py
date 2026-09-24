@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import time
 import unicodedata
 from collections import OrderedDict
 from typing import Optional
@@ -31,21 +32,30 @@ def source_hash(text: str) -> str:
 
 
 class MemoryLayer:
-    def __init__(self, max_size: int = 20000):
+    """LRU with a time limit: a reviewed import made by another process (the CLI) replaces
+    what this process serves within `ttl` seconds, without a restart."""
+
+    def __init__(self, max_size: int = 20000, ttl: float = 600.0, clock=time.monotonic):
         self._max = max(1, max_size)
+        self._ttl, self._clock = ttl, clock
         self._data: OrderedDict = OrderedDict()
         self._lock = threading.Lock()
 
     def get(self, key) -> Optional[str]:
         with self._lock:
-            if key not in self._data:
+            hit = self._data.get(key)
+            if hit is None:
+                return None
+            value, expires = hit
+            if expires <= self._clock():
+                del self._data[key]
                 return None
             self._data.move_to_end(key)
-            return self._data[key]
+            return value
 
     def put(self, key, value: str) -> None:
         with self._lock:
-            self._data[key] = value
+            self._data[key] = (value, self._clock() + self._ttl)
             self._data.move_to_end(key)
             while len(self._data) > self._max:
                 self._data.popitem(last=False)
