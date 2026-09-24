@@ -369,3 +369,8 @@ def test_attention_replies_survive_the_output_safety_boundary(client, monkeypatc
     _block(client.store)
     reply = client.get("/reports/attention").json()
     assert osafe.scrub_payload(reply, where="test") == reply
+
+
+def test_report_signoff_is_a_transact_action():
+    # transact: held by Approver and Admin, irreversible, so a stated permit is required.
+    assert actions.action_class("report.signoff") == "transact"

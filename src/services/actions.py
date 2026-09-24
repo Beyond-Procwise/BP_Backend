@@ -67,6 +67,9 @@ ACTIONS: Dict[str, str] = {
     "spend.approve": "transact",
     "negotiation.counter": "transact",
     "sales_quote.approve": "transact",
+    # Signing off a report commits the company to what it says before it leaves;
+    # who may is policy (report_signoff_authority), which reports need it too.
+    "report.signoff": "transact",
     # --- approving -------------------------------------------------------
     "approval.email": "approve_email",
     "approval.record": "approve_email",
