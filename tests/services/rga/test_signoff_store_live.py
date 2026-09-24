@@ -293,3 +293,55 @@ def test_a_job_that_is_not_released_cannot_take_an_edit(released):
     with pytest.raises(job_store.StaleVersion) as exc:
         _save(job["job_id"], 1)
     assert exc.value.current is None
+
+
+# ---------------------------------------------------------------------------
+# final review: the version a sign-off saw, the last editor under the lock, the attention list
+# ---------------------------------------------------------------------------
+
+def _set(job_id, **cols):
+    sets = ", ".join(f"{k} = %s" for k in cols)
+    with get_conn() as c, c.cursor() as cur:
+        cur.execute(f"UPDATE proc.bp_report_job SET {sets} WHERE job_id = %s",
+                    (*cols.values(), job_id))
+
+
+def test_a_sign_off_of_a_version_that_has_since_been_replaced_is_refused(released):
+    """I2: B reviews version 2, C saves version 3, B clicks Sign off -- that must not sign 3."""
+    _set(released["job_id"], current_version=3)
+    with pytest.raises(signoff.NotDecidable) as exc:
+        signoff.decide(released["job_id"], verdict="sign_off", by="approver-1", reason=None,
+                       policy_name="P", seen_version=2)
+    assert exc.value.state == "edited"
+    assert store.find_report_decision(released["job_id"]) is None
+    s = signoff.decide(released["job_id"], verdict="sign_off", by="approver-1", reason=None,
+                       policy_name="P", seen_version=3)
+    assert s["state"] == "signed_off"
+
+
+@pytest.mark.parametrize("who", ["buyer-1", "editor-1"])     # the requester; the last editor
+def test_self_approval_is_decided_under_the_lock(released, who):
+    """I3: the router's check reads the job unlocked; a save committing between that check and
+    the lock made the signer the last editor. decide() re-checks on the locked row."""
+    _set(released["job_id"], last_edited_by="editor-1", current_version=2)
+    with pytest.raises(signoff.SelfApproval) as exc:
+        signoff.decide(released["job_id"], verdict="sign_off", by=who, reason=None,
+                       policy_name="P", self_approval_denied=True)
+    assert exc.value.role == ("requester" if who == "buyer-1" else "editor")
+    assert store.find_report_decision(released["job_id"]) is None
+    s = signoff.decide(released["job_id"], verdict="sign_off", by=who, reason=None,
+                       policy_name="P", self_approval_denied=False)
+    assert s["state"] == "signed_off"
+
+
+def test_an_edited_report_that_was_signed_off_needs_attention_again(released):
+    """I5: the attention list dropped any job whose newest decision was 'approved', whatever
+    version it was for -- so an edit after sign-off left no approver prompted."""
+    listed = lambda: {j["job_id"] for j in job_store.needs_attention(200)
+                      if j["report_type"] == released["report_type"]}
+    _set(released["job_id"], current_version=1)
+    signoff.decide(released["job_id"], verdict="sign_off", by="approver-1", reason=None,
+                   policy_name="P")
+    assert released["job_id"] not in listed()
+    _set(released["job_id"], current_version=2)
+    assert released["job_id"] in listed()

@@ -122,10 +122,10 @@ def test_a_figure_that_is_not_in_the_report_is_refused(store):
     assert store.saved == []
 
 
-def test_a_number_typed_into_a_title_is_caught_by_the_page_check(store):
+def test_a_number_typed_into_a_title_is_refused(store):
     with pytest.raises(editing.EditRefused) as exc:
         _save(store, _ast(store), title="Summary for board meeting 4471")
-    assert any("4471" in r and "isn't one of the report's verified figures" in r
+    assert any("The report title" in r and "can't contain typed numbers" in r
                for r in exc.value.reasons)
     assert store.saved == []
 
@@ -184,8 +184,11 @@ def test_a_preview_draws_the_page_and_saves_nothing(store):
 
 
 def test_a_preview_of_a_failing_edit_still_shows_the_page_and_the_reasons(store):
-    html, reasons = editing.preview(JOB, title="Summary 4471", ast_json=_ast(store))
-    assert html and any("4471" in r for r in reasons)
+    a = _ast(store)
+    a["sections"][0]["blocks"].append({"type": "narrative", "role": "recommendation",
+                                       "text": "Chase {{F0004}} harder.", "fact_refs": ["F0004"]})
+    html, reasons = editing.preview(JOB, title="T", ast_json=a)
+    assert html and any("recommendation can't rest on" in r for r in reasons)
 
 
 def test_a_preview_that_cannot_be_drawn_gives_only_reasons(store):
@@ -211,3 +214,53 @@ def test_every_mistake_is_reported_at_once(store):
         _save(store, a, title="")
     joined = " | ".join(exc.value.reasons)
     assert "needs a title" in joined and "Sentences can't" in joined and "Table cells" in joined
+
+
+# -- final review fixes ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("title", ["Summary</style>", "Summary {x}", "a > b"])
+def test_a_title_may_not_carry_markup(store, title):
+    with pytest.raises(editing.EditRefused) as exc:
+        _save(store, _ast(store), title=title)
+    assert any("can't contain" in r and "< > { }" in r for r in exc.value.reasons)
+
+
+def test_a_section_title_may_not_carry_markup(store):
+    a = _ast(store)
+    a["sections"][0]["title"] = "Exec </style>"
+    with pytest.raises(editing.EditRefused):
+        _save(store, a)
+
+
+@pytest.mark.parametrize("where", ["section", "column", "series", "title"])
+def test_a_number_typed_into_a_heading_is_refused_even_if_it_matches_a_figure(store, where):
+    """Final review I1: '376' is F0002's value, so the post-check let 'Savings of 376
+    suppliers' through as a section title. Headings and labels refuse a NEW number outright."""
+    a, title = _ast(store), "Executive procurement summary"
+    if where == "section":
+        a["sections"][0]["title"] = "Savings of 376 suppliers"
+    elif where == "column":
+        a["sections"][1]["blocks"][0]["columns"][0] = "Measure 376"
+    elif where == "series":
+        a["sections"][1]["blocks"][1]["series"][0]["label"] = "Spend ½"
+    else:
+        title = "Board pack 376"
+    with pytest.raises(editing.EditRefused) as exc:
+        _save(store, a, title=title)
+    assert any("Titles and labels can't contain typed numbers" in r for r in exc.value.reasons)
+    assert store.saved == []
+
+
+def test_a_number_the_agent_itself_wrote_in_a_heading_may_stay(store):
+    base = store.stored["ast"]
+    base["sections"][0]["title"] = "Executive summary 2026 Q1"      # as the agent wrote it
+    a = _ast(store)
+    a["sections"].reverse()
+    assert _save(store, a) == 2
+
+
+def test_the_preview_is_marked_as_a_draft_and_the_saved_page_is_not(store):
+    html, _ = editing.preview(JOB, title="T", ast_json=_ast(store))
+    assert b"DRAFT \xe2\x80\x94 not signed off" in html
+    _save(store, _ast(store))
+    assert b"DRAFT" not in store.saved[0][1]["page"]

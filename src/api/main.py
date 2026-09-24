@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import sys, os, uvicorn, logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Protocol, cast
@@ -623,6 +624,14 @@ from services import output_safety as osafe  # noqa: E402
 # reference — so exempting it leaks nothing the operator did not already decide.
 _OPERATOR_PATHS = ("/docs", "/redoc", "/openapi.json", "/models")
 
+# The report editor's document: a report's own title and sentences, and the reasons an edit
+# was refused (which quote them). The same words are served unscrubbed as the printable page;
+# scrubbing their JSON form protected nothing and corrupted them -- a paragraph about a
+# "sourcing pipeline" came back as the apology sentence, and a person saving any other change
+# would have written that into the report (final review 2026-09-24). Exactly these three
+# answers; every other /reports answer, and every error raised in them, is still scrubbed.
+_REPORT_EDITOR = re.compile(r"^/reports/jobs/[^/]+/(draft|preview|versions)$")
+
 
 @app.exception_handler(StarletteHTTPException)
 async def _safe_http_exception(request: Request, exc: StarletteHTTPException):
@@ -657,7 +666,7 @@ class OutputSafetyMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         path = request.url.path
-        if any(path.startswith(p) for p in _OPERATOR_PATHS):
+        if any(path.startswith(p) for p in _OPERATOR_PATHS) or _REPORT_EDITOR.match(path):
             return response
         ctype = response.headers.get("content-type", "")
 

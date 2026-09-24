@@ -159,14 +159,32 @@ class NotDecidable(Exception):
         self.state = state
 
 
+class SelfApproval(Exception):
+    """The person deciding asked for the report (``role="requester"``) or made its last edit
+    (``role="editor"``), and the policy denies self-approval. Decided on the locked row."""
+
+    def __init__(self, role: str) -> None:
+        super().__init__(role)
+        self.role = role
+
+
+_UNCHECKED = object()
+
+
 def decide(job_id: str, *, verdict: str, by: str, reason: Optional[str],
-           policy_name: Optional[str]) -> Dict[str, Any]:
+           policy_name: Optional[str], seen_version: Any = _UNCHECKED,
+           self_approval_denied: bool = False) -> Dict[str, Any]:
     """Record a sign-off (``verdict="sign_off"``) or a refusal (``"refuse"``) -- exactly once.
 
     One transaction: the job row is locked FOR UPDATE, the newest decision is re-read on the
     same connection, and only a job still ``awaiting`` is decided. Two people deciding at once
     are serialised by the lock; the second sees the first's decision and gets NotDecidable.
     A sign-off records the sha256 of the stored deck, so it is bound to the file reviewed.
+
+    ``seen_version`` is the version the person was shown: if an edit has replaced it since,
+    the decision would be about files they never saw, and it is refused (NotDecidable
+    "edited"). ``self_approval_denied`` re-checks the requester and the last editor on the
+    locked row -- a save committing after the caller's own check cannot slip through.
     """
     from src.services import approval_store
     from src.services.db import get_conn
@@ -178,13 +196,20 @@ def decide(job_id: str, *, verdict: str, by: str, reason: Optional[str],
         try:
             cur = conn.cursor()
             cur.execute("SELECT job_id, report_type, status, run_id, requested_by, deck, page, "
-                        "       current_version "
+                        "       current_version, last_edited_by "
                         "  FROM proc.bp_report_job WHERE job_id = %s FOR UPDATE", (job_id,))
             row = cur.fetchone()
             if row is None:
                 raise LookupError(f"no report job {job_id!r}")
             job = dict(zip(("job_id", "report_type", "status", "run_id", "requested_by"), row[:5]))
             job["current_version"] = row[7]
+            if seen_version is not _UNCHECKED and seen_version != job["current_version"]:
+                raise NotDecidable("edited")
+            if self_approval_denied and by:
+                if by == row[8]:
+                    raise SelfApproval("editor")
+                if by == job["requested_by"]:
+                    raise SelfApproval("requester")
             deck = bytes(row[5]) if row[5] is not None else b""
             page = bytes(row[6]) if row[6] is not None else None
             current = state(job, decision=approval_store.find_report_decision(job_id, conn=conn))

@@ -136,3 +136,23 @@ def test_text_outside_any_chunk_is_still_read(ast, pack, brief):
 def test_a_void_tag_inside_a_chunk_does_not_swallow_the_rest(ast, pack, brief):
     chunks = page.extract_text(b'<body><p data-chunk>a<br>b</p><p data-chunk>9,999 later</p></body>')
     assert chunks == ["a b", "9,999 later"] or chunks == ["ab", "9,999 later"]
+
+
+def test_a_title_cannot_close_the_stylesheet(ast, pack, brief):
+    """Final review C1: the title reaches the @page footer inside <style>, and a title reading
+    '</style><style>.stamps{display:none}' ended the stylesheet and hid every badge -- with
+    the post-check still passing, since the markers stayed in the text."""
+    hostile = 'Summary</style><style>.stamps{display:none!important}</style><style>'
+    text = page.render(ast, pack, brief, title=hostile).content.decode("utf-8")
+    assert text.count("</style>") == 1
+    css = text[text.index("<style>") + len("<style>"):text.index("</style>")]
+    assert "<" not in css and ">" not in css
+
+
+def test_a_draft_page_says_so_on_every_page(ast, pack, brief):
+    """Final review C3: an editor's preview is the full page; it must not pass for a released one."""
+    draft = page.render(ast, pack, brief, draft=True).content.decode("utf-8")
+    chunks = page.extract_text(draft.encode("utf-8"))
+    assert any("DRAFT — not signed off" in c for c in chunks)
+    assert draft.count("DRAFT — not signed off") >= 1 + len(ast.sections)
+    assert "DRAFT" not in page.render(ast, pack, brief).content.decode("utf-8")

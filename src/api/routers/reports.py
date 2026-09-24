@@ -30,7 +30,7 @@ import urllib.parse
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import src.services.rga  # noqa: F401  registers the Fact Pack builders
@@ -208,10 +208,15 @@ def dismiss(job_id: str, body: DismissBody, principal=Depends(require_user)):
 
 class SignoffBody(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=500)
+    # The version the person was shown (the job's current_version when they opened it; null
+    # for a report from before versions). Required: a decision about files the person never
+    # saw -- an edit landed after they opened it -- is refused (final review 2026-09-24).
+    version: Optional[int]
 
 
 class RefuseBody(BaseModel):
     reason: str = Field(max_length=500)
+    version: Optional[int]
 
     @field_validator("reason")
     @classmethod
@@ -221,44 +226,59 @@ class RefuseBody(BaseModel):
         return v.strip()
 
 
-def _decide(job_id: str, verdict: str, reason: Optional[str], principal: Any) -> Dict[str, Any]:
+def _refuse_self(job: Dict[str, Any], subject: Optional[str], verdict: str, by_editor: bool):
+    """On the record, like the email approvals' self-approval refusal: the gate has already
+    logged report.signoff as allowed, and this refusal must not leave no trace. The raising
+    writer -- a refusal that cannot be recorded is still a refusal."""
+    requester, editor = job.get("requested_by"), job.get("last_edited_by")
+    evidence = {"rule": "self_approval", "requested_by": requester, "actioned_by": subject}
+    if editor or by_editor:
+        evidence["last_edited_by"] = editor or subject
+    record_action_or_fail(
+        phase="authorize", action_type=signoff.ACTION, agent=_AGENT, status="denied",
+        summary=("a report version cannot be signed off by the person who made its last "
+                 "edit") if by_editor else
+                "a report cannot be signed off by the person who asked for it",
+        details={"job_id": job["job_id"], "run_id": job.get("run_id"), "principal": subject,
+                 "verdict": verdict, "policy_name": "ReportSignoffPolicy",
+                 "evidence": evidence})
+    raise HTTPException(status_code=403,
+                        detail="you made the last edit to this report, so someone else "
+                               "must sign it off" if by_editor else
+                               "you asked for this report, so someone else must sign it off")
+
+
+def _decide(job_id: str, verdict: str, reason: Optional[str], principal: Any,
+            seen_version: Optional[int]) -> Dict[str, Any]:
     """Sign a report off, or refuse to. Who may is policy (report.signoff's permit, Approver
     and above); whether a requester may sign off their own is policy too."""
     job = _job_or_404(job_id)
     gate(signoff.ACTION, principal, agent=_AGENT,
-         context={"job_id": job_id, "run_id": job.get("run_id"), "verdict": verdict})
+         context={"job_id": job_id, "run_id": job.get("run_id"), "verdict": verdict,
+                  "version": seen_version})
     subject = getattr(principal, "subject", None) or None
     requester = job.get("requested_by")
     # Self-approval covers the person who asked for the report AND the person who made its
     # last edit (ruled 2026-09-24): whoever last chose its words cannot be the one who lets
     # that version leave. A job with no recorded person cannot match anyone -- the email
-    # approvals' rule.
+    # approvals' rule. Checked here as the fast path, and again by decide() on the locked
+    # row, where a save committing in between cannot slip past it.
     editor = job.get("last_edited_by")
+    denied = signoff.self_approval_denied()
     own = [who for who in (requester, editor) if who and subject and who == subject]
-    if signoff.self_approval_denied() and own:
-        # On the record, like the email approvals' self-approval refusal: the gate above has
-        # already logged report.signoff as allowed, and this refusal must not leave no trace.
-        # The raising writer -- a refusal that cannot be recorded is still a refusal.
-        evidence = {"rule": "self_approval", "requested_by": requester, "actioned_by": subject}
-        if editor:
-            evidence["last_edited_by"] = editor
-        by_editor = editor == subject
-        record_action_or_fail(
-            phase="authorize", action_type=signoff.ACTION, agent=_AGENT, status="denied",
-            summary=("a report version cannot be signed off by the person who made its last "
-                     "edit") if by_editor else
-                    "a report cannot be signed off by the person who asked for it",
-            details={"job_id": job_id, "run_id": job.get("run_id"), "principal": subject,
-                     "verdict": verdict, "policy_name": "ReportSignoffPolicy",
-                     "evidence": evidence})
-        raise HTTPException(status_code=403,
-                            detail="you made the last edit to this report, so someone else "
-                                   "must sign it off" if by_editor else
-                                   "you asked for this report, so someone else must sign it off")
+    if denied and own:
+        _refuse_self(job, subject, verdict, by_editor=editor == subject)
     try:
         decided = signoff.decide(job_id, verdict=verdict, by=subject or "", reason=reason,
-                                 policy_name="ReportSignoffAuthorityPolicy")
+                                 policy_name="ReportSignoffAuthorityPolicy",
+                                 seen_version=seen_version, self_approval_denied=denied)
+    except signoff.SelfApproval as exc:
+        _refuse_self(job, subject, verdict, by_editor=exc.role == "editor")
     except signoff.NotDecidable as exc:
+        if exc.state == "edited":
+            raise HTTPException(status_code=409,
+                                detail="This report was edited since you opened it. Review "
+                                       "the new version before signing it off or refusing it.")
         raise HTTPException(status_code=409,
                             detail=f"report job {job_id} is {exc.state}; only a report "
                                    "awaiting sign-off can be signed off or refused")
@@ -273,18 +293,20 @@ def _decide(job_id: str, verdict: str, reason: Optional[str], principal: Any) ->
                    summary="report signed off" if granted else "report sign-off refused",
                    details={("signed_off_by" if granted else "refused_by"): subject,
                             "reason": reason, "approval_id": decided.get("approval_id"),
+                            "version": seen_version,
                             "policy": "ReportSignoffAuthorityPolicy"})
     return _view(job_store.get(job_id) or job)
 
 
 @router.post("/jobs/{job_id}/signoff")
 def sign_off(job_id: str, body: SignoffBody, principal=Depends(require_user)):
-    return _decide(job_id, "sign_off", (body.reason or "").strip() or None, principal)
+    return _decide(job_id, "sign_off", (body.reason or "").strip() or None, principal,
+                   body.version)
 
 
 @router.post("/jobs/{job_id}/refuse")
 def refuse(job_id: str, body: RefuseBody, principal=Depends(require_user)):
-    return _decide(job_id, "refuse", body.reason, principal)
+    return _decide(job_id, "refuse", body.reason, principal, body.version)
 
 
 @router.get("/jobs/{job_id}")
@@ -381,6 +403,15 @@ class VersionBody(PreviewBody):
     summary: Optional[str] = Field(default=None, max_length=500)
 
 
+class _Refusal(Exception):
+    def __init__(self, reasons):
+        self.reasons = reasons
+
+
+def _refused(reasons) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": {"reasons": reasons}})
+
+
 def _editing_call(fn, *args, **kwargs):
     """The editor's refusals as HTTP answers a person can act on."""
     try:
@@ -390,7 +421,8 @@ def _editing_call(fn, *args, **kwargs):
     except editing.NotEditable as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except editing.EditRefused as exc:
-        raise HTTPException(status_code=422, detail={"reasons": exc.reasons})
+        # Returned, not raised: the app's error handler flattens a structured detail to text.
+        raise _Refusal(exc.reasons)
     except editing.StaleVersion as exc:
         raise HTTPException(status_code=409,
                             detail=f"Someone else saved a newer version (version {exc.current}) "
@@ -417,10 +449,13 @@ def preview_edit(job_id: str, body: PreviewBody, principal=Depends(require_user)
     output-safety boundary would withhold a page whose footnotes name its evidence. What would
     stop it saving travels in a header, percent-encoded JSON (headers are ASCII)."""
     _edit_gate(job_id, principal, "preview")
-    content, blocking = _editing_call(editing.preview, job_id, title=body.title,
-                                      ast_json=body.ast)
+    try:
+        content, blocking = _editing_call(editing.preview, job_id, title=body.title,
+                                          ast_json=body.ast)
+    except _Refusal as r:
+        return _refused(r.reasons)
     if content is None:
-        raise HTTPException(status_code=422, detail={"reasons": blocking})
+        return _refused(blocking)
     return Response(content=content, media_type="text/html; charset=utf-8",
                     headers={"Content-Security-Policy": _PAGE_CSP,
                              "X-Content-Type-Options": "nosniff",
@@ -435,7 +470,10 @@ def save_version(job_id: str, body: VersionBody, principal=Depends(require_user)
     subject = _edit_gate(job_id, principal, "save")
     if not subject:
         raise HTTPException(status_code=403, detail="an edit must be made by a signed-in person")
-    version = _editing_call(editing.save, job_id, base_version=body.base_version,
-                            title=body.title, ast_json=body.ast, by=subject,
-                            summary=(body.summary or "").strip() or None)
+    try:
+        version = _editing_call(editing.save, job_id, base_version=body.base_version,
+                                title=body.title, ast_json=body.ast, by=subject,
+                                summary=(body.summary or "").strip() or None)
+    except _Refusal as r:
+        return _refused(r.reasons)
     return {**_view(_job_or_404(job_id)), "version": version}
