@@ -200,9 +200,209 @@ def check_unlinked_lines(ds: DocumentSet, links: Links, cfg) -> list[Result]:
     return out
 
 
+# --- 4. invoice totals ------------------------------------------------------------------
+
+def check_invoice_totals(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    tol = cfg["rounding_per_line"]
+    out = []
+    for inv in ds.invoices:
+        amounts = [l.line_amount for l in inv.lines]
+        if inv.lines and inv.net is not None and all(a is not None for a in amounts):
+            total = sum(amounts, ZERO)
+            diff = abs(inv.net) - abs(total)
+            allow = tol * max(1, len(inv.lines))
+            outcome = (Outcome.MATCH if diff == 0 else
+                       Outcome.WITHIN_TOL if abs(diff) <= allow else _fail(cfg, 1.0, inv))
+            out.append(_r(ds, "invoice_totals", "money", outcome, inv, "net",
+                          po_id=inv.po_ref, claim_value=_s(inv.net), auth_value=_s(total),
+                          delta=diff, exposure=abs(diff), confidence=_doc_conf(inv),
+                          tolerance={"rounding": str(allow)}))
+        if inv.net is not None and inv.tax is not None and inv.gross is not None:
+            expected = inv.net + inv.tax
+            diff = inv.gross - expected
+            outcome = (Outcome.MATCH if diff == 0 else
+                       Outcome.WITHIN_TOL if abs(diff) <= tol else _fail(cfg, 1.0, inv))
+            out.append(_r(ds, "invoice_totals", "money", outcome, inv, "gross",
+                          po_id=inv.po_ref, claim_value=_s(inv.gross),
+                          auth_value=_s(expected), delta=diff, exposure=abs(diff),
+                          confidence=_doc_conf(inv), tolerance={"rounding": str(tol)}))
+    return out
+
+
+# --- 5. running total against the PO ---------------------------------------------------
+
+def check_cumulative_total(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    by_po = defaultdict(list)
+    for inv in ds.invoices:
+        p = links.invoice_po.get(inv.doc_id)
+        if p is not None:
+            by_po[p.doc_id].append(inv)
+    out = []
+    for p in ds.pos:
+        invs = by_po.get(p.doc_id)
+        if not invs or p.net is None:
+            continue
+        total = sum((i.net for i in invs if i.net is not None), ZERO)
+        over = total - p.net
+        common = dict(auth_doc=p.doc_id, po_id=p.doc_id, claim_value=_s(total),
+                      auth_value=_s(p.net), delta=over,
+                      note="invoiced by " + ", ".join(sorted(i.doc_id for i in invs)),
+                      confidence=_doc_conf(p, *invs))
+        if over <= 0:
+            outcome = Outcome.MATCH if over == 0 else Outcome.EXPLAINED
+            out.append(_r(ds, "cumulative_total", "money", outcome, p, "net", **common))
+            continue
+        tol = resolve_tolerance("cumulative_total", cfg)
+        allow = tol.allowance(p.net, p.fx_to_gbp)
+        outcome = Outcome.WITHIN_TOL if over <= allow else _fail(cfg, 1.0, p, *invs)
+        out.append(_r(ds, "cumulative_total", "money", outcome, p, "net", exposure=over,
+                      tolerance={**tol.as_dict(), "allowance": str(allow)}, **common))
+    return out
+
+
+# --- 6. tax rate ----------------------------------------------------------------------
+
+def check_tax_rate(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    rates = cfg["allowed_tax_rates"]
+    out = []
+    for inv in ds.invoices:
+        if inv.net is None or inv.net == 0:
+            continue
+        if inv.tax is None:
+            out.append(_r(ds, "tax_rate", "money", Outcome.UNVERIFIABLE, inv, "tax",
+                          po_id=inv.po_ref, note="no tax amount", confidence=_doc_conf(inv)))
+            continue
+        implied = inv.tax / inv.net * 100
+        nearest = min(rates, key=lambda r: abs(r - implied))
+        expected = (inv.net * nearest / 100).quantize(Decimal("0.01"))
+        diff = inv.tax - expected
+        allow = cfg["rounding_per_line"] * max(1, len(inv.lines))
+        outcome = (Outcome.MATCH if diff == 0 else
+                   Outcome.WITHIN_TOL if abs(diff) <= allow else _fail(cfg, 1.0, inv))
+        out.append(_r(ds, "tax_rate", "money", outcome, inv, "tax", po_id=inv.po_ref,
+                      claim_value=f"{implied:.2f}%", auth_value=f"{nearest}%", delta=diff,
+                      exposure=abs(diff), confidence=_doc_conf(inv),
+                      tolerance={"allowed_rates": [str(r) for r in rates],
+                                 "rounding": str(allow)}))
+    return out
+
+
+# --- 7-9, 13. header fields compared with the PO -----------------------------------------
+
+def _against_po(ds: DocumentSet, links: Links):
+    for inv in ds.invoices:
+        p = links.invoice_po.get(inv.doc_id)
+        if p is not None:
+            yield inv, p
+
+
+def check_currency(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    out = []
+    for inv, p in _against_po(ds, links):
+        a, b = (inv.currency or "").strip().upper(), (p.currency or "").strip().upper()
+        common = dict(auth_doc=p.doc_id, po_id=p.doc_id, claim_value=a or None,
+                      auth_value=b or None, confidence=_doc_conf(inv, p))
+        if not a or not b:
+            outcome, exposure = Outcome.UNVERIFIABLE, ZERO
+        elif a != b:
+            outcome, exposure = Outcome.CONFLICT, abs(inv.net or ZERO)
+        else:
+            outcome, exposure = Outcome.MATCH, ZERO
+        out.append(_r(ds, "currency", "currency", outcome, inv, "currency",
+                      exposure=exposure, **common))
+    return out
+
+
+def check_supplier(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    out = []
+    for inv, p in _against_po(ds, links):
+        a, b = inv.supplier_id, p.supplier_id
+        common = dict(auth_doc=p.doc_id, po_id=p.doc_id, claim_value=a, auth_value=b,
+                      confidence=_doc_conf(inv, p))
+        if not a or not b:
+            outcome, exposure = Outcome.UNVERIFIABLE, ZERO
+        elif str(a) != str(b):
+            outcome, exposure = Outcome.CONFLICT, abs(inv.net or ZERO)
+        else:
+            outcome, exposure = Outcome.MATCH, ZERO
+        out.append(_r(ds, "supplier", "party", outcome, inv, "supplier_id",
+                      exposure=exposure, **common))
+    return out
+
+
+def check_invoice_date(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    out = []
+    for inv, p in _against_po(ds, links):
+        if inv.doc_date is None or p.doc_date is None:
+            continue
+        outcome = Outcome.CONFLICT if inv.doc_date < p.doc_date else Outcome.MATCH
+        out.append(_r(ds, "invoice_date", "date", outcome, inv, "invoice_date",
+                      auth_doc=p.doc_id, po_id=p.doc_id, claim_value=_s(inv.doc_date),
+                      auth_value=_s(p.doc_date), confidence=_doc_conf(inv, p)))
+    return out
+
+
+def check_payment_terms(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    out = []
+    for inv, p in _against_po(ds, links):
+        if not p.payment_terms:
+            continue
+        common = dict(auth_doc=p.doc_id, po_id=p.doc_id, claim_value=inv.payment_terms,
+                      auth_value=p.payment_terms, confidence=_doc_conf(inv, p))
+        if not inv.payment_terms:
+            outcome = Outcome.ABSENT_SUBORDINATE
+        else:
+            da, db = terms_days(inv.payment_terms), terms_days(p.payment_terms)
+            if da is not None and db is not None:
+                outcome = Outcome.MATCH if da == db else Outcome.CONFLICT
+            elif norm_text(inv.payment_terms) == norm_text(p.payment_terms):
+                outcome = Outcome.MATCH
+            else:
+                outcome = Outcome.UNVERIFIABLE
+        out.append(_r(ds, "payment_terms", "terms", outcome, inv, "payment_terms", **common))
+    return out
+
+
+# --- 10. duplicates (read from the duplicate detector) -----------------------------------
+
+def check_duplicates(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    invs = {i.doc_id: i for i in ds.invoices}
+    out = []
+    for flag in ds.duplicates:
+        inv = invs.get(flag.invoice_id)
+        if inv is None:
+            continue
+        p = links.invoice_po.get(inv.doc_id)
+        exposure = abs(inv.net) if inv.net is not None else abs(flag.amount or ZERO)
+        out.append(_r(ds, "duplicate", "money", Outcome.CONFLICT, inv, "invoice_id",
+                      auth_doc=flag.earlier_invoice_id, po_id=p.doc_id if p else None,
+                      claim_value=inv.doc_id, auth_value=flag.earlier_invoice_id,
+                      exposure=exposure, confidence=_doc_conf(inv),
+                      note="flagged by the duplicate-invoice detector"))
+    return out
+
+
+# --- 14-15. invoices that do not reach a PO -----------------------------------------------
+
+def check_po_links(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    out = []
+    for inv in ds.invoices:
+        if inv.doc_id in links.bad_refs:
+            out.append(_r(ds, "bad_po_ref", "reference", Outcome.ABSENT_AUTHORITATIVE, inv,
+                          "po_id", claim_value=inv.po_ref, exposure=abs(inv.net or ZERO),
+                          confidence=_doc_conf(inv)))
+        elif inv.doc_id in links.no_ref:
+            out.append(_r(ds, "no_po", "reference", Outcome.ABSENT_AUTHORITATIVE, inv,
+                          "po_id", exposure=abs(inv.net or ZERO), confidence=_doc_conf(inv)))
+    return out
+
+
 LINE_CHECKS = (check_unit_price, check_quantity, check_line_arithmetic,
                check_description, check_unlinked_lines)
+DOC_CHECKS = (check_invoice_totals, check_cumulative_total, check_tax_rate, check_currency,
+              check_supplier, check_invoice_date, check_payment_terms, check_duplicates,
+              check_po_links)
 
 
 def run_checks(ds: DocumentSet, links: Links, cfg) -> list[Result]:
-    return [r for check in LINE_CHECKS for r in check(ds, links, cfg)]
+    return [r for check in (*LINE_CHECKS, *DOC_CHECKS) for r in check(ds, links, cfg)]
