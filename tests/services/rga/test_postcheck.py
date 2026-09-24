@@ -248,3 +248,35 @@ class TestTheArtefactRecord:
         result = postcheck.run(artefact, pack, ast, brief, emit_audit=False)
 
         assert FindingCode.MISSING_HASH_RECORD in codes(result)
+
+
+class TestThePrintablePage:
+    """The same §6 checks, read through the page's own renderer (2026-09-24)."""
+
+    def _page(self, ast, pack, brief, mutate=None):
+        from src.services.rga.render import html as page_renderer
+        art = page_renderer.render(ast, pack, brief)
+        if mutate:
+            art = dataclasses.replace(art, content=mutate(art.content.decode("utf-8")).encode("utf-8"))
+        return art
+
+    def test_the_page_passes_the_same_checks_as_the_deck(self, ast, pack, brief):
+        result = check(ast, pack, brief, artefact=self._page(ast, pack, brief))
+        assert result.passed, [f.detail for f in result.findings]
+
+    def test_an_untraced_figure_on_the_page_blocks(self, ast, pack, brief):
+        art = self._page(ast, pack, brief,
+                         lambda t: t.replace("</body>", '<p data-chunk>A spare £9,999 appeared.</p></body>'))
+        assert "REPORT_UNTRACED_FIGURE" in codes(check(ast, pack, brief, artefact=art))
+
+    def test_a_page_figure_without_its_badge_blocks(self, ast, pack, brief):
+        # Every drawing of F0003 loses its badge text: the page shows the figure bare.
+        art = self._page(ast, pack, brief, lambda t: t.replace("[F0003] · CORROBORATED", "[F0003]"))
+        assert "MISSING_ORIGIN_BADGE" in codes(check(ast, pack, brief, artefact=art))
+
+    def test_an_unknown_renderer_is_refused(self, ast, pack, brief):
+        import pytest
+        from src.services.rga.render import extract_text_for
+        art = dataclasses.replace(self._page(ast, pack, brief), renderer="pdf")
+        with pytest.raises(ValueError):
+            extract_text_for(art)
