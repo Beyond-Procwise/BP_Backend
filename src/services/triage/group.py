@@ -12,8 +12,9 @@ from decimal import Decimal
 from .model import SCORED, Finding, Result, Severity, pct_change
 from .score import score_result
 
-_EXPLAINS_OVERAGE = ("duplicate", "quantity", "unit_price", "uniform_uplift")
-_GROUPED = frozenset({"duplicate", "quantity", "unit_price", "cumulative_total"})
+_EXPLAINS_OVERAGE = ("duplicate", "quantity", "unit_price", "uniform_uplift", "unlinked_line")
+_GROUPED = frozenset({"duplicate", "quantity", "unit_price", "cumulative_total",
+                      "unlinked_line"})
 
 
 def _uplift_clusters(rs: list[Result], within: Decimal) -> list[list[Result]]:
@@ -77,6 +78,11 @@ def group(results: list[Result], cfg) -> list[Finding]:
             else:
                 findings.extend(Finding(r.deal_id, "unit_price", [r], r.cause_key)
                                 for r in cluster)
+
+    # Built before the running total, which they can explain: an invoice line the PO
+    # does not have is part of that PO's overage, not money at stake on top of it.
+    findings.extend(Finding(r.deal_id, "unlinked_line", [r], r.cause_key)
+                    for r in live if r.rule_id == "unlinked_line")
 
     for r in live:
         if r.rule_id != "cumulative_total":

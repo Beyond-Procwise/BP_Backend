@@ -134,3 +134,14 @@ def test_two_uplift_clusters_on_one_invoice_have_distinct_fingerprints():
     assert len(ups) == 2
     assert {f.cause_key for f in ups} == {"INV-1|uplift|3.0", "INV-1|uplift|10.0"}
     assert ups[0].fingerprint != ups[1].fingerprint
+
+
+# --- an invoice line with no PO line explains the PO overage, not adds to it -----
+
+def test_an_unlinked_line_explains_the_po_overage():
+    ds = deal(po(), inv(lines=[line(1), line(2, item="FRT", desc="Expedited freight",
+                                           qty="1", price="120.00")]))
+    fs = _findings(ds)
+    assert [f.rule_id for f in fs] == ["unlinked_line"]
+    assert [e.rule_id for e in fs[0].effects] == ["cumulative_total"]
+    assert fs[0].exposure == D("120.00")
