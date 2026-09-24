@@ -483,3 +483,77 @@ def revoke_approval(
         except Exception:
             own.rollback()
             raise
+
+
+# ---------------------------------------------------------------------------
+# Report sign-off (RGA). A report job's decisions are keyed by
+# grounding.report_job_id; the newest row wins, as for dispatch, so a later
+# decision (or a future revoke) supersedes an earlier one. A sign-off is an
+# ordinary record_approval; a refusal is written here.
+# ---------------------------------------------------------------------------
+_STATUS_REFUSED = "refused"
+_DECISION_DENY = "deny"
+
+
+def find_report_decision(job_id: str, conn: Any = None) -> Optional[Dict[str, Any]]:
+    """The newest sign-off decision on a report job, or ``None``."""
+
+    def _run(connection: Any) -> Optional[Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(
+            "SELECT approval_id, decision, status, actioned_by, actioned_at, grounding "
+            "  FROM proc.bp_approval WHERE grounding->>'report_job_id' = %s "
+            " ORDER BY created_date DESC, approval_id DESC LIMIT 1",
+            (str(job_id),),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)
+
+
+def record_report_refusal(
+    *,
+    job_id: str,
+    run_id: Optional[str],
+    actioned_by: str,
+    reason: str,
+    policy_name: Optional[str],
+    conn: Any = None,
+) -> int:
+    """A person refused to sign a report off. The deck stays held, with their reason."""
+
+    signer = str(actioned_by or "").strip()
+    why = str(reason or "").strip()
+    if not signer:
+        raise ValueError("actioned_by is required: a refusal must name a person")
+    if not why:
+        raise ValueError("a refusal must say why")
+    sql = (
+        "INSERT INTO proc.bp_approval (workflow_id, decision, decision_reason, status, "
+        " actioned_by, actioned_at, policy_name, grounding, created_by, created_date) "
+        "VALUES (%s,%s,%s,%s,%s, now(), %s,%s,%s, now()) RETURNING approval_id"
+    )
+    params = (
+        job_id, _DECISION_DENY, why, _STATUS_REFUSED, signer, policy_name,
+        psycopg2.extras.Json({"report_job_id": job_id, "run_id": run_id, "reason": why}),
+        signer,
+    )
+    if conn is not None:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        return int(cur.fetchone()[0])
+    with get_conn() as own:
+        own.autocommit = False
+        cur = own.cursor()
+        try:
+            cur.execute(sql, params)
+            approval_id = int(cur.fetchone()[0])
+            own.commit()
+            return approval_id
+        except Exception:
+            own.rollback()
+            raise
