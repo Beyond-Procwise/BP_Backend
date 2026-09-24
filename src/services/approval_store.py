@@ -523,8 +523,10 @@ def record_report_refusal(
     reason: str,
     policy_name: Optional[str],
     conn: Any = None,
+    version: Optional[int] = None,
 ) -> int:
-    """A person refused to sign a report off. The deck stays held, with their reason."""
+    """A person refused to sign a report off. The deck stays held, with their reason.
+    ``version`` is the report version refused; a later edit makes it no longer apply."""
 
     signer = str(actioned_by or "").strip()
     why = str(reason or "").strip()
@@ -539,7 +541,8 @@ def record_report_refusal(
     )
     params = (
         job_id, _DECISION_DENY, why, _STATUS_REFUSED, signer, policy_name,
-        psycopg2.extras.Json({"report_job_id": job_id, "run_id": run_id, "reason": why}),
+        psycopg2.extras.Json({"report_job_id": job_id, "run_id": run_id, "reason": why,
+                              "version": version}),
         signer,
     )
     if conn is not None:

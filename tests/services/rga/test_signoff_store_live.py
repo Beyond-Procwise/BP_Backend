@@ -204,3 +204,18 @@ def test_a_release_with_its_pack_writes_version_one(released):
     assert draft["version"] == 1 and draft["ast"] == ast and draft["fact_pack"] == pack
     assert draft["title"] == "My title"
     assert job_store.get(released["job_id"])["editable"] is False     # released without a pack
+
+
+def test_a_sign_off_records_its_version_and_an_edit_voids_it(released):
+    from src.services.db import get_conn as _conn
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE proc.bp_report_job SET current_version = 1 WHERE job_id = %s",
+                    (released["job_id"],))
+    s = signoff.decide(released["job_id"], verdict="sign_off", by="approver-1", reason=None,
+                       policy_name="ReportSignoffAuthorityPolicy")
+    assert s["state"] == "signed_off"
+    assert store.find_report_decision(released["job_id"])["grounding"]["version"] == 1
+    with _conn() as c, c.cursor() as cur:        # an edit saved version 2
+        cur.execute("UPDATE proc.bp_report_job SET current_version = 2 WHERE job_id = %s",
+                    (released["job_id"],))
+    assert signoff.state(job_store.get(released["job_id"]))["state"] == "awaiting"

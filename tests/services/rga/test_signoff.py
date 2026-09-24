@@ -165,3 +165,39 @@ def test_a_list_that_needs_no_sign_off_looks_nothing_up():
     got = signoff.states_for([job()], engine=eng({"requires_signoff": []}),
                              fetch=lambda ids: calls.append(ids) or {})
     assert calls == [] and got["rpt-1"]["state"] == "not_required"
+
+
+# ---------------------------------------------------------------------------
+# a sign-off is for the version it saw (light editor, 2026-09-24)
+# ---------------------------------------------------------------------------
+def _approved(version):
+    g = {"deck_sha256": "h"}
+    if version is not None:
+        g["version"] = version
+    return {"approval_id": 1, "status": "approved", "actioned_by": "ap", "actioned_at": None,
+            "grounding": g}
+
+
+def test_a_sign_off_counts_for_the_version_it_saw():
+    e = eng({"requires_signoff": ["*"]})
+    v2 = dict(job(), current_version=2)
+    assert signoff.state(v2, engine=e, decision=_approved(2))["state"] == "signed_off"
+
+
+def test_an_edit_after_sign_off_puts_it_back_to_awaiting():
+    e = eng({"requires_signoff": ["*"]})
+    s = signoff.state(dict(job(), current_version=2), engine=e, decision=_approved(1))
+    assert s["state"] == "awaiting"
+    assert s["note"] == "edited since it was signed off"
+
+
+def test_a_refusal_of_an_older_version_does_not_hold_the_new_one():
+    e = eng({"requires_signoff": ["*"]})
+    refused = {"approval_id": 2, "status": "refused", "actioned_by": "ap", "actioned_at": None,
+               "grounding": {"reason": "no", "version": 1}}
+    assert signoff.state(dict(job(), current_version=2), engine=e, decision=refused)["state"] == "awaiting"
+
+
+def test_a_report_from_before_versions_is_judged_as_before():
+    e = eng({"requires_signoff": ["*"]})
+    assert signoff.state(job(), engine=e, decision=_approved(None))["state"] == "signed_off"

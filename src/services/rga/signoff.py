@@ -115,6 +115,15 @@ def state(job: Dict[str, Any], engine: Any = None, decision: Any = _UNSET) -> Di
         out["state"] = "awaiting"
         return out
     grounding = decision.get("grounding") or {}
+    # A decision is for the version it saw. Once an edit has saved a newer version, an older
+    # sign-off -- or refusal -- no longer speaks for it: the report is awaiting again.
+    current = job.get("current_version")
+    seen = grounding.get("version")
+    if current is not None and seen is not None and seen != current:
+        out["state"] = "awaiting"
+        out["note"] = "edited since it was signed off" if decision.get("status") == "approved" \
+            else "edited since it was refused"
+        return out
     at = decision.get("actioned_at")
     out.update(by=decision.get("actioned_by"),
                at=at.isoformat() if hasattr(at, "isoformat") else at,
@@ -168,12 +177,14 @@ def decide(job_id: str, *, verdict: str, by: str, reason: Optional[str],
         conn.autocommit = False
         try:
             cur = conn.cursor()
-            cur.execute("SELECT job_id, report_type, status, run_id, requested_by, deck, page "
+            cur.execute("SELECT job_id, report_type, status, run_id, requested_by, deck, page, "
+                        "       current_version "
                         "  FROM proc.bp_report_job WHERE job_id = %s FOR UPDATE", (job_id,))
             row = cur.fetchone()
             if row is None:
                 raise LookupError(f"no report job {job_id!r}")
             job = dict(zip(("job_id", "report_type", "status", "run_id", "requested_by"), row[:5]))
+            job["current_version"] = row[7]
             deck = bytes(row[5]) if row[5] is not None else b""
             page = bytes(row[6]) if row[6] is not None else None
             current = state(job, decision=approval_store.find_report_decision(job_id, conn=conn))
@@ -184,6 +195,8 @@ def decide(job_id: str, *, verdict: str, by: str, reason: Optional[str],
                     rfq_id=None, workflow_id=job_id, unique_id=None, supplier_id=None,
                     actioned_by=by, policy_name=policy_name, conn=conn,
                     grounding_extra={"report_job_id": job_id, "run_id": job["run_id"],
+                                     # The version this sign-off saw; an edit voids it.
+                                     "version": job["current_version"],
                                      "deck_sha256": deck_hash(deck),
                                      # One sign-off covers both files the reviewer saw.
                                      "page_sha256": deck_hash(page) if page is not None else None,
@@ -191,7 +204,7 @@ def decide(job_id: str, *, verdict: str, by: str, reason: Optional[str],
             else:
                 approval_store.record_report_refusal(
                     job_id=job_id, run_id=job["run_id"], actioned_by=by, reason=reason or "",
-                    policy_name=policy_name, conn=conn)
+                    policy_name=policy_name, conn=conn, version=job["current_version"])
             decided = state(job, decision=approval_store.find_report_decision(job_id, conn=conn))
             conn.commit()
             return decided
