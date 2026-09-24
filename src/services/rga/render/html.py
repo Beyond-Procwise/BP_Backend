@@ -57,8 +57,9 @@ from src.services.rga.style import PALETTE, StyleBrief
 RENDERER = "html"
 # Bump when the drawing changes: a rebuild that produced different bytes under the same
 # version would silently break the reproducibility promise.
-RENDERER_VERSION = "1.0.0"
+RENDERER_VERSION = "1.1.0"   # 1.1.0: the page states its own CSP (final review)
 MEDIA_TYPE = "text/html; charset=utf-8"
+PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'"
 
 _LEGACY = "LEGACY_UNVERIFIED"
 _HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -154,6 +155,9 @@ def render(
     out: List[str] = [
         "<!DOCTYPE html>",
         '<html lang="en-GB"><head><meta charset="utf-8">',
+        # The page bans scripts itself. The /page response sends the same policy as a header,
+        # but a page opened as a blob or saved to disk gets no headers -- this goes with it.
+        f'<meta http-equiv="Content-Security-Policy" content="{PAGE_CSP}">',
         f"<title>{_e(title)} — {_e(pack.scope.get('period_label') or pack.pack_id)}</title>",
         "<style>",
         _stylesheet(palette, body_font, mono_font, title, pack),
@@ -380,19 +384,37 @@ def _findings(block: FindingListBlock, pack: FactPack) -> str:
 # --------------------------------------------------------------------------
 
 
+_VOID = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+                   "param", "source", "track", "wbr"})
+_HIDDEN = frozenset({"style", "title", "script", "head"})
+
+
 class _Chunks(HTMLParser):
-    """Text of every outermost ``data-chunk`` element, whitespace collapsed."""
+    """Every string the page shows, in the chunks the post-check reasons about.
+
+    One chunk per outermost ``data-chunk`` element (the locality unit), AND -- failing closed
+    -- every run of visible text outside any such element, so a figure drawn without the tag
+    is still read. Void elements (``<br>``) do not nest; ``<head>``/``<style>``/``<title>``
+    are never read.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.chunks: List[str] = []
         self._depth = 0          # nesting inside the current chunk, 0 = outside one
         self._buf: List[str] = []
-        self._in_style = False
+        self._hidden = 0
+
+    def _emit(self, parts: List[str]) -> None:
+        text = " ".join("".join(parts).split())
+        if text:
+            self.chunks.append(text)
 
     def handle_starttag(self, tag, attrs) -> None:
-        if tag == "style":
-            self._in_style = True
+        if tag in _HIDDEN:
+            self._hidden += 1
+            return
+        if tag in _VOID:
             return
         if self._depth:
             self._depth += 1
@@ -400,20 +422,27 @@ class _Chunks(HTMLParser):
             self._depth = 1
             self._buf = []
 
+    def handle_startendtag(self, tag, attrs) -> None:
+        return   # <br/> and friends never open anything
+
     def handle_endtag(self, tag) -> None:
-        if tag == "style":
-            self._in_style = False
+        if tag in _HIDDEN:
+            self._hidden = max(0, self._hidden - 1)
+            return
+        if tag in _VOID:
             return
         if self._depth:
             self._depth -= 1
             if self._depth == 0:
-                text = " ".join("".join(self._buf).split())
-                if text:
-                    self.chunks.append(text)
+                self._emit(self._buf)
 
     def handle_data(self, data) -> None:
-        if self._depth and not self._in_style:
+        if self._hidden:
+            return
+        if self._depth:
             self._buf.append(data)
+        else:
+            self._emit([data])
 
 
 def extract_text(content: bytes) -> List[str]:
