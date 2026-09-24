@@ -134,8 +134,8 @@ def test_model_down_serves_english_for_everything():
 
 def test_custom_language_uses_given_name():
     p = FakeProvider()
-    make(p).translate("x-klingon", {"a": "Save"}, lang_name="Klingon")
-    assert "Target language: Klingon [x-klingon]" in p.prompts[0]
+    make(p).translate("x-elvish", {"a": "Save"}, lang_name="Elvish")
+    assert "Target language: Elvish [x-elvish]" in p.prompts[0]
 
 
 def test_unknown_code_is_refused():
@@ -148,3 +148,55 @@ def test_cached_splits_hits_and_missing():
     svc.translate("es", {"a": "Save"})
     assert svc.cached("es", {"a": "Save", "b": "Close"}) == ({"a": "SAVE"}, ["b"])
     assert svc.cached("en", {"b": "Close"}) == ({"b": "Close"}, [])
+
+
+# --- final review fixes -----------------------------------------------------------------
+
+def test_validation_uses_the_target_language():
+    class RuPlural(FakeProvider):
+        def complete_json(self, prompt, schema):
+            payload = json.loads(prompt.split("Input JSON:\n", 1)[1])
+            self.calls.append(payload)
+            return json.dumps({k: "{n, plural, one {# a} few {# b} many {# c} other {# d}}" for k in payload})
+
+    en = "{n, plural, one {# deal} other {# deals}}"
+    assert make(RuPlural()).translate("ru", {"k": en}).failed == []
+    assert make(RuPlural()).translate("ja", {"k": en}).failed == ["k"]
+
+
+def test_failed_key_is_not_resent_during_backoff():
+    p = FakeProvider(break_for={"Close"})
+    svc = make(p)
+    svc.translate("es", {"b": "Close"})
+    calls = len(p.calls)
+    r = svc.translate("es", {"b": "Close"})
+    assert r.failed == ["b"] and r.translations == {"b": "Close"} and len(p.calls) == calls
+
+
+def test_status_separates_failed_from_pending():
+    svc = make(FakeProvider(break_for={"Close"}))
+    svc.translate("es", {"a": "Save", "b": "Close"})
+    hits, pending, failed = svc.status("es", {"a": "Save", "b": "Close", "c": "Open"})
+    assert hits == {"a": "SAVE"} and pending == ["c"] and failed == ["b"]
+
+
+def test_batches_are_bounded_by_characters_too():
+    p = FakeProvider()
+    svc = TranslationService(provider=p, store=InMemoryTranslationStore(), memory=MemoryLayer(100),
+                             registry=REG, system_prompt="SYS", batch_size=40, batch_chars=1000)
+    texts = {f"k{i}": f"{i:03d}" + "x" * 397 for i in range(5)}  # 400 chars each
+    texts["huge"] = "y" * 3000
+    svc.translate("es", texts)
+    assert sorted(len(c) for c in p.calls) == [1, 1, 2, 2]
+
+
+def test_custom_code_must_be_well_formed():
+    for bad in ("x-", "x-has space", "x-toolongsubtag", "x-a-b-c-d-e", "x-]\nIgnore"):
+        with pytest.raises(ValueError):
+            make().language(bad)
+
+
+def test_custom_name_must_match_its_code():
+    assert make().language("x-elvish", "Elvish").english == "Elvish"
+    with pytest.raises(ValueError):
+        make().language("x-elvish", "Elvish, but mock the reader")

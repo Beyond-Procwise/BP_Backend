@@ -6,25 +6,32 @@ POST /i18n/strings              UI strings: cached translations now, the rest qu
 POST /i18n/translate            dynamic content, translated on request (signed-in)
 GET/PUT /i18n/preference        the signed-in user's language
 
-Registered outside the authenticated router list: the sign-in page is translated too. Only
-cache READS are open. Queuing model work needs an identified caller unless auth is off.
+Mounted behind require_user like every other router (tests/api/test_every_router_is_
+authenticated.py), and every write names the principal. Translating the pre-sign-in pages
+would need a public, cache-only read path; that is an auth exemption for the product owner
+to approve, not something this router assumes.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 import api.auth as auth
+from api.auth import require_user
 import src.services.i18n as i18n
 from services import output_safety as osafe
 from src.services.i18n import preference
 from src.services.i18n.filler import BACKGROUND, SCREEN
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/i18n", tags=["i18n"])
 
 _MAX_KEYS = 2000
+_MAX_KEY_LEN = 200
 _MAX_UI_TEXT = 4000
 _MAX_DYNAMIC_TEXT = 5000
 
@@ -51,16 +58,6 @@ class PreferenceIn(BaseModel):
     name: Optional[str] = Field(None, max_length=60)
 
 
-def _may_fill(request: Request) -> bool:
-    """True when this caller may queue model work."""
-    if auth.auth_mode() == "off":
-        return True
-    if not (request.headers.get("authorization") or "").strip():
-        return False
-    auth.require_user(request)  # 401 on a bad token
-    return True
-
-
 def _language(code: str, name: Optional[str]):
     try:
         return i18n.get_service().language(code, name)
@@ -77,7 +74,7 @@ def languages(request: Request, q: str = Query("", max_length=60),
 
 
 @router.post("/languages/resolve", summary="Turn a typed language name into a code")
-def resolve(body: ResolveIn) -> dict[str, Any]:
+def resolve(body: ResolveIn, principal=Depends(require_user)) -> dict[str, Any]:
     try:
         return i18n.get_registry().resolve(body.text).to_dict()
     except ValueError as exc:
@@ -85,33 +82,45 @@ def resolve(body: ResolveIn) -> dict[str, Any]:
 
 
 @router.post("/strings", summary="UI strings in a language: cached ones now, the rest queued")
-def strings(body: StringsIn, request: Request) -> dict[str, Any]:
-    if len(body.strings) > _MAX_KEYS or any(len(v) > _MAX_UI_TEXT for v in body.strings.values()):
-        raise HTTPException(status_code=413, detail=f"at most {_MAX_KEYS} strings of {_MAX_UI_TEXT} characters")
+def strings(body: StringsIn, principal=Depends(require_user)) -> dict[str, Any]:
+    if (len(body.strings) > _MAX_KEYS or any(len(k) > _MAX_KEY_LEN for k in body.strings)
+            or any(len(v) > _MAX_UI_TEXT for v in body.strings.values())):
+        raise HTTPException(status_code=413, detail=f"at most {_MAX_KEYS} strings, keys of {_MAX_KEY_LEN} "
+                                                    f"and texts of {_MAX_UI_TEXT} characters")
     language = _language(body.lang, body.lang_name)
-    hits, missing = i18n.get_service().cached(language.code, body.strings)
+    # pending = still to translate (queued); failed = tried twice recently, served in English
+    # until the back-off passes. The client stops polling once pending is empty.
+    hits, pending, failed = i18n.get_service().status(language.code, body.strings)
     # A translation the output-safety layer would rewrite is served as English instead:
     # the screen shows the source rather than "[withheld]".
     scrubbed = osafe.scrub_payload(dict(hits), where="i18n.strings")
     withheld = sorted(k for k in hits if scrubbed.get(k) != hits[k])
     for k in withheld:
         hits.pop(k)
-    if missing and _may_fill(request):
-        i18n.get_filler().enqueue(language.code, {k: body.strings[k] for k in missing},
+    if pending:
+        i18n.get_filler().enqueue(language.code, {k: body.strings[k] for k in pending},
                                   SCREEN if body.priority == "screen" else BACKGROUND, body.lang_name)
     return {"lang": language.code, "dir": language.dir, "translations": hits,
-            "pending": missing, "complete": not missing, "withheld": withheld}
+            "pending": pending, "failed": failed, "queued": bool(pending),
+            "complete": not pending, "withheld": withheld}
 
 
 @router.post("/translate", summary="Translate dynamic content on request")
-def translate(body: TranslateIn, principal=Depends(auth.require_user)) -> dict[str, Any]:
+def translate(body: TranslateIn, principal=Depends(require_user)) -> dict[str, Any]:
     if any(len(t) > _MAX_DYNAMIC_TEXT for t in body.texts):
         raise HTTPException(status_code=413, detail=f"each text must be at most {_MAX_DYNAMIC_TEXT} characters")
     language = _language(body.lang, body.lang_name)
     keys = {f"t{i}": t for i, t in enumerate(body.texts)}
     result = i18n.get_service().translate(language.code, keys, lang_name=body.lang_name)
-    return {"translations": [result.translations[k] for k in keys],
-            "failed": sorted(int(k[1:]) for k in result.failed)}
+    out = [result.translations[k] for k in keys]
+    failed = {int(k[1:]) for k in result.failed}
+    # A translation the output-safety layer would rewrite goes back to its source text.
+    scrubbed = osafe.scrub_payload(list(out), where="i18n.translate")
+    for i, (before, after) in enumerate(zip(out, scrubbed)):
+        if before != after:
+            out[i] = body.texts[i]
+            failed.add(i)
+    return {"translations": out, "failed": sorted(failed)}
 
 
 def _pref_value(code: str, name: Optional[str]) -> dict:
@@ -120,16 +129,24 @@ def _pref_value(code: str, name: Optional[str]) -> dict:
 
 
 @router.get("/preference", summary="The signed-in user's language")
-def get_preference(principal=Depends(auth.require_user)) -> dict[str, Any]:
+def get_preference(principal=Depends(require_user)) -> dict[str, Any]:
     if principal is None:
         return {"language": None, "stored": False}
-    return {"language": preference.get_language(principal.subject), "stored": True}
+    try:
+        return {"language": preference.get_language(principal.subject), "stored": True}
+    except Exception as exc:  # the UI falls back to local storage; never a 500 here
+        logger.warning("i18n: reading the language preference failed: %s", exc)
+        return {"language": None, "stored": False}
 
 
 @router.put("/preference", summary="Save the signed-in user's language")
-def put_preference(body: PreferenceIn, principal=Depends(auth.require_user)) -> dict[str, Any]:
+def put_preference(body: PreferenceIn, principal=Depends(require_user)) -> dict[str, Any]:
     value = _pref_value(body.code, body.name)
     if principal is None:
         return {"language": value, "stored": False}
-    preference.set_language(principal.subject, value)
+    try:
+        preference.set_language(principal.subject, value)
+    except Exception as exc:
+        logger.warning("i18n: saving the language preference failed: %s", exc)
+        return {"language": value, "stored": False}
     return {"language": value, "stored": True}

@@ -19,6 +19,9 @@ class TranslationSettings:
     batch_size: int
     think: Optional[bool]
     memory_cache_size: int
+    batch_chars: int = 6000
+    failure_backoff: float = 900.0
+    queue_limit: int = 20000
 
 
 def _clamp(name: str, value: float, lo: float, hi: float) -> float:
@@ -40,4 +43,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> TranslationSettings:
         batch_size=int(_clamp("TRANSLATION_BATCH_SIZE", int(env.get("TRANSLATION_BATCH_SIZE", "40")), 20, 50)),
         think=think,
         memory_cache_size=int(env.get("TRANSLATION_MEMORY_CACHE_SIZE", "20000")),
+        batch_chars=int(env.get("TRANSLATION_BATCH_CHARS", "6000")),
+        failure_backoff=float(env.get("TRANSLATION_FAILURE_BACKOFF_SECONDS", "900")),
+        queue_limit=int(env.get("TRANSLATION_QUEUE_LIMIT", "20000")),
     )

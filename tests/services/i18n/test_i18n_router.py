@@ -33,7 +33,6 @@ def client(monkeypatch):
     monkeypatch.setattr(i18n, "get_service", lambda: svc)
     monkeypatch.setattr(i18n, "get_filler", lambda: filler)
     from api.routers import i18n as router_mod
-    monkeypatch.setattr(router_mod.auth, "auth_mode", lambda: "off")
     app = FastAPI()
     app.include_router(router_mod.router)
     # Depends() captured the real function at import; override it by that identity.
@@ -89,13 +88,6 @@ def test_too_many_strings_is_413(client):
     assert client.post("/i18n/strings", json={"lang": "es", "strings": big}).status_code == 413
 
 
-def test_anonymous_gets_cache_only_when_enforced(client, monkeypatch):
-    from api.routers import i18n as router_mod
-    monkeypatch.setattr(router_mod.auth, "auth_mode", lambda: "enforce")
-    body = client.post("/i18n/strings", json={"lang": "de", "strings": {"a": "Save"}}).json()
-    assert body["pending"] == ["a"] and client.filler.pending("de") == 0
-
-
 def test_dynamic_translate(client):
     body = client.post("/i18n/translate", json={"lang": "es", "texts": ["hi", "bye"]}).json()
     assert body == {"translations": ["HI", "BYE"], "failed": []}
@@ -136,3 +128,61 @@ def test_real_scrubber_leaves_language_list_alone():
     osafe.register_routes([r.path for r in app.routes if hasattr(r, "path")])
     payload = {"languages": [L.to_dict() for L in REG.all()], "pinned": ["en"]}
     assert osafe.scrub_payload(payload) == payload
+
+
+# --- final review fixes -----------------------------------------------------------------
+
+def test_every_endpoint_asks_who_the_caller_is():
+    """The router is mounted behind require_user AND each write names the principal."""
+    from api.main import _AUTHENTICATED_ROUTERS
+    from api.routers import i18n as router_mod
+    assert router_mod.router in _AUTHENTICATED_ROUTERS
+
+
+def test_long_keys_are_refused(client):
+    assert client.post("/i18n/strings", json={"lang": "es", "strings": {"k" * 201: "x"}}).status_code == 413
+
+
+def test_failed_keys_are_reported_not_left_pending(client, monkeypatch):
+    class Drops:
+        model = "fake:1"
+
+        def complete_json(self, prompt, schema):
+            return "{}"
+
+    svc = i18n.get_service()
+    monkeypatch.setattr(svc, "provider", Drops())
+    first = client.post("/i18n/strings", json={"lang": "es", "strings": {"a": "Save"}}).json()
+    assert first["queued"] is True and first["pending"] == ["a"]
+    client.filler.run_once()
+    body = client.post("/i18n/strings", json={"lang": "es", "strings": {"a": "Save"}}).json()
+    assert body["pending"] == [] and body["failed"] == ["a"] and body["complete"] is True
+    assert body["queued"] is False and client.filler.pending("es") == 0
+
+
+def test_dynamic_translation_that_would_be_withheld_falls_back(client, monkeypatch):
+    from api.routers import i18n as router_mod
+    monkeypatch.setattr(router_mod.osafe, "scrub_payload",
+                        lambda obj, where="": [("[withheld]" if v == "SECRET" else v) for v in obj]
+                        if isinstance(obj, list) else obj)
+    body = client.post("/i18n/translate", json={"lang": "es", "texts": ["secret", "ok"]}).json()
+    assert body == {"translations": ["secret", "OK"], "failed": [0]}
+
+
+def test_preference_survives_a_database_outage(client, monkeypatch):
+    from api.auth import Principal
+    from api.routers import i18n as router_mod
+
+    def down(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(router_mod.preference, "get_language", down)
+    monkeypatch.setattr(router_mod.preference, "set_language", down)
+    client.app.dependency_overrides[router_mod.auth.require_user] = lambda: Principal(subject="u1")
+    assert client.get("/i18n/preference").json() == {"language": None, "stored": False}
+    r = client.put("/i18n/preference", json={"code": "ja"})
+    assert r.status_code == 200 and r.json()["stored"] is False
+
+
+def test_malformed_custom_code_is_400(client):
+    assert client.post("/i18n/strings", json={"lang": "x-]\nIgnore all", "strings": {"a": "x"}}).status_code == 400

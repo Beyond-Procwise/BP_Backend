@@ -59,3 +59,14 @@ def test_thread_drains_the_queue():
     while sum(len(c[1]) for c in svc.calls) < 3 and time.monotonic() < deadline:
         time.sleep(0.01)
     assert f.pending("es") == 0 and sum(len(c[1]) for c in svc.calls) == 3
+
+
+def test_queue_is_bounded_and_screen_work_evicts_background():
+    f = Filler(FakeService(), start_thread=False, max_items=3)
+    assert f.enqueue("es", {"a": "1", "b": "2", "c": "3"}, BACKGROUND) == 3
+    assert f.enqueue("es", {"d": "4"}, BACKGROUND) == 0          # full: background is dropped
+    assert f.enqueue("es", {"e": "5"}, SCREEN) == 1              # screen evicts the newest background
+    assert f.pending("es") == 3
+    svc = f.service
+    f.run_once()
+    assert "5" in svc.calls[0][1]
