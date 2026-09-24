@@ -22,12 +22,14 @@ before the save commits, so an edit that cannot be audited does not happen.
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
 
 from src.services.rga import audit, job_store, postcheck
-from src.services.rga.models import FactPack, Finding, FindingCode, ReportAST
+from src.services.rga.models import (ChartBlock, FactPack, Finding, FindingCode, ReportAST,
+                                     TableBlock)
 from src.services.rga.style import resolve_style_brief
 
 AGENT = "rga_editor"
@@ -140,12 +142,47 @@ def _validation_words(exc: ValidationError, ast_json: Any) -> List[str]:
     return list(dict.fromkeys(reasons))
 
 
+# Titles are printed in places a stylesheet reads (the page footer), so the characters that
+# could end or extend a style rule are refused outright rather than trusted to escaping alone.
+_MARKUP = re.compile(r"[<>{}]")
+_NO_MARKUP = "{what} can't contain any of < > {{ }} -- use words instead."
+
+
+def _labels(title: str, ast: ReportAST) -> List[Tuple[str, str]]:
+    """Every heading and label a person can type into, with where it is: the report title,
+    section titles, table column headings and chart series labels. Paragraphs and table cells
+    have their own rule in the report tree's validators."""
+    out = [("The report title", title)]
+    for s in ast.sections:
+        out.append((f'The section title "{s.title}"', s.title))
+        for b in s.blocks:
+            if isinstance(b, TableBlock):
+                out += [(f'A column heading in "{s.title}"', c) for c in b.columns]
+            elif isinstance(b, ChartBlock):
+                out += [(f'A chart label in "{s.title}"', x.label) for x in b.series]
+    return out
+
+
+def _new_numbers(title: str, ast: ReportAST, base_title: str, base: ReportAST) -> List[str]:
+    """Headings and labels may not gain a number (final review): the post-check only asks
+    whether a number is one of the report's figures somewhere, so a typed '376' that happens
+    to equal a deal count passed as a section title. A heading the agent itself wrote with a
+    number in it ('2026 Q1') may stay as it is."""
+    kept = {text for _, text in _labels(base_title, base)}
+    return list(dict.fromkeys(
+        f"{where}: Titles and labels can't contain typed numbers — say it in a paragraph "
+        "with a figure instead." for where, text in _labels(title, ast)
+        if text not in kept and any(ch.isnumeric() for ch in text)))
+
+
 def _limits(title: str, ast_json: Any) -> List[str]:
     reasons: List[str] = []
     if not title.strip():
         reasons.append("The report needs a title.")
     elif len(title) > MAX_TITLE:
         reasons.append(f"The title is too long; keep it under {MAX_TITLE} characters.")
+    if _MARKUP.search(title):
+        reasons.append(_NO_MARKUP.format(what="The title"))
     sections = ast_json.get("sections") if isinstance(ast_json, dict) else None
     if not isinstance(sections, list):
         return reasons + ["The report's layout could not be read."]
@@ -158,6 +195,8 @@ def _limits(title: str, ast_json: Any) -> List[str]:
         name = s.get("title") or "an untitled section"
         if not str(s.get("title") or "").strip():
             reasons.append("Every section needs a title.")
+        elif _MARKUP.search(str(s.get("title"))):
+            reasons.append(_NO_MARKUP.format(what=f'The section title "{name}"'))
         blocks = s.get("blocks") or []
         if len(blocks) > MAX_BLOCKS:
             reasons.append(f'"{name}" has too many blocks; keep it to {MAX_BLOCKS}.')
@@ -187,7 +226,8 @@ def _finding_words(f: Finding, pack: FactPack) -> str:
     return "The edited report failed a check the agent's own draft must pass."
 
 
-def _parse(pack: FactPack, title: str, ast_json: Any) -> ReportAST:
+def _parse(pack: FactPack, title: str, ast_json: Any,
+           stored: Optional[Dict[str, Any]] = None) -> ReportAST:
     """The edit as a report tree, or every reason it is not one -- all at once, so a person
     fixes them in one go rather than meeting them one per save."""
     reasons = _limits(title, ast_json)
@@ -199,12 +239,16 @@ def _parse(pack: FactPack, title: str, ast_json: Any) -> ReportAST:
         raise EditRefused(reasons + _validation_words(exc, ast_json)) from None
     reasons += [f"{r} isn't one of this report's figures — choose one from the figure list."
                 for r in sorted(r for r in ast.fact_refs() if pack.fact(r) is None)]
+    if stored is not None:
+        reasons += _new_numbers(title, ast, stored.get("title") or "",
+                                ReportAST.model_validate(stored["ast"]))
     if reasons:
         raise EditRefused(reasons)
     return ast
 
 
-def _draw(job: Dict[str, Any], pack: FactPack, ast: ReportAST, title: str):
+def _draw(job: Dict[str, Any], pack: FactPack, ast: ReportAST, title: str, *,
+          draft: bool = False):
     """Both files, from the stored pack, with the report type's style; and the post-check's
     blocking reasons in words (both files, each reason once)."""
     from src.services.rga.render import html as page_renderer
@@ -213,7 +257,7 @@ def _draw(job: Dict[str, Any], pack: FactPack, ast: ReportAST, title: str):
     brief = resolve_style_brief(job["report_type"])
     try:
         deck = deck_renderer.render(ast, pack, brief, title=title)
-        page = page_renderer.render(ast, pack, brief, title=title)
+        page = page_renderer.render(ast, pack, brief, title=title, draft=draft)
     except Exception:  # noqa: BLE001 - a drawing fault is a refusal, not a crash
         raise EditRefused(["The edited report could not be drawn; undo the last change "
                            "and try again."]) from None
@@ -230,10 +274,12 @@ def _draw(job: Dict[str, Any], pack: FactPack, ast: ReportAST, title: str):
 def preview(job_id: str, *, title: str, ast_json: Any) -> Tuple[Optional[bytes], List[str]]:
     """The printable page for an unsaved edit, and what would stop it saving. Nothing is
     written. An edit that cannot even be read gives reasons and no page."""
-    job, _, pack = _load(job_id)
+    job, stored, pack = _load(job_id)
     try:
-        ast = _parse(pack, title, ast_json)
-        _, page, blocking = _draw(job, pack, ast, title.strip())
+        ast = _parse(pack, title.strip(), ast_json, stored)
+        # Marked as a draft on every page: a preview is the whole report, and must never pass
+        # for one that has been signed off (final review).
+        _, page, blocking = _draw(job, pack, ast, title.strip(), draft=True)
     except EditRefused as exc:
         return None, exc.reasons
     return page.content, blocking
@@ -243,9 +289,9 @@ def save(job_id: str, *, base_version: int, title: str, ast_json: Any, by: str,
          summary: Optional[str] = None) -> int:
     """Save an edit as the next version. Raises NotEditable, EditRefused or StaleVersion;
     on any of them nothing is saved."""
-    job, _, pack = _load(job_id)
+    job, stored, pack = _load(job_id)
     title = title.strip()
-    ast = _parse(pack, title, ast_json)
+    ast = _parse(pack, title, ast_json, stored)
     deck, page, blocking = _draw(job, pack, ast, title)
     if blocking:
         raise EditRefused(blocking)

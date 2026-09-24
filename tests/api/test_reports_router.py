@@ -111,9 +111,17 @@ class FakeSignoff:
     decided = None
     refuse_state = None     # set to a state name to make decide() refuse
 
-    def decide(self, job_id, *, verdict, by, reason, policy_name):
+    from src.services.rga.signoff import SelfApproval
+
+    decide_kw = None
+    self_role = None        # set to "requester"/"editor" to make decide() refuse on the lock
+
+    def decide(self, job_id, *, verdict, by, reason, policy_name, **kw):
+        self.decide_kw = kw
         if self.refuse_state:
             raise self.NotDecidable(self.refuse_state)
+        if self.self_role and kw.get("self_approval_denied"):
+            raise self.SelfApproval(self.self_role)
         self.decided = (job_id, verdict, by, reason, policy_name)
         new = {"required": True, "state": "signed_off" if verdict == "sign_off" else "refused",
                "by": by, "reason": reason, "approval_id": 42}
@@ -519,7 +527,7 @@ def test_an_approver_signs_off_and_the_granted_event_is_written(client, events):
     _awaiting(client)
     client.store.jobs["rpt-1"]["requested_by"] = "buyer-1"
     client.gates.clear()
-    r = client.post("/reports/jobs/rpt-1/signoff", json={"reason": "checked the figures"})
+    r = client.post("/reports/jobs/rpt-1/signoff", json={"reason": "checked the figures", "version": None})
     assert r.status_code == 200, r.text
     assert r.json()["signoff"]["state"] == "signed_off"
     assert [g[0] for g in client.gates] == ["report.signoff"]
@@ -540,7 +548,7 @@ def test_the_requester_cannot_sign_off_their_own_report(client, events, monkeypa
     monkeypatch.setattr(rr, "record_action_or_fail", lambda **k: written.append(k))
     _awaiting(client)
     client.store.jobs["rpt-1"]["requested_by"] = CALLER
-    r = client.post("/reports/jobs/rpt-1/signoff", json={})
+    r = client.post("/reports/jobs/rpt-1/signoff", json={"version": None})
     assert r.status_code == 403 and "someone else" in r.json()["detail"]
     assert client.signoff.decided is None and events == []
     assert len(written) == 1
@@ -554,25 +562,25 @@ def test_self_approval_is_allowed_only_when_the_policy_says_so(client, events):
     _awaiting(client)
     client.store.jobs["rpt-1"]["requested_by"] = CALLER
     client.signoff.self_denied = False
-    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 200
+    assert client.post("/reports/jobs/rpt-1/signoff", json={"version": None}).status_code == 200
 
 
 def test_a_job_with_no_requester_can_be_signed_off(client, events):
     _awaiting(client)
     client.store.jobs["rpt-1"]["requested_by"] = None
-    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 200
+    assert client.post("/reports/jobs/rpt-1/signoff", json={"version": None}).status_code == 200
 
 
 def test_refusing_needs_a_reason(client, events):
     _awaiting(client)
-    assert client.post("/reports/jobs/rpt-1/refuse", json={}).status_code == 422
-    assert client.post("/reports/jobs/rpt-1/refuse", json={"reason": "   "}).status_code == 422
+    assert client.post("/reports/jobs/rpt-1/refuse", json={"version": None}).status_code == 422
+    assert client.post("/reports/jobs/rpt-1/refuse", json={"reason": "   ", "version": None}).status_code == 422
     assert client.signoff.decided is None
 
 
 def test_a_refusal_writes_approval_denied(client, events):
     _awaiting(client)
-    r = client.post("/reports/jobs/rpt-1/refuse", json={"reason": "figures wrong"})
+    r = client.post("/reports/jobs/rpt-1/refuse", json={"reason": "figures wrong", "version": None})
     assert r.status_code == 200 and r.json()["signoff"]["state"] == "refused"
     assert client.signoff.decided[1:4] == ("refuse", CALLER, "figures wrong")
     from src.services.rga import audit
@@ -583,7 +591,7 @@ def test_a_refusal_writes_approval_denied(client, events):
 def test_a_second_decision_on_the_same_job_is_refused(client, events):
     _awaiting(client)
     client.signoff.refuse_state = "signed_off"
-    r = client.post("/reports/jobs/rpt-1/refuse", json={"reason": "late"})
+    r = client.post("/reports/jobs/rpt-1/refuse", json={"reason": "late", "version": None})
     assert r.status_code == 409 and "signed_off" in r.json()["detail"]
     assert events == []
 
@@ -595,12 +603,12 @@ def test_only_a_signoff_permit_may_decide(client, monkeypatch, events):
         raise HTTPException(status_code=403, detail="role Buyer may not perform transact")
 
     monkeypatch.setattr(rr, "gate", _refuse)
-    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 403
+    assert client.post("/reports/jobs/rpt-1/signoff", json={"version": None}).status_code == 403
     assert client.signoff.decided is None and events == []
 
 
 def test_an_unknown_job_cannot_be_signed(client):
-    assert client.post("/reports/jobs/rpt-nope/signoff", json={}).status_code == 404
+    assert client.post("/reports/jobs/rpt-nope/signoff", json={"version": None}).status_code == 404
 
 
 def test_attention_drops_released_jobs_whose_type_needs_no_sign_off(client):
@@ -835,7 +843,7 @@ def test_the_last_editor_cannot_sign_off_the_version_they_made(client, events, m
     monkeypatch.setattr(rr, "record_action_or_fail", lambda **k: written.append(k))
     _awaiting(client)
     client.store.jobs["rpt-1"]["last_edited_by"] = CALLER
-    r = client.post("/reports/jobs/rpt-1/signoff", json={})
+    r = client.post("/reports/jobs/rpt-1/signoff", json={"version": None})
     assert r.status_code == 403 and "you made the last edit" in r.json()["detail"]
     assert client.signoff.decided is None and events == []
     (row,) = written
@@ -847,14 +855,14 @@ def test_the_last_editor_cannot_sign_off_the_version_they_made(client, events, m
 def test_someone_other_than_the_editor_may_sign_off_an_edited_report(client, events):
     _awaiting(client)
     client.store.jobs["rpt-1"]["last_edited_by"] = "buyer-2"
-    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 200
+    assert client.post("/reports/jobs/rpt-1/signoff", json={"version": None}).status_code == 200
 
 
 def test_the_last_editor_may_sign_off_when_the_policy_allows_self_approval(client, events):
     _awaiting(client)
     client.store.jobs["rpt-1"]["last_edited_by"] = CALLER
     client.signoff.self_denied = False
-    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 200
+    assert client.post("/reports/jobs/rpt-1/signoff", json={"version": None}).status_code == 200
 
 
 def test_the_job_view_says_whether_and_how_it_has_been_edited(client):
@@ -873,3 +881,43 @@ def test_only_a_released_report_is_offered_for_editing(client):
     _release(client.store, "rpt-1")
     client.store.jobs["rpt-1"]["editable"] = None            # from before the editor
     assert client.get("/reports/jobs/rpt-1").json()["editable"] is False
+
+
+
+# ---------------------------------------------------------------------------
+# final review: the version a decision saw; self-approval decided on the locked row
+# ---------------------------------------------------------------------------
+def test_a_decision_must_say_which_version_it_saw(client, events):
+    _awaiting(client)
+    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 422
+    assert client.post("/reports/jobs/rpt-1/refuse", json={"reason": "x"}).status_code == 422
+    assert client.signoff.decided is None
+
+
+def test_the_version_seen_is_passed_to_the_locked_decision(client, events):
+    _awaiting(client)
+    assert client.post("/reports/jobs/rpt-1/signoff", json={"version": 2}).status_code == 200
+    assert client.signoff.decide_kw == {"seen_version": 2, "self_approval_denied": True}
+
+
+def test_a_report_edited_since_it_was_opened_is_not_signed_off(client, events):
+    _awaiting(client)
+    client.signoff.refuse_state = "edited"
+    r = client.post("/reports/jobs/rpt-1/signoff", json={"version": 2})
+    assert r.status_code == 409 and "edited since you opened it" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("role,words", [("editor", "you made the last edit"),
+                                        ("requester", "you asked for this report")])
+def test_self_approval_found_under_the_lock_is_refused_and_recorded(client, events, monkeypatch,
+                                                                   role, words):
+    written = []
+    monkeypatch.setattr(rr, "record_action_or_fail", lambda **k: written.append(k))
+    _awaiting(client)                       # the unlocked check sees someone else
+    client.signoff.self_role = role
+    r = client.post("/reports/jobs/rpt-1/signoff", json={"version": 1})
+    assert r.status_code == 403 and words in r.json()["detail"]
+    assert client.signoff.decided is None and events == []
+    (row,) = written
+    assert (row["action_type"], row["status"]) == ("report.signoff", "denied")
+    assert row["details"]["evidence"]["rule"] == "self_approval"

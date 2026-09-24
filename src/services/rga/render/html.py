@@ -83,7 +83,11 @@ def _font(name: Any, fallback: str) -> str:
 
 
 def _css_string(value: str) -> str:
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
+    """A CSS string literal. ``<`` and ``>`` are written as CSS escapes: the string sits
+    inside <style>, and a title reading ``</style>`` would otherwise end the stylesheet and let
+    what follows restyle the page -- hiding badges the post-check still reads (final review)."""
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    return '"' + text.replace("<", "\\3c ").replace(">", "\\3e ") + '"'
 
 
 def _coverage_line(pack: FactPack) -> str:
@@ -140,8 +144,10 @@ def render(
     brief: StyleBrief,
     *,
     title: str = "Executive procurement summary",
+    draft: bool = False,
 ) -> RenderedArtefact:
-    """Draw the page and return it with its reproducibility record."""
+    """Draw the page and return it with its reproducibility record. ``draft`` marks every page
+    as not signed off -- the editor's preview, which must never pass for a released page."""
     palette = brief.get("report.style.palette") or {}
     body_font = _font(brief.get("report.style.font.body"), "Arial, Helvetica, sans-serif")
     mono_font = _font(brief.get("report.style.font.mono"), "'Courier New', monospace")
@@ -162,10 +168,10 @@ def render(
         "<style>",
         _stylesheet(palette, body_font, mono_font, title, pack),
         "</style></head><body>",
-        _cover(pack, brief, title, ast_hash, style_version, coverage),
+        _cover(pack, brief, title, ast_hash, style_version, coverage, draft),
     ]
     for section in ast.sections:
-        out.append(_section(section, pack, show_badges, show_footnotes))
+        out.append(_section(section, pack, show_badges, show_footnotes, draft))
     out.append("</body></html>\n")
 
     return RenderedArtefact(
@@ -206,6 +212,7 @@ body {{ margin: 0; font: 10.5pt/1.45 {body_font}; color: {c['ink']}; background:
 .band .scope {{ font: 11pt {mono_font}; }}
 .coverage {{ font-size: 13pt; font-weight: 700; margin: 0 0 3mm; }}
 .coverage.warn {{ color: {c['warm']}; }}
+.draft {{ margin: 0 0 4mm; padding: 2mm 3mm; border: 1.5pt solid {c['warm']}; color: {c['warm']}; font-weight: 700; font-size: 9pt; letter-spacing: .02em; }}
 .coverage.ok {{ color: {c['ok']}; }}
 .disclosure, .provenance {{ color: {c['mute']}; font-size: 8.5pt; margin: 0 0 2mm; }}
 .provenance {{ font-family: {mono_font}; margin-top: 30mm; }}
@@ -245,7 +252,14 @@ td {{ border-bottom: 0.75pt solid {c['rule']}; padding: 2mm 3mm; vertical-align:
 """
 
 
-def _cover(pack, brief, title, ast_hash, style_version, coverage) -> str:
+DRAFT_MARK = "DRAFT — not signed off. Not for use outside the company."
+
+
+def _draft_mark(draft: bool) -> str:
+    return f'<p class="draft" data-chunk>{_e(DRAFT_MARK)}</p>' if draft else ""
+
+
+def _cover(pack, brief, title, ast_hash, style_version, coverage, draft=False) -> str:
     scope = pack.scope
     scope_line = " · ".join(str(v) for v in (
         scope.get("period_label"), scope.get("currency"), f"as at {pack.as_of}") if v)
@@ -254,6 +268,7 @@ def _cover(pack, brief, title, ast_hash, style_version, coverage) -> str:
              f"ast {ast_hash[:12]} · renderer {RENDERER}/{RENDERER_VERSION}")
     return (
         '<header class="cover">'
+        + _draft_mark(draft) +
         f'<div class="band"><h1 data-chunk>{_e(title)}</h1>'
         f'<div class="scope" data-chunk>{_e(scope_line)}</div></div>'
         f'<p class="coverage {tone}" data-chunk>{_e(coverage)}</p>'
@@ -270,9 +285,11 @@ def _substitute(text: str, pack: FactPack) -> str:
         lambda m: pack.fact(m.group(1)).display if pack.fact(m.group(1)) else m.group(0), text)
 
 
-def _section(section: Section, pack: FactPack, show_badges: bool, show_footnotes: bool) -> str:
+def _section(section: Section, pack: FactPack, show_badges: bool, show_footnotes: bool,
+             draft: bool = False) -> str:
     page = _Page(pack, show_badges)
-    parts: List[str] = [f'<section class="section"><h2 data-chunk>{_e(section.title)}</h2>']
+    parts: List[str] = ['<section class="section">' + _draft_mark(draft)
+                        + f'<h2 data-chunk>{_e(section.title)}</h2>']
     metrics: List[str] = []
 
     def flush_metrics() -> None:
