@@ -52,5 +52,9 @@ def get_filler():
         if _filler is None:
             from src.services.i18n.filler import Filler
             from src.services.i18n.settings import load_settings
-            _filler = Filler(service, max_items=load_settings().queue_limit)
+            from src.services.i18n.gpu_gate import GpuGate
+            s = load_settings()
+            _filler = Filler(service, max_items=s.queue_limit,
+                             gate=GpuGate(util_threshold=s.yield_gpu_util),
+                             poll_seconds=s.yield_poll_seconds)
         return _filler

@@ -178,7 +178,7 @@ def _coerce_keep_alive(v: str | int | None) -> str | int:
 KEEP_ALIVE = _coerce_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", "-1"))
 
 
-def ollama_generate(
+def _ollama_generate(
     prompt: str,
     *,
     model: Optional[str] = None,
@@ -533,3 +533,39 @@ def preload_model(model: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT) -
         note_layout_rejection(f"preload failed: {exc}")
         logger.warning("Ollama model preload failed (non-critical): %s", exc)
         return False
+
+
+# ---------------------------------------------------------------------------------------
+# Foreground vs background.
+#
+# Every call counts as FOREGROUND -- extraction, chat, agents -- from the moment it asks
+# for a slot until it returns, unless the caller says background=True. Background work
+# (bulk translation, src/services/i18n) checks foreground_busy() before each batch and
+# waits, so pre-translating a whole language can never slow extraction down.
+# ---------------------------------------------------------------------------------------
+_foreground_lock = threading.Lock()
+_foreground_count = 0
+
+
+def foreground_busy() -> bool:
+    """True while any foreground generation in this process is waiting or running."""
+    return _foreground_count > 0
+
+
+def ollama_generate(prompt: str, *, background: bool = False, **kwargs: Any) -> Optional[str]:
+    global _foreground_count
+    if background:
+        return _ollama_generate(prompt, **kwargs)
+    with _foreground_lock:
+        _foreground_count += 1
+    try:
+        return _ollama_generate(prompt, **kwargs)
+    finally:
+        with _foreground_lock:
+            _foreground_count -= 1
+
+
+ollama_generate.__doc__ = (_ollama_generate.__doc__ or "") + """
+    ``background=True`` marks the call as yieldable work (bulk translation): it is not
+    counted by foreground_busy(). Everything else counts.
+    """
