@@ -70,3 +70,60 @@ def test_batch_none_response_fails_every_key():
 def test_batch_non_string_value_rejected():
     good, bad = validate_batch({"s01": "Save"}, json.dumps({"s01": 3}))
     assert set(bad) == {"s01"}
+
+
+# --- ICU is parsed, not pattern-matched (final review, Critical 1) ------------------------
+
+def test_icu_branch_text_is_not_a_placeholder():
+    en = "{n, plural, one {item} other {items}}"
+    ru = "{n, plural, one {элемент} few {элемента} many {элементов} other {элемента}}"
+    assert check_pair(en, ru, "ru") is None
+
+
+def test_icu_exact_match_selector_is_ok():
+    en = "{n, plural, =0 {No deals} one {# deal} other {# deals}}"
+    fr = "{n, plural, =0 {Aucune affaire} one {# affaire} other {# affaires}}"
+    assert check_pair(en, fr, "fr") is None
+
+
+def test_icu_select_keeps_its_keywords():
+    en = "{g, select, male {He} female {She} other {They}}"
+    assert check_pair(en, "{g, select, male {Él} female {Ella} other {Elle}}", "es") is None
+    assert check_pair(en, "{g, select, hombre {Él} mujer {Ella} otro {Elle}}", "es") is not None
+
+
+def test_icu_translated_plural_keywords_rejected():
+    en = "{n, plural, one {# deal} other {# deals}}"
+    assert check_pair(en, "{n, plural, uno {# trato} otro {# tratos}}", "es") is not None
+
+
+def test_icu_missing_other_rejected():
+    assert check_pair("{n, plural, one {# deal} other {# deals}}", "{n, plural, one {# trato}}", "es") is not None
+
+
+def test_icu_category_the_language_lacks_rejected():
+    assert check_pair("{n, plural, one {# deal} other {# deals}}",
+                      "{n, plural, one {# 件} few {# 件} other {# 件}}", "ja") is not None
+
+
+def test_icu_dropping_every_hash_rejected():
+    assert check_pair("{n, plural, one {# deal} other {# deals}}",
+                      "{n, plural, one {un trato} other {tratos}}", "es") is not None
+
+
+def test_icu_broken_braces_rejected():
+    assert check_pair("{n, plural, one {# deal} other {# deals}}",
+                      "{n, plural, one {# trato} other {# tratos}", "es") is not None
+
+
+def test_nested_argument_inside_a_branch_is_checked():
+    en = "{n, plural, one {{name} has # deal} other {{name} has # deals}}"
+    assert check_pair(en, "{n, plural, one {{name} tiene # trato} other {{name} tiene # tratos}}", "es") is None
+    assert check_pair(en, "{n, plural, one {Tiene # trato} other {Tiene # tratos}}", "es") is not None
+
+
+def test_batch_validates_against_the_target_language():
+    sent = {"s01": "{n, plural, one {# deal} other {# deals}}"}
+    raw = json.dumps({"s01": "{n, plural, one {# трейд} few {# трейда} many {# трейдов} other {# трейда}}"})
+    good, bad = validate_batch(sent, raw, "ru")
+    assert set(good) == {"s01"} and bad == {}

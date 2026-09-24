@@ -38,6 +38,7 @@ def get_service():
                 provider=build_provider(s), store=PgTranslationStore(),
                 memory=MemoryLayer(s.memory_cache_size), registry=registry,
                 system_prompt=load_ui_prompt(), batch_size=s.batch_size,
+                batch_chars=s.batch_chars, failure_backoff=s.failure_backoff,
             )
         return _service
 
@@ -48,5 +49,6 @@ def get_filler():
     with _lock:
         if _filler is None:
             from src.services.i18n.filler import Filler
-            _filler = Filler(service)
+            from src.services.i18n.settings import load_settings
+            _filler = Filler(service, max_items=load_settings().queue_limit)
         return _filler

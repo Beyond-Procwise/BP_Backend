@@ -19,8 +19,9 @@ SCREEN, BACKGROUND = 0, 1
 
 
 class Filler:
-    def __init__(self, service, *, start_thread: bool = True):
+    def __init__(self, service, *, start_thread: bool = True, max_items: int = 20000):
         self.service = service
+        self.max_items = max(1, max_items)
         self._items: dict[tuple[str, str], list] = {}  # (lang, hash) -> [priority, seq, text, lang_name]
         self._seq = itertools.count()
         self._cv = threading.Condition()
@@ -34,6 +35,8 @@ class Filler:
                 key = (lang, source_hash(text))
                 cur = self._items.get(key)
                 if cur is None:
+                    if len(self._items) >= self.max_items and not self._evict_for(priority):
+                        continue  # full of work at least as urgent; the next poll asks again
                     self._items[key] = [priority, next(self._seq), text, lang_name]
                     added += 1
                 elif priority < cur[0]:
@@ -44,6 +47,14 @@ class Filler:
                 self._thread = threading.Thread(target=self._loop, name="i18n-filler", daemon=True)
                 self._thread.start()
         return added
+
+    def _evict_for(self, priority: int) -> bool:
+        """Make room for work of `priority` by dropping the newest less-urgent item."""
+        victims = [(v[0], v[1], k) for k, v in self._items.items() if v[0] > priority]
+        if not victims:
+            return False
+        del self._items[max(victims)[2]]
+        return True
 
     def pending(self, lang: str) -> int:
         with self._cv:

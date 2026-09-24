@@ -518,10 +518,6 @@ app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_al
 # tests/api/test_ws_authentication.py is what now holds this to be true.
 app.include_router(ws_router_mod.router)
 
-# AI translation: public because the sign-in page is translated too. Only cache reads are
-# open; the endpoints that make the model work authenticate per endpoint (see the router).
-app.include_router(i18n_router.router)
-
 # --------------------------------------------------------------------------
 # Every HTTP router below is mounted WITH authentication.
 #
@@ -587,6 +583,7 @@ _AUTHENTICATED_ROUTERS = [
     sales_router.router,
     reports_router.router,
     triage_router.router,
+    i18n_router.router,
 ]
 
 for _router in _AUTHENTICATED_ROUTERS:
