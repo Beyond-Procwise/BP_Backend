@@ -68,6 +68,14 @@ def test_unexplained_part_of_an_overage_is_its_own_finding():
     assert fs["cumulative_total"].exposure == D("75")
 
 
+def test_a_partly_explained_overage_carries_only_its_remainder_as_money():
+    ds = deal(po(), inv(lines=[line(1, price="12.50")], net="200"))
+    fs = {f.rule_id: f for f in _findings(ds)}
+    r = fs["cumulative_total"].lead
+    assert r.auth_amount == D("120")
+    assert r.claim_amount - r.auth_amount == D("75") == r.exposure
+
+
 # --- final review F4: a quantity finding belongs to the PO, not the latest invoice ---
 
 def _qty_finding(ds):

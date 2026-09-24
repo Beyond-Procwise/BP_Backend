@@ -90,6 +90,10 @@ def group(results: list[Result], cfg) -> list[Finding]:
             continue
         if related:
             r.exposure = abs(r.exposure) - explained
+            # The explained part is already money at stake on those findings: the
+            # Action Centre sums claim - auth, so this one must show only the remainder.
+            if r.claim_amount is not None and r.auth_amount is not None:
+                r.claim_amount = r.auth_amount + r.exposure
             r.note = f"{r.note}; {explained} of the overage is explained by findings on its lines"
             score_result(r, cfg)
         findings.append(Finding(r.deal_id, "cumulative_total", [r], r.cause_key))
