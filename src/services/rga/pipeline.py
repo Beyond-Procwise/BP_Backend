@@ -48,6 +48,21 @@ logger = logging.getLogger(__name__)
 AGENT = "rga_pipeline"
 
 
+def _page_only(deck: List[Finding], page: List[Finding]) -> List[Finding]:
+    """The page's post-check findings that are not the deck's.
+
+    Checks that look at the DRAFT (nothing stated, an unknown fact, an unassessed figure
+    behind a recommendation) fire on both files, so the same defect would be listed twice
+    under one id. What only the page got wrong is kept, renumbered PGnnn and said to be the
+    page's, so a person reading the reasons can tell which file failed.
+    """
+    seen = {(f.code, f.detail) for f in deck}
+    kept = [f for f in page if (f.code, f.detail) not in seen]
+    return [f.model_copy(update={
+        "finding_id": f.finding_id.replace("-PC", "-PG"),
+        "detail": f"the printable page: {f.detail}"}) for f in kept]
+
+
 @dataclass(frozen=True)
 class ReportRun:
     """Everything one run produced, including the reasons it was stopped."""
@@ -202,7 +217,7 @@ def generate_report(
     page_result = postcheck.run(page, pack, ast, brief, emit_audit=emit_audit,
                                 writer=writer)
     findings.extend(result.findings)
-    findings.extend(page_result.findings)
+    findings.extend(_page_only(result.findings, page_result.findings))
 
     if not (result.passed and page_result.passed):
         logger.info("rga: %s blocked by %d finding(s)", run_id,
