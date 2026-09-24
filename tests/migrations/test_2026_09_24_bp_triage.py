@@ -48,3 +48,22 @@ def test_policy_row_matches_the_test_seed(applied):
     rows = cur.fetchall()
     assert len(rows) == 1
     assert rows[0][0] == GOVERNED_LIMIT_SEED["triage_tolerances"]
+
+
+def test_deal_state_table_has_the_scheduler_columns(applied):
+    cur = applied.cursor()
+    cur.execute("""SELECT column_name, data_type, is_nullable FROM information_schema.columns
+                   WHERE table_schema='proc' AND table_name='bp_triage_deal_state'""")
+    cols = {name: (dtype, nullable) for name, dtype, nullable in cur.fetchall()}
+    assert cols == {
+        "deal_id": ("character varying", "NO"),
+        "content_hash": ("character varying", "NO"),
+        "config_fingerprint": ("character varying", "NO"),
+        "last_run_id": ("uuid", "NO"),
+        "triaged_at": ("timestamp with time zone", "NO"),
+    }
+
+
+def test_rollback_sql_drops_the_deal_state_table():
+    text = (MIGRATION.parent / "2026-09-24_bp_triage_rollback.sql").read_text()
+    assert "DROP TABLE IF EXISTS proc.bp_triage_deal_state;" in text

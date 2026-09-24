@@ -20,6 +20,7 @@ class RunReport:
     run_id: Optional[str] = None
     deals_done: int = 0
     deals_without_documents: int = 0
+    deals_vanished: int = 0               # had a state row, now no documents: findings closed
     failed: dict = field(default_factory=dict)
     raw_differences: int = 0
     shown: int = 0
@@ -68,6 +69,7 @@ class RunReport:
             "mode": self.mode, "dry_run": self.dry_run, "run_id": self.run_id,
             "deals_requested": self.deals_requested, "deals_done": self.deals_done,
             "deals_without_documents": self.deals_without_documents,
+            "deals_vanished": self.deals_vanished,
             "failed": dict(self.failed), "elapsed_s": self.elapsed_s,
             "deals_per_second": round(self.deals_per_second, 2),
             "raw_differences": self.raw_differences, "shown": self.shown,
@@ -87,7 +89,8 @@ class RunReport:
             f"Discrepancy triage — {self.mode}{' (dry run)' if self.dry_run else ''} "
             f"· run {self.run_id or '-'}",
             f"Deals: {self.deals_done:,} checked of {self.deals_requested:,} · "
-            f"{self.deals_without_documents:,} without documents · {len(self.failed):,} failed",
+            f"{self.deals_without_documents:,} without documents · "
+            f"{self.deals_vanished:,} no longer have documents · {len(self.failed):,} failed",
             f"Time: {self.elapsed_s:,.1f}s · {self.deals_per_second:,.1f} deals/s",
             f"Noise ratio: {self.shown:,} findings shown / {self.raw_differences:,} raw "
             f"differences = {self.noise_ratio:.2%}",

@@ -7,6 +7,9 @@
     ./.venv/bin/python scripts/triage_backfill.py --deals DEALV2-005049,DEALV2-000001
 
 --dry-run computes everything and writes nothing. Exit code 1 if any deal failed.
+
+Only `--all` without `--limit` is recorded as a full backfill (mode 'backfill') -- the
+baseline the scheduled re-triage waits for. `--deals` and `--limit` runs are 'single'.
 """
 from __future__ import annotations
 
@@ -49,7 +52,8 @@ def main(argv=None) -> int:
         print(f"  ... {r.deals_done:,}/{r.deals_requested:,} deals, {len(r.failed)} failed",
               flush=True)
 
-    report = run_triage(ids, "backfill", dry_run=a.dry_run, on_batch=progress,
+    mode = "backfill" if a.all and not a.limit else "single"
+    report = run_triage(ids, mode, dry_run=a.dry_run, on_batch=progress,
                         known_gaps=[f"Invoices with no deal_id are not triaged: {no_deal:,}"])
     print(report.render())
     if a.report_json:

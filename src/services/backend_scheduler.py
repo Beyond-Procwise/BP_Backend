@@ -430,10 +430,11 @@ class BackendScheduler:
     TRIAGE_JOB_NAME = "discrepancy-triage"
 
     def _register_triage_job(self) -> None:
-        """Re-triage deals whose final documents changed since the last triage run.
+        """Re-triage deals whose documents (or tolerances) changed since their last
+        successful triage, by content hash against proc.bp_triage_deal_state.
 
-        Does nothing until a backfill has completed (spec §9.1): the first pass over the
-        whole corpus is a deliberate, reported act, not a side effect of startup.
+        Does nothing until a full backfill has completed (spec §9.1): the first pass over
+        the whole corpus is a deliberate, reported act, not a side effect of startup.
 
         Interval via TRIAGE_INTERVAL_MINUTES (default 15).
         """

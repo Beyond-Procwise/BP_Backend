@@ -18,6 +18,7 @@ from src.services.db import get_conn
 
 from . import loader, writer
 from .checks import run_checks
+from .fingerprint import deal_content_hash
 from .group import group
 from .link import link
 from .model import DocumentSet, Finding, Result, Severity, Verdict
@@ -29,19 +30,12 @@ from .verdict import verdict
 
 log = logging.getLogger(__name__)
 
+# Only a completed full backfill is a baseline: a --deals or --limit run ('single') has
+# not triaged the corpus, and the scheduler must not start from one.
 _BASELINE_SQL = """
-SELECT max(started_at) FROM proc.bp_triage_run
- WHERE mode IN ('backfill', 'scheduled') AND finished_at IS NOT NULL AND rolled_back_at IS NULL
-"""
-_CHANGED_SQL = """
-SELECT DISTINCT deal_id FROM (
-    SELECT deal_id, greatest(created_date, last_modified_date) AS ts FROM proc.bp_invoice_trgt
-    UNION ALL
-    SELECT deal_id, greatest(created_date, last_modified_date) FROM proc.bp_purchase_order_trgt
-    UNION ALL
-    SELECT deal_id, greatest(created_date, last_modified_date) FROM proc.bp_quote_trgt
-) d
- WHERE deal_id IS NOT NULL AND ts > (%s::timestamptz AT TIME ZONE 'UTC')
+SELECT 1 FROM proc.bp_triage_run
+ WHERE mode = 'backfill' AND finished_at IS NOT NULL AND rolled_back_at IS NULL
+ LIMIT 1
 """
 
 
@@ -50,7 +44,14 @@ class DealOutput:
     deal_id: str
     results: list[Result]
     findings: list[Finding]
-    verdict: Verdict
+    verdict: Optional[Verdict]
+    content_hash: str = ""       # "" = the deal's documents have all gone (see vanished())
+
+    @classmethod
+    def vanished(cls, deal_id: str) -> "DealOutput":
+        """A deal that no longer has documents: no results, so the writer closes its
+        untouched open findings and drops its state row."""
+        return cls(deal_id, [], [], None, "")
 
 
 def triage_set(ds: DocumentSet, cfg: TriageConfig) -> DealOutput:
@@ -59,7 +60,8 @@ def triage_set(ds: DocumentSet, cfg: TriageConfig) -> DealOutput:
     for r in results:
         score_result(r, cfg)
     findings = [describe(f) for f in group(results, cfg)]
-    return DealOutput(ds.deal_id, results, findings, verdict(ds, links, findings, results))
+    return DealOutput(ds.deal_id, results, findings, verdict(ds, links, findings, results),
+                      deal_content_hash(ds))
 
 
 def _chunks(items: list, size: int):
@@ -70,9 +72,13 @@ def _chunks(items: list, size: int):
 def run_triage(deal_ids: Iterable[str], mode: str, *, dry_run: bool = False,
                cfg: Optional[TriageConfig] = None, connect: Callable = get_conn,
                on_batch: Optional[Callable[[RunReport], None]] = None,
-               known_gaps: Iterable[str] = ()) -> RunReport:
+               known_gaps: Iterable[str] = (), vanished: Iterable[str] = ()) -> RunReport:
+    """`vanished`: requested deals that have a bp_triage_deal_state row. One of them
+    that loads no documents is written as an empty DealOutput (its findings close)
+    instead of being counted as a deal without documents."""
     cfg = cfg or load_config()
     ids = list(dict.fromkeys(deal_ids))
+    had_state = set(vanished)
     report = RunReport(mode=mode, dry_run=dry_run, deals_requested=len(ids))
     report.known_gaps.extend(known_gaps)
     with connect() as conn:
@@ -90,7 +96,10 @@ def run_triage(deal_ids: Iterable[str], mode: str, *, dry_run: bool = False,
             for d in batch:
                 ds = sets.get(d)
                 if ds is None:
-                    report.deals_without_documents += 1
+                    if d in had_state:
+                        outputs.append(DealOutput.vanished(d))
+                    else:
+                        report.deals_without_documents += 1
                     continue
                 try:
                     outputs.append(triage_set(ds, cfg))
@@ -106,7 +115,10 @@ def run_triage(deal_ids: Iterable[str], mode: str, *, dry_run: bool = False,
                         report.fail(o.deal_id, f"write failed: {exc}")
                     continue
             for o in outputs:
-                report.add(o)
+                if o.content_hash:
+                    report.add(o)
+                else:
+                    report.deals_vanished += 1
             if on_batch:
                 on_batch(report)
         report.finish()
@@ -146,22 +158,56 @@ def triage_deal_view(deal_id: str, *, cfg: Optional[TriageConfig] = None,
     return view_dict(out, ids)
 
 
+def _has_baseline(cur) -> bool:
+    cur.execute(_BASELINE_SQL)
+    return cur.fetchone() is not None
+
+
+def _select_changed(cur, cfg: TriageConfig) -> tuple[list[str], set[str]]:
+    """Deals whose content or tolerances differ from their last successful triage.
+
+    Returns (deals to run, those among them that have a state row). A deal is selected
+    when it has no state row (new, or it failed last time), its content hash differs, or
+    the tolerance fingerprint differs; and a state-row deal that no longer loads any
+    documents is selected so its findings close. A batch that cannot load is skipped:
+    its deals keep their state and are looked at again next pass.
+    """
+    state = writer.deal_state(cur)
+    ids = list(dict.fromkeys([*loader.list_deal_ids(cur), *sorted(state)]))
+    selected: list[str] = []
+    for batch in _chunks(ids, int(cfg["batch_size"])):
+        try:
+            sets = loader.load_deal_sets(cur, batch)
+        except Exception:  # noqa: BLE001 - retried next pass
+            log.exception("triage: loading a batch to fingerprint failed")
+            continue
+        for d in batch:
+            ds, prior = sets.get(d), state.get(d)
+            if ds is None:
+                if prior is not None:
+                    selected.append(d)
+            elif (prior is None or prior[0] != deal_content_hash(ds)
+                  or prior[1] != cfg.fingerprint):
+                selected.append(d)
+    return selected, set(selected) & set(state)
+
+
 def run_changed(*, cfg: Optional[TriageConfig] = None,
                 connect: Callable = get_conn) -> Optional[RunReport]:
-    """Re-triage deals whose final documents changed since the last completed run.
+    """Re-triage deals whose documents (or the tolerances) changed since their last
+    successful triage, by comparing each deal's content hash with bp_triage_deal_state.
 
-    Does nothing until a backfill has completed: the first pass over the whole corpus
-    is a deliberate, reported act, not a side effect of the scheduler starting.
+    Does nothing until a full backfill has completed: the first pass over the whole
+    corpus is a deliberate, reported act, not a side effect of the scheduler starting.
+    Writes nothing -- not even a run row -- when nothing changed.
     """
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute(_BASELINE_SQL)
-        baseline = cur.fetchone()[0]
-        if baseline is None:
-            log.info("triage: no completed backfill yet; nothing scheduled")
+        if not _has_baseline(cur):
+            log.info("triage: no completed full backfill yet; nothing scheduled")
             return None
-        cur.execute(_CHANGED_SQL, (baseline,))
-        ids = [r[0] for r in cur.fetchall()]
+        cfg = cfg or load_config()
+        ids, had_state = _select_changed(cur, cfg)
     if not ids:
         return None
-    return run_triage(ids, "scheduled", cfg=cfg, connect=connect)
+    return run_triage(ids, "scheduled", cfg=cfg, connect=connect, vanished=had_state)

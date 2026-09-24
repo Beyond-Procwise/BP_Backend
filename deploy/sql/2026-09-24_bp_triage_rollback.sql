@@ -1,12 +1,19 @@
 -- Reverses 2026-09-24_bp_triage.sql. Removes the Action Centre findings triage created
 -- that nobody has touched; findings a person acted on stay (their map rows go, so they
 -- become ordinary findings).
+--
+-- To undo ONE run rather than the whole feature, use scripts/triage_rollback.py
+-- --run-id <uuid>. It also deletes that run's bp_triage_deal_state rows, so the scheduled
+-- job will re-check those deals within its next interval unless TRIAGE_INTERVAL_MINUTES
+-- is raised or the procwise service is stopped. It does not undo the supersedes or
+-- in-place updates the run made to findings that already existed.
 BEGIN;
 DELETE FROM proc.bp_detection_finding f
  USING proc.bp_triage_finding m
  WHERE m.finding_id = f.finding_id
    AND f.status = 'open' AND f.lifecycle_status = 'open'
    AND f.owner IS NULL AND f.due_date IS NULL AND f.resolved_by IS NULL;
+DROP TABLE IF EXISTS proc.bp_triage_deal_state;
 DROP TABLE IF EXISTS proc.bp_triage_result;
 DROP TABLE IF EXISTS proc.bp_triage_finding;
 DROP TABLE IF EXISTS proc.bp_triage_run;

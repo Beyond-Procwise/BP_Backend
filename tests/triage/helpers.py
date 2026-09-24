@@ -88,6 +88,7 @@ def scored(ds, cfg=None):
 def pipeline(ds, cfg=None):
     """The whole pure pipeline for one deal, shaped like engine.DealOutput."""
     from types import SimpleNamespace
+    from src.services.triage.fingerprint import deal_content_hash
     from src.services.triage.group import group
     from src.services.triage.text import describe
     from src.services.triage.verdict import verdict
@@ -95,4 +96,5 @@ def pipeline(ds, cfg=None):
     links, results = scored(ds, cfg)
     findings = [describe(f) for f in group(results, cfg)]
     return SimpleNamespace(deal_id=ds.deal_id, results=results, findings=findings,
-                           verdict=verdict(ds, links, findings, results))
+                           verdict=verdict(ds, links, findings, results),
+                           content_hash=deal_content_hash(ds))

@@ -27,6 +27,7 @@ def ctx():
         cur.execute("DELETE FROM proc.bp_detection_finding WHERE deal_id = %s", (deal_id,))
         cur.execute("DELETE FROM proc.bp_triage_finding WHERE deal_id = %s", (deal_id,))
         cur.execute("DELETE FROM proc.bp_triage_result WHERE deal_id = %s", (deal_id,))
+        cur.execute("DELETE FROM proc.bp_triage_deal_state WHERE deal_id = %s", (deal_id,))
         for run_id in runs:
             cur.execute("DELETE FROM proc.bp_triage_run WHERE run_id = %s", (run_id,))
 
@@ -228,3 +229,43 @@ def test_an_owned_but_still_open_finding_is_not_superseded(ctx):
         (ctx.deal_id,))
     _run_id, counts = _write(ctx, _currency_deal(ctx, currency="GBP"))
     assert counts["superseded"] == 0 and _findings(ctx)[0][3] == "open"
+
+
+# --- final review F1/F2: the per-deal state row the scheduler compares against ------
+
+def _state(ctx):
+    cur = ctx.conn.cursor()
+    cur.execute("""SELECT content_hash, config_fingerprint, last_run_id::text
+                     FROM proc.bp_triage_deal_state WHERE deal_id = %s""", (ctx.deal_id,))
+    return cur.fetchone()
+
+
+def test_a_written_deal_records_its_hash_config_and_run(ctx):
+    from src.services.triage.fingerprint import deal_content_hash
+    ds = _currency_deal(ctx)
+    run_id, _counts = _write(ctx, ds)
+    assert _state(ctx) == (deal_content_hash(ds), CFG.fingerprint, run_id)
+    ds2 = _currency_deal(ctx, currency="USD")
+    run2, _counts = _write(ctx, ds2)
+    assert _state(ctx) == (deal_content_hash(ds2), CFG.fingerprint, run2)
+
+
+def test_a_vanished_deal_closes_its_findings_and_drops_its_state(ctx):
+    from src.services.triage.engine import DealOutput
+    _write(ctx, _currency_deal(ctx))
+    assert _state(ctx) is not None
+    run_id = writer.start_run(ctx.conn, "scheduled", CFG)
+    ctx.runs.append(run_id)
+    counts = writer.write_batch(ctx.conn, run_id, [DealOutput.vanished(ctx.deal_id)])
+    assert counts["superseded"] == 1 and counts["audit_rows"] == 0
+    assert _state(ctx) is None
+    assert [(r[3], r[4]) for r in _findings(ctx)] == [("superseded", "resolved")]
+
+
+def test_rollback_drops_the_state_rows_that_run_wrote(ctx):
+    first, _counts = _write(ctx, _currency_deal(ctx))
+    second, _counts = _write(ctx, _currency_deal(ctx))
+    writer.rollback_run(ctx.conn, first)                # not the run that owns the row
+    assert _state(ctx) is not None
+    result = writer.rollback_run(ctx.conn, second)
+    assert _state(ctx) is None and result["deal_states_removed"] == 1

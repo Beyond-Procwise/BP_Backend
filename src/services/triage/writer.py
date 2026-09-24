@@ -67,6 +67,16 @@ INSERT INTO proc.bp_triage_result
      tolerance, fingerprint, finding_id)
 VALUES %s
 """
+# One row per deal written successfully: what its documents hashed to and which
+# tolerances judged them. The scheduler re-triages a deal whose row is missing or differs.
+_UPSERT_STATE = """
+INSERT INTO proc.bp_triage_deal_state (deal_id, content_hash, config_fingerprint, last_run_id)
+SELECT %s, %s, config_fingerprint, run_id FROM proc.bp_triage_run WHERE run_id = %s
+ON CONFLICT (deal_id) DO UPDATE
+   SET content_hash = EXCLUDED.content_hash,
+       config_fingerprint = EXCLUDED.config_fingerprint,
+       last_run_id = EXCLUDED.last_run_id, triaged_at = now()
+"""
 _ROLLBACK_FINDINGS = """
 DELETE FROM proc.bp_detection_finding f
  USING proc.bp_triage_finding m
@@ -80,6 +90,13 @@ UPDATE proc.bp_triage_finding
    SET finding_id = %s, last_severity = %s, replaced_finding_id = NULL, replaced_severity = NULL
  WHERE fingerprint = %s
 """
+
+
+def deal_state(cur) -> dict[str, tuple[str, str]]:
+    """deal_id -> (content_hash, config_fingerprint) of its last successful triage."""
+    cur.execute("SELECT deal_id, content_hash, config_fingerprint "
+                "FROM proc.bp_triage_deal_state")
+    return {d: (h, c) for d, h, c in cur.fetchall()}
 
 
 def start_run(conn, mode: str, cfg) -> str:
@@ -210,6 +227,14 @@ def write_batch(conn, run_id: str, outputs) -> dict:
             if fp not in seen and status == "open":
                 cur.execute(_SUPERSEDE, (fid,))
                 counts["superseded"] += cur.rowcount
+        for o in outputs:
+            if o.content_hash:
+                cur.execute(_UPSERT_STATE, (o.deal_id, o.content_hash, run_id))
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"triage run {run_id} is not recorded; cannot write state")
+            else:   # its documents have all gone: nothing left to compare against
+                cur.execute("DELETE FROM proc.bp_triage_deal_state WHERE deal_id = %s",
+                            (o.deal_id,))
         rows = [_audit_row(run_id, r, fid_of.get(id(r))) for o in outputs for r in o.results]
         if rows:
             execute_values(cur, _AUDIT, rows, page_size=1000)
@@ -246,11 +271,15 @@ def rollback_run(conn, run_id: str) -> dict:
         kept = cur.fetchone()[0]
         cur.execute("DELETE FROM proc.bp_triage_result WHERE run_id = %s", (run_id,))
         audit = cur.rowcount
+        # The deals this run triaged lose their state row, so the scheduler re-checks
+        # them on its next pass (supersedes and in-place updates are not undone).
+        cur.execute("DELETE FROM proc.bp_triage_deal_state WHERE last_run_id = %s", (run_id,))
+        state = cur.rowcount
         cur.execute("UPDATE proc.bp_triage_run SET rolled_back_at = now() WHERE run_id = %s",
                     (run_id,))
         conn.commit()
         return {"findings_removed": len(removed), "findings_kept": kept,
-                "audit_rows_removed": audit}
+                "audit_rows_removed": audit, "deal_states_removed": state}
     except Exception:
         conn.rollback()
         raise

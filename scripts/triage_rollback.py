@@ -7,6 +7,14 @@
 Removes the Action Centre findings that run created which nobody has touched (still
 open, no owner, no due date, no resolver) and the run's audit rows. Findings a person
 has acted on are kept.
+
+It also deletes the run's bp_triage_deal_state rows, so the deals it triaged look
+unchecked: the scheduled job will re-check these deals within its next interval unless
+TRIAGE_INTERVAL_MINUTES is raised or the procwise service is stopped.
+
+Supersedes and in-place updates are not undone: findings the run closed because their
+problem had gone, and updates it made to findings that already existed, stay as they
+are; the next triage of the deal sets them straight.
 """
 from __future__ import annotations
 
@@ -30,7 +38,10 @@ def main(argv=None) -> int:
         result = writer.rollback_run(conn, a.run_id)
     print(f"Run {a.run_id}: removed {result['findings_removed']} findings nobody had touched, "
           f"kept {result['findings_kept']} that a person had acted on, "
-          f"removed {result['audit_rows_removed']} audit rows.")
+          f"removed {result['audit_rows_removed']} audit rows, and cleared "
+          f"{result.get('deal_states_removed', 0)} deal states.")
+    print("The scheduled job will re-check these deals within its next interval unless "
+          "TRIAGE_INTERVAL_MINUTES is raised or the procwise service is stopped.")
     return 0
 
 

@@ -2,10 +2,11 @@
 -- Spec: docs/superpowers/specs/2026-09-24-discrepancy-triage-p2p-design.md (§5.3, §8.2).
 --
 -- Findings that need action go to the EXISTING proc.bp_detection_finding (the Action
--- Centre reads it). These three tables hold everything else: one row per run, one row
+-- Centre reads it). These four tables hold everything else: one row per run, one row
 -- per comparison (including matches -- "suppress from view, never from record"), and a
 -- map from each finding's stable fingerprint to its bp_detection_finding row, kept here
--- so no column is added to a table the gateway maps field by field.
+-- so no column is added to a table the gateway maps field by field; and each deal's
+-- content hash at its last triage, which the scheduled re-triage compares against.
 --
 -- The tolerance row: every value that decides whether a difference is a discrepancy.
 -- Starting values are the triage spec's §14 example; tune them after the first backfill.
@@ -61,6 +62,17 @@ ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS replaced_finding_id 
 ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS replaced_severity varchar;
 CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_deal      ON proc.bp_triage_finding (deal_id);
 CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_first_run ON proc.bp_triage_finding (first_run_id);
+
+-- What each deal's documents hashed to (and which tolerances judged them) at its last
+-- successful triage. The scheduled job re-triages a deal whose row is missing or
+-- differs; a deal that failed keeps its old row (or none) and is retried.
+CREATE TABLE IF NOT EXISTS proc.bp_triage_deal_state (
+    deal_id             varchar PRIMARY KEY,
+    content_hash        varchar NOT NULL,
+    config_fingerprint  varchar NOT NULL,
+    last_run_id         uuid NOT NULL,
+    triaged_at          timestamptz NOT NULL DEFAULT now()
+);
 
 INSERT INTO proc.bp_policy (
     policy_name, policy_type, policy_desc, policy_details,
