@@ -50,6 +50,17 @@ GOVERNED_LIMIT_SEED = {
         "duplicate_invoice_detector_enabled": False,
         "supplier_research_enabled": True},
     "reseller_catalog": {"fuzzy_propose_min": 88, "calibration_min_closed": 30},
+    "triage_tolerances": {
+        "unit_price_over_pct": 1.0, "unit_price_over_abs": 5.0,
+        "unit_price_combine": "min", "unit_price_under_pct": 5.0,
+        "quantity_over_pct": 5.0, "rounding_per_line": 0.01,
+        "cumulative_total_pct": 0.5, "cumulative_total_abs": 50.0,
+        "cumulative_total_combine": "min", "allowed_tax_rates": [0, 5, 20],
+        "min_link_confidence": 0.8, "unlinked_below": 0.5,
+        "min_extraction_confidence": 0.7, "description_min_similarity": 0.4,
+        "materiality_pct_of_total": 0.5, "materiality_floor": 25,
+        "materiality_ceiling": 5000, "band_s1": 70, "band_s2": 40,
+        "uplift_min_lines": 3, "uplift_same_pct_within": 0.1, "batch_size": 200},
 }
 
 
