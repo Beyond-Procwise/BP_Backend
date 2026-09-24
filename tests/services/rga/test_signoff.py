@@ -94,3 +94,50 @@ def test_no_authority_policy_means_nobody_reviews_early(roles):
     roles("Admin")
     assert signoff.may_sign_off(SimpleNamespace(subject="u"),
                                 engine=eng({}, authority=False)) is False
+
+
+# ---------------------------------------------------------------------------
+# a job's sign-off state: policy + the newest decision
+# ---------------------------------------------------------------------------
+def job(status="released", rtype="exec_procurement_summary"):
+    return {"job_id": "rpt-1", "report_type": rtype, "status": status, "requested_by": "buyer-1"}
+
+
+def test_a_released_report_with_no_decision_awaits_sign_off():
+    s = signoff.state(job(), engine=eng({"requires_signoff": ["*"]}), decision=None)
+    assert (s["required"], s["state"]) == (True, "awaiting")
+
+
+def test_the_newest_decision_decides():
+    e = eng({"requires_signoff": ["*"]})
+    s = signoff.state(job(), engine=e, decision={
+        "approval_id": 7, "status": "approved", "actioned_by": "ap-1", "actioned_at": None,
+        "grounding": {"deck_sha256": "h"}})
+    assert (s["state"], s["by"], s["approval_id"], s["deck_sha256"]) == ("signed_off", "ap-1", 7, "h")
+    r = signoff.state(job(), engine=e, decision={
+        "approval_id": 8, "status": "refused", "actioned_by": "ap-2", "actioned_at": None,
+        "grounding": {"reason": "figures wrong"}})
+    assert (r["state"], r["reason"]) == ("refused", "figures wrong")
+
+
+def test_an_unknown_decision_status_is_not_a_sign_off():
+    s = signoff.state(job(), engine=eng({"requires_signoff": ["*"]}), decision={
+        "approval_id": 9, "status": "revoked", "actioned_by": "ap-1", "actioned_at": None,
+        "grounding": {}})
+    assert s["state"] == "awaiting"
+
+
+def test_a_report_that_is_not_released_has_nothing_to_sign():
+    for status in ("queued", "running", "blocked", "failed"):
+        assert signoff.state(job(status), engine=eng({"requires_signoff": ["*"]}),
+                             decision=None)["state"] == "not_released"
+
+
+def test_a_type_the_policy_does_not_list_needs_no_sign_off():
+    s = signoff.state(job(), engine=eng({"requires_signoff": ["board_paper"]}), decision=None)
+    assert (s["required"], s["state"]) == (False, "not_required")
+
+
+def test_the_deck_hash_is_sha256():
+    import hashlib
+    assert signoff.deck_hash(b"PK") == hashlib.sha256(b"PK").hexdigest()

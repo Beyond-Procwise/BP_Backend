@@ -16,6 +16,7 @@ a missing authority row lets nobody review early.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any, Dict
 
@@ -78,3 +79,45 @@ def may_sign_off(principal: Any, engine: Any = None) -> bool:
     return (need_rank > 0
             and rbac.may(role, actions.action_class(ACTION), policy_engine=engine)
             and rbac.role_rank(role, policy_engine=engine) >= need_rank)
+
+
+_UNSET = object()
+_BY_STATUS = {"approved": "signed_off", "refused": "refused"}
+
+
+def deck_hash(content: bytes) -> str:
+    """What a sign-off is bound to: the exact file that was reviewed."""
+    return hashlib.sha256(content or b"").hexdigest()
+
+
+def state(job: Dict[str, Any], engine: Any = None, decision: Any = _UNSET) -> Dict[str, Any]:
+    """A job's sign-off state: ``not_released`` | ``not_required`` | ``awaiting`` |
+    ``signed_off`` | ``refused``, with who, when, why, the approval id and the deck hash.
+
+    Derived, never stored: policy decides whether a report needs sign-off, and the newest
+    ``bp_approval`` row for the job decides whether it has one. A decision in any other status
+    (a future revoke) is not a sign-off, so the report is awaiting again.
+    """
+    need = required(job.get("report_type") or "", engine=engine)
+    out: Dict[str, Any] = {"required": need, "state": "not_required", "by": None, "at": None,
+                           "reason": None, "approval_id": None, "deck_sha256": None}
+    if job.get("status") != "released":
+        out["state"] = "not_released"
+        return out
+    if not need:
+        return out
+    if decision is _UNSET:
+        from src.services import approval_store
+
+        decision = approval_store.find_report_decision(job["job_id"])
+    if not decision:
+        out["state"] = "awaiting"
+        return out
+    grounding = decision.get("grounding") or {}
+    at = decision.get("actioned_at")
+    out.update(by=decision.get("actioned_by"),
+               at=at.isoformat() if hasattr(at, "isoformat") else at,
+               reason=grounding.get("reason"), approval_id=decision.get("approval_id"),
+               deck_sha256=grounding.get("deck_sha256"))
+    out["state"] = _BY_STATUS.get(decision.get("status"), "awaiting")
+    return out

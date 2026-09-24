@@ -67,9 +67,35 @@ class FakeStore:
         return [dict(j) for j in jobs[:limit]]
 
 
+class FakeSignoff:
+    """Stands in for services/rga/signoff: the router is under test, not the policy.
+    Defaults to "not required" so tests written before sign-off keep their meaning."""
+    from src.services.rga.signoff import deck_hash as _hash
+    deck_hash = staticmethod(_hash)
+
+    def __init__(self):
+        self.states, self.may, self.self_denied = {}, False, True
+
+    def state(self, job):
+        base = {"required": True, "state": "not_released", "by": None, "at": None,
+                "reason": None, "approval_id": None, "deck_sha256": None}
+        if job.get("status") != "released":
+            return base
+        return {**base, "required": False, "state": "not_required",
+                **self.states.get(job["job_id"], {})}
+
+    def may_sign_off(self, principal):
+        return self.may
+
+    def self_approval_denied(self):
+        return self.self_denied
+
+
 @pytest.fixture
 def client(monkeypatch):
     gates, submitted, store = [], [], FakeStore()
+    signoff = FakeSignoff()
+    monkeypatch.setattr(rr, "signoff", signoff, raising=False)
 
     def _gate(action, principal, **k):
         gates.append((action, getattr(principal, "subject", None), k.get("context")))
@@ -82,7 +108,7 @@ def client(monkeypatch):
     app.include_router(rr.router)
     app.dependency_overrides[rr.require_user] = lambda: _P()
     c = TestClient(app)
-    c.gates, c.submitted, c.store = gates, submitted, store
+    c.gates, c.submitted, c.store, c.signoff = gates, submitted, store, signoff
     return c
 
 
@@ -374,3 +400,71 @@ def test_attention_replies_survive_the_output_safety_boundary(client, monkeypatc
 def test_report_signoff_is_a_transact_action():
     # transact: held by Approver and Admin, irreversible, so a stated permit is required.
     assert actions.action_class("report.signoff") == "transact"
+
+
+# ---------------------------------------------------------------------------
+# sign-off holds the download (ruled 2026-09-24)
+# ---------------------------------------------------------------------------
+import hashlib as _hashlib
+_DECK_SHA = _hashlib.sha256(b"PK-deck-bytes").hexdigest()
+
+
+def _awaiting(client, **extra):
+    client.post("/reports/generate", json=BODY)
+    _release(client.store, "rpt-1")
+    client.signoff.states["rpt-1"] = {"required": True, "state": "awaiting", **extra}
+
+
+def test_a_deck_awaiting_sign_off_is_not_ready_and_not_served(client):
+    _awaiting(client)
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert body["deck_ready"] is False and body["review_available"] is True
+    assert body["signoff"]["state"] == "awaiting" and "deck_sha256" not in body["signoff"]
+    r = client.get("/reports/jobs/rpt-1/deck")
+    assert r.status_code == 409 and "awaiting sign-off" in r.json()["detail"]
+    assert b"PK-deck-bytes" not in r.content
+
+
+def test_a_deck_from_before_signoff_existed_is_held(client):
+    """Released before sign-off shipped, no decision row at all: the rule is about the deck
+    leaving the company, not about when it was made."""
+    _awaiting(client)
+    assert client.get("/reports/jobs/rpt-1/deck").status_code == 409
+
+
+def test_an_approver_may_open_it_to_review(client):
+    _awaiting(client)
+    client.signoff.may = True
+    client.gates.clear()
+    r = client.get("/reports/jobs/rpt-1/deck")
+    assert r.status_code == 200 and r.content == b"PK-deck-bytes"
+    action, _subject, context = client.gates[-1]
+    assert action == "report.read" and context["review"] is True
+
+
+def test_a_signed_off_deck_is_ready_for_anyone_who_may_read(client):
+    _awaiting(client)
+    client.signoff.states["rpt-1"].update(state="signed_off", by="ap-1", deck_sha256=_DECK_SHA)
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert body["deck_ready"] is True and body["review_available"] is False
+    assert body["signoff"]["by"] == "ap-1"
+    r = client.get("/reports/jobs/rpt-1/deck")
+    assert r.status_code == 200 and client.gates[-1][2]["review"] is False
+
+
+def test_a_deck_that_no_longer_matches_its_sign_off_is_not_served(client):
+    _awaiting(client)
+    client.signoff.states["rpt-1"].update(state="signed_off", by="ap-1", deck_sha256="0" * 64)
+    r = client.get("/reports/jobs/rpt-1/deck")
+    assert r.status_code == 409 and "does not match" in r.json()["detail"]
+    assert b"PK-deck-bytes" not in r.content
+
+
+def test_a_refused_deck_says_why_and_is_not_served(client):
+    _awaiting(client)
+    client.signoff.may = True          # not even an approver gets a refused deck
+    client.signoff.states["rpt-1"].update(state="refused", by="ap-2", reason="figures wrong")
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert body["deck_ready"] is False and body["review_available"] is False
+    r = client.get("/reports/jobs/rpt-1/deck")
+    assert r.status_code == 409 and "figures wrong" in r.json()["detail"]

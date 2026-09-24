@@ -28,7 +28,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import src.services.rga  # noqa: F401  registers the Fact Pack builders
-from src.services.rga import audit, job_runner, job_store
+from src.services.rga import audit, job_runner, job_store, signoff
 from src.services.rga.factpack import registered_types
 
 from api.auth import require_user
@@ -77,10 +77,15 @@ def _view(job: Dict[str, Any]) -> Dict[str, Any]:
     if out.get("blocking"):
         out["blocking"] = [{**b, "code": str(b.get("code") or "").lower()}
                            for b in out["blocking"]]
-    # A flag, not a link: the output-safety boundary in api/main.py withholds any
-    # field that names an internal route, so a URL here arrives as "[withheld]".
-    # The caller builds /reports/jobs/{job_id}/deck from the id it already has.
-    out["deck_ready"] = job.get("status") == "released"
+    # Sign-off (ruled 2026-09-24): a released deck leaves only once signed off, if the
+    # policy says its report type needs it. The hash it is bound to stays server-side.
+    s = signoff.state(job)
+    out["signoff"] = {k: v for k, v in s.items() if k != "deck_sha256"}
+    released = job.get("status") == "released"
+    # Flags, not links: the output-safety boundary in api/main.py withholds any field that
+    # names an internal route. The caller builds /reports/jobs/{job_id}/deck itself.
+    out["deck_ready"] = released and s["state"] in ("not_required", "signed_off")
+    out["review_available"] = released and s["state"] == "awaiting"
     return out
 
 
@@ -182,8 +187,21 @@ def get_job(job_id: str):
 @router.get("/jobs/{job_id}/deck")
 def get_deck(job_id: str, principal=Depends(require_user)):
     job = _job_or_404(job_id)
+    s = signoff.state(job)
+    # Held until signed off. Before then only someone the policy lets sign it off may open
+    # it -- to review it -- and that download is audited as a review. A refused deck is
+    # held from everyone.
+    if s["state"] == "awaiting" and not signoff.may_sign_off(principal):
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is awaiting sign-off; only a person "
+                                   "who may sign it off can open it before then")
+    if s["state"] == "refused":
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} was refused sign-off: "
+                                   f"{s.get('reason') or 'no reason recorded'}")
     gate("report.read", principal, agent=_AGENT,
-         context={"job_id": job_id, "run_id": job.get("run_id")})
+         context={"job_id": job_id, "run_id": job.get("run_id"),
+                  "review": s["state"] == "awaiting"})
     # The status decides, not the presence of bytes.
     found = job_store.deck(job_id) if job["status"] == "released" else None
     if found is None:
@@ -191,6 +209,12 @@ def get_deck(job_id: str, principal=Depends(require_user)):
                             detail=f"report job {job_id} is {job['status']}; only a "
                                    "released report has a deck")
     content, media_type, filename = found
+    # A sign-off is for the file that was reviewed. The deck is immutable, so a mismatch
+    # means tampering or a bug -- either way this is not the deck that was signed off.
+    if s["state"] == "signed_off" and signoff.deck_hash(content) != s.get("deck_sha256"):
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id}: the stored deck does not match the "
+                                   "one that was signed off")
     return Response(content=content, media_type=media_type,
                     headers={"Content-Disposition": f'attachment; filename="{filename}"',
                              "X-Report-Run-Id": job.get("run_id") or ""})
