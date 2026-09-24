@@ -44,7 +44,7 @@ spec's §15 measures.
 
 - Engine package `src/services/triage/` implementing the triage spec pipeline (§6):
   normalise → link → compare → group → score → write, for quote/PO/invoice/credit note.
-- The thirteen checks in §5 below, the grouping patterns in §6, scoring and overrides in §7.
+- The fifteen checks in §5 below, the grouping patterns in §6, scoring and overrides in §7.
 - Three new tables, one new `bp_policy` limit row.
 - Scheduler job, two API endpoints, backfill script, rollback script.
 
@@ -95,7 +95,7 @@ src/services/triage/
   normalise.py    Decimal money, FX to GBP (via facts/fx.resolve_fx, cached per batch),
                   supplier-name cleanup, confidence 0-100 -> 0-1
   link.py         invoice -> PO; invoice line -> PO line; PO -> quote; link confidence
-  checks.py       the thirteen checks; each returns list[Result] with an outcome
+  checks.py       the fifteen checks; each returns list[Result] with an outcome
   tolerance.py    resolve_tolerance(check, ctx) -> Tolerance (reads governed limits)
   group.py        results -> findings (cascade, duplicate→overbilling, uplift, offset, bad ref)
   score.py        materiality, bands, overrides
@@ -130,7 +130,7 @@ load_deal_sets(batch of 200 deal_ids)      fixed number of queries per batch
 | Dates | PO order date | Invoice date | Invoice not before order |
 | Description | PO line | Invoice line | Must not conflict; max S3 |
 
-## 5. Linking and the thirteen checks
+## 5. Linking and the fifteen checks
 
 ### 5.1 Linking
 
@@ -163,10 +163,14 @@ Each check emits exactly one outcome per compared pair (triage spec §5): `MATCH
 | 10 | `duplicate` | Open `duplicate_invoice` rows in `bp_extraction_discrepancy` for the deal's invoices | CONFLICT; exposure = duplicate invoice net. **Always S1** |
 | 11 | `description` | Invoice vs PO line description where `item_id` matches | CONFLICT on low similarity; **max S3** |
 | 12 | `unlinked_line` | Invoice line with no PO line | ABSENT_AUTHORITATIVE; exposure = line amount |
-| 13 | `payment_terms` | Invoice vs PO `payment_terms` (normalised text) | CONFLICT; exposure = 0, so its severity comes from the **min S2** override |
+| 13 | `payment_terms` | Invoice vs PO `payment_terms`, compared as a day count ("30 days", "Net 30") | CONFLICT when both parse and differ; exposure = 0, so its severity comes from the **min S2** override. Unparseable text that differs is UNVERIFIABLE; absent on the invoice is ABSENT_SUBORDINATE |
+| 14 | `bad_po_ref` | Invoice whose PO number matches no PO | ABSENT_AUTHORITATIVE; exposure = invoice net. One per invoice (this *is* grouping pattern 5) |
+| 15 | `no_po` | Invoice with no PO number on header or lines | ABSENT_AUTHORITATIVE; **max S3**; marks the deal Incomplete |
 
 **EXPLAINED:** several invoice lines for the same PO line whose sum equals it (split);
-partial invoicing (check 2 under). **ABSENT_SUBORDINATE:** a field present on the invoice
+partial invoicing (check 2 under); **roll-up** — an invoice's unlinked lines whose
+amounts together equal one PO line that no line of that invoice linked to (the
+"Installation £5,000 itemised into four lines" case). **ABSENT_SUBORDINATE:** a field present on the invoice
 and absent on the PO (e.g. line `delivery_date`). Both become S3 notes.
 
 **UNVERIFIABLE:** a would-be CONFLICT where either document's extraction confidence is
@@ -217,11 +221,16 @@ finding has one **cause** and a list of **effects**; effects are not scored sepa
 3. **Uniform uplift.** ≥ `uplift_min_lines` unit-price CONFLICTs on one invoice whose
    percentage difference agrees within `uplift_same_pct_within` points become one
    finding ("Prices 3.5% above PO on 42 lines, +£1,840"); exposure = sum.
-4. **Offsetting.** Quantity CONFLICTs on one invoice that net to within rounding of
-   zero become one finding, severity **S2**, exposure = **gross** (sum of absolute
-   exposures), so errors cannot hide each other.
-5. **Bad PO reference.** An invoice whose `po_id` matches no PO yields one `linking`
-   finding, not one `unlinked_line` per line.
+4. **Quantity over-claims on one invoice.** All quantity CONFLICTs of one invoice
+   against one PO become one finding ("Quantity above PO on 5 lines of INV-X"). On
+   this corpus an over-billed PO is usually a whole invoice issued again; without this
+   it would surface as one finding per line. If that invoice is a flagged duplicate,
+   the group is an effect of the duplicate finding instead.
+5. **Bad PO reference.** Implemented as check 14: one `bad_po_ref` result per invoice,
+   never one `unlinked_line` per line.
+6. **Offsetting — not produced in this release.** Under-invoicing is EXPLAINED
+   (partial), so no negative quantity CONFLICT exists to offset. The pattern arrives
+   with goods receipts, when under-delivery becomes a real conflict.
 
 Finding severity = highest severity among its causes. Finding exposure = gross.
 
@@ -261,7 +270,7 @@ at **S2**, and its text says "no FX rate".
 - **Always S1:** `cumulative_total` beyond tolerance; `currency`; `duplicate`.
 - **Min S2:** `payment_terms`; `invoice_date`; any UNVERIFIABLE on a money or supplier
   field.
-- **Max S3:** `description`.
+- **Max S3:** `description`, `no_po`.
 
 ## 8. Storage
 
@@ -349,6 +358,11 @@ written first and finalised last.
 | Matched | none |
 | Incomplete | a PO with no invoice yet, or an invoice with no PO |
 
+Precedence: Blocked → Needs review → Incomplete → Matched with notes → Matched.
+`GET /triage/deals/{deal_id}` recomputes the verdict on request (a dry run, no writes,
+well under a second) and attaches the `finding_id` of each S1/S2 finding already in
+the Action Centre, so the verdict is always current.
+
 Summary line: "Blocked · 2 findings need action · 14 notes · exposure £570.00".
 
 ### 9.3 Failure handling
@@ -382,6 +396,11 @@ Summary line: "Blocked · 2 findings need action · 14 notes · exposure £570.0
   `fetched_at` are stored with each finding.
 - Quantity is checked against the PO, not a goods receipt.
 - Bank-detail changes are not checked (no invoice-side bank data).
+- Triage is per deal: invoices with no `deal_id` (2,154 in `bp_testdb`) are not
+  triaged. The run report counts them.
+- Duplicates come only from the duplicate detector's existing open findings (300 in
+  `bp_testdb`; the detector is currently disabled by policy). Repeat invoices it has
+  not flagged are still caught — as over-billing (always S1) and quantity over-claims.
 - On this corpus ~3,400 deals are expected to be Blocked, driven by the seeded
   repeated invoices. That is correct behaviour for the data; the rollback script
   removes the backfill if it is not wanted.
