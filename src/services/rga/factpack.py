@@ -52,6 +52,7 @@ from src.services.rga.models import (
     Finding,
     FindingCode,
     FormatHint,
+    NUMBER,
     Origin,
     Severity,
 )
@@ -166,7 +167,15 @@ class FactBuilder:
         that silently omits a measure reads as though it were not relevant. A
         Finding is raised alongside so the omission is visible in the roll-up
         rather than only on the page.
+
+        ``reason`` is shown to the composer, which may quote it, and a narrative
+        may not carry a literal number -- so a reason with a digit in it makes a
+        report that can never release. Refused here, where the mistake is.
         """
+        if NUMBER.search(reason):
+            raise ValueError(
+                f"an unmeasured reason may not contain a number: {reason!r}. "
+                "The composer may quote it, and a quoted number blocks release")
         entry = self.add(
             label=label, value=None, derivation=derivation,
             confidence=Confidence.UNASSESSED, format_hint=FormatHint.TEXT, unit=unit,

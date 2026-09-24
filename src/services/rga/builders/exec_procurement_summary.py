@@ -139,7 +139,7 @@ def build(fb: FactBuilder) -> None:
             label=f"Invoiced spend ({target})",
             derivation="exec_summary.invoiced_total",
             reason="no published exchange rates; a multi-currency total cannot "
-                   "be stated and will not be guessed at 1:1",
+                   "be stated and will not be guessed at par",
         )
     else:
         from src.services.analytics.currency import DisplayCurrency
@@ -150,8 +150,8 @@ def build(fb: FactBuilder) -> None:
             fb.unmeasured(
                 label=f"Invoiced spend ({target})",
                 derivation="exec_summary.invoiced_total",
-                reason=f"nothing could be converted to {target}; "
-                       f"{result.excluded} row(s) excluded",
+                reason=f"no deal amount in the period could be converted "
+                       f"to {target}, so no total is stated",
             )
         else:
             # Fully reconciled across currencies against an independent rate
@@ -212,7 +212,8 @@ def build(fb: FactBuilder) -> None:
         fb.unmeasured(label="Identified value (GBP)",
                       derivation="exec_summary.opportunity_identified_value",
                       reason="no opportunity was detected in this period, so "
-                             "there is no value to state — which is not £0")
+                             "there is no value to state — which is not the same "
+                             "as a value of zero")
     else:
         fb.add(label="Identified value (GBP)", value=Decimal(identified),
                derivation="exec_summary.opportunity_identified_value",

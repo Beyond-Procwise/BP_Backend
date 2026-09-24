@@ -152,3 +152,50 @@ class TestStorage:
 
         with pytest.raises(ValueError, match="altered since it was written"):
             FactPack.from_stored(payload)
+
+
+class TestUnmeasuredReasonsCarryNoNumbers:
+    """An unmeasured reason is shown to the composer, which may quote it, and a
+    narrative may not contain a literal number. Live 2026-09-24, run
+    FP-1f076acf7aa2: the reason "...which is not £0" was quoted into prose and
+    blocked the whole report on both attempts. A reason with a digit in it is a
+    report that cannot release, so the builder refuses it at the point of the
+    mistake."""
+
+    def test_a_reason_with_a_number_is_refused(self):
+        fb = FactBuilder(pack_id="FP-test", scope={}, as_of="2026-03-31")
+        with pytest.raises(ValueError, match="number"):
+            fb.unmeasured(label="Identified value", derivation="d",
+                          reason="no value to state, which is not £0")
+
+    def test_a_reason_in_words_is_recorded(self):
+        fb = FactBuilder(pack_id="FP-test", scope={}, as_of="2026-03-31")
+        fb.unmeasured(label="Identified value", derivation="d",
+                      reason="no value to state, which is not the same as zero")
+        assert fb.findings[0].code == FindingCode.MEASURE_UNAVAILABLE
+
+    @pytest.mark.parametrize("rates_unavailable", [True, False])
+    def test_every_exec_summary_gap_is_stated_in_words(self, monkeypatch,
+                                                       rates_unavailable):
+        """Drive the real builder down every unmeasured branch: an empty
+        period, and spend that is either unconvertible or rate-less."""
+        from src.services.rga.builders import exec_procurement_summary as ex
+
+        rows = {
+            ex._DEAL_SHAPE: [(0, 0, 0, 0, None, 0)],
+            ex._DEAL_AMOUNTS: [(Decimal("10"), "XXX")],
+            ex._OPPORTUNITIES: [(0, None, None, 0)],
+        }
+        monkeypatch.setattr(ex, "_fetch", lambda sql, params: rows[sql])
+        monkeypatch.setattr(
+            ex, "_rates",
+            lambda: ({}, None, True) if rates_unavailable
+            else ({"USD": Decimal("1"), "GBP": Decimal("0.8")}, None, False))
+
+        fb = FactBuilder(pack_id="FP-test", scope={
+            "period_start": "2026-01-01", "period_end": "2026-03-31",
+            "currency": "GBP"}, as_of="2026-03-31")
+        ex.build(fb)  # raises if any reason carries a number
+
+        gaps = [f for f in fb.findings if f.code == FindingCode.MEASURE_UNAVAILABLE]
+        assert len(gaps) == 5  # spend, match rate, cycle, identified, realised
