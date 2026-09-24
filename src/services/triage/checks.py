@@ -113,9 +113,10 @@ def check_quantity(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         over = cum - po_line.quantity
         link_conf = min(l.confidence for l in lks)
         invoices = ", ".join(sorted({l.invoice.doc_id for l in lks}))
+        invs = list({l.invoice.doc_id: l.invoice for l in lks}.values())
         common = dict(claim_line=last.inv_line.line_ref, auth_doc=po_id, auth_line=ref,
                       po_id=po_id, claim_value=_s(cum), auth_value=_s(po_line.quantity),
-                      delta=over, confidence=link_conf * _doc_conf(last.invoice, po))
+                      delta=over, confidence=link_conf * _doc_conf(po, *invs))
         if over <= 0:
             if over == 0 and len(lks) == 1:
                 outcome, note = Outcome.MATCH, ""
@@ -129,7 +130,7 @@ def check_quantity(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         tol = resolve_tolerance("quantity_over", cfg)
         allow = tol.allowance(po_line.quantity, None)
         outcome = (Outcome.WITHIN_TOL if over <= allow
-                   else _fail(cfg, link_conf, last.invoice, po))
+                   else _fail(cfg, link_conf, po, *invs))
         price = po_line.unit_price or last.inv_line.unit_price or ZERO
         out.append(_r(ds, "quantity", "quantity", outcome, last.invoice, "quantity",
                       exposure=abs(over * price), note=f"invoiced on {invoices}",

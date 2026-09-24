@@ -106,6 +106,14 @@ def test_credit_note_quantity_is_subtracted():
     assert _one(_run(check_quantity, ds)).outcome == Outcome.EXPLAINED
 
 
+def test_low_confidence_early_invoice_makes_over_delivery_unverifiable():
+    ds = deal(po(lines=[line(1, qty="10")]),
+              inv("INV-1", lines=[line(1, qty="6")], inv_date=date(2026, 2, 1), confidence=0.5),
+              inv("INV-2", lines=[line(1, qty="6")], inv_date=date(2026, 3, 1)))
+    r = _one(_run(check_quantity, ds))
+    assert r.outcome == Outcome.UNVERIFIABLE
+
+
 # --- line arithmetic ---------------------------------------------------------
 
 def test_line_amount_not_equal_to_qty_times_price_conflicts():
