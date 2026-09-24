@@ -71,3 +71,4 @@ paddlepaddle-gpu==3.1.0
 paddleocr==3.5.0
 ddgs
 pyjwt[crypto]
+babel>=2.10
