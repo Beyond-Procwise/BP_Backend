@@ -424,7 +424,8 @@ def preview_edit(job_id: str, body: PreviewBody, principal=Depends(require_user)
     return Response(content=content, media_type="text/html; charset=utf-8",
                     headers={"Content-Security-Policy": _PAGE_CSP,
                              "X-Content-Type-Options": "nosniff",
-                             "X-Report-Blocking": urllib.parse.quote(json.dumps(blocking))})
+                             # At most twenty: a header has a size limit, and a person fixes the first ones first.
+                             "X-Report-Blocking": urllib.parse.quote(json.dumps(blocking[:20]))})
 
 
 @router.post("/jobs/{job_id}/versions")

@@ -504,7 +504,10 @@ app = FastAPI(title="ProcWise API v4 (Definitive)", version="4.0", lifespan=life
 
 _origins = [o.strip() for o in os.getenv("PROCWISE_CORS_ORIGINS", "*").split(",") if o.strip()]
 _allow_creds = _origins != ["*"]
-app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_allow_creds, allow_methods=["*"], allow_headers=["*"])
+# The screens run on another origin, and a browser hides any response header not exposed
+# here: the report editor's preview carries what would stop an edit saving in X-Report-Blocking.
+app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_allow_creds, allow_methods=["*"], allow_headers=["*"],
+                   expose_headers=["X-Report-Blocking", "X-Report-Run-Id"])
 
 # WebSocket router: no auth DEPENDENCY, because a dependency that raises
 # HTTPException cannot answer a WebSocket upgrade. Browsers also cannot set
