@@ -3,7 +3,7 @@
 Composing a report takes the local model minutes, too long to hold a request
 open, so the door files a job and answers at once:
 
-    POST /reports/generate           -> 202 {job_id, status: queued, poll}
+    POST /reports/generate           -> 202 {job_id, status: queued}
     GET  /reports/jobs/{job_id}      -> queued | running | released | blocked | failed
     GET  /reports/jobs/{job_id}/deck -> the .pptx, for a released job only
 
@@ -70,8 +70,10 @@ class GenerateBody(BaseModel):
 
 def _view(job: Dict[str, Any]) -> Dict[str, Any]:
     out = {k: job.get(k) for k in _PUBLIC}
-    out["deck_url"] = (f"/reports/jobs/{job['job_id']}/deck"
-                       if job.get("status") == "released" else None)
+    # A flag, not a link: the output-safety boundary in api/main.py withholds any
+    # field that names an internal route, so a URL here arrives as "[withheld]".
+    # The caller builds /reports/jobs/{job_id}/deck from the id it already has.
+    out["deck_ready"] = job.get("status") == "released"
     return out
 
 
@@ -103,8 +105,7 @@ def generate(body: GenerateBody, principal=Depends(require_user)):
     if created:
         job_runner.submit(job["job_id"])
     return {"job_id": job["job_id"], "status": job["status"],
-            "already_requested": not created,
-            "poll": f"/reports/jobs/{job['job_id']}"}
+            "already_requested": not created}
 
 
 @router.get("/jobs/{job_id}")

@@ -93,7 +93,6 @@ def test_generate_answers_at_once_with_a_queued_job(client):
     body = r.json()
     assert body["job_id"] == "rpt-1" and body["status"] == "queued"
     assert body["already_requested"] is False
-    assert body["poll"] == "/reports/jobs/rpt-1"
     assert client.submitted == ["rpt-1"]
 
     report_type, scope, as_of, requested_by = client.store.created[0]
@@ -134,12 +133,12 @@ def test_a_job_reports_its_status_and_never_its_bytes(client):
     r = client.get("/reports/jobs/rpt-1")
     assert r.status_code == 200
     assert r.json()["status"] == "queued"
-    assert r.json()["deck_url"] is None
+    assert r.json()["deck_ready"] is False
 
     _release(client.store, "rpt-1")
     body = client.get("/reports/jobs/rpt-1").json()
     assert body["status"] == "released"
-    assert body["deck_url"] == "/reports/jobs/rpt-1/deck"
+    assert body["deck_ready"] is True
     assert "deck" not in body
 
 
@@ -152,7 +151,7 @@ def test_a_blocked_job_says_why(client):
     body = client.get("/reports/jobs/rpt-1").json()
     assert body["status"] == "blocked"
     assert body["blocking"][0]["code"] == "REPORT_UNTRACED_FIGURE"
-    assert body["deck_url"] is None
+    assert body["deck_ready"] is False
 
 
 def test_a_released_deck_downloads(client):
@@ -224,3 +223,18 @@ def test_an_anonymous_caller_is_refused_when_auth_is_on(monkeypatch):
     c = TestClient(app)
     assert c.post("/reports/generate", json=BODY).status_code == 401
     assert c.get("/reports/jobs/rpt-1/deck").status_code == 401
+
+
+def test_replies_survive_the_output_safety_boundary(client, monkeypatch):
+    """api/main.py scrubs every JSON reply, and an internal route in a field is
+    withheld. Live 2026-09-24: deck_url came back "[withheld]" from procwise.
+    So replies carry the job id and a flag, never a path; the caller builds it."""
+    from src.services import output_safety as osafe
+
+    monkeypatch.setattr(osafe, "_route_paths", {r.path for r in rr.router.routes})
+    started = client.post("/reports/generate", json=BODY).json()
+    _release(client.store, "rpt-1")
+    status = client.get("/reports/jobs/rpt-1").json()
+    for reply in (started, status):
+        assert osafe.scrub_payload(reply, where="test") == reply
+    assert status["deck_ready"] is True
