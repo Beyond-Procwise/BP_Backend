@@ -73,6 +73,7 @@ from api.routers import catalog as catalog_router
 from api.routers import sales as sales_router
 from api.routers import reports as reports_router
 from api.routers import triage as triage_router
+from api.routers import i18n as i18n_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -516,6 +517,10 @@ app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_al
 # could reach the port and knew a session id was served its outcomes.
 # tests/api/test_ws_authentication.py is what now holds this to be true.
 app.include_router(ws_router_mod.router)
+
+# AI translation: public because the sign-in page is translated too. Only cache reads are
+# open; the endpoints that make the model work authenticate per endpoint (see the router).
+app.include_router(i18n_router.router)
 
 # --------------------------------------------------------------------------
 # Every HTTP router below is mounted WITH authentication.
