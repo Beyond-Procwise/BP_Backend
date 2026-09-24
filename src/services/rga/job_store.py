@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.services.db import get_conn
 from src.services.rga import audit
@@ -310,6 +310,58 @@ def draft(job_id: str) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
     return {"version": row[0], "title": row[1], "ast": row[2], "fact_pack": row[3]}
+
+
+class StaleVersion(Exception):
+    """The edit was made on a version that is no longer the current one (someone else saved
+    first), or the job cannot take an edit at all. ``current`` is the version now current."""
+
+    def __init__(self, current: Optional[int]) -> None:
+        super().__init__(f"the report is now at version {current}")
+        self.current = current
+
+
+def save_version(job_id: str, *, base_version: int, title: str, ast: Dict[str, Any],
+                 deck: bytes, page: bytes, by: str, summary: Optional[str] = None,
+                 before_commit: Optional[Callable[[int], None]] = None) -> int:
+    """Make an edit the next version and the job's current files, in one transaction.
+
+    The job row is locked first, so two people saving the same version at once cannot both
+    win: the second finds ``current_version`` moved and gets StaleVersion. ``before_commit``
+    runs inside the transaction with the new version number -- the audit write; if it
+    raises, nothing is saved.
+    """
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT current_version FROM proc.bp_report_job "
+                        "WHERE job_id = %s AND status = 'released' AND fact_pack IS NOT NULL "
+                        "FOR UPDATE", (job_id,))
+            row = cur.fetchone()
+            current = row[0] if row else None
+            if current is None or current != base_version:
+                raise StaleVersion(current)
+            version = current + 1
+            deck_sha = hashlib.sha256(deck).hexdigest()
+            page_sha = hashlib.sha256(page).hexdigest()
+            cur.execute(
+                "INSERT INTO proc.bp_report_version (job_id, version, title, ast, deck, page, "
+                "  deck_sha256, page_sha256, edited_by, summary) "
+                "VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)",
+                (job_id, version, title, json.dumps(ast), deck, page, deck_sha, page_sha,
+                 by, summary))
+            cur.execute(
+                "UPDATE proc.bp_report_job SET deck = %s, page = %s, title = %s, "
+                "  current_version = %s, last_edited_by = %s WHERE job_id = %s",
+                (deck, page, title, version, by, job_id))
+            if before_commit is not None:
+                before_commit(version)
+            conn.commit()
+            return version
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def page(job_id: str) -> Optional[Tuple[bytes, str]]:
