@@ -66,3 +66,8 @@ def test_ollama_adapter_request():
 def test_unknown_provider_is_refused():
     with pytest.raises(ValueError):
         build_provider(load_settings({"TRANSLATION_PROVIDER": "nope"}))
+
+
+def test_memory_ttl_from_env():
+    assert load_settings({}).memory_ttl == 600
+    assert load_settings({"TRANSLATION_MEMORY_TTL_SECONDS": "60"}).memory_ttl == 60

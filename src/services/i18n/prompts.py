@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-PROMPT_VERSION = "translate-ui/1"
-PROMPT_SHA256 = "2e43c51a6c50f557aec9abe672f97e188dd7366ec0407bc5067475d3e093955f"
+PROMPT_VERSION = "translate-ui/2"  # 2: procurement glossary
+PROMPT_SHA256 = "750c9a71ee89ce3937f9186be37fc4a38453879c6682ccfb4e334ddb4f8a4f76"
 
 _PROMPT_DIR = Path(__file__).resolve().parents[3] / "prompts"
 

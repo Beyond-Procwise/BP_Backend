@@ -117,3 +117,13 @@ def test_pg_machine_rows_are_immutable_and_changes_reported():
         from src.services.db import get_conn
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM proc.bp_translation WHERE target_lang = 'xx-test'")
+
+
+def test_memory_entries_expire_so_a_reviewed_import_is_picked_up():
+    now = [0.0]
+    m = MemoryLayer(max_size=10, ttl=600, clock=lambda: now[0])
+    m.put("k", "machine")
+    now[0] = 599
+    assert m.get("k") == "machine"
+    now[0] = 601
+    assert m.get("k") is None

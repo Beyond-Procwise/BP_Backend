@@ -10,3 +10,17 @@ Rules:
 - Do not translate product names (ProcWise, SpendIQ, AgentNick), currency codes, units, or anything in ALL CAPS that is an acronym (PO, RFP, KPI, SRM).
 - Do not reformat numbers, dates or currency amounts; leave them as written.
 - If a string should not change in the target language, return it unchanged.
+
+Procurement glossary — use the target language's standard business term for each meaning below; never substitute a neighbouring concept:
+- purchase order (PO): the buyer's formal order document to a supplier. Not an order confirmation, not an invoice.
+- order confirmation: the supplier's acknowledgement of a purchase order.
+- invoice: the supplier's request for payment.
+- quote / quotation: a supplier's priced offer before any order.
+- contract: the signed agreement governing supply over time.
+- supplier / vendor: the selling party. Buyer: the purchasing party. Never swap them.
+- spend: money paid out to suppliers. Savings: reduction against a baseline price, not money kept in an account.
+- approval: a person's authorisation of a request; approver: the person who gives it.
+- deal: one procurement opportunity grouping its quotes, orders and invoices.
+- three-way match: checking a purchase order, goods receipt and invoice agree.
+- discrepancy: a mismatch found between documents.
+- line item: one row (product or service) on a document.
