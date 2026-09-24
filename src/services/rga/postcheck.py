@@ -141,10 +141,11 @@ def run(
                           f"{pack.pack_id}")
 
     # -- 2. no untraced figure in the rendered artefact ---------------------
-    from src.services.rga.render.pptx import extract_text
+    from src.services.rga.render import extract_text_for
 
+    chunks = extract_text_for(artefact)
     allowed = pack.quotable_tokens()
-    for chunk in extract_text(artefact.content):
+    for chunk in chunks:
         stripped = _strip(chunk, artefact, pack)
         for match in NUMBER.finditer(stripped):
             token = match.group(0)
@@ -182,7 +183,6 @@ def run(
     # green while checking nothing. The renderer's contract is that a fact's
     # marker and its badge appear in the same text frame, so that pairing is
     # what is verified here.
-    chunks = extract_text(artefact.content)
     show_confidence = bool(brief.get("report.style.show_confidence_badges"))
 
     for entry in pack.facts:

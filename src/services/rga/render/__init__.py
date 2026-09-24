@@ -10,7 +10,7 @@ disclosure.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -56,3 +56,19 @@ class RenderedArtefact:
             self.ast_hash, self.ast_hash[:12], self.renderer_version,
             self.pack_id, self.style_disclosure, self.coverage_disclosure,
         ) if s)
+
+
+def extract_text_for(artefact: RenderedArtefact) -> List[str]:
+    """Every string ``artefact`` shows, read through its OWN renderer.
+
+    The post-check reasons over these chunks; a deck and a page each chunk their text the way
+    their locality rule needs (a text frame; a ``data-chunk`` element). An artefact from a
+    renderer this does not know is refused rather than read the wrong way.
+    """
+    if artefact.renderer == "pptx":
+        from src.services.rga.render.pptx import extract_text
+    elif artefact.renderer == "html":
+        from src.services.rga.render.html import extract_text
+    else:
+        raise ValueError(f"no text reader for renderer {artefact.renderer!r}")
+    return extract_text(artefact.content)
