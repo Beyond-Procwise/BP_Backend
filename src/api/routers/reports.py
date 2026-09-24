@@ -31,6 +31,8 @@ import src.services.rga  # noqa: F401  registers the Fact Pack builders
 from src.services.rga import audit, job_runner, job_store, signoff
 from src.services.rga.factpack import registered_types
 
+from src.services.agent_actions import record_action_or_fail
+
 from api.auth import require_user
 from api.endpoint_gate import require as gate
 
@@ -209,6 +211,16 @@ def _decide(job_id: str, verdict: str, reason: Optional[str], principal: Any) ->
     requester = job.get("requested_by")
     # A job with no recorded requester cannot match anyone -- the email approvals' rule.
     if signoff.self_approval_denied() and requester and subject and requester == subject:
+        # On the record, like the email approvals' self-approval refusal: the gate above has
+        # already logged report.signoff as allowed, and this refusal must not leave no trace.
+        # The raising writer -- a refusal that cannot be recorded is still a refusal.
+        record_action_or_fail(
+            phase="authorize", action_type=signoff.ACTION, agent=_AGENT, status="denied",
+            summary="a report cannot be signed off by the person who asked for it",
+            details={"job_id": job_id, "run_id": job.get("run_id"), "principal": subject,
+                     "verdict": verdict, "policy_name": "ReportSignoffPolicy",
+                     "evidence": {"rule": "self_approval", "requested_by": requester,
+                                  "actioned_by": subject}})
         raise HTTPException(status_code=403,
                             detail="you asked for this report, so someone else must sign it off")
     try:

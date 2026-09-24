@@ -521,12 +521,22 @@ def test_an_approver_signs_off_and_the_granted_event_is_written(client, events):
     assert (ctx["job_id"], ctx["requested_by"]) == ("rpt-1", "buyer-1")
 
 
-def test_the_requester_cannot_sign_off_their_own_report(client, events):
+def test_the_requester_cannot_sign_off_their_own_report(client, events, monkeypatch):
+    """Refused -- and on the record. Found live 2026-09-24: the gate logged report.signoff
+    'allowed' and the self-approval refusal that followed left no trace. The email
+    approvals record theirs (approvals._refuse_self_approval); so does this."""
+    written = []
+    monkeypatch.setattr(rr, "record_action_or_fail", lambda **k: written.append(k))
     _awaiting(client)
     client.store.jobs["rpt-1"]["requested_by"] = CALLER
     r = client.post("/reports/jobs/rpt-1/signoff", json={})
     assert r.status_code == 403 and "someone else" in r.json()["detail"]
     assert client.signoff.decided is None and events == []
+    assert len(written) == 1
+    row = written[0]
+    assert (row["action_type"], row["status"]) == ("report.signoff", "denied")
+    assert row["details"]["evidence"]["rule"] == "self_approval"
+    assert row["details"]["principal"] == CALLER and row["details"]["job_id"] == "rpt-1"
 
 
 def test_self_approval_is_allowed_only_when_the_policy_says_so(client, events):
