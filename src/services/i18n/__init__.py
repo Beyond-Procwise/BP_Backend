@@ -28,6 +28,7 @@ def get_service():
     registry = get_registry()
     with _lock:
         if _service is None:
+            from src.services.i18n import audit
             from src.services.i18n.adapters import build_provider
             from src.services.i18n.prompts import load_ui_prompt
             from src.services.i18n.service import TranslationService
@@ -39,6 +40,7 @@ def get_service():
                 memory=MemoryLayer(s.memory_cache_size), registry=registry,
                 system_prompt=load_ui_prompt(), batch_size=s.batch_size,
                 batch_chars=s.batch_chars, failure_backoff=s.failure_backoff,
+                on_generated=audit.record_generated,
             )
         return _service
 

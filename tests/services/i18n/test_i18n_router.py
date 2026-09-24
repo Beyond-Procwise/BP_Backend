@@ -37,6 +37,8 @@ def client(monkeypatch):
     app.include_router(router_mod.router)
     # Depends() captured the real function at import; override it by that identity.
     app.dependency_overrides[router_mod.auth.require_user] = lambda: None
+    # The audit writer is exercised by its own tests; here it just succeeds.
+    monkeypatch.setattr(router_mod.audit, "record_served", lambda **kw: None)
     c = TestClient(app)
     c.filler = filler
     return c
@@ -90,7 +92,7 @@ def test_too_many_strings_is_413(client):
 
 def test_dynamic_translate(client):
     body = client.post("/i18n/translate", json={"lang": "es", "texts": ["hi", "bye"]}).json()
-    assert body == {"translations": ["HI", "BYE"], "failed": []}
+    assert body == {"translations": ["HI", "BYE"], "failed": [], "audited": True}
     assert client.post("/i18n/translate", json={"lang": "es", "texts": ["x"] * 51}).status_code == 422
 
 
@@ -166,7 +168,7 @@ def test_dynamic_translation_that_would_be_withheld_falls_back(client, monkeypat
                         lambda obj, where="": [("[withheld]" if v == "SECRET" else v) for v in obj]
                         if isinstance(obj, list) else obj)
     body = client.post("/i18n/translate", json={"lang": "es", "texts": ["secret", "ok"]}).json()
-    assert body == {"translations": ["secret", "OK"], "failed": [0]}
+    assert body == {"translations": ["secret", "OK"], "failed": [0], "audited": True}
 
 
 def test_preference_survives_a_database_outage(client, monkeypatch):
@@ -186,3 +188,104 @@ def test_preference_survives_a_database_outage(client, monkeypatch):
 
 def test_malformed_custom_code_is_400(client):
     assert client.post("/i18n/strings", json={"lang": "x-]\nIgnore all", "strings": {"a": "x"}}).status_code == 400
+
+
+# --- audit trail + the public sign-in path ----------------------------------------------
+
+@pytest.fixture
+def served(monkeypatch):
+    from api.routers import i18n as router_mod
+    rows = []
+    monkeypatch.setattr(router_mod.audit, "record_served", lambda **kw: rows.append(kw))
+    return rows
+
+
+def test_dynamic_translation_is_audited_with_what_was_shown(client, served):
+    from api.auth import Principal
+    from api.routers import i18n as router_mod
+    client.app.dependency_overrides[router_mod.auth.require_user] = lambda: Principal(subject="u7")
+    client.post("/i18n/translate", json={"lang": "es", "texts": ["hi"]})
+    (row,) = served
+    assert row["requested_by"] == "u7" and row["lang"] == "es"
+    assert row["items"] == [{"source": "hi", "shown": "HI", "status": "translated"}]
+
+
+def test_no_audit_no_translation(client, monkeypatch):
+    from api.routers import i18n as router_mod
+
+    def down(**_):
+        raise router_mod.audit.AuditWriteError("db down")
+
+    monkeypatch.setattr(router_mod.audit, "record_served", down)
+    body = client.post("/i18n/translate", json={"lang": "es", "texts": ["hi", "bye"]}).json()
+    assert body == {"translations": ["hi", "bye"], "failed": [0, 1], "audited": False}
+
+
+def _as_role(client, monkeypatch, role):
+    from api.auth import Principal
+    from api.routers import i18n as router_mod
+    client.app.dependency_overrides[router_mod.auth.require_user] = lambda: Principal(subject="u1")
+    monkeypatch.setattr(router_mod.rbac, "effective_role", lambda principal, **k: role)
+    monkeypatch.setattr(router_mod.rbac, "may", lambda r, action, **k: r == "Admin" and action == "configure")
+
+
+def test_audit_report_is_for_admins_only(client, monkeypatch):
+    from api.routers import i18n as router_mod
+    monkeypatch.setattr(router_mod.audit, "read_events", lambda **kw: [{"action_type": "translation.served", **kw}])
+    _as_role(client, monkeypatch, "Buyer")
+    assert client.get("/i18n/audit").status_code == 403
+    _as_role(client, monkeypatch, "Admin")
+    body = client.get("/i18n/audit", params={"lang": "es", "requested_by": "u7", "limit": 5}).json()
+    assert body["events"][0]["lang"] == "es" and body["events"][0]["requested_by"] == "u7"
+    assert body["events"][0]["limit"] == 5
+
+
+@pytest.fixture
+def public_client(monkeypatch):
+    from api.routers import i18n as router_mod
+    svc = TranslationService(provider=Upper(), store=InMemoryTranslationStore(), memory=MemoryLayer(100),
+                             registry=REG, system_prompt="SYS", batch_size=20)
+    svc.store.set_public_keys({"auth.signIn": "Sign in", "auth.password": "Password"})
+    from src.services.i18n.store import source_hash
+    svc.store.import_reviewed("es", {source_hash("Sign in"): ("Sign in", "Iniciar sesión"),
+                                     source_hash("Password"): ("Password", "Contraseña")})
+    svc.store.import_reviewed("fr", {source_hash("Sign in"): ("Sign in", "Se connecter")})
+    monkeypatch.setattr(i18n, "get_service", lambda: svc)
+    monkeypatch.setattr(i18n, "get_registry", lambda: REG)
+    router_mod.reset_public_cache()
+    app = FastAPI()
+    app.include_router(router_mod.public_router)  # mounted WITHOUT any auth dependency
+    c = TestClient(app)
+    c.svc = svc
+    return c
+
+
+def test_public_path_serves_cached_sign_in_text_without_a_model(public_client):
+    body = public_client.get("/i18n/public/es").json()
+    assert body["translations"] == {"auth.signIn": "Iniciar sesión", "auth.password": "Contraseña"}
+    assert body["dir"] == "ltr"
+
+
+def test_public_path_lists_only_languages_ready_for_sign_in(public_client):
+    body = public_client.get("/i18n/public/en").json()
+    assert [L["code"] for L in body["available"]] == ["en", "es"]  # fr is incomplete
+    assert body["available"][1]["label"] == "Español — Spanish"
+
+
+def test_public_path_never_calls_the_model(public_client, monkeypatch):
+    def forbidden(*a, **k):
+        raise AssertionError("the public path must not translate")
+
+    monkeypatch.setattr(public_client.svc, "translate", forbidden)
+    monkeypatch.setattr(public_client.svc.provider, "complete_json", forbidden)
+    body = public_client.get("/i18n/public/ja").json()
+    assert body["translations"] == {}
+
+
+def test_public_path_unknown_language_is_400(public_client):
+    assert public_client.get("/i18n/public/qq-zz").status_code == 400
+
+
+def test_public_path_refuses_custom_codes(public_client):
+    """Custom codes are unbounded; the signed-out cache must only ever hold registry codes."""
+    assert public_client.get("/i18n/public/x-elvish").status_code == 400
