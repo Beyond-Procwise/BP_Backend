@@ -19,10 +19,9 @@ not: ``FactPack`` and ``RenderedArtefact`` are both frozen.
 
 WHAT IS NOT HERE YET
 
-APPROVAL. §8 wants external-release report types gated on an approval matrix,
-and no matrix exists (discovery §3.3). Rather than pretend, ``approval_required``
-is reported as unknown and no approval event is emitted — an absent gate that
-announces itself, instead of a gate that always says yes.
+APPROVAL happens after release, not here: a released deck is held until a person
+the policy allows signs it off (services/rga/signoff.py, ruled 2026-09-24). The
+release event records whether the policy requires that for this report type.
 
 ENTITLEMENT is checked at the door, not here: ``report.generate`` is gated in
 api/routers/reports.py when the job is filed, and the decision -- including
@@ -37,7 +36,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from src.services.rga import audit, postcheck
+from src.services.rga import audit, postcheck, signoff
 from src.services.rga.compose import CompositionError, compose_report
 from src.services.rga.factpack import build_fact_pack
 from src.services.rga.models import FactPack, Finding, FindingCode, ReportAST, Severity
@@ -59,6 +58,9 @@ class ReportRun:
     brief: Optional[StyleBrief] = None
     ast: Optional[ReportAST] = None
     artefact: Optional[RenderedArtefact] = None
+    # The printable page: the same AST drawn as A4 HTML (2026-09-24). Released only if it
+    # passes the same post-check as the deck.
+    page: Optional[RenderedArtefact] = None
     result: Optional[postcheck.PostCheckResult] = None
     released: bool = False
     stage_reached: str = "SCOPE"
@@ -82,6 +84,7 @@ def generate_report(
     generate: Optional[Callable[..., Optional[str]]] = None,
     template: Optional[str] = None,
     renderer: Any = None,
+    page_renderer: Any = None,
     title: str = "Executive procurement summary",
     emit_audit: bool = True,
     writer: Any = None,
@@ -94,6 +97,8 @@ def generate_report(
     """
     if renderer is None:
         from src.services.rga.render import pptx as renderer
+    if page_renderer is None:
+        from src.services.rga.render import html as page_renderer
 
     def event(action_type: str, **kwargs) -> None:
         if emit_audit:
@@ -155,45 +160,56 @@ def generate_report(
                        "sections": len(ast.sections)})
 
     # -- RENDER ------------------------------------------------------------
-    # A renderer fault is this function's to report, not to propagate. It
-    # promises never to raise for a report that merely failed, and a drawing
-    # library raising on a degenerate block is exactly that: live, a table with
-    # no columns reached python-pptx and came back as ZeroDivisionError, which
-    # took the whole call down instead of blocking one report.
-    try:
-        artefact = renderer.render(ast, pack, brief, title=title)
-    except Exception as exc:
-        findings.append(Finding(
-            finding_id=f"{run_id}-RND001",
-            code=FindingCode.RENDER_FAILED,
-            severity=Severity.HIGH,
-            detail=f"the renderer could not draw this report: "
-                   f"{type(exc).__name__}: {exc}",
-            blocks_release=True))
-        logger.exception("rga: %s render failed", run_id)
-        return ReportRun(run_id=run_id, report_type_id=report_type_id, pack=pack,
-                         brief=brief, ast=ast, stage_reached="RENDER",
-                         findings=findings)
-    event(audit.RENDERED, run_id=run_id, pack_hash=pack.hash,
-          summary=f"{artefact.renderer}/{artefact.renderer_version} · "
-                  f"{len(artefact.content)} bytes",
-          details={"renderer": artefact.renderer,
-                   "renderer_version": artefact.renderer_version,
-                   "media_type": artefact.media_type,
-                   "ast_hash": artefact.ast_hash,
-                   "style_version": artefact.style_version,
-                   "bytes": len(artefact.content)})
+    # Two drawings of one AST: the deck and the printable page. A renderer fault is this
+    # function's to report, not to propagate. It promises never to raise for a report that
+    # merely failed, and a drawing library raising on a degenerate block is exactly that:
+    # live, a table with no columns reached python-pptx and came back as ZeroDivisionError,
+    # which took the whole call down instead of blocking one report.
+    drawn: Dict[str, RenderedArtefact] = {}
+    for kind, drawer in (("deck", renderer), ("page", page_renderer)):
+        try:
+            drawn[kind] = drawer.render(ast, pack, brief, title=title)
+        except Exception as exc:
+            findings.append(Finding(
+                finding_id=f"{run_id}-RND00{1 if kind == 'deck' else 2}",
+                code=FindingCode.RENDER_FAILED,
+                severity=Severity.HIGH,
+                detail=f"the renderer could not draw this report's {kind}: "
+                       f"{type(exc).__name__}: {exc}",
+                blocks_release=True))
+            logger.exception("rga: %s %s render failed", run_id, kind)
+            return ReportRun(run_id=run_id, report_type_id=report_type_id, pack=pack,
+                             brief=brief, ast=ast, artefact=drawn.get("deck"),
+                             page=drawn.get("page"), stage_reached="RENDER",
+                             findings=findings)
+        art = drawn[kind]
+        event(audit.RENDERED, run_id=run_id, pack_hash=pack.hash,
+              summary=f"{art.renderer}/{art.renderer_version} · "
+                      f"{len(art.content)} bytes",
+              details={"renderer": art.renderer,
+                       "renderer_version": art.renderer_version,
+                       "media_type": art.media_type,
+                       "ast_hash": art.ast_hash,
+                       "style_version": art.style_version,
+                       "bytes": len(art.content)})
+    artefact, page = drawn["deck"], drawn["page"]
 
     # -- POST_CHECK --------------------------------------------------------
+    # Both files, the same checks. Either failing blocks the report: the page is what
+    # gets printed and handed round, so it answers to the same rules as the deck.
     result = postcheck.run(artefact, pack, ast, brief, emit_audit=emit_audit,
                            writer=writer)
+    page_result = postcheck.run(page, pack, ast, brief, emit_audit=emit_audit,
+                                writer=writer)
     findings.extend(result.findings)
+    findings.extend(page_result.findings)
 
-    if not result.passed:
-        logger.info("rga: %s blocked by %d finding(s)", run_id, len(result.blocking))
+    if not (result.passed and page_result.passed):
+        logger.info("rga: %s blocked by %d finding(s)", run_id,
+                    len(result.blocking) + len(page_result.blocking))
         return ReportRun(run_id=run_id, report_type_id=report_type_id, pack=pack,
-                         brief=brief, ast=ast, artefact=artefact, result=result,
-                         stage_reached="POST_CHECK", findings=findings)
+                         brief=brief, ast=ast, artefact=artefact, page=page,
+                         result=result, stage_reached="POST_CHECK", findings=findings)
 
     # -- APPROVAL ----------------------------------------------------------
     # Not built; no matrix exists to consult. Deliberately emits nothing rather
@@ -208,9 +224,13 @@ def generate_report(
                    "ast_hash": artefact.ast_hash,
                    "style_version": artefact.style_version,
                    "renderer_version": artefact.renderer_version,
-                   "approval_required": "unknown — no approval matrix exists",
+                   "page_bytes": len(page.content),
+                   "page_renderer": f"{page.renderer}/{page.renderer_version}",
+                   # Released is not yet allowed to leave: the sign-off policy decides.
+                   "approval_required": signoff.required(report_type_id),
+                   "approval_policy": "ReportSignoffPolicy",
                    "external_release": False})
 
     return ReportRun(run_id=run_id, report_type_id=report_type_id, pack=pack,
-                     brief=brief, ast=ast, artefact=artefact, result=result,
+                     brief=brief, ast=ast, artefact=artefact, page=page, result=result,
                      released=True, stage_reached="RELEASE", findings=findings)
