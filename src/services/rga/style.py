@@ -195,6 +195,10 @@ def resolve_style_brief(
         values[key] = spec.default
         provenance[key] = PLATFORM_DEFAULT
 
+    if section_order is None:
+        # A report type may register its own order with its builder (factpack.register).
+        from src.services.rga.factpack import section_order_for
+        section_order = section_order_for(report_type_id)
     if section_order is not None:
         values["report.style.section_order"] = list(section_order)
         provenance["report.style.section_order"] = f"report_type:{report_type_id}"

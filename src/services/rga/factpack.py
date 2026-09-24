@@ -68,16 +68,57 @@ class NoBuilderRegistered(KeyError):
 
 
 _BUILDERS: Dict[str, Callable[["FactBuilder"], None]] = {}
+_SECTION_ORDERS: Dict[str, List[str]] = {}
+_COMPOSER_NOTES: Dict[str, str] = {}
+_COMPOSER_LABELS: Dict[str, Callable[[Any], str]] = {}
+_TITLES: Dict[str, str] = {}
+#: The title a report type draws with when it registered none (the first report type's).
+DEFAULT_TITLE = "Executive procurement summary"
 
 
-def register(report_type_id: str) -> Callable[[Callable[["FactBuilder"], None]], Callable]:
-    """Register the deterministic query set for one report type."""
+def register(report_type_id: str, *, section_order: Optional[List[str]] = None,
+             composer_note: Optional[str] = None,
+             composer_label: Optional[Callable[[Any], str]] = None,
+             title: Optional[str] = None
+             ) -> Callable[[Callable[["FactBuilder"], None]], Callable]:
+    """Register the deterministic query set for one report type, and -- if the report has
+    one -- the order of its sections, a property of the report rather than a preference."""
 
     def _wrap(fn: Callable[["FactBuilder"], None]) -> Callable:
         _BUILDERS[report_type_id] = fn
+        if section_order is not None:
+            _SECTION_ORDERS[report_type_id] = list(section_order)
+        if composer_note:
+            _COMPOSER_NOTES[report_type_id] = composer_note
+        if composer_label is not None:
+            _COMPOSER_LABELS[report_type_id] = composer_label
+        if title:
+            _TITLES[report_type_id] = title
         return fn
 
     return _wrap
+
+
+def title_for(report_type_id: str) -> str:
+    """The title a report of this type is drawn and stored under."""
+    return _TITLES.get(report_type_id, DEFAULT_TITLE)
+
+
+def composer_label_for(report_type_id: str) -> Callable[[Any], str]:
+    """How the composer is shown each figure's label -- the label itself unless the report
+    type says otherwise. Only the model's view: the pack, and the page, keep the real label."""
+    return _COMPOSER_LABELS.get(report_type_id) or (lambda entry: entry.label)
+
+
+def composer_note_for(report_type_id: str) -> Optional[str]:
+    """What the composer must be told about this report type, if anything."""
+    return _COMPOSER_NOTES.get(report_type_id)
+
+
+def section_order_for(report_type_id: str) -> Optional[List[str]]:
+    """The section order a report type registered, or None to take the platform default."""
+    order = _SECTION_ORDERS.get(report_type_id)
+    return list(order) if order is not None else None
 
 
 def registered_types() -> List[str]:
