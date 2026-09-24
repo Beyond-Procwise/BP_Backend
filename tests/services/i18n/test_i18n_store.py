@@ -69,3 +69,51 @@ def test_pg_round_trip():
         from src.services.db import get_conn
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM proc.bp_translation WHERE target_lang = 'xx-test'")
+
+
+# --- audit: machine rows are immutable; reviewed changes are reported; public keys ------
+
+def test_a_machine_translation_is_never_overwritten():
+    s = InMemoryTranslationStore()
+    h = source_hash("Save")
+    s.save("es", "v1", "m1", {h: ("Save", "Guardar")})
+    s.save("es", "v1", "m1", {h: ("Save", "Salvar")})
+    assert s.lookup("es", [h], "v1", "m1") == {h: "Guardar"}
+
+
+def test_reviewed_changes_lists_only_replaced_text():
+    s = InMemoryTranslationStore()
+    a, b, c = source_hash("Save"), source_hash("Close"), source_hash("Open")
+    s.import_reviewed("es", {a: ("Save", "Salvar"), b: ("Close", "Cerrar")})
+    changes = s.reviewed_changes("es", {a: ("Save", "Guardar"), b: ("Close", "Cerrar"), c: ("Open", "Abrir")})
+    assert changes == [(a, "Salvar", "Guardar")]
+
+
+def test_public_keys_and_languages_that_have_them():
+    s = InMemoryTranslationStore()
+    s.set_public_keys({"auth.signIn": "Sign in", "auth.password": "Password"})
+    assert s.public_keys() == {"auth.signIn": "Sign in", "auth.password": "Password"}
+    s.import_reviewed("es", {source_hash("Sign in"): ("Sign in", "Iniciar sesión")})
+    s.save("ja", "v1", "m1", {source_hash("Sign in"): ("Sign in", "サインイン"),
+                              source_hash("Password"): ("Password", "パスワード")})
+    hashes = [source_hash("Sign in"), source_hash("Password")]
+    assert s.languages_with(hashes, "v1", "m1") == {"es": 1, "ja": 2}
+    s.set_public_keys({"auth.signIn": "Sign in"})
+    assert s.public_keys() == {"auth.signIn": "Sign in"}
+
+
+@pytest.mark.skipif(os.environ.get("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB only")
+def test_pg_machine_rows_are_immutable_and_changes_reported():
+    s = PgTranslationStore()
+    h = source_hash("__i18n_live_test2__")
+    try:
+        s.save("xx-test", "v1", "m1", {h: ("__i18n_live_test2__", "first")})
+        s.save("xx-test", "v1", "m1", {h: ("__i18n_live_test2__", "second")})
+        assert s.lookup("xx-test", [h], "v1", "m1") == {h: "first"}
+        s.import_reviewed("xx-test", {h: ("__i18n_live_test2__", "human1")})
+        assert s.reviewed_changes("xx-test", {h: ("__i18n_live_test2__", "human2")}) == [(h, "human1", "human2")]
+        assert s.languages_with([h], "v1", "m1") == {"xx-test": 1}
+    finally:
+        from src.services.db import get_conn
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_translation WHERE target_lang = 'xx-test'")

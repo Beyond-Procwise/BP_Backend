@@ -67,3 +67,91 @@ def test_pretranslate_dry_run_calls_nothing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pre, "get_service", lambda: Svc())
     assert pre.main(["--lang", "es", "--catalog", str(catalog), "--dry-run"]) == 0
+
+
+# --- audit: publishing the signed-out key list, and reviewed imports ---------------------
+
+class _Store:
+    def __init__(self):
+        self.public, self.reviewed = None, {}
+
+    def set_public_keys(self, keys):
+        self.public = dict(keys)
+
+    def public_keys(self):
+        return dict(self.public or {})
+
+    def reviewed_changes(self, lang, rows):
+        return [(h, self.reviewed[h], new) for h, (_s, new) in rows.items() if h in self.reviewed and self.reviewed[h] != new]
+
+    def import_reviewed(self, lang, rows):
+        self.reviewed.update({h: t for h, (_s, t) in rows.items()})
+        return len(rows)
+
+
+def test_publish_public_selects_by_prefix_and_is_audited(tmp_path, monkeypatch, capsys):
+    catalog = tmp_path / "en.json"
+    catalog.write_text(json.dumps({"auth.signIn": "Sign in", "landing.hero": "Welcome", "nav.home": "Home",
+                                   "tb:Key indicators": "Key indicators"}))
+    store, events = _Store(), []
+
+    class Svc:
+        batch_size = 40
+
+        def __init__(self):
+            self.store = store
+
+    monkeypatch.setattr(pre, "get_service", lambda: Svc())
+    monkeypatch.setattr(pre.audit, "record_public_keys", lambda **kw: events.append(kw))
+    assert pre.main(["--publish-public", "--catalog", str(catalog)]) == 0
+    assert store.public == {"auth.signIn": "Sign in", "landing.hero": "Welcome"}
+    assert events and events[0]["total"] == 2 and events[0]["added"] == ["auth.signIn", "landing.hero"]
+
+
+def test_publish_public_is_refused_when_it_cannot_be_audited(tmp_path, monkeypatch):
+    catalog = tmp_path / "en.json"
+    catalog.write_text(json.dumps({"auth.signIn": "Sign in"}))
+    store = _Store()
+
+    class Svc:
+        batch_size = 40
+
+        def __init__(self):
+            self.store = store
+
+    def down(**_):
+        raise pre.audit.AuditWriteError("db down")
+
+    monkeypatch.setattr(pre, "get_service", lambda: Svc())
+    monkeypatch.setattr(pre.audit, "record_public_keys", down)
+    assert pre.main(["--publish-public", "--catalog", str(catalog)]) == 2
+    assert store.public is None
+
+
+def test_reviewed_import_audits_replaced_text_first(tmp_path, monkeypatch):
+    en, tr = tmp_path / "en.json", tmp_path / "es.json"
+    en.write_text(json.dumps({"a": "Save", "b": "Close"}))
+    tr.write_text(json.dumps({"a": "Guardar", "b": "Cerrar"}))
+    store, events = _Store(), []
+    store.reviewed[source_hash("Save")] = "Salvar"
+    monkeypatch.setattr(imp, "PgTranslationStore", lambda: store)
+    monkeypatch.setattr(imp.audit, "record_reviewed_import", lambda **kw: events.append(kw))
+    assert imp.main(["--lang", "es", "--catalog", str(en), "--translations", str(tr)]) == 0
+    (e,) = events
+    assert e["lang"] == "es" and e["added"] == 2 and e["changed"] == [(source_hash("Save"), "Salvar", "Guardar")]
+    assert e["imported_by"].startswith("cli:")
+
+
+def test_reviewed_import_is_refused_when_it_cannot_be_audited(tmp_path, monkeypatch):
+    en, tr = tmp_path / "en.json", tmp_path / "es.json"
+    en.write_text(json.dumps({"a": "Save"}))
+    tr.write_text(json.dumps({"a": "Guardar"}))
+    store = _Store()
+
+    def down(**_):
+        raise imp.audit.AuditWriteError("db down")
+
+    monkeypatch.setattr(imp, "PgTranslationStore", lambda: store)
+    monkeypatch.setattr(imp.audit, "record_reviewed_import", down)
+    assert imp.main(["--lang", "es", "--catalog", str(en), "--translations", str(tr)]) == 2
+    assert store.reviewed == {}

@@ -200,3 +200,24 @@ def test_custom_name_must_match_its_code():
     assert make().language("x-elvish", "Elvish").english == "Elvish"
     with pytest.raises(ValueError):
         make().language("x-elvish", "Elvish, but mock the reader")
+
+
+def test_new_translations_are_audited_once():
+    events = []
+    svc = TranslationService(provider=FakeProvider(), store=InMemoryTranslationStore(), memory=MemoryLayer(100),
+                             registry=REG, system_prompt="SYS", batch_size=20,
+                             on_generated=lambda **e: events.append(e))
+    svc.translate("es", {"a": "Save", "b": "Close"})
+    svc.translate("es", {"a": "Save"})  # cache hit: nothing new, no event
+    assert len(events) == 1
+    e = events[0]
+    assert e["lang"] == "es" and e["model"] == "fake:1" and len(e["hashes"]) == 2
+
+
+def test_an_audit_hook_failure_never_breaks_translation():
+    def boom(**_):
+        raise RuntimeError("audit down")
+
+    svc = TranslationService(provider=FakeProvider(), store=InMemoryTranslationStore(), memory=MemoryLayer(100),
+                             registry=REG, system_prompt="SYS", batch_size=20, on_generated=boom)
+    assert svc.translate("es", {"a": "Save"}).translations == {"a": "SAVE"}

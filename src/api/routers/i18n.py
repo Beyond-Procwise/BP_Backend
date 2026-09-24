@@ -5,15 +5,20 @@ POST /i18n/languages/resolve    a typed language name -> a registry entry or a c
 POST /i18n/strings              UI strings: cached translations now, the rest queued (screen first)
 POST /i18n/translate            dynamic content, translated on request (signed-in)
 GET/PUT /i18n/preference        the signed-in user's language
+GET  /i18n/audit                the translation audit trail (Admin: policy action 'configure')
 
-Mounted behind require_user like every other router (tests/api/test_every_router_is_
-authenticated.py), and every write names the principal. Translating the pre-sign-in pages
-would need a public, cache-only read path; that is an auth exemption for the product owner
-to approve, not something this router assumes.
+GET  /i18n/public/{lang}        (public_router) the sign-in screens' text, signed-out
+
+`router` is mounted behind require_user like every other router (tests/api/test_every_
+router_is_authenticated.py), and every write names the principal. `public_router` is the one
+exemption, approved by the product owner on 2026-09-24: it takes no text, never calls the
+model, and serves only cached translations of the keys in proc.bp_i18n_public_key.
 """
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -23,12 +28,15 @@ import api.auth as auth
 from api.auth import require_user
 import src.services.i18n as i18n
 from services import output_safety as osafe
-from src.services.i18n import preference
+from src.services import rbac
+from src.services.i18n import audit, preference
 from src.services.i18n.filler import BACKGROUND, SCREEN
+from src.services.i18n.store import source_hash
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/i18n", tags=["i18n"])
+public_router = APIRouter(prefix="/i18n/public", tags=["i18n"])
 
 _MAX_KEYS = 2000
 _MAX_KEY_LEN = 200
@@ -111,16 +119,29 @@ def translate(body: TranslateIn, principal=Depends(require_user)) -> dict[str, A
         raise HTTPException(status_code=413, detail=f"each text must be at most {_MAX_DYNAMIC_TEXT} characters")
     language = _language(body.lang, body.lang_name)
     keys = {f"t{i}": t for i, t in enumerate(body.texts)}
-    result = i18n.get_service().translate(language.code, keys, lang_name=body.lang_name)
+    svc = i18n.get_service()
+    result = svc.translate(language.code, keys, lang_name=body.lang_name)
     out = [result.translations[k] for k in keys]
     failed = {int(k[1:]) for k in result.failed}
+    withheld = set()
     # A translation the output-safety layer would rewrite goes back to its source text.
     scrubbed = osafe.scrub_payload(list(out), where="i18n.translate")
     for i, (before, after) in enumerate(zip(out, scrubbed)):
         if before != after:
             out[i] = body.texts[i]
-            failed.add(i)
-    return {"translations": out, "failed": sorted(failed)}
+            withheld.add(i)
+    # Audit before showing: who asked, and exactly what they will see. A translation that
+    # cannot be traced is not shown; the person gets the source text instead.
+    items = [{"source": body.texts[i], "shown": out[i],
+              "status": "withheld" if i in withheld else "english_fallback" if i in failed else "translated"}
+             for i in range(len(out))]
+    try:
+        audit.record_served(lang=language.code, requested_by=getattr(principal, "subject", None),
+                            model=svc.provider.model, prompt_version=svc.prompt_version, items=items)
+    except audit.AuditWriteError:
+        logger.error("i18n: served translation could not be audited; showing the source text")
+        return {"translations": list(body.texts), "failed": list(range(len(body.texts))), "audited": False}
+    return {"translations": out, "failed": sorted(failed | withheld), "audited": True}
 
 
 def _pref_value(code: str, name: Optional[str]) -> dict:
@@ -150,3 +171,73 @@ def put_preference(body: PreferenceIn, principal=Depends(require_user)) -> dict[
         logger.warning("i18n: saving the language preference failed: %s", exc)
         return {"language": value, "stored": False}
     return {"language": value, "stored": True}
+
+
+@router.get("/audit", summary="The translation audit trail (Admin)")
+def audit_trail(lang: Optional[str] = Query(None, max_length=64),
+                requested_by: Optional[str] = Query(None, max_length=200),
+                action_type: Optional[str] = Query(None, max_length=64),
+                since: Optional[str] = Query(None, max_length=40),
+                until: Optional[str] = Query(None, max_length=40),
+                limit: int = Query(200, ge=1, le=1000),
+                principal=Depends(require_user)) -> dict[str, Any]:
+    if not rbac.may(rbac.effective_role(principal), "configure"):
+        raise HTTPException(status_code=403, detail="the translation audit trail needs the configure permission")
+    events = audit.read_events(lang=lang, requested_by=requested_by, action_type=action_type,
+                               since=since, until=until, limit=limit)
+    return {"events": events}
+
+
+# ---------------------------------------------------------------------------------------
+# The one signed-out path. No input text, no model, a short-lived cache in front of the DB.
+# ---------------------------------------------------------------------------------------
+_PUBLIC_TTL = 300.0
+_public_cache: dict[str, tuple[float, dict]] = {}
+_public_lock = threading.Lock()
+
+
+def reset_public_cache() -> None:
+    with _public_lock:
+        _public_cache.clear()
+
+
+def _cached(key: str, build):
+    now = time.monotonic()
+    with _public_lock:
+        hit = _public_cache.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+    value = build()
+    with _public_lock:
+        _public_cache[key] = (now + _PUBLIC_TTL, value)
+    return value
+
+
+def _public_available() -> list[dict]:
+    svc, reg = i18n.get_service(), i18n.get_registry()
+    keys = svc.store.public_keys()
+    hashes = {source_hash(v) for v in keys.values()}
+    counts = svc.store.languages_with(list(hashes), svc.prompt_version, svc.provider.model) if hashes else {}
+    ready = [reg.get(c) for c, n in counts.items() if n >= len(hashes) and reg.get(c)]
+    langs = [reg.get("en")] + sorted(ready, key=lambda L: L.english.casefold())
+    return [{"code": L.code, "label": L.label(), "dir": L.dir} for L in langs]
+
+
+@public_router.get("/{lang}", summary="Sign-in screen text in a language (signed-out, cache only)")
+def public_strings(lang: str) -> dict[str, Any]:
+    language = i18n.get_registry().get(lang)  # registry codes only: the cache below stays bounded
+    if language is None:
+        raise HTTPException(status_code=400, detail=f"unknown language code {lang!r}")
+
+    def build() -> dict:
+        svc = i18n.get_service()
+        keys = svc.store.public_keys()
+        hits, _missing = svc.cached(language.code, keys) if keys else ({}, [])
+        if language.code.split("-")[0] == "en":
+            hits = {}
+        scrubbed = osafe.scrub_payload(dict(hits), where="i18n.public")
+        hits = {k: v for k, v in hits.items() if scrubbed.get(k) == v}
+        return {"lang": language.code, "dir": language.dir, "translations": hits,
+                "available": _cached("_available", _public_available)}
+
+    return _cached(language.code, build)

@@ -36,7 +36,7 @@ class TranslationService:
     def __init__(self, *, provider: TranslationProvider, store, memory: MemoryLayer,
                  registry: LanguageRegistry, system_prompt: str, batch_size: int,
                  batch_chars: int = 6000, failure_backoff: float = 900.0,
-                 prompt_version: str = PROMPT_VERSION, clock=time.monotonic):
+                 prompt_version: str = PROMPT_VERSION, clock=time.monotonic, on_generated=None):
         self.provider, self.store, self.memory = provider, store, memory
         self.registry, self.system_prompt = registry, system_prompt
         self.batch_size, self.batch_chars, self.prompt_version = batch_size, batch_chars, prompt_version
@@ -45,6 +45,9 @@ class TranslationService:
         self.failure_backoff, self._clock = failure_backoff, clock
         self._failed: dict[tuple[str, str], float] = {}
         self._failed_lock = threading.Lock()
+        # Called with lang/model/prompt_version/hashes whenever new translations are stored
+        # (the audit trail's translation.generated). Best-effort: never breaks a translation.
+        self._on_generated = on_generated
 
     # -- language -----------------------------------------------------------------------
     def language(self, code: str, name: Optional[str] = None) -> Language:
@@ -155,6 +158,12 @@ class TranslationService:
                     self.memory.put(self._mkey(language.code, h), t)
             done.update(good)
             failed_hashes.update(bad)
+            if good and self._on_generated is not None:
+                try:
+                    self._on_generated(lang=language.code, model=self.provider.model,
+                                       prompt_version=self.prompt_version, hashes=list(good))
+                except Exception as exc:
+                    logger.warning("i18n: auditing %d new translation(s) failed: %s", len(good), exc)
             if bad:
                 until = self._clock() + self.failure_backoff
                 with self._failed_lock:

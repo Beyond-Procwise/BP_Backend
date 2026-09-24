@@ -34,6 +34,9 @@ _PUBLIC: dict[str, str] = {
     "/docs": "FastAPI's own docs UI",
     "/docs/oauth2-redirect": "FastAPI's own docs UI",
     "/redoc": "FastAPI's own docs UI",
+    "/i18n/public/{lang}": "the sign-in screens are read before anyone is identified; serves "
+                           "cached translations of a fixed key list only -- no input text, "
+                           "never calls the model (approved 2026-09-24)",
 }
 
 # A browser cannot set headers on a WebSocket upgrade, so ws.py authenticates on

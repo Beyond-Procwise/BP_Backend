@@ -522,6 +522,11 @@ app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_al
 # tests/api/test_ws_authentication.py is what now holds this to be true.
 app.include_router(ws_router_mod.router)
 
+# The one signed-out translation path: the sign-in screens' text, from cache only. It takes
+# no input text and never calls the model (see api/routers/i18n.py). Listed in _PUBLIC in
+# tests/api/test_every_router_is_authenticated.py with its reason.
+app.include_router(i18n_router.public_router)
+
 # --------------------------------------------------------------------------
 # Every HTTP router below is mounted WITH authentication.
 #

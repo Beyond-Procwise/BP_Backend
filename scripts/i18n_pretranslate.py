@@ -1,6 +1,11 @@
 """Pre-translate the whole English catalog for one language, so no user waits for it.
 
   ./.venv/bin/python scripts/i18n_pretranslate.py --lang ja --catalog out/en.json [--limit N] [--dry-run]
+  ./.venv/bin/python scripts/i18n_pretranslate.py --publish-public --catalog out/en.json
+
+--publish-public replaces the list of keys a signed-out visitor may read translated
+(GET /i18n/public/{lang}) with the catalog keys matching config/i18n/public.json. It is
+audited first; if the audit cannot be written, nothing changes.
 
 Only strings with no cached translation for the current prompt version and model are sent;
 re-running after an English edit translates just the edited strings.
@@ -8,6 +13,7 @@ re-running after an English edit translates just the edited strings.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
 import time
@@ -15,19 +21,44 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.services.i18n import get_service  # noqa: E402
+from src.services.i18n import audit, get_service  # noqa: E402
+
+PUBLIC_CONFIG = Path(__file__).resolve().parents[1] / "config" / "i18n" / "public.json"
+
+
+def publish_public(svc, catalog: dict) -> int:
+    prefixes = tuple(json.loads(PUBLIC_CONFIG.read_text(encoding="utf-8"))["key_prefixes"])
+    keys = {k: v for k, v in catalog.items() if k.startswith(prefixes)}
+    before = svc.store.public_keys()
+    try:
+        audit.record_public_keys(published_by=f"cli:{getpass.getuser()}", total=len(keys),
+                                 added=sorted(set(keys) - set(before)), removed=sorted(set(before) - set(keys)))
+    except audit.AuditWriteError as exc:
+        print(f"refused, the change could not be audited: {exc}", file=sys.stderr)
+        return 2
+    svc.store.set_public_keys(keys)
+    print(f"signed-out key list: {len(keys)} keys ({', '.join(prefixes)})")
+    return 0
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--lang", required=True)
+    ap.add_argument("--lang", help="language to pre-translate (optional with --publish-public)")
     ap.add_argument("--lang-name", default=None, help="display name for a custom x- code")
     ap.add_argument("--catalog", required=True)
     ap.add_argument("--limit", type=int, default=0, help="translate at most N strings (0 = all)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--publish-public", action="store_true",
+                    help="replace the signed-out key list from this catalog (audited)")
     a = ap.parse_args(argv)
+    if not a.lang and not a.publish_public:
+        ap.error("--lang is required unless --publish-public is given")
     catalog = json.loads(Path(a.catalog).read_text(encoding="utf-8"))
     svc = get_service()
+    if a.publish_public:
+        rc = publish_public(svc, catalog)
+        if rc or not a.lang:
+            return rc
     hits, missing = svc.cached(a.lang, catalog)
     if a.limit:
         missing = missing[: a.limit]
