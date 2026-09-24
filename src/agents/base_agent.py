@@ -2023,8 +2023,8 @@ class AgentNick:
         (:latest) and only used by the legacy data_extraction_agent path. This
         avoids the ~60s cold-load from disk on the first document after a
         server/Ollama restart, and pins it resident with the same keep_alive the
-        pipeline uses. preload_model uses a 120s timeout — long enough for a true
-        cold-load (the old 30s timeout silently failed on cold disk).
+        pipeline uses. preload_model waits up to the client's DEFAULT_TIMEOUT: a cold
+        load measured 114-141 s, and the old 120 s wait cancelled it most restarts.
         """
         try:
             from src.services.ollama_client import preload_model

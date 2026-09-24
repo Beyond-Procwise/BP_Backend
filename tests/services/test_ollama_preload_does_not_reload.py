@@ -147,3 +147,29 @@ def test_a_refused_layout_still_falls_back_and_loads(monkeypatch):
     assert len(seen) == 2, seen
     assert seen[0]["options"]["num_gpu"] == oc.ALL_GPU_LAYERS
     assert "num_gpu" not in seen[1].get("options", {})
+
+
+# ---------------------------------------------------------------------------
+# the preload waits for the load it started
+# ---------------------------------------------------------------------------
+def test_the_preload_waits_longer_than_a_cold_load_takes(monkeypatch):
+    """A cold load of this model measured 114-141 s on 2026-09-24. The preload
+    waited 120 s, so on most restarts it gave up first -- and a client that hangs
+    up cancels the load ("timed out waiting for llama runner to start: context
+    canceled"), leaving NOTHING resident. The failure then took the pin off (the
+    rule above), so the next ten minutes of calls loaded the half-GPU layout:
+    ~135 s to load and ~6x slower to generate. A report that takes 19 s on a warm,
+    whole-card model took 3-4 minutes. The wait must cover the load, with the
+    same ceiling as any other call to this server."""
+    timeouts = []
+
+    def _post(url, json=None, timeout=None, **kw):
+        timeouts.append(timeout)
+        return _Resp()
+
+    monkeypatch.setattr(oc, "loaded_models", lambda: [])
+    monkeypatch.setattr(oc.egress, "post", _post)
+
+    assert oc.preload_model(MODEL) is True
+    assert timeouts and timeouts[0] >= 300, timeouts
+    assert timeouts[0] == oc.DEFAULT_TIMEOUT

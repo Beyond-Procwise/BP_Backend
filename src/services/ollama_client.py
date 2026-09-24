@@ -455,8 +455,15 @@ def loaded_models() -> List[str]:
             if isinstance(m, dict) and m.get("name")]
 
 
-def preload_model(model: Optional[str] = None, timeout: int = 120) -> bool:
+def preload_model(model: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT) -> bool:
     """Preload the model into VRAM, and find out here whether it fits.
+
+    The wait must outlast the load. A cold load of AgentNick:unified measured
+    114-141 s on 2026-09-24, and this used to wait 120: a client that hangs up
+    cancels the load ("timed out waiting for llama runner to start: context
+    canceled"), so most restarts ended with nothing resident, and the failure
+    below then sent ten minutes of callers to the half-GPU layout. The startup
+    only waits as long as the load actually takes; this is a ceiling.
 
     This runs at startup, which is the right place to discover that the card
     cannot hold the model whole: the alternative is the first reader's question
