@@ -70,3 +70,16 @@ def deal(*docs, duplicates=(), deal_id="DEAL-1") -> DocumentSet:
         {"quote": ds.quotes, "purchase_order": ds.pos, "invoice": ds.invoices}[d.doc_type].append(d)
     ds.duplicates = list(duplicates)
     return ds
+
+
+def scored(ds, cfg=None):
+    """link -> checks -> score, as the engine does it."""
+    from src.services.triage.checks import run_checks
+    from src.services.triage.link import link
+    from src.services.triage.score import score_result
+    cfg = cfg or make_cfg()
+    links = link(ds, cfg)
+    results = run_checks(ds, links, cfg)
+    for r in results:
+        score_result(r, cfg)
+    return links, results
