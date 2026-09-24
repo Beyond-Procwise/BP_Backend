@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS proc.bp_triage_finding (
     last_run_id    uuid NOT NULL,
     last_severity  varchar NOT NULL
 );
+ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS replaced_finding_id bigint;
+ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS replaced_severity varchar;
 CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_deal      ON proc.bp_triage_finding (deal_id);
 CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_first_run ON proc.bp_triage_finding (first_run_id);
 

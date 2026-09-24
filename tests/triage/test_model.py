@@ -40,3 +40,12 @@ def test_invoice_po_ref_falls_back_to_lines_and_credit_note_flag():
     doc = inv(po_id=None, lines=[line(1, po_id="PO-9")])
     assert doc.po_ref == "PO-9"
     assert inv(net="-10").is_credit_note
+
+
+def test_net_and_gross_results_on_one_invoice_have_different_fingerprints():
+    """F4: check_invoice_totals emits net and gross results for the same invoice with
+    claim_line=None on both; they must not collide on the same fingerprint."""
+    net = Result("D1", "invoice_totals", "money", Outcome.CONFLICT, "INV-1", "net")
+    gross = Result("D1", "invoice_totals", "money", Outcome.CONFLICT, "INV-1", "gross")
+    assert net.cause_key != gross.cause_key
+    assert net.fingerprint != gross.fingerprint

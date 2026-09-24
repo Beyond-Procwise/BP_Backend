@@ -44,11 +44,14 @@ UPDATE proc.bp_detection_finding
 """
 _UPSERT_MAP = """
 INSERT INTO proc.bp_triage_finding
-    (fingerprint, finding_id, deal_id, first_run_id, last_run_id, last_severity)
-VALUES (%s, %s, %s, %s, %s, %s)
+    (fingerprint, finding_id, deal_id, first_run_id, last_run_id, last_severity,
+     replaced_finding_id, replaced_severity)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (fingerprint) DO UPDATE
    SET finding_id = EXCLUDED.finding_id, first_run_id = EXCLUDED.first_run_id,
-       last_run_id = EXCLUDED.last_run_id, last_severity = EXCLUDED.last_severity
+       last_run_id = EXCLUDED.last_run_id, last_severity = EXCLUDED.last_severity,
+       replaced_finding_id = EXCLUDED.replaced_finding_id,
+       replaced_severity = EXCLUDED.replaced_severity
 """
 _TOUCH_MAP = """
 UPDATE proc.bp_triage_finding SET last_run_id = %s, last_severity = %s WHERE fingerprint = %s
@@ -67,7 +70,12 @@ DELETE FROM proc.bp_detection_finding f
  WHERE m.finding_id = f.finding_id AND m.first_run_id = %s
    AND f.status = 'open' AND f.lifecycle_status = 'open'
    AND f.owner IS NULL AND f.due_date IS NULL AND f.resolved_by IS NULL
-RETURNING f.finding_id
+RETURNING f.finding_id, m.fingerprint, m.replaced_finding_id, m.replaced_severity
+"""
+_RESTORE_MAP = """
+UPDATE proc.bp_triage_finding
+   SET finding_id = %s, last_severity = %s, replaced_finding_id = NULL, replaced_severity = NULL
+ WHERE fingerprint = %s
 """
 
 
@@ -132,41 +140,62 @@ def write_batch(conn, run_id: str, outputs) -> dict:
     conn.autocommit = False
     try:
         cur = conn.cursor()
+        # F3: one deal must never be written by two batches at once -- held for the
+        # whole transaction, released automatically on commit/rollback.
+        for deal_id in sorted({o.deal_id for o in outputs}):
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (deal_id,))
         cur.execute(_EXISTING, ([o.deal_id for o in outputs],))
         existing = {fp: (fid, sev, status) for fp, fid, sev, status in cur.fetchall()}
         seen: set[str] = set()
+        written: dict[str, int] = {}   # fingerprint -> finding_id already written this batch
         fid_of: dict[int, int] = {}
         for o in outputs:
             for f in o.findings:
                 if f.severity < Severity.S2:
                     continue
                 fp = f.fingerprint
-                seen.add(fp)
-                prior = existing.get(fp)
-                if prior is None:
-                    fid = _insert(cur, run_id, f)
-                    cur.execute(_UPSERT_MAP, (fp, fid, f.deal_id, run_id, run_id, f.severity.name))
-                    counts["inserted"] += 1
+                if fp in seen:
+                    # F4: a second finding with the same fingerprint in this batch is
+                    # never a new row -- it rides on the one already written.
+                    fid = written[fp]
                 else:
-                    old_fid, old_sev, status = prior
-                    if status == "open":
-                        v = _finding_values(run_id, f)
-                        cur.execute(_UPDATE_FINDING, (v[0], v[3], v[9], v[10], v[11], v[12],
-                                                      v[13], v[14], old_fid))
-                        cur.execute(_TOUCH_MAP, (run_id, f.severity.name, fp))
-                        fid = old_fid
-                        counts["updated"] += 1
-                    elif f.severity > Severity[old_sev]:
-                        f.text = (f"Reopened: finding {old_fid} was {status}; this is now "
-                                  f"{f.severity.name}. {f.text}")
+                    seen.add(fp)
+                    prior = existing.get(fp)
+                    # F1: 'superseded' carries no human decision -- treat it as absent.
+                    if prior is None or prior[2] == "superseded":
                         fid = _insert(cur, run_id, f)
                         cur.execute(_UPSERT_MAP, (fp, fid, f.deal_id, run_id, run_id,
-                                                  f.severity.name))
-                        counts["reopened"] += 1
+                                                  f.severity.name, None, None))
+                        counts["inserted"] += 1
                     else:
-                        fid = old_fid
-                        cur.execute(_TOUCH_MAP_RUN_ONLY, (run_id, fp))
-                        counts["unchanged"] += 1
+                        old_fid, old_sev, status = prior
+                        if status == "open":
+                            v = _finding_values(run_id, f)
+                            cur.execute(_UPDATE_FINDING, (v[0], v[3], v[9], v[10], v[11], v[12],
+                                                          v[13], v[14], old_fid))
+                            if cur.rowcount == 0:
+                                # F5: a person closed it mid-batch -- do not resurrect it.
+                                cur.execute(_TOUCH_MAP_RUN_ONLY, (run_id, fp))
+                                fid = old_fid
+                                counts["unchanged"] += 1
+                            else:
+                                cur.execute(_TOUCH_MAP, (run_id, f.severity.name, fp))
+                                fid = old_fid
+                                counts["updated"] += 1
+                        elif f.severity > Severity[old_sev]:
+                            f.text = (f"Reopened: finding {old_fid} was {status}; this is now "
+                                      f"{f.severity.name}. {f.text}")
+                            fid = _insert(cur, run_id, f)
+                            # F2: record what this reopen replaces so a rollback can
+                            # hand the fingerprint back to the person's decision.
+                            cur.execute(_UPSERT_MAP, (fp, fid, f.deal_id, run_id, run_id,
+                                                      f.severity.name, old_fid, old_sev))
+                            counts["reopened"] += 1
+                        else:
+                            fid = old_fid
+                            cur.execute(_TOUCH_MAP_RUN_ONLY, (run_id, fp))
+                            counts["unchanged"] += 1
+                    written[fp] = fid
                 for r in (*f.causes, *f.effects):
                     fid_of[id(r)] = fid
         for fp, (fid, _sev, status) in existing.items():
@@ -191,8 +220,19 @@ def rollback_run(conn, run_id: str) -> dict:
     try:
         cur = conn.cursor()
         cur.execute(_ROLLBACK_FINDINGS, (run_id,))
-        removed = [r[0] for r in cur.fetchall()]
-        cur.execute("DELETE FROM proc.bp_triage_finding WHERE finding_id = ANY(%s)", (removed,))
+        deleted = cur.fetchall()
+        removed = [row[0] for row in deleted]
+        # F2: a removed finding that replaced an earlier one hands the fingerprint back
+        # to that earlier finding -- the person's decision on it must not vanish too.
+        to_delete = []
+        for _finding_id, fp, replaced_finding_id, replaced_severity in deleted:
+            if replaced_finding_id is not None:
+                cur.execute(_RESTORE_MAP, (replaced_finding_id, replaced_severity, fp))
+            else:
+                to_delete.append(fp)
+        if to_delete:
+            cur.execute("DELETE FROM proc.bp_triage_finding WHERE fingerprint = ANY(%s)",
+                        (to_delete,))
         cur.execute("SELECT count(*) FROM proc.bp_triage_finding WHERE first_run_id = %s",
                     (run_id,))
         kept = cur.fetchone()[0]

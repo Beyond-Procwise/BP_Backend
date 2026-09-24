@@ -173,7 +173,7 @@ class Result:
 
     @property
     def cause_key(self) -> str:
-        return f"{self.claim_doc or ''}|{self.claim_line or ''}"
+        return f"{self.claim_doc or ''}|{self.claim_line or ''}|{self.field_name}"
 
     @property
     def fingerprint(self) -> str:
