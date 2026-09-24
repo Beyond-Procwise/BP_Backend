@@ -60,12 +60,18 @@ UPDATE proc.bp_detection_finding
  WHERE finding_id = %s AND status = 'open'
 """
 # Only an untouched finding (the same test rollback uses) is closed when its problem
-# disappears: one a person owns, has dated, resolved or moved on is theirs to close.
+# disappears: one a person owns, has dated, resolved or moved on -- here or on its
+# Action Centre mirror row -- is theirs to close.
 _SUPERSEDE = """
-UPDATE proc.bp_detection_finding
+UPDATE proc.bp_detection_finding f
    SET status = 'superseded', lifecycle_status = 'resolved'
- WHERE finding_id = %s AND status = 'open' AND lifecycle_status = 'open'
-   AND owner IS NULL AND due_date IS NULL AND resolved_by IS NULL
+ WHERE f.finding_id = %s AND f.status = 'open' AND f.lifecycle_status = 'open'
+   AND f.owner IS NULL AND f.due_date IS NULL AND f.resolved_by IS NULL
+   AND NOT EXISTS (SELECT 1 FROM proc.bp_triage_finding m
+                     JOIN proc.bp_extraction_discrepancy d ON d.discrepancy_id = m.mirror_id
+                    WHERE m.finding_id = f.finding_id
+                      AND (d.status <> 'open' OR d.resolved_by IS NOT NULL
+                           OR d.query_sent_at IS NOT NULL))
 """
 _SUPERSEDE_MIRROR = """
 UPDATE proc.bp_extraction_discrepancy SET status = 'superseded'
@@ -99,17 +105,19 @@ ON CONFLICT (fingerprint) DO UPDATE
 # The Action Centre's copy of a finding. raw_id stays NULL and blocks_promotion false, so
 # promotion and the discrepancy triggers never act on it; field_name carries the finding
 # id so every finding (a reopened one too) has its own key in the open-row unique index.
+# computed_value stays NULL: the decision engine reads it as a value in expected_value's
+# units (or a signed delta), which an exposure is not. The exposure is in the notes.
 _INSERT_MIRROR = """
 INSERT INTO proc.bp_extraction_discrepancy
     (doc_type, raw_id, source_file, doc_pk_candidate, field_name, raw_value, expected_value,
      computed_value, issue_type, severity, status, notes, blocks_promotion)
-VALUES (%s, NULL, %s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, false)
+VALUES (%s, NULL, %s, %s, %s, %s, %s, NULL, %s, %s, 'open', %s, false)
 RETURNING discrepancy_id
 """
 # A mirror row a person has decided on is theirs: only an open one follows the finding.
 _UPDATE_MIRROR = """
 UPDATE proc.bp_extraction_discrepancy
-   SET raw_value = %s, expected_value = %s, computed_value = %s, severity = %s, notes = %s
+   SET raw_value = %s, expected_value = %s, computed_value = NULL, severity = %s, notes = %s
  WHERE discrepancy_id = %s AND status = 'open'
 """
 _SET_MAP_MIRROR = "UPDATE proc.bp_triage_finding SET mirror_id = %s WHERE fingerprint = %s"
@@ -140,6 +148,10 @@ DELETE FROM proc.bp_detection_finding f
  WHERE m.finding_id = f.finding_id AND m.first_run_id = %s
    AND f.status = 'open' AND f.lifecycle_status = 'open'
    AND f.owner IS NULL AND f.due_date IS NULL AND f.resolved_by IS NULL
+   AND NOT EXISTS (SELECT 1 FROM proc.bp_extraction_discrepancy d
+                    WHERE d.discrepancy_id = m.mirror_id
+                      AND (d.status <> 'open' OR d.resolved_by IS NOT NULL
+                           OR d.query_sent_at IS NOT NULL))
 RETURNING f.finding_id, m.fingerprint, m.replaced_finding_id, m.replaced_severity,
           m.mirror_id, m.replaced_mirror_id
 """
@@ -224,7 +236,7 @@ def _insert_mirror(cur, f: Finding, finding_id: int):
     cur.execute(_INSERT_MIRROR, (
         "purchase_order" if f.rule_id == "cumulative_total" else "invoice",
         f"triage:{f.deal_id}", r.claim_doc, f"{r.field_name} #{finding_id}",
-        r.claim_value, r.auth_value, str(f.exposure), issue_type,
+        r.claim_value, r.auth_value, issue_type,
         ACTION_CENTRE_SEVERITY[f.severity], f.text))
     return cur.fetchone()[0]
 
@@ -289,8 +301,8 @@ def write_batch(conn, run_id: str, outputs) -> dict:
                                 cur.execute(_TOUCH_MAP, (run_id, f.severity.name, fp))
                                 if mirror_id is not None:
                                     cur.execute(_UPDATE_MIRROR, (
-                                        f.lead.claim_value, f.lead.auth_value, str(f.exposure),
-                                        v[3], v[14], mirror_id))
+                                        f.lead.claim_value, f.lead.auth_value, v[3], v[14],
+                                        mirror_id))
                                 else:   # written before mirrors existed
                                     mirror_id = _insert_mirror(cur, f, old_fid)
                                     if mirror_id is not None:

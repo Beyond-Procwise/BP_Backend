@@ -311,7 +311,9 @@ def test_a_new_finding_gets_one_action_centre_mirror_row(ctx):
     assert (doc_type, raw_id, doc_pk, field, raw, expected) == (
         "invoice", None, "INV-1", f"currency #{fid}", "EUR", "GBP")
     assert (issue, sev, status, blocks) == ("currency_differs_from_po", "critical", "open", False)
-    assert computed is not None and notes == _notes(ctx, fid)
+    # computed_value stays empty: the decision engine would read an exposure there as a
+    # value in expected_value's units. The exposure is in the notes.
+    assert computed is None and notes == _notes(ctx, fid)
     assert _map(ctx) == [(fid, mid, None)]
 
 
@@ -336,7 +338,8 @@ def test_a_rerun_updates_the_same_mirror_row(ctx):
     (after,) = _mirrors(ctx)
     assert after[0] == first[0] and _map(ctx)[0][1] == first[0]
     assert (first[5], after[5]) == ("30.50", "30.60")
-    assert after[7] != first[7] and after[10] == "open"
+    assert (first[7], after[7]) == (None, None) and after[10] == "open"
+    assert after[11] != first[11]
 
 
 def test_a_fixed_problem_supersedes_its_mirror_row(ctx):
@@ -410,3 +413,38 @@ def test_rollback_removes_untouched_mirror_rows_and_keeps_touched_ones(ctx):
     writer.rollback_run(ctx.conn, run_id)
     left = [m[0] for m in _mirrors(ctx)]
     assert mirrors[0][0] in left and mirrors[1][0] not in left
+    # the finding behind the mirror a person acted on stays, still mapped to that mirror
+    touched_fid = int(mirrors[0][4].rsplit("#", 1)[1])
+    assert touched_fid in [r[0] for r in _findings(ctx)]
+    assert (touched_fid, mirrors[0][0], None) in _map(ctx)
+
+
+def test_rollback_keeps_a_reopened_finding_whose_new_mirror_a_person_resolved(ctx):
+    _write(ctx, _price_deal(ctx, "30.50"))                    # S2
+    (old,) = _mirrors(ctx)
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_extraction_discrepancy SET status='ignored', resolved_by='tester' "
+        "WHERE discrepancy_id = %s", (old[0],))
+    run_id, counts = _write(ctx, _price_deal(ctx, "32.00"))  # S1 -> reopens
+    assert counts["reopened"] == 1
+    new = _mirrors(ctx)[1]
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_extraction_discrepancy SET status='resolved', resolved_by='tester' "
+        "WHERE discrepancy_id = %s", (new[0],))
+    fid2 = _findings(ctx)[1][0]
+    result = writer.rollback_run(ctx.conn, run_id)
+    assert result["findings_removed"] == 0
+    assert fid2 in [r[0] for r in _findings(ctx)]
+    assert _map(ctx) == [(fid2, new[0], old[0])]
+
+
+def test_a_flagged_mirror_keeps_its_finding_open_when_the_problem_goes(ctx):
+    _write(ctx, _currency_deal(ctx))
+    (mirror,) = _mirrors(ctx)
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_extraction_discrepancy SET resolved_by='tester' "
+        "WHERE discrepancy_id = %s", (mirror[0],))
+    _run_id, counts = _write(ctx, _currency_deal(ctx, currency="GBP"))   # problem gone
+    assert counts["superseded"] == 0
+    assert [(r[3], r[4]) for r in _findings(ctx)] == [("open", "open")]
+    assert _mirrors(ctx) == [mirror]
