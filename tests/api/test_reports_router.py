@@ -49,6 +49,11 @@ class FakeStore:
     def deck(self, job_id):
         return self.decks.get(job_id)
 
+    pages = None
+
+    def page(self, job_id):
+        return (self.pages or {}).get(job_id)
+
     attention_extra = ()
 
     def needs_attention(self, limit):
@@ -621,3 +626,88 @@ def test_lists_read_sign_off_state_in_one_batch(client, monkeypatch):
     client.get("/reports/attention")
     assert client.signoff.batch_calls == 2
     assert len(single) == 6          # the fake's batch reuses state(); the router never calls it itself
+
+
+# ---------------------------------------------------------------------------
+# the printable page (2026-09-24): held, reviewed, bound and served like the deck
+# ---------------------------------------------------------------------------
+_PAGE = b"<!DOCTYPE html><html><body><p data-chunk>page</p></body></html>"
+_PAGE_SHA = _hashlib.sha256(_PAGE).hexdigest()
+
+
+def _with_page(client):
+    client.store.pages = {"rpt-1": (_PAGE, "text/html; charset=utf-8")}
+    client.store.jobs["rpt-1"]["has_page"] = True
+
+
+def test_the_page_is_held_like_the_deck(client):
+    _awaiting(client)
+    _with_page(client)
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert body["page_ready"] is False and body["page_review_available"] is True
+    r = client.get("/reports/jobs/rpt-1/page")
+    assert r.status_code == 409 and "awaiting sign-off" in r.json()["detail"]
+    assert b"data-chunk" not in r.content
+
+
+def test_an_approver_may_open_the_page_to_review(client):
+    _awaiting(client)
+    _with_page(client)
+    client.signoff.may = True
+    client.gates.clear()
+    r = client.get("/reports/jobs/rpt-1/page")
+    assert r.status_code == 200 and r.content == _PAGE
+    assert client.gates[-1][0] == "report.read" and client.gates[-1][2]["review"] is True
+    assert client.gates[-1][2]["format"] == "page"
+
+
+def test_a_signed_off_page_is_served_inline_with_a_csp(client):
+    _awaiting(client)
+    _with_page(client)
+    client.signoff.states["rpt-1"].update(state="signed_off", by="ap-1",
+                                          deck_sha256=_DECK_SHA, page_sha256=_PAGE_SHA)
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert body["page_ready"] is True and body["deck_ready"] is True
+    r = client.get("/reports/jobs/rpt-1/page")
+    assert r.status_code == 200 and r.content == _PAGE
+    assert r.headers["content-type"].startswith("text/html")
+    assert r.headers["content-disposition"].startswith("inline")
+    assert r.headers["content-security-policy"] == "default-src 'none'; style-src 'unsafe-inline'"
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_a_page_that_no_longer_matches_its_sign_off_is_not_served(client):
+    _awaiting(client)
+    _with_page(client)
+    client.signoff.states["rpt-1"].update(state="signed_off", deck_sha256=_DECK_SHA,
+                                          page_sha256="0" * 64)
+    r = client.get("/reports/jobs/rpt-1/page")
+    assert r.status_code == 409 and "does not match" in r.json()["detail"]
+
+
+def test_a_sign_off_without_a_page_hash_serves_no_page(client):
+    """A deck signed off before pages existed -- or a sign-off that never saw this page."""
+    _awaiting(client)
+    _with_page(client)
+    client.signoff.states["rpt-1"].update(state="signed_off", deck_sha256=_DECK_SHA,
+                                          page_sha256=None)
+    assert client.get("/reports/jobs/rpt-1/page").status_code == 409
+    assert client.get("/reports/jobs/rpt-1/deck").status_code == 200   # the deck is unaffected
+
+
+def test_a_job_with_no_page_says_so(client):
+    client.post("/reports/generate", json=BODY)
+    _release(client.store, "rpt-1")                  # not required by default in the fake
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert body["page_ready"] is False and body["has_page"] is False
+    r = client.get("/reports/jobs/rpt-1/page")
+    assert r.status_code == 404 and "no printable page" in r.json()["detail"]
+
+
+def test_a_refused_page_says_why(client):
+    _awaiting(client)
+    _with_page(client)
+    client.signoff.may = True
+    client.signoff.states["rpt-1"].update(state="refused", reason="figures wrong")
+    r = client.get("/reports/jobs/rpt-1/page")
+    assert r.status_code == 409 and "figures wrong" in r.json()["detail"]

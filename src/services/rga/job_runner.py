@@ -78,7 +78,9 @@ def run_job(job_id: str, *, store: Any = _store,
             store.finish_released(
                 job_id, run_id=run.run_id, stage_reached=run.stage_reached,
                 deck=run.artefact.content, media_type=run.artefact.media_type,
-                filename=f"{run.report_type_id}_{run.run_id}.pptx")
+                filename=f"{run.report_type_id}_{run.run_id}.pptx",
+                page=run.page.content if run.page is not None else None,
+                page_media_type=run.page.media_type if run.page is not None else None)
             # Released is not yet allowed to leave: the policy decides whether a person
             # must sign it off first, and the trail records that one was asked for.
             if signoff.required(run.report_type_id):
