@@ -85,6 +85,26 @@ def test_rollback_sql_deletes_untouched_mirror_rows_before_dropping_the_map():
     assert text.index(delete) < text.index("DROP TABLE IF EXISTS proc.bp_triage_finding;")
 
 
+def test_finding_and_mirror_ids_are_uniquely_indexed(applied):
+    """One finding <-> at most one mirror: the sync triggers assume it, so a duplicate
+    would mean a decision made on one side never fans out to the other."""
+    cur = applied.cursor()
+    cur.execute("""SELECT indexname, indexdef FROM pg_indexes
+                   WHERE schemaname='proc' AND tablename='bp_triage_finding'
+                     AND indexname IN ('ix_bp_triage_finding_finding_unique',
+                                       'ix_bp_triage_finding_mirror_unique')""")
+    defs = dict(cur.fetchall())
+    assert set(defs) == {"ix_bp_triage_finding_finding_unique",
+                          "ix_bp_triage_finding_mirror_unique"}
+    assert "CREATE UNIQUE INDEX" in defs["ix_bp_triage_finding_finding_unique"]
+    assert "CREATE UNIQUE INDEX" in defs["ix_bp_triage_finding_mirror_unique"]
+    assert "mirror_id IS NOT NULL" in defs["ix_bp_triage_finding_mirror_unique"]
+    cur.execute("""SELECT indexname FROM pg_indexes
+                   WHERE schemaname='proc' AND tablename='bp_triage_finding'
+                     AND indexname IN ('ix_bp_triage_finding_finding', 'ix_bp_triage_finding_mirror')""")
+    assert cur.fetchall() == []   # the old plain indexes are gone, not just superseded
+
+
 def test_decision_sync_triggers_exist(applied):
     cur = applied.cursor()
     cur.execute("""SELECT tgname, tgrelid::regclass::text FROM pg_trigger

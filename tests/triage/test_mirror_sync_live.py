@@ -220,16 +220,28 @@ def other(ctx):
 
 def test_a_later_decision_in_the_same_transaction_still_syncs(ctx, pair, other):
     """The echo guard is transaction-local; it must be switched off again after each
-    sync, or every later decision in the transaction would be skipped."""
+    sync, or every later decision in the transaction would be skipped.
+
+    An explicit transaction (autocommit off, two separate .execute() calls, one commit)
+    proves the two UPDATEs share a transaction because we put them in one, not because
+    psycopg2 happened to send them as a single multi-statement query message -- that
+    accident of the wire protocol is not what production callers do."""
     fid_a, mid_a = pair
     fid_b, mid_b = other
     _detection_service_resolve(ctx, fid_a, "ignored", "accepted_risk", "buyer@x")
-    # Two statements sent together run as one implicit transaction.
-    ctx.conn.cursor().execute(
-        """UPDATE proc.bp_detection_finding SET status = 'resolved', lifecycle_status = 'resolved',
-                  resolved_by = 'boss@x', resolved_at = now() WHERE finding_id = %s;
-           UPDATE proc.bp_detection_finding SET status = 'resolved', lifecycle_status = 'resolved',
-                  resolved_by = 'boss@x', resolved_at = now() WHERE finding_id = %s""",
-        (fid_a, fid_b))
+    ctx.conn.autocommit = False
+    try:
+        cur = ctx.conn.cursor()
+        cur.execute(
+            """UPDATE proc.bp_detection_finding SET status = 'resolved', lifecycle_status = 'resolved',
+                      resolved_by = 'boss@x', resolved_at = now() WHERE finding_id = %s""",
+            (fid_a,))
+        cur.execute(
+            """UPDATE proc.bp_detection_finding SET status = 'resolved', lifecycle_status = 'resolved',
+                      resolved_by = 'boss@x', resolved_at = now() WHERE finding_id = %s""",
+            (fid_b,))
+        ctx.conn.commit()
+    finally:
+        ctx.conn.autocommit = True
     assert _mirror(ctx, mid_a) == ("resolved", "boss@x", True)
     assert _mirror(ctx, mid_b) == ("resolved", "boss@x", True)

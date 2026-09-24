@@ -126,7 +126,12 @@ SELECT 'TriageTolerancePolicy', 'limit',
 -- so a sync never bounces back (and cannot reopen the side that started it). It is set
 -- back to 'off' straight after, so a later decision in the same transaction still syncs.
 -- If the UPDATE raises, the whole transaction aborts and set_config(..., true) is undone
--- with it, so a stale 'on' can never survive into a commit.
+-- with it, so a stale 'on' can never survive into a commit. The same holds one level down:
+-- set_config's third argument is true, so the setting is transaction-local in the strict
+-- sense Postgres gives that GUC class -- rolling back to a SAVEPOINT (including a
+-- PL/pgSQL EXCEPTION block, which is a SAVEPOINT under the hood) also restores it to
+-- whatever it was before that SAVEPOINT, so an exception handler never needs to reset it
+-- by hand.
 --
 -- A finding can move straight from one closed state to the other (the gateway's
 -- POST /discrepancies/resolve writes 'resolved' or 'ignored' whatever the current state),
@@ -265,8 +270,15 @@ END;
 $$;
 
 -- The two decision-sync triggers look up the map by finding_id and by mirror_id on every
--- decision; without these each lookup scans the whole map.
-CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_finding ON proc.bp_triage_finding (finding_id);
-CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_mirror  ON proc.bp_triage_finding (mirror_id);
+-- decision; without these each lookup scans the whole map. Unique, not plain: the triggers
+-- assume one mirror per finding, and a second mirror sharing a finding_id (or a second
+-- finding sharing a mirror_id) would mean a decision made on one of the pair never fans out
+-- to the other, because the echo guard stops the sync after the first match it finds.
+DROP INDEX IF EXISTS proc.ix_bp_triage_finding_finding;
+DROP INDEX IF EXISTS proc.ix_bp_triage_finding_mirror;
+CREATE UNIQUE INDEX IF NOT EXISTS ix_bp_triage_finding_finding_unique
+    ON proc.bp_triage_finding (finding_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_bp_triage_finding_mirror_unique
+    ON proc.bp_triage_finding (mirror_id) WHERE mirror_id IS NOT NULL;
 
 COMMIT;
