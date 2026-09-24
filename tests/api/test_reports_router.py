@@ -825,3 +825,51 @@ def test_a_preview_that_cannot_be_drawn_is_422_with_reasons(client, editor):
     editor.page = (None, ["The report needs a title."])
     r = client.post("/reports/jobs/rpt-1/preview", json={"title": "", "ast": {"sections": []}})
     assert r.status_code == 422 and r.json()["detail"]["reasons"] == ["The report needs a title."]
+
+
+# ---------------------------------------------------------------------------
+# The last editor is self-approval too; the job view says what can be edited
+# ---------------------------------------------------------------------------
+def test_the_last_editor_cannot_sign_off_the_version_they_made(client, events, monkeypatch):
+    written = []
+    monkeypatch.setattr(rr, "record_action_or_fail", lambda **k: written.append(k))
+    _awaiting(client)
+    client.store.jobs["rpt-1"]["last_edited_by"] = CALLER
+    r = client.post("/reports/jobs/rpt-1/signoff", json={})
+    assert r.status_code == 403 and "you made the last edit" in r.json()["detail"]
+    assert client.signoff.decided is None and events == []
+    (row,) = written
+    assert (row["action_type"], row["status"]) == ("report.signoff", "denied")
+    assert row["details"]["evidence"] == {"rule": "self_approval", "requested_by": "buyer-1",
+                                          "last_edited_by": CALLER, "actioned_by": CALLER}
+
+
+def test_someone_other_than_the_editor_may_sign_off_an_edited_report(client, events):
+    _awaiting(client)
+    client.store.jobs["rpt-1"]["last_edited_by"] = "buyer-2"
+    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 200
+
+
+def test_the_last_editor_may_sign_off_when_the_policy_allows_self_approval(client, events):
+    _awaiting(client)
+    client.store.jobs["rpt-1"]["last_edited_by"] = CALLER
+    client.signoff.self_denied = False
+    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 200
+
+
+def test_the_job_view_says_whether_and_how_it_has_been_edited(client):
+    _awaiting(client)
+    client.store.jobs["rpt-1"].update(editable=True, current_version=2, last_edited_by="buyer-2",
+                                      title="Quarterly spend summary")
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert (body["editable"], body["current_version"], body["last_edited_by"], body["title"]) == \
+        (True, 2, "buyer-2", "Quarterly spend summary")
+
+
+def test_only_a_released_report_is_offered_for_editing(client):
+    client.post("/reports/generate", json=BODY)
+    client.store.jobs["rpt-1"].update(status="blocked", editable=False)
+    assert client.get("/reports/jobs/rpt-1").json()["editable"] is False
+    _release(client.store, "rpt-1")
+    client.store.jobs["rpt-1"]["editable"] = None            # from before the editor
+    assert client.get("/reports/jobs/rpt-1").json()["editable"] is False

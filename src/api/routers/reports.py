@@ -99,6 +99,11 @@ def _view(job: Dict[str, Any], s: Optional[Dict[str, Any]] = None) -> Dict[str, 
     out["has_page"] = bool(job.get("has_page"))
     out["page_ready"] = out["deck_ready"] and out["has_page"]
     out["page_review_available"] = out["review_available"] and out["has_page"]
+    # The light editor: a released report made with its Fact Pack stored can be edited;
+    # each saved edit is a new version, and its last editor cannot sign that version off.
+    out["editable"] = released and bool(job.get("editable"))
+    for key in ("current_version", "last_edited_by", "title"):
+        out[key] = job.get(key)
     return out
 
 
@@ -224,20 +229,32 @@ def _decide(job_id: str, verdict: str, reason: Optional[str], principal: Any) ->
          context={"job_id": job_id, "run_id": job.get("run_id"), "verdict": verdict})
     subject = getattr(principal, "subject", None) or None
     requester = job.get("requested_by")
-    # A job with no recorded requester cannot match anyone -- the email approvals' rule.
-    if signoff.self_approval_denied() and requester and subject and requester == subject:
+    # Self-approval covers the person who asked for the report AND the person who made its
+    # last edit (ruled 2026-09-24): whoever last chose its words cannot be the one who lets
+    # that version leave. A job with no recorded person cannot match anyone -- the email
+    # approvals' rule.
+    editor = job.get("last_edited_by")
+    own = [who for who in (requester, editor) if who and subject and who == subject]
+    if signoff.self_approval_denied() and own:
         # On the record, like the email approvals' self-approval refusal: the gate above has
         # already logged report.signoff as allowed, and this refusal must not leave no trace.
         # The raising writer -- a refusal that cannot be recorded is still a refusal.
+        evidence = {"rule": "self_approval", "requested_by": requester, "actioned_by": subject}
+        if editor:
+            evidence["last_edited_by"] = editor
+        by_editor = editor == subject
         record_action_or_fail(
             phase="authorize", action_type=signoff.ACTION, agent=_AGENT, status="denied",
-            summary="a report cannot be signed off by the person who asked for it",
+            summary=("a report version cannot be signed off by the person who made its last "
+                     "edit") if by_editor else
+                    "a report cannot be signed off by the person who asked for it",
             details={"job_id": job_id, "run_id": job.get("run_id"), "principal": subject,
                      "verdict": verdict, "policy_name": "ReportSignoffPolicy",
-                     "evidence": {"rule": "self_approval", "requested_by": requester,
-                                  "actioned_by": subject}})
+                     "evidence": evidence})
         raise HTTPException(status_code=403,
-                            detail="you asked for this report, so someone else must sign it off")
+                            detail="you made the last edit to this report, so someone else "
+                                   "must sign it off" if by_editor else
+                                   "you asked for this report, so someone else must sign it off")
     try:
         decided = signoff.decide(job_id, verdict=verdict, by=subject or "", reason=reason,
                                  policy_name="ReportSignoffAuthorityPolicy")
@@ -317,7 +334,8 @@ def _serve(job_id: str, principal: Any, fmt: str) -> Response:
                                        "made before pages existed")
         raise HTTPException(status_code=409, detail=f"report job {job_id} has no deck")
     content = found[0]
-    # A sign-off is for the files that were reviewed. Both are immutable, so a mismatch --
+    # A sign-off is for the files that were reviewed. An edit replaces them only as a new
+    # version, which the sign-off does not count for (signoff.state), so a mismatch here --
     # or a sign-off that never saw this file -- means this is not what was signed off.
     if s["state"] == "signed_off" and (not signed_hash
                                        or signoff.deck_hash(content) != signed_hash):
