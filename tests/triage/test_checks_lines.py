@@ -174,3 +174,54 @@ def test_negative_line_on_an_ordinary_invoice_is_a_note_not_a_finding():
                                              qty="1", price="5.00", amount="-5.00")]))
     r = _one(_run(check_unlinked_lines, ds))
     assert r.outcome == Outcome.ABSENT_SUBORDINATE and r.exposure == D("0")
+
+
+# --- the money behind each comparison (Action Centre "at stake") ---------------
+
+def test_unit_price_amounts_are_price_times_invoiced_quantity():
+    ds = deal(po(lines=[line(1, qty="300", price="12.00")]),
+              inv(lines=[line(1, qty="300", price="13.50")]))
+    r = _one(_run(check_unit_price, ds))
+    assert (r.claim_amount, r.auth_amount) == (D("4050"), D("3600"))
+
+
+def test_unit_price_within_tolerance_also_carries_amounts():
+    ds = deal(po(lines=[line(1, price="12.00")]), inv(lines=[line(1, price="12.10")]))
+    r = _one(_run(check_unit_price, ds))
+    assert r.outcome == Outcome.WITHIN_TOL
+    assert (r.claim_amount, r.auth_amount) == (D("121.0"), D("120.0"))
+
+
+def test_unit_price_without_a_quantity_has_no_amounts():
+    ds = deal(po(lines=[line(1, price="12.00")]),
+              inv(lines=[line(1, qty=None, price="13.50", amount="135")]))
+    r = _one(_run(check_unit_price, ds))
+    assert r.claim_amount is None and r.auth_amount is None
+
+
+def test_quantity_amounts_are_cumulative_and_ordered_quantity_times_price():
+    ds = deal(po(lines=[line(1, qty="10")]),
+              inv("INV-1", lines=[line(1, qty="6")], inv_date=date(2026, 2, 1)),
+              inv("INV-2", lines=[line(1, qty="6")], inv_date=date(2026, 3, 1)))
+    r = _one(_run(check_quantity, ds))
+    assert (r.claim_amount, r.auth_amount) == (D("144.00"), D("120.00"))
+    assert r.claim_amount - r.auth_amount == r.exposure
+
+
+def test_line_arithmetic_amounts_are_line_amount_and_qty_times_price():
+    ds = deal(po(), inv(lines=[line(1, amount="125.00")]))
+    r = _one(_run(check_line_arithmetic, ds))
+    assert (r.claim_amount, r.auth_amount) == (D("125.00"), D("120.00"))
+
+
+def test_unlinked_line_amounts_are_line_amount_against_zero():
+    ds = deal(po(), inv(lines=[line(1), line(2, item="FRT", desc="Expedited freight",
+                                           qty="1", price="120.00")]))
+    r = _one(_run(check_unlinked_lines, ds))
+    assert (r.claim_amount, r.auth_amount) == (D("120.00"), D("0"))
+
+
+def test_description_and_rollup_carry_no_amounts():
+    ds = deal(po(lines=[line(1, desc="Steel bolts M8")]), inv(lines=[line(1, desc="Office chair")]))
+    r = _one(_run(check_description, ds))
+    assert r.claim_amount is None and r.auth_amount is None

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from decimal import Decimal
 from typing import Iterable
 
 from psycopg2.extras import execute_values
@@ -227,6 +228,25 @@ def _insert(cur, run_id: str, f: Finding) -> int:
     return cur.fetchone()[0]
 
 
+def _mirror_values(f: Finding) -> tuple:
+    """(raw_value, expected_value) for the Action Centre row.
+
+    The Action Centre shows raw - expected as the money at stake and sums it per group,
+    so where every cause carries its money and an FX rate these are GBP totals over the
+    finding's causes. Otherwise (a currency or supplier mismatch, no FX rate) they stay
+    the lead's own values, which the Action Centre cannot read as money.
+    """
+    causes = f.causes
+    if f.lead.fx_to_gbp is not None and all(
+            r.claim_amount is not None and r.auth_amount is not None
+            and r.fx_to_gbp is not None for r in causes):
+        cent = Decimal("0.01")
+        claim = sum((r.claim_amount * r.fx_to_gbp for r in causes), Decimal("0"))
+        auth = sum((r.auth_amount * r.fx_to_gbp for r in causes), Decimal("0"))
+        return str(claim.quantize(cent)), str(auth.quantize(cent))
+    return f.lead.claim_value, f.lead.auth_value
+
+
 def _insert_mirror(cur, f: Finding, finding_id: int):
     """The finding's Action Centre row, or None for a rule that is not mirrored."""
     issue_type = MIRROR_ISSUE_TYPE.get(f.rule_id)
@@ -236,7 +256,7 @@ def _insert_mirror(cur, f: Finding, finding_id: int):
     cur.execute(_INSERT_MIRROR, (
         "purchase_order" if f.rule_id == "cumulative_total" else "invoice",
         f"triage:{f.deal_id}", r.claim_doc, f"{r.field_name} #{finding_id}",
-        r.claim_value, r.auth_value, issue_type,
+        *_mirror_values(f), issue_type,
         ACTION_CENTRE_SEVERITY[f.severity], f.text))
     return cur.fetchone()[0]
 
@@ -301,8 +321,7 @@ def write_batch(conn, run_id: str, outputs) -> dict:
                                 cur.execute(_TOUCH_MAP, (run_id, f.severity.name, fp))
                                 if mirror_id is not None:
                                     cur.execute(_UPDATE_MIRROR, (
-                                        f.lead.claim_value, f.lead.auth_value, v[3], v[14],
-                                        mirror_id))
+                                        *_mirror_values(f), v[3], v[14], mirror_id))
                                 else:   # written before mirrors existed
                                     mirror_id = _insert_mirror(cur, f, old_fid)
                                     if mirror_id is not None:

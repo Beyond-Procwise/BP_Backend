@@ -119,3 +119,53 @@ def test_blank_invoice_supplier_is_a_note():
 
 def test_blank_po_supplier_is_skipped():
     assert _run(check_supplier, deal(po(supplier=""), inv())) == []
+
+
+# --- the money behind each comparison (Action Centre "at stake") ---------------
+
+def test_invoice_totals_amounts():
+    rs = _run(check_invoice_totals, deal(po(), inv(net="130")))
+    net = next(r for r in rs if r.field_name == "net")
+    assert (net.claim_amount, net.auth_amount) == (D("130"), D("120"))
+    rs = _run(check_invoice_totals, deal(po(), inv(gross="150")))
+    gross = next(r for r in rs if r.field_name == "gross")
+    assert (gross.claim_amount, gross.auth_amount) == (D("150"), D("144.00"))
+
+
+def test_invoice_totals_net_amounts_are_magnitudes_on_a_credit_note():
+    rs = _run(check_invoice_totals,
+              deal(po(), inv("CN-1", lines=[line(1, amount="-120")], net="-130")))
+    net = next(r for r in rs if r.field_name == "net")
+    assert (net.claim_amount, net.auth_amount) == (D("130"), D("120"))
+
+
+def test_cumulative_total_amounts_are_invoiced_total_and_po_net():
+    r = _one(_run(check_cumulative_total, deal(po(), inv("INV-1"), inv("INV-2"))))
+    assert (r.claim_amount, r.auth_amount) == (D("240"), D("120"))
+
+
+def test_tax_rate_amounts_are_tax_and_tax_at_the_nearest_allowed_rate():
+    r = _one(_run(check_tax_rate, deal(po(), inv(tax="25"))))
+    assert (r.claim_amount, r.auth_amount) == (D("25"), D("24.00"))
+
+
+def test_duplicate_amounts_are_exposure_against_zero():
+    ds = deal(po(), inv("INV-1"), inv("INV-2"),
+              duplicates=[DuplicateFlag("INV-2", "INV-1", D("144"))])
+    r = _one(_run(check_duplicates, ds))
+    assert (r.claim_amount, r.auth_amount) == (D("120"), D("0"))
+
+
+def test_bad_po_ref_amounts_are_invoice_net_against_zero_and_no_po_has_none():
+    ds = deal(po(), inv("INV-1", po_id="PO-404"), inv("INV-2", po_id=None))
+    rs = {r.rule_id: r for r in _run(check_po_links, ds)}
+    assert (rs["bad_po_ref"].claim_amount, rs["bad_po_ref"].auth_amount) == (D("120"), D("0"))
+    assert rs["no_po"].claim_amount is None and rs["no_po"].auth_amount is None
+
+
+def test_header_checks_carry_no_amounts():
+    ds = deal(po(), inv(currency="EUR", supplier="SUP-2", inv_date=date(2026, 1, 1),
+                        terms="60 days"))
+    for check in (check_currency, check_supplier, check_invoice_date, check_payment_terms):
+        r = _one(_run(check, ds))
+        assert r.claim_amount is None and r.auth_amount is None, check.__name__

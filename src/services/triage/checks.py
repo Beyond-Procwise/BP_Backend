@@ -87,8 +87,11 @@ def check_unit_price(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         outcome = (Outcome.WITHIN_TOL if abs(diff) <= allow
                    else _fail(cfg, lk.confidence, lk.invoice, lk.po))
         qty = lk.inv_line.quantity or ZERO
+        amounts = ({} if lk.inv_line.quantity is None else
+                   dict(claim_amount=claim * lk.inv_line.quantity,
+                        auth_amount=auth * lk.inv_line.quantity))
         out.append(_r(ds, "unit_price", "money", outcome, lk.invoice, "unit_price",
-                      delta=diff, exposure=abs(diff * qty),
+                      delta=diff, exposure=abs(diff * qty), **amounts,
                       tolerance={**tol.as_dict(), "allowance": str(allow)}, **common))
     return out
 
@@ -132,8 +135,11 @@ def check_quantity(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         outcome = (Outcome.WITHIN_TOL if over <= allow
                    else _fail(cfg, link_conf, po, *invs))
         price = po_line.unit_price or last.inv_line.unit_price or ZERO
+        # No price on either line: there is no money to show, only units.
+        amounts = ({} if not price else
+                   dict(claim_amount=cum * price, auth_amount=po_line.quantity * price))
         out.append(_r(ds, "quantity", "quantity", outcome, last.invoice, "quantity",
-                      exposure=abs(over * price), note=f"invoiced on {invoices}",
+                      exposure=abs(over * price), note=f"invoiced on {invoices}", **amounts,
                       tolerance={**tol.as_dict(), "allowance": str(allow)}, **common))
     return out
 
@@ -155,6 +161,7 @@ def check_line_arithmetic(ds: DocumentSet, links: Links, cfg) -> list[Result]:
                           claim_line=l.line_ref, po_id=inv.po_ref,
                           claim_value=_s(l.line_amount), auth_value=_s(expected),
                           delta=diff, exposure=abs(diff), confidence=_doc_conf(inv),
+                          claim_amount=abs(l.line_amount), auth_amount=expected,
                           tolerance={"rounding": str(tol)}))
     return out
 
@@ -206,6 +213,9 @@ def check_unlinked_lines(ds: DocumentSet, links: Links, cfg) -> list[Result]:
                           auth_doc=lk.po.doc_id, po_id=lk.po.doc_id,
                           claim_value=lk.inv_line.description or lk.inv_line.item_id,
                           exposure=abs(lk.inv_line.line_amount or ZERO),
+                          **({} if lk.inv_line.line_amount is None else
+                             dict(claim_amount=abs(lk.inv_line.line_amount),
+                                  auth_amount=ZERO)),
                           confidence=_doc_conf(lk.invoice)))
     return out
 
@@ -226,6 +236,7 @@ def check_invoice_totals(ds: DocumentSet, links: Links, cfg) -> list[Result]:
             out.append(_r(ds, "invoice_totals", "money", outcome, inv, "net",
                           po_id=inv.po_ref, claim_value=_s(inv.net), auth_value=_s(total),
                           delta=diff, exposure=abs(diff), confidence=_doc_conf(inv),
+                          claim_amount=abs(inv.net), auth_amount=abs(total),
                           tolerance={"rounding": str(allow)}))
         if inv.net is not None and inv.tax is not None and inv.gross is not None:
             expected = inv.net + inv.tax
@@ -235,6 +246,7 @@ def check_invoice_totals(ds: DocumentSet, links: Links, cfg) -> list[Result]:
             out.append(_r(ds, "invoice_totals", "money", outcome, inv, "gross",
                           po_id=inv.po_ref, claim_value=_s(inv.gross),
                           auth_value=_s(expected), delta=diff, exposure=abs(diff),
+                          claim_amount=inv.gross, auth_amount=expected,
                           confidence=_doc_conf(inv), tolerance={"rounding": str(tol)}))
     return out
 
@@ -255,7 +267,8 @@ def check_cumulative_total(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         total = sum((i.net for i in invs if i.net is not None), ZERO)
         over = total - p.net
         common = dict(auth_doc=p.doc_id, po_id=p.doc_id, claim_value=_s(total),
-                      auth_value=_s(p.net), delta=over,
+                      auth_value=_s(p.net), delta=over, claim_amount=total,
+                      auth_amount=p.net,
                       note="invoiced by " + ", ".join(sorted(i.doc_id for i in invs)),
                       confidence=_doc_conf(p, *invs))
         if over <= 0:
@@ -291,6 +304,7 @@ def check_tax_rate(ds: DocumentSet, links: Links, cfg) -> list[Result]:
                    Outcome.WITHIN_TOL if abs(diff) <= allow else _fail(cfg, 1.0, inv))
         out.append(_r(ds, "tax_rate", "money", outcome, inv, "tax", po_id=inv.po_ref,
                       claim_value=f"{implied:.2f}%", auth_value=f"{nearest}%", delta=diff,
+                      claim_amount=inv.tax, auth_amount=expected,
                       exposure=abs(diff), confidence=_doc_conf(inv),
                       tolerance={"allowed_rates": [str(r) for r in rates],
                                  "rounding": str(allow)}))
@@ -391,7 +405,8 @@ def check_duplicates(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         out.append(_r(ds, "duplicate", "money", Outcome.CONFLICT, inv, "invoice_id",
                       auth_doc=flag.earlier_invoice_id, po_id=p.doc_id if p else None,
                       claim_value=inv.doc_id, auth_value=flag.earlier_invoice_id,
-                      exposure=exposure, confidence=_doc_conf(inv),
+                      exposure=exposure, claim_amount=exposure, auth_amount=ZERO,
+                      confidence=_doc_conf(inv),
                       note="flagged by the duplicate-invoice detector"))
     return out
 
@@ -404,6 +419,8 @@ def check_po_links(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         if inv.doc_id in links.bad_refs:
             out.append(_r(ds, "bad_po_ref", "reference", Outcome.ABSENT_AUTHORITATIVE, inv,
                           "po_id", claim_value=inv.po_ref, exposure=abs(inv.net or ZERO),
+                          **({} if inv.net is None else
+                             dict(claim_amount=abs(inv.net), auth_amount=ZERO)),
                           confidence=_doc_conf(inv)))
         elif inv.doc_id in links.no_ref:
             out.append(_r(ds, "no_po", "reference", Outcome.ABSENT_AUTHORITATIVE, inv,

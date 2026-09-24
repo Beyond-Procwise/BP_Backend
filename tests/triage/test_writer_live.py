@@ -337,7 +337,9 @@ def test_a_rerun_updates_the_same_mirror_row(ctx):
     assert counts["updated"] == 1
     (after,) = _mirrors(ctx)
     assert after[0] == first[0] and _map(ctx)[0][1] == first[0]
-    assert (first[5], after[5]) == ("30.50", "30.60")
+    # the mirror carries money (300 x price, in GBP), not the per-unit price
+    assert (first[5], after[5]) == ("9150.00", "9180.00")
+    assert (first[6], after[6]) == ("9000.00", "9000.00")
     assert (first[7], after[7]) == (None, None) and after[10] == "open"
     assert after[11] != first[11]
 
@@ -448,3 +450,33 @@ def test_a_flagged_mirror_keeps_its_finding_open_when_the_problem_goes(ctx):
     assert counts["superseded"] == 0
     assert [(r[3], r[4]) for r in _findings(ctx)] == [("open", "open")]
     assert _mirrors(ctx) == [mirror]
+
+
+# --- the mirror row carries money, so the Action Centre's "at stake" is right ---------
+
+def _price_error_deal(ctx):
+    return deal(po(lines=[line(1, qty="300", price="12.00")]),
+                inv(lines=[line(1, qty="300", price="13.50")]), deal_id=ctx.deal_id)
+
+
+def test_the_price_error_mirror_row_carries_money(ctx):
+    _write(ctx, _price_error_deal(ctx))
+    (mirror,) = _mirrors(ctx)
+    assert mirror[8] == "unit_price_differs_from_po"
+    assert (mirror[5], mirror[6]) == ("4050.00", "3600.00")
+    cur = ctx.conn.cursor()
+    cur.execute("SELECT observed_value, expected_value FROM proc.bp_detection_finding "
+                "WHERE deal_id = %s", (ctx.deal_id,))
+    assert cur.fetchall() == [("INV-1: 13.50", "PO-1: 12.00")]   # the finding keeps its text
+
+
+def test_a_rerun_gives_an_old_text_valued_mirror_row_its_money(ctx):
+    _write(ctx, _price_error_deal(ctx))
+    (mirror,) = _mirrors(ctx)
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_extraction_discrepancy SET raw_value = '6', expected_value = '3.00' "
+        "WHERE discrepancy_id = %s", (mirror[0],))
+    _run_id, counts = _write(ctx, _price_error_deal(ctx))
+    assert counts["updated"] == 1
+    (after,) = _mirrors(ctx)
+    assert after[0] == mirror[0] and (after[5], after[6]) == ("4050.00", "3600.00")

@@ -164,6 +164,10 @@ class Result:
     fx_to_gbp: Optional[Decimal] = None
     fx_rate_date: Optional[datetime] = None
     basis_total: Optional[Decimal] = None  # claim document total, for the materiality threshold
+    # The money behind the comparison, in document currency: claim_amount - auth_amount
+    # IS the money at stake. None where the comparison is not about an amount.
+    claim_amount: Optional[Decimal] = None
+    auth_amount: Optional[Decimal] = None
     confidence: float = 1.0
     tolerance: dict = field(default_factory=dict)
     note: str = ""
