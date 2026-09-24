@@ -4,18 +4,23 @@ One row per request in ``proc.bp_report_job`` (deploy/sql/2026-09-24_bp_report_j
 The table holds the two rules that matter, so a bug here cannot break them:
 one active job per report, scope and day; and a deck only on a released job.
 
-OWNER, AND WHY A RESTART FAILS A JOB RATHER THAN RESUMING IT
+WHY A RESTART FAILS A JOB RATHER THAN RESUMING IT, AND HOW ONE IS SPOTTED
 
-The worker is a thread in this process. A job accepted by a process that has
-since exited will never finish, and a status that reads "running" forever is
-worse than one that says what happened. Each process mints ``OWNER`` once; a
-queued or running job owned by anyone else is healed to failed when it is next
-read, and before a new request for the same report so it cannot block one.
-Re-running it instead would be a second model call nobody asked for.
+The worker is a thread in the process that accepted the job. If that process
+exits, the job will never finish, and a status that reads "running" forever is
+worse than one that says what happened. Re-running it instead would be a second
+model call nobody asked for.
 
-That rule assumes one API process -- procwise.service runs ``--workers 1``. A
-second worker would heal the first's live jobs; move the queue out of process
-before adding one.
+A job is spotted as stranded by its HEARTBEAT, not by who is reading it: the
+worker stamps ``heartbeat_at`` on every job its process holds every 30 seconds
+(``beat``), and a queued or running job whose stamp is older than
+``STALE_SECONDS`` is healed to failed when next read or listed, and before a
+repeat request for the same report so it cannot block one. The first version
+healed by owner, which meant any OTHER process -- a test run, a second server --
+failed the main server's live report the moment it listed the jobs.
+
+``OWNER`` still decides who may CLAIM a job: a job runs in the process whose
+queue it was put on, never in another that happens to read it.
 
 Every statement here is a single statement on an autocommit connection, which
 is what ``get_conn`` hands out (see reference_get_conn_is_autocommit): the
@@ -33,6 +38,9 @@ from src.services.db import get_conn
 OWNER = f"proc-{uuid.uuid4().hex[:12]}"
 
 ACTIVE = ("queued", "running")
+#: Four missed beats. Long enough that a busy GPU never starves the heartbeat
+#: thread into a false alarm; short enough that a restart shows within minutes.
+STALE_SECONDS = 120
 _RESTARTED = ("The report was interrupted by a server restart before it finished. "
               "Please run it again.")
 
@@ -59,11 +67,23 @@ def _row(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
     return job
 
 
-def _heal(cur: Any, where: str, param: str) -> None:
+_STRANDED = ("status IN %s AND heartbeat_at < now() - make_interval(secs => %s)")
+
+
+def _heal(cur: Any, where: Optional[str] = None, param: Optional[str] = None) -> None:
+    """Fail the stranded jobs -- all of them, or those where ``where = param``."""
+    scoped = f"{where} = %s AND " if where else ""
     cur.execute(
         "UPDATE proc.bp_report_job SET status = 'failed', error = %s, finished_at = now() "
-        f"WHERE {where} = %s AND status IN %s AND owner <> %s",
-        (_RESTARTED, param, ACTIVE, OWNER))
+        f"WHERE {scoped}{_STRANDED}",
+        (_RESTARTED, *((param,) if where else ()), ACTIVE, STALE_SECONDS))
+
+
+def beat() -> None:
+    """Vouch for every job this process holds. Called by the worker's heartbeat."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_report_job SET heartbeat_at = now() "
+                    "WHERE owner = %s AND status IN %s", (OWNER, ACTIVE))
 
 
 def create(report_type: str, *, scope: Dict[str, Any], as_of: str,
@@ -105,6 +125,15 @@ def get(job_id: str) -> Optional[Dict[str, Any]]:
         _heal(cur, "job_id", job_id)
         cur.execute(f"{_SELECT} WHERE job_id = %s", (job_id,))
         return _row(cur.fetchone())
+
+
+def recent(limit: int) -> List[Dict[str, Any]]:
+    """The newest jobs, everyone's, without their decks. Heals the stranded first
+    so the list never shows a job as running that no process is running."""
+    with get_conn() as conn, conn.cursor() as cur:
+        _heal(cur)
+        cur.execute(f"{_SELECT} ORDER BY requested_at DESC LIMIT %s", (limit,))
+        return [_row(r) for r in cur.fetchall()]
 
 
 def claim(job_id: str) -> bool:

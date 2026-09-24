@@ -111,18 +111,27 @@ def test_the_table_refuses_a_deck_on_a_job_that_was_not_released(rtype):
                         "WHERE job_id=%s", (b"x", job["job_id"]))
 
 
-def test_a_job_stranded_by_a_restart_is_healed_to_failed(rtype, monkeypatch):
+def _stale(job_id):
+    """What a restart leaves behind: a job nobody has vouched for in minutes."""
+    from src.services.db import get_conn
+
+    with get_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE proc.bp_report_job SET heartbeat_at = now() - interval '10 minutes' "
+                    "WHERE job_id = %s", (job_id,))
+
+
+def test_a_job_stranded_by_a_restart_is_healed_to_failed(rtype):
     job, _ = _new(rtype)
     job_store.claim(job["job_id"])
-    monkeypatch.setattr(job_store, "OWNER", "a-later-process")
+    _stale(job["job_id"])
     got = job_store.get(job["job_id"])
     assert got["status"] == "failed"
     assert "restart" in got["error"]
 
 
-def test_a_stranded_job_does_not_block_a_new_request(rtype, monkeypatch):
+def test_a_stranded_job_does_not_block_a_new_request(rtype):
     first, _ = _new(rtype)
-    monkeypatch.setattr(job_store, "OWNER", "a-later-process")
+    _stale(first["job_id"])
     second, created = _new(rtype)
     assert created is True and second["job_id"] != first["job_id"]
     assert job_store.get(first["job_id"])["status"] == "failed"
@@ -131,3 +140,34 @@ def test_a_stranded_job_does_not_block_a_new_request(rtype, monkeypatch):
 def test_an_unknown_job_is_none():
     assert job_store.get("rpt-does-not-exist") is None
     assert job_store.deck("rpt-does-not-exist") is None
+
+
+def test_recent_lists_newest_first_and_heals_the_stranded(rtype):
+    first, _ = _new(rtype)
+    second, _ = job_store.create(rtype, scope={**SCOPE, "period_end": "2026-02-28"},
+                                 as_of=AS_OF, requested_by="t")
+    _stale(first["job_id"]); _stale(second["job_id"])
+    mine = [j for j in job_store.recent(50) if j["report_type"] == rtype]
+    assert [j["job_id"] for j in mine] == [second["job_id"], first["job_id"]]
+    assert {j["status"] for j in mine} == {"failed"}
+    assert all("deck" not in j for j in mine)
+
+
+def test_another_process_never_fails_a_job_that_is_still_beating(rtype, monkeypatch):
+    """The reason for the heartbeat. Owner-based healing let ANY other process --
+    a test run, a second server -- fail the main server's running report the
+    moment it listed the jobs."""
+    job, _ = _new(rtype)
+    job_store.claim(job["job_id"])
+    monkeypatch.setattr(job_store, "OWNER", "some-other-process")
+    job_store.recent(50)
+    assert job_store.get(job["job_id"])["status"] == "running"
+    job_store.create(rtype, scope=SCOPE, as_of=AS_OF, requested_by="t")
+    assert job_store.get(job["job_id"])["status"] == "running"
+
+
+def test_a_beat_keeps_this_process_s_jobs_alive(rtype):
+    job, _ = _new(rtype)
+    _stale(job["job_id"])
+    job_store.beat()
+    assert job_store.get(job["job_id"])["status"] == "queued"

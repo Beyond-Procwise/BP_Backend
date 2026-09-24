@@ -4,6 +4,7 @@ Composing a report takes the local model minutes, too long to hold a request
 open, so the door files a job and answers at once:
 
     POST /reports/generate           -> 202 {job_id, status: queued}
+    GET  /reports/jobs               -> the newest jobs, without their decks
     GET  /reports/jobs/{job_id}      -> queued | running | released | blocked | failed
     GET  /reports/jobs/{job_id}/deck -> the .pptx, for a released job only
 
@@ -106,6 +107,13 @@ def generate(body: GenerateBody, principal=Depends(require_user)):
         job_runner.submit(job["job_id"])
     return {"job_id": job["job_id"], "status": job["status"],
             "already_requested": not created}
+
+
+@router.get("/jobs")
+def list_jobs(limit: int = 20):
+    """Recent jobs, newest first, without their decks. Not gated, like a single
+    status poll: the Reports screen reloads it while a job runs."""
+    return {"jobs": [_view(j) for j in job_store.recent(max(1, min(limit, 50)))]}
 
 
 @router.get("/jobs/{job_id}")

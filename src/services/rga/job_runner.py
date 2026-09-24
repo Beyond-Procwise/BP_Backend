@@ -15,6 +15,8 @@ Fact Pack id -- derived from scope and as-of -- still matches the request.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -25,9 +27,35 @@ logger = logging.getLogger(__name__)
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rga-report")
 
+# The heartbeat is its own thread, not a step of the worker: the worker spends
+# minutes inside one model call, and a job queued behind it must stay vouched
+# for all that time. See job_store's docstring for what a missed beat means.
+_HEARTBEAT_SECONDS = 30
+_heartbeat = None
+_heartbeat_lock = threading.Lock()
+
+
+def _beat_forever() -> None:
+    while True:
+        try:
+            _store.beat()
+        except Exception:  # noqa: BLE001 - one missed beat is not a reason to stop
+            logger.exception("rga: report job heartbeat failed")
+        time.sleep(_HEARTBEAT_SECONDS)
+
+
+def _ensure_heartbeat() -> None:
+    global _heartbeat
+    with _heartbeat_lock:
+        if _heartbeat is None or not _heartbeat.is_alive():
+            _heartbeat = threading.Thread(target=_beat_forever, daemon=True,
+                                          name="rga-report-heartbeat")
+            _heartbeat.start()
+
 
 def submit(job_id: str) -> None:
     """Queue a filed job. Returns at once."""
+    _ensure_heartbeat()
     _EXECUTOR.submit(run_job, job_id)
 
 

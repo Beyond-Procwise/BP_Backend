@@ -92,3 +92,25 @@ def test_a_job_already_claimed_is_not_run_twice():
 
 def test_the_worker_runs_one_report_at_a_time():
     assert job_runner._EXECUTOR._max_workers == 1
+
+
+def test_submitting_starts_one_heartbeat_that_keeps_beating(monkeypatch):
+    import threading
+
+    beats = threading.Event()
+    calls = []
+
+    def beat():
+        calls.append(1)
+        if len(calls) >= 2:
+            beats.set()
+
+    monkeypatch.setattr(job_runner, "_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(job_runner._store, "beat", beat)
+    monkeypatch.setattr(job_runner, "_heartbeat", None)
+    monkeypatch.setattr(job_runner._EXECUTOR, "submit", lambda *a, **k: None)
+    job_runner.submit("rpt-1")
+    first = job_runner._heartbeat
+    job_runner.submit("rpt-2")
+    assert job_runner._heartbeat is first            # one thread, not one per job
+    assert beats.wait(2), "the heartbeat never beat twice"

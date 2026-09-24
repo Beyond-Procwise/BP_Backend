@@ -48,6 +48,11 @@ class FakeStore:
     def deck(self, job_id):
         return self.decks.get(job_id)
 
+    def recent(self, limit):
+        self.recent_limit = limit
+        jobs = sorted(self.jobs.values(), key=lambda j: j["job_id"], reverse=True)
+        return [dict(j) for j in jobs[:limit]]
+
 
 @pytest.fixture
 def client(monkeypatch):
@@ -238,3 +243,22 @@ def test_replies_survive_the_output_safety_boundary(client, monkeypatch):
     for reply in (started, status):
         assert osafe.scrub_payload(reply, where="test") == reply
     assert status["deck_ready"] is True
+
+
+def test_recent_jobs_are_listed_newest_first_without_bytes(client):
+    client.post("/reports/generate", json=BODY)
+    client.post("/reports/generate", json={**BODY, "period_end": "2026-02-28"})
+    _release(client.store, "rpt-1")
+    r = client.get("/reports/jobs")
+    assert r.status_code == 200
+    jobs = r.json()["jobs"]
+    assert [j["job_id"] for j in jobs] == ["rpt-2", "rpt-1"]
+    assert [j["deck_ready"] for j in jobs] == [False, True]
+    assert all("deck" not in j for j in jobs)
+    assert client.store.recent_limit == 20
+
+
+@pytest.mark.parametrize("asked, used", [("5", 5), ("0", 1), ("500", 50)])
+def test_the_list_is_bounded(client, asked, used):
+    client.get(f"/reports/jobs?limit={asked}")
+    assert client.store.recent_limit == used
