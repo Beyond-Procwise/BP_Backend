@@ -102,3 +102,12 @@ def test_the_record_is_complete(ast, pack, brief):
     assert art.coverage_disclosure in joined
     assert brief.disclosure() in joined
     assert f"pack {pack.pack_id}" in joined and art.ast_hash[:12] in joined
+
+
+def test_a_chart_value_is_never_clipped_at_the_margin(ast, pack, brief):
+    """Printed to PDF 2026-09-24: "£5.8M [F0001] · CORROBORATED" ran past the right margin --
+    the value column was a fixed 26% of an A4 text width. It now takes the width its text
+    needs (auto, no wrapping) and the bar gives way instead."""
+    css = _css(page.render(ast, pack, brief).content)
+    assert "grid-template-columns:34%minmax(0,1fr)auto" in css
+    assert ".bar-row.fig{white-space:nowrap" in css

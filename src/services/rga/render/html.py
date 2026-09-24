@@ -227,8 +227,9 @@ tr {{ break-inside: avoid; }}
 th {{ background: {c['ocean_dark']}; color: {c['paper']}; text-align: left; padding: 2mm 3mm; }}
 td {{ border-bottom: 0.75pt solid {c['rule']}; padding: 2mm 3mm; vertical-align: top; }}
 .chart {{ margin: 0 0 6mm; }}
-.bar-row {{ display: grid; grid-template-columns: 36% 38% 26%; align-items: center; gap: 2mm;
+.bar-row {{ display: grid; grid-template-columns: 34% minmax(0, 1fr) auto; align-items: center; gap: 3mm;
   margin-bottom: 1.5mm; break-inside: avoid; font-size: 9pt; }}
+.bar-row .fig {{ white-space: nowrap; }}
 .bar {{ height: 4mm; background: {c['ocean']}; }}
 .findings {{ margin: 0 0 6mm; padding-left: 5mm; font-size: 9.5pt; }}
 .findings li {{ break-inside: avoid; margin-bottom: 1mm; }}
