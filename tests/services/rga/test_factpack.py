@@ -199,3 +199,10 @@ class TestUnmeasuredReasonsCarryNoNumbers:
 
         gaps = [f for f in fb.findings if f.code == FindingCode.MEASURE_UNAVAILABLE]
         assert len(gaps) == 5  # spend, match rate, cycle, identified, realised
+
+
+def test_a_pack_id_can_be_known_before_the_pack_is_built(stub_type):
+    """So a job can carry its run id from the start, and a run interrupted before
+    its pack was built still has a trace id to close its trail under."""
+    pack = build_fact_pack(stub_type, scope=SCOPE, as_of="2026-03-31", emit_audit=False)
+    assert factpack.pack_id_for(stub_type, SCOPE, "2026-03-31") == pack.pack_id

@@ -20,6 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
+from src.services.rga import audit
 from src.services.rga import job_store as _store
 from src.services.rga.pipeline import generate_report as _generate
 
@@ -65,9 +66,14 @@ def run_job(job_id: str, *, store: Any = _store,
     if not store.claim(job_id):
         # Already claimed, finished, or healed after a restart: not ours to run.
         return
+    job = None
     try:
         job = store.get(job_id)
-        run = generate(job["report_type"], scope=job["scope"], as_of=job["as_of"])
+        # Every event this run writes, from any module, carries the job id and
+        # who asked; SCOPE also records the entitlement the job was filed under.
+        with audit.run_context(job_id=job_id, requested_by=job.get("requested_by"),
+                               entitlement=job.get("entitlement")):
+            run = generate(job["report_type"], scope=job["scope"], as_of=job["as_of"])
         if run.released and run.artefact is not None:
             store.finish_released(
                 job_id, run_id=run.run_id, stage_reached=run.stage_reached,
@@ -81,7 +87,17 @@ def run_job(job_id: str, *, store: Any = _store,
                           for f in run.findings if f.blocks_release])
     except Exception as exc:  # noqa: BLE001 - a dead worker would strand the job
         logger.exception("rga: report job %s failed", job_id)
+        error = f"The report could not be built: {exc}"
         try:
-            store.finish_failed(job_id, f"The report could not be built: {exc}")
+            store.finish_failed(job_id, error)
         except Exception:  # noqa: BLE001
             logger.exception("rga: could not mark report job %s failed", job_id)
+        # Close the trail: a crash otherwise leaves events that just stop.
+        try:
+            with audit.run_context(job_id=job_id,
+                                   requested_by=(job or {}).get("requested_by")):
+                audit.emit(audit.RUN_FAILED, run_id=(job or {}).get("run_id") or job_id,
+                           agent="rga_job_runner", status="failed", summary=error,
+                           details={"reason": "crashed", "error": type(exc).__name__})
+        except Exception:  # noqa: BLE001
+            logger.exception("rga: could not audit the failure of report job %s", job_id)

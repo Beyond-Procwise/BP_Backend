@@ -29,9 +29,11 @@ prompt hash — enough to identify the call, short of costing it.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import logging
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +54,41 @@ APPROVAL_DENIED = "report.approval_denied"
 RELEASED = "report.released"
 STYLE_CHANGE_PROPOSED = "report.style_change_proposed"
 STYLE_CHANGE_PROMOTED = "report.style_change_promoted"
+# Not in the brief's list. A run that crashed, or was stranded by a restart,
+# otherwise leaves a trail that just stops -- indistinguishable from one still
+# going. This closes it.
+RUN_FAILED = "report.run_failed"
 
 #: Events that must not happen unless they can be audited.
 IRREVERSIBLE = frozenset({
     RELEASED, APPROVAL_GRANTED, APPROVAL_DENIED, STYLE_CHANGE_PROMOTED,
 })
+
+
+# WHICH RUN AN EVENT BELONGS TO
+#
+# The run id is the Fact Pack id, derived from report, scope and as-of, so two
+# runs of one quarter on one day share it (by design: DoD3 rests on it). A job
+# sets this context around its run; ``emit`` stamps job_id and requested_by onto
+# every event written inside it, from whichever module writes it, so each run's
+# trail can be separated from another's. The entitlement decision rides here
+# too, and the pipeline repeats it on report.scope_resolved only.
+_RUN_CONTEXT: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
+    "rga_run_context", default={})
+_STAMPED = ("job_id", "requested_by")
+
+
+@contextmanager
+def run_context(**values: Any) -> Iterator[None]:
+    token = _RUN_CONTEXT.set({k: v for k, v in values.items() if v is not None})
+    try:
+        yield
+    finally:
+        _RUN_CONTEXT.reset(token)
+
+
+def current_context() -> Dict[str, Any]:
+    return dict(_RUN_CONTEXT.get())
 
 
 def prompt_hash(prompt: str) -> str:
@@ -87,6 +119,8 @@ def emit(
     everything else uses the one that does not.
     """
     payload: Dict[str, Any] = {"run_id": run_id}
+    context = _RUN_CONTEXT.get()
+    payload.update({k: context[k] for k in _STAMPED if k in context})
     if pack_hash:
         payload["pack_hash"] = pack_hash
     payload.update(details or {})

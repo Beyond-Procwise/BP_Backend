@@ -97,12 +97,25 @@ def generate(body: GenerateBody, principal=Depends(require_user)):
                             detail=f"no report type {body.report_type!r}; "
                                    f"available: {registered_types()}")
     scope = body.scope()
-    gate("report.generate", principal, agent=_AGENT,
-         context={"report_type": body.report_type, "scope": scope})
+    decision = gate("report.generate", principal, agent=_AGENT,
+                    context={"report_type": body.report_type, "scope": scope})
+    subject = getattr(principal, "subject", None) or None
+    evidence = getattr(decision, "evidence", None) or {}
+    # The gate's own audit row has no trace id, so the job keeps the decision and
+    # the run repeats it on report.scope_resolved. `shadowed` is read from the
+    # evidence, never inferred from `allowed`: under shadow mode a refusal is
+    # recorded as allowed (docs/rga/build-report.md §6).
+    entitlement = {"action": "report.generate", "principal": subject,
+                   "allowed": bool(getattr(decision, "allowed", False)),
+                   "role": evidence.get("role"),
+                   "policy_name": getattr(decision, "policy_name", None),
+                   "policy_version": getattr(decision, "policy_version", None),
+                   "resolution": getattr(decision, "resolution", None),
+                   "shadowed": bool(evidence.get("shadowed"))}
 
     job, created = job_store.create(
         body.report_type, scope=scope, as_of=dt.date.today().isoformat(),
-        requested_by=getattr(principal, "subject", None) or None)
+        requested_by=subject, entitlement=entitlement)
     if created:
         job_runner.submit(job["job_id"])
     return {"job_id": job["job_id"], "status": job["status"],

@@ -246,3 +246,50 @@ class TestRegeneration:
             as_of="2026-03-31", ast=hand_written, emit_audit=False)
 
         assert second.run_id != first.run_id
+
+
+class TestRunContext:
+    """Every event a job's run writes can be told apart from another run's.
+
+    The run id is the Fact Pack id, derived from report, scope and as-of, so two
+    runs of the same quarter on the same day share it -- live 2026-09-24 a blocked
+    and a released Q2 run interleaved under one trace id with nothing to separate
+    them. The job id and the requester ride on every event, and the SCOPE event
+    carries the entitlement decision the job was filed under."""
+
+    ENT = {"action": "report.generate", "principal": "buyer-1", "allowed": True,
+           "role": "Buyer", "policy_name": "RoleDefinitionPolicy",
+           "resolution": "resolved", "shadowed": False}
+
+    def test_every_event_carries_the_job_and_who_asked(self, stub_type, hand_written):
+        writer = Recorder()
+        with audit.run_context(job_id="rpt-9", requested_by="buyer-1", entitlement=self.ENT):
+            run(stub_type, hand_written, writer=writer)
+        assert len(writer.rows) == 7
+        for row in writer.rows:          # factpack_built included
+            assert row["details"]["job_id"] == "rpt-9", row["action_type"]
+            assert row["details"]["requested_by"] == "buyer-1", row["action_type"]
+
+    def test_the_scope_event_records_the_entitlement_decision(self, stub_type, hand_written):
+        writer = Recorder()
+        with audit.run_context(job_id="rpt-9", requested_by="buyer-1", entitlement=self.ENT):
+            run(stub_type, hand_written, writer=writer)
+        scope = [r for r in writer.rows if r["action_type"] == audit.SCOPE_RESOLVED][0]
+        assert scope["details"]["entitlement_checked"] is True
+        assert scope["details"]["entitlement"] == self.ENT
+
+    def test_a_direct_call_says_no_entitlement_was_checked(self, stub_type, hand_written):
+        """Honest outside a job: a script calling the pipeline passed no gate."""
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+        scope = [r for r in writer.rows if r["action_type"] == audit.SCOPE_RESOLVED][0]
+        assert scope["details"]["entitlement_checked"] is False
+        assert "entitlement" not in scope["details"]
+        assert all("job_id" not in r["details"] for r in writer.rows)
+
+    def test_the_context_ends_with_the_block_even_on_error(self):
+        with pytest.raises(RuntimeError):
+            with audit.run_context(job_id="rpt-9"):
+                assert audit.current_context()["job_id"] == "rpt-9"
+                raise RuntimeError("boom")
+        assert audit.current_context() == {}

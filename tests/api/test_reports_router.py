@@ -28,8 +28,9 @@ class FakeStore:
     def __init__(self):
         self.jobs, self.decks, self.created = {}, {}, []
 
-    def create(self, report_type, *, scope, as_of, requested_by):
+    def create(self, report_type, *, scope, as_of, requested_by, entitlement=None):
         self.created.append((report_type, scope, as_of, requested_by))
+        self.entitlement = entitlement
         for job in self.jobs.values():
             if job["status"] in ("queued", "running") and job["scope"] == scope:
                 return dict(job), False
@@ -262,3 +263,17 @@ def test_recent_jobs_are_listed_newest_first_without_bytes(client):
 def test_the_list_is_bounded(client, asked, used):
     client.get(f"/reports/jobs?limit={asked}")
     assert client.store.recent_limit == used
+
+
+def test_the_entitlement_decision_is_filed_with_the_job(client, monkeypatch):
+    """The gate's audit row carries no trace id, so the job keeps the decision it
+    was filed under -- including whether shadow mode suppressed a refusal."""
+    shadowed = guardrail.Decision(allowed=True, reason="denied, shadowed",
+                                  policy_name="RoleDefinitionPolicy", policy_version=3,
+                                  evidence={"role": "Viewer", "shadowed": True})
+    monkeypatch.setattr(rr, "gate", lambda *a, **k: shadowed)
+    client.post("/reports/generate", json=BODY)
+    assert client.store.entitlement == {
+        "action": "report.generate", "principal": CALLER, "allowed": True,
+        "role": "Viewer", "policy_name": "RoleDefinitionPolicy", "policy_version": 3,
+        "resolution": "resolved", "shadowed": True}

@@ -203,6 +203,18 @@ class FactBuilder:
         return found
 
 
+def pack_id_for(report_type_id: str, scope: Dict[str, Any], as_of: str) -> str:
+    """The id a pack for these inputs will have -- known before it is built, so a
+    job can carry its run id from the start."""
+    from src.services.rga.models import canonical_hash
+
+    return "FP-" + canonical_hash({
+        "report_type_id": report_type_id,
+        "scope": scope,
+        "as_of": as_of,
+    })[:12]
+
+
 def build_fact_pack(
     report_type_id: str,
     *,
@@ -226,14 +238,7 @@ def build_fact_pack(
             f"registered types are {registered_types()}")
 
     resolved_as_of = as_of or date.today().isoformat()
-
-    from src.services.rga.models import canonical_hash
-
-    pack_id = "FP-" + canonical_hash({
-        "report_type_id": report_type_id,
-        "scope": scope,
-        "as_of": resolved_as_of,
-    })[:12]
+    pack_id = pack_id_for(report_type_id, scope, resolved_as_of)
 
     builder = FactBuilder(pack_id=pack_id, scope=scope, as_of=resolved_as_of)
     _BUILDERS[report_type_id](builder)

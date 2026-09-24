@@ -24,11 +24,11 @@ and no matrix exists (discovery §3.3). Rather than pretend, ``approval_required
 is reported as unknown and no approval event is emitted — an absent gate that
 announces itself, instead of a gate that always says yes.
 
-ENTITLEMENT. The SCOPE stage should call ``endpoint_gate.require`` once
-``report.generate`` exists in the closed action vocabulary. It does not yet, and
-on this deployment there is a further trap worth knowing before wiring it: with
-shadow mode live, an audit row reading ``status=allowed`` can mean "denied, but
-suppressed" — see the warning in docs/rga/build-report.md §3.
+ENTITLEMENT is checked at the door, not here: ``report.generate`` is gated in
+api/routers/reports.py when the job is filed, and the decision -- including
+whether shadow mode suppressed a refusal (an audit row reading
+``status=allowed`` can mean "denied, but shadowed") -- arrives through the
+job's audit context and is recorded on report.scope_resolved.
 """
 
 from __future__ import annotations
@@ -102,15 +102,20 @@ def generate_report(
     findings: List[Finding] = []
 
     # -- SCOPE -------------------------------------------------------------
-    # The entitlement check belongs here. See the module docstring for why it
-    # is absent rather than stubbed.
+    # Entitlement was decided at the door; see the module docstring.
     pack = build_fact_pack(report_type_id, scope=scope, as_of=as_of,
                            emit_audit=emit_audit, writer=writer)
     run_id = pack.pack_id
+    # The gate runs at the door (api/routers/reports.py) when the job is filed;
+    # its decision reaches here through the job's audit context. A caller that
+    # came in any other way passed no gate, and the event says so.
+    entitlement = audit.current_context().get("entitlement")
+    scope_details = {"report_type_id": report_type_id, "scope": scope,
+                     "as_of": pack.as_of, "entitlement_checked": bool(entitlement)}
+    if entitlement:
+        scope_details["entitlement"] = entitlement
     event(audit.SCOPE_RESOLVED, run_id=run_id, pack_hash=pack.hash,
-          summary=f"{report_type_id} · {scope}",
-          details={"report_type_id": report_type_id, "scope": scope,
-                   "as_of": pack.as_of, "entitlement_checked": False})
+          summary=f"{report_type_id} · {scope}", details=scope_details)
 
     # FACT_PACK emits its own report.factpack_built inside build_fact_pack, so
     # it is not repeated here — one event per thing that happened.

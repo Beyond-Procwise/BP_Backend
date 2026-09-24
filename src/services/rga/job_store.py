@@ -34,6 +34,8 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.services.db import get_conn
+from src.services.rga import audit
+from src.services.rga.factpack import pack_id_for
 
 OWNER = f"proc-{uuid.uuid4().hex[:12]}"
 
@@ -47,7 +49,7 @@ _RESTARTED = ("The report was interrupted by a server restart before it finished
 # Everything but the deck: a status read must never haul the file.
 _COLUMNS = ("job_id", "report_type", "scope", "as_of", "status", "owner",
             "requested_by", "requested_at", "started_at", "finished_at", "run_id",
-            "stage_reached", "blocking", "error")
+            "stage_reached", "blocking", "error", "entitlement")
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM proc.bp_report_job"
 
 
@@ -70,13 +72,37 @@ def _row(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
 _STRANDED = ("status IN %s AND heartbeat_at < now() - make_interval(secs => %s)")
 
 
+def _emit_healed(rows: List[Dict[str, Any]]) -> None:
+    """Close each healed job's trail: without this, a stranded run's events just
+    stop, and read exactly like a run still in progress."""
+    for row in rows:
+        with audit.run_context(job_id=row["job_id"], requested_by=row["requested_by"]):
+            audit.emit(audit.RUN_FAILED, run_id=row["run_id"] or row["job_id"],
+                       agent="rga_job_store", status="failed", summary=_RESTARTED,
+                       details={"reason": "stranded", "stale_after_seconds": STALE_SECONDS})
+
+
+_on_healed = _emit_healed
+
+
 def _heal(cur: Any, where: Optional[str] = None, param: Optional[str] = None) -> None:
-    """Fail the stranded jobs -- all of them, or those where ``where = param``."""
+    """Fail the stranded jobs -- all of them, or those where ``where = param``.
+
+    RETURNING names exactly the rows this statement moved, so two processes
+    healing at once each report only their own: the second finds nothing to move.
+    """
     scoped = f"{where} = %s AND " if where else ""
     cur.execute(
         "UPDATE proc.bp_report_job SET status = 'failed', error = %s, finished_at = now() "
-        f"WHERE {scoped}{_STRANDED}",
+        f"WHERE {scoped}{_STRANDED} RETURNING job_id, run_id, requested_by",
         (_RESTARTED, *((param,) if where else ()), ACTIVE, STALE_SECONDS))
+    healed = [dict(zip(("job_id", "run_id", "requested_by"), r)) for r in cur.fetchall()]
+    if healed:
+        try:
+            _on_healed(healed)
+        except Exception:  # noqa: BLE001 - a missing event must not undo the heal
+            import logging
+            logging.getLogger(__name__).exception("rga: could not audit healed report jobs")
 
 
 def beat() -> None:
@@ -87,7 +113,8 @@ def beat() -> None:
 
 
 def create(report_type: str, *, scope: Dict[str, Any], as_of: str,
-           requested_by: Optional[str]) -> Tuple[Dict[str, Any], bool]:
+           requested_by: Optional[str],
+           entitlement: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], bool]:
     """File a job, or return the active one for the same request.
 
     Returns ``(job, created)``. ``created`` is False when an identical request
@@ -102,12 +129,14 @@ def create(report_type: str, *, scope: Dict[str, Any], as_of: str,
         for _ in range(2):
             cur.execute(
                 "INSERT INTO proc.bp_report_job "
-                "  (job_id, report_type, scope, as_of, dedup_key, owner, requested_by) "
-                "VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s) "
+                "  (job_id, report_type, scope, as_of, dedup_key, owner, requested_by, "
+                "   run_id, entitlement) "
+                "VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb) "
                 "ON CONFLICT (dedup_key) WHERE status IN ('queued', 'running') DO NOTHING "
                 "RETURNING job_id",
                 (f"rpt-{uuid.uuid4().hex[:12]}", report_type, json.dumps(scope), as_of,
-                 key, OWNER, requested_by))
+                 key, OWNER, requested_by, pack_id_for(report_type, scope, as_of),
+                 json.dumps(entitlement) if entitlement is not None else None))
             inserted = cur.fetchone()
             if inserted:
                 cur.execute(f"{_SELECT} WHERE job_id = %s", (inserted[0],))

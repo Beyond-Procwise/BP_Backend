@@ -25,6 +25,14 @@ SCOPE = {"period_start": "2026-01-01", "period_end": "2026-03-31",
 AS_OF = "2026-09-24"
 
 
+@pytest.fixture(autouse=True)
+def _no_audit_rows(monkeypatch):
+    """bp_agent_actions is append-only: a test that heals a job must not leave a
+    permanent report.run_failed row behind. Healing is captured instead; the one
+    test about those events overrides this with its own capture."""
+    monkeypatch.setattr(job_store, "_on_healed", lambda rows: None)
+
+
 @pytest.fixture
 def rtype():
     name = f"test_{uuid.uuid4().hex[:10]}"
@@ -35,8 +43,12 @@ def rtype():
         cur.execute("DELETE FROM proc.bp_report_job WHERE report_type = %s", (name,))
 
 
+ENT = {"action": "report.generate", "principal": "t", "allowed": True, "shadowed": False}
+
+
 def _new(rtype, **k):
-    return job_store.create(rtype, scope=SCOPE, as_of=AS_OF, requested_by="t", **k)
+    return job_store.create(rtype, scope=SCOPE, as_of=AS_OF, requested_by="t",
+                            entitlement=ENT, **k)
 
 
 def test_a_new_job_is_queued_and_owned_by_this_process(rtype):
@@ -58,7 +70,7 @@ def test_the_same_request_while_active_returns_the_same_job(rtype):
 def test_a_different_period_is_a_different_job(rtype):
     first, _ = _new(rtype)
     other, created = job_store.create(rtype, scope={**SCOPE, "period_end": "2026-02-28"},
-                                      as_of=AS_OF, requested_by="t")
+                                      as_of=AS_OF, requested_by="t", entitlement=ENT)
     assert created is True and other["job_id"] != first["job_id"]
 
 
@@ -145,7 +157,7 @@ def test_an_unknown_job_is_none():
 def test_recent_lists_newest_first_and_heals_the_stranded(rtype):
     first, _ = _new(rtype)
     second, _ = job_store.create(rtype, scope={**SCOPE, "period_end": "2026-02-28"},
-                                 as_of=AS_OF, requested_by="t")
+                                 as_of=AS_OF, requested_by="t", entitlement=ENT)
     _stale(first["job_id"]); _stale(second["job_id"])
     mine = [j for j in job_store.recent(50) if j["report_type"] == rtype]
     assert [j["job_id"] for j in mine] == [second["job_id"], first["job_id"]]
@@ -162,7 +174,7 @@ def test_another_process_never_fails_a_job_that_is_still_beating(rtype, monkeypa
     monkeypatch.setattr(job_store, "OWNER", "some-other-process")
     job_store.recent(50)
     assert job_store.get(job["job_id"])["status"] == "running"
-    job_store.create(rtype, scope=SCOPE, as_of=AS_OF, requested_by="t")
+    job_store.create(rtype, scope=SCOPE, as_of=AS_OF, requested_by="t", entitlement=ENT)
     assert job_store.get(job["job_id"])["status"] == "running"
 
 
@@ -171,3 +183,23 @@ def test_a_beat_keeps_this_process_s_jobs_alive(rtype):
     _stale(job["job_id"])
     job_store.beat()
     assert job_store.get(job["job_id"])["status"] == "queued"
+
+
+def test_a_job_knows_its_run_id_and_entitlement_from_the_start(rtype):
+    from src.services.rga.factpack import pack_id_for
+
+    job, _ = _new(rtype)
+    assert job["run_id"] == pack_id_for(rtype, SCOPE, AS_OF)
+    assert job["entitlement"] == ENT
+
+
+def test_healing_closes_each_stranded_job_s_trail(rtype, monkeypatch):
+    healed = []
+    monkeypatch.setattr(job_store, "_on_healed", lambda rows: healed.extend(rows))
+    job, _ = _new(rtype)
+    _stale(job["job_id"])
+    job_store.get(job["job_id"])
+    assert [(r["job_id"], r["run_id"], r["requested_by"]) for r in healed] == [
+        (job["job_id"], job["run_id"], "t")]
+    job_store.get(job["job_id"])       # already failed: no second event
+    assert len(healed) == 1

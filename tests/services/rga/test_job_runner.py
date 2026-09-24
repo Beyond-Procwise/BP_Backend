@@ -7,12 +7,25 @@ from src.services.rga.pipeline import ReportRun
 from src.services.rga.render import RenderedArtefact
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_audit_rows(monkeypatch):
+    """A crash now writes report.run_failed. Under PROCWISE_TEST_LIVE_DB=1 that
+    would be a permanent row in the append-only bp_agent_actions -- so it is
+    captured here, and the test about that event captures it itself."""
+    monkeypatch.setattr(job_runner.audit, "emit", lambda *a, **k: None)
+
+
 class FakeStore:
     def __init__(self, claimable=True):
         self.claimable = claimable
         self.calls = []
         self.job = {"job_id": "rpt-1", "report_type": "exec_procurement_summary",
-                    "scope": {"period_start": "2026-01-01"}, "as_of": "2026-09-24"}
+                    "scope": {"period_start": "2026-01-01"}, "as_of": "2026-09-24",
+                    "run_id": "FP-a", "requested_by": "buyer-1",
+                    "entitlement": {"action": "report.generate", "shadowed": False}}
 
     def claim(self, job_id):
         self.calls.append(("claim", job_id))
@@ -114,3 +127,38 @@ def test_submitting_starts_one_heartbeat_that_keeps_beating(monkeypatch):
     job_runner.submit("rpt-2")
     assert job_runner._heartbeat is first            # one thread, not one per job
     assert beats.wait(2), "the heartbeat never beat twice"
+
+
+def test_the_run_executes_inside_the_job_s_audit_context():
+    from src.services.rga import audit
+
+    store, seen = FakeStore(), {}
+
+    def generate(report_type, **k):
+        seen.update(audit.current_context())
+        return ReportRun(run_id="FP-a", report_type_id=report_type, artefact=_artefact(),
+                         released=True, stage_reached="RELEASE")
+
+    job_runner.run_job("rpt-1", store=store, generate=generate)
+    assert seen == {"job_id": "rpt-1", "requested_by": "buyer-1",
+                    "entitlement": {"action": "report.generate", "shadowed": False}}
+    assert audit.current_context() == {}
+
+
+def test_a_crash_closes_the_trail_with_a_failed_event(monkeypatch):
+    from src.services.rga import audit
+
+    events = []
+    monkeypatch.setattr(job_runner.audit, "emit",
+                        lambda action, **k: events.append((action, k, audit.current_context())))
+
+    def generate(*a, **k):
+        raise RuntimeError("database went away")
+
+    job_runner.run_job("rpt-1", store=FakeStore(), generate=generate)
+    assert len(events) == 1
+    action, k, ctx = events[0]
+    assert action == audit.RUN_FAILED
+    assert k["run_id"] == "FP-a" and k["status"] == "failed"
+    assert "database went away" in k["summary"]
+    assert ctx["job_id"] == "rpt-1"
