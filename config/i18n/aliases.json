@@ -1,0 +1,6 @@
+{
+  "_comment": "Extra search aliases CLDR does not carry. Codes and deprecated codes (iw, jpn, spa) come from CLDR itself.",
+  "fa": ["Farsi"], "es": ["Castilian", "Castellano"], "zh": ["Mandarin"],
+  "fil": ["Tagalog"], "nb": ["Norwegian", "Norsk"], "ckb": ["Sorani"],
+  "pa": ["Punjabi"], "ms": ["Malay"], "el": ["Greek"], "de": ["Deutsch"]
+}

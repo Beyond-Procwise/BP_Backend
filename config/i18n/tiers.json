@@ -1,0 +1,10 @@
+{
+  "_comment": "Support tier per language, per model. 1 = well supported, 2 = supported/lower quality, anything unlisted = default_tier (3, experimental). English is always 1. Tune per model; keys are BCP-47 codes, a base code covers its regional variants.",
+  "default_tier": 3,
+  "models": {
+    "BeyondProcwise/AgentNick:unified": {
+      "1": ["en", "es", "fr", "de", "it", "pt", "nl", "zh", "ja", "ko", "ru"],
+      "2": ["ar", "he", "hi", "pl", "sv", "da", "nb", "fi", "tr", "cs", "el", "uk", "th", "vi", "id", "ro", "hu", "ms", "bn", "fa", "ur", "ca", "sk", "bg", "hr", "sr", "sl", "lt", "lv", "et", "fil", "sw", "ta"]
+    }
+  }
+}
