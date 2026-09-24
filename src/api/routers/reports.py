@@ -41,7 +41,7 @@ _AGENT = "ReportsRouter"
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _PUBLIC = ("job_id", "report_type", "scope", "as_of", "status", "requested_by",
            "requested_at", "started_at", "finished_at", "run_id", "stage_reached",
-           "blocking", "error", "dismissed_at", "dismissed_by", "dismiss_reason")
+           "blocking", "error", "dismissed_at", "dismissed_by", "dismiss_reason", "has_page")
 
 
 class GenerateBody(BaseModel):
@@ -89,6 +89,10 @@ def _view(job: Dict[str, Any], s: Optional[Dict[str, Any]] = None) -> Dict[str, 
     # names an internal route. The caller builds /reports/jobs/{job_id}/deck itself.
     out["deck_ready"] = released and s["state"] in ("not_required", "signed_off")
     out["review_available"] = released and s["state"] == "awaiting"
+    # The printable page follows the deck exactly; older jobs have none.
+    out["has_page"] = bool(job.get("has_page"))
+    out["page_ready"] = out["deck_ready"] and out["has_page"]
+    out["page_review_available"] = out["review_available"] and out["has_page"]
     return out
 
 
@@ -265,12 +269,18 @@ def get_job(job_id: str):
     return _view(_job_or_404(job_id))
 
 
-@router.get("/jobs/{job_id}/deck")
-def get_deck(job_id: str, principal=Depends(require_user)):
+# The printable page is served inline, to be read and printed in a browser tab. It is
+# self-contained and every text in it is escaped; the policy below makes sure that even a
+# mistake in that escaping could not run anything: no scripts, no fetches, inline style only.
+_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'"
+
+
+def _serve(job_id: str, principal: Any, fmt: str) -> Response:
+    """The deck or the page -- one set of rules for both, so the two cannot drift apart."""
     job = _job_or_404(job_id)
     s = signoff.state(job)
     # Held until signed off. Before then only someone the policy lets sign it off may open
-    # it -- to review it -- and that download is audited as a review. A refused deck is
+    # it -- to review it -- and that download is audited as a review. A refused report is
     # held from everyone.
     if s["state"] == "awaiting" and not signoff.may_sign_off(principal):
         raise HTTPException(status_code=409,
@@ -282,20 +292,51 @@ def get_deck(job_id: str, principal=Depends(require_user)):
                                    f"{s.get('reason') or 'no reason recorded'}")
     gate("report.read", principal, agent=_AGENT,
          context={"job_id": job_id, "run_id": job.get("run_id"),
-                  "review": s["state"] == "awaiting"})
-    # The status decides, not the presence of bytes.
-    found = job_store.deck(job_id) if job["status"] == "released" else None
-    if found is None:
+                  "review": s["state"] == "awaiting", "format": fmt})
+    if job["status"] != "released":
+        # The status decides, not the presence of bytes.
         raise HTTPException(status_code=409,
                             detail=f"report job {job_id} is {job['status']}; only a "
                                    "released report has a deck")
-    content, media_type, filename = found
-    # A sign-off is for the file that was reviewed. The deck is immutable, so a mismatch
-    # means tampering or a bug -- either way this is not the deck that was signed off.
-    if s["state"] == "signed_off" and signoff.deck_hash(content) != s.get("deck_sha256"):
+    if fmt == "deck":
+        found = job_store.deck(job_id)
+        signed_hash = s.get("deck_sha256")
+    else:
+        found = job_store.page(job_id)
+        signed_hash = s.get("page_sha256")
+    if found is None:
+        if fmt == "page":
+            raise HTTPException(status_code=404,
+                                detail=f"report job {job_id} has no printable page -- it was "
+                                       "made before pages existed")
+        raise HTTPException(status_code=409, detail=f"report job {job_id} has no deck")
+    content = found[0]
+    # A sign-off is for the files that were reviewed. Both are immutable, so a mismatch --
+    # or a sign-off that never saw this file -- means this is not what was signed off.
+    if s["state"] == "signed_off" and (not signed_hash
+                                       or signoff.deck_hash(content) != signed_hash):
         raise HTTPException(status_code=409,
-                            detail=f"report job {job_id}: the stored deck does not match the "
-                                   "one that was signed off")
-    return Response(content=content, media_type=media_type,
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                            detail=f"report job {job_id}: the stored {fmt} does not match "
+                                   "the one that was signed off")
+    if fmt == "deck":
+        _, media_type, filename = found
+        return Response(content=content, media_type=media_type,
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                                 "X-Report-Run-Id": job.get("run_id") or ""})
+    name = f"{job.get('report_type')}_{job.get('run_id') or job_id}.html"
+    return Response(content=content, media_type=found[1],
+                    headers={"Content-Disposition": f'inline; filename="{name}"',
+                             "Content-Security-Policy": _PAGE_CSP,
+                             "X-Content-Type-Options": "nosniff",
                              "X-Report-Run-Id": job.get("run_id") or ""})
+
+
+@router.get("/jobs/{job_id}/deck")
+def get_deck(job_id: str, principal=Depends(require_user)):
+    return _serve(job_id, principal, "deck")
+
+
+@router.get("/jobs/{job_id}/page")
+def get_page(job_id: str, principal=Depends(require_user)):
+    """The printable A4 page, inline, for a browser tab to show and print."""
+    return _serve(job_id, principal, "page")

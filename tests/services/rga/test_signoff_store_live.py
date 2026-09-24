@@ -88,7 +88,8 @@ def released(monkeypatch):
                               as_of="2026-09-24", requested_by="buyer-1", entitlement=None)
     job_store.claim(job["job_id"])
     job_store.finish_released(job["job_id"], run_id=job["run_id"], stage_reached="RELEASE",
-                              deck=b"PK-live-deck", media_type="application/x", filename="d.pptx")
+                              deck=b"PK-live-deck", media_type="application/x", filename="d.pptx",
+                              page=b"<html>live page</html>", page_media_type="text/html; charset=utf-8")
     yield job
     with get_conn() as c, c.cursor() as cur:
         cur.execute("DELETE FROM proc.bp_approval WHERE grounding->>'report_job_id' = %s",
@@ -157,3 +158,23 @@ def test_many_jobs_decisions_are_read_in_one_go(job):
     finally:
         with get_conn() as c, c.cursor() as cur:
             cur.execute("DELETE FROM proc.bp_approval WHERE grounding->>'report_job_id' = %s", (other,))
+
+
+
+def test_a_sign_off_binds_the_page_too(released):
+    s = signoff.decide(released["job_id"], verdict="sign_off", by="approver-1",
+                       reason=None, policy_name="ReportSignoffAuthorityPolicy")
+    assert s["page_sha256"] == signoff.deck_hash(b"<html>live page</html>")
+    assert job_store.page(released["job_id"]) == (b"<html>live page</html>",
+                                                  "text/html; charset=utf-8")
+    assert job_store.get(released["job_id"])["has_page"] is True
+
+
+def test_a_page_is_stored_only_for_a_released_job(released):
+    """The table refuses a page on a job that is not released (ck_bp_report_job_page)."""
+    job, _ = job_store.create(released["report_type"], scope={"period_start": "2026-04-01"},
+                              as_of="2026-09-24", requested_by="t", entitlement=None)
+    with pytest.raises(Exception, match="ck_bp_report_job_page"):
+        with get_conn() as c, c.cursor() as cur:
+            cur.execute("UPDATE proc.bp_report_job SET page = %s WHERE job_id = %s",
+                        (b"<html>", job["job_id"]))

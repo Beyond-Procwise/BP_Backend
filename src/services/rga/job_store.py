@@ -50,8 +50,17 @@ _RESTARTED = ("The report was interrupted by a server restart before it finished
 _COLUMNS = ("job_id", "report_type", "scope", "as_of", "status", "owner",
             "requested_by", "requested_at", "started_at", "finished_at", "run_id",
             "stage_reached", "blocking", "error", "entitlement",
-            "dismissed_at", "dismissed_by", "dismiss_reason")
-_SELECT = f"SELECT {', '.join(_COLUMNS)} FROM proc.bp_report_job"
+            "dismissed_at", "dismissed_by", "dismiss_reason", "has_page")
+# Computed columns, by name: whether a printable page is stored, without hauling it.
+_COMPUTED = {"has_page": "({p}page IS NOT NULL)"}
+
+
+def _select_list(prefix: str = "") -> str:
+    return ", ".join(_COMPUTED[c].format(p=prefix) if c in _COMPUTED else f"{prefix}{c}"
+                     for c in _COLUMNS)
+
+
+_SELECT = f"SELECT {_select_list()} FROM proc.bp_report_job"
 
 
 def dedup_key(report_type: str, scope: Dict[str, Any], as_of: str) -> str:
@@ -177,7 +186,7 @@ def needs_attention(limit: int) -> List[Dict[str, Any]]:
     Reports items. Dealt with means dismissed by a person, or settled by a later
     RELEASED run of the same report and scope. A rerun still in progress does
     not settle it; it is reported as ``rerun_status`` so the item can say so."""
-    cols = ", ".join(f"j.{c}" for c in _COLUMNS)
+    cols = _select_list("j.")
     with get_conn() as conn, conn.cursor() as cur:
         _heal(cur)
         cur.execute(
@@ -243,9 +252,22 @@ def _finish(job_id: str, status: str, **fields: Any) -> None:
 
 
 def finish_released(job_id: str, *, run_id: str, stage_reached: str, deck: bytes,
-                    media_type: str, filename: str) -> None:
+                    media_type: str, filename: str, page: Optional[bytes] = None,
+                    page_media_type: Optional[str] = None) -> None:
     _finish(job_id, "released", run_id=run_id, stage_reached=stage_reached,
-            deck=deck, media_type=media_type, filename=filename)
+            deck=deck, media_type=media_type, filename=filename,
+            page=page, page_media_type=page_media_type)
+
+
+def page(job_id: str) -> Optional[Tuple[bytes, str]]:
+    """The released job's printable page as ``(bytes, media_type)``, or None."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT page, page_media_type FROM proc.bp_report_job "
+                    "WHERE job_id = %s AND status = 'released'", (job_id,))
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return bytes(row[0]), row[1]
 
 
 def finish_blocked(job_id: str, *, run_id: str, stage_reached: str,

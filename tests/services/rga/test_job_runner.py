@@ -187,3 +187,19 @@ def test_a_release_that_needs_none_asks_for_nothing(monkeypatch):
     monkeypatch.setattr(job_runner.signoff, "required", lambda report_type: False)
     job_runner.run_job("rpt-1", store=FakeStore(), generate=_released_run)
     assert events == []
+
+
+def test_a_released_run_stores_its_page_beside_the_deck():
+    store = FakeStore()
+    page = RenderedArtefact(content=b"<html>page</html>", media_type="text/html; charset=utf-8",
+                            renderer="html", renderer_version="1", pack_id="FP-a",
+                            pack_hash="h", style_version="s", ast_hash="a")
+
+    def generate(report_type, **k):
+        return ReportRun(run_id="FP-a", report_type_id=report_type, artefact=_artefact(),
+                         page=page, released=True, stage_reached="RELEASE")
+
+    job_runner.run_job("rpt-1", store=store, generate=generate)
+    kind, k = [c for c in store.calls if c[0] == "released"][0]
+    assert k["page"] == b"<html>page</html>"
+    assert k["page_media_type"] == "text/html; charset=utf-8"
