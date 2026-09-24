@@ -203,3 +203,22 @@ def test_a_released_run_stores_its_page_beside_the_deck():
     kind, k = [c for c in store.calls if c[0] == "released"][0]
     assert k["page"] == b"<html>page</html>"
     assert k["page_media_type"] == "text/html; charset=utf-8"
+
+
+def test_a_release_stores_what_an_editor_needs():
+    """Editing re-renders from the STORED Fact Pack and AST (2026-09-24), so the worker hands
+    both over with the title when it releases."""
+    from types import SimpleNamespace
+    store = FakeStore()
+    pack = SimpleNamespace(model_dump=lambda **k: {"pack_id": "FP-a", "facts": []})
+    ast = SimpleNamespace(model_dump=lambda **k: {"sections": []})
+
+    def generate(report_type, **k):
+        return ReportRun(run_id="FP-a", report_type_id=report_type, artefact=_artefact(),
+                         pack=pack, ast=ast, released=True, stage_reached="RELEASE")
+
+    job_runner.run_job("rpt-1", store=store, generate=generate)
+    kind, k = [c for c in store.calls if c[0] == "released"][0]
+    assert k["fact_pack"] == {"pack_id": "FP-a", "facts": []}
+    assert k["ast"] == {"sections": []}
+    assert k["title"] == "Executive procurement summary"

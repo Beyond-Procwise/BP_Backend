@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rga-report")
 
+# The title generate_report draws with by default; version 1 records it, and an editor may
+# change it for later versions.
+REPORT_TITLE = "Executive procurement summary"
+
 # The heartbeat is its own thread, not a step of the worker: the worker spends
 # minutes inside one model call, and a job queued behind it must stay vouched
 # for all that time. See job_store's docstring for what a missed beat means.
@@ -80,7 +84,12 @@ def run_job(job_id: str, *, store: Any = _store,
                 deck=run.artefact.content, media_type=run.artefact.media_type,
                 filename=f"{run.report_type_id}_{run.run_id}.pptx",
                 page=run.page.content if run.page is not None else None,
-                page_media_type=run.page.media_type if run.page is not None else None)
+                page_media_type=run.page.media_type if run.page is not None else None,
+                # What an editor needs: this exact pack (edits never re-query) and the draft.
+                fact_pack=(run.pack.model_dump(mode="json", exclude_computed_fields=True)
+                           if run.pack is not None else None),
+                ast=run.ast.model_dump(mode="json") if run.ast is not None else None,
+                title=REPORT_TITLE)
             # Released is not yet allowed to leave: the policy decides whether a person
             # must sign it off first, and the trail records that one was asked for.
             if signoff.required(run.report_type_id):

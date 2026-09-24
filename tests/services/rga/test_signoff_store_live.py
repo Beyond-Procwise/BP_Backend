@@ -183,3 +183,24 @@ def test_a_page_is_stored_only_for_a_released_job(released):
         with get_conn() as c, c.cursor() as cur:
             cur.execute("UPDATE proc.bp_report_job SET page = %s WHERE job_id = %s",
                         (b"<html>", job["job_id"]))
+
+
+
+def test_a_release_with_its_pack_writes_version_one(released):
+    """The fixture releases without a pack (legacy); this one releases as the worker now does."""
+    rtype = released["report_type"]
+    job, _ = job_store.create(rtype, scope={"period_start": "2026-07-01"}, as_of="2026-09-24",
+                              requested_by="buyer-1", entitlement=None)
+    job_store.claim(job["job_id"])
+    pack = {"pack_id": "FP-x", "facts": [{"fact_id": "F0001"}]}
+    ast = {"sections": [{"id": "s", "title": "S", "blocks": []}]}
+    job_store.finish_released(job["job_id"], run_id="FP-x", stage_reached="RELEASE",
+                              deck=b"PK-v1", media_type="application/x", filename="d.pptx",
+                              page=b"<html>v1</html>", page_media_type="text/html",
+                              fact_pack=pack, ast=ast, title="My title")
+    got = job_store.get(job["job_id"])
+    assert (got["current_version"], got["editable"], got["title"]) == (1, True, "My title")
+    draft = job_store.draft(job["job_id"])
+    assert draft["version"] == 1 and draft["ast"] == ast and draft["fact_pack"] == pack
+    assert draft["title"] == "My title"
+    assert job_store.get(released["job_id"])["editable"] is False     # released without a pack
