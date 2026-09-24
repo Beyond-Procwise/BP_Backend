@@ -1,7 +1,9 @@
 """Fills the cache in the background, one batch at a time, what-is-on-screen first.
 
 One daemon thread per process: the GPU runs one generation at a time anyway, and the
-client's next /i18n/strings call picks up whatever has landed. Nothing here is durable. A
+client's next /i18n/strings call picks up whatever has landed. BACKGROUND batches yield the
+GPU: while the gate says foreground work (extraction, chat) wants it, they wait. SCREEN
+batches do not -- a person is looking at that screen. Nothing here is durable. A
 restart drops the queue, and the next client call re-enqueues what is still missing.
 """
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
+import time
 from typing import Optional
 
 from src.services.i18n.store import source_hash
@@ -19,9 +22,11 @@ SCREEN, BACKGROUND = 0, 1
 
 
 class Filler:
-    def __init__(self, service, *, start_thread: bool = True, max_items: int = 20000):
+    def __init__(self, service, *, start_thread: bool = True, max_items: int = 20000,
+                 gate=None, poll_seconds: float = 2.0):
         self.service = service
         self.max_items = max(1, max_items)
+        self.gate, self.poll_seconds = gate, poll_seconds
         self._items: dict[tuple[str, str], list] = {}  # (lang, hash) -> [priority, seq, text, lang_name]
         self._seq = itertools.count()
         self._cv = threading.Condition()
@@ -61,10 +66,17 @@ class Filler:
             return sum(1 for (L, _h) in self._items if L == lang)
 
     def _take(self) -> tuple[str, dict[str, str], Optional[str]] | None:
+        # Asked outside the lock: the card check can take seconds, and enqueue must not wait.
+        yielding = self.gate is not None and bool(self._items) and self.gate.busy()
         with self._cv:
             if not self._items:
                 return None
             order = sorted(self._items.items(), key=lambda kv: (kv[1][0], kv[1][1]))
+            if yielding:
+                # The GPU is wanted by foreground work: only on-screen items may go now.
+                order = [kv for kv in order if kv[1][0] == SCREEN]
+                if not order:
+                    return None
             lang = order[0][0][0]
             size = getattr(self.service, "batch_size", 40)
             chosen = [(k, v) for k, v in order if k[0] == lang][:size]
@@ -73,6 +85,7 @@ class Filler:
             return lang, {k[1]: v[2] for k, v in chosen}, chosen[0][1][3]
 
     def run_once(self) -> int:
+        """Process one batch; 0 when there is nothing to do or background work is yielding."""
         job = self._take()
         if job is None:
             return 0
@@ -89,4 +102,8 @@ class Filler:
             with self._cv:
                 while not self._items:
                     self._cv.wait()
-            self.run_once()
+            if self.run_once() == 0:
+                # Yielding to foreground work: look again shortly, or sooner if a SCREEN
+                # item arrives (enqueue notifies).
+                with self._cv:
+                    self._cv.wait(timeout=self.poll_seconds)

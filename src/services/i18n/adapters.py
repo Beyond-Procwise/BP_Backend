@@ -44,6 +44,7 @@ class OllamaAdapter:
             retries=1,  # the service owns the retry-once rule
             think=self._s.think,
             format=schema,
+            background=True,  # never counted as foreground: extraction goes first
         )
 
 

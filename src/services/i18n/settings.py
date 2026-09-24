@@ -23,6 +23,8 @@ class TranslationSettings:
     failure_backoff: float = 900.0
     queue_limit: int = 20000
     memory_ttl: float = 600.0
+    yield_gpu_util: int = 30
+    yield_poll_seconds: float = 2.0
 
 
 def _clamp(name: str, value: float, lo: float, hi: float) -> float:
@@ -48,4 +50,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> TranslationSettings:
         failure_backoff=float(env.get("TRANSLATION_FAILURE_BACKOFF_SECONDS", "900")),
         queue_limit=int(env.get("TRANSLATION_QUEUE_LIMIT", "20000")),
         memory_ttl=float(env.get("TRANSLATION_MEMORY_TTL_SECONDS", "600")),
+        yield_gpu_util=int(env.get("TRANSLATION_YIELD_GPU_UTIL", "30")),
+        yield_poll_seconds=float(env.get("TRANSLATION_YIELD_POLL_SECONDS", "2")),
     )
