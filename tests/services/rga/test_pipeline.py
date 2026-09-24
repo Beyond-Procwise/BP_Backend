@@ -109,8 +109,10 @@ class TestEventsEndToEnd:
             audit.SCOPE_RESOLVED,
             audit.STYLEBRIEF_RESOLVED,
             audit.COMPOSED,
-            audit.RENDERED,
-            audit.POSTCHECK_PASSED,
+            audit.RENDERED,           # the deck
+            audit.RENDERED,           # the printable page (2026-09-24)
+            audit.POSTCHECK_PASSED,   # the deck
+            audit.POSTCHECK_PASSED,   # the page
             audit.RELEASED,
         ]
 
@@ -265,7 +267,7 @@ class TestRunContext:
         writer = Recorder()
         with audit.run_context(job_id="rpt-9", requested_by="buyer-1", entitlement=self.ENT):
             run(stub_type, hand_written, writer=writer)
-        assert len(writer.rows) == 7
+        assert len(writer.rows) == 9     # two formats: rendered and checked twice
         for row in writer.rows:          # factpack_built included
             assert row["details"]["job_id"] == "rpt-9", row["action_type"]
             assert row["details"]["requested_by"] == "buyer-1", row["action_type"]
@@ -293,3 +295,66 @@ class TestRunContext:
                 assert audit.current_context()["job_id"] == "rpt-9"
                 raise RuntimeError("boom")
         assert audit.current_context() == {}
+
+
+class TestThePrintablePage:
+    """Every report is drawn twice from one AST -- the deck and the page -- and both must pass."""
+
+    def test_a_release_carries_both_formats(self, stub_type, hand_written):
+        result = run(stub_type, hand_written, emit_audit=False)
+        assert result.released is True
+        assert result.artefact.renderer == "pptx" and result.page.renderer == "html"
+        assert result.page.ast_hash == result.artefact.ast_hash
+        assert result.page.pack_hash == result.artefact.pack_hash
+
+    def test_the_page_is_deterministic_too(self, stub_type, hand_written):
+        a = run(stub_type, hand_written, emit_audit=False)
+        b = run(stub_type, hand_written, emit_audit=False)
+        assert a.page.content == b.page.content
+
+    def test_a_page_that_fails_its_check_blocks_the_report(self, stub_type, hand_written):
+        import dataclasses
+        from types import SimpleNamespace
+        from src.services.rga.render import html as real
+
+        def render(ast, pack, brief, *, title):
+            art = real.render(ast, pack, brief, title=title)
+            bad = art.content.decode().replace("</body>", "<p data-chunk>An extra £9,999.</p></body>")
+            return dataclasses.replace(art, content=bad.encode())
+
+        result = run(stub_type, hand_written, emit_audit=False,
+                     page_renderer=SimpleNamespace(render=render))
+        assert result.released is False and result.stage_reached == "POST_CHECK"
+        assert "REPORT_UNTRACED_FIGURE" in {f.code for f in result.findings if f.blocks_release}
+
+    def test_a_page_renderer_fault_blocks_the_report(self, stub_type, hand_written):
+        from types import SimpleNamespace
+
+        def render(*a, **k):
+            raise ZeroDivisionError("a degenerate block")
+
+        result = run(stub_type, hand_written, emit_audit=False,
+                     page_renderer=SimpleNamespace(render=render))
+        assert result.released is False and result.stage_reached == "RENDER"
+        assert any("page" in f.detail for f in result.findings)
+
+    def test_each_format_is_rendered_and_checked_on_the_record(self, stub_type, hand_written):
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+        rendered = [r["details"]["renderer"] for r in writer.rows if r["action_type"] == audit.RENDERED]
+        checked = [r["details"]["renderer"] for r in writer.rows if r["action_type"] == audit.POSTCHECK_PASSED]
+        assert rendered == ["pptx", "html"]
+        assert [c.split("/")[0] for c in checked] == ["pptx", "html"]
+
+
+def test_the_release_event_says_whether_sign_off_is_required(stub_type, hand_written, monkeypatch):
+    """It said "unknown — no approval matrix exists" until sign-off shipped; the policy now
+    decides, and the release record says what it decided."""
+    from src.services.rga import signoff
+    for needed in (True, False):
+        monkeypatch.setattr(signoff, "required", lambda report_type, engine=None, _n=needed: _n)
+        writer = Recorder()
+        run(stub_type, hand_written, writer=writer)
+        released = [r for r in writer.rows if r["action_type"] == audit.RELEASED][0]
+        assert released["details"]["approval_required"] is needed
+        assert released["details"]["approval_policy"] == "ReportSignoffPolicy"
