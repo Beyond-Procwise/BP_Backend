@@ -425,6 +425,41 @@ class BackendScheduler:
         self._register_style_staging_sweep_job()
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
+        self._register_triage_job()
+
+    TRIAGE_JOB_NAME = "discrepancy-triage"
+
+    def _register_triage_job(self) -> None:
+        """Re-triage deals whose final documents changed since the last triage run.
+
+        Does nothing until a backfill has completed (spec §9.1): the first pass over the
+        whole corpus is a deliberate, reported act, not a side effect of startup.
+
+        Interval via TRIAGE_INTERVAL_MINUTES (default 15).
+        """
+        import os
+        if self.TRIAGE_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("TRIAGE_INTERVAL_MINUTES", "15"))
+        except ValueError:
+            minutes = 15
+        self.register_job(
+            self.TRIAGE_JOB_NAME,
+            self._run_triage_job,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_triage_job(self) -> None:
+        try:
+            from src.services.triage.engine import run_changed
+
+            report = run_changed()
+            if report is not None:
+                logger.info("Discrepancy triage: %s", report.render().splitlines()[1])
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Discrepancy triage job failed")
 
     def _register_style_staging_sweep_job(self) -> None:
         """Register the style-staging TTL sweep.
