@@ -191,6 +191,7 @@ def ollama_generate(
     keep_alive: str | int = KEEP_ALIVE,
     think: Optional[bool] = None,
     format: Optional[Any] = None,
+    base_url: Optional[str] = None,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -207,6 +208,9 @@ def ollama_generate(
     extraction specialist). Pass ``think=False`` for reasoning models so the
     answer lands in ``response`` instead of a separate ``thinking`` field that
     this function does not return — otherwise ``response`` comes back empty.
+
+    ``base_url`` overrides OLLAMA_BASE_URL for one call (the translation
+    provider's own endpoint); the GPU semaphore is still shared.
     """
     model = model or DEFAULT_MODEL
     options: Dict[str, Any] = {
@@ -249,7 +253,7 @@ def ollama_generate(
 
         def _send(body: Dict[str, Any]) -> Any:
             return egress.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
+                f"{base_url or OLLAMA_BASE_URL}/api/generate",
                 purpose=egress.Purpose.MODEL_INFERENCE,
                 json=body,
                 timeout=timeout,
