@@ -1,7 +1,9 @@
 """/reports: the Report Generation Agent's front door.
 
-The pipeline is replaced here -- what is under test is the door, not the report:
-who may open it, what they must bring, and that a blocked report never leaves.
+A report takes the local model minutes, so the door files a job and answers at
+once; the caller polls the job and collects the deck. The store and the worker
+are replaced here -- what is under test is the door: who may open it, what they
+must bring, and that a deck leaves only for a released job.
 """
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -9,9 +11,6 @@ from fastapi.testclient import TestClient
 
 from api.routers import reports as rr
 from src.services import actions, guardrail
-from src.services.rga.models import Finding, FindingCode, Severity
-from src.services.rga.pipeline import ReportRun
-from src.services.rga.render import RenderedArtefact
 
 CALLER = "sub-real-caller"
 _ALLOWED = guardrail.Decision(allowed=True, reason="compute is a reversible class",
@@ -25,49 +24,53 @@ class _P:
     subject = CALLER
 
 
-def _artefact():
-    return RenderedArtefact(content=b"PK-deck-bytes", media_type=_PPTX,
-                            renderer="pptx", renderer_version="1", pack_id="FP-abc",
-                            pack_hash="h" * 64, style_version="s1", ast_hash="a" * 64)
+class FakeStore:
+    def __init__(self):
+        self.jobs, self.decks, self.created = {}, {}, []
 
+    def create(self, report_type, *, scope, as_of, requested_by):
+        self.created.append((report_type, scope, as_of, requested_by))
+        for job in self.jobs.values():
+            if job["status"] in ("queued", "running") and job["scope"] == scope:
+                return dict(job), False
+        job = {"job_id": f"rpt-{len(self.jobs) + 1}", "report_type": report_type,
+               "scope": scope, "as_of": as_of, "status": "queued",
+               "requested_by": requested_by, "requested_at": "2026-09-24T09:00:00+00:00",
+               "started_at": None, "finished_at": None, "run_id": None,
+               "stage_reached": None, "blocking": None, "error": None}
+        self.jobs[job["job_id"]] = job
+        return dict(job), True
 
-def _released():
-    return ReportRun(run_id="FP-abc", report_type_id="exec_procurement_summary",
-                     artefact=_artefact(), released=True, stage_reached="RELEASE")
+    def get(self, job_id):
+        job = self.jobs.get(job_id)
+        return dict(job) if job else None
 
-
-def _blocked():
-    return ReportRun(
-        run_id="FP-abc", report_type_id="exec_procurement_summary",
-        artefact=_artefact(), released=False, stage_reached="POST_CHECK",
-        findings=[
-            Finding(finding_id="FP-abc-PC001", code=FindingCode.REPORT_UNTRACED_FIGURE,
-                    severity=Severity.HIGH, detail="'£9,999' traces to no fact"),
-            Finding(finding_id="FP-abc-F0009", code=FindingCode.REPORT_UNTRACED_FIGURE,
-                    severity=Severity.LOW, detail="a note", blocks_release=False),
-        ])
+    def deck(self, job_id):
+        return self.decks.get(job_id)
 
 
 @pytest.fixture
 def client(monkeypatch):
-    gates, runs = [], []
+    gates, submitted, store = [], [], FakeStore()
 
     def _gate(action, principal, **k):
         gates.append((action, getattr(principal, "subject", None), k.get("context")))
         return _ALLOWED
 
-    def _generate(report_type_id, **k):
-        runs.append((report_type_id, k))
-        return client.next_run
-
     monkeypatch.setattr(rr, "gate", _gate)
-    monkeypatch.setattr(rr, "generate_report", _generate)
+    monkeypatch.setattr(rr, "job_store", store)
+    monkeypatch.setattr(rr.job_runner, "submit", submitted.append)
     app = FastAPI()
     app.include_router(rr.router)
     app.dependency_overrides[rr.require_user] = lambda: _P()
-    client = TestClient(app)
-    client.gates, client.runs, client.next_run = gates, runs, _released()
-    return client
+    c = TestClient(app)
+    c.gates, c.submitted, c.store = gates, submitted, store
+    return c
+
+
+def _release(store, job_id):
+    store.jobs[job_id].update(status="released", run_id="FP-abc", stage_reached="RELEASE")
+    store.decks[job_id] = (b"PK-deck-bytes", _PPTX, "exec_procurement_summary_FP-abc.pptx")
 
 
 def test_report_generate_is_a_compute_action():
@@ -75,6 +78,7 @@ def test_report_generate_is_a_compute_action():
     # Sending one out is report.export, a share, and stays refused by default.
     assert actions.action_class("report.generate") == "compute"
     assert actions.action_class("report.export") == "share"
+    assert actions.action_class("report.read") == "read"
 
 
 def test_types_lists_what_has_a_builder(client):
@@ -83,19 +87,29 @@ def test_types_lists_what_has_a_builder(client):
     assert "exec_procurement_summary" in r.json()["report_types"]
 
 
-def test_a_released_report_comes_back_as_the_deck(client):
+def test_generate_answers_at_once_with_a_queued_job(client):
     r = client.post("/reports/generate", json=BODY)
-    assert r.status_code == 200, r.text
-    assert r.content == b"PK-deck-bytes"
-    assert r.headers["content-type"] == _PPTX
-    assert r.headers["x-report-run-id"] == "FP-abc"
-    assert "attachment" in r.headers["content-disposition"]
-    assert "FP-abc" in r.headers["content-disposition"]
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["job_id"] == "rpt-1" and body["status"] == "queued"
+    assert body["already_requested"] is False
+    assert body["poll"] == "/reports/jobs/rpt-1"
+    assert client.submitted == ["rpt-1"]
 
-    report_type, kwargs = client.runs[0]
+    report_type, scope, as_of, requested_by = client.store.created[0]
     assert report_type == "exec_procurement_summary"
-    assert kwargs["scope"] == {"period_start": "2026-01-01", "period_end": "2026-03-31",
-                               "period_label": "2026 Q1", "currency": "GBP"}
+    assert scope == {"period_start": "2026-01-01", "period_end": "2026-03-31",
+                     "period_label": "2026 Q1", "currency": "GBP"}
+    assert requested_by == CALLER
+    assert len(as_of) == 10                      # an ISO day, fixed at request time
+
+
+def test_asking_again_while_it_runs_returns_the_same_job_and_starts_nothing(client):
+    client.post("/reports/generate", json=BODY)
+    r = client.post("/reports/generate", json=BODY)
+    assert r.status_code == 202
+    assert r.json()["job_id"] == "rpt-1" and r.json()["already_requested"] is True
+    assert client.submitted == ["rpt-1"]         # the worker was handed it once
 
 
 def test_the_gate_is_asked_first_and_by_the_token_holder(client):
@@ -105,34 +119,76 @@ def test_the_gate_is_asked_first_and_by_the_token_holder(client):
     assert context["report_type"] == "exec_procurement_summary"
 
 
-def test_a_refusal_stops_the_run(client, monkeypatch):
+def test_a_refusal_files_no_job(client, monkeypatch):
     def _refuse(*a, **k):
         raise HTTPException(status_code=403, detail="refused by a rule")
 
     monkeypatch.setattr(rr, "gate", _refuse)
     r = client.post("/reports/generate", json=BODY)
     assert r.status_code == 403
-    assert client.runs == []
+    assert client.store.created == [] and client.submitted == []
 
 
-def test_a_blocked_report_returns_reasons_and_never_the_deck(client):
-    client.next_run = _blocked()
-    r = client.post("/reports/generate", json=BODY)
-    assert r.status_code == 422
-    assert b"PK-deck-bytes" not in r.content
-    body = r.json()
-    assert body["released"] is False
-    assert body["run_id"] == "FP-abc"
-    assert body["stage_reached"] == "POST_CHECK"
-    # Only what blocked it: a non-blocking note is not a reason.
-    assert [f["finding_id"] for f in body["blocking"]] == ["FP-abc-PC001"]
+def test_a_job_reports_its_status_and_never_its_bytes(client):
+    client.post("/reports/generate", json=BODY)
+    r = client.get("/reports/jobs/rpt-1")
+    assert r.status_code == 200
+    assert r.json()["status"] == "queued"
+    assert r.json()["deck_url"] is None
+
+    _release(client.store, "rpt-1")
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert body["status"] == "released"
+    assert body["deck_url"] == "/reports/jobs/rpt-1/deck"
+    assert "deck" not in body
+
+
+def test_a_blocked_job_says_why(client):
+    client.post("/reports/generate", json=BODY)
+    client.store.jobs["rpt-1"].update(
+        status="blocked", run_id="FP-abc", stage_reached="POST_CHECK",
+        blocking=[{"finding_id": "FP-abc-PC001", "code": "REPORT_UNTRACED_FIGURE",
+                   "severity": "HIGH", "detail": "'£9,999' traces to no fact"}])
+    body = client.get("/reports/jobs/rpt-1").json()
+    assert body["status"] == "blocked"
     assert body["blocking"][0]["code"] == "REPORT_UNTRACED_FIGURE"
+    assert body["deck_url"] is None
+
+
+def test_a_released_deck_downloads(client):
+    client.post("/reports/generate", json=BODY)
+    _release(client.store, "rpt-1")
+    client.gates.clear()
+    r = client.get("/reports/jobs/rpt-1/deck")
+    assert r.status_code == 200
+    assert r.content == b"PK-deck-bytes"
+    assert r.headers["content-type"] == _PPTX
+    assert r.headers["x-report-run-id"] == "FP-abc"
+    assert 'filename="exec_procurement_summary_FP-abc.pptx"' in r.headers["content-disposition"]
+    assert [g[0] for g in client.gates] == ["report.read"]
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "blocked", "failed"])
+def test_no_deck_leaves_for_a_job_that_was_not_released(client, status):
+    client.post("/reports/generate", json=BODY)
+    client.store.jobs["rpt-1"]["status"] = status
+    # Even if bytes were somehow on file, the status decides.
+    client.store.decks["rpt-1"] = (b"PK-deck-bytes", _PPTX, "x.pptx")
+    r = client.get("/reports/jobs/rpt-1/deck")
+    assert r.status_code == 409
+    assert b"PK-deck-bytes" not in r.content
+    assert status in r.json()["detail"]
+
+
+def test_an_unknown_job_is_404(client):
+    assert client.get("/reports/jobs/rpt-nope").status_code == 404
+    assert client.get("/reports/jobs/rpt-nope/deck").status_code == 404
 
 
 def test_an_unknown_report_type_is_refused_before_anything_runs(client):
     r = client.post("/reports/generate", json={**BODY, "report_type": "board_paper"})
     assert r.status_code == 404
-    assert client.runs == [] and client.gates == []
+    assert client.store.created == [] and client.gates == []
 
 
 @pytest.mark.parametrize("patch", [
@@ -143,20 +199,19 @@ def test_an_unknown_report_type_is_refused_before_anything_runs(client):
 def test_a_malformed_period_is_refused(client, patch):
     r = client.post("/reports/generate", json={**BODY, **patch})
     assert r.status_code == 422
-    assert client.runs == []
+    assert client.store.created == []
 
 
 def test_label_and_currency_have_defaults(client):
     body = {k: v for k, v in BODY.items() if k not in ("period_label", "currency")}
-    assert client.post("/reports/generate", json=body).status_code == 200
-    scope = client.runs[0][1]["scope"]
+    assert client.post("/reports/generate", json=body).status_code == 202
+    scope = client.store.created[0][1]
     assert scope["currency"] == "GBP"
     assert scope["period_label"] == "2026-01-01 to 2026-03-31"
 
 
 def test_an_anonymous_caller_is_refused_when_auth_is_on(monkeypatch):
     # No override of require_user: the real dependency runs.
-    monkeypatch.setattr(rr, "generate_report", lambda *a, **k: _released())
     import api.auth as auth
 
     class _V:
@@ -166,5 +221,6 @@ def test_an_anonymous_caller_is_refused_when_auth_is_on(monkeypatch):
     monkeypatch.setattr(auth, "_active_verifier", lambda: _V())
     app = FastAPI()
     app.include_router(rr.router)
-    r = TestClient(app).post("/reports/generate", json=BODY)
-    assert r.status_code == 401
+    c = TestClient(app)
+    assert c.post("/reports/generate", json=BODY).status_code == 401
+    assert c.get("/reports/jobs/rpt-1/deck").status_code == 401

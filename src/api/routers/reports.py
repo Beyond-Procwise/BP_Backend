@@ -1,32 +1,34 @@
 """Report Generation Agent: the way in from outside the process.
 
-Until this router nothing could reach ``services/rga`` -- it ran only when a test
-or a script called it. This is the door, and it is deliberately narrow:
+Composing a report takes the local model minutes, too long to hold a request
+open, so the door files a job and answers at once:
 
-  * The gate is asked before any figure is computed, as ``report.generate``, by
-    whoever the token says is calling.
-  * A released report comes back as the deck itself, with its run id in a header
-    so the file can be traced to its Fact Pack in the audit spine.
-  * A BLOCKED report returns its reasons and never its deck. The pipeline still
-    renders one, so a person investigating can rebuild it, but the gate failed
-    closed and a download link would be the gate failing open.
+    POST /reports/generate           -> 202 {job_id, status: queued, poll}
+    GET  /reports/jobs/{job_id}      -> queued | running | released | blocked | failed
+    GET  /reports/jobs/{job_id}/deck -> the .pptx, for a released job only
 
-Nothing is stored. Each request is a fresh run; the audit events are the record.
+  * The gate is asked before a job is filed, as ``report.generate``, by whoever
+    the token says is calling. Downloading a deck asks ``report.read``. A status
+    poll does not ask the gate: it runs every few seconds, would write an audit
+    row each time, and reveals no figure -- the router-level auth still applies.
+  * A BLOCKED report returns its reasons and never its deck. The worker does not
+    even store one, and the table refuses a deck on a job that was not released.
+  * Asking again for the same report while it is queued or running returns the
+    same job; the GPU runs it once.
 """
 from __future__ import annotations
 
 import datetime as dt
 import re
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel, field_validator, model_validator
-from starlette.concurrency import run_in_threadpool
 
 import src.services.rga  # noqa: F401  registers the Fact Pack builders
+from src.services.rga import job_runner, job_store
 from src.services.rga.factpack import registered_types
-from src.services.rga.pipeline import generate_report
 
 from api.auth import require_user
 from api.endpoint_gate import require as gate
@@ -34,6 +36,9 @@ from api.endpoint_gate import require as gate
 router = APIRouter(prefix="/reports", tags=["Reports"])
 _AGENT = "ReportsRouter"
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
+_PUBLIC = ("job_id", "report_type", "scope", "as_of", "status", "requested_by",
+           "requested_at", "started_at", "finished_at", "run_id", "stage_reached",
+           "blocking", "error")
 
 
 class GenerateBody(BaseModel):
@@ -63,13 +68,27 @@ class GenerateBody(BaseModel):
                 "currency": self.currency}
 
 
+def _view(job: Dict[str, Any]) -> Dict[str, Any]:
+    out = {k: job.get(k) for k in _PUBLIC}
+    out["deck_url"] = (f"/reports/jobs/{job['job_id']}/deck"
+                       if job.get("status") == "released" else None)
+    return out
+
+
+def _job_or_404(job_id: str) -> Dict[str, Any]:
+    job = job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no report job {job_id!r}")
+    return job
+
+
 @router.get("/types")
 def list_types():
     return {"report_types": registered_types()}
 
 
-@router.post("/generate")
-async def generate(body: GenerateBody, principal=Depends(require_user)):
+@router.post("/generate", status_code=202)
+def generate(body: GenerateBody, principal=Depends(require_user)):
     if body.report_type not in registered_types():
         raise HTTPException(status_code=404,
                             detail=f"no report type {body.report_type!r}; "
@@ -78,21 +97,33 @@ async def generate(body: GenerateBody, principal=Depends(require_user)):
     gate("report.generate", principal, agent=_AGENT,
          context={"report_type": body.report_type, "scope": scope})
 
-    # COMPOSE calls the local model; seconds to minutes, never on the event loop.
-    run = await run_in_threadpool(generate_report, body.report_type, scope=scope)
+    job, created = job_store.create(
+        body.report_type, scope=scope, as_of=dt.date.today().isoformat(),
+        requested_by=getattr(principal, "subject", None) or None)
+    if created:
+        job_runner.submit(job["job_id"])
+    return {"job_id": job["job_id"], "status": job["status"],
+            "already_requested": not created,
+            "poll": f"/reports/jobs/{job['job_id']}"}
 
-    if not run.released or run.artefact is None:
-        return JSONResponse(status_code=422, content={
-            "released": False,
-            "run_id": run.run_id,
-            "report_type": run.report_type_id,
-            "stage_reached": run.stage_reached,
-            "blocking": [{"finding_id": f.finding_id, "code": f.code.value,
-                          "severity": f.severity.value, "detail": f.detail}
-                         for f in run.findings if f.blocks_release],
-        })
 
-    filename = f"{run.report_type_id}_{run.run_id}.pptx"
-    return Response(content=run.artefact.content, media_type=run.artefact.media_type,
+@router.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    return _view(_job_or_404(job_id))
+
+
+@router.get("/jobs/{job_id}/deck")
+def get_deck(job_id: str, principal=Depends(require_user)):
+    job = _job_or_404(job_id)
+    gate("report.read", principal, agent=_AGENT,
+         context={"job_id": job_id, "run_id": job.get("run_id")})
+    # The status decides, not the presence of bytes.
+    found = job_store.deck(job_id) if job["status"] == "released" else None
+    if found is None:
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is {job['status']}; only a "
+                                   "released report has a deck")
+    content, media_type, filename = found
+    return Response(content=content, media_type=media_type,
                     headers={"Content-Disposition": f'attachment; filename="{filename}"',
-                             "X-Report-Run-Id": run.run_id})
+                             "X-Report-Run-Id": job.get("run_id") or ""})
