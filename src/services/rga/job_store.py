@@ -50,9 +50,12 @@ _RESTARTED = ("The report was interrupted by a server restart before it finished
 _COLUMNS = ("job_id", "report_type", "scope", "as_of", "status", "owner",
             "requested_by", "requested_at", "started_at", "finished_at", "run_id",
             "stage_reached", "blocking", "error", "entitlement",
-            "dismissed_at", "dismissed_by", "dismiss_reason", "has_page")
+            "dismissed_at", "dismissed_by", "dismiss_reason", "has_page",
+            "title", "current_version", "last_edited_by", "editable")
 # Computed columns, by name: whether a printable page is stored, without hauling it.
-_COMPUTED = {"has_page": "({p}page IS NOT NULL)"}
+_COMPUTED = {"has_page": "({p}page IS NOT NULL)",
+             # Editable = released with its Fact Pack stored (2026-09-24 onwards).
+             "editable": "({p}fact_pack IS NOT NULL)"}
 
 
 def _select_list(prefix: str = "") -> str:
@@ -253,10 +256,60 @@ def _finish(job_id: str, status: str, **fields: Any) -> None:
 
 def finish_released(job_id: str, *, run_id: str, stage_reached: str, deck: bytes,
                     media_type: str, filename: str, page: Optional[bytes] = None,
-                    page_media_type: Optional[str] = None) -> None:
-    _finish(job_id, "released", run_id=run_id, stage_reached=stage_reached,
-            deck=deck, media_type=media_type, filename=filename,
-            page=page, page_media_type=page_media_type)
+                    page_media_type: Optional[str] = None,
+                    fact_pack: Optional[Dict[str, Any]] = None,
+                    ast: Optional[Dict[str, Any]] = None,
+                    title: Optional[str] = None) -> None:
+    """Release a job. With its Fact Pack and AST it also becomes version 1, editable: an edit
+    re-renders from exactly this pack (never a re-query). Without them -- a caller from before
+    the editor -- it is released as before and cannot be edited."""
+    if fact_pack is None or ast is None:
+        _finish(job_id, "released", run_id=run_id, stage_reached=stage_reached,
+                deck=deck, media_type=media_type, filename=filename,
+                page=page, page_media_type=page_media_type)
+        return
+
+    title = title or "Executive procurement summary"
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE proc.bp_report_job SET status = 'released', finished_at = now(), "
+                "  run_id = %s, stage_reached = %s, deck = %s, media_type = %s, filename = %s, "
+                "  page = %s, page_media_type = %s, fact_pack = %s::jsonb, title = %s, "
+                "  current_version = 1 "
+                "WHERE job_id = %s AND status IN %s RETURNING job_id",
+                (run_id, stage_reached, deck, media_type, filename, page, page_media_type,
+                 json.dumps(fact_pack), title, job_id, ACTIVE))
+            if cur.fetchone():
+                cur.execute(
+                    "INSERT INTO proc.bp_report_version (job_id, version, title, ast, deck, page, "
+                    "  deck_sha256, page_sha256, edited_by, summary) "
+                    "VALUES (%s, 1, %s, %s::jsonb, %s, %s, %s, %s, NULL, %s)",
+                    (job_id, title, json.dumps(ast), deck, page,
+                     hashlib.sha256(deck).hexdigest(),
+                     hashlib.sha256(page).hexdigest() if page is not None else None,
+                     "released by the reporting agent"))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def draft(job_id: str) -> Optional[Dict[str, Any]]:
+    """The current version's title and AST, with the job's Fact Pack -- what the editor edits.
+    None for a job that has no versions (not released, or released before the editor)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT j.current_version, v.title, v.ast, j.fact_pack "
+            "  FROM proc.bp_report_job j "
+            "  JOIN proc.bp_report_version v ON v.job_id = j.job_id AND v.version = j.current_version "
+            " WHERE j.job_id = %s", (job_id,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"version": row[0], "title": row[1], "ast": row[2], "fact_pack": row[3]}
 
 
 def page(job_id: str) -> Optional[Tuple[bytes, str]]:
