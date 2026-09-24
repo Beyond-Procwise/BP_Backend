@@ -83,3 +83,29 @@ def test_rollback_sql_deletes_untouched_mirror_rows_before_dropping_the_map():
               "AND status='open'\n   AND resolved_by IS NULL AND query_sent_at IS NULL;")
     assert delete in text
     assert text.index(delete) < text.index("DROP TABLE IF EXISTS proc.bp_triage_finding;")
+
+
+def test_decision_sync_triggers_exist(applied):
+    cur = applied.cursor()
+    cur.execute("""SELECT tgname, tgrelid::regclass::text FROM pg_trigger
+                    WHERE tgname IN ('tr_bp_triage_finding_decision_to_mirror',
+                                     'tr_bp_triage_mirror_decision_to_finding')
+                      AND NOT tgisinternal""")
+    assert dict(cur.fetchall()) == {
+        "tr_bp_triage_finding_decision_to_mirror": "proc.bp_detection_finding",
+        "tr_bp_triage_mirror_decision_to_finding": "proc.bp_extraction_discrepancy",
+    }
+
+
+def test_rollback_sql_drops_the_decision_sync_triggers_first():
+    text = (MIGRATION.parent / "2026-09-24_bp_triage_rollback.sql").read_text()
+    drops = [
+        "DROP TRIGGER IF EXISTS tr_bp_triage_finding_decision_to_mirror "
+        "ON proc.bp_detection_finding;",
+        "DROP TRIGGER IF EXISTS tr_bp_triage_mirror_decision_to_finding "
+        "ON proc.bp_extraction_discrepancy;",
+        "DROP FUNCTION IF EXISTS proc.bp_triage_finding_decision_to_mirror();",
+        "DROP FUNCTION IF EXISTS proc.bp_triage_mirror_decision_to_finding();",
+    ]
+    assert all(d in text for d in drops)
+    assert max(text.index(d) for d in drops) < text.index("DELETE FROM")

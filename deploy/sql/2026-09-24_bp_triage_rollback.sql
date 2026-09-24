@@ -8,6 +8,11 @@
 -- is raised or the procwise service is stopped. It does not undo the supersedes or
 -- in-place updates the run made to findings that already existed.
 BEGIN;
+-- The decision sync first, so the deletes below cannot fire it.
+DROP TRIGGER IF EXISTS tr_bp_triage_finding_decision_to_mirror ON proc.bp_detection_finding;
+DROP TRIGGER IF EXISTS tr_bp_triage_mirror_decision_to_finding ON proc.bp_extraction_discrepancy;
+DROP FUNCTION IF EXISTS proc.bp_triage_finding_decision_to_mirror();
+DROP FUNCTION IF EXISTS proc.bp_triage_mirror_decision_to_finding();
 DELETE FROM proc.bp_detection_finding f
  USING proc.bp_triage_finding m
  WHERE m.finding_id = f.finding_id
