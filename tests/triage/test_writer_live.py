@@ -25,6 +25,8 @@ def ctx():
         yield SimpleNamespace(conn=conn, deal_id=deal_id, runs=runs)
         cur = conn.cursor()
         cur.execute("DELETE FROM proc.bp_detection_finding WHERE deal_id = %s", (deal_id,))
+        cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE source_file = 'triage:' || %s",
+                    (deal_id,))
         cur.execute("DELETE FROM proc.bp_triage_finding WHERE deal_id = %s", (deal_id,))
         cur.execute("DELETE FROM proc.bp_triage_result WHERE deal_id = %s", (deal_id,))
         cur.execute("DELETE FROM proc.bp_triage_deal_state WHERE deal_id = %s", (deal_id,))
@@ -269,3 +271,142 @@ def test_rollback_drops_the_state_rows_that_run_wrote(ctx):
     assert _state(ctx) is not None
     result = writer.rollback_run(ctx.conn, second)
     assert _state(ctx) is None and result["deal_states_removed"] == 1
+
+
+# --- the Action Centre mirror in proc.bp_extraction_discrepancy ---------------------
+
+def _mirrors(ctx):
+    cur = ctx.conn.cursor()
+    cur.execute("""SELECT discrepancy_id, doc_type, raw_id, doc_pk_candidate, field_name,
+                          raw_value, expected_value, computed_value, issue_type, severity,
+                          status, notes, blocks_promotion
+                     FROM proc.bp_extraction_discrepancy WHERE source_file = %s
+                    ORDER BY discrepancy_id""", (f"triage:{ctx.deal_id}",))
+    return cur.fetchall()
+
+
+def _map(ctx):
+    cur = ctx.conn.cursor()
+    cur.execute("""SELECT finding_id, mirror_id, replaced_mirror_id FROM proc.bp_triage_finding
+                    WHERE deal_id = %s ORDER BY finding_id""", (ctx.deal_id,))
+    return cur.fetchall()
+
+
+def _notes(ctx, fid):
+    cur = ctx.conn.cursor()
+    cur.execute("SELECT notes FROM proc.bp_detection_finding WHERE finding_id = %s", (fid,))
+    return cur.fetchone()[0]
+
+
+def _price_deal(ctx, price):
+    return deal(po(lines=[line(1, qty="600", price="30.00")]),
+                inv(lines=[line(1, qty="300", price=price)]), deal_id=ctx.deal_id)
+
+
+def test_a_new_finding_gets_one_action_centre_mirror_row(ctx):
+    _write(ctx, _currency_deal(ctx))
+    (fid, *_rest), = _findings(ctx)
+    (mid, doc_type, raw_id, doc_pk, field, raw, expected, computed, issue, sev, status,
+     notes, blocks), = _mirrors(ctx)
+    assert (doc_type, raw_id, doc_pk, field, raw, expected) == (
+        "invoice", None, "INV-1", f"currency #{fid}", "EUR", "GBP")
+    assert (issue, sev, status, blocks) == ("currency_differs_from_po", "critical", "open", False)
+    assert computed is not None and notes == _notes(ctx, fid)
+    assert _map(ctx) == [(fid, mid, None)]
+
+
+def test_a_flagged_duplicate_is_not_mirrored(ctx):
+    from decimal import Decimal
+    from src.services.triage.model import DuplicateFlag
+    ds = deal(po(), inv("INV-1"), inv("INV-2", currency="EUR"),
+              duplicates=[DuplicateFlag("INV-2", "INV-1", Decimal("144"))], deal_id=ctx.deal_id)
+    _write(ctx, ds)
+    rules = {r[0]: r[1] for r in _findings(ctx)}
+    assert {"duplicate", "currency"} <= set(rules.values())
+    mirrored = {int(m[4].rsplit("#", 1)[1]) for m in _mirrors(ctx)}
+    assert mirrored and mirrored == {fid for fid, rule in rules.items() if rule != "duplicate"}
+    assert all(m[8] != "duplicate" for m in _mirrors(ctx))
+
+
+def test_a_rerun_updates_the_same_mirror_row(ctx):
+    _write(ctx, _price_deal(ctx, "30.50"))
+    (first,) = _mirrors(ctx)
+    _run_id, counts = _write(ctx, _price_deal(ctx, "30.60"))
+    assert counts["updated"] == 1
+    (after,) = _mirrors(ctx)
+    assert after[0] == first[0] and _map(ctx)[0][1] == first[0]
+    assert (first[5], after[5]) == ("30.50", "30.60")
+    assert after[7] != first[7] and after[10] == "open"
+
+
+def test_a_fixed_problem_supersedes_its_mirror_row(ctx):
+    _write(ctx, _currency_deal(ctx))
+    _write(ctx, _currency_deal(ctx, currency="GBP"))
+    assert [m[10] for m in _mirrors(ctx)] == ["superseded"]
+
+
+def test_a_decision_on_the_mirror_row_flows_back_to_the_finding(ctx):
+    _write(ctx, _currency_deal(ctx))
+    (mirror,) = _mirrors(ctx)
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_extraction_discrepancy SET status='ignored', resolved_by='tester' "
+        "WHERE discrepancy_id = %s", (mirror[0],))
+    _run_id, counts = _write(ctx, _currency_deal(ctx))
+    assert counts["inserted"] == 0 and counts["reopened"] == 0 and counts["unchanged"] == 1
+    cur = ctx.conn.cursor()
+    cur.execute("""SELECT status, lifecycle_status, resolved_by, resolved_at IS NOT NULL
+                     FROM proc.bp_detection_finding WHERE deal_id = %s""", (ctx.deal_id,))
+    assert cur.fetchall() == [("ignored", "accepted_risk", "tester", True)]
+    after = _mirrors(ctx)
+    assert len(after) == 1 and after[0][0] == mirror[0] and after[0][10] == "ignored"
+    assert after[0][5:10] == mirror[5:10]
+
+
+def test_a_severity_rise_after_a_mirror_decision_opens_a_new_mirror_row(ctx):
+    _write(ctx, _price_deal(ctx, "30.50"))                    # S2
+    (old,) = _mirrors(ctx)
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_extraction_discrepancy SET status='ignored', resolved_by='tester' "
+        "WHERE discrepancy_id = %s", (old[0],))
+    run_id, counts = _write(ctx, _price_deal(ctx, "32.00"))  # S1 -> reopens
+    assert counts["reopened"] == 1
+    rows = _findings(ctx)
+    assert [r[3] for r in rows] == ["ignored", "open"]
+    mirrors = _mirrors(ctx)
+    assert [(m[0], m[9], m[10]) for m in mirrors] == [
+        (old[0], "warning", "ignored"), (mirrors[1][0], "critical", "open")]
+    assert mirrors[1][4] == f"unit_price #{rows[1][0]}"
+    assert _map(ctx) == [(rows[1][0], mirrors[1][0], old[0])]
+    # rolling the reopen back hands the fingerprint back to the old finding AND mirror
+    writer.rollback_run(ctx.conn, run_id)
+    assert _map(ctx) == [(rows[0][0], old[0], None)]
+    assert [m[0] for m in _mirrors(ctx)] == [old[0]]
+
+
+def test_a_finding_written_before_mirrors_existed_gets_one(ctx):
+    _write(ctx, _currency_deal(ctx))
+    (fid, *_rest), = _findings(ctx)
+    cur = ctx.conn.cursor()
+    cur.execute("UPDATE proc.bp_triage_finding SET mirror_id = NULL WHERE deal_id = %s",
+                (ctx.deal_id,))
+    cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE source_file = %s",
+                (f"triage:{ctx.deal_id}",))
+    _run_id, counts = _write(ctx, _currency_deal(ctx))
+    assert counts["updated"] == 1
+    (mirror,) = _mirrors(ctx)
+    assert mirror[4] == f"currency #{fid}" and mirror[10] == "open"
+    assert _map(ctx) == [(fid, mirror[0], None)]
+
+
+def test_rollback_removes_untouched_mirror_rows_and_keeps_touched_ones(ctx):
+    ds = deal(po(), inv("INV-1", currency="EUR"), inv("INV-2", currency="USD", po_id="PO-1"),
+              deal_id=ctx.deal_id)
+    run_id, _counts = _write(ctx, ds)
+    mirrors = [m for m in _mirrors(ctx) if m[8] == "currency_differs_from_po"]
+    assert len(mirrors) == 2
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_extraction_discrepancy SET query_sent_at = now() "
+        "WHERE discrepancy_id = %s", (mirrors[0][0],))
+    writer.rollback_run(ctx.conn, run_id)
+    left = [m[0] for m in _mirrors(ctx)]
+    assert mirrors[0][0] in left and mirrors[1][0] not in left
