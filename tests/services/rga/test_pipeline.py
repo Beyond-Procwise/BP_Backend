@@ -358,3 +358,35 @@ def test_the_release_event_says_whether_sign_off_is_required(stub_type, hand_wri
         released = [r for r in writer.rows if r["action_type"] == audit.RELEASED][0]
         assert released["details"]["approval_required"] is needed
         assert released["details"]["approval_policy"] == "ReportSignoffPolicy"
+
+
+class TestOneReasonOnce:
+    """Final review: the deck and the page are post-checked separately, and checks that look
+    at the DRAFT (an unknown fact, nothing stated) fire on both -- so one defect was stored
+    twice under one finding id and shown as "2 checks failed" with the same sentence twice."""
+
+    def test_a_draft_defect_is_listed_once(self, stub_type):
+        broken = ReportAST(sections=[Section(id="s", title="S", blocks=[
+            MetricBlock(fact_ref="F0001"), MetricBlock(fact_ref="F0099")])])
+        result = run(stub_type, broken, emit_audit=False)
+        blocking = [f for f in result.findings if f.blocks_release]
+        unknown = [f for f in blocking if f.code.value == "UNKNOWN_FACT_REF"]
+        assert len(unknown) == 1
+        ids = [f.finding_id for f in blocking]
+        assert len(ids) == len(set(ids))
+
+    def test_a_page_only_defect_says_it_is_the_page(self, stub_type, hand_written):
+        import dataclasses
+        from types import SimpleNamespace
+        from src.services.rga.render import html as real
+
+        def render(ast, pack, brief, *, title):
+            art = real.render(ast, pack, brief, title=title)
+            bad = art.content.decode().replace("</body>", "<p>An extra £9,999.</p></body>")
+            return dataclasses.replace(art, content=bad.encode())
+
+        result = run(stub_type, hand_written, emit_audit=False,
+                     page_renderer=SimpleNamespace(render=render))
+        page_only = [f for f in result.findings if f.blocks_release]
+        assert len(page_only) == 1
+        assert "-PG" in page_only[0].finding_id and "printable page" in page_only[0].detail
