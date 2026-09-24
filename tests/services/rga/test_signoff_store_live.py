@@ -72,3 +72,71 @@ def test_a_refusal_must_name_a_person_and_a_reason(job):
         store.record_report_refusal(job_id=job, run_id=None, actioned_by="a", reason=" ",
                                     policy_name=None)
     assert store.find_report_decision(job) is None
+
+
+# ---------------------------------------------------------------------------
+# decide(): one decision per awaiting deck, under a row lock
+# ---------------------------------------------------------------------------
+from src.services.rga import job_store, signoff  # noqa: E402
+
+
+@pytest.fixture
+def released(monkeypatch):
+    monkeypatch.setattr(job_store, "_on_healed", lambda rows: None)
+    rtype = f"test_{uuid.uuid4().hex[:10]}"
+    job, _ = job_store.create(rtype, scope={"period_start": "2026-01-01", "period_end": "2026-03-31"},
+                              as_of="2026-09-24", requested_by="buyer-1", entitlement=None)
+    job_store.claim(job["job_id"])
+    job_store.finish_released(job["job_id"], run_id=job["run_id"], stage_reached="RELEASE",
+                              deck=b"PK-live-deck", media_type="application/x", filename="d.pptx")
+    yield job
+    with get_conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM proc.bp_approval WHERE grounding->>'report_job_id' = %s",
+                    (job["job_id"],))
+        cur.execute("DELETE FROM proc.bp_report_job WHERE report_type = %s", (rtype,))
+
+
+def test_a_sign_off_is_bound_to_the_stored_deck(released):
+    s = signoff.decide(released["job_id"], verdict="sign_off", by="approver-1",
+                       reason=None, policy_name="ReportSignoffAuthorityPolicy")
+    assert s["state"] == "signed_off" and s["by"] == "approver-1"
+    assert s["deck_sha256"] == signoff.deck_hash(b"PK-live-deck")
+
+
+def test_a_decided_deck_cannot_be_decided_again(released):
+    signoff.decide(released["job_id"], verdict="sign_off", by="approver-1", reason=None,
+                   policy_name="ReportSignoffAuthorityPolicy")
+    with pytest.raises(signoff.NotDecidable) as e:
+        signoff.decide(released["job_id"], verdict="refuse", by="approver-2", reason="late",
+                       policy_name="ReportSignoffAuthorityPolicy")
+    assert e.value.state == "signed_off"
+    assert store.find_report_decision(released["job_id"])["status"] == "approved"
+
+
+def test_a_refusal_holds_the_deck_with_its_reason(released):
+    s = signoff.decide(released["job_id"], verdict="refuse", by="approver-2",
+                       reason="figures wrong", policy_name="ReportSignoffAuthorityPolicy")
+    assert (s["state"], s["reason"]) == ("refused", "figures wrong")
+
+
+def test_awaiting_and_refused_decks_need_attention_signed_off_ones_do_not(released):
+    rtype = released["report_type"]
+    listed = lambda: {j["job_id"] for j in job_store.needs_attention(200) if j["report_type"] == rtype}
+    assert released["job_id"] in listed()                       # awaiting
+    signoff.decide(released["job_id"], verdict="refuse", by="a", reason="no",
+                   policy_name="ReportSignoffAuthorityPolicy")
+    assert released["job_id"] in listed()                       # refused: still needs a person
+
+
+def test_a_signed_off_deck_leaves_attention(released):
+    signoff.decide(released["job_id"], verdict="sign_off", by="a", reason=None,
+                   policy_name="ReportSignoffAuthorityPolicy")
+    rtype = released["report_type"]
+    assert released["job_id"] not in {j["job_id"] for j in job_store.needs_attention(200)
+                                      if j["report_type"] == rtype}
+
+
+def test_an_unknown_job_cannot_be_decided():
+    with pytest.raises(LookupError):
+        signoff.decide("rpt-does-not-exist", verdict="sign_off", by="a", reason=None,
+                       policy_name=None)

@@ -162,3 +162,28 @@ def test_a_crash_closes_the_trail_with_a_failed_event(monkeypatch):
     assert k["run_id"] == "FP-a" and k["status"] == "failed"
     assert "database went away" in k["summary"]
     assert ctx["job_id"] == "rpt-1"
+
+
+def _released_run(report_type, **k):
+    return ReportRun(run_id="FP-a", report_type_id=report_type, artefact=_artefact(),
+                     released=True, stage_reached="RELEASE")
+
+
+def test_a_release_that_needs_sign_off_asks_for_it(monkeypatch):
+    from src.services.rga import audit
+    events = []
+    monkeypatch.setattr(job_runner.audit, "emit",
+                        lambda action, **k: events.append((action, k, audit.current_context())))
+    monkeypatch.setattr(job_runner.signoff, "required", lambda report_type: True)
+    job_runner.run_job("rpt-1", store=FakeStore(), generate=_released_run)
+    assert [e[0] for e in events] == [audit.APPROVAL_REQUESTED]
+    action, k, ctx = events[0]
+    assert k["run_id"] == "FP-a" and ctx["job_id"] == "rpt-1" and ctx["requested_by"] == "buyer-1"
+
+
+def test_a_release_that_needs_none_asks_for_nothing(monkeypatch):
+    events = []
+    monkeypatch.setattr(job_runner.audit, "emit", lambda action, **k: events.append(action))
+    monkeypatch.setattr(job_runner.signoff, "required", lambda report_type: False)
+    job_runner.run_job("rpt-1", store=FakeStore(), generate=_released_run)
+    assert events == []

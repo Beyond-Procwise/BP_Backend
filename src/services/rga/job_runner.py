@@ -20,7 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from src.services.rga import audit
+from src.services.rga import audit, signoff
 from src.services.rga import job_store as _store
 from src.services.rga.pipeline import generate_report as _generate
 
@@ -79,6 +79,13 @@ def run_job(job_id: str, *, store: Any = _store,
                 job_id, run_id=run.run_id, stage_reached=run.stage_reached,
                 deck=run.artefact.content, media_type=run.artefact.media_type,
                 filename=f"{run.report_type_id}_{run.run_id}.pptx")
+            # Released is not yet allowed to leave: the policy decides whether a person
+            # must sign it off first, and the trail records that one was asked for.
+            if signoff.required(run.report_type_id):
+                with audit.run_context(job_id=job_id, requested_by=job.get("requested_by")):
+                    audit.emit(audit.APPROVAL_REQUESTED, run_id=run.run_id,
+                               agent="rga_job_runner", summary="awaiting sign-off",
+                               details={"policy": "ReportSignoffPolicy"})
         else:
             store.finish_blocked(
                 job_id, run_id=run.run_id, stage_reached=run.stage_reached,

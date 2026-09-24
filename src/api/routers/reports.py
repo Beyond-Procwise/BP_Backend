@@ -147,6 +147,10 @@ def attention(limit: int = 50):
     items = []
     for job in job_store.needs_attention(max(1, min(limit, 100))):
         item = _view(job)
+        # The store lists every released deck without a sign-off; the policy decides
+        # which of those actually need one.
+        if job.get("status") == "released" and item["signoff"]["state"] not in ("awaiting", "refused"):
+            continue
         item["rerun_status"] = job.get("rerun_status")
         items.append(item)
     return {"items": items}
@@ -167,7 +171,8 @@ def dismiss(job_id: str, body: DismissBody, principal=Depends(require_user)):
          context={"job_id": job_id, "run_id": job.get("run_id")})
     subject = getattr(principal, "subject", None) or None
     reason = (body.reason or "").strip() or None
-    if not job_store.dismiss(job_id, by=subject, reason=reason):
+    refused = job["status"] == "released" and signoff.state(job)["state"] == "refused"
+    if not job_store.dismiss(job_id, by=subject, reason=reason, allow_released=refused):
         raise HTTPException(status_code=409,
                             detail=f"report job {job_id} is {job['status']}; only a blocked "
                                    "or failed report can be dismissed, and only once")
@@ -177,6 +182,65 @@ def dismiss(job_id: str, body: DismissBody, principal=Depends(require_user)):
                    details={"dismissed_by": subject, "reason": reason,
                             "status": job["status"]})
     return {"job_id": job_id, "dismissed": True}
+
+
+class SignoffBody(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class RefuseBody(BaseModel):
+    reason: str = Field(max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _stated(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("a refusal must say why")
+        return v.strip()
+
+
+def _decide(job_id: str, verdict: str, reason: Optional[str], principal: Any) -> Dict[str, Any]:
+    """Sign a report off, or refuse to. Who may is policy (report.signoff's permit, Approver
+    and above); whether a requester may sign off their own is policy too."""
+    job = _job_or_404(job_id)
+    gate(signoff.ACTION, principal, agent=_AGENT,
+         context={"job_id": job_id, "run_id": job.get("run_id"), "verdict": verdict})
+    subject = getattr(principal, "subject", None) or None
+    requester = job.get("requested_by")
+    # A job with no recorded requester cannot match anyone -- the email approvals' rule.
+    if signoff.self_approval_denied() and requester and subject and requester == subject:
+        raise HTTPException(status_code=403,
+                            detail="you asked for this report, so someone else must sign it off")
+    try:
+        decided = signoff.decide(job_id, verdict=verdict, by=subject or "", reason=reason,
+                                 policy_name="ReportSignoffAuthorityPolicy")
+    except signoff.NotDecidable as exc:
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is {exc.state}; only a report "
+                                   "awaiting sign-off can be signed off or refused")
+    except ValueError as exc:   # no signed-in person to record
+        raise HTTPException(status_code=403, detail=str(exc))
+    # Irreversible events: the raising writer. The decision is already committed, so a
+    # failed write surfaces as an error rather than passing silently.
+    granted = verdict == "sign_off"
+    with audit.run_context(job_id=job_id, requested_by=requester):
+        audit.emit(audit.APPROVAL_GRANTED if granted else audit.APPROVAL_DENIED,
+                   run_id=job.get("run_id") or job_id, agent=_AGENT,
+                   summary="report signed off" if granted else "report sign-off refused",
+                   details={("signed_off_by" if granted else "refused_by"): subject,
+                            "reason": reason, "approval_id": decided.get("approval_id"),
+                            "policy": "ReportSignoffAuthorityPolicy"})
+    return _view(job_store.get(job_id) or job)
+
+
+@router.post("/jobs/{job_id}/signoff")
+def sign_off(job_id: str, body: SignoffBody, principal=Depends(require_user)):
+    return _decide(job_id, "sign_off", (body.reason or "").strip() or None, principal)
+
+
+@router.post("/jobs/{job_id}/refuse")
+def refuse(job_id: str, body: RefuseBody, principal=Depends(require_user)):
+    return _decide(job_id, "refuse", body.reason, principal)
 
 
 @router.get("/jobs/{job_id}")

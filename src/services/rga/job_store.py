@@ -185,7 +185,16 @@ def needs_attention(limit: int) -> List[Dict[str, Any]]:
             f"  (SELECT r.status FROM proc.bp_report_job r WHERE {_LATER_SAME} "
             "     AND r.status IN %s ORDER BY r.requested_at DESC LIMIT 1) AS rerun_status "
             "  FROM proc.bp_report_job j "
-            " WHERE j.status IN ('blocked', 'failed') AND j.dismissed_at IS NULL "
+            # The newest sign-off decision on the job, if any (bp_approval, newest wins).
+            "  LEFT JOIN LATERAL (SELECT a.status FROM proc.bp_approval a "
+            "                      WHERE a.grounding->>'report_job_id' = j.job_id "
+            "                      ORDER BY a.created_date DESC, a.approval_id DESC LIMIT 1) d "
+            "         ON true "
+            " WHERE j.dismissed_at IS NULL "
+            # Blocked or failed; or released and not signed off (awaiting or refused -- the
+            # caller drops report types the policy says need no sign-off).
+            "   AND (j.status IN ('blocked', 'failed') "
+            "        OR (j.status = 'released' AND COALESCE(d.status, '') <> 'approved')) "
             f"  AND NOT EXISTS (SELECT 1 FROM proc.bp_report_job r WHERE {_LATER_SAME} "
             "                     AND r.status = 'released') "
             " ORDER BY j.requested_at DESC LIMIT %s",
@@ -198,15 +207,19 @@ def needs_attention(limit: int) -> List[Dict[str, Any]]:
         return out
 
 
-def dismiss(job_id: str, *, by: Optional[str], reason: Optional[str]) -> bool:
+def dismiss(job_id: str, *, by: Optional[str], reason: Optional[str],
+            allow_released: bool = False) -> bool:
     """Take a blocked or failed job off the Action Centre. True for exactly one
-    caller; False for any other status, or if someone already dismissed it."""
+    caller; False for any other status, or if someone already dismissed it.
+    ``allow_released`` admits a released job too -- the caller passes it only for a
+    deck whose sign-off was refused."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE proc.bp_report_job "
             "   SET dismissed_at = now(), dismissed_by = %s, dismiss_reason = %s "
-            " WHERE job_id = %s AND status IN ('blocked', 'failed') AND dismissed_at IS NULL",
-            (by, reason, job_id))
+            " WHERE job_id = %s AND dismissed_at IS NULL "
+            "   AND (status IN ('blocked', 'failed') OR (%s AND status = 'released'))",
+            (by, reason, job_id, bool(allow_released)))
         return cur.rowcount == 1
 
 

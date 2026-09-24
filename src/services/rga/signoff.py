@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from src.services import actions, rbac
 
@@ -121,3 +121,57 @@ def state(job: Dict[str, Any], engine: Any = None, decision: Any = _UNSET) -> Di
                deck_sha256=grounding.get("deck_sha256"))
     out["state"] = _BY_STATUS.get(decision.get("status"), "awaiting")
     return out
+
+
+class NotDecidable(Exception):
+    """The job is not awaiting sign-off (already decided, not released, or not required)."""
+
+    def __init__(self, state: str) -> None:
+        super().__init__(state)
+        self.state = state
+
+
+def decide(job_id: str, *, verdict: str, by: str, reason: Optional[str],
+           policy_name: Optional[str]) -> Dict[str, Any]:
+    """Record a sign-off (``verdict="sign_off"``) or a refusal (``"refuse"``) -- exactly once.
+
+    One transaction: the job row is locked FOR UPDATE, the newest decision is re-read on the
+    same connection, and only a job still ``awaiting`` is decided. Two people deciding at once
+    are serialised by the lock; the second sees the first's decision and gets NotDecidable.
+    A sign-off records the sha256 of the stored deck, so it is bound to the file reviewed.
+    """
+    from src.services import approval_store
+    from src.services.db import get_conn
+
+    if verdict not in ("sign_off", "refuse"):
+        raise ValueError(f"unknown verdict {verdict!r}")
+    with get_conn() as conn:
+        conn.autocommit = False
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT job_id, report_type, status, run_id, requested_by, deck "
+                        "  FROM proc.bp_report_job WHERE job_id = %s FOR UPDATE", (job_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise LookupError(f"no report job {job_id!r}")
+            job = dict(zip(("job_id", "report_type", "status", "run_id", "requested_by"), row[:5]))
+            deck = bytes(row[5]) if row[5] is not None else b""
+            current = state(job, decision=approval_store.find_report_decision(job_id, conn=conn))
+            if current["state"] != "awaiting":
+                raise NotDecidable(current["state"])
+            if verdict == "sign_off":
+                approval_store.record_approval(
+                    rfq_id=None, workflow_id=job_id, unique_id=None, supplier_id=None,
+                    actioned_by=by, policy_name=policy_name, conn=conn,
+                    grounding_extra={"report_job_id": job_id, "run_id": job["run_id"],
+                                     "deck_sha256": deck_hash(deck), "reason": reason})
+            else:
+                approval_store.record_report_refusal(
+                    job_id=job_id, run_id=job["run_id"], actioned_by=by, reason=reason or "",
+                    policy_name=policy_name, conn=conn)
+            decided = state(job, decision=approval_store.find_report_decision(job_id, conn=conn))
+            conn.commit()
+            return decided
+        except Exception:
+            conn.rollback()
+            raise

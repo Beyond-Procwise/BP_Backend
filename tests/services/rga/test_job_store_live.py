@@ -227,12 +227,14 @@ def _mine(rtype):
     return {j["job_id"]: j for j in job_store.needs_attention(200) if j["report_type"] == rtype}
 
 
-def test_blocked_and_failed_jobs_need_attention_released_ones_do_not(rtype):
+def test_blocked_failed_and_unsigned_released_jobs_need_attention(rtype):
+    """Since sign-off (2026-09-24) a released deck with no sign-off needs a person too; the
+    router drops the ones whose report type the policy says need none."""
     blocked = _ended(rtype, "blocked")
     failed = _ended(rtype, "failed", scope={**SCOPE, "period_end": "2026-02-28"})
-    _ended(rtype, "released", scope={**SCOPE, "period_end": "2026-01-31"})
+    released = _ended(rtype, "released", scope={**SCOPE, "period_end": "2026-01-31"})
     mine = _mine(rtype)
-    assert set(mine) == {blocked, failed}
+    assert set(mine) == {blocked, failed, released}
     assert mine[blocked]["rerun_status"] is None
 
 

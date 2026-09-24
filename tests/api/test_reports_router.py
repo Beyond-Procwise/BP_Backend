@@ -49,12 +49,15 @@ class FakeStore:
     def deck(self, job_id):
         return self.decks.get(job_id)
 
+    attention_extra = ()
+
     def needs_attention(self, limit):
         self.attention_limit = limit
         return [dict(j, rerun_status=None) for j in self.jobs.values()
-                if j["status"] in ("blocked", "failed") and not j.get("dismissed_at")]
+                if (j["status"] in ("blocked", "failed") or j["job_id"] in self.attention_extra)
+                and not j.get("dismissed_at")]
 
-    def dismiss(self, job_id, *, by, reason):
+    def dismiss(self, job_id, *, by, reason, allow_released=False):
         job = self.jobs.get(job_id)
         if not job or job["status"] not in ("blocked", "failed") or job.get("dismissed_at"):
             return False
@@ -73,6 +76,8 @@ class FakeSignoff:
     from src.services.rga.signoff import deck_hash as _hash
     deck_hash = staticmethod(_hash)
 
+    ACTION = "report.signoff"
+
     def __init__(self):
         self.states, self.may, self.self_denied = {}, False, True
 
@@ -89,6 +94,20 @@ class FakeSignoff:
 
     def self_approval_denied(self):
         return self.self_denied
+
+    from src.services.rga.signoff import NotDecidable
+
+    decided = None
+    refuse_state = None     # set to a state name to make decide() refuse
+
+    def decide(self, job_id, *, verdict, by, reason, policy_name):
+        if self.refuse_state:
+            raise self.NotDecidable(self.refuse_state)
+        self.decided = (job_id, verdict, by, reason, policy_name)
+        new = {"required": True, "state": "signed_off" if verdict == "sign_off" else "refused",
+               "by": by, "reason": reason, "approval_id": 42}
+        self.states[job_id] = new
+        return new
 
 
 @pytest.fixture
@@ -412,6 +431,9 @@ _DECK_SHA = _hashlib.sha256(b"PK-deck-bytes").hexdigest()
 def _awaiting(client, **extra):
     client.post("/reports/generate", json=BODY)
     _release(client.store, "rpt-1")
+    # Asked for by someone other than the caller, so self-approval is not in play unless
+    # a test puts it there.
+    client.store.jobs["rpt-1"]["requested_by"] = "buyer-1"
     client.signoff.states["rpt-1"] = {"required": True, "state": "awaiting", **extra}
 
 
@@ -468,3 +490,103 @@ def test_a_refused_deck_says_why_and_is_not_served(client):
     assert body["deck_ready"] is False and body["review_available"] is False
     r = client.get("/reports/jobs/rpt-1/deck")
     assert r.status_code == 409 and "figures wrong" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# signing off and refusing
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def events(monkeypatch):
+    from src.services.rga import audit
+    seen = []
+    monkeypatch.setattr(rr.audit, "emit",
+                        lambda action, **k: seen.append((action, k, audit.current_context())))
+    return seen
+
+
+def test_an_approver_signs_off_and_the_granted_event_is_written(client, events):
+    _awaiting(client)
+    client.store.jobs["rpt-1"]["requested_by"] = "buyer-1"
+    client.gates.clear()
+    r = client.post("/reports/jobs/rpt-1/signoff", json={"reason": "checked the figures"})
+    assert r.status_code == 200, r.text
+    assert r.json()["signoff"]["state"] == "signed_off"
+    assert [g[0] for g in client.gates] == ["report.signoff"]
+    assert client.signoff.decided == ("rpt-1", "sign_off", CALLER, "checked the figures",
+                                      "ReportSignoffAuthorityPolicy")
+    from src.services.rga import audit
+    action, k, ctx = events[0]
+    assert action == audit.APPROVAL_GRANTED
+    assert k["details"]["signed_off_by"] == CALLER and k["details"]["approval_id"] == 42
+    assert (ctx["job_id"], ctx["requested_by"]) == ("rpt-1", "buyer-1")
+
+
+def test_the_requester_cannot_sign_off_their_own_report(client, events):
+    _awaiting(client)
+    client.store.jobs["rpt-1"]["requested_by"] = CALLER
+    r = client.post("/reports/jobs/rpt-1/signoff", json={})
+    assert r.status_code == 403 and "someone else" in r.json()["detail"]
+    assert client.signoff.decided is None and events == []
+
+
+def test_self_approval_is_allowed_only_when_the_policy_says_so(client, events):
+    _awaiting(client)
+    client.store.jobs["rpt-1"]["requested_by"] = CALLER
+    client.signoff.self_denied = False
+    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 200
+
+
+def test_a_job_with_no_requester_can_be_signed_off(client, events):
+    _awaiting(client)
+    client.store.jobs["rpt-1"]["requested_by"] = None
+    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 200
+
+
+def test_refusing_needs_a_reason(client, events):
+    _awaiting(client)
+    assert client.post("/reports/jobs/rpt-1/refuse", json={}).status_code == 422
+    assert client.post("/reports/jobs/rpt-1/refuse", json={"reason": "   "}).status_code == 422
+    assert client.signoff.decided is None
+
+
+def test_a_refusal_writes_approval_denied(client, events):
+    _awaiting(client)
+    r = client.post("/reports/jobs/rpt-1/refuse", json={"reason": "figures wrong"})
+    assert r.status_code == 200 and r.json()["signoff"]["state"] == "refused"
+    assert client.signoff.decided[1:4] == ("refuse", CALLER, "figures wrong")
+    from src.services.rga import audit
+    assert events[0][0] == audit.APPROVAL_DENIED
+    assert events[0][1]["details"]["refused_by"] == CALLER
+
+
+def test_a_second_decision_on_the_same_job_is_refused(client, events):
+    _awaiting(client)
+    client.signoff.refuse_state = "signed_off"
+    r = client.post("/reports/jobs/rpt-1/refuse", json={"reason": "late"})
+    assert r.status_code == 409 and "signed_off" in r.json()["detail"]
+    assert events == []
+
+
+def test_only_a_signoff_permit_may_decide(client, monkeypatch, events):
+    _awaiting(client)
+
+    def _refuse(*a, **k):
+        raise HTTPException(status_code=403, detail="role Buyer may not perform transact")
+
+    monkeypatch.setattr(rr, "gate", _refuse)
+    assert client.post("/reports/jobs/rpt-1/signoff", json={}).status_code == 403
+    assert client.signoff.decided is None and events == []
+
+
+def test_an_unknown_job_cannot_be_signed(client):
+    assert client.post("/reports/jobs/rpt-nope/signoff", json={}).status_code == 404
+
+
+def test_attention_drops_released_jobs_whose_type_needs_no_sign_off(client):
+    client.post("/reports/generate", json=BODY)
+    _release(client.store, "rpt-1")
+    client.store.attention_extra = ["rpt-1"]          # the store lists it; policy says not required
+    assert client.get("/reports/attention").json()["items"] == []
+    client.signoff.states["rpt-1"] = {"required": True, "state": "awaiting"}
+    items = client.get("/reports/attention").json()["items"]
+    assert [(i["job_id"], i["signoff"]["state"]) for i in items] == [("rpt-1", "awaiting")]
