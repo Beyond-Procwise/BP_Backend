@@ -49,7 +49,8 @@ _RESTARTED = ("The report was interrupted by a server restart before it finished
 # Everything but the deck: a status read must never haul the file.
 _COLUMNS = ("job_id", "report_type", "scope", "as_of", "status", "owner",
             "requested_by", "requested_at", "started_at", "finished_at", "run_id",
-            "stage_reached", "blocking", "error", "entitlement")
+            "stage_reached", "blocking", "error", "entitlement",
+            "dismissed_at", "dismissed_by", "dismiss_reason")
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM proc.bp_report_job"
 
 
@@ -63,7 +64,7 @@ def _row(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
     job = dict(zip(_COLUMNS, row))
-    for key in ("requested_at", "started_at", "finished_at", "as_of"):
+    for key in ("requested_at", "started_at", "finished_at", "as_of", "dismissed_at"):
         if job.get(key) is not None:
             job[key] = job[key].isoformat()
     return job
@@ -163,6 +164,50 @@ def recent(limit: int) -> List[Dict[str, Any]]:
         _heal(cur)
         cur.execute(f"{_SELECT} ORDER BY requested_at DESC LIMIT %s", (limit,))
         return [_row(r) for r in cur.fetchall()]
+
+
+# A later run of the SAME report and scope. `scope` is jsonb, so equality is by
+# value, not by key order.
+_LATER_SAME = ("r.report_type = j.report_type AND r.scope = j.scope "
+               "AND r.requested_at > j.requested_at")
+
+
+def needs_attention(limit: int) -> List[Dict[str, Any]]:
+    """Blocked or failed jobs nobody has dealt with -- the Action Centre's
+    Reports items. Dealt with means dismissed by a person, or settled by a later
+    RELEASED run of the same report and scope. A rerun still in progress does
+    not settle it; it is reported as ``rerun_status`` so the item can say so."""
+    cols = ", ".join(f"j.{c}" for c in _COLUMNS)
+    with get_conn() as conn, conn.cursor() as cur:
+        _heal(cur)
+        cur.execute(
+            f"SELECT {cols}, "
+            f"  (SELECT r.status FROM proc.bp_report_job r WHERE {_LATER_SAME} "
+            "     AND r.status IN %s ORDER BY r.requested_at DESC LIMIT 1) AS rerun_status "
+            "  FROM proc.bp_report_job j "
+            " WHERE j.status IN ('blocked', 'failed') AND j.dismissed_at IS NULL "
+            f"  AND NOT EXISTS (SELECT 1 FROM proc.bp_report_job r WHERE {_LATER_SAME} "
+            "                     AND r.status = 'released') "
+            " ORDER BY j.requested_at DESC LIMIT %s",
+            (ACTIVE, limit))
+        out = []
+        for row in cur.fetchall():
+            job = _row(row[:-1])
+            job["rerun_status"] = row[-1]
+            out.append(job)
+        return out
+
+
+def dismiss(job_id: str, *, by: Optional[str], reason: Optional[str]) -> bool:
+    """Take a blocked or failed job off the Action Centre. True for exactly one
+    caller; False for any other status, or if someone already dismissed it."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE proc.bp_report_job "
+            "   SET dismissed_at = now(), dismissed_by = %s, dismiss_reason = %s "
+            " WHERE job_id = %s AND status IN ('blocked', 'failed') AND dismissed_at IS NULL",
+            (by, reason, job_id))
+        return cur.rowcount == 1
 
 
 def claim(job_id: str) -> bool:

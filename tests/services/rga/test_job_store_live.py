@@ -203,3 +203,82 @@ def test_healing_closes_each_stranded_job_s_trail(rtype, monkeypatch):
         (job["job_id"], job["run_id"], "t")]
     job_store.get(job["job_id"])       # already failed: no second event
     assert len(healed) == 1
+
+
+# ---------------------------------------------------------------------------
+# the Action Centre's view: blocked or failed reports nobody has dealt with
+# ---------------------------------------------------------------------------
+def _ended(rtype, status, scope=SCOPE):
+    job, _ = job_store.create(rtype, scope=scope, as_of=AS_OF, requested_by="t", entitlement=ENT)
+    job_store.claim(job["job_id"])
+    if status == "blocked":
+        job_store.finish_blocked(job["job_id"], run_id=job["run_id"], stage_reached="POST_CHECK",
+                                 blocking=[{"finding_id": "F1", "code": "REPORT_UNTRACED_FIGURE",
+                                            "severity": "high", "detail": "x"}])
+    elif status == "failed":
+        job_store.finish_failed(job["job_id"], "boom")
+    else:
+        job_store.finish_released(job["job_id"], run_id=job["run_id"], stage_reached="RELEASE",
+                                  deck=b"PK", media_type="application/x", filename="r.pptx")
+    return job["job_id"]
+
+
+def _mine(rtype):
+    return {j["job_id"]: j for j in job_store.needs_attention(200) if j["report_type"] == rtype}
+
+
+def test_blocked_and_failed_jobs_need_attention_released_ones_do_not(rtype):
+    blocked = _ended(rtype, "blocked")
+    failed = _ended(rtype, "failed", scope={**SCOPE, "period_end": "2026-02-28"})
+    _ended(rtype, "released", scope={**SCOPE, "period_end": "2026-01-31"})
+    mine = _mine(rtype)
+    assert set(mine) == {blocked, failed}
+    assert mine[blocked]["rerun_status"] is None
+
+
+def test_a_later_release_of_the_same_report_settles_it(rtype):
+    blocked = _ended(rtype, "blocked")
+    _ended(rtype, "released")                     # same report, same scope, later
+    assert blocked not in _mine(rtype)
+
+
+def test_a_later_release_of_a_different_period_does_not(rtype):
+    blocked = _ended(rtype, "blocked")
+    _ended(rtype, "released", scope={**SCOPE, "period_end": "2026-02-28"})
+    assert blocked in _mine(rtype)
+
+
+def test_a_rerun_in_progress_is_shown_on_the_item(rtype):
+    blocked = _ended(rtype, "blocked")
+    rerun, _ = _new(rtype)                        # queued, same scope
+    assert _mine(rtype)[blocked]["rerun_status"] == "queued"
+    job_store.claim(rerun["job_id"])
+    assert _mine(rtype)[blocked]["rerun_status"] == "running"
+
+
+def test_a_dismissed_job_leaves_and_records_who_and_why(rtype):
+    blocked = _ended(rtype, "blocked")
+    assert job_store.dismiss(blocked, by="buyer-1", reason="not needed this quarter") is True
+    assert blocked not in _mine(rtype)
+    got = job_store.get(blocked)
+    assert got["dismissed_by"] == "buyer-1"
+    assert got["dismiss_reason"] == "not needed this quarter"
+    assert got["dismissed_at"]
+
+
+@pytest.mark.parametrize("status", ["released", "queued"])
+def test_only_a_blocked_or_failed_job_can_be_dismissed(rtype, status):
+    if status == "queued":
+        job, _ = _new(rtype)
+        job_id = job["job_id"]
+    else:
+        job_id = _ended(rtype, "released")
+    assert job_store.dismiss(job_id, by="buyer-1", reason=None) is False
+    assert job_store.get(job_id)["dismissed_at"] is None
+
+
+def test_a_job_is_dismissed_once(rtype):
+    blocked = _ended(rtype, "blocked")
+    assert job_store.dismiss(blocked, by="a", reason=None) is True
+    assert job_store.dismiss(blocked, by="b", reason=None) is False
+    assert job_store.get(blocked)["dismissed_by"] == "a"

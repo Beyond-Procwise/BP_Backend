@@ -49,6 +49,18 @@ class FakeStore:
     def deck(self, job_id):
         return self.decks.get(job_id)
 
+    def needs_attention(self, limit):
+        self.attention_limit = limit
+        return [dict(j, rerun_status=None) for j in self.jobs.values()
+                if j["status"] in ("blocked", "failed") and not j.get("dismissed_at")]
+
+    def dismiss(self, job_id, *, by, reason):
+        job = self.jobs.get(job_id)
+        if not job or job["status"] not in ("blocked", "failed") or job.get("dismissed_at"):
+            return False
+        job.update(dismissed_at="2026-09-24T13:00:00+00:00", dismissed_by=by, dismiss_reason=reason)
+        return True
+
     def recent(self, limit):
         self.recent_limit = limit
         jobs = sorted(self.jobs.values(), key=lambda j: j["job_id"], reverse=True)
@@ -156,7 +168,7 @@ def test_a_blocked_job_says_why(client):
                    "severity": "HIGH", "detail": "'£9,999' traces to no fact"}])
     body = client.get("/reports/jobs/rpt-1").json()
     assert body["status"] == "blocked"
-    assert body["blocking"][0]["code"] == "REPORT_UNTRACED_FIGURE"
+    assert body["blocking"][0]["code"] == "report_untraced_figure"   # lower-case on the wire
     assert body["deck_ready"] is False
 
 
@@ -241,9 +253,18 @@ def test_replies_survive_the_output_safety_boundary(client, monkeypatch):
     started = client.post("/reports/generate", json=BODY).json()
     _release(client.store, "rpt-1")
     status = client.get("/reports/jobs/rpt-1").json()
-    for reply in (started, status):
+    # A blocked job too: its check codes (REPORT_UNTRACED_FIGURE) read as env-var
+    # names to the boundary and came back "[withheld]" -- live, the Verified decks
+    # "Why?" lost every reason but the composition one.
+    client.post("/reports/generate", json={**BODY, "period_end": "2026-02-28"})
+    client.store.jobs["rpt-2"].update(status="blocked", blocking=[
+        {"finding_id": "F1", "code": "REPORT_UNTRACED_FIGURE", "severity": "HIGH", "detail": "x"}])
+    blocked = client.get("/reports/jobs/rpt-2").json()
+    listed = client.get("/reports/jobs").json()
+    for reply in (started, status, blocked, listed):
         assert osafe.scrub_payload(reply, where="test") == reply
     assert status["deck_ready"] is True
+    assert blocked["blocking"][0]["code"] == "report_untraced_figure"
 
 
 def test_recent_jobs_are_listed_newest_first_without_bytes(client):
@@ -277,3 +298,74 @@ def test_the_entitlement_decision_is_filed_with_the_job(client, monkeypatch):
         "action": "report.generate", "principal": CALLER, "allowed": True,
         "role": "Viewer", "policy_name": "RoleDefinitionPolicy", "policy_version": 3,
         "resolution": "resolved", "shadowed": True}
+
+
+def _block(store, job_id="rpt-1"):
+    store.jobs[job_id].update(status="blocked", run_id="FP-abc", stage_reached="POST_CHECK",
+                              blocking=[{"finding_id": "F1", "code": "REPORT_UNTRACED_FIGURE",
+                                         "severity": "HIGH", "detail": "x"}])
+
+
+def test_attention_lists_blocked_and_failed_jobs_with_no_bytes(client):
+    client.post("/reports/generate", json=BODY)
+    client.post("/reports/generate", json={**BODY, "period_end": "2026-02-28"})
+    _block(client.store)
+    r = client.get("/reports/attention")
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert [i["job_id"] for i in items] == ["rpt-1"]
+    assert items[0]["status"] == "blocked" and items[0]["rerun_status"] is None
+    assert items[0]["deck_ready"] is False and "deck" not in items[0]
+    assert client.store.attention_limit == 50
+
+
+def test_dismiss_is_gated_records_who_and_writes_the_audit_event(client, monkeypatch):
+    from src.services.rga import audit
+    events = []
+    monkeypatch.setattr(rr.audit, "emit",
+                        lambda action, **k: events.append((action, k, audit.current_context())))
+    client.post("/reports/generate", json=BODY)
+    _block(client.store)
+    client.gates.clear()
+    r = client.post("/reports/jobs/rpt-1/dismiss", json={"reason": "not needed"})
+    assert r.status_code == 200, r.text
+    assert r.json()["dismissed"] is True
+    assert [g[0] for g in client.gates] == ["finding.resolve"]
+    job = client.store.jobs["rpt-1"]
+    assert (job["dismissed_by"], job["dismiss_reason"]) == (CALLER, "not needed")
+    action, k, ctx = events[0]
+    assert action == audit.DISMISSED
+    assert k["run_id"] == "FP-abc" and k["details"]["dismissed_by"] == CALLER
+    assert k["details"]["reason"] == "not needed"
+    assert ctx["job_id"] == "rpt-1"
+
+
+def test_dismissing_what_cannot_be_dismissed_is_409_and_writes_nothing(client, monkeypatch):
+    events = []
+    monkeypatch.setattr(rr.audit, "emit", lambda *a, **k: events.append(a))
+    client.post("/reports/generate", json=BODY)          # queued, not blocked
+    r = client.post("/reports/jobs/rpt-1/dismiss", json={})
+    assert r.status_code == 409
+    assert events == []
+    assert client.post("/reports/jobs/rpt-nope/dismiss", json={}).status_code == 404
+
+
+def test_a_refused_dismiss_changes_nothing(client, monkeypatch):
+    client.post("/reports/generate", json=BODY)
+    _block(client.store)
+
+    def _refuse(*a, **k):
+        raise HTTPException(status_code=403, detail="role Viewer may not perform write")
+
+    monkeypatch.setattr(rr, "gate", _refuse)
+    assert client.post("/reports/jobs/rpt-1/dismiss", json={}).status_code == 403
+    assert client.store.jobs["rpt-1"].get("dismissed_at") is None
+
+
+def test_attention_replies_survive_the_output_safety_boundary(client, monkeypatch):
+    from src.services import output_safety as osafe
+    monkeypatch.setattr(osafe, "_route_paths", {r.path for r in rr.router.routes})
+    client.post("/reports/generate", json=BODY)
+    _block(client.store)
+    reply = client.get("/reports/attention").json()
+    assert osafe.scrub_payload(reply, where="test") == reply

@@ -58,6 +58,10 @@ STYLE_CHANGE_PROMOTED = "report.style_change_promoted"
 # otherwise leaves a trail that just stops -- indistinguishable from one still
 # going. This closes it.
 RUN_FAILED = "report.run_failed"
+# A person decided a blocked or failed report needs no further action. Not in
+# the brief's list either; without it an item leaving the Action Centre would
+# leave no trace of who took it off the list, or why.
+DISMISSED = "report.dismissed"
 
 #: Events that must not happen unless they can be audited.
 IRREVERSIBLE = frozenset({

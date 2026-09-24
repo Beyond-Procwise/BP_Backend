@@ -25,10 +25,10 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import src.services.rga  # noqa: F401  registers the Fact Pack builders
-from src.services.rga import job_runner, job_store
+from src.services.rga import audit, job_runner, job_store
 from src.services.rga.factpack import registered_types
 
 from api.auth import require_user
@@ -39,7 +39,7 @@ _AGENT = "ReportsRouter"
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _PUBLIC = ("job_id", "report_type", "scope", "as_of", "status", "requested_by",
            "requested_at", "started_at", "finished_at", "run_id", "stage_reached",
-           "blocking", "error")
+           "blocking", "error", "dismissed_at", "dismissed_by", "dismiss_reason")
 
 
 class GenerateBody(BaseModel):
@@ -71,6 +71,12 @@ class GenerateBody(BaseModel):
 
 def _view(job: Dict[str, Any]) -> Dict[str, Any]:
     out = {k: job.get(k) for k in _PUBLIC}
+    # Check codes go out lower-case. The output-safety boundary in api/main.py
+    # reads some upper-case codes (REPORT_UNTRACED_FIGURE) as environment-variable
+    # names and withholds them, which left the screens with no reason to show.
+    if out.get("blocking"):
+        out["blocking"] = [{**b, "code": str(b.get("code") or "").lower()}
+                           for b in out["blocking"]]
     # A flag, not a link: the output-safety boundary in api/main.py withholds any
     # field that names an internal route, so a URL here arrives as "[withheld]".
     # The caller builds /reports/jobs/{job_id}/deck from the id it already has.
@@ -127,6 +133,45 @@ def list_jobs(limit: int = 20):
     """Recent jobs, newest first, without their decks. Not gated, like a single
     status poll: the Reports screen reloads it while a job runs."""
     return {"jobs": [_view(j) for j in job_store.recent(max(1, min(limit, 50)))]}
+
+
+@router.get("/attention")
+def attention(limit: int = 50):
+    """Blocked or failed reports nobody has dealt with -- the SpendIQ Action
+    Centre's Reports items. Not gated, like the other job reads."""
+    items = []
+    for job in job_store.needs_attention(max(1, min(limit, 100))):
+        item = _view(job)
+        item["rerun_status"] = job.get("rerun_status")
+        items.append(item)
+    return {"items": items}
+
+
+class DismissBody(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/jobs/{job_id}/dismiss")
+def dismiss(job_id: str, body: DismissBody, principal=Depends(require_user)):
+    """A person decides a blocked or failed report needs no further action.
+
+    Gated as finding.resolve -- the same act as closing any other Action Centre
+    finding -- so a Viewer can see the item but not clear it."""
+    job = _job_or_404(job_id)
+    gate("finding.resolve", principal, agent=_AGENT,
+         context={"job_id": job_id, "run_id": job.get("run_id")})
+    subject = getattr(principal, "subject", None) or None
+    reason = (body.reason or "").strip() or None
+    if not job_store.dismiss(job_id, by=subject, reason=reason):
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is {job['status']}; only a blocked "
+                                   "or failed report can be dismissed, and only once")
+    with audit.run_context(job_id=job_id, requested_by=job.get("requested_by")):
+        audit.emit(audit.DISMISSED, run_id=job.get("run_id") or job_id, agent=_AGENT,
+                   summary=f"{job['status']} report dismissed",
+                   details={"dismissed_by": subject, "reason": reason,
+                            "status": job["status"]})
+    return {"job_id": job_id, "dismissed": True}
 
 
 @router.get("/jobs/{job_id}")
