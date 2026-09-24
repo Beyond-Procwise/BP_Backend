@@ -1,0 +1,72 @@
+"""A translation may change every word, and nothing else."""
+from __future__ import annotations
+
+import json
+
+from src.services.i18n.validate import check_pair, validate_batch
+
+
+def test_named_brace_kept():
+    assert check_pair("Show all {n} tools", "Ver las {n} herramientas") is None
+
+
+def test_named_brace_dropped_or_renamed():
+    assert check_pair("Hello {name}", "Hola") is not None
+    assert check_pair("Hello {name}", "Hola {nombre}") is not None
+
+
+def test_icu_plural_gains_categories_is_ok():
+    en = "{n, plural, one {# deal} other {# deals}}"
+    ru = "{n, plural, one {# сделка} few {# сделки} many {# сделок} other {# сделки}}"
+    assert check_pair(en, ru) is None
+
+
+def test_icu_argument_type_must_match():
+    assert check_pair("{n, plural, other {# x}}", "{n, select, other {# x}}") is not None
+
+
+def test_printf_multiset():
+    assert check_pair("%s of %d", "%d de %s") is None
+    assert check_pair("%s of %s", "%s") is not None
+    assert check_pair("%(name)s paid", "pagó %(name)s") is None
+
+
+def test_percent_in_prose_is_not_a_placeholder():
+    assert check_pair("50% discount", "50 % de descuento") is None
+    assert check_pair("% 3-way matched", "% cotejado a tres vías") is None
+    assert check_pair("100%% sure", "100%% seguro") is None
+
+
+def test_html_tags_and_link_targets():
+    assert check_pair('Read <b>this</b> <a href="x.pdf">file</a>',
+                      'Lee <a href="x.pdf">el archivo</a> <b>esto</b>') is None
+    assert check_pair("<b>Bold</b>", "Negrita") is not None
+    assert check_pair('<a href="x.pdf">f</a>', '<a href="y.pdf">f</a>') is not None
+
+
+def test_empty_translation_rejected():
+    assert check_pair("Save", "  ") is not None
+
+
+def test_batch_keeps_good_keys_and_names_bad_ones():
+    sent = {"s01": "Save", "s02": "Hello {name}", "s03": "Close"}
+    raw = json.dumps({"s01": "Guardar", "s02": "Hola", "s04": "extra"})
+    good, bad = validate_batch(sent, raw)
+    assert good == {"s01": "Guardar"}
+    assert set(bad) == {"s02", "s03"}
+    assert "missing" in bad["s03"]
+
+
+def test_batch_not_json_fails_every_key():
+    good, bad = validate_batch({"s01": "Save"}, "Sure! Here you go: Guardar")
+    assert good == {} and set(bad) == {"s01"}
+
+
+def test_batch_none_response_fails_every_key():
+    good, bad = validate_batch({"s01": "Save"}, None)
+    assert good == {} and bad == {"s01": "no response from the model"}
+
+
+def test_batch_non_string_value_rejected():
+    good, bad = validate_batch({"s01": "Save"}, json.dumps({"s01": 3}))
+    assert set(bad) == {"s01"}
