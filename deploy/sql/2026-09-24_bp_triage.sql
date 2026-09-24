@@ -204,4 +204,9 @@ BEGIN
 END;
 $$;
 
+-- The two decision-sync triggers look up the map by finding_id and by mirror_id on every
+-- decision; without these each lookup scans the whole map.
+CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_finding ON proc.bp_triage_finding (finding_id);
+CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_mirror  ON proc.bp_triage_finding (mirror_id);
+
 COMMIT;
