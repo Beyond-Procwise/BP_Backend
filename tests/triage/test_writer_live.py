@@ -205,3 +205,26 @@ def test_net_and_gross_collision_produces_two_distinct_findings(ctx):
     assert len(totals_rows) == 2
     assert totals_rows[0][0] != totals_rows[1][0]
     assert counts["inserted"] >= 2
+
+
+# --- final review F5: never close a finding a person is working on ---------------
+
+def test_a_finding_being_worked_on_is_not_superseded(ctx):
+    _write(ctx, _currency_deal(ctx))
+    (fid, *_rest), = _findings(ctx)
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_detection_finding SET lifecycle_status='remediating', "
+        "owner='buyer@example.com' WHERE finding_id = %s", (fid,))
+    _run_id, counts = _write(ctx, _currency_deal(ctx, currency="GBP"))   # problem gone
+    assert counts["superseded"] == 0
+    (fid2, _rule, _sev, status, life, _b, _r), = _findings(ctx)
+    assert (fid2, status, life) == (fid, "open", "remediating")
+
+
+def test_an_owned_but_still_open_finding_is_not_superseded(ctx):
+    _write(ctx, _currency_deal(ctx))
+    ctx.conn.cursor().execute(
+        "UPDATE proc.bp_detection_finding SET owner='buyer@example.com' WHERE deal_id = %s",
+        (ctx.deal_id,))
+    _run_id, counts = _write(ctx, _currency_deal(ctx, currency="GBP"))
+    assert counts["superseded"] == 0 and _findings(ctx)[0][3] == "open"

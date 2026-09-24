@@ -37,10 +37,13 @@ UPDATE proc.bp_detection_finding
        delta = %s, blocks_promotion = %s, confidence = %s, notes = %s
  WHERE finding_id = %s AND status = 'open'
 """
+# Only an untouched finding (the same test rollback uses) is closed when its problem
+# disappears: one a person owns, has dated, resolved or moved on is theirs to close.
 _SUPERSEDE = """
 UPDATE proc.bp_detection_finding
    SET status = 'superseded', lifecycle_status = 'resolved'
- WHERE finding_id = %s AND status = 'open'
+ WHERE finding_id = %s AND status = 'open' AND lifecycle_status = 'open'
+   AND owner IS NULL AND due_date IS NULL AND resolved_by IS NULL
 """
 _UPSERT_MAP = """
 INSERT INTO proc.bp_triage_finding
@@ -106,6 +109,10 @@ def finding_ids(cur, fingerprints: Iterable[str]) -> dict[str, int]:
     return {fp: fid for fp, fid in cur.fetchall()}
 
 
+def _or_dash(value) -> str:
+    return "-" if value is None else str(value)
+
+
 def _finding_values(run_id: str, f: Finding) -> tuple:
     r = f.lead
     if f.exposure_gbp is not None:
@@ -117,7 +124,8 @@ def _finding_values(run_id: str, f: Finding) -> tuple:
     return (run_id, f.rule_id, f.category, ACTION_CENTRE_SEVERITY[f.severity],
             "purchase_order" if f.rule_id == "cumulative_total" else "invoice",
             r.claim_doc, f.deal_id, f.deal_id, r.field_name,
-            f"{r.claim_doc}: {r.claim_value}", f"{r.auth_doc}: {r.auth_value}", delta,
+            f"{r.claim_doc}: {_or_dash(r.claim_value)}",
+            f"{r.auth_doc or 'expected'}: {_or_dash(r.auth_value)}", delta,
             f.severity == Severity.S1, round(f.confidence, 4), f.text)
 
 
