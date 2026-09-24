@@ -336,9 +336,7 @@ written first and finalised last.
 
 ### 9.1 Entry points
 
-- **Scheduler job** (`backend_scheduler`): selects deals whose `_trgt` rows have
-  `last_modified_date` later than the deal's last triage run, and runs them in batches.
-  A job, not a promotion hook, so a triage fault can never break promotion.
+- **Scheduler job** (`backend_scheduler`, every `TRIAGE_INTERVAL_MINUTES`, default 15): loads every deal, computes a content fingerprint of each deal's documents, lines and duplicate flags, and re-triages only deals whose fingerprint or tolerance-policy fingerprint differs from `proc.bp_triage_deal_state`, deals never triaged, and deals whose documents have all gone (their open findings are superseded). A pass with no changes writes nothing (~10 s over 5,042 deals). It stays idle until a completed, not-rolled-back full backfill (`--all`, mode `backfill`) exists. Revised 2026-09-24 after the final review: `_trgt` timestamps do not move on promotion or deal assignment, so timestamp-based detection silently missed new work. A job, not a promotion hook, so a triage fault can never break promotion.
 - **`POST /triage/deals/{deal_id}/run`** (requires `require_user`) — triage one deal now.
 - **`GET /triage/deals/{deal_id}`** — verdict, counts and findings for one deal.
 - **`scripts/triage_backfill.py`** — `--all`, `--deals A,B,…`, `--dry-run` (computes
