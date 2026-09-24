@@ -62,10 +62,14 @@ RUN_FAILED = "report.run_failed"
 # the brief's list either; without it an item leaving the Action Centre would
 # leave no trace of who took it off the list, or why.
 DISMISSED = "report.dismissed"
+# A person saved an edit of a released report as a new version (the light editor,
+# 2026-09-24). Irreversible: what the report says has changed, and it is written
+# inside the save's transaction so an edit that cannot be audited does not happen.
+EDITED = "report.edited"
 
 #: Events that must not happen unless they can be audited.
 IRREVERSIBLE = frozenset({
-    RELEASED, APPROVAL_GRANTED, APPROVAL_DENIED, STYLE_CHANGE_PROMOTED,
+    RELEASED, APPROVAL_GRANTED, APPROVAL_DENIED, STYLE_CHANGE_PROMOTED, EDITED,
 })
 
 

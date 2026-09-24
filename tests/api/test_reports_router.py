@@ -711,3 +711,117 @@ def test_a_refused_page_says_why(client):
     client.signoff.states["rpt-1"].update(state="refused", reason="figures wrong")
     r = client.get("/reports/jobs/rpt-1/page")
     assert r.status_code == 409 and "figures wrong" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# The light editor: draft, preview, save a version (2026-09-24)
+# ---------------------------------------------------------------------------
+from src.services.rga import editing as _real_editing  # noqa: E402
+
+
+class FakeEditing:
+    NotEditable = _real_editing.NotEditable
+    EditRefused = _real_editing.EditRefused
+    StaleVersion = _real_editing.StaleVersion
+
+    def __init__(self):
+        self.raise_on = None
+        self.saved = None
+        self.page = (b"<html>preview</html>", [])
+
+    def draft(self, job_id):
+        if self.raise_on:
+            raise self.raise_on
+        return {"version": 1, "title": "T", "ast": {"sections": []}, "facts": [],
+                "editable": True, "reason": None}
+
+    def preview(self, job_id, *, title, ast_json):
+        if self.raise_on:
+            raise self.raise_on
+        return self.page
+
+    def save(self, job_id, **kw):
+        if self.raise_on:
+            raise self.raise_on
+        self.saved = (job_id, kw)
+        return kw["base_version"] + 1
+
+
+@pytest.fixture
+def editor(client, monkeypatch):
+    fake = FakeEditing()
+    monkeypatch.setattr(rr, "editing", fake, raising=False)
+    client.post("/reports/generate", json=BODY)
+    _release(client.store, "rpt-1")
+    return fake
+
+
+EDIT = {"base_version": 1, "title": "New title", "ast": {"sections": []}, "summary": "tidied"}
+
+
+def test_the_draft_is_gated_as_making_a_report(client, editor):
+    r = client.get("/reports/jobs/rpt-1/draft")
+    assert r.status_code == 200 and r.json()["version"] == 1
+    assert client.gates[-1][0] == "report.generate"
+
+
+def test_the_draft_of_an_unknown_job_is_404(client, editor):
+    editor.raise_on = LookupError("nope")
+    assert client.get("/reports/jobs/rpt-9/draft").status_code == 404
+
+
+def test_a_saved_edit_returns_the_new_version_and_who_made_it(client, editor):
+    r = client.post("/reports/jobs/rpt-1/versions", json=EDIT)
+    assert r.status_code == 200, r.text
+    assert r.json()["version"] == 2 and r.json()["job_id"] == "rpt-1"
+    job_id, kw = editor.saved
+    assert (job_id, kw["base_version"], kw["title"], kw["by"], kw["summary"]) == \
+        ("rpt-1", 1, "New title", CALLER, "tidied")
+    assert client.gates[-1][0] == "report.generate"
+
+
+def test_a_refused_edit_is_422_with_the_reasons_in_words(client, editor):
+    editor.raise_on = FakeEditing.EditRefused(
+        ["Sentences can't contain typed numbers — insert a figure instead."])
+    r = client.post("/reports/jobs/rpt-1/versions", json=EDIT)
+    assert r.status_code == 422
+    assert r.json()["detail"]["reasons"] == [
+        "Sentences can't contain typed numbers — insert a figure instead."]
+
+
+def test_a_stale_base_version_is_409_and_says_someone_saved_first(client, editor):
+    editor.raise_on = FakeEditing.StaleVersion(3)
+    r = client.post("/reports/jobs/rpt-1/versions", json=EDIT)
+    assert r.status_code == 409 and "someone else saved" in r.json()["detail"].lower()
+
+
+def test_a_report_that_cannot_be_edited_is_409_with_the_reason(client, editor):
+    editor.raise_on = FakeEditing.NotEditable("this report was made before editing existed")
+    r = client.post("/reports/jobs/rpt-1/versions", json=EDIT)
+    assert r.status_code == 409 and "before editing existed" in r.json()["detail"]
+
+
+def test_an_edit_with_no_signed_in_person_is_refused(client, editor):
+    client.app.dependency_overrides[rr.require_user] = lambda: type("Anon", (), {"subject": None})()
+    r = client.post("/reports/jobs/rpt-1/versions", json=EDIT)
+    assert r.status_code == 403 and editor.saved is None
+
+
+def test_a_preview_is_the_page_itself_with_its_script_ban(client, editor):
+    import json
+    import urllib.parse
+    editor.page = (b"<html>preview</html>", ["4471 isn't one of the report's verified figures"])
+    r = client.post("/reports/jobs/rpt-1/preview", json={"title": "T", "ast": {"sections": []}})
+    assert r.status_code == 200 and r.content == b"<html>preview</html>"
+    assert r.headers["content-type"].startswith("text/html")
+    assert r.headers["content-security-policy"] == rr._PAGE_CSP
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert json.loads(urllib.parse.unquote(r.headers["x-report-blocking"])) == [
+        "4471 isn't one of the report's verified figures"]
+    assert client.gates[-1][0] == "report.generate"
+
+
+def test_a_preview_that_cannot_be_drawn_is_422_with_reasons(client, editor):
+    editor.page = (None, ["The report needs a title."])
+    r = client.post("/reports/jobs/rpt-1/preview", json={"title": "", "ast": {"sections": []}})
+    assert r.status_code == 422 and r.json()["detail"]["reasons"] == ["The report needs a title."]

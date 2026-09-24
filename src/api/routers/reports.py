@@ -7,6 +7,10 @@ open, so the door files a job and answers at once:
     GET  /reports/jobs               -> the newest jobs, without their decks
     GET  /reports/jobs/{job_id}      -> queued | running | released | blocked | failed
     GET  /reports/jobs/{job_id}/deck -> the .pptx, for a released job only
+    GET  /reports/jobs/{job_id}/page -> the printable A4 page, inline
+    GET  /reports/jobs/{job_id}/draft    -> what the light editor edits
+    POST /reports/jobs/{job_id}/preview  -> the printable page of an unsaved edit
+    POST /reports/jobs/{job_id}/versions -> save an edit as the next version
 
   * The gate is asked before a job is filed, as ``report.generate``, by whoever
     the token says is calling. Downloading a deck asks ``report.read``. A status
@@ -20,7 +24,9 @@ open, so the door files a job and answers at once:
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
+import urllib.parse
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,7 +34,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import src.services.rga  # noqa: F401  registers the Fact Pack builders
-from src.services.rga import audit, job_runner, job_store, signoff
+from src.services.rga import audit, editing, job_runner, job_store, signoff
 from src.services.rga.factpack import registered_types
 
 from src.services.agent_actions import record_action_or_fail
@@ -340,3 +346,77 @@ def get_deck(job_id: str, principal=Depends(require_user)):
 def get_page(job_id: str, principal=Depends(require_user)):
     """The printable A4 page, inline, for a browser tab to show and print."""
     return _serve(job_id, principal, "page")
+
+
+# -- the light editor (ruled 2026-09-24): words and layout, never a number -----------------
+# Gated as report.generate -- Buyers and above -- because an edit makes a new report version.
+# Every rule about WHAT may be saved lives in services/rga/editing.py; this is only the door.
+
+
+class PreviewBody(BaseModel):
+    title: str = Field(max_length=500)
+    ast: Dict[str, Any]
+
+
+class VersionBody(PreviewBody):
+    base_version: int
+    summary: Optional[str] = Field(default=None, max_length=500)
+
+
+def _editing_call(fn, *args, **kwargs):
+    """The editor's refusals as HTTP answers a person can act on."""
+    try:
+        return fn(*args, **kwargs)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="no such report")
+    except editing.NotEditable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except editing.EditRefused as exc:
+        raise HTTPException(status_code=422, detail={"reasons": exc.reasons})
+    except editing.StaleVersion as exc:
+        raise HTTPException(status_code=409,
+                            detail=f"Someone else saved a newer version (version {exc.current}) "
+                                   "while you were editing. Reopen the report to see their "
+                                   "changes, then make yours again.")
+
+
+def _edit_gate(job_id: str, principal: Any, what: str) -> Optional[str]:
+    gate("report.generate", principal, agent=_AGENT,
+         context={"job_id": job_id, "edit": what})
+    return getattr(principal, "subject", None) or None
+
+
+@router.get("/jobs/{job_id}/draft")
+def get_draft(job_id: str, principal=Depends(require_user)):
+    """The current version, and the report's own figures the editor may place."""
+    _edit_gate(job_id, principal, "open")
+    return _editing_call(editing.draft, job_id)
+
+
+@router.post("/jobs/{job_id}/preview")
+def preview_edit(job_id: str, body: PreviewBody, principal=Depends(require_user)):
+    """The printable page of an unsaved edit. Served as the page itself, not inside JSON: the
+    output-safety boundary would withhold a page whose footnotes name its evidence. What would
+    stop it saving travels in a header, percent-encoded JSON (headers are ASCII)."""
+    _edit_gate(job_id, principal, "preview")
+    content, blocking = _editing_call(editing.preview, job_id, title=body.title,
+                                      ast_json=body.ast)
+    if content is None:
+        raise HTTPException(status_code=422, detail={"reasons": blocking})
+    return Response(content=content, media_type="text/html; charset=utf-8",
+                    headers={"Content-Security-Policy": _PAGE_CSP,
+                             "X-Content-Type-Options": "nosniff",
+                             "X-Report-Blocking": urllib.parse.quote(json.dumps(blocking))})
+
+
+@router.post("/jobs/{job_id}/versions")
+def save_version(job_id: str, body: VersionBody, principal=Depends(require_user)):
+    """Save an edit as the next version. It goes back to awaiting sign-off (a sign-off counts
+    for the version it saw), and whoever saved it cannot sign that version off."""
+    subject = _edit_gate(job_id, principal, "save")
+    if not subject:
+        raise HTTPException(status_code=403, detail="an edit must be made by a signed-in person")
+    version = _editing_call(editing.save, job_id, base_version=body.base_version,
+                            title=body.title, ast_json=body.ast, by=subject,
+                            summary=(body.summary or "").strip() or None)
+    return {**_view(_job_or_404(job_id)), "version": version}

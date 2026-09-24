@@ -219,3 +219,77 @@ def test_a_sign_off_records_its_version_and_an_edit_voids_it(released):
         cur.execute("UPDATE proc.bp_report_job SET current_version = 2 WHERE job_id = %s",
                     (released["job_id"],))
     assert signoff.state(job_store.get(released["job_id"]))["state"] == "awaiting"
+
+
+# ---------------------------------------------------------------------------
+# save_version(): an edit becomes the next version, under a row lock
+# ---------------------------------------------------------------------------
+
+def _v1(released):
+    job, _ = job_store.create(released["report_type"], scope={"period_start": "2026-08-01"},
+                              as_of="2026-09-24", requested_by="buyer-1", entitlement=None)
+    job_store.claim(job["job_id"])
+    job_store.finish_released(job["job_id"], run_id="FP-x", stage_reached="RELEASE",
+                              deck=b"PK-v1", media_type="application/x", filename="d.pptx",
+                              page=b"<html>v1</html>", page_media_type="text/html",
+                              fact_pack={"pack_id": "FP-x"}, ast={"sections": []}, title="T1")
+    return job["job_id"]
+
+
+def _save(jid, base, **kw):
+    args = dict(base_version=base, title="T2", ast={"sections": [{"id": "s"}]},
+                deck=b"PK-v2", page=b"<html>v2</html>", by="editor-1", summary="words")
+    args.update(kw)
+    return job_store.save_version(jid, **args)
+
+
+def test_an_edit_becomes_the_next_version_and_the_current_files(released):
+    jid = _v1(released)
+    seen = []
+    assert _save(jid, 1, before_commit=seen.append) == 2
+    assert seen == [2]
+    got = job_store.get(jid)
+    assert (got["current_version"], got["last_edited_by"], got["title"]) == (2, "editor-1", "T2")
+    assert job_store.deck(jid)[0] == b"PK-v2" and job_store.page(jid)[0] == b"<html>v2</html>"
+    d = job_store.draft(jid)
+    assert d["version"] == 2 and d["ast"] == {"sections": [{"id": "s"}]}
+    assert d["fact_pack"] == {"pack_id": "FP-x"}                        # the pack never changes
+    with get_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT version, edited_by, summary, deck_sha256 FROM proc.bp_report_version "
+                    "WHERE job_id = %s ORDER BY version", (jid,))
+        rows = cur.fetchall()
+    assert [r[:3] for r in rows] == [(1, None, "released by the reporting agent"),
+                                     (2, "editor-1", "words")]
+    assert rows[1][3] == signoff.deck_hash(b"PK-v2")
+
+
+def test_a_stale_base_version_is_refused_and_nothing_changes(released):
+    jid = _v1(released)
+    _save(jid, 1)
+    with pytest.raises(job_store.StaleVersion) as exc:
+        _save(jid, 1, deck=b"PK-lost", by="editor-2")
+    assert exc.value.current == 2
+    got = job_store.get(jid)
+    assert (got["current_version"], got["last_edited_by"]) == (2, "editor-1")
+    assert job_store.deck(jid)[0] == b"PK-v2"
+
+
+def test_an_edit_that_cannot_be_audited_is_not_saved(released):
+    jid = _v1(released)
+
+    def refuse(version):
+        raise RuntimeError("audit down")
+
+    with pytest.raises(RuntimeError):
+        _save(jid, 1, before_commit=refuse)
+    got = job_store.get(jid)
+    assert got["current_version"] == 1 and job_store.deck(jid)[0] == b"PK-v1"
+    assert job_store.draft(jid)["version"] == 1
+
+
+def test_a_job_that_is_not_released_cannot_take_an_edit(released):
+    job, _ = job_store.create(released["report_type"], scope={"period_start": "2026-09-01"},
+                              as_of="2026-09-24", requested_by="buyer-1", entitlement=None)
+    with pytest.raises(job_store.StaleVersion) as exc:
+        _save(job["job_id"], 1)
+    assert exc.value.current is None
