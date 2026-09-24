@@ -83,3 +83,16 @@ def scored(ds, cfg=None):
     for r in results:
         score_result(r, cfg)
     return links, results
+
+
+def pipeline(ds, cfg=None):
+    """The whole pure pipeline for one deal, shaped like engine.DealOutput."""
+    from types import SimpleNamespace
+    from src.services.triage.group import group
+    from src.services.triage.text import describe
+    from src.services.triage.verdict import verdict
+    cfg = cfg or make_cfg()
+    links, results = scored(ds, cfg)
+    findings = [describe(f) for f in group(results, cfg)]
+    return SimpleNamespace(deal_id=ds.deal_id, results=results, findings=findings,
+                           verdict=verdict(ds, links, findings, results))
