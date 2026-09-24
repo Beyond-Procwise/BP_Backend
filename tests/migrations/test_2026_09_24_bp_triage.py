@@ -67,3 +67,19 @@ def test_deal_state_table_has_the_scheduler_columns(applied):
 def test_rollback_sql_drops_the_deal_state_table():
     text = (MIGRATION.parent / "2026-09-24_bp_triage_rollback.sql").read_text()
     assert "DROP TABLE IF EXISTS proc.bp_triage_deal_state;" in text
+
+
+def test_finding_map_records_the_action_centre_mirror_rows(applied):
+    cur = applied.cursor()
+    cur.execute("""SELECT column_name, data_type FROM information_schema.columns
+                   WHERE table_schema='proc' AND table_name='bp_triage_finding'
+                     AND column_name IN ('mirror_id', 'replaced_mirror_id')""")
+    assert dict(cur.fetchall()) == {"mirror_id": "bigint", "replaced_mirror_id": "bigint"}
+
+
+def test_rollback_sql_deletes_untouched_mirror_rows_before_dropping_the_map():
+    text = (MIGRATION.parent / "2026-09-24_bp_triage_rollback.sql").read_text()
+    delete = ("DELETE FROM proc.bp_extraction_discrepancy WHERE source_file LIKE 'triage:%' "
+              "AND status='open'\n   AND resolved_by IS NULL AND query_sent_at IS NULL;")
+    assert delete in text
+    assert text.index(delete) < text.index("DROP TABLE IF EXISTS proc.bp_triage_finding;")

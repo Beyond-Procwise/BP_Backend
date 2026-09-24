@@ -17,6 +17,28 @@ from psycopg2.extras import execute_values
 
 from .model import ACTION_CENTRE_SEVERITY, Finding, Result, Severity, money
 
+#: The SpendIQ Action Centre reads proc.bp_extraction_discrepancy, so every finding also
+#: gets a mirror row there. Triage-only issue types keep these rows out of the other
+#: readers' lists. 'duplicate' is absent: its detector's own row is already in that table.
+MIRROR_ISSUE_TYPE = {
+    "unit_price": "unit_price_differs_from_po",
+    "uniform_uplift": "prices_uplifted_across_lines",
+    "quantity": "quantity_invoiced_above_po",
+    "cumulative_total": "invoices_exceed_po_total",
+    "tax_rate": "tax_rate_not_allowed",
+    "currency": "currency_differs_from_po",
+    "supplier": "supplier_differs_from_po",
+    "invoice_date": "invoice_dated_before_po",
+    "payment_terms": "payment_terms_differ_from_po",
+    "unlinked_line": "invoice_line_not_on_po",
+    "bad_po_ref": "invoice_cites_missing_po",
+    "line_arithmetic": "line_amount_not_qty_x_price",
+    "invoice_totals": "invoice_totals_do_not_add_up",
+    "description": "line_description_differs_from_po",
+    "no_po": "invoice_has_no_po",
+    "rollup": "invoice_lines_rolled_up",
+}
+
 _EXISTING = """
 SELECT m.fingerprint, m.finding_id, m.last_severity, f.status
   FROM proc.bp_triage_finding m

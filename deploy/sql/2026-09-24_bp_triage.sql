@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS proc.bp_triage_finding (
 );
 ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS replaced_finding_id bigint;
 ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS replaced_severity varchar;
+-- The finding's mirror row in proc.bp_extraction_discrepancy (the table the SpendIQ
+-- Action Centre reads), and the one a reopen replaced, so a rollback can hand it back.
+ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS mirror_id bigint;
+ALTER TABLE proc.bp_triage_finding ADD COLUMN IF NOT EXISTS replaced_mirror_id bigint;
 CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_deal      ON proc.bp_triage_finding (deal_id);
 CREATE INDEX IF NOT EXISTS ix_bp_triage_finding_first_run ON proc.bp_triage_finding (first_run_id);
 

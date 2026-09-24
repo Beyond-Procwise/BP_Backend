@@ -18,3 +18,9 @@ def test_missing_values_are_a_dash_not_none():
     f.lead.severity = Severity.S2        # no_po is capped at S3; lift it to reach the writer
     v = writer._finding_values("RUN-1", f)
     assert v[9] == "INV-9: -" and v[10] == "expected: -"
+
+
+def test_every_mirrored_rule_has_an_action_centre_issue_type():
+    from src.services.triage.model import CATEGORY
+    assert set(writer.MIRROR_ISSUE_TYPE) == set(CATEGORY) - {"duplicate"}
+    assert len(set(writer.MIRROR_ISSUE_TYPE.values())) == len(writer.MIRROR_ISSUE_TYPE)

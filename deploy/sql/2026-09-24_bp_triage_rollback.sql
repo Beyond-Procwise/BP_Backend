@@ -13,6 +13,9 @@ DELETE FROM proc.bp_detection_finding f
  WHERE m.finding_id = f.finding_id
    AND f.status = 'open' AND f.lifecycle_status = 'open'
    AND f.owner IS NULL AND f.due_date IS NULL AND f.resolved_by IS NULL;
+-- Their Action Centre mirror rows go the same way: only those nobody has touched.
+DELETE FROM proc.bp_extraction_discrepancy WHERE source_file LIKE 'triage:%' AND status='open'
+   AND resolved_by IS NULL AND query_sent_at IS NULL;
 DROP TABLE IF EXISTS proc.bp_triage_deal_state;
 DROP TABLE IF EXISTS proc.bp_triage_result;
 DROP TABLE IF EXISTS proc.bp_triage_finding;
