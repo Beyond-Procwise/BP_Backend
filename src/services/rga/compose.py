@@ -297,16 +297,18 @@ style asks. Lead with what the style says to lead with.
 """
 
 
-def _render_facts(pack: FactPack) -> str:
+def _render_facts(pack: FactPack, report_type: Optional[str] = None) -> str:
     """The menu the model chooses from.
 
     It is shown each fact's *rendered* form, never a raw amount — the same rule
     ``analytics/insight`` holds: a model shown raw amounts is a model formatting
     money again, and this one is not allowed to type digits at all.
     """
+    from src.services.rga.factpack import composer_label_for
+    shown = composer_label_for(report_type or pack.report_type_id)
     lines = []
     for entry in pack.facts:
-        bits = [f"  {entry.fact_id}  {entry.label}", f"= {entry.display}"]
+        bits = [f"  {entry.fact_id}  {shown(entry)}", f"= {entry.display}"]
         if entry.unit:
             bits.append(f"({entry.unit})")
         bits.append(f"[{entry.confidence.value}]")
@@ -337,10 +339,14 @@ def build_prompt(pack: FactPack, brief: StyleBrief, report_type: str,
         max_bullets=brief.get("report.style.exec_summary.max_bullets"),
         charts=", ".join(brief.get("report.style.chart.preferred")),
         n_facts=len(pack.facts),
-        facts=_render_facts(pack),
+        facts=_render_facts(pack, report_type),
         n_findings=len(pack.findings),
         findings=_render_findings(pack),
     )
+    from src.services.rga.factpack import composer_note_for
+    note = composer_note_for(report_type)
+    if note:
+        body += f"\nFOR THIS REPORT TYPE\n  {note}\n"
     return body
 
 

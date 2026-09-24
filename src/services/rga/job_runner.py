@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from src.services.rga import audit, signoff
+from src.services.rga.factpack import title_for
 from src.services.rga import job_store as _store
 from src.services.rga.pipeline import generate_report as _generate
 
@@ -30,7 +31,7 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rga-report")
 
 # The title generate_report draws with by default; version 1 records it, and an editor may
 # change it for later versions.
-REPORT_TITLE = "Executive procurement summary"
+REPORT_TITLE = "Executive procurement summary"   # the first report type's; see factpack.title_for
 
 # The heartbeat is its own thread, not a step of the worker: the worker spends
 # minutes inside one model call, and a job queued behind it must stay vouched
@@ -89,7 +90,7 @@ def run_job(job_id: str, *, store: Any = _store,
                 fact_pack=(run.pack.model_dump(mode="json", exclude_computed_fields=True)
                            if run.pack is not None else None),
                 ast=run.ast.model_dump(mode="json") if run.ast is not None else None,
-                title=REPORT_TITLE)
+                title=title_for(run.report_type_id))
             # Released is not yet allowed to leave: the policy decides whether a person
             # must sign it off first, and the trail records that one was asked for.
             if signoff.required(run.report_type_id):

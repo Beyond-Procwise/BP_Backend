@@ -100,7 +100,7 @@ def generate_report(
     template: Optional[str] = None,
     renderer: Any = None,
     page_renderer: Any = None,
-    title: str = "Executive procurement summary",
+    title: Optional[str] = None,
     emit_audit: bool = True,
     writer: Any = None,
 ) -> ReportRun:
@@ -110,6 +110,9 @@ def generate_report(
     run is regenerated without a model, and it is what makes the reproducibility
     guarantee testable.
     """
+    if title is None:
+        from src.services.rga.factpack import title_for
+        title = title_for(report_type_id)
     if renderer is None:
         from src.services.rga.render import pptx as renderer
     if page_renderer is None:

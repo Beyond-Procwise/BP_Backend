@@ -222,3 +222,20 @@ def test_a_release_stores_what_an_editor_needs():
     assert k["fact_pack"] == {"pack_id": "FP-a", "facts": []}
     assert k["ast"] == {"sections": []}
     assert k["title"] == "Executive procurement summary"
+
+
+def test_a_release_is_stored_under_its_own_report_type_s_title():
+    """Live 2026-09-24: the supplier review was titled 'Executive procurement summary'."""
+    from types import SimpleNamespace
+    store = FakeStore()
+    store.job["report_type"] = "supplier_criticality_review"
+    pack = SimpleNamespace(model_dump=lambda **k: {"pack_id": "FP-a"})
+    ast = SimpleNamespace(model_dump=lambda **k: {"sections": []})
+
+    def generate(report_type, **k):
+        return ReportRun(run_id="FP-a", report_type_id=report_type, artefact=_artefact(),
+                         pack=pack, ast=ast, released=True, stage_reached="RELEASE")
+
+    job_runner.run_job("rpt-1", store=store, generate=generate)
+    kind, k = [c for c in store.calls if c[0] == "released"][0]
+    assert k["title"] == "Supplier criticality review"
