@@ -47,15 +47,19 @@ def group(results: list[Result], cfg) -> list[Finding]:
             findings.append(f)
             dup_by_invoice[r.claim_doc] = f
 
-    by_invoice_po = defaultdict(list)
+    # Keyed on the PO alone: the quantity invoiced against a PO is one fact, whichever
+    # invoice (or credit note) happens to be the latest, so a later document must not
+    # re-key the finding a person may already be working on.
+    by_po = defaultdict(list)
     for r in live:
         if r.rule_id == "quantity":
-            by_invoice_po[(r.claim_doc, r.po_id)].append(r)
-    for (inv_id, po_id), rs in by_invoice_po.items():
-        if inv_id in dup_by_invoice:
-            dup_by_invoice[inv_id].effects.extend(rs)
+            by_po[r.po_id].append(r)
+    for po_id, rs in by_po.items():
+        dups = sorted({r.claim_doc for r in rs if r.claim_doc in dup_by_invoice})
+        if dups:
+            dup_by_invoice[dups[0]].effects.extend(rs)
         else:
-            findings.append(Finding(rs[0].deal_id, "quantity", rs, f"{inv_id}|{po_id}"))
+            findings.append(Finding(rs[0].deal_id, "quantity", rs, f"{po_id}|quantity"))
 
     by_invoice = defaultdict(list)
     for r in live:
@@ -64,8 +68,12 @@ def group(results: list[Result], cfg) -> list[Finding]:
     for inv_id, rs in by_invoice.items():
         for cluster in _uplift_clusters(rs, cfg["uplift_same_pct_within"]):
             if len(cluster) >= cfg["uplift_min_lines"]:
-                findings.append(Finding(cluster[0].deal_id, "uniform_uplift", cluster,
-                                        f"{inv_id}|uplift"))
+                # The cluster's starting percentage keeps two clusters on one invoice
+                # (say +3% and +10%) from sharing a fingerprint.
+                start_pct = pct_change(cluster[0])
+                key = f"{inv_id}|uplift|{start_pct:.1f}" if start_pct is not None else \
+                    f"{inv_id}|uplift|{cluster[0].claim_line}"
+                findings.append(Finding(cluster[0].deal_id, "uniform_uplift", cluster, key))
             else:
                 findings.extend(Finding(r.deal_id, "unit_price", [r], r.cause_key)
                                 for r in cluster)

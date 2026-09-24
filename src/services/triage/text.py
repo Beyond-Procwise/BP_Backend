@@ -26,7 +26,7 @@ def _headline(f: Finding) -> str:
         "unit_price": lambda: f"Unit price {'above' if up else 'below'} PO on line {r.claim_line}",
         "uniform_uplift": lambda: (f"Prices {abs(_avg_pct(f)):.1f}% "
                                    f"{'above' if up else 'below'} PO on {n} lines"),
-        "quantity": lambda: f"Quantity above PO on {n} line{'s' if n != 1 else ''} of {r.claim_doc}",
+        "quantity": lambda: f"Quantity above PO {r.po_id} on {n} line{'s' if n != 1 else ''}",
         "cumulative_total": lambda: f"Invoices exceed PO {r.claim_doc} total",
         "duplicate": lambda: f"Possible duplicate of {r.auth_doc or 'an earlier invoice'}",
         "tax_rate": lambda: f"Tax rate {r.claim_value} is not an allowed rate",

@@ -66,3 +66,63 @@ def test_unexplained_part_of_an_overage_is_its_own_finding():
     fs = {f.rule_id: f for f in _findings(ds)}
     assert set(fs) == {"unit_price", "cumulative_total", "invoice_totals"}
     assert fs["cumulative_total"].exposure == D("75")
+
+
+# --- final review F4: a quantity finding belongs to the PO, not the latest invoice ---
+
+def _qty_finding(ds):
+    (f,) = [f for f in _findings(ds) if f.rule_id == "quantity"]
+    return f
+
+
+def _rebilled(*extra):
+    return deal(po(),
+                inv("INV-1", inv_date=date(2026, 2, 1)),
+                inv("INV-2", inv_date=date(2026, 2, 2)), *extra)
+
+
+def test_a_later_invoice_keeps_the_quantity_fingerprint():
+    before = _qty_finding(_rebilled())
+    after = _qty_finding(_rebilled(inv("INV-3", inv_date=date(2026, 2, 3))))
+    assert after.cause_key == "PO-1|quantity"
+    assert before.fingerprint == after.fingerprint
+
+
+def test_a_later_credit_note_keeps_the_quantity_fingerprint():
+    before = _qty_finding(_rebilled())
+    after = _qty_finding(_rebilled(inv("CN-1", inv_date=date(2026, 2, 3), net="-60",
+                                       lines=[line(1, qty="5", amount="-60")])))
+    assert before.fingerprint == after.fingerprint
+
+
+def test_quantity_results_of_one_po_are_one_finding():
+    ds = deal(po(lines=[line(1), line(2, item="ITEM-2")]),
+              inv("INV-1", lines=[line(1), line(2, item="ITEM-2")], inv_date=date(2026, 2, 1)),
+              inv("INV-2", lines=[line(1)], inv_date=date(2026, 2, 2)),
+              inv("INV-3", lines=[line(2, item="ITEM-2")], inv_date=date(2026, 2, 3)))
+    f = _qty_finding(ds)
+    assert len(f.causes) == 2 and {c.claim_doc for c in f.causes} == {"INV-2", "INV-3"}
+
+
+def test_duplicate_absorbs_the_po_quantity_group_when_any_claim_is_the_duplicate():
+    ds = deal(po(lines=[line(1), line(2, item="ITEM-2")]),
+              inv("INV-1", lines=[line(1), line(2, item="ITEM-2")], inv_date=date(2026, 2, 1)),
+              inv("INV-2", lines=[line(1)], inv_date=date(2026, 2, 2)),
+              inv("INV-3", lines=[line(2, item="ITEM-2")], inv_date=date(2026, 2, 3)),
+              duplicates=[DuplicateFlag("INV-2", "INV-1", D("144"))])
+    fs = _findings(ds)
+    assert [f.rule_id for f in fs if f.rule_id == "quantity"] == []
+    (dup,) = [f for f in fs if f.rule_id == "duplicate"]
+    assert sorted(e.claim_doc for e in dup.effects if e.rule_id == "quantity") == ["INV-2", "INV-3"]
+
+
+# --- final review F6b: two uplift clusters on one invoice are two findings ---------
+
+def test_two_uplift_clusters_on_one_invoice_have_distinct_fingerprints():
+    prices = ["103.00"] * 3 + ["110.00"] * 3
+    ds = deal(po(lines=[line(i, item=str(i), qty="1", price="100.00") for i in range(6)]),
+              inv(lines=[line(i, item=str(i), qty="1", price=p) for i, p in enumerate(prices)]))
+    ups = [f for f in _findings(ds) if f.rule_id == "uniform_uplift"]
+    assert len(ups) == 2
+    assert {f.cause_key for f in ups} == {"INV-1|uplift|3.0", "INV-1|uplift|10.0"}
+    assert ups[0].fingerprint != ups[1].fingerprint

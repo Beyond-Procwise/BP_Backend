@@ -32,3 +32,11 @@ def test_uplift_headline():
                         inv(lines=[line(i, item=items[i], qty="1", price="103.50") for i in range(4)])))
     (f,) = out.findings
     assert f.headline == "Prices 3.5% above PO on 4 lines"
+
+
+def test_quantity_headline_names_the_po():
+    from datetime import date
+    out = pipeline(deal(po(), inv("INV-1", inv_date=date(2026, 2, 1)),
+                        inv("INV-2", inv_date=date(2026, 2, 2))))
+    (f,) = [f for f in out.findings if f.rule_id == "quantity"]
+    assert f.headline == "Quantity above PO PO-1 on 1 line"
