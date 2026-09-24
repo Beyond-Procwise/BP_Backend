@@ -84,17 +84,22 @@ from src.services.rga import job_store, signoff  # noqa: E402
 def released(monkeypatch):
     monkeypatch.setattr(job_store, "_on_healed", lambda rows: None)
     rtype = f"test_{uuid.uuid4().hex[:10]}"
-    job, _ = job_store.create(rtype, scope={"period_start": "2026-01-01", "period_end": "2026-03-31"},
-                              as_of="2026-09-24", requested_by="buyer-1", entitlement=None)
-    job_store.claim(job["job_id"])
-    job_store.finish_released(job["job_id"], run_id=job["run_id"], stage_reached="RELEASE",
-                              deck=b"PK-live-deck", media_type="application/x", filename="d.pptx",
-                              page=b"<html>live page</html>", page_media_type="text/html; charset=utf-8")
-    yield job
-    with get_conn() as c, c.cursor() as cur:
-        cur.execute("DELETE FROM proc.bp_approval WHERE grounding->>'report_job_id' = %s",
-                    (job["job_id"],))
-        cur.execute("DELETE FROM proc.bp_report_job WHERE report_type = %s", (rtype,))
+    # Clean up whatever setup managed to write, even if setup itself fails: pytest runs a
+    # fixture's teardown only after a successful yield, and a half-built job otherwise stays
+    # behind (2026-09-24: seven did, and the running API then healed them to failed).
+    try:
+        job, _ = job_store.create(rtype, scope={"period_start": "2026-01-01", "period_end": "2026-03-31"},
+                                  as_of="2026-09-24", requested_by="buyer-1", entitlement=None)
+        job_store.claim(job["job_id"])
+        job_store.finish_released(job["job_id"], run_id=job["run_id"], stage_reached="RELEASE",
+                                  deck=b"PK-live-deck", media_type="application/x", filename="d.pptx",
+                                  page=b"<html>live page</html>", page_media_type="text/html; charset=utf-8")
+        yield job
+    finally:
+        with get_conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_approval WHERE grounding->>'report_job_id' IN "
+                        "(SELECT job_id FROM proc.bp_report_job WHERE report_type = %s)", (rtype,))
+            cur.execute("DELETE FROM proc.bp_report_job WHERE report_type = %s", (rtype,))
 
 
 def test_a_sign_off_is_bound_to_the_stored_deck(released):
