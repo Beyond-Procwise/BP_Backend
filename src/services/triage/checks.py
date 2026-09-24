@@ -190,6 +190,16 @@ def check_unlinked_lines(ds: DocumentSet, links: Links, cfg) -> list[Result]:
                           auth_line=lk.po_line.line_ref, po_id=lk.po.doc_id,
                           claim_value=lk.inv_line.description,
                           note=f"itemises PO line {lk.po_line.line_ref}"))
+        elif lk.po_line is None and (lk.invoice.is_credit_note
+                                     or (lk.inv_line.line_amount is not None
+                                         and lk.inv_line.line_amount < 0)):
+            # A credit line reduces what is owed; it never needs a PO line to cover it.
+            out.append(_r(ds, "unlinked_line", "money", Outcome.ABSENT_SUBORDINATE,
+                          lk.invoice, "line", claim_line=lk.inv_line.line_ref,
+                          auth_doc=lk.po.doc_id, po_id=lk.po.doc_id,
+                          claim_value=lk.inv_line.description or lk.inv_line.item_id,
+                          exposure=ZERO, note="credit line with no PO line",
+                          confidence=_doc_conf(lk.invoice)))
         elif lk.po_line is None:
             out.append(_r(ds, "unlinked_line", "money", Outcome.ABSENT_AUTHORITATIVE,
                           lk.invoice, "line", claim_line=lk.inv_line.line_ref,
@@ -302,8 +312,10 @@ def check_currency(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         a, b = (inv.currency or "").strip().upper(), (p.currency or "").strip().upper()
         common = dict(auth_doc=p.doc_id, po_id=p.doc_id, claim_value=a or None,
                       auth_value=b or None, confidence=_doc_conf(inv, p))
-        if not a or not b:
-            outcome, exposure = Outcome.UNVERIFIABLE, ZERO
+        if not b:
+            continue                      # the PO states no currency: nothing to compare
+        if not a:
+            outcome, exposure = Outcome.ABSENT_SUBORDINATE, ZERO
         elif a != b:
             outcome, exposure = Outcome.CONFLICT, abs(inv.net or ZERO)
         else:
@@ -319,8 +331,10 @@ def check_supplier(ds: DocumentSet, links: Links, cfg) -> list[Result]:
         a, b = inv.supplier_id, p.supplier_id
         common = dict(auth_doc=p.doc_id, po_id=p.doc_id, claim_value=a, auth_value=b,
                       confidence=_doc_conf(inv, p))
-        if not a or not b:
-            outcome, exposure = Outcome.UNVERIFIABLE, ZERO
+        if not b:
+            continue                      # the PO names no supplier: nothing to compare
+        if not a:
+            outcome, exposure = Outcome.ABSENT_SUBORDINATE, ZERO
         elif str(a) != str(b):
             outcome, exposure = Outcome.CONFLICT, abs(inv.net or ZERO)
         else:

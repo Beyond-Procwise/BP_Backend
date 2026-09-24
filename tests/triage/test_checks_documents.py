@@ -99,3 +99,23 @@ def test_bad_and_missing_po_references():
 def test_clean_deal_produces_only_matches():
     rs = run_checks(deal(po(), inv()), link(deal(po(), inv()), CFG), CFG)
     assert rs and {r.outcome for r in rs} == {Outcome.MATCH}
+
+
+# --- final review F6c: a blank header value is a note (invoice) or nothing (PO) -----
+
+def test_blank_invoice_currency_is_a_note():
+    r = _one(_run(check_currency, deal(po(), inv(currency=" "))))
+    assert r.outcome == Outcome.ABSENT_SUBORDINATE and r.exposure == D("0")
+
+
+def test_blank_po_currency_is_skipped():
+    assert _run(check_currency, deal(po(currency=None), inv())) == []
+
+
+def test_blank_invoice_supplier_is_a_note():
+    r = _one(_run(check_supplier, deal(po(), inv(supplier=None))))
+    assert r.outcome == Outcome.ABSENT_SUBORDINATE and r.exposure == D("0")
+
+
+def test_blank_po_supplier_is_skipped():
+    assert _run(check_supplier, deal(po(supplier=""), inv())) == []

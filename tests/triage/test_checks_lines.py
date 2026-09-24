@@ -155,3 +155,22 @@ def test_rolled_up_lines_are_explained_notes():
     rs = _run(check_unlinked_lines, ds)
     assert [r.outcome for r in rs] == [Outcome.EXPLAINED] * 4
     assert {r.rule_id for r in rs} == {"rollup"}
+
+
+# --- final review F3: credit notes never raise an unlinked-line finding -------
+
+def test_credit_note_line_with_no_po_line_is_a_note_not_a_finding():
+    ds = deal(po(), inv("CN-1", net="-975",
+                        lines=[line(1, item="CRD", desc="Credit note — Q3 on-call overcharge",
+                                    qty="1", price="975.00", amount="-975.00")]))
+    r = _one(_run(check_unlinked_lines, ds))
+    assert r.rule_id == "unlinked_line"
+    assert r.outcome == Outcome.ABSENT_SUBORDINATE
+    assert r.exposure == D("0") and r.note == "credit line with no PO line"
+
+
+def test_negative_line_on_an_ordinary_invoice_is_a_note_not_a_finding():
+    ds = deal(po(), inv(lines=[line(1), line(2, item="DSC", desc="Loyalty discount",
+                                             qty="1", price="5.00", amount="-5.00")]))
+    r = _one(_run(check_unlinked_lines, ds))
+    assert r.outcome == Outcome.ABSENT_SUBORDINATE and r.exposure == D("0")
