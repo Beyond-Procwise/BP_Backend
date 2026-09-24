@@ -140,3 +140,20 @@ def test_an_unknown_job_cannot_be_decided():
     with pytest.raises(LookupError):
         signoff.decide("rpt-does-not-exist", verdict="sign_off", by="a", reason=None,
                        policy_name=None)
+
+
+def test_many_jobs_decisions_are_read_in_one_go(job):
+    other = job + "-b"
+    try:
+        _sign(job)
+        store.record_report_refusal(job_id=job, run_id=None, actioned_by="ap-2", reason="late",
+                                    policy_name=None)
+        _sign(other, by="ap-3")
+        got = store.find_report_decisions([job, other, job + "-none"])
+        assert set(got) == {job, other}
+        assert got[job]["status"] == "refused"          # newest wins, per job
+        assert got[other]["actioned_by"] == "ap-3"
+        assert store.find_report_decisions([]) == {}
+    finally:
+        with get_conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_approval WHERE grounding->>'report_job_id' = %s", (other,))

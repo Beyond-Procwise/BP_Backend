@@ -557,3 +557,28 @@ def record_report_refusal(
         except Exception:
             own.rollback()
             raise
+
+
+def find_report_decisions(job_ids: List[str], conn: Any = None) -> Dict[str, Dict[str, Any]]:
+    """The newest decision for each of many report jobs, in one query -- what a list of jobs
+    needs (one connection per job was the alternative). Jobs with no decision are absent."""
+    ids = [str(j) for j in job_ids if j]
+    if not ids:
+        return {}
+
+    def _run(connection: Any) -> Dict[str, Dict[str, Any]]:
+        cur = _dict_cursor(connection)
+        cur.execute(
+            "SELECT DISTINCT ON (grounding->>'report_job_id') "
+            "       grounding->>'report_job_id' AS report_job_id, approval_id, decision, "
+            "       status, actioned_by, actioned_at, grounding "
+            "  FROM proc.bp_approval WHERE grounding->>'report_job_id' = ANY(%s) "
+            " ORDER BY grounding->>'report_job_id', created_date DESC, approval_id DESC",
+            (ids,),
+        )
+        return {row["report_job_id"]: dict(row) for row in cur.fetchall()}
+
+    if conn is not None:
+        return _run(conn)
+    with get_conn() as own:
+        return _run(own)

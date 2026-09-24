@@ -141,3 +141,27 @@ def test_a_type_the_policy_does_not_list_needs_no_sign_off():
 def test_the_deck_hash_is_sha256():
     import hashlib
     assert signoff.deck_hash(b"PK") == hashlib.sha256(b"PK").hexdigest()
+
+
+def test_a_list_of_jobs_reads_its_decisions_in_one_lookup():
+    """Final review: one connection per job view -- up to 100 per /attention call -- and each
+    a scan of bp_approval. A list reads every decision in a single query."""
+    calls = []
+
+    def fetch(ids):
+        calls.append(list(ids))
+        return {"rpt-2": {"approval_id": 1, "status": "approved", "actioned_by": "ap",
+                          "actioned_at": None, "grounding": {"deck_sha256": "h"}}}
+
+    jobs = [dict(job(), job_id="rpt-1"), dict(job(), job_id="rpt-2"),
+            dict(job(status="running"), job_id="rpt-3")]
+    got = signoff.states_for(jobs, engine=eng({"requires_signoff": ["*"]}), fetch=fetch)
+    assert calls == [["rpt-1", "rpt-2"]]              # one lookup, released jobs only
+    assert [got[j]["state"] for j in ("rpt-1", "rpt-2", "rpt-3")] == ["awaiting", "signed_off", "not_released"]
+
+
+def test_a_list_that_needs_no_sign_off_looks_nothing_up():
+    calls = []
+    got = signoff.states_for([job()], engine=eng({"requires_signoff": []}),
+                             fetch=lambda ids: calls.append(ids) or {})
+    assert calls == [] and got["rpt-1"]["state"] == "not_required"

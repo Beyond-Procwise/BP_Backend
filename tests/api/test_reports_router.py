@@ -89,6 +89,12 @@ class FakeSignoff:
         return {**base, "required": False, "state": "not_required",
                 **self.states.get(job["job_id"], {})}
 
+    batch_calls = 0
+
+    def states_for(self, jobs):
+        self.batch_calls += 1
+        return {j["job_id"]: self.state(j) for j in jobs}
+
     def may_sign_off(self, principal):
         return self.may
 
@@ -600,3 +606,18 @@ def test_attention_drops_released_jobs_whose_type_needs_no_sign_off(client):
     client.signoff.states["rpt-1"] = {"required": True, "state": "awaiting"}
     items = client.get("/reports/attention").json()["items"]
     assert [(i["job_id"], i["signoff"]["state"]) for i in items] == [("rpt-1", "awaiting")]
+
+
+def test_lists_read_sign_off_state_in_one_batch(client, monkeypatch):
+    """Final review: each listed job looked its sign-off up on its own connection."""
+    for end in ("2026-03-31", "2026-02-28", "2026-01-31"):
+        client.post("/reports/generate", json={**BODY, "period_end": end})
+    for jid in ("rpt-1", "rpt-2", "rpt-3"):
+        _release(client.store, jid)
+    single = []
+    monkeypatch.setattr(client.signoff, "state", lambda job, _s=client.signoff.state: single.append(1) or _s(job))
+    client.get("/reports/jobs")
+    client.store.attention_extra = ["rpt-1", "rpt-2", "rpt-3"]
+    client.get("/reports/attention")
+    assert client.signoff.batch_calls == 2
+    assert len(single) == 6          # the fake's batch reuses state(); the router never calls it itself

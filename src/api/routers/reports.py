@@ -71,7 +71,7 @@ class GenerateBody(BaseModel):
                 "currency": self.currency}
 
 
-def _view(job: Dict[str, Any]) -> Dict[str, Any]:
+def _view(job: Dict[str, Any], s: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     out = {k: job.get(k) for k in _PUBLIC}
     # Check codes go out lower-case. The output-safety boundary in api/main.py
     # reads some upper-case codes (REPORT_UNTRACED_FIGURE) as environment-variable
@@ -81,7 +81,8 @@ def _view(job: Dict[str, Any]) -> Dict[str, Any]:
                            for b in out["blocking"]]
     # Sign-off (ruled 2026-09-24): a released deck leaves only once signed off, if the
     # policy says its report type needs it. The hash it is bound to stays server-side.
-    s = signoff.state(job)
+    # A list passes the state it read in one batch (signoff.states_for); a single job reads it.
+    s = s if s is not None else signoff.state(job)
     out["signoff"] = {k: v for k, v in s.items() if k != "deck_sha256"}
     released = job.get("status") == "released"
     # Flags, not links: the output-safety boundary in api/main.py withholds any field that
@@ -139,7 +140,9 @@ def generate(body: GenerateBody, principal=Depends(require_user)):
 def list_jobs(limit: int = 20):
     """Recent jobs, newest first, without their decks. Not gated, like a single
     status poll: the Reports screen reloads it while a job runs."""
-    return {"jobs": [_view(j) for j in job_store.recent(max(1, min(limit, 50)))]}
+    jobs = job_store.recent(max(1, min(limit, 50)))
+    states = signoff.states_for(jobs)
+    return {"jobs": [_view(j, states[j["job_id"]]) for j in jobs]}
 
 
 @router.get("/attention")
@@ -147,8 +150,10 @@ def attention(limit: int = 50):
     """Blocked or failed reports nobody has dealt with -- the SpendIQ Action
     Centre's Reports items. Not gated, like the other job reads."""
     items = []
-    for job in job_store.needs_attention(max(1, min(limit, 100))):
-        item = _view(job)
+    jobs = job_store.needs_attention(max(1, min(limit, 100)))
+    states = signoff.states_for(jobs)
+    for job in jobs:
+        item = _view(job, states[job["job_id"]])
         # The store lists every released deck without a sign-off; the policy decides
         # which of those actually need one.
         if job.get("status") == "released" and item["signoff"]["state"] not in ("awaiting", "refused"):

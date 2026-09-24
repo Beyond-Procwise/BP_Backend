@@ -123,6 +123,23 @@ def state(job: Dict[str, Any], engine: Any = None, decision: Any = _UNSET) -> Di
     return out
 
 
+def states_for(jobs, engine: Any = None, fetch: Any = None) -> Dict[str, Dict[str, Any]]:
+    """``state`` for a list of jobs, reading every decision it needs in ONE query.
+
+    Only released jobs whose report type needs sign-off are looked up; ``fetch`` (for tests)
+    replaces ``approval_store.find_report_decisions``.
+    """
+    jobs = list(jobs)
+    wanted = [j["job_id"] for j in jobs
+              if j.get("status") == "released" and required(j.get("report_type") or "", engine=engine)]
+    if fetch is None:
+        from src.services import approval_store
+
+        fetch = approval_store.find_report_decisions
+    decisions = fetch(wanted) if wanted else {}
+    return {j["job_id"]: state(j, engine=engine, decision=decisions.get(j["job_id"])) for j in jobs}
+
+
 class NotDecidable(Exception):
     """The job is not awaiting sign-off (already decided, not released, or not required)."""
 
