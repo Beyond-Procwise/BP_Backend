@@ -8,7 +8,9 @@
 audited first; if the audit cannot be written, nothing changes.
 
 Only strings with no cached translation for the current prompt version and model are sent;
-re-running after an English edit translates just the edited strings.
+re-running after an English edit translates just the edited strings. Like the background
+filler, it yields the GPU: before each chunk it waits while extraction (or any foreground
+model work) wants the card.
 """
 from __future__ import annotations
 
@@ -22,6 +24,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.services.i18n import audit, get_service  # noqa: E402
+from src.services.i18n.gpu_gate import GpuGate  # noqa: E402
+from src.services.i18n.settings import load_settings  # noqa: E402
+
+
+def _gate():
+    s = load_settings()
+    return GpuGate(util_threshold=s.yield_gpu_util)
 
 PUBLIC_CONFIG = Path(__file__).resolve().parents[1] / "config" / "i18n" / "public.json"
 
@@ -67,7 +76,14 @@ def main(argv=None) -> int:
         return 0
     failed = 0
     step = svc.batch_size * 5
+    gate, poll = _gate(), load_settings().yield_poll_seconds
     for i in range(0, len(missing), step):
+        waited = 0.0
+        while gate.busy():  # extraction goes first
+            time.sleep(poll)
+            waited += poll
+        if waited:
+            print(f"  waited {waited:.0f}s for the GPU", flush=True)
         t0 = time.monotonic()
         chunk = {k: catalog[k] for k in missing[i:i + step]}
         r = svc.translate(a.lang, chunk, lang_name=a.lang_name)
