@@ -3,10 +3,21 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from scripts import i18n_import_reviewed as imp
 from scripts import i18n_pretranslate as pre
 from src.services.i18n.service import TranslateResult
 from src.services.i18n.store import source_hash
+
+
+@pytest.fixture(autouse=True)
+def _gpu_is_free(monkeypatch):
+    """The real gate reads the live card; these tests must not depend on how busy it is."""
+    class Free:
+        def busy(self):
+            return False
+    monkeypatch.setattr(pre, "_gate", lambda: Free())
 
 
 def test_pairs_only_keys_in_both_and_non_empty():
@@ -179,3 +190,34 @@ def test_reviewed_import_skips_human_text_that_breaks_placeholders(tmp_path, mon
     assert imp.main(["--lang", "es", "--catalog", str(en), "--translations", str(tr)]) == 0
     assert list(store.reviewed.values()) == ["Guardar"] and events[0]["added"] == 1
     assert "b" in capsys.readouterr().out
+
+
+def test_pretranslate_waits_while_extraction_wants_the_gpu(tmp_path, monkeypatch, capsys):
+    """The CLI is bulk work too: between chunks it yields the GPU like the filler does."""
+    catalog = tmp_path / "en.json"
+    catalog.write_text(json.dumps({f"k{i}": f"text {i}" for i in range(3)}))
+    order = []
+
+    class Svc:
+        batch_size = 1  # chunk = batch_size * 5 = 5 -> one chunk
+
+        def cached(self, lang, texts):
+            return {}, list(texts)
+
+        def translate(self, lang, texts, *, lang_name=None):
+            order.append("translate")
+            return TranslateResult(translations=dict(texts))
+
+    busy = iter([True, True, False])
+
+    class Gate:
+        def busy(self):
+            b = next(busy)
+            order.append("busy" if b else "free")
+            return b
+
+    monkeypatch.setattr(pre, "get_service", lambda: Svc())
+    monkeypatch.setattr(pre, "_gate", lambda: Gate())
+    monkeypatch.setattr(pre.time, "sleep", lambda s: order.append("sleep"))
+    assert pre.main(["--lang", "es", "--catalog", str(catalog)]) == 0
+    assert order == ["busy", "sleep", "busy", "sleep", "free", "translate"]
