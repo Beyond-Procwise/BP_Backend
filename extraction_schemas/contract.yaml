@@ -1,6 +1,6 @@
 doc_type: contract
 db_table: proc.bp_contracts
-db_lines_table: null
+db_lines_table: proc.bp_contract_line_items_raw
 
 fields:
   - name: contract_id
@@ -637,7 +637,80 @@ fields:
       ner_type_check: "none"
     invariants: []
 
-line_items: null
+line_items:
+  primary_extractor: qwen_vlm
+  fields:
+    - name: item_description
+      type: string
+      required: true
+      db_column: item_description
+      canonical_labels:
+        - "Description"
+        - "Service"
+        - "Item"
+        - "Deliverable"
+        - "Role"
+        - "Rate Card Item"
+      extractors:
+      - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_price
+      type: money
+      required: false
+      db_column: unit_price
+      canonical_labels:
+        - "Rate"
+        - "Day Rate"
+        - "Unit Price"
+        - "Price"
+        - "Cap"
+        - "Not to Exceed"
+        - "Maximum"
+      extractors:
+      - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_of_measure
+      type: string
+      required: false
+      db_column: unit_of_measure
+      canonical_labels:
+        - "Unit"
+        - "UoM"
+        - "Per"
+        - "Basis"
+      extractors:
+      - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: qualifier
+      type: string
+      required: false
+      db_column: qualifier
+      canonical_labels:
+        - "Notes"
+        - "Terms"
+        - "Conditions"
+      extractors:
+      - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
 
 document_invariants:
   - currency_consistency

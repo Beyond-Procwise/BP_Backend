@@ -8,6 +8,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
+from src.services.extraction.po_revision import latest_approved
+
 from .model import Doc, DocumentSet, Line, LineLink, Links
 from .normalise import similarity
 
@@ -58,7 +60,7 @@ def link(ds: DocumentSet, cfg) -> Links:
     out = Links()
     for inv in ds.invoices:
         ref = inv.po_ref
-        po = pos.get(ref) if ref else None
+        po = latest_approved(ref, pos) if ref else None
         out.invoice_po[inv.doc_id] = po
         if ref is None:
             out.no_ref.add(inv.doc_id)

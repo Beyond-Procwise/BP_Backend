@@ -58,3 +58,35 @@ def test_itemised_lines_roll_up_into_one_po_line():
 def test_po_to_quote():
     ds = deal(quote(), po(quote_ref="Q-1"), inv())
     assert link(ds, CFG).po_quote["PO-1"].doc_id == "Q-1"
+
+
+# PO revisions (build 4): an invoice prints the bare PO number, never "(Rev 3)", and must
+# be measured against the latest APPROVED revision, not revision 1.
+def _rev(po_id, revision, approval, price):
+    p = po(po_id, lines=[line(1, price=price)])
+    p.revision, p.approval = revision, approval
+    return p
+
+
+def test_bare_po_reference_resolves_to_latest_approved_revision():
+    ds = deal(_rev("PO-1", None, None, "10.00"), _rev("PO-1 (Rev 2)", 2, "approved", "12.00"),
+              _rev("PO-1 (Rev 3)", 3, "pending", "15.00"), inv(lines=[line(1, price="12.00")]))
+    links = link(ds, CFG)
+    assert links.invoice_po["INV-1"].doc_id == "PO-1 (Rev 2)"
+    (lk,) = links.line_links
+    assert lk.po_line.unit_price == D("12.00")
+
+
+def test_revision_is_read_from_the_id_when_the_column_is_empty():
+    ds = deal(po("PO-1"), po("PO-1 (Rev 4)"), inv())
+    assert link(ds, CFG).invoice_po["INV-1"].doc_id == "PO-1 (Rev 4)"
+
+
+def test_no_approved_revision_falls_back_to_the_cited_po():
+    ds = deal(_rev("PO-1", 1, "pending", "10.00"), _rev("PO-1 (Rev 2)", 2, "rejected", "12.00"), inv())
+    assert link(ds, CFG).invoice_po["INV-1"].doc_id == "PO-1"
+
+
+def test_an_invoice_citing_a_revision_keeps_it():
+    ds = deal(po("PO-1"), po("PO-1 (Rev 2)"), po("PO-1 (Rev 3)"), inv(po_id="PO-1 (Rev 2)"))
+    assert link(ds, CFG).invoice_po["INV-1"].doc_id == "PO-1 (Rev 2)"

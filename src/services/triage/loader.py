@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from typing import Iterable, Optional
 
+from src.services.extraction.po_revision import po_base
 from src.services.facts.fx import resolve_fx
 
 from .model import Doc, DocumentSet, DuplicateFlag, Line
@@ -36,8 +37,12 @@ SELECT invoice_id, COALESCE(line_no::text, invoice_line_id::text), item_id, item
 """
 _POS = """
 SELECT po_id, deal_id, supplier_id, currency, order_date, total_amount, tax_amount,
-       total_amount_incl_tax, payment_terms, quote_reference, confidence_score
-  FROM proc.bp_purchase_order_trgt WHERE deal_id = ANY(%s) OR po_id = ANY(%s)
+       total_amount_incl_tax, payment_terms, quote_reference, confidence_score,
+       po_revision, approval_status
+  FROM proc.bp_purchase_order_trgt
+ WHERE deal_id = ANY(%s) OR po_id = ANY(%s)
+    -- every revision of a PO an invoice names: the invoice prints the bare number
+    OR regexp_replace(po_id, '\\s*\\(\\s*rev\\M.*$', '', 'i') = ANY(%s)
 """
 _PO_LINES = """
 SELECT po_id, COALESCE(line_number::text, po_line_id::text), item_id, item_description,
@@ -112,20 +117,23 @@ def load_deal_sets(cur, deal_ids: Iterable[str]) -> dict[str, DocumentSet]:
 
     # POs in these deals, plus any PO an invoice here names.
     po_refs = sorted({d.po_ref for _, d in invoices if d.po_ref})
-    cur.execute(_POS, (wanted, po_refs))
+    cur.execute(_POS, (wanted, po_refs, sorted({po_base(r) for r in po_refs})))
     pos: dict[str, Doc] = {}
     po_deal: dict[str, Optional[str]] = {}
-    for (po_id, deal, sup, ccy, when, net, tax, gross, terms, qref, conf) in cur.fetchall():
+    for (po_id, deal, sup, ccy, when, net, tax, gross, terms, qref, conf, rev,
+         approval) in cur.fetchall():
         pos[str(po_id)] = Doc(
             doc_id=str(po_id), doc_type="purchase_order", supplier_id=_s(sup), currency=ccy,
             doc_date=when, net=to_decimal(net), tax=to_decimal(tax), gross=to_decimal(gross),
-            payment_terms=terms, quote_ref=_s(qref), confidence=to_confidence(conf))
+            payment_terms=terms, quote_ref=_s(qref), confidence=to_confidence(conf),
+            revision=rev, approval=approval)
         po_deal[str(po_id)] = _s(deal)
     po_lines = _lines_by_doc(cur, _PO_LINES, list(pos))
     po_owners: dict[str, set] = {}
     for po_id, doc in pos.items():
         doc.lines = po_lines.get(po_id, [])
-        owners = {po_deal[po_id]} | {deal for deal, i in invoices if i.po_ref == po_id}
+        owners = {po_deal[po_id]} | {deal for deal, i in invoices
+                                     if i.po_ref and po_base(i.po_ref) == po_base(po_id)}
         po_owners[po_id] = owners
         for owner in owners:
             if owner in sets:

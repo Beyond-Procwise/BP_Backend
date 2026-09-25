@@ -1192,8 +1192,16 @@ def _validate_and_bind(
                     # A quote revision is its own document and needs its own key.
                     # Recover the version from the text rather than relying on the
                     # model to decide whether the marker was part of the token.
-                    out[name] = (canonical_quote_revision(sval, full_text)
-                                 if name == "quote_id" else sval)
+                    if name == "quote_id":
+                        out[name] = canonical_quote_revision(sval, full_text)
+                    elif name == "po_id":
+                        # A PO revision ("Rev 3", "Change Order 2") likewise.
+                        from src.services.extraction.po_revision import canonical_po_revision
+                        out[name], rev = canonical_po_revision(sval, full_text)
+                        if rev is not None:
+                            out["po_revision"] = rev
+                    else:
+                        out[name] = sval
                 else:
                     log.debug("context_layer: dropped ungrounded id %s=%r", name, sval)
                     out[name] = None
@@ -1440,6 +1448,9 @@ def _read_labelled_id(full_text: str, labels: tuple[str, ...]) -> str | None:
     return None
 
 
+_REVISION_KEY_SUFFIX = re.compile(r"^ \((?:Rev |V)\d+\)$")
+
+
 def _recover_identifiers(
     row: dict[str, Any], full_text: str, valid_fields: set[str] | None = None
 ) -> dict[str, Any]:
@@ -1468,6 +1479,11 @@ def _recover_identifiers(
         # document prints against the label wins.
         if printed and current and str(current) != printed:
             cur_s = str(current)
+            # "<id> (Rev 3)" / "<id> (V2)" is the revision's own key (canonical_po_revision,
+            # canonical_quote_revision), not a model that read too much; stripping it back
+            # made revision 3 overwrite revision 1.
+            if cur_s.startswith(printed) and _REVISION_KEY_SUFFIX.match(cur_s[len(printed):]):
+                continue
             if cur_s in printed or printed in cur_s:
                 log.info(
                     "context_layer: %s=%r → %r (the model %s the printed identifier)",

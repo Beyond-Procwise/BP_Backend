@@ -34,6 +34,7 @@ from typing import Any, Optional
 
 from src.services.extraction.persistence import Discrepancy, get_conn
 from src.services.linking_engine import _norm_po, _PO_NORM_SQL
+from src.services.extraction.po_revision import po_base, revision_of
 from src.services.resolution import (
     CandidateEdge,
     CardinalityRule,
@@ -224,6 +225,14 @@ def _assign_lines(line_items: list[dict], po_lines: list[dict],
     return assigned
 
 
+# The PO number without its revision suffix, normalised as _PO_NORM_SQL does, and the
+# revision each row is: the column, else the "(Rev n)" in its id, else 1.
+_PO_BASE_NORM_SQL = _PO_NORM_SQL.format(
+    col="regexp_replace(po_id, '\\s*\\(\\s*rev\\M.*$', '', 'i')")
+_PO_REVISION_SQL = (
+    "COALESCE(po_revision, (regexp_match(po_id, '\\(\\s*rev\\s*(\\d+)', 'i'))[1]::int, 1)")
+
+
 def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
     """The referenced PO and its lines, from _trgt if promoted else _stg.
 
@@ -232,16 +241,34 @@ def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
     same canonical PO number the linking engine already uses for
     quote/invoice -> PO joins (_norm_po / _PO_NORM_SQL from linking_engine),
     tolerant of a PO-prefix and separator differences on either side. Falls
-    back to an exact match on the raw citation for safety."""
+    back to an exact match on the raw citation for safety.
+
+    An invoice prints the bare PO number, never "(Rev 3)", so a bare citation resolves
+    to the latest revision whose approval is approved or unstated (po_revision); with
+    none, or a citation naming its revision, the lookup is as before."""
     canonical = _norm_po(po_id)
     cond = _PO_NORM_SQL.format(col="po_id")
+    base_canonical = _norm_po(po_base(po_id)) if revision_of(po_id) is None else None
     with get_conn() as conn:
         cur = conn.cursor()
         header = None
         for table in ("proc.bp_purchase_order_trgt", "proc.bp_purchase_order_stg"):
             row = None
+            if base_canonical:
+                try:
+                    cur.execute(
+                        f"SELECT po_id, total_amount, currency FROM {table} "
+                        f"WHERE {_PO_BASE_NORM_SQL} = %s "
+                        "AND (approval_status IS NULL OR approval_status = 'approved') "
+                        f"ORDER BY {_PO_REVISION_SQL} DESC LIMIT 1",
+                        (base_canonical,),
+                    )
+                    row = cur.fetchone()
+                except Exception:  # noqa: BLE001 - revision columns absent: look up as before
+                    conn.rollback()
+                    row = None
             try:
-                if canonical:
+                if row is None and canonical:
                     cur.execute(
                         f"SELECT po_id, total_amount, currency FROM {table} WHERE {cond} = %s",
                         (canonical,),
