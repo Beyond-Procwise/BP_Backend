@@ -69,35 +69,39 @@ SELECT invoice_total, currency
    AND invoice_total IS NOT NULL
 """
 
-# Realised savings are recorded outcomes, not the legacy realised_savings_gbp column: a
-# scalar subquery on the ledger's CURRENT realised_saving rows for this opportunity,
-# scoped to the period by the outcome's own valid_from (superseded rows excluded).
-_REALISED_GBP = """(SELECT coalesce(sum(o.amount_gbp), 0)::numeric
-    FROM proc.bp_value_outcome o
-   WHERE o.source_type = 'opportunity' AND o.outcome_type = 'realised_saving'
-     AND o.valid_from BETWEEN %s AND %s
-     AND NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s WHERE s.supersedes_id = o.outcome_id))"""
+# Realised savings are recorded outcomes, not the legacy realised_savings_gbp column: the
+# ledger's CURRENT realised_saving rows for opportunities, scoped to the period by the
+# outcome's own valid_from (superseded rows excluded). Priced and unpriced rows are
+# counted separately -- count(o.amount_gbp) ignores NULLs, count(*) does not -- because an
+# unconvertible-currency row (amount_gbp NULL) must not inflate the count that gates
+# CORROBORATED vs unmeasured: a period holding only unpriced rows must not report a
+# fabricated £0.00 as a measured fact.
+_REALISED = """
+SELECT coalesce(sum(o.amount_gbp), 0)::numeric           AS realised_gbp,
+       count(o.amount_gbp)::int                          AS realised_n,
+       count(*) FILTER (WHERE o.amount_gbp IS NULL)::int AS realised_unpriced_n
+  FROM proc.bp_value_outcome o
+ WHERE o.source_type = 'opportunity' AND o.outcome_type = 'realised_saving'
+   AND o.valid_from BETWEEN %s AND %s
+   AND NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s WHERE s.supersedes_id = o.outcome_id)
+"""
 
-_REALISED_N = """(SELECT count(*)::int
-    FROM proc.bp_value_outcome o
-   WHERE o.source_type = 'opportunity' AND o.outcome_type = 'realised_saving'
-     AND o.valid_from BETWEEN %s AND %s
-     AND NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s WHERE s.supersedes_id = o.outcome_id))"""
-
-_OPPORTUNITIES = f"""
+_OPPORTUNITIES = """
 SELECT COUNT(*)::int                        AS n,
-       SUM(financial_impact_gbp)::numeric   AS identified_gbp,
-       {_REALISED_GBP}                      AS realised_gbp,
-       {_REALISED_N}                        AS realised_n
+       SUM(financial_impact_gbp)::numeric   AS identified_gbp
   FROM proc.bp_opportunity
  WHERE detected_on::date BETWEEN %s AND %s
 """
 
 # Everything counted as "saved" this period: money stopped (avoided), credited back
 # (recovered) or booked as a realised opportunity saving. Grouped by outcome_type so the
-# caller can both total it and, if needed, see the split.
+# caller can both total it and, if needed, see the split. Priced/unpriced counted
+# separately for the same reason as _REALISED above.
 _SAVED = """
-SELECT o.outcome_type, coalesce(sum(o.amount_gbp), 0)::numeric, count(*)::int
+SELECT o.outcome_type,
+       coalesce(sum(o.amount_gbp), 0)::numeric           AS gbp,
+       count(o.amount_gbp)::int                          AS priced_n,
+       count(*) FILTER (WHERE o.amount_gbp IS NULL)::int AS unpriced_n
   FROM proc.bp_value_outcome o
  WHERE o.outcome_type IN ('avoided', 'recovered', 'realised_saving')
    AND o.valid_from BETWEEN %s AND %s
@@ -226,8 +230,8 @@ def build(fb: FactBuilder) -> None:
                       reason="no deal in the period records both a quote and a PO date")
 
     # ---- opportunities ----------------------------------------------------
-    opp_rows = _fetch(_OPPORTUNITIES, (start, end, start, end, start, end))
-    n_opps, identified, realised, realised_n = opp_rows[0]
+    opp_rows = _fetch(_OPPORTUNITIES, (start, end))
+    n_opps, identified = opp_rows[0]
 
     # A COUNT is always measurable, and a measured zero is a finding in itself.
     fb.add(label="Opportunities identified", value=Decimal(n_opps),
@@ -247,11 +251,27 @@ def build(fb: FactBuilder) -> None:
                confidence=Confidence.CORROBORATED, format_hint=FormatHint.MONEY,
                currency="GBP")
 
+    realised, realised_n, realised_unpriced_n = _fetch(_REALISED, (start, end))[0]
+
     if realised_n:
+        # A priced figure exists; note (in the derivation, never the unmeasured reason --
+        # that may carry no digit) how many further rows this total excludes.
+        derivation = "exec_summary.opportunity_realised_value"
+        if realised_unpriced_n:
+            derivation += (f" (excludes {realised_unpriced_n} realised saving(s) whose "
+                           f"currency could not be converted to GBP)")
         fb.add(label="Realised savings (GBP)", value=Decimal(realised or 0),
-               derivation="exec_summary.opportunity_realised_value",
+               derivation=derivation,
                confidence=Confidence.CORROBORATED, format_hint=FormatHint.MONEY,
                currency="GBP", provenance_id="proc.bp_value_outcome")
+    elif realised_unpriced_n:
+        # Every realised row this period is unpriced: a real saving happened, but no GBP
+        # figure can be stated for it -- and £0.00 would be a fabricated one.
+        fb.unmeasured(label="Realised savings (GBP)",
+                      derivation="exec_summary.opportunity_realised_value",
+                      reason="an opportunity saving was realised in this period but its "
+                             "currency could not be converted to GBP, so no total is "
+                             "stated")
     else:
         fb.unmeasured(label="Realised savings (GBP)",
                       derivation="exec_summary.opportunity_realised_value",
@@ -259,14 +279,24 @@ def build(fb: FactBuilder) -> None:
                              "this period")
 
     # ---- saved (avoided + recovered + realised) ---------------------------
-    saved = {t: (v, n) for t, v, n in _fetch(_SAVED, (start, end))}
-    saved_n = sum(n for _, n in saved.values())
-    if saved_n:
-        total = sum(v for v, _ in saved.values())
-        fb.add(label="Saved (GBP)", value=Decimal(total),
-               derivation="exec_summary.value_saved",
+    saved_rows = _fetch(_SAVED, (start, end))
+    saved_total = sum(v for _, v, _, _ in saved_rows)
+    saved_priced_n = sum(pn for _, _, pn, _ in saved_rows)
+    saved_unpriced_n = sum(un for _, _, _, un in saved_rows)
+    if saved_priced_n:
+        derivation = "exec_summary.value_saved"
+        if saved_unpriced_n:
+            derivation += (f" (excludes {saved_unpriced_n} outcome(s) whose currency "
+                           f"could not be converted to GBP)")
+        fb.add(label="Saved (GBP)", value=Decimal(saved_total),
+               derivation=derivation,
                confidence=Confidence.CORROBORATED, format_hint=FormatHint.MONEY,
                currency="GBP", provenance_id="proc.bp_value_outcome")
+    elif saved_unpriced_n:
+        fb.unmeasured(label="Saved (GBP)", derivation="exec_summary.value_saved",
+                      reason="money was stopped, recovered or realised in this period "
+                             "but its currency could not be converted to GBP, so no "
+                             "total is stated")
     else:
         fb.unmeasured(label="Saved (GBP)", derivation="exec_summary.value_saved",
                       reason="no money was recorded as stopped, recovered or realised "
