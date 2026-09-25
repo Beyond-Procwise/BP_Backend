@@ -69,17 +69,19 @@ class NoBuilderRegistered(KeyError):
 
 _BUILDERS: Dict[str, Callable[["FactBuilder"], None]] = {}
 _SECTION_ORDERS: Dict[str, List[str]] = {}
-_COMPOSER_NOTES: Dict[str, str] = {}
+_COMPOSER_NOTES: Dict[str, Any] = {}   # text, or a callable(pack) -> text
 _COMPOSER_LABELS: Dict[str, Callable[[Any], str]] = {}
 _TITLES: Dict[str, str] = {}
+_PROSE_RULES: Dict[str, Callable[[Any], List[str]]] = {}
 #: The title a report type draws with when it registered none (the first report type's).
 DEFAULT_TITLE = "Executive procurement summary"
 
 
 def register(report_type_id: str, *, section_order: Optional[List[str]] = None,
-             composer_note: Optional[str] = None,
+             composer_note: Any = None,
              composer_label: Optional[Callable[[Any], str]] = None,
-             title: Optional[str] = None
+             title: Optional[str] = None,
+             prose_rules: Optional[Callable[[Any], List[str]]] = None
              ) -> Callable[[Callable[["FactBuilder"], None]], Callable]:
     """Register the deterministic query set for one report type, and -- if the report has
     one -- the order of its sections, a property of the report rather than a preference."""
@@ -94,9 +96,18 @@ def register(report_type_id: str, *, section_order: Optional[List[str]] = None,
             _COMPOSER_LABELS[report_type_id] = composer_label
         if title:
             _TITLES[report_type_id] = title
+        if prose_rules is not None:
+            _PROSE_RULES[report_type_id] = prose_rules
         return fn
 
     return _wrap
+
+
+def prose_faults_for(report_type_id: str, ast: Any) -> List[str]:
+    """What this report type forbids in the composer's sentences -- a fault sends the draft
+    back for its one corrected attempt, like a schema fault."""
+    rules = _PROSE_RULES.get(report_type_id)
+    return rules(ast) if rules else []
 
 
 def title_for(report_type_id: str) -> str:
@@ -110,7 +121,7 @@ def composer_label_for(report_type_id: str) -> Callable[[Any], str]:
     return _COMPOSER_LABELS.get(report_type_id) or (lambda entry: entry.label)
 
 
-def composer_note_for(report_type_id: str) -> Optional[str]:
+def composer_note_for(report_type_id: str) -> Any:
     """What the composer must be told about this report type, if anything."""
     return _COMPOSER_NOTES.get(report_type_id)
 

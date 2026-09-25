@@ -267,7 +267,7 @@ def test_an_unknown_job_is_404(client):
 
 
 def test_an_unknown_report_type_is_refused_before_anything_runs(client):
-    r = client.post("/reports/generate", json={**BODY, "report_type": "board_paper"})
+    r = client.post("/reports/generate", json={**BODY, "report_type": "regulator_pack"})
     assert r.status_code == 404
     assert client.store.created == [] and client.gates == []
 
@@ -921,3 +921,44 @@ def test_self_approval_found_under_the_lock_is_refused_and_recorded(client, even
     (row,) = written
     assert (row["action_type"], row["status"]) == ("report.signoff", "denied")
     assert row["details"]["evidence"]["rule"] == "self_approval"
+
+
+# ---------------------------------------------------------------------------
+# a board paper is asked for by deal, not by period (2026-09-25)
+# ---------------------------------------------------------------------------
+PAPER = {"report_type": "board_paper", "deal_id": "DEAL-1", "period_label": "Cloud renewal",
+         "category": "SaaS / IT"}
+
+
+@pytest.fixture
+def deals(monkeypatch):
+    known = {"DEAL-1"}
+    monkeypatch.setattr(rr, "_deal_exists", lambda d: d in known)
+    return known
+
+
+def test_a_board_paper_is_filed_for_one_deal(client, deals):
+    r = client.post("/reports/generate", json=PAPER)
+    assert r.status_code == 202, r.text
+    report_type, scope, as_of, _ = client.store.created[0]
+    assert report_type == "board_paper"
+    assert scope == {"deal_id": "DEAL-1", "period_label": "Cloud renewal", "category": "SaaS / IT"}
+
+
+def test_a_board_paper_without_a_category_is_still_filed(client, deals):
+    r = client.post("/reports/generate", json={"report_type": "board_paper", "deal_id": "DEAL-1"})
+    assert r.status_code == 202
+    assert client.store.created[0][1] == {"deal_id": "DEAL-1", "period_label": "DEAL-1"}
+
+
+def test_a_board_paper_needs_a_deal_that_exists(client, deals):
+    assert client.post("/reports/generate",
+                       json={"report_type": "board_paper"}).status_code == 422
+    r = client.post("/reports/generate", json={**PAPER, "deal_id": "NOPE"})
+    assert r.status_code == 404 and "no deal" in r.json()["detail"]
+    assert client.store.created == []
+
+
+def test_a_period_report_still_needs_its_period(client, deals):
+    r = client.post("/reports/generate", json={"report_type": "exec_procurement_summary"})
+    assert r.status_code == 422
