@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -110,7 +111,13 @@ def test_claim_then_partial_credit(conn):
         vl.settle_claim(did, "claim_dropped", actor=ACTOR, conn=conn)
 
 
-def test_a_failed_audit_write_leaves_the_finding_open(conn, monkeypatch):
+def test_audit_write_failure_raises_auditwriteerror_on_a_caller_owned_conn(conn, monkeypatch):
+    """AuditWriteError propagates out of record_finding_outcome when the audit write
+    fails, on a caller-owned conn. This does NOT exercise _in_tx's own rollback path
+    (conn= is given, so _in_tx just calls the closure) -- the finding-stays-open
+    assertion here is only true because the test itself rolls back to its own
+    savepoint below. See test_audit_write_failure_on_the_private_path_rolls_back_
+    everything for a test that actually exercises _in_tx's rollback."""
     from src.services import value_ledger as vl
     from src.services.agent_actions import AuditWriteError
     cur = conn.cursor()
@@ -128,6 +135,61 @@ def test_a_failed_audit_write_leaves_the_finding_open(conn, monkeypatch):
     assert _rows(cur, did) == []
 
 
+def test_audit_write_failure_on_the_private_path_rolls_back_everything(conn, monkeypatch):
+    """R5: exercise _in_tx's OWN rollback, not the test's. record_finding_outcome is
+    called WITHOUT conn, so _in_tx opens its "private" connection via vl.get_conn().
+    We monkeypatch vl.get_conn to hand back a thin wrapper over the test's own conn
+    (so everything still happens inside this test's rolled-back transaction), whose
+    .autocommit setter is a no-op, .commit() is a no-op, and .rollback() runs
+    ROLLBACK TO SAVEPOINT -- i.e. exactly what _in_tx calls on failure. If _in_tx's
+    except-block rollback were ever removed, this test would go red (see the report
+    for the RED run)."""
+    from src.services import value_ledger as vl
+    from src.services.agent_actions import AuditWriteError
+    cur = conn.cursor()
+    did = _finding(cur)
+    cur.execute("SAVEPOINT before_private_write")
+
+    class _ConnWrapper:
+        """Stands in for vl.get_conn()'s private connection, but every operation
+        actually runs on the test's own `conn` so it stays inside the outer
+        rolled-back transaction."""
+
+        def cursor(self):
+            return conn.cursor()
+
+        @property
+        def autocommit(self):
+            return conn.autocommit
+
+        @autocommit.setter
+        def autocommit(self, value):
+            pass  # _in_tx sets this; the real conn is already autocommit=False
+
+        def commit(self):
+            pass  # never reached on this path (AuditWriteError raises first)
+
+        def rollback(self):
+            conn.cursor().execute("ROLLBACK TO SAVEPOINT before_private_write")
+
+    @contextmanager
+    def _fake_get_conn():
+        yield _ConnWrapper()
+
+    def _boom(**kw):
+        raise AuditWriteError("audit down")
+
+    monkeypatch.setattr(vl, "get_conn", _fake_get_conn)
+    monkeypatch.setattr(vl, "record_action_or_fail", _boom)
+
+    with pytest.raises(AuditWriteError):
+        vl.record_finding_outcome(did, "claimed", "500", "GBP", actor=ACTOR)  # no conn=
+
+    cur.execute("SELECT status FROM proc.bp_extraction_discrepancy WHERE discrepancy_id=%s", (did,))
+    assert cur.fetchone()[0] == "open"
+    assert _rows(cur, did) == []
+
+
 def test_correction_supersedes_and_becomes_the_state(conn):
     from src.services import value_ledger as vl
     cur = conn.cursor()
@@ -139,6 +201,43 @@ def test_correction_supersedes_and_becomes_the_state(conn):
     assert hist["state"] == "avoided"
     assert hist["history"][-1]["outcome_id"] == fixed["outcome_id"]
     assert str(hist["history"][-1]["amount"]) == "450.00"
+
+
+def test_correcting_a_superseded_claim_after_settlement_is_refused(conn):
+    """R4: a claim that has since been settled recovered is no longer the finding's
+    current state. Correcting it must not resurrect 'claimed' and must not allow a
+    second settle_claim to double-count recovered money."""
+    from src.services import value_ledger as vl
+    cur = conn.cursor()
+    did = _finding(cur)
+    claim = vl.record_finding_outcome(did, "claimed", "500", "GBP", actor=ACTOR, conn=conn)
+    vl.settle_claim(did, "recovered", "320", "GBP", actor=ACTOR, evidence_ref="CN-1", conn=conn)
+    with pytest.raises(vl.LedgerError) as e:
+        vl.correct_outcome(claim["outcome_id"], "480", "GBP", actor=ACTOR,
+                           note="claim was actually 480", conn=conn)
+    assert e.value.code == "not_current"
+    recovered_rows = [r for r in _rows(cur, did) if r[0] == "recovered"]
+    assert len(recovered_rows) == 1
+    # and the already-settled claim can't be settled a second time either
+    with pytest.raises(vl.LedgerError):
+        vl.settle_claim(did, "recovered", "1", "GBP", actor=ACTOR, evidence_ref="CN-2", conn=conn)
+
+
+def test_correcting_the_current_recovered_row_still_works(conn):
+    """R4: the settle_claim outcome IS the current state, so correcting it is allowed."""
+    from src.services import value_ledger as vl
+    cur = conn.cursor()
+    did = _finding(cur)
+    vl.record_finding_outcome(did, "claimed", "500", "GBP", actor=ACTOR, conn=conn)
+    recovered = vl.settle_claim(did, "recovered", "320", "GBP", actor=ACTOR,
+                                evidence_ref="CN-1", conn=conn)
+    fixed = vl.correct_outcome(recovered["outcome_id"], "300", "GBP", actor=ACTOR,
+                               note="credit note was actually 300", evidence_ref="CN-1",
+                               conn=conn)
+    hist = vl.finding_outcomes(did, conn=conn)
+    assert hist["state"] == "recovered"
+    assert hist["history"][-1]["outcome_id"] == fixed["outcome_id"]
+    assert str(hist["history"][-1]["amount"]) == "300.00"
 
 
 def test_prefill_offers_the_findings_own_figure(conn):
