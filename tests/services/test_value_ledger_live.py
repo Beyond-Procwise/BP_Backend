@@ -247,3 +247,21 @@ def test_prefill_offers_the_findings_own_figure(conn):
     pre = vl.finding_outcomes(did, conn=conn)["prefill"]
     assert pre["is_money"] is True
     assert pre["amount"] == "1234.50"
+
+
+def test_triage_prefill_matches_the_action_centres_own_figure(conn):
+    """R16 (2026-09-25): the prefill for a triage-sourced finding must read the SAME
+    leading-£ figure the Action Centre shows for it (bp_detection_finding.delta), not
+    one arbitrary bp_triage_result line. Read-only proof against a real, live example
+    (discrepancy 7295 / finding 8477, INV006000-1 against PO006000): the Action Centre
+    shows £226.78; before this fix the prefill offered £56.60 (one line's own exposure).
+    Skips rather than fails if the corpus has moved on and 7295 is no longer open."""
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM proc.bp_extraction_discrepancy WHERE discrepancy_id = 7295")
+    row = cur.fetchone()
+    if not row or row[0] != "open":
+        pytest.skip("discrepancy 7295 no longer exists or is no longer open")
+    from src.services import value_ledger as vl
+    pre = vl.finding_outcomes(7295, conn=conn)["prefill"]
+    assert pre["amount"] == "226.78"
+    assert pre["currency"] == "GBP"
