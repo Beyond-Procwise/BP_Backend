@@ -94,6 +94,8 @@ class Doc:
     payment_terms: Optional[str] = None
     po_id: Optional[str] = None           # invoice -> PO number on its header
     quote_ref: Optional[str] = None       # PO -> quote
+    revision: Optional[int] = None        # PO revision (None = unstated)
+    approval: Optional[str] = None        # PO approval_status (None = unstated)
     confidence: Optional[float] = None    # 0-1; None = not reported
     fx_to_gbp: Optional[Decimal] = None
     fx_rate_date: Optional[datetime] = None

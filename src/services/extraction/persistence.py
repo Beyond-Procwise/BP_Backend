@@ -38,13 +38,14 @@ _LINE_RAW_TABLES = {
     "invoice": "proc.bp_invoice_line_items_raw",
     "purchase_order": "proc.bp_po_line_items_raw",
     "quote": "proc.bp_quote_line_items_raw",
-    # contract has no line items
+    "contract": "proc.bp_contract_line_items_raw",
 }
 # The line-index column on each line_items_raw table (differs across doc types).
 _LINE_RAW_INDEX_COL = {
     "invoice": "line_no",
     "purchase_order": "line_number",
     "quote": "line_number",
+    "contract": "line_number",
 }
 _DOC_PK_FIELD = {
     "invoice": "invoice_id",

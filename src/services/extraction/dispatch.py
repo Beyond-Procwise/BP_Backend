@@ -457,6 +457,19 @@ def dispatch_document(
     if columns.get(_pk_field) not in (None, ""):
         columns[_pk_field] = normalize_doc_pk(doc_type, columns[_pk_field])
 
+    # A PO's approval is stored as a closed value (approved/pending/rejected/cancelled,
+    # NULL when the document does not say), and its revision as a whole number for the
+    # INTEGER column; the schema has no integer type, so it binds as a decimal.
+    if doc_type == "purchase_order":
+        from src.services.extraction.po_revision import normalise_approval
+        if "approval_status" in columns:
+            columns["approval_status"] = normalise_approval(columns.get("approval_status"))
+        if columns.get("po_revision") not in (None, ""):
+            try:
+                columns["po_revision"] = int(columns["po_revision"])
+            except (TypeError, ValueError):
+                columns.pop("po_revision", None)
+
     # --- Bounded gap-control recovery (one attempt) ---
     # If the structural/table extractor produced no lines or lines that don't
     # reconcile to the header subtotal, ask AgentNick to re-enumerate line
@@ -468,7 +481,9 @@ def dispatch_document(
     pre = _completeness.assess(
         doc_type, columns, line_items, has_line_schema=has_line_schema,
     )
-    if has_line_schema and full_text.strip() and pre.status in (
+    # A contract's lines are a rate card (rates, caps, included items) with no line
+    # amounts to reconcile, so recovery and the per-line money checks do not apply.
+    if has_line_schema and doc_type in _RECOVERED_LINE_AMOUNT_COL and full_text.strip() and pre.status in (
         "no_line_items", "line_sum_mismatch",
     ):
         try:
@@ -589,7 +604,8 @@ def dispatch_document(
     # Line-item warnings: surface silent failures into the discrepancy
     # queue so HITL can see them. Non-blocking — these don't stop
     # promotion (we still want the header data in _stg).
-    if registry.schema.line_items and registry.schema.line_items.fields:
+    if (registry.schema.line_items and registry.schema.line_items.fields
+            and doc_type in _RECOVERED_LINE_AMOUNT_COL):
         if not line_items:
             discrepancies.append(Discrepancy(
                 field_name="line_items",
@@ -772,6 +788,9 @@ def dispatch_document(
 
     # Write line items (if any)
     if line_items:
+        if doc_type == "contract":
+            from src.services.extraction.contract_terms import classify_contract_lines
+            line_items = classify_contract_lines(line_items)
         try:
             persistence.write_line_items_raw(
                 doc_type=doc_type, raw_id=raw_id, line_items=line_items,

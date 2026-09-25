@@ -158,6 +158,57 @@ fields:
       ner_type_check: "none"
     invariants: []
 
+  - name: po_revision
+    type: decimal
+    required: false
+    db_column: po_revision
+    canonical_labels:
+      - "Revision"
+      - "Rev"
+      - "Revision No"
+      - "Change Order"
+      - "Change Order No"
+      - "Amendment No"
+      - "Version"
+    patterns:
+      - name: anchored_revision
+        anchor: '(?i)\b(?:revision|rev\.?|change\s+order|amendment)\s*(?:no\.?|number|#)?\s*[:\-]\s*'
+        value: '\A(\d{1,3})\b'
+        max_span_after_anchor_chars: 12
+    confidence_threshold: 0.8
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: approval_status
+    type: string
+    required: false
+    db_column: approval_status
+    canonical_labels:
+      - "Status"
+      - "PO Status"
+      - "Approval Status"
+      - "Approval"
+      - "Approved By"
+      - "Authorised By"
+    # Read only from a closed vocabulary, so a flattened header ("Status: Pending approval
+    # Supplier: ...") cannot carry the next label into the value. dispatch normalises the
+    # words to approved | pending | rejected | cancelled (po_revision.normalise_approval).
+    patterns:
+      - name: labelled_status
+        anchor: '(?i)\b(?:po\s+|order\s+|approval\s+)?status\s*[:\-]\s*'
+        value: '(?i)\A((?:not\s+)?(?:approved|pending(?:\s+approval)?|awaiting\s+approval|for\s+approval|draft|submitted|rejected|declined|cancell?ed|void(?:ed)?|withdrawn|authori[sz]ed|released|issued))\b'
+        max_span_after_anchor_chars: 25
+        prior_confidence: 0.85
+    confidence_threshold: 0.8
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
   - name: requested_by
     type: string
     required: false
