@@ -1,6 +1,23 @@
 {
-  "_comment": "Fills the {{DO_NOT_TRANSLATE_LIST}}, {{GLOSSARY}} and {{TONE}} slots in prompts/translate-ui.txt and prompts/translate-audio.txt. Edit freely: the file is re-read on change, and a change refreshes cached translations (it is part of the prompt version). do_not_translate: words kept as written. glossary: {\"English term\": \"translation for every language\"} or {\"English term\": {\"de\": \"...\", \"fr\": \"...\"}}. tone: e.g. \"friendly and professional\".",
+  "_comment": "Fills the {{DO_NOT_TRANSLATE_LIST}}, {{GLOSSARY}} and {{TONE}} slots in prompts/translate-ui.txt and prompts/translate-audio.txt. Edit freely: the file is re-read on change, and a change refreshes cached translations (it is part of the prompt version) -- re-run scripts/i18n_pretranslate.py for the languages offered at sign-in. do_not_translate: words kept as written. glossary: {\"English term\": \"translation for every language\"} or {\"English term\": {\"de\": \"...\", \"fr\": \"...\"}}; a regional code (de-AT) falls back to its base (de). tone: e.g. \"friendly and professional\".",
+  "_glossary_sources": "Procurement glossary added 2026-09-25. es/fr/de follow the product's existing human translations (proc.bp_translation origin='reviewed'); where those disagreed, the menu wording won (quote -> presupuesto). it/nl/ja/zh/ko/ru are standard procurement terms not yet checked by a native reviewer. Portuguese is left out on purpose: European and Brazilian usage differ (add pt-PT / pt-BR entries separately). Terms a language has no entry for are translated by the model as usual.",
   "do_not_translate": [],
-  "glossary": {},
+  "glossary": {
+    "purchase order": {"es": "pedido", "fr": "bon de commande", "de": "Bestellung", "it": "ordine di acquisto", "nl": "inkooporder", "ja": "発注書", "zh": "采购订单", "ko": "구매 주문서", "ru": "заказ на закупку"},
+    "order confirmation": {"es": "confirmación de pedido", "fr": "confirmation de commande", "de": "Auftragsbestätigung", "it": "conferma d'ordine", "nl": "orderbevestiging", "ja": "注文確認書", "zh": "订单确认", "ko": "주문 확인서", "ru": "подтверждение заказа"},
+    "invoice": {"es": "factura", "fr": "facture", "de": "Rechnung", "it": "fattura", "nl": "factuur", "ja": "請求書", "zh": "发票", "ko": "청구서", "ru": "счёт"},
+    "quote": {"es": "presupuesto", "fr": "devis", "de": "Angebot", "it": "preventivo", "nl": "offerte", "ja": "見積書", "zh": "报价单", "ko": "견적서", "ru": "коммерческое предложение"},
+    "contract": {"es": "contrato", "fr": "contrat", "de": "Vertrag", "it": "contratto", "nl": "contract", "ja": "契約", "zh": "合同", "ko": "계약", "ru": "договор"},
+    "supplier": {"es": "proveedor", "fr": "fournisseur", "de": "Lieferant", "it": "fornitore", "nl": "leverancier", "ja": "仕入先", "zh": "供应商", "ko": "공급업체", "ru": "поставщик"},
+    "buyer": {"es": "comprador", "fr": "acheteur", "de": "Einkäufer", "it": "acquirente", "nl": "inkoper", "ja": "購買担当者", "zh": "采购员", "ko": "구매 담당자", "ru": "закупщик"},
+    "spend": {"es": "gasto", "fr": "dépenses", "de": "Ausgaben", "it": "spesa", "nl": "uitgaven", "ja": "支出", "zh": "支出", "ko": "지출", "ru": "расходы"},
+    "savings": {"es": "ahorro", "fr": "économies", "de": "Einsparungen", "it": "risparmi", "nl": "besparingen", "ja": "削減額", "zh": "节省", "ko": "절감액", "ru": "экономия"},
+    "approval": {"es": "aprobación", "fr": "approbation", "de": "Freigabe", "it": "approvazione", "nl": "goedkeuring", "ja": "承認", "zh": "审批", "ko": "승인", "ru": "согласование"},
+    "approver": {"es": "aprobador", "fr": "approbateur", "de": "Genehmiger", "it": "approvatore", "nl": "goedkeurder", "ja": "承認者", "zh": "审批人", "ko": "승인자", "ru": "согласующий"},
+    "deal": {"es": "negociación", "fr": "affaire", "de": "Deal", "it": "trattativa", "nl": "deal", "ja": "案件", "zh": "交易", "ko": "거래", "ru": "сделка"},
+    "three-way match": {"es": "cotejo a tres vías", "fr": "rapprochement à trois voies", "de": "Drei-Wege-Abgleich", "it": "abbinamento a tre vie", "zh": "三方匹配", "ru": "трёхстороннее сопоставление"},
+    "discrepancy": {"es": "discrepancia", "fr": "écart", "de": "Abweichung", "it": "discrepanza", "nl": "afwijking", "ja": "不一致", "zh": "差异", "ko": "불일치", "ru": "расхождение"},
+    "line item": {"es": "línea", "fr": "ligne", "de": "Position", "it": "riga", "nl": "regel", "ja": "明細", "zh": "明细行", "ko": "품목", "ru": "позиция"}
+  },
   "tone": ""
 }

@@ -14,9 +14,18 @@ TEMPLATE = ("Never translate these words: {{DO_NOT_TRANSLATE_LIST}}\n"
             "Tone: {{TONE}}.")
 
 
-def test_the_shipped_config_is_empty():
+def test_the_shipped_config_is_well_formed():
+    """The shipped procurement glossary (2026-09-25): per-language entries under real
+    registry codes, nothing blank. do_not_translate and tone stay empty by default."""
+    from src.services.i18n.registry import build_registry
+    reg = build_registry("BeyondProcwise/AgentNick:unified")
     cfg = prompts.load_translation_config()
-    assert cfg == {"do_not_translate": [], "glossary": {}, "tone": ""}
+    assert cfg["do_not_translate"] == [] and cfg["tone"] == ""
+    assert "purchase order" in cfg["glossary"]
+    for term, per_lang in cfg["glossary"].items():
+        assert isinstance(per_lang, dict) and per_lang, term
+        for code, text in per_lang.items():
+            assert reg.get(code) is not None and text.strip(), (term, code)
 
 
 def test_empty_slots_read_as_none_not_blank():
