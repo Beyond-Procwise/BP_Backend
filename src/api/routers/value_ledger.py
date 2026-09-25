@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.api.auth import require_user
+from api.auth import require_user
 from src.services import value_ledger
 
 logger = logging.getLogger(__name__)
