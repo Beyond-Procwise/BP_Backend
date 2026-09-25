@@ -8,7 +8,7 @@
 - **Table:** a new append-only table, `proc.bp_value_outcome`, guarded by a database trigger.
 - **Writes:** a backend service, `src/services/value_ledger.py`, writes to it. Each write happens in one explicit transaction together with the finding's or opportunity's status change and an audit row.
 - **Reads:** `value_summary_service`, the opportunities dashboard, the executive-summary report and the weekly digest read it.
-- **UI:** one shared React panel (`ValueOutcomePanel`) records outcomes from both the SpendIQ Action Centre and Procurement Home. The Value Found drawer gains a "Being claimed" section and a "Mark realised" action.
+- **UI (existing look only):** in the SpendIQ Action Centre the outcome form is a new mode of the engine's existing decision popover. On Procurement Home it is `OutcomeModal`, built from the Value Found drawer's existing Query-modal styles. The drawer gains a "Being claimed" section and a "Mark realised" action in its existing row styles.
 - **Gateway:** unchanged.
 
 **Tech Stack:** Python 3.12, FastAPI, psycopg2, PostgreSQL (bp_testdb / bp_sqldb), pytest; React 19 (JS), axios, vitest.
@@ -33,6 +33,7 @@
 - New tables use the `bp_` prefix and indexes are named `ix_bp_<table>_<cols>`.
 
 **UI conventions**
+- **No new UI look (user ruling 2026-09-25).** New UI lives inside the existing screens and reuses their existing components, classes, style strings and colour tokens: the engine's decision popover in the SpendIQ Action Centre, and the Value Found drawer's Query-modal styles on Home. No new component library, palette, font or layout pattern.
 - All new UI strings go through `tOr('key', 'English fallback', vars)` from `src/lib/i18n`.
 - The UI checkout is shared with other sessions that have uncommitted edits (`App.jsx`, `index.css`, i18n files). Stage only this plan's hunks (`git add -p`). Never `git add -A`, never `git commit -a`, never `git commit -o` on a file another session has dirty.
 
@@ -78,11 +79,13 @@ Tests: `tests/migrations/test_2026_09_26_bp_value_outcome.py`, `tests/services/t
 | path | role |
 |---|---|
 | `src/lib/valueOutcome.js` (+ `.test.js`) | pure: money issue types, payload builders, validation, labels |
-| `src/components/value/ValueOutcomePanel.jsx` | the shared "What happened to this money?" panel |
 | `src/modules/SpendIQ/data/useSpendData.js` | money findings get a "Record outcome" action |
-| `src/modules/SpendIQ/engine.js` | `record_outcome` opens the panel through a bridge |
-| `src/modules/SpendIQ/index.jsx` | mounts the panel and exposes `window.__SPENDIQ_OPEN_OUTCOME__` |
-| `src/modules/ProcurementHome/index.jsx` | the Home deck opens the panel for `record_outcome` |
+| `src/modules/SpendIQ/engine.js` | `record_outcome` opens an `'outcome'` mode of the existing decision popover (`assignRejectPopover`) |
+| `src/modules/SpendIQ/index.jsx` | publishes the shared rules as `window.__SIQ_VALUE_OUTCOME__` (the engine is a classic script) |
+| `src/modules/SpendIQ/valueOutcome.contract.test.js` | the engine contract: existing popover, shared styles, no new colours |
+| `src/modules/ProcurementHome/modalStyles.js` | the Query modal's style strings, moved verbatim and shared |
+| `src/modules/ProcurementHome/OutcomeModal.jsx` | outcome / settle / realise modal built only from `modalStyles.js` |
+| `src/modules/ProcurementHome/index.jsx` | the Home deck opens `OutcomeModal` for `record_outcome` |
 | `src/lib/valueFound.js`, `src/modules/ProcurementHome/ValueFoundDrawer.jsx`, `src/modules/ProcurementHome/heroFigure.js` | "Saved" headline, "Being claimed" section, Credit received / Claim dropped / Mark realised, and "in play" from `in_play_gbp` |
 
 ---
@@ -1880,269 +1883,306 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 8: The "What happened to this money?" panel, wired into the Action Centre and Home
+### Task 8: Record an outcome from the existing Action Centre popover and the existing Home modal
+
+**No new look (user ruling, 2026-09-25).** Nothing in this task introduces a component, colour, font or style of its own:
+- **SpendIQ Action Centre:** the outcome form is a new *mode* of the engine's existing reject/override popover, `assignRejectPopover()` in `engine.js` (`:13357`). It reuses that function's `wrapStyle`/`boxStyle`/`taStyle` and the existing `.p-title`, `.p-sub`, `.btn` and `.btn primary` classes.
+- **Procurement Home:** the form is rendered with the exact style strings of the Value Found drawer's existing Query modal (`QueryModal`, `ValueFoundDrawer.jsx:115`). Those strings move into a shared `modalStyles.js` that `QueryModal` also uses, so the Query modal must look identical before and after (verified by screenshot in Task 10).
 
 **Files (beyond_procwise_ui):**
-- Create: `src/components/value/ValueOutcomePanel.jsx`
-- Create: `src/components/value/ValueOutcomePanel.test.jsx`
-- Modify: `src/modules/SpendIQ/data/useSpendData.js` (`findingToAction`, around `:1822-1838`)
-- Modify: `src/modules/SpendIQ/engine.js` (`ACTION_INTENT` `:3533`, `siqAction` `:3552`, `resolveFinding` `:3307`)
-- Modify: `src/modules/SpendIQ/index.jsx` (bridge block near `:410-420` and the render tree)
-- Modify: `src/modules/ProcurementHome/index.jsx` (`decideCard` `:2083-2105` and render tree)
+- Modify: `src/lib/valueOutcome.js`: add `submitOutcome` (pure; the network call is passed in)
+- Modify: `src/lib/valueOutcome.test.js`
+- Modify: `src/modules/SpendIQ/index.jsx`: publish `window.__SIQ_VALUE_OUTCOME__` in `ensureEngineLoaded()` (`:162-185`), beside `__SIQ_FMT`
+- Modify: `src/modules/SpendIQ/data/useSpendData.js`: money findings get "Record outcome" (`findingToAction`, `:1822-1838`)
+- Modify: `src/modules/SpendIQ/engine.js`: `ACTION_INTENT` (`:3533`), `siqAction` (`:3552`), `resolveFinding` (`:3307`), and a new `'outcome'` mode in `_arState`/`assignRejectPopover` (`:13318-13390`)
+- Create: `src/modules/SpendIQ/valueOutcome.contract.test.js` (the engine contract, in the style of `acceptanceQueue.contract.test.js`)
+- Create: `src/modules/ProcurementHome/modalStyles.js`: the Query modal's style strings and the `st()` helper, moved verbatim from `ValueFoundDrawer.jsx`
+- Create: `src/modules/ProcurementHome/OutcomeModal.jsx`: one modal with modes `outcome` / `settle` / `realise`, built only from `modalStyles.js`
+- Modify: `src/modules/ProcurementHome/ValueFoundDrawer.jsx`: `QueryModal` imports its styles from `modalStyles.js` (no visual change)
+- Modify: `src/modules/ProcurementHome/index.jsx`: `decideCard` (`:2083-2105`) opens `OutcomeModal` for `record_outcome`
 
 **Interfaces:**
-- Consumes: Task 7 helpers; backend `GET /value/findings/{id}/outcomes`, `POST /value/findings/{id}/outcome`, `POST /decisions/finding/{id}`.
+- Consumes: Task 7 helpers. Backend `GET /value/findings/{id}/outcomes`, `POST /value/findings/{id}/outcome` and `POST /decisions/finding/{id}`. The existing bridges `window.__SPENDIQ_API_AI__(path)` (GET) and `window.__SPENDIQ_API_AI_POST__(path, body)`.
 - Produces:
-  - `<ValueOutcomePanel findingId onClose onDone />`
-  - `window.__SPENDIQ_OPEN_OUTCOME__(findingId)`
-  - Queue items for money findings carry `dec[0] = 'Record outcome'` and `acts[0] = 'record_outcome'`.
+  - `submitOutcome({findingId, form, post, conflictAcknowledged}) -> Promise<{conflict}|{saved}>` in `src/lib/valueOutcome.js`
+  - `window.__SIQ_VALUE_OUTCOME__ = { isMoneyFinding, OUTCOME_CHOICES, buildOutcomeBody, validateOutcomeForm, ledgerErrorMessage, historyPath, submitOutcome }`
+  - engine global `openOutcome(findingId)`
+  - `<OutcomeModal mode findingId finding onClose onDone />` (default export of `OutcomeModal.jsx`)
+  - `modalStyles.js` exports `st`, `FIELD`, `LABEL`, `BOX`, `SCRIM`, `DIALOG`, `HEADER`, `TITLE`, `CLOSE_BTN`, `BODY`, `FOOT`, `PRIMARY_BTN`, `SECONDARY_BTN`. Each is the string `QueryModal` uses today, copied character for character.
 
-- [ ] **Step 1: Write the failing component test**
+- [ ] **Step 1: Write the failing test for `submitOutcome`** (append to `src/lib/valueOutcome.test.js`)
 
-```jsx
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import axios from 'axios';
-import ValueOutcomePanel from './ValueOutcomePanel';
+```js
+import { submitOutcome } from './valueOutcome';
 
-vi.mock('axios');
+describe('submitOutcome', () => {
+  const form = { outcome: 'claimed', amount: '226.78', currency: 'GBP', validFrom: '2026-09-25', note: '' };
 
-describe('ValueOutcomePanel', () => {
-  beforeEach(() => {
-    axios.get.mockResolvedValue({ data: { state: null, history: [],
-      prefill: { amount: '226.78', currency: 'GBP', is_money: true } } });
-    axios.post.mockReset();
+  it('asks the decision engine first, then records the outcome', async () => {
+    const calls = [];
+    const post = async (path, body) => {
+      calls.push([path, body]);
+      return path.startsWith('/decisions') ? { decision: 'approve' } : { outcome_id: 1, state: 'claimed' };
+    };
+    const r = await submitOutcome({ findingId: 42, form, post });
+    expect(r.saved.state).toBe('claimed');
+    expect(calls[0]).toEqual(['/decisions/finding/42', { requested: 'approve', user_id: 'ui' }]);
+    expect(calls[1][0]).toBe('/value/findings/42/outcome');
+    expect(calls[1][1]).toMatchObject({ outcome: 'claimed', amount: '226.78', currency: 'GBP' });
   });
 
-  it('pre-fills the finding\'s own figure', async () => {
-    render(<ValueOutcomePanel findingId={42} onClose={() => {}} onDone={() => {}} />);
-    expect(await screen.findByDisplayValue('226.78')).toBeTruthy();
+  it('stops and reports when the engine disagrees; nothing is written', async () => {
+    const calls = [];
+    const post = async (path) => { calls.push(path); return { decision: 'escalate', rationale: 'PO amended', conflicts_with_request: {} }; };
+    const r = await submitOutcome({ findingId: 42, form, post });
+    expect(r.conflict.rationale).toBe('PO amended');
+    expect(calls).toEqual(['/decisions/finding/42']);
   });
 
-  it('checks with the decision engine, then records a claim', async () => {
-    axios.post
-      .mockResolvedValueOnce({ data: { decision: 'approve', rationale: 'ok' } })
-      .mockResolvedValueOnce({ data: { outcome_id: 1, state: 'claimed' } });
-    const onDone = vi.fn();
-    render(<ValueOutcomePanel findingId={42} onClose={() => {}} onDone={onDone} />);
-    fireEvent.click(await screen.findByLabelText(/Claiming it back/));
-    fireEvent.click(screen.getByRole('button', { name: /Save/ }));
-    await waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(axios.post.mock.calls[0][0]).toMatch(/\/decisions\/finding\/42$/);
-    expect(axios.post.mock.calls[1][0]).toMatch(/\/value\/findings\/42\/outcome$/);
-    expect(axios.post.mock.calls[1][1]).toMatchObject({ outcome: 'claimed', amount: '226.78', currency: 'GBP' });
+  it('once the reason is given, it records without asking again', async () => {
+    const calls = [];
+    const post = async (path) => { calls.push(path); return { state: 'claimed' }; };
+    await submitOutcome({ findingId: 42, form: { ...form, note: 'credit agreed by phone' }, post, conflictAcknowledged: true });
+    expect(calls).toEqual(['/value/findings/42/outcome']);
   });
 
-  it('asks for a reason when the engine disagrees, and sends it as the note', async () => {
-    axios.post.mockResolvedValueOnce({ data: { decision: 'escalate', rationale: 'PO was amended',
-      conflicts_with_request: { requested: 'approve' } } });
-    render(<ValueOutcomePanel findingId={42} onClose={() => {}} onDone={() => {}} />);
-    fireEvent.click(await screen.findByLabelText(/Claiming it back/));
-    fireEvent.click(screen.getByRole('button', { name: /Save/ }));
-    expect(await screen.findByText(/PO was amended/)).toBeTruthy();
-    expect(axios.post).toHaveBeenCalledTimes(1);          // nothing written yet
+  it('accepting the charge asks the engine to dismiss', async () => {
+    const calls = [];
+    const post = async (path, body) => { calls.push(body); return {}; };
+    await submitOutcome({ findingId: 7, form: { outcome: 'accepted' }, post });
+    expect(calls[0].requested).toBe('dismiss');
   });
 });
 ```
 
-(Check `package.json` devDependencies for `@testing-library/react`. If it is absent, do not install it. Rewrite these three tests against exported pure handlers, i.e. export `submitOutcome({findingId, form, post})` from the component file and test that. Record which form was used.)
-
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `npx vitest run src/components/value/ValueOutcomePanel.test.jsx`
-Expected: FAIL (module not found).
+Run: `cd /home/muthu/PycharmProjects/beyond_procwise_ui && npx vitest run src/lib/valueOutcome.test.js`
+Expected: FAIL (`submitOutcome` is not exported).
 
-- [ ] **Step 3: Implement the panel**
-
-```jsx
-// "What happened to this money?" — one panel, mounted by both the SpendIQ Action Centre and
-// Procurement Home, so recording an outcome looks and behaves the same wherever it starts.
-// The decision engine is consulted first, as it is for every close: when it disagrees the
-// buyer is not blocked, only asked to say why (the reason is stored as the ledger note).
-import { useEffect, useState } from 'react';
-import axios from 'axios';
-import { tOr } from '../../lib/i18n';
-import { AI_API } from '../../lib/api';
-import {
-  OUTCOME_CHOICES, buildOutcomeBody, historyPath, ledgerErrorMessage, outcomePath,
-  validateOutcomeForm,
-} from '../../lib/valueOutcome';
-
-const INTENT = { avoided: 'approve', claimed: 'approve', accepted: 'dismiss' };
-const today = () => new Date().toISOString().slice(0, 10);
-
-export async function submitOutcome({ findingId, form, post, conflictAcknowledged }) {
-  if (!conflictAcknowledged) {
-    const d = (await post(`/decisions/finding/${findingId}`,
-      { requested: INTENT[form.outcome], user_id: 'ui' })).data;
-    if (d.conflicts_with_request) return { conflict: d };
-  }
-  const r = (await post(outcomePath(findingId), buildOutcomeBody(form))).data;
-  return { saved: r };
-}
-
-export default function ValueOutcomePanel({ findingId, onClose, onDone }) {
-  const [form, setForm] = useState({ outcome: 'claimed', amount: '', currency: 'GBP', validFrom: today(), note: '' });
-  const [conflict, setConflict] = useState(null);
-  const [errors, setErrors] = useState({});
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState('');
-
-  useEffect(() => {
-    let live = true;
-    axios.get(`${AI_API}${historyPath(findingId)}`).then(({ data }) => {
-      if (!live) return;
-      const p = data.prefill || {};
-      setForm((f) => ({ ...f, amount: p.amount ?? '', currency: p.currency || 'GBP' }));
-    }).catch(() => {});
-    return () => { live = false; };
-  }, [findingId]);
-
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-  const post = (path, body) => axios.post(`${AI_API}${path}`, body);
-
-  const save = async () => {
-    const check = validateOutcomeForm({ ...form, noteRequired: !!conflict });
-    setErrors(check.errors);
-    if (!check.ok) return;
-    setBusy(true); setFailure('');
-    try {
-      const r = await submitOutcome({ findingId, form, post, conflictAcknowledged: !!conflict });
-      if (r.conflict) { setConflict(r.conflict); return; }
-      onDone(r.saved);
-    } catch (err) {
-      setFailure(ledgerErrorMessage(err));
-      if (err?.response?.status === 409) onDone(null);
-    } finally { setBusy(false); }
-  };
-
-  const moneyless = form.outcome === 'accepted';
-  return (
-    <div className="vo-panel" role="dialog" aria-modal="true" aria-labelledby="vo-title">
-      <h2 id="vo-title">{tOr('vo.title', 'What happened to this money?')}</h2>
-      <fieldset>
-        {OUTCOME_CHOICES.map((c) => (
-          <label key={c.value}>
-            <input type="radio" name="vo-outcome" id={`vo-${c.value}`} value={c.value}
-              checked={form.outcome === c.value} onChange={set('outcome')} />
-            {tOr(c.labelKey, c.fallback)}
-          </label>
-        ))}
-      </fieldset>
-      {!moneyless && (
-        <div className="vo-row">
-          <label htmlFor="vo-amount">{tOr('vo.amount', 'Amount')}</label>
-          <input id="vo-amount" inputMode="decimal" value={form.amount} onChange={set('amount')} />
-          <label htmlFor="vo-currency">{tOr('vo.currency', 'Currency')}</label>
-          <input id="vo-currency" maxLength={3} value={form.currency} onChange={set('currency')} />
-          <label htmlFor="vo-date">{tOr('vo.date', 'Date')}</label>
-          <input id="vo-date" type="date" value={form.validFrom} onChange={set('validFrom')} />
-          {errors.amount && <p className="vo-err">{errors.amount}</p>}
-          {errors.currency && <p className="vo-err">{errors.currency}</p>}
-        </div>
-      )}
-      {conflict && (
-        <p className="vo-conflict">
-          {tOr('vo.conflict', 'The evidence suggests {d}: {why}', { d: conflict.decision, why: conflict.rationale })}
-        </p>
-      )}
-      <label htmlFor="vo-note">{conflict ? tOr('vo.noteWhy', 'Why are you going ahead?') : tOr('vo.note', 'Note (optional)')}</label>
-      <textarea id="vo-note" value={form.note} onChange={set('note')} />
-      {errors.note && <p className="vo-err">{errors.note}</p>}
-      {failure && <p className="vo-err" role="alert">{failure}</p>}
-      <div className="vo-actions">
-        <button type="button" onClick={onClose} disabled={busy}>{tOr('vo.cancel', 'Cancel')}</button>
-        <button type="button" onClick={save} disabled={busy}>{tOr('vo.save', 'Save')}</button>
-      </div>
-    </div>
-  );
-}
-```
-
-Before using the import `AI_API` from `'../../lib/api'`, check it: `grep -rn "export const AI_API" src/lib`. Import it from wherever `useHomeData.js` gets it. Styles: add `.vo-panel` rules beside the drawer's existing styles (find the stylesheet the drawer uses with `grep -rn "vf-" src --include=*.css | head`). Use that sheet's existing tokens only; no new colours.
-
-- [ ] **Step 4: Route money findings to the panel**
-
-`useSpendData.js`, in `findingToAction` (`:1827-1838`), before `const dec = ...`:
+- [ ] **Step 3: Implement `submitOutcome`** (append to `src/lib/valueOutcome.js`)
 
 ```js
-  // A finding that found money is closed by saying what happened to that money. Its first
-  // action opens the outcome panel; the second is unchanged.
-  const money = isMoneyFinding(f.rule_id);
+// What the buyer's choice asks of the decision engine. A claim or a stopped payment is an
+// approval of the finding; accepting the charge dismisses it.
+const INTENT = { avoided: 'approve', claimed: 'approve', accepted: 'dismiss' };
+
+/**
+ * The decision engine is consulted first, as for every close. When it disagrees the buyer
+ * is not blocked, only asked to say why: the caller re-submits with conflictAcknowledged
+ * and the reason in form.note, which the ledger stores as the row's note.
+ * `post(path, body)` resolves to the response body (the engine's __SPENDIQ_API_AI_POST__
+ * bridge, or an axios wrapper on Home).
+ */
+export async function submitOutcome({ findingId, form, post, conflictAcknowledged = false }) {
+  const id = String(findingId).replace(/^disc:/, '');
+  if (!conflictAcknowledged) {
+    const d = await post(`/decisions/finding/${id}`, { requested: INTENT[form.outcome], user_id: 'ui' });
+    if (d && d.conflicts_with_request) return { conflict: d };
+  }
+  return { saved: await post(outcomePath(id), buildOutcomeBody(form)) };
+}
 ```
 
-Then change the triage and resolve branches:
+Run: `npx vitest run src/lib/valueOutcome.test.js`. Expected: 14 passed.
+
+- [ ] **Step 4: Write the failing engine contract test** (`src/modules/SpendIQ/valueOutcome.contract.test.js`)
+
+First read `src/modules/SpendIQ/acceptanceQueue.contract.test.js` and copy exactly how it loads `engine.js` source and evaluates or inspects its functions. Then assert:
+
+```js
+// The Action Centre records what happened to found money inside its EXISTING popover:
+// the same wrapper, box, title and buttons as reject/override, never a new component.
+import { describe, it, expect } from 'vitest';
+import engineSrc from './engine.js?raw';
+
+describe('Action Centre: record outcome', () => {
+  it('maps the label to the record_outcome intent', () => {
+    expect(engineSrc).toMatch(/'Record outcome'\s*:\s*'record_outcome'/);
+  });
+  it('opens the outcome popover instead of closing the finding', () => {
+    expect(engineSrc).toMatch(/intent\s*===\s*'record_outcome'[\s\S]{0,120}openOutcome\(/);
+    expect(engineSrc).toMatch(/action\s*===\s*'record_outcome'[\s\S]{0,120}openOutcome\(/);
+  });
+  it('renders the outcome form inside assignRejectPopover with the shared styles and classes', () => {
+    const fn = engineSrc.slice(engineSrc.indexOf('function assignRejectPopover'),
+                               engineSrc.indexOf('function assignRejectPopover') + 9000);
+    expect(fn).toMatch(/s\.mode\s*===\s*'outcome'/);
+    const outcomeBlock = fn.slice(fn.indexOf("s.mode==='outcome'"));
+    expect(outcomeBlock).toMatch(/\$\{wrapStyle\}/);
+    expect(outcomeBlock).toMatch(/\$\{boxStyle\}/);
+    expect(outcomeBlock).toMatch(/class="p-title"/);
+    expect(outcomeBlock).toMatch(/class="btn primary"/);
+    expect(outcomeBlock).not.toMatch(/#[0-9a-fA-F]{3,6}/);   // no new colours: tokens only
+  });
+  it('uses the shared rules from index.jsx, not its own copy', () => {
+    expect(engineSrc).toMatch(/__SIQ_VALUE_OUTCOME__/);
+    expect(engineSrc).not.toMatch(/quantity_invoiced_above_po/);  // the type list lives in lib
+  });
+});
+```
+
+Run: `npx vitest run src/modules/SpendIQ/valueOutcome.contract.test.js`. Expected: FAIL.
+
+- [ ] **Step 5: Implement the SpendIQ side**
+
+`index.jsx`, in `ensureEngineLoaded()` beside `window.__SIQ_FMT = ...`:
+
+```js
+  // Recording what happened to found money. Same channel and the same reason as __SIQ_TREE__:
+  // the rules are a tested ES module (src/lib/valueOutcome.js) and the engine reaches them
+  // here instead of owning a copy.
+  window.__SIQ_VALUE_OUTCOME__ = {
+    isMoneyFinding, OUTCOME_CHOICES, buildOutcomeBody, validateOutcomeForm,
+    ledgerErrorMessage, historyPath, submitOutcome,
+  };
+```
+
+Add the import: `import { isMoneyFinding, OUTCOME_CHOICES, buildOutcomeBody, validateOutcomeForm, ledgerErrorMessage, historyPath, submitOutcome } from '../../lib/valueOutcome';`.
+
+`useSpendData.js`, in `findingToAction`: before `const dec = ...`, add `const money = isMoneyFinding(f.rule_id);`. Then:
 
 ```js
   const dec = money ? ['Record outcome', 'Flag for review']
-    : triage ? ['Flag for review', 'Accept as risk']
-    : type === 'resolve' ? [applyLabel, 'Dismiss'] ...
+    : triage ? ['Flag for review', 'Accept as risk'] // ...rest unchanged
   const acts = money ? ['record_outcome', 'flag']
-    : triage ? ['flag', 'dismiss'] ...
+    : triage ? ['flag', 'dismiss'] // ...rest unchanged
 ```
 
-Import `isMoneyFinding` from `'../../../lib/valueOutcome'`. Check the relative depth against `useSpendData.js`'s other `lib` imports.
+Also import `isMoneyFinding` from `src/lib/valueOutcome` (match the relative depth of the file's other `lib` imports).
 
 `engine.js`:
-- Add `'Record outcome':'record_outcome',` to `ACTION_INTENT` (`:3533`).
-- At the top of `siqAction`, after the sample-row check (`:3556`):
+1. `ACTION_INTENT` (`:3533`): add `'Record outcome':'record_outcome',`.
+2. `siqAction` (`:3552`), directly after the sample-row guard:
+   ```js
+     if(intent==='record_outcome'){ openOutcome(findingId); return; }
+   ```
+3. `resolveFinding` (`:3307`), first line of the body:
+   ```js
+     if(action==='record_outcome'){ openOutcome(id); return; }
+   ```
+4. Next to `openAR` (`:13319`), add the outcome state handlers. They reuse `_arState`, `renderBody()`, `toast()` and `escH()` exactly as reject/override do:
 
 ```js
-  if(intent==='record_outcome'){
-    if(window.__SPENDIQ_OPEN_OUTCOME__) window.__SPENDIQ_OPEN_OUTCOME__(findingId);
-    else toast('Outcome recording unavailable');
-    return;
+// Recording what happened to found money: a mode of the reject/override popover, so it
+// looks and behaves like every other decision popover on this screen.
+function openOutcome(findingId){
+  const R = window.__SIQ_VALUE_OUTCOME__;
+  if(!R || !window.__SPENDIQ_API_AI__ || !window.__SPENDIQ_API_AI_POST__){ toast('Outcome recording unavailable'); return; }
+  _arState = { mode:'outcome', findingId:findingId, outcome:'claimed', amount:'', currency:'GBP',
+               validFrom:new Date().toISOString().slice(0,10), note:'', conflict:null, errors:{}, busy:false };
+  renderBody();
+  window.__SPENDIQ_API_AI__(R.historyPath(findingId)).then(function(d){
+    if(!_arState || _arState.mode!=='outcome' || _arState.findingId!==findingId) return;
+    const p = (d && d.prefill) || {};
+    _arState.amount = p.amount || ''; _arState.currency = p.currency || 'GBP';
+    renderBody();
+  }).catch(function(){});
+}
+function outcomeField(k, v){ if(_arState && _arState.mode==='outcome'){ _arState[k] = v; } }
+function pickOutcome(v){ if(_arState && _arState.mode==='outcome'){ _arState.outcome = v; renderBody(); } }
+async function confirmOutcome(){
+  const s = _arState; const R = window.__SIQ_VALUE_OUTCOME__;
+  if(!s || s.mode!=='outcome' || s.busy) return;
+  const form = { outcome:s.outcome, amount:s.amount, currency:s.currency, validFrom:s.validFrom, note:s.note };
+  const check = R.validateOutcomeForm(Object.assign({ noteRequired: !!s.conflict }, form));
+  s.errors = check.errors; if(!check.ok){ renderBody(); return; }
+  s.busy = true; renderBody();
+  try{
+    const r = await R.submitOutcome({ findingId:s.findingId, form:form,
+      post: window.__SPENDIQ_API_AI_POST__, conflictAcknowledged: !!s.conflict });
+    if(r.conflict){ s.conflict = r.conflict; s.busy = false; renderBody(); return; }
+    closeAR(); actionSel = 0; toast(T('vo.saved','Recorded'));
+    if(window.__SPENDIQ_REFETCH__) window.__SPENDIQ_REFETCH__();
+  }catch(e){
+    s.busy = false; s.errors = { save: R.ledgerErrorMessage(e) }; renderBody();
+    if(e && e.response && e.response.status===409 && window.__SPENDIQ_REFETCH__) window.__SPENDIQ_REFETCH__();
+  }
+}
+```
+
+5. In `assignRejectPopover()`, before the `const isOverride = ...` line, add the `outcome` mode. It uses only the function's existing `wrapStyle`, `boxStyle` and `taStyle`, the existing classes, and `var(--…)` tokens:
+
+```js
+  if(s.mode==='outcome'){
+    const R = window.__SIQ_VALUE_OUTCOME__;
+    const e = s.errors || {};
+    const inStyle = 'width:100%;margin-top:4px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;font:inherit;font-size:.84rem;color:var(--ink);background:var(--surface-2)';
+    const err = (m) => m ? `<div class="p-sub" style="color:var(--red);margin-top:4px">${escH(m)}</div>` : '';
+    const choices = R.OUTCOME_CHOICES.map(function(c){
+      return `<label class="p-sub" style="display:flex;gap:8px;align-items:center;margin-top:6px;cursor:pointer">
+        <input type="radio" name="vo-outcome" value="${c.value}" ${s.outcome===c.value?'checked':''} onchange="pickOutcome('${c.value}')">
+        ${escH(T(c.labelKey, c.fallback))}</label>`;
+    }).join('');
+    const money = s.outcome!=='accepted' ? `
+      <div style="display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:8px;margin-top:12px">
+        <label class="p-sub">${escH(T('vo.amount','Amount'))}<input id="vo-amount" inputmode="decimal" value="${escH(s.amount)}" oninput="outcomeField('amount',this.value)" style="${inStyle}"></label>
+        <label class="p-sub">${escH(T('vo.currency','Currency'))}<input id="vo-currency" maxlength="3" value="${escH(s.currency)}" oninput="outcomeField('currency',this.value)" style="${inStyle}"></label>
+        <label class="p-sub">${escH(T('vo.date','Date'))}<input id="vo-date" type="date" value="${escH(s.validFrom)}" oninput="outcomeField('validFrom',this.value)" style="${inStyle}"></label>
+      </div>${err(e.amount)}${err(e.currency)}` : '';
+    const conflict = s.conflict ? `<div class="p-sub" style="margin-top:12px">${escH(T('vo.conflict','The evidence suggests')+' '+(s.conflict.decision||'')+': '+(s.conflict.rationale||''))}</div>` : '';
+    return `<div style="${wrapStyle}" onclick="closeAR()"><div style="${boxStyle}" onclick="event.stopPropagation()">
+      <div class="p-title">${escH(T('vo.title','What happened to this money?'))}</div>
+      ${choices}${money}${conflict}
+      <textarea id="vo-note" placeholder="${escH(s.conflict ? T('vo.noteWhy','Why are you going ahead?') : T('vo.note','Note (optional)'))}" oninput="outcomeField('note',this.value)" style="${taStyle}">${escH(s.note)}</textarea>
+      ${err(e.note)}${err(e.save)}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn" onclick="closeAR()">${escH(T('vo.cancel','Cancel'))}</button>
+        <button class="btn primary" ${s.busy?'disabled':''} onclick="confirmOutcome()">${escH(T('vo.save','Save'))}</button>
+      </div>
+    </div></div>`;
   }
 ```
 
-- At the top of `resolveFinding` (`:3307`):
+Before relying on them, confirm that `var(--red)`, `var(--line)`, `var(--ink)`, `var(--surface)` and `var(--surface-2)` exist in the engine's stylesheet (`grep -n "\-\-red\|\-\-surface-2" src/modules/SpendIQ/*.css src/components/ui/tokens.css`). Use the error token the engine already uses for error text if `--red` is not it. `outcomeField` deliberately does not re-render, so typing keeps focus. Only `pickOutcome` and submit re-render.
 
-```js
-  if(action==='record_outcome'){ if(window.__SPENDIQ_OPEN_OUTCOME__) window.__SPENDIQ_OPEN_OUTCOME__(id); return; }
-```
+Run: `npx vitest run src/modules/SpendIQ/valueOutcome.contract.test.js src/lib/valueOutcome.test.js`. Expected: all pass.
 
-`SpendIQ/index.jsx`:
-- In the component that installs the bridges, add state `const [outcomeFor, setOutcomeFor] = useState(null);`.
-- Next to the other bridges: `window.__SPENDIQ_OPEN_OUTCOME__ = (id) => setOutcomeFor(id);`.
-- Remove it in the same effect's cleanup, if the bridges have one.
-- In the JSX, render:
+- [ ] **Step 6: Move the Query modal's styles, then build `OutcomeModal` from them**
 
-```jsx
-{outcomeFor != null && (
-  <ValueOutcomePanel findingId={outcomeFor} onClose={() => setOutcomeFor(null)}
-    onDone={() => { setOutcomeFor(null); if (window.__SPENDIQ_REFETCH__) window.__SPENDIQ_REFETCH__(); }} />
-)}
-```
+1. Create `src/modules/ProcurementHome/modalStyles.js`:
+   - Move `st` from `ValueFoundDrawer.jsx:32-43` verbatim.
+   - Export each style string `QueryModal` uses today under the names in Interfaces, copied **character for character** from `ValueFoundDrawer.jsx:118-175` and the rest of `QueryModal` (the scrim div, dialog div, header, title, close button, body, `field`, `label`, `box`, and the footer and buttons further down the function).
+2. Change `QueryModal` to use those constants. **Visual no-op:** run `npx vitest run src/modules/ProcurementHome` and confirm the counts are unchanged.
+3. Create `OutcomeModal.jsx`:
+   - Structure: `SCRIM` > `DIALOG` (width `min(560px,100%)` in place of the Query modal's 1100px, the only permitted change, because this form is short) > `HEADER` (`TITLE` + `CLOSE_BTN`) > `BODY` > `FOOT` (`SECONDARY_BTN` Cancel, `PRIMARY_BTN` Save).
+   - Fields use `LABEL` and `FIELD`; the conflict notice uses `BOX` with the Query modal's amber variant (`BOX + 'border-color:#f0d9a8;'`, which already exists in `QueryModal`).
+   - **Modes:**
+     - `outcome`: the three `OUTCOME_CHOICES` radios, amount, currency, date and note. Save calls `submitOutcome({findingId, form, post})`, where `post = (path, body) => axios.post(`${AI_API}${path}`, body).then((r) => r.data)`, and handles `conflict` exactly as the engine does.
+     - `settle`: two radios, "Credit received" (`recovered`) and "Claim dropped" (`claim_dropped`). Recovered shows amount (pre-filled from `finding.claim.amount`), currency, "Credit note or reference" (required) and date. Save posts `buildSettleBody(form)` to `settlePath(finding.id)`.
+     - `realise`: amount, currency (default GBP), date and optional reference. Save posts `{amount, currency, valid_from, evidence_ref}` to `realisePath(finding.id)`.
+   - Every string goes through `tOr`. Errors from `validateOutcomeForm` show under their field, and save failures show `ledgerErrorMessage(err)` above the footer.
+   - Escape closes, as in `QueryModal`.
+4. `ProcurementHome/index.jsx`:
+   - Add state `const [outcomeFor, setOutcomeFor] = useState(null);`.
+   - In `decideCard`, before `setDeciding(true)`: `if (intent === 'record_outcome') { setOutcomeFor(cardCur._id); return; }`.
+   - Factor the existing post-close lines (`setDeckDoneIds`, `dropClosed`, advance to the next card) into `afterClose(id)`, used by both the decision path and `OutcomeModal`'s `onDone`.
+   - Render `<OutcomeModal mode="outcome" findingId={outcomeFor} onClose={() => setOutcomeFor(null)} onDone={() => { const id = outcomeFor; setOutcomeFor(null); afterClose(id); }} />` when `outcomeFor != null`.
 
-`ProcurementHome/index.jsx`:
-- In `decideCard`, before `setDeciding(true)`:
+- [ ] **Step 7: Run the UI tests against the baseline**
 
-```js
-    if (intent === 'record_outcome') { setOutcomeFor(cardCur._id); return; }
-```
+Before Step 5, record the baseline with `npx vitest run src/modules/SpendIQ src/modules/ProcurementHome src/lib`. Now run it again.
+Expected: the new tests pass, and no previously passing test fails.
 
-- Add the same `outcomeFor` state and a panel whose `onDone` does what a closed card does today: `setDeckDoneIds`, `useActionsStore.getState().dropClosed(id)`, then advance to the next card. Factor the existing post-close lines into a small `afterClose(id)` function used by both paths, so they stay one behaviour.
-
-- [ ] **Step 5: Run the UI tests**
-
-Run: `npx vitest run src/components/value src/lib/valueOutcome.test.js src/modules/SpendIQ src/modules/ProcurementHome`
-Expected: the new tests pass and the existing ones stay green. Record the before and after counts. Run the same command before Step 4 to get the baseline.
-
-- [ ] **Step 6: Commit** (stage hunks only; `useSpendData.js`, `engine.js` and both `index.jsx` files may carry other sessions' edits)
+- [ ] **Step 8: Commit** (hunks only: `useSpendData.js`, `engine.js` and both `index.jsx` files may carry other sessions' edits)
 
 ```bash
-git status --short src/modules/SpendIQ src/modules/ProcurementHome
-git add src/components/value/ValueOutcomePanel.jsx src/components/value/ValueOutcomePanel.test.jsx
-git add -p src/modules/SpendIQ/data/useSpendData.js src/modules/SpendIQ/engine.js src/modules/SpendIQ/index.jsx src/modules/ProcurementHome/index.jsx
+cd /home/muthu/PycharmProjects/beyond_procwise_ui
+git status --short src/modules/SpendIQ src/modules/ProcurementHome src/lib
+git add src/modules/SpendIQ/valueOutcome.contract.test.js src/modules/ProcurementHome/modalStyles.js src/modules/ProcurementHome/OutcomeModal.jsx
+git add -p src/lib/valueOutcome.js src/lib/valueOutcome.test.js src/modules/SpendIQ/index.jsx src/modules/SpendIQ/data/useSpendData.js src/modules/SpendIQ/engine.js src/modules/ProcurementHome/ValueFoundDrawer.jsx src/modules/ProcurementHome/index.jsx
 git diff --cached --stat
 git commit -m "feat(value-ledger): money findings close by saying what happened to the money
+
+Recorded in the Action Centre's existing decision popover and, on Home, in a modal
+built from the Query modal's own styles. No new component look.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-Accept only this task's hunks in `git add -p`. Then verify the staged tree builds in a clean worktree:
+Then verify the staged tree in a clean worktree:
 - `git worktree add /tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/55b438ba-4cd7-4e9f-a05c-55689aee1472/scratchpad/ui-verify HEAD`
-- `cd` into it, `npx vitest run src/components/value src/lib/valueOutcome.test.js`
+- run the tests from Step 7 there
 - `git worktree remove` it
 
 ---
@@ -2151,7 +2191,7 @@ Accept only this task's hunks in `git add -p`. Then verify the staged tree build
 
 **Files (beyond_procwise_ui):**
 - Modify: `src/lib/valueFound.js`: add `savedHeadline(summary)`, `claimsOf(summary)`, `isRealisable(finding)`
-- Modify: `src/modules/ProcurementHome/ValueFoundDrawer.jsx`: the headline, a "Being claimed" section, a `SettleModal`, and "Mark realised" on opportunity rows
+- Modify: `src/modules/ProcurementHome/ValueFoundDrawer.jsx`: the headline, a "Being claimed" section and "Mark realised" on opportunity rows, all in the drawer's existing `st(...)` row, heading and button styles; the modals are Task 8's `OutcomeModal`
 - Modify: `src/modules/ProcurementHome/heroFigure.js`: "in play" reads `summary.in_play_gbp`
 - Test: `src/modules/SpendIQ/valueSummary.contract.test.js` (extend)
 
@@ -2238,10 +2278,10 @@ export function isRealisable(finding) {
 `ValueFoundDrawer.jsx`:
 - **Headline.** Render `savedHeadline(summary)` above the supplier groups: a heading "Saved {value}" and its parts joined by the drawer's existing separator style. Leave it out when `value` is null.
 - **Being claimed.** When `claimsOf(summary)` is non-empty, render a section headed `tOr('vf.beingClaimed', 'Being claimed')` with a line "`{claimed_open}` in progress". Each row shows the supplier, `claimLabel(f)`, days since `claimed_at`, and two buttons:
-  - `tOr('vf.creditReceived', 'Credit received')` opens a `SettleModal` with outcome `recovered`. Fields: amount pre-filled from `f.claim.amount`, currency, credit note reference (required), date.
-  - `tOr('vf.claimDropped', 'Claim dropped')` opens the same modal with outcome `claim_dropped` and an optional note only.
-- **SettleModal.** Validates with `validateOutcomeForm` and posts `buildSettleBody(...)` to `${AI_API}${settlePath(f.id)}`. On success, call the drawer's existing refetch (`onNavigate` is for links; find how the drawer's parent refetches `valueSummary`, e.g. a `queryClient.invalidateQueries(['valueSummary'])` in `useHomeData.js`, and pass an `onChanged` prop down). On error, show `ledgerErrorMessage(err)` in the modal.
-- **Mark realised.** In `FindingRow`, when `isRealisable(finding)`, show `tOr('vf.markRealised', 'Mark realised')`. It opens the same modal in a `realise` mode: amount, currency (default GBP), date, optional reference. It posts `{amount, currency, valid_from, evidence_ref}` to `${AI_API}${realisePath(finding.id)}`.
+  - `tOr('vf.creditReceived', 'Credit received')` opens `<OutcomeModal mode="settle" finding={f} …/>` (Task 8) preset to `recovered`. Fields: amount pre-filled from `f.claim.amount`, currency, credit note reference (required), date.
+  - `tOr('vf.claimDropped', 'Claim dropped')` opens `<OutcomeModal mode="settle" …/>` preset to `claim_dropped`.
+- **After a save.** `OutcomeModal` (Task 8) already validates and posts. The drawer only needs its `onDone` to refetch the summary: call the drawer's existing refetch (`onNavigate` is for links; find how the drawer's parent refetches `valueSummary`, e.g. a `queryClient.invalidateQueries(['valueSummary'])` in `useHomeData.js`, and pass an `onChanged` prop down).
+- **Mark realised.** In `FindingRow`, when `isRealisable(finding)`, show `tOr('vf.markRealised', 'Mark realised')`. It opens `<OutcomeModal mode="realise" finding={finding} …/>` (Task 8): amount, currency (default GBP), date, optional reference. It posts `{amount, currency, valid_from, evidence_ref}` to `${AI_API}${realisePath(finding.id)}`.
 - **Existing row label.** The `recovered_gbp` label (`:99-101`) keeps working: `recovered_gbp` is now ledger-derived.
 
 `heroFigure.js`: where "in play" is computed as verified + potential, use `summary.in_play_gbp` when it is present (a number), falling back to the existing sum when it is absent (an older backend). Update the header comment's "WHAT IN PLAY IS" paragraph to say that settled money (stopped, recovered, dropped) is no longer in play.
