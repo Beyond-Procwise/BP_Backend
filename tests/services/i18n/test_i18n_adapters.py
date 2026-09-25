@@ -44,7 +44,8 @@ def test_build_ui_prompt_carries_language_and_payload():
 
 def test_schema_requires_exactly_the_keys_and_has_no_unions():
     sch = batch_schema(["s01", "s02"])
-    assert sch["required"] == ["s01", "s02"] and sch["additionalProperties"] is False
+    inner = sch["properties"]["strings"]  # prompt v3 wraps the strings beside the flags
+    assert inner["required"] == ["s01", "s02"] and inner["additionalProperties"] is False
     assert "oneOf" not in json.dumps(sch) and "anyOf" not in json.dumps(sch)
 
 
@@ -71,3 +72,11 @@ def test_unknown_provider_is_refused():
 def test_memory_ttl_from_env():
     assert load_settings({}).memory_ttl == 600
     assert load_settings({"TRANSLATION_MEMORY_TTL_SECONDS": "60"}).memory_ttl == 60
+
+
+def test_reply_schema_asks_for_the_flags_first():
+    sch = batch_schema(["s01", "s02"])
+    assert list(sch["properties"]) == ["lang_recognized", "confidence", "strings"]
+    assert sch["properties"]["confidence"]["enum"] == ["high", "medium", "low"]
+    assert sch["properties"]["strings"]["required"] == ["s01", "s02"]
+    assert sch["properties"]["strings"]["additionalProperties"] is False

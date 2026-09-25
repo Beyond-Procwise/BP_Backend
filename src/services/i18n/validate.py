@@ -6,8 +6,10 @@ than English (Russian adds few/many). What must hold:
 
   * the same arguments, with the same types ({n, plural}, {name}, {d, date}), at any depth;
   * select keywords unchanged (they are keys the app passes in, not words);
-  * plural selectors drawn from the TARGET language's CLDR plural categories (or =N),
-    always including `other`, which the formatter requires;
+  * plural selectors drawn from CLDR's six categories (zero/one/two/few/many/other) or =N,
+    always including `other`, which the formatter requires. A category the TARGET language
+    does not use (Japanese `one`) is accepted: the formatter never selects it, and AgentNick
+    keeps it however the prompt is worded. A translated keyword (`uno`) is refused;
   * `#` kept if the source used it (it is where the count is printed).
 
 printf conversions and HTML tags are compared as multisets over the whole string:
@@ -105,16 +107,6 @@ def parse_icu(text: str) -> list[dict]:
     return args
 
 
-def _plural_categories(lang: Optional[str]) -> frozenset:
-    if not lang or lang.lower().startswith("x-"):
-        return _ALL_CATEGORIES
-    try:
-        from babel import Locale
-        return frozenset(Locale.parse(lang.replace("-", "_")).plural_form.tags) | {"other"}
-    except Exception:
-        return _ALL_CATEGORIES
-
-
 def _check_icu(source: str, translated: str, lang: Optional[str]) -> Optional[str]:
     try:
         src = parse_icu(source)
@@ -128,7 +120,6 @@ def _check_icu(source: str, translated: str, lang: Optional[str]) -> Optional[st
     dst_sig = {(a["name"], a["type"]) for a in dst}
     if src_sig != dst_sig:
         return f"arguments changed: {sorted(src_sig, key=str)} -> {sorted(dst_sig, key=str)}"
-    allowed = _plural_categories(lang)
     for a in src:
         if a["type"] not in _CHOICE_TYPES:
             continue
@@ -140,9 +131,9 @@ def _check_icu(source: str, translated: str, lang: Optional[str]) -> Optional[st
         for b in same:
             if "other" not in b["selectors"]:
                 return f"plural {{{a['name']}}} has no 'other' branch"
-            bad = [x for x in b["selectors"] if not x.startswith("=") and x not in allowed]
+            bad = [x for x in b["selectors"] if not x.startswith("=") and x not in _ALL_CATEGORIES]
             if bad:
-                return f"plural {{{a['name']}}} uses categories {bad} not in {lang or 'CLDR'}'s {sorted(allowed)}"
+                return f"plural {{{a['name']}}} uses {bad}, which are not plural categories"
             if a["hash"] and not b["hash"]:
                 return f"plural {{{a['name']}}} lost '#'"
     return None
@@ -168,6 +159,29 @@ def check_pair(source: str, translated: str, lang: Optional[str] = None) -> str 
     return None
 
 
+_CONFIDENCE = ("high", "medium", "low")
+
+
+def _strings_of(data: dict) -> dict:
+    """The translations in a reply: {"strings": {...}} (prompt v3+) or the whole flat object."""
+    inner = data.get("strings")
+    return inner if isinstance(inner, dict) else data
+
+
+def read_flags(raw: str | None) -> tuple[Optional[bool], Optional[str]]:
+    """(lang_recognized, confidence) from a reply; None for each one it does not carry."""
+    try:
+        data = json.loads(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    recognized = data.get("lang_recognized")
+    confidence = data.get("confidence")
+    return (recognized if isinstance(recognized, bool) else None,
+            confidence if confidence in _CONFIDENCE else None)
+
+
 def validate_batch(sent: dict[str, str], raw: str | None,
                    lang: Optional[str] = None) -> tuple[dict[str, str], dict[str, str]]:
     if raw is None:
@@ -178,6 +192,7 @@ def validate_batch(sent: dict[str, str], raw: str | None,
         return {}, {k: "response was not JSON" for k in sent}
     if not isinstance(data, dict):
         return {}, {k: "response was not a JSON object" for k in sent}
+    data = _strings_of(data)
     good: dict[str, str] = {}
     bad: dict[str, str] = {}
     for key, source in sent.items():

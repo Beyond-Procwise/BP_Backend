@@ -127,3 +127,40 @@ def test_memory_entries_expire_so_a_reviewed_import_is_picked_up():
     assert m.get("k") == "machine"
     now[0] = 601
     assert m.get("k") is None
+
+
+# --- what the model says about a language (prompt v3 flags) ------------------------------
+
+def test_language_status_is_sticky_unrecognized_and_keeps_the_lowest_confidence():
+    s = InMemoryTranslationStore()
+    assert s.language_status("zu", "v3", "m") is None
+    s.record_language_status("zu", "v3", "m", True, "high")
+    s.record_language_status("zu", "v3", "m", True, "low")
+    s.record_language_status("zu", "v3", "m", True, "medium")
+    assert s.language_status("zu", "v3", "m") == {"recognized": True, "confidence": "low"}
+    s.record_language_status("x-elvish", "v3", "m", False, "low")
+    s.record_language_status("x-elvish", "v3", "m", True, "high")
+    assert s.language_status("x-elvish", "v3", "m")["recognized"] is False
+    assert s.language_status("zu", "v4", "m") is None  # a new prompt version asks again
+    assert set(s.language_statuses("v3", "m")) == {"zu", "x-elvish"}
+
+
+def test_flat_replies_record_nothing():
+    s = InMemoryTranslationStore()
+    s.record_language_status("es", "v3", "m", None, None)
+    assert s.language_status("es", "v3", "m") is None
+
+
+@pytest.mark.skipif(os.environ.get("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB only")
+def test_pg_language_status_merges_the_same_way():
+    s = PgTranslationStore()
+    try:
+        s.record_language_status("xx-test", "v3", "m", True, "high")
+        s.record_language_status("xx-test", "v3", "m", True, "low")
+        s.record_language_status("xx-test", "v3", "m", False, "high")
+        assert s.language_status("xx-test", "v3", "m") == {"recognized": False, "confidence": "low"}
+        assert "xx-test" in s.language_statuses("v3", "m")
+    finally:
+        from src.services.db import get_conn
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_translation_language_status WHERE target_lang = 'xx-test'")

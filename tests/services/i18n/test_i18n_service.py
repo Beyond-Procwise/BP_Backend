@@ -161,7 +161,17 @@ def test_validation_uses_the_target_language():
 
     en = "{n, plural, one {# deal} other {# deals}}"
     assert make(RuPlural()).translate("ru", {"k": en}).failed == []
-    assert make(RuPlural()).translate("ja", {"k": en}).failed == ["k"]
+    # A category Japanese does not use is dead text, not a defect (see validate.py) ...
+    assert make(RuPlural()).translate("ja", {"k": en}).failed == []
+
+    class Keywords(RuPlural):
+        def complete_json(self, prompt, schema):
+            payload = json.loads(prompt.split("Input JSON:\n", 1)[1])
+            self.calls.append(payload)
+            return json.dumps({k: "{n, plural, uno {# a} otro {# b}}" for k in payload})
+
+    # ... but a translated keyword is refused in any language.
+    assert make(Keywords()).translate("es", {"k": en}).failed == ["k"]
 
 
 def test_failed_key_is_not_resent_during_backoff():
@@ -221,3 +231,77 @@ def test_an_audit_hook_failure_never_breaks_translation():
     svc = TranslationService(provider=FakeProvider(), store=InMemoryTranslationStore(), memory=MemoryLayer(100),
                              registry=REG, system_prompt="SYS", batch_size=20, on_generated=boom)
     assert svc.translate("es", {"a": "Save"}).translations == {"a": "SAVE"}
+
+
+# --- prompt v3: slots, lang_recognized, confidence ---------------------------------------
+
+class Flagged(FakeProvider):
+    """Wrapped replies carrying the flags."""
+
+    def __init__(self, recognized=True, confidence="high"):
+        super().__init__()
+        self.recognized, self.confidence = recognized, confidence
+
+    def complete_json(self, prompt, schema):
+        payload = json.loads(prompt.split("Input JSON:\n", 1)[1])
+        self.calls.append(payload)
+        self.prompts.append(prompt)
+        strings = {k: (v.upper() if self.recognized else v) for k, v in payload.items()}
+        return json.dumps({"lang_recognized": self.recognized, "confidence": self.confidence, "strings": strings})
+
+
+def make_cfg(provider, config, store=None):
+    return TranslationService(provider=provider, store=store or InMemoryTranslationStore(), memory=MemoryLayer(100),
+                              registry=REG, system_prompt="Never: {{DO_NOT_TRANSLATE_LIST}} Tone: {{TONE}}.",
+                              batch_size=20, config_loader=lambda: config)
+
+
+def test_slots_are_filled_in_every_prompt():
+    p = Flagged()
+    make_cfg(p, {"do_not_translate": ["SpendIQ"], "glossary": {}, "tone": "formal"}).translate("es", {"a": "Save"})
+    assert 'Never: "SpendIQ" Tone: formal.' in p.prompts[0] and "{{" not in p.prompts[0]
+
+
+def test_editing_the_config_refreshes_the_cache():
+    cfg = {"do_not_translate": [], "glossary": {}, "tone": ""}
+    p, store = Flagged(), InMemoryTranslationStore()
+    svc = make_cfg(p, cfg, store)
+    v1 = svc.prompt_version
+    svc.translate("es", {"a": "Save"})
+    cfg["tone"] = "formal"
+    assert svc.prompt_version != v1
+    svc.translate("es", {"a": "Save"})
+    assert len(p.calls) == 2
+
+
+def test_an_unrecognised_language_stays_english_and_is_not_asked_again():
+    p, store = Flagged(recognized=False, confidence="low"), InMemoryTranslationStore()
+    svc = make_cfg(p, {"do_not_translate": [], "glossary": {}, "tone": ""}, store)
+    r = svc.translate("x-elvish", {"a": "Save", "b": "Close"}, lang_name="Elvish")
+    assert r.supported is False and r.translations == {"a": "Save", "b": "Close"} and sorted(r.failed) == ["a", "b"]
+    assert len(p.calls) == 1  # no retry: the model said it does not know the language
+    r2 = svc.translate("x-elvish", {"c": "Open"}, lang_name="Elvish")
+    assert r2.supported is False and len(p.calls) == 1
+    assert svc.quality("x-elvish") == {"supported": False, "confidence": "low", "experimental": True}
+    assert store.lookup("x-elvish", [__import__("src.services.i18n.store", fromlist=["x"]).source_hash("Save")],
+                        svc.prompt_version, p.model) == {}
+
+
+def test_low_confidence_marks_the_language_experimental():
+    svc = make_cfg(Flagged(confidence="low"), {"do_not_translate": [], "glossary": {}, "tone": ""})
+    r = svc.translate("zu", {"a": "Save"})
+    assert r.supported is True and r.confidence == "low" and r.translations == {"a": "SAVE"}
+    assert svc.quality("zu") == {"supported": True, "confidence": "low", "experimental": True}
+
+
+def test_quality_of_an_untried_language_follows_its_tier():
+    svc = make_cfg(Flagged(), {"do_not_translate": [], "glossary": {}, "tone": ""})
+    assert svc.quality("es") == {"supported": True, "confidence": None, "experimental": False}
+    assert svc.quality("zu")["experimental"] is True  # tier 3 in config/i18n/tiers.json
+
+
+def test_status_of_an_unsupported_language_has_nothing_pending():
+    svc = make_cfg(Flagged(recognized=False), {"do_not_translate": [], "glossary": {}, "tone": ""})
+    svc.translate("x-elvish", {"a": "Save"}, lang_name="Elvish")
+    hits, pending, failed = svc.status("x-elvish", {"a": "Save", "b": "Close"})
+    assert hits == {} and pending == [] and sorted(failed) == ["a", "b"]

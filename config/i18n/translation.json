@@ -1,0 +1,6 @@
+{
+  "_comment": "Fills the {{DO_NOT_TRANSLATE_LIST}}, {{GLOSSARY}} and {{TONE}} slots in prompts/translate-ui.txt and prompts/translate-audio.txt. Edit freely: the file is re-read on change, and a change refreshes cached translations (it is part of the prompt version). do_not_translate: words kept as written. glossary: {\"English term\": \"translation for every language\"} or {\"English term\": {\"de\": \"...\", \"fr\": \"...\"}}. tone: e.g. \"friendly and professional\".",
+  "do_not_translate": [],
+  "glossary": {},
+  "tone": ""
+}
