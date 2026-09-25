@@ -69,13 +69,40 @@ SELECT invoice_total, currency
    AND invoice_total IS NOT NULL
 """
 
-_OPPORTUNITIES = """
+# Realised savings are recorded outcomes, not the legacy realised_savings_gbp column: a
+# scalar subquery on the ledger's CURRENT realised_saving rows for this opportunity,
+# scoped to the period by the outcome's own valid_from (superseded rows excluded).
+_REALISED_GBP = """(SELECT coalesce(sum(o.amount_gbp), 0)::numeric
+    FROM proc.bp_value_outcome o
+   WHERE o.source_type = 'opportunity' AND o.outcome_type = 'realised_saving'
+     AND o.valid_from BETWEEN %s AND %s
+     AND NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s WHERE s.supersedes_id = o.outcome_id))"""
+
+_REALISED_N = """(SELECT count(*)::int
+    FROM proc.bp_value_outcome o
+   WHERE o.source_type = 'opportunity' AND o.outcome_type = 'realised_saving'
+     AND o.valid_from BETWEEN %s AND %s
+     AND NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s WHERE s.supersedes_id = o.outcome_id))"""
+
+_OPPORTUNITIES = f"""
 SELECT COUNT(*)::int                        AS n,
        SUM(financial_impact_gbp)::numeric   AS identified_gbp,
-       SUM(realised_savings_gbp)::numeric   AS realised_gbp,
-       COUNT(realised_savings_gbp)::int     AS realised_n
+       {_REALISED_GBP}                      AS realised_gbp,
+       {_REALISED_N}                        AS realised_n
   FROM proc.bp_opportunity
  WHERE detected_on::date BETWEEN %s AND %s
+"""
+
+# Everything counted as "saved" this period: money stopped (avoided), credited back
+# (recovered) or booked as a realised opportunity saving. Grouped by outcome_type so the
+# caller can both total it and, if needed, see the split.
+_SAVED = """
+SELECT o.outcome_type, coalesce(sum(o.amount_gbp), 0)::numeric, count(*)::int
+  FROM proc.bp_value_outcome o
+ WHERE o.outcome_type IN ('avoided', 'recovered', 'realised_saving')
+   AND o.valid_from BETWEEN %s AND %s
+   AND NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s WHERE s.supersedes_id = o.outcome_id)
+ GROUP BY o.outcome_type
 """
 
 
@@ -199,7 +226,7 @@ def build(fb: FactBuilder) -> None:
                       reason="no deal in the period records both a quote and a PO date")
 
     # ---- opportunities ----------------------------------------------------
-    opp_rows = _fetch(_OPPORTUNITIES, (start, end))
+    opp_rows = _fetch(_OPPORTUNITIES, (start, end, start, end, start, end))
     n_opps, identified, realised, realised_n = opp_rows[0]
 
     # A COUNT is always measurable, and a measured zero is a finding in itself.
@@ -224,10 +251,23 @@ def build(fb: FactBuilder) -> None:
         fb.add(label="Realised savings (GBP)", value=Decimal(realised or 0),
                derivation="exec_summary.opportunity_realised_value",
                confidence=Confidence.CORROBORATED, format_hint=FormatHint.MONEY,
-               currency="GBP")
+               currency="GBP", provenance_id="proc.bp_value_outcome")
     else:
-        # Verified corpus-wide: 0 of 308 opportunities carry a realised figure.
         fb.unmeasured(label="Realised savings (GBP)",
                       derivation="exec_summary.opportunity_realised_value",
-                      reason="no opportunity in the corpus records a realised "
-                             "figure; realised savings are not being captured")
+                      reason="no opportunity saving was recorded as realised in "
+                             "this period")
+
+    # ---- saved (avoided + recovered + realised) ---------------------------
+    saved = {t: (v, n) for t, v, n in _fetch(_SAVED, (start, end))}
+    saved_n = sum(n for _, n in saved.values())
+    if saved_n:
+        total = sum(v for v, _ in saved.values())
+        fb.add(label="Saved (GBP)", value=Decimal(total),
+               derivation="exec_summary.value_saved",
+               confidence=Confidence.CORROBORATED, format_hint=FormatHint.MONEY,
+               currency="GBP", provenance_id="proc.bp_value_outcome")
+    else:
+        fb.unmeasured(label="Saved (GBP)", derivation="exec_summary.value_saved",
+                      reason="no money was recorded as stopped, recovered or realised "
+                             "in this period")

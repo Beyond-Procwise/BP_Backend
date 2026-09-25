@@ -185,6 +185,7 @@ class TestUnmeasuredReasonsCarryNoNumbers:
             ex._DEAL_SHAPE: [(0, 0, 0, 0, None, 0)],
             ex._DEAL_AMOUNTS: [(Decimal("10"), "XXX")],
             ex._OPPORTUNITIES: [(0, None, None, 0)],
+            ex._SAVED: [],
         }
         monkeypatch.setattr(ex, "_fetch", lambda sql, params: rows[sql])
         monkeypatch.setattr(
@@ -198,7 +199,7 @@ class TestUnmeasuredReasonsCarryNoNumbers:
         ex.build(fb)  # raises if any reason carries a number
 
         gaps = [f for f in fb.findings if f.code == FindingCode.MEASURE_UNAVAILABLE]
-        assert len(gaps) == 5  # spend, match rate, cycle, identified, realised
+        assert len(gaps) == 6  # spend, match rate, cycle, identified, realised, saved
 
 
 def test_a_pack_id_can_be_known_before_the_pack_is_built(stub_type):

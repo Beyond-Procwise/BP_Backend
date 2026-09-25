@@ -1,11 +1,11 @@
-"""The weekly value digest — what we found, and what came back.
+"""The weekly value digest — what we found, and what was saved.
 
-One email a week: value found this week, recovered this week, the top three open findings
+One email a week: value found this week, saved this week, the top three open findings
 by amount with their age, and one link into the drawer.
 
 The rule that matters most is the one about NOT sending. A digest that arrives every week
 saying nothing is a digest people stop opening, and then the week it does matter they miss
-it. So an empty week — nothing found in the last seven days AND nothing recovered — sends
+it. So an empty week — nothing found in the last seven days AND nothing saved — sends
 nothing at all.
 
 Composed from the same GET /spendiq/value-summary data every surface uses, so the email
@@ -92,9 +92,14 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
     live = _live(summary)
 
     found_this_week = [f for f in live if _within(f.get("found_at"), since)]
-    recovered_this_week = [f for f in live
-                           if f.get("recovered_gbp") and _within(f.get("resolved_at"), since)]
-    if not found_this_week and not recovered_this_week:
+    # R8: "recovered this week" became "saved this week" -- avoided and realised savings
+    # are just as much this week's news as a recovered credit, and must not drop out of
+    # the digest. settled_at is the ledger's date for the finding's current state; a
+    # finding recorded before the ledger existed falls back to resolved_at.
+    saved_this_week = [f for f in live
+                       if (f.get("recovered_gbp") or f.get("avoided_gbp") or f.get("realised_gbp"))
+                       and _within(f.get("settled_at") or f.get("resolved_at"), since)]
+    if not found_this_week and not saved_this_week:
         return None
 
     # A finding whose amount could not be converted is real but unpriced. It is counted,
@@ -103,8 +108,8 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
     valued = [f for f in found_this_week if f.get("amount_gbp") is not None]
     unvalued = len(found_this_week) - len(valued)
     found_total = sum(f["amount_gbp"] for f in valued)
-    recovered_total = sum(f["recovered_gbp"] for f in recovered_this_week
-                          if f.get("recovered_gbp") is not None)
+    saved_total = sum((f.get("recovered_gbp") or 0) + (f.get("avoided_gbp") or 0)
+                      + (f.get("realised_gbp") or 0) for f in saved_this_week)
     found_headline = _money(found_total) if valued else _count(found_this_week)
 
     # The list is what somebody can still act on — a resolved finding is not a to-do. It
@@ -114,7 +119,7 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
         key=lambda f: f["amount_gbp"], reverse=True)[:TOP_N]
 
     subject = (f"{SUBJECT_PREFIX}: {found_headline}"
-               f" · {_money(recovered_total)} recovered")
+               f" · {_money(saved_total)} saved")
 
     found_line = (f"{_money(found_total)} value found this week across "
                   f"{_count(found_this_week)}." if valued
@@ -126,7 +131,7 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
                        f"not in that total.")
     lines = [
         found_line,
-        f"{_money(recovered_total)} recovered this week.",
+        f"{_money(saved_total)} saved this week.",
         "",
     ]
     if actionable:
@@ -297,7 +302,7 @@ def run_weekly_digest(agent_nick=None) -> int:
         logger.exception("value digest: could not build the summary")
         return 0
     if digest is None:
-        logger.info("value digest: nothing found or recovered this week — not sending")
+        logger.info("value digest: nothing found or saved this week — not sending")
         return 0
     try:
         if not _send_email(to=to, subject=digest["subject"], body=digest["body"],
