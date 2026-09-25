@@ -64,6 +64,22 @@ def latest_approved(cited: str | None, pos: dict):
     return max(live, key=lambda p: getattr(p, "revision", None) or revision_of(p.doc_id) or 1)
 
 
+def _ident(po_id) -> str:
+    """One row's identity, as linking_engine._norm_po_id: '506789 (Rev 3)' -> '506789rev3'."""
+    return re.sub(r"^po", "", re.sub(r"[^a-z0-9]", "", str(po_id or "").lower()))
+
+
+def pick_key(row: dict, cited) -> tuple:
+    """Rank of a PO row for a citation of ``cited``, higher is better; the Python twin of
+    linking_engine._PO_PICK_ORDER_SQL. The revision the citation names; else the latest
+    revision approved or unstated; else the row the citation matches."""
+    same = _ident(row.get("po_id")) == _ident(cited)
+    approved = row.get("approval_status") in (None, "approved")
+    rev = row.get("po_revision")
+    rev = int(rev) if rev not in (None, "") else (revision_of(row.get("po_id")) or 1)
+    return (revision_of(cited) is not None and same, approved, rev if approved else 0, same)
+
+
 def canonical_po_revision(po_id: str | None, full_text: str | None) -> tuple[str | None, int | None]:
     """(po_id carrying the revision the document states, the revision number or None)."""
     if not po_id or not full_text:

@@ -161,8 +161,11 @@ _LINE_RAW = {
 _DOCTYPE_FROM_HINT = {"invoice": "invoice", "quote": "quote", "po": "po",
                       "purchase_order": "po", "purchaseorder": "po"}
 
-# SQL fragment normalizing a po_id column the same way as _norm_po().
-_PO_NORM_COND = "regexp_replace(regexp_replace(lower(po_id),'[^a-z0-9]','','g'),'^po','')"
+# SQL fragment normalizing a po_id column the same way as _norm_po(), revisions
+# ("<n> (Rev k)") folded onto their PO number.
+_PO_NORM_COND = ("regexp_replace(regexp_replace(lower("
+                 "regexp_replace(po_id,'\\s*\\(\\s*rev\\M.*$','','i')"
+                 "),'[^a-z0-9]','','g'),'^po','')")
 
 
 def _persist_deal(cur, doc_type, doc_pk, *, deal_id, deal_name, document_id, deal_date):
@@ -423,9 +426,9 @@ def _deal_date_for_doc(cur, doc_type, doc_pk):
     inv_line = _invoice_line_delivery(cur, doc_pk) if doc_type == "invoice" else None
     if not po_ref:
         return resolve_deal_date(None, inv_line)
-    pr = _rows(cur, f"select expected_delivery_date from {_PO['trgt']} where {_PO_NORM_COND}=%s",
-               (_norm_po(po_ref),))
-    return resolve_deal_date(pr[0] if pr else None, inv_line)
+    from src.services.linking_engine import _pick_po   # of its revisions, the one cited
+    pr = _pick_po(cur, po_ref, cols="t.expected_delivery_date", tables=(_PO['trgt'],))
+    return resolve_deal_date(pr, inv_line)
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +552,19 @@ def _anchor_log_odds(f: float) -> float:
 
 
 def _quote_anchors(cur, pos, cache=None) -> dict:
+    """The anchoring quote per PO, one quote per PO NUMBER: a PO's revisions ("<n> (Rev
+    k)") are one order re-issued, not rival orders for one quote, so the family is
+    anchored once, through its first id, and every revision shares that anchor."""
+    reps: dict = {}
+    for po in sorted(pos, key=lambda p: str(p.get("po_id") or "")):
+        reps.setdefault(_norm_po(po.get("po_id")) or str(po.get("po_id")), po)
+    anchored = _quote_anchors_per_order(cur, list(reps.values()), cache=cache)
+    return {str(po.get("po_id")): anchored.get(str(reps[_norm_po(po.get("po_id"))
+                                                         or str(po.get("po_id"))].get("po_id")))
+            for po in pos}
+
+
+def _quote_anchors_per_order(cur, pos, cache=None) -> dict:
     """str(po_id) -> the quote that ANCHORS it, or None, decided across all the
     purchase orders at once.
 

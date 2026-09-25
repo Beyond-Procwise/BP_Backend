@@ -455,12 +455,29 @@ def orders_by_supplier(cur, supplier_ids: list[str]) -> dict[str, list[dict]]:
                    (ids,))
     if not orders:
         return {}
+    orders = _live_revisions(orders)
     invoiced = _invoices_by_order(cur, [str(o.get("po_id") or "") for o in orders])
     out: dict[str, list[dict]] = {}
     for po in orders:
         _apply_remaining(po, invoiced)
         out.setdefault(str(po.get("supplier_id") or "").strip(), []).append(po)
     return out
+
+
+def _live_revisions(orders: list[dict]) -> list[dict]:
+    """One order per PO number: its latest revision approved or unstated, else the
+    unrevised one. A superseded or unapproved revision is the same order re-issued; offered
+    alongside the live one it would double what the order has left to absorb."""
+    from src.services.extraction.po_revision import pick_key, po_base
+
+    best: dict = {}
+    for po in orders:
+        fam = _norm(po.get("po_id")) or str(po.get("po_id"))
+        key = pick_key(po, po_base(po.get("po_id")))
+        if fam not in best or key > best[fam][0]:
+            best[fam] = (key, po)
+    kept = {id(po) for _k, po in best.values()}
+    return [po for po in orders if id(po) in kept]
 
 
 def _apply_remaining(po: dict, invoiced: dict) -> None:
