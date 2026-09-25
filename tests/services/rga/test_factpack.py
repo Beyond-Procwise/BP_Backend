@@ -184,7 +184,8 @@ class TestUnmeasuredReasonsCarryNoNumbers:
         rows = {
             ex._DEAL_SHAPE: [(0, 0, 0, 0, None, 0)],
             ex._DEAL_AMOUNTS: [(Decimal("10"), "XXX")],
-            ex._OPPORTUNITIES: [(0, None, None, 0)],
+            ex._OPPORTUNITIES: [(0, None)],
+            ex._REALISED: [(Decimal("0"), 0, 0)],
             ex._SAVED: [],
         }
         monkeypatch.setattr(ex, "_fetch", lambda sql, params: rows[sql])
@@ -200,6 +201,64 @@ class TestUnmeasuredReasonsCarryNoNumbers:
 
         gaps = [f for f in fb.findings if f.code == FindingCode.MEASURE_UNAVAILABLE]
         assert len(gaps) == 6  # spend, match rate, cycle, identified, realised, saved
+
+    def test_unpriced_only_rows_do_not_fabricate_a_measured_zero(self, monkeypatch):
+        """An unconvertible-currency ledger row (amount_gbp NULL) must not inflate
+        realised_n/saved_n -- the counts that gate CORROBORATED vs unmeasured. A period
+        holding only unpriced rows must go unmeasured, never report a fabricated £0.00
+        at CORROBORATED confidence."""
+        from src.services.rga.builders import exec_procurement_summary as ex
+
+        rows = {
+            ex._DEAL_SHAPE: [(0, 0, 0, 0, None, 0)],
+            ex._DEAL_AMOUNTS: [],
+            ex._OPPORTUNITIES: [(0, None)],
+            ex._REALISED: [(Decimal("0"), 0, 3)],          # 3 unpriced, 0 priced
+            ex._SAVED: [("avoided", Decimal("0"), 0, 2)],  # 2 unpriced, 0 priced
+        }
+        monkeypatch.setattr(ex, "_fetch", lambda sql, params: rows[sql])
+        monkeypatch.setattr(ex, "_rates", lambda: ({}, None, True))
+
+        fb = FactBuilder(pack_id="FP-test", scope={
+            "period_start": "2026-01-01", "period_end": "2026-03-31",
+            "currency": "GBP"}, as_of="2026-03-31")
+        ex.build(fb)  # raises if any reason carries a number
+
+        realised = next(f for f in fb.facts if f.label == "Realised savings (GBP)")
+        saved = next(f for f in fb.facts if f.label == "Saved (GBP)")
+        assert realised.value is None and realised.confidence is Confidence.UNASSESSED
+        assert saved.value is None and saved.confidence is Confidence.UNASSESSED
+
+    def test_a_mix_of_priced_and_unpriced_rows_sums_only_the_priced(self, monkeypatch):
+        """A mix of priced and unpriced rows in the same period sums only what could be
+        converted to GBP, and discloses how many further rows it excludes (in the
+        derivation, since an unmeasured reason may carry no digit)."""
+        from src.services.rga.builders import exec_procurement_summary as ex
+
+        rows = {
+            ex._DEAL_SHAPE: [(0, 0, 0, 0, None, 0)],
+            ex._DEAL_AMOUNTS: [],
+            ex._OPPORTUNITIES: [(0, None)],
+            ex._REALISED: [(Decimal("500"), 1, 2)],        # 1 priced (£500), 2 unpriced
+            ex._SAVED: [("avoided", Decimal("300"), 1, 0),
+                       ("recovered", Decimal("0"), 0, 4)],  # 1 priced (£300), 4 unpriced
+        }
+        monkeypatch.setattr(ex, "_fetch", lambda sql, params: rows[sql])
+        monkeypatch.setattr(ex, "_rates", lambda: ({}, None, True))
+
+        fb = FactBuilder(pack_id="FP-test", scope={
+            "period_start": "2026-01-01", "period_end": "2026-03-31",
+            "currency": "GBP"}, as_of="2026-03-31")
+        ex.build(fb)  # raises if any reason carries a number
+
+        realised = next(f for f in fb.facts if f.label == "Realised savings (GBP)")
+        saved = next(f for f in fb.facts if f.label == "Saved (GBP)")
+        assert realised.value == Decimal("500")
+        assert realised.confidence is Confidence.CORROBORATED
+        assert "2" in realised.derivation and "could not be converted" in realised.derivation
+        assert saved.value == Decimal("300")
+        assert saved.confidence is Confidence.CORROBORATED
+        assert "4" in saved.derivation and "could not be converted" in saved.derivation
 
 
 def test_a_pack_id_can_be_known_before_the_pack_is_built(stub_type):
