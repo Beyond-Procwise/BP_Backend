@@ -65,6 +65,20 @@ class MemoryLayer:
             self._data.clear()
 
 
+_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _merge_status(old: Optional[dict], recognized: Optional[bool], confidence: Optional[str]) -> dict:
+    """Sticky 'not recognised'; the lowest confidence seen."""
+    old = old or {"recognized": None, "confidence": None}
+    if old["recognized"] is False or recognized is False:
+        rec = False
+    else:
+        rec = recognized if recognized is not None else old["recognized"]
+    confs = [c for c in (old["confidence"], confidence) if c in _CONFIDENCE_RANK]
+    return {"recognized": rec, "confidence": min(confs, key=_CONFIDENCE_RANK.get) if confs else None}
+
+
 class InMemoryTranslationStore:
     """The same contract as the database store, for tests and DB-less runs."""
 
@@ -107,6 +121,21 @@ class InMemoryTranslationStore:
             if h in wanted and ((pv, m) == (REVIEWED_VERSION, REVIEWED_MODEL) or (pv, m) == (prompt_version, model)):
                 found.setdefault(lang, set()).add(h)
         return {lang: len(hs) for lang, hs in found.items()}
+
+    def record_language_status(self, lang, prompt_version, model, recognized, confidence) -> None:
+        if recognized is None and confidence is None:
+            return
+        if not hasattr(self, "_status"):
+            self._status: dict[tuple, dict] = {}
+        key = (lang, prompt_version, model)
+        self._status[key] = _merge_status(self._status.get(key), recognized, confidence)
+
+    def language_status(self, lang, prompt_version, model) -> Optional[dict]:
+        return dict(getattr(self, "_status", {}).get((lang, prompt_version, model)) or {}) or None
+
+    def language_statuses(self, prompt_version, model) -> dict[str, dict]:
+        return {k[0]: dict(v) for k, v in getattr(self, "_status", {}).items()
+                if k[1] == prompt_version and k[2] == model}
 
     def set_public_keys(self, keys: dict[str, str]) -> None:
         self.__init_public()
@@ -226,4 +255,50 @@ class PgTranslationStore:
                 return dict(cur.fetchall())
         except Exception as exc:
             logger.warning("i18n: reading the public key list failed (serving none): %s", exc)
+            return {}
+
+    def record_language_status(self, lang, prompt_version, model, recognized, confidence) -> None:
+        """Merge one reply's flags into the language's verdict (see _merge_status)."""
+        if recognized is None and confidence is None:
+            return
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO proc.bp_translation_language_status
+                        (target_lang, prompt_version, model, recognized, confidence)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (target_lang, prompt_version, model) DO UPDATE SET
+                        recognized = CASE
+                            WHEN bp_translation_language_status.recognized IS FALSE
+                              OR EXCLUDED.recognized IS FALSE THEN FALSE
+                            ELSE COALESCE(EXCLUDED.recognized, bp_translation_language_status.recognized) END,
+                        confidence = CASE
+                            WHEN EXCLUDED.confidence IS NULL THEN bp_translation_language_status.confidence
+                            WHEN bp_translation_language_status.confidence IS NULL THEN EXCLUDED.confidence
+                            WHEN array_position(ARRAY['low','medium','high'], EXCLUDED.confidence)
+                               < array_position(ARRAY['low','medium','high'], bp_translation_language_status.confidence)
+                              THEN EXCLUDED.confidence
+                            ELSE bp_translation_language_status.confidence END,
+                        updated_at = now()
+                    """,
+                    (lang, prompt_version, model, recognized, confidence),
+                )
+        except Exception as exc:
+            logger.warning("i18n: recording the language verdict for %s failed: %s", lang, exc)
+
+    def language_status(self, lang, prompt_version, model) -> Optional[dict]:
+        return self.language_statuses(prompt_version, model, lang=lang).get(lang)
+
+    def language_statuses(self, prompt_version, model, *, lang: Optional[str] = None) -> dict[str, dict]:
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT target_lang, recognized, confidence FROM proc.bp_translation_language_status "
+                    "WHERE prompt_version = %s AND model = %s" + (" AND target_lang = %s" if lang else ""),
+                    (prompt_version, model, lang) if lang else (prompt_version, model),
+                )
+                return {t: {"recognized": r, "confidence": c} for t, r, c in cur.fetchall()}
+        except Exception as exc:
+            logger.warning("i18n: reading language verdicts failed (treated as none): %s", exc)
             return {}

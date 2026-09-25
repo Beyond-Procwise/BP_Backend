@@ -16,6 +16,11 @@ from src.services.i18n.store import InMemoryTranslationStore, MemoryLayer
 REG = build_registry("BeyondProcwise/AgentNick:unified")
 
 
+def _core(body):
+    """/i18n/translate's translation fields (the quality flags are checked separately)."""
+    return {k: body[k] for k in ("translations", "failed", "audited")}
+
+
 class Upper:
     model = "fake:1"
 
@@ -92,7 +97,7 @@ def test_too_many_strings_is_413(client):
 
 def test_dynamic_translate(client):
     body = client.post("/i18n/translate", json={"lang": "es", "texts": ["hi", "bye"]}).json()
-    assert body == {"translations": ["HI", "BYE"], "failed": [], "audited": True}
+    assert _core(body) == {"translations": ["HI", "BYE"], "failed": [], "audited": True}
     assert client.post("/i18n/translate", json={"lang": "es", "texts": ["x"] * 51}).status_code == 422
 
 
@@ -168,7 +173,7 @@ def test_dynamic_translation_that_would_be_withheld_falls_back(client, monkeypat
                         lambda obj, where="": [("[withheld]" if v == "SECRET" else v) for v in obj]
                         if isinstance(obj, list) else obj)
     body = client.post("/i18n/translate", json={"lang": "es", "texts": ["secret", "ok"]}).json()
-    assert body == {"translations": ["secret", "OK"], "failed": [0], "audited": True}
+    assert _core(body) == {"translations": ["secret", "OK"], "failed": [0], "audited": True}
 
 
 def test_preference_survives_a_database_outage(client, monkeypatch):
@@ -218,7 +223,7 @@ def test_no_audit_no_translation(client, monkeypatch):
 
     monkeypatch.setattr(router_mod.audit, "record_served", down)
     body = client.post("/i18n/translate", json={"lang": "es", "texts": ["hi", "bye"]}).json()
-    assert body == {"translations": ["hi", "bye"], "failed": [0, 1], "audited": False}
+    assert _core(body) == {"translations": ["hi", "bye"], "failed": [0, 1], "audited": False}
 
 
 def _as_role(client, monkeypatch, role):
@@ -289,3 +294,52 @@ def test_public_path_unknown_language_is_400(public_client):
 def test_public_path_refuses_custom_codes(public_client):
     """Custom codes are unbounded; the signed-out cache must only ever hold registry codes."""
     assert public_client.get("/i18n/public/x-elvish").status_code == 400
+
+
+# --- prompt v3 flags reach the screens ---------------------------------------------------
+
+def _flag(svc, lang, recognized, confidence):
+    svc.store.record_language_status(lang, svc.prompt_version, svc.provider.model, recognized, confidence)
+
+
+def test_language_list_marks_experimental_and_unsupported(client):
+    svc = i18n.get_service()
+    _flag(svc, "de", True, "low")
+    _flag(svc, "fr", False, "low")
+    langs = {L["code"]: L for L in client.get("/i18n/languages").json()["languages"]}
+    assert langs["de"]["experimental"] is True and langs["de"]["supported"] is True
+    assert langs["fr"]["supported"] is False and langs["fr"]["experimental"] is True
+    assert langs["es"]["experimental"] is False and langs["es"]["supported"] is True
+    assert langs["zu"]["experimental"] is True  # tier 3
+
+
+def test_strings_reports_an_unsupported_language_and_stops_polling(client):
+    _flag(i18n.get_service(), "fr", False, None)
+    body = client.post("/i18n/strings", json={"lang": "fr", "strings": {"a": "Save"}}).json()
+    assert body["supported"] is False and body["pending"] == [] and body["failed"] == ["a"]
+    assert body["complete"] is True and body["queued"] is False and client.filler.pending("fr") == 0
+
+
+def test_strings_reports_low_confidence(client):
+    _flag(i18n.get_service(), "de", True, "low")
+    body = client.post("/i18n/strings", json={"lang": "de", "strings": {"a": "Save"}}).json()
+    assert body["supported"] is True and body["confidence"] == "low" and body["experimental"] is True
+
+
+def test_dynamic_translate_carries_the_flags(client):
+    body = client.post("/i18n/translate", json={"lang": "es", "texts": ["hi"]}).json()
+    assert body["supported"] is True and "confidence" in body and body["experimental"] is False
+
+
+def test_public_path_hides_unsupported_and_marks_experimental(public_client):
+    svc = public_client.svc
+    from src.services.i18n.store import source_hash
+    svc.store.import_reviewed("fr", {source_hash("Password"): ("Password", "Mot de passe")})  # fr now complete
+    _flag(svc, "fr", True, "low")
+    body = public_client.get("/i18n/public/en").json()
+    avail = {a["code"]: a for a in body["available"]}
+    assert avail["fr"]["experimental"] is True and avail["es"]["experimental"] is False
+    from api.routers import i18n as router_mod
+    router_mod.reset_public_cache()
+    _flag(svc, "fr", False, None)
+    assert "fr" not in [a["code"] for a in public_client.get("/i18n/public/en").json()["available"]]

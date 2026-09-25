@@ -18,10 +18,21 @@ class TranslationProvider(Protocol):
 
 
 def batch_schema(keys: list[str]) -> dict:
+    """The reply shape the prompt asks for. The flags come first, so the model states whether
+    it knows the language before it writes a word in it. No unions: Ollama ignores them."""
     return {
         "type": "object",
-        "properties": {k: {"type": "string"} for k in keys},
-        "required": list(keys),
+        "properties": {
+            "lang_recognized": {"type": "boolean"},
+            "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+            "strings": {
+                "type": "object",
+                "properties": {k: {"type": "string"} for k in keys},
+                "required": list(keys),
+                "additionalProperties": False,
+            },
+        },
+        "required": ["lang_recognized", "confidence", "strings"],
         "additionalProperties": False,
     }
 

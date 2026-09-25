@@ -14,10 +14,11 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.services.i18n.adapters import TranslationProvider, batch_schema
-from src.services.i18n.prompts import PROMPT_VERSION, build_ui_prompt
+from src.services.i18n.prompts import (PROMPT_VERSION, build_ui_prompt, effective_version, fill_slots,
+                                       load_translation_config)
 from src.services.i18n.registry import Language, LanguageRegistry, is_source_language
 from src.services.i18n.store import MemoryLayer, source_hash
-from src.services.i18n.validate import validate_batch
+from src.services.i18n.validate import read_flags, validate_batch
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +31,22 @@ class TranslateResult:
     translations: dict[str, str]
     failed: list[str] = field(default_factory=list)
     model_calls: int = 0
+    supported: bool = True               # False: the model said it does not know the language
+    confidence: Optional[str] = None     # the lowest confidence the model reported, if any
 
 
 class TranslationService:
     def __init__(self, *, provider: TranslationProvider, store, memory: MemoryLayer,
                  registry: LanguageRegistry, system_prompt: str, batch_size: int,
                  batch_chars: int = 6000, failure_backoff: float = 900.0,
-                 prompt_version: str = PROMPT_VERSION, clock=time.monotonic, on_generated=None):
+                 prompt_version: str = PROMPT_VERSION, clock=time.monotonic, on_generated=None,
+                 config_loader=load_translation_config):
         self.provider, self.store, self.memory = provider, store, memory
         self.registry, self.system_prompt = registry, system_prompt
-        self.batch_size, self.batch_chars, self.prompt_version = batch_size, batch_chars, prompt_version
+        self.batch_size, self.batch_chars = batch_size, batch_chars
+        # The slot values (config/i18n/translation.json) are part of the effective prompt
+        # version, so editing them refreshes the cache (see prompts.effective_version).
+        self._base_version, self._config_loader = prompt_version, config_loader
         # A text that failed twice is not sent again until the back-off passes: without this,
         # every poll from an open screen would spend two model calls on it, forever.
         self.failure_backoff, self._clock = failure_backoff, clock
@@ -67,6 +74,24 @@ class TranslationService:
         if lang is None:
             raise ValueError(f"unknown language code {code!r}")
         return lang
+
+    @property
+    def prompt_version(self) -> str:
+        return effective_version(self._config_loader(), self._base_version)
+
+    # -- what the model said about a language ---------------------------------------------
+    def _verdict(self, code: str) -> Optional[dict]:
+        return self.store.language_status(code, self.prompt_version, self.provider.model)
+
+    def quality(self, lang: str, name: Optional[str] = None) -> dict:
+        """{supported, confidence, experimental} for the picker and the screen's notices.
+        Experimental: tier 3 in config, or the model reported low confidence."""
+        language = self.language(lang, name)
+        verdict = self._verdict(language.code) or {}
+        supported = verdict.get("recognized") is not False
+        confidence = verdict.get("confidence")
+        return {"supported": supported, "confidence": confidence,
+                "experimental": (not supported) or confidence == "low" or language.tier >= 3}
 
     def _mkey(self, lang: str, h: str) -> tuple:
         return (lang, h, self.prompt_version, self.provider.model)
@@ -96,6 +121,8 @@ class TranslationService:
         if not missing:
             return hits, [], []
         code = self.language(lang).code
+        if (self._verdict(code) or {}).get("recognized") is False:
+            return hits, [], missing  # not supported: nothing will be queued, all stays English
         hashes = {k: source_hash(texts[k]) for k in missing}
         failed_h = self._recently_failed(code, hashes.values())
         return hits, [k for k in missing if hashes[k] not in failed_h], [k for k in missing if hashes[k] in failed_h]
@@ -125,13 +152,21 @@ class TranslationService:
         if chunk:
             yield chunk
 
-    def _call(self, lang: Language, batch: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    def _call(self, lang: Language, batch: dict[str, str]):
+        """One model call: (good, bad, recognized, confidence)."""
         ids = {f"s{i + 1:02d}": h for i, h in enumerate(batch)}
         payload = {sid: batch[h] for sid, h in ids.items()}
-        prompt = build_ui_prompt(self.system_prompt, lang.label(), lang.code, payload)
+        system = fill_slots(self.system_prompt, self._config_loader(), lang.code)
+        prompt = build_ui_prompt(system, lang.label(), lang.code, payload)
         raw = self.provider.complete_json(prompt, batch_schema(list(payload)))
+        recognized, confidence = read_flags(raw)
+        self.store.record_language_status(lang.code, self.prompt_version, self.provider.model,
+                                          recognized, confidence)
+        if recognized is False:
+            return {}, {h: "the model does not recognise this language" for h in batch}, False, confidence
         good, bad = validate_batch(payload, raw, lang.code)
-        return {ids[s]: t for s, t in good.items()}, {ids[s]: why for s, why in bad.items()}
+        return ({ids[s]: t for s, t in good.items()}, {ids[s]: why for s, why in bad.items()},
+                recognized, confidence)
 
     def translate(self, lang: str, texts: dict[str, str], *, lang_name: Optional[str] = None) -> TranslateResult:
         language = self.language(lang, lang_name)
@@ -141,16 +176,33 @@ class TranslationService:
         by_hash = {h: texts[k] for k, h in hashes.items()}
         done = self._lookup(language.code, by_hash)
         pending = [h for h in by_hash if h not in done]
+        if pending and (self._verdict(language.code) or {}).get("recognized") is False:
+            return TranslateResult(translations={k: done.get(h, texts[k]) for k, h in hashes.items()},
+                                   failed=[k for k, h in hashes.items() if h not in done],
+                                   supported=False, confidence=(self._verdict(language.code) or {}).get("confidence"))
         skipped = self._recently_failed(language.code, pending)
         todo = [h for h in pending if h not in skipped]
         calls, failed_hashes = 0, {h: "failed recently; in back-off" for h in skipped}
-        for chunk in self._chunks({h: by_hash[h] for h in todo}):
-            good, bad = self._call(language, chunk)
+        supported, confidences = True, []
+        chunks = list(self._chunks({h: by_hash[h] for h in todo}))
+        for n, chunk in enumerate(chunks):
+            good, bad, recognized, confidence = self._call(language, chunk)
             calls += 1
+            confidences.append(confidence)
+            if recognized is False:
+                # The model says it cannot write this language: stop, keep English, do not
+                # retry, and do not back off per string -- the language verdict covers it.
+                supported = False
+                for rest in chunks[n:]:
+                    failed_hashes.update({h: "the model does not recognise this language" for h in rest})
+                break
             if bad:  # retry once, only what failed
-                good2, bad = self._call(language, {h: chunk[h] for h in bad})
+                good2, bad, recognized2, confidence2 = self._call(language, {h: chunk[h] for h in bad})
                 calls += 1
+                confidences.append(confidence2)
                 good.update(good2)
+                if recognized2 is False:
+                    supported = False
             if good:
                 self.store.save(language.code, self.prompt_version, self.provider.model,
                                 {h: (chunk[h], t) for h, t in good.items()})
@@ -164,7 +216,7 @@ class TranslationService:
                                        prompt_version=self.prompt_version, hashes=list(good))
                 except Exception as exc:
                     logger.warning("i18n: auditing %d new translation(s) failed: %s", len(good), exc)
-            if bad:
+            if bad and supported:
                 until = self._clock() + self.failure_backoff
                 with self._failed_lock:
                     for h in bad:
@@ -174,7 +226,10 @@ class TranslationService:
             logger.warning("i18n: %d key(s) served in English for %s after one retry: %s",
                            len(failed), language.code,
                            {k: failed_hashes[hashes[k]] for k in failed[:20]})
+        rank = {"low": 0, "medium": 1, "high": 2}
+        seen = [c for c in confidences if c in rank]
         return TranslateResult(
             translations={k: done.get(h, texts[k]) for k, h in hashes.items()},
-            failed=failed, model_calls=calls,
+            failed=failed, model_calls=calls, supported=supported,
+            confidence=min(seen, key=rank.get) if seen else None,
         )

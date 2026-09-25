@@ -101,9 +101,14 @@ def test_icu_missing_other_rejected():
     assert check_pair("{n, plural, one {# deal} other {# deals}}", "{n, plural, one {# trato}}", "es") is not None
 
 
-def test_icu_category_the_language_lacks_rejected():
+def test_icu_category_the_language_does_not_use_is_accepted():
+    """Live, AgentNick keeps English's `one` branch for Japanese/Korean even when the prompt
+    says to drop it (2026-09-25). The formatter never selects a category the locale lacks,
+    so the branch is dead text, not a defect: accepted. Only non-CLDR keywords are refused."""
     assert check_pair("{n, plural, one {# deal} other {# deals}}",
-                      "{n, plural, one {# 件} few {# 件} other {# 件}}", "ja") is not None
+                      "{n, plural, one {# 件} other {# 件}}", "ja") is None
+    assert check_pair("{n, plural, one {# deal} other {# deals}}",
+                      "{n, plural, uno {# 件} other {# 件}}", "ja") is not None
 
 
 def test_icu_dropping_every_hash_rejected():
@@ -132,3 +137,25 @@ def test_batch_validates_against_the_target_language():
 def test_link_target_quote_style_does_not_matter():
     assert check_pair("<a href='/help'>Help</a>", '<a href="/help">Ayuda</a>') is None
     assert check_pair("<a href='/help'>Help</a>", '<a href="/other">Ayuda</a>') is not None
+
+
+# --- the reply carries language/quality flags (prompt v3) --------------------------------
+from src.services.i18n.validate import read_flags  # noqa: E402
+
+
+def test_wrapped_reply_is_read():
+    raw = json.dumps({"lang_recognized": True, "confidence": "medium", "strings": {"s01": "Guardar"}})
+    good, bad = validate_batch({"s01": "Save"}, raw)
+    assert good == {"s01": "Guardar"} and bad == {}
+    assert read_flags(raw) == (True, "medium")
+
+
+def test_flat_reply_still_works_and_has_no_flags():
+    raw = json.dumps({"s01": "Guardar"})
+    assert validate_batch({"s01": "Save"}, raw)[0] == {"s01": "Guardar"}
+    assert read_flags(raw) == (None, None)
+
+
+def test_unknown_confidence_is_ignored():
+    assert read_flags(json.dumps({"lang_recognized": False, "confidence": "very", "strings": {}})) == (False, None)
+    assert read_flags("not json") == (None, None)

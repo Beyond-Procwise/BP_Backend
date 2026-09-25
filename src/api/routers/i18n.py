@@ -76,9 +76,21 @@ def _language(code: str, name: Optional[str]):
 @router.get("/languages", summary="Every language, searchable, with English and the browser's languages pinned")
 def languages(request: Request, q: str = Query("", max_length=60),
               limit: int = Query(1000, ge=1, le=1000)) -> dict[str, Any]:
-    reg = i18n.get_registry()
+    reg, svc = i18n.get_registry(), i18n.get_service()
     pinned = reg.pin_codes(request.headers.get("accept-language", ""))
-    return {"languages": [L.to_dict() for L in reg.search(q, pinned=pinned, limit=limit)], "pinned": pinned}
+    verdicts = svc.store.language_statuses(svc.prompt_version, svc.provider.model)
+    return {"languages": [_with_quality(L, verdicts.get(L.code)) for L in reg.search(q, pinned=pinned, limit=limit)],
+            "pinned": pinned}
+
+
+def _with_quality(language, verdict: Optional[dict]) -> dict:
+    """The picker's view of a language: supported (the model did not refuse it) and
+    experimental (tier 3 in config, or the model reported low confidence)."""
+    verdict = verdict or {}
+    supported = verdict.get("recognized") is not False
+    confidence = verdict.get("confidence")
+    return {**language.to_dict(), "supported": supported, "confidence": confidence,
+            "experimental": (not supported) or confidence == "low" or language.tier >= 3}
 
 
 @router.post("/languages/resolve", summary="Turn a typed language name into a code")
@@ -108,9 +120,12 @@ def strings(body: StringsIn, principal=Depends(require_user)) -> dict[str, Any]:
     if pending:
         i18n.get_filler().enqueue(language.code, {k: body.strings[k] for k in pending},
                                   SCREEN if body.priority == "screen" else BACKGROUND, body.lang_name)
+    quality = i18n.get_service().quality(language.code, body.lang_name)
+    # supported:false -> the UI keeps English and says the language isn't supported yet;
+    # experimental:true -> the picker's Experimental label and a small on-screen quality note.
     return {"lang": language.code, "dir": language.dir, "translations": hits,
             "pending": pending, "failed": failed, "queued": bool(pending),
-            "complete": not pending, "withheld": withheld}
+            "complete": not pending, "withheld": withheld, **quality}
 
 
 @router.post("/translate", summary="Translate dynamic content on request")
@@ -140,8 +155,12 @@ def translate(body: TranslateIn, principal=Depends(require_user)) -> dict[str, A
                             model=svc.provider.model, prompt_version=svc.prompt_version, items=items)
     except audit.AuditWriteError:
         logger.error("i18n: served translation could not be audited; showing the source text")
-        return {"translations": list(body.texts), "failed": list(range(len(body.texts))), "audited": False}
-    return {"translations": out, "failed": sorted(failed | withheld), "audited": True}
+        return {"translations": list(body.texts), "failed": list(range(len(body.texts))), "audited": False,
+                "supported": result.supported, "confidence": result.confidence,
+                "experimental": svc.quality(language.code, body.lang_name)["experimental"]}
+    return {"translations": out, "failed": sorted(failed | withheld), "audited": True,
+            "supported": result.supported, "confidence": result.confidence,
+            "experimental": svc.quality(language.code, body.lang_name)["experimental"]}
 
 
 def _pref_value(code: str, name: Optional[str]) -> dict:
@@ -218,9 +237,15 @@ def _public_available() -> list[dict]:
     keys = svc.store.public_keys()
     hashes = {source_hash(v) for v in keys.values()}
     counts = svc.store.languages_with(list(hashes), svc.prompt_version, svc.provider.model) if hashes else {}
-    ready = [reg.get(c) for c, n in counts.items() if n >= len(hashes) and reg.get(c)]
+    verdicts = svc.store.language_statuses(svc.prompt_version, svc.provider.model)
+    ready = [reg.get(c) for c, n in counts.items()
+             if n >= len(hashes) and reg.get(c) and (verdicts.get(c) or {}).get("recognized") is not False]
     langs = [reg.get("en")] + sorted(ready, key=lambda L: L.english.casefold())
-    return [{"code": L.code, "label": L.label(), "dir": L.dir} for L in langs]
+    out = []
+    for L in langs:
+        q = _with_quality(L, verdicts.get(L.code))
+        out.append({"code": L.code, "label": L.label(), "dir": L.dir, "experimental": q["experimental"]})
+    return out
 
 
 @public_router.get("/{lang}", summary="Sign-in screen text in a language (signed-out, cache only)")
