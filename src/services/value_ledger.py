@@ -262,6 +262,23 @@ def correct_outcome(outcome_id: int, amount, currency, *, actor: str, note: str,
                     (int(outcome_id),))
         if cur.fetchone():
             raise LedgerError("already_corrected", f"outcome {outcome_id} was already corrected")
+        # R4: lock the source row so a concurrent correction (or a settle/claim
+        # racing this one) serialises against it, then refuse unless this outcome
+        # is still the source's CURRENT state. Without this, correcting an older
+        # row (e.g. a claim that has since been settled recovered) would become
+        # the new current state by recorded_at, silently reopening a claim a later
+        # outcome already closed and letting it be settled a second time.
+        if old["source_type"] == "finding":
+            _lock_finding(cur, int(old["source_id"]))
+        else:
+            cur.execute("SELECT 1 FROM proc.bp_opportunity WHERE opportunity_id = %s FOR UPDATE",
+                        (str(old["source_id"]),))
+            if not cur.fetchone():
+                raise LedgerError("not_found", f"opportunity {old['source_id']} does not exist")
+        history = _rows(cur, _HISTORY, (old["source_type"], str(old["source_id"])))
+        current = current_state(history)
+        if not current or current["outcome_id"] != outcome_id:
+            raise LedgerError("not_current", "only the latest figure can be corrected")
         ev = evidence_ref if evidence_ref is not None else old["evidence_ref"]
         clean_amount, clean_ccy = validate_outcome(old["outcome_type"], amount, currency, ev)
         return _write(cur, c, source_type=old["source_type"], source_id=old["source_id"],
