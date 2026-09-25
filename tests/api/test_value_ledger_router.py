@@ -1,15 +1,25 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+# Import the router the way api/main.py does (no `src.` prefix). conftest.py puts both
+# the repo root and src/ on sys.path, so `api.routers.value_ledger` and
+# `src.api.routers.value_ledger` are two DIFFERENT module objects for the same file —
+# only the former is the one main.py actually mounts. Overriding a `require_user`
+# pulled from the latter would override nothing the running app checks, exactly the bug
+# that put the live service into a permanent 503 (task-5 fix round 1). See also the note
+# at the top of tests/api/test_decisions_email_endpoints.py.
+import api.routers.value_ledger as value_ledger_router
 
 
 @pytest.fixture()
 def client(monkeypatch):
-    from src.api.main import app
-    from src.api.routers import value_ledger as router_mod
-    app.dependency_overrides[router_mod.require_user] = lambda: SimpleNamespace(subject="buyer-1")
-    yield TestClient(app), router_mod
+    app = FastAPI()
+    app.include_router(value_ledger_router.router)
+    app.dependency_overrides[value_ledger_router.require_user] = lambda: SimpleNamespace(subject="buyer-1")
+    yield TestClient(app), value_ledger_router
     app.dependency_overrides.clear()
 
 

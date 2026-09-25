@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from src.api.auth import require_user
+from api.auth import require_user
 from src.services import value_query_service, value_summary_service
 from src.services.email_dispatch_guard import DispatchDenied
 
