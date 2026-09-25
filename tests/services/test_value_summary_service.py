@@ -308,11 +308,35 @@ def test_po_level_superseded_by_the_largest_duplicate_ties_break_on_lowest_id():
 
 
 def test_triage_row_takes_its_amount_from_exposure():
+    # R16: the figure is the leading £ figure of the finding's own bp_detection_finding
+    # .delta (what the Action Centre shows) -- never a bp_triage_result line's own
+    # exposure_gbp, which the LATERAL-join approach this replaced could pick arbitrarily.
     row = {"discrepancy_id": 5, "issue_type": "quantity_invoiced_above_po", "status": "open",
            "raw_value": "340.17", "expected_value": "113.39", "computed_value": None,
-           "exposure_gbp": 226.78, "currency": "USD", "doc_type": "invoice",
+           "triage_delta": "£226.78 (301.23 USD)", "currency": "USD", "doc_type": "invoice",
            "doc_pk_candidate": "INV5", "created_at": None, "resolved_at": None,
            "query_sent_at": None}
     f = vss.classify_discrepancy(row)
     assert f["amount_gbp"] == 226.78
     assert f["currency"] == "GBP"            # exposure is already sterling: no second FX
+
+
+def test_triage_row_with_no_fx_rate_at_triage_time_is_excluded_not_zeroed():
+    # money() (triage/model.py) writes a delta with no leading £ at all when no FX rate
+    # was available when the finding was triaged -- parse_gbp_delta must not invent a
+    # figure for it, and classify_discrepancy must drop the row rather than count £0.
+    row = {"discrepancy_id": 6, "issue_type": "quantity_invoiced_above_po", "status": "open",
+           "raw_value": "340.17", "expected_value": "113.39", "computed_value": None,
+           "triage_delta": "315.21 USD (no FX rate)", "currency": "USD", "doc_type": "invoice",
+           "doc_pk_candidate": "INV6", "created_at": None, "resolved_at": None,
+           "query_sent_at": None}
+    assert vss.classify_discrepancy(row) is None
+
+
+def test_parse_gbp_delta():
+    assert vss.parse_gbp_delta("£226.78") == 226.78
+    assert vss.parse_gbp_delta("£1,687.57 (2,230.94 USD)") == 1687.57
+    assert vss.parse_gbp_delta("") is None
+    assert vss.parse_gbp_delta(None) is None
+    assert vss.parse_gbp_delta("abc") is None
+    assert vss.parse_gbp_delta("315.21 USD (no FX rate)") is None

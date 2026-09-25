@@ -296,23 +296,27 @@ def finding_outcomes(discrepancy_id: int, conn=None) -> dict:
         cur = c.cursor()
         history = _rows(cur, _HISTORY, ("finding", str(discrepancy_id)))
         state = current_state(history)
+        # R16 (2026-09-25): the triage figure is the leading £ figure of the finding's
+        # own bp_detection_finding.delta -- the SAME figure the Action Centre shows --
+        # never one arbitrary bp_triage_result line (a finding has many: one per cause
+        # line, plus a cumulative_total row, all sharing its finding_id). mirror_id and
+        # finding_id are each unique, so this is a plain 1:1 LEFT JOIN.
         rows = _rows(cur, """
             SELECT e.issue_type, e.raw_value, e.expected_value, e.computed_value, i.currency,
-                   (SELECT r.exposure_gbp FROM proc.bp_triage_finding m
-                      JOIN proc.bp_triage_result r ON r.finding_id = m.finding_id
-                      JOIN proc.bp_triage_run u ON u.run_id = r.run_id
-                     WHERE m.mirror_id = e.discrepancy_id
-                     ORDER BY u.started_at DESC LIMIT 1) AS exposure_gbp
+                   f.delta AS triage_delta
               FROM proc.bp_extraction_discrepancy e
               LEFT JOIN proc.bp_invoice_trgt i
                      ON e.doc_type = 'invoice' AND i.invoice_id = e.doc_pk_candidate
+              LEFT JOIN proc.bp_triage_finding m ON m.mirror_id = e.discrepancy_id
+              LEFT JOIN proc.bp_detection_finding f ON f.finding_id = m.finding_id
              WHERE e.discrepancy_id = %s""", (int(discrepancy_id),))
         prefill = {"amount": None, "currency": None, "is_money": False}
         if rows:
             r = rows[0]
             prefill["is_money"] = r["issue_type"] in vss.DISCREPANCY_VALUE_TYPES
-            if r.get("exposure_gbp") is not None:
-                prefill.update(amount=f"{Decimal(r['exposure_gbp']):.2f}", currency="GBP")
+            exposure = vss.parse_gbp_delta(r.get("triage_delta"))
+            if exposure is not None:
+                prefill.update(amount=f"{exposure:.2f}", currency="GBP")
             else:
                 delta = vss.discrepancy_delta(r)
                 if delta is not None:

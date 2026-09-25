@@ -30,8 +30,10 @@ from src.services.value_ledger import SETTLED_STATES, current_state
 log = logging.getLogger(__name__)
 
 # Triage-sourced money findings (mirrored into proc.bp_extraction_discrepancy by
-# triage/writer.py): their figure is the triage exposure_gbp, never the legacy
-# computed_value/raw_value/expected_value delta (see classify_discrepancy).
+# triage/writer.py): their figure is the leading £ figure of the finding's own
+# bp_detection_finding.delta (R16), never the legacy computed_value/raw_value/
+# expected_value delta, and never one arbitrary bp_triage_result line (see
+# classify_discrepancy / parse_gbp_delta).
 TRIAGE_VALUE_TYPES = ("quantity_invoiced_above_po", "invoices_exceed_po_total",
                       "unit_price_differs_from_po")
 DISCREPANCY_VALUE_TYPES = ("amount_over_po", "line_amount_over_po", "duplicate_invoice",
@@ -44,6 +46,7 @@ _EXCLUDED_STATUS = ("ignored", "superseded")
 _STAGE_TIER = {"identified": "potential", "negotiation": "verified", "agreed": "verified",
                "realised": "verified", "rejected": None, "closed": None}
 _NUM_RE = re.compile(r"^[+-]?\d+(\.\d+)?$")
+_GBP_DELTA_RE = re.compile(r"^£([0-9,]+\.[0-9]+)")
 
 
 def parse_amount(v: Any) -> Optional[float]:
@@ -52,6 +55,19 @@ def parse_amount(v: Any) -> Optional[float]:
     if not _NUM_RE.match(s):
         return None
     return float(s)
+
+
+def parse_gbp_delta(s: Any) -> Optional[float]:
+    """The leading £ figure of a proc.bp_detection_finding.delta string -- the SAME
+    figure the Action Centre shows (R16). ``money()`` (triage/model.py) writes this as
+    e.g. '£226.78' or, for a non-GBP document, '£1,687.57 (2,230.94 USD)'; when no FX
+    rate was available at triage time it instead writes the native amount with no leading
+    £ at all ('315.21 USD (no FX rate)'). That case, and anything else that doesn't start
+    with a £ figure, returns None -- never a fabricated 0."""
+    m = _GBP_DELTA_RE.match(str(s if s is not None else ""))
+    if not m:
+        return None
+    return float(m.group(1).replace(",", ""))
 
 
 def discrepancy_delta(row: dict) -> Optional[float]:
@@ -78,11 +94,14 @@ def classify_discrepancy(row: dict) -> Optional[dict]:
         return None
     if row.get("status") in _EXCLUDED_STATUS:
         return None
-    # A triage mirror's figure is its exposure (already GBP): the mirror leaves
-    # computed_value NULL on purpose (triage/writer.py), and its raw/expected values
-    # are not a currency basis to difference.
+    # A triage mirror's figure is the leading £ figure of its bp_detection_finding.delta
+    # (R16) -- the SAME figure the Action Centre shows for this finding as a whole, not
+    # one arbitrary bp_triage_result line among its many (a finding has one result row
+    # per cause line, plus a cumulative_total row, all sharing its finding_id). The
+    # mirror leaves computed_value NULL on purpose (triage/writer.py), and its raw/
+    # expected values are not a currency basis to difference.
     if row.get("issue_type") in TRIAGE_VALUE_TYPES:
-        exposure = parse_amount(row.get("exposure_gbp"))
+        exposure = parse_gbp_delta(row.get("triage_delta"))
         if exposure is None or exposure <= 0:
             return None
         delta, currency = round(exposure, 2), "GBP"
@@ -381,9 +400,18 @@ def _rows(cur, sql, params=()) -> list[dict]:
 # supplier_id, but not supplier_name -- that needs proc.bp_supplier). A PO-level triage
 # mirror (doc_type = 'purchase_order', from the cumulative_total rule) has no invoice to
 # join through -- it joins proc.bp_purchase_order_trgt/bp_supplier instead, and its own
-# doc_pk_candidate IS the PO id (verified live 2026-09-25). tx joins in the triage
-# exposure_gbp for the three triage-sourced issue types (see TRIAGE_VALUE_TYPES); a
-# non-triage discrepancy has no bp_triage_finding row, so tx.exposure_gbp is NULL for it.
+# doc_pk_candidate IS the PO id (verified live 2026-09-25).
+#
+# R16 (2026-09-25, found live during the Task 10 demo): the triage figure comes from
+# proc.bp_detection_finding.delta, not proc.bp_triage_result -- a finding has MANY result
+# rows sharing its finding_id (one per cause line, plus a cumulative_total row), so the
+# earlier "LATERAL ... ORDER BY started_at DESC LIMIT 1" picked one arbitrary line's
+# figure rather than the finding's own total (live: £56.60 off a £226.78 finding; summed
+# across the corpus, ~£12.6M against the true ~£39.4M). bp_triage_finding.mirror_id and
+# bp_detection_finding.finding_id are each unique, so this is a plain 1:1 LEFT JOIN --
+# no LATERAL/ORDER BY/LIMIT needed. parse_gbp_delta() reads the leading £ figure out of
+# delta (the same figure the Action Centre shows); a non-triage discrepancy has no
+# bp_triage_finding row, so triage_delta is NULL for it.
 _DISCREPANCY_SQL = """
 SELECT e.discrepancy_id, e.doc_type, e.doc_pk_candidate, e.field_name, e.raw_value,
        e.expected_value, e.computed_value, e.issue_type, e.status, e.notes, e.created_at,
@@ -392,7 +420,7 @@ SELECT e.discrepancy_id, e.doc_type, e.doc_pk_candidate, e.field_name, e.raw_val
        coalesce(s.supplier_name, ps.supplier_name) AS supplier_name,
        coalesce(i.currency, p.currency) AS currency,
        CASE WHEN e.doc_type = 'purchase_order' THEN e.doc_pk_candidate ELSE i.po_id END AS po_id,
-       tx.exposure_gbp
+       f.delta AS triage_delta
   FROM proc.bp_extraction_discrepancy e
   LEFT JOIN proc.bp_invoice_trgt i
          ON e.doc_type = 'invoice' AND i.invoice_id = e.doc_pk_candidate
@@ -400,14 +428,8 @@ SELECT e.discrepancy_id, e.doc_type, e.doc_pk_candidate, e.field_name, e.raw_val
   LEFT JOIN proc.bp_purchase_order_trgt p
          ON e.doc_type = 'purchase_order' AND p.po_id = e.doc_pk_candidate
   LEFT JOIN proc.bp_supplier ps ON ps.supplier_id = p.supplier_id
-  LEFT JOIN LATERAL (
-        SELECT r.exposure_gbp
-          FROM proc.bp_triage_finding m
-          JOIN proc.bp_triage_result r ON r.finding_id = m.finding_id
-          JOIN proc.bp_triage_run u ON u.run_id = r.run_id
-         WHERE m.mirror_id = e.discrepancy_id
-         ORDER BY u.started_at DESC
-         LIMIT 1) tx ON true
+  LEFT JOIN proc.bp_triage_finding m ON m.mirror_id = e.discrepancy_id
+  LEFT JOIN proc.bp_detection_finding f ON f.finding_id = m.finding_id
  WHERE e.issue_type IN %s
 """
 
