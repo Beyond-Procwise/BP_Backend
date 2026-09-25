@@ -92,6 +92,23 @@ def currency_symbol(currency: Optional[str]) -> str:
     return _SYMBOLS.get(code, f"{code} ")
 
 
+def format_money_exact(amount: Any, currency: Optional[str] = "GBP") -> str:
+    """A monetary amount in full: grouped, pence shown only when there are any.
+
+    £1,309,000 · £1,234.50 · -£60. For a figure a decision rests on, where the compact form
+    (£1.3M) makes amounts a few per cent apart read as the same.
+    """
+    value = _as_decimal(amount)
+    if value is None:
+        return EMPTY_AMOUNT
+    symbol = currency_symbol(currency)
+    sign = "-" if value < 0 else ""
+    magnitude = _quantize(abs(value), 2)
+    if magnitude == magnitude.to_integral_value():
+        return f"{sign}{symbol}{_group(magnitude)}"
+    return f"{sign}{symbol}{magnitude:,.2f}"
+
+
 def format_money(amount: Any, currency: Optional[str] = "GBP", decimals: int = 1) -> str:
     """A monetary amount, compact.
 

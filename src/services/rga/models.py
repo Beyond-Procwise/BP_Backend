@@ -47,6 +47,7 @@ from src.services.analytics.formatting import (
     format_delta,
     format_int,
     format_money,
+    format_money_exact,
     format_pct,
 )
 from src.services.analytics.models import Confidence
@@ -91,6 +92,9 @@ class FormatHint(str, Enum):
     """
 
     MONEY = "money"
+    # The whole amount, grouped, pence kept when there are any (£1,309,000; £1,234.50). For a
+    # board paper, where a compact £1.2M makes bids a few per cent apart read as identical.
+    MONEY_EXACT = "money_exact"
     PCT = "pct"
     INT = "int"
     DELTA = "delta"
@@ -205,6 +209,8 @@ class FactEntry(BaseModel):
             return EMPTY_AMOUNT
         if self.format_hint is FormatHint.MONEY:
             return format_money(self.value, self.currency)
+        if self.format_hint is FormatHint.MONEY_EXACT:
+            return format_money_exact(self.value, self.currency)
         if self.format_hint is FormatHint.PCT:
             return format_pct(self.value)
         if self.format_hint is FormatHint.DELTA:

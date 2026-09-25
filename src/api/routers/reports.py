@@ -50,12 +50,20 @@ _PUBLIC = ("job_id", "report_type", "scope", "as_of", "status", "requested_by",
            "blocking", "error", "dismissed_at", "dismissed_by", "dismiss_reason", "has_page")
 
 
+#: Report types asked for by deal rather than by period (the board paper, 2026-09-25).
+_DEAL_SCOPED = {"board_paper"}
+
+
 class GenerateBody(BaseModel):
     report_type: str
-    period_start: dt.date
-    period_end: dt.date
-    period_label: Optional[str] = None
+    period_start: Optional[dt.date] = None
+    period_end: Optional[dt.date] = None
+    period_label: Optional[str] = Field(default=None, max_length=200)
     currency: str = "GBP"
+    # A deal-scoped report: which deal, and the category a person confirmed for it in
+    # SpendIQ (the source carries none; the approval route is derived from it).
+    deal_id: Optional[str] = Field(default=None, max_length=100)
+    category: Optional[str] = Field(default=None, max_length=100)
 
     @field_validator("currency")
     @classmethod
@@ -66,15 +74,35 @@ class GenerateBody(BaseModel):
 
     @model_validator(mode="after")
     def _ordered(self) -> "GenerateBody":
+        if self.report_type in _DEAL_SCOPED:
+            if not (self.deal_id or "").strip():
+                raise ValueError("a board paper is written for one deal: give deal_id")
+            return self
+        if self.period_start is None or self.period_end is None:
+            raise ValueError("give period_start and period_end")
         if self.period_start > self.period_end:
             raise ValueError("period_start is after period_end")
         return self
 
     def scope(self) -> dict:
+        if self.report_type in _DEAL_SCOPED:
+            deal = self.deal_id.strip()
+            out = {"deal_id": deal, "period_label": (self.period_label or "").strip() or deal}
+            if (self.category or "").strip():
+                out["category"] = self.category.strip()
+            return out
         start, end = self.period_start.isoformat(), self.period_end.isoformat()
         return {"period_start": start, "period_end": end,
                 "period_label": self.period_label or f"{start} to {end}",
                 "currency": self.currency}
+
+
+def _deal_exists(deal_id: str) -> bool:
+    from src.services.db import get_conn
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM proc.bp_deal_overview WHERE deal_id = %s LIMIT 1", (deal_id,))
+        return cur.fetchone() is not None
 
 
 def _view(job: Dict[str, Any], s: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -126,6 +154,8 @@ def generate(body: GenerateBody, principal=Depends(require_user)):
                             detail=f"no report type {body.report_type!r}; "
                                    f"available: {registered_types()}")
     scope = body.scope()
+    if body.report_type in _DEAL_SCOPED and not _deal_exists(scope["deal_id"]):
+        raise HTTPException(status_code=404, detail=f"no deal {scope['deal_id']!r} on the record")
     decision = gate("report.generate", principal, agent=_AGENT,
                     context={"report_type": body.report_type, "scope": scope})
     subject = getattr(principal, "subject", None) or None

@@ -345,6 +345,8 @@ def build_prompt(pack: FactPack, brief: StyleBrief, report_type: str,
     )
     from src.services.rga.factpack import composer_note_for
     note = composer_note_for(report_type)
+    if callable(note):          # a note written from this pack (the board paper's)
+        note = note(pack)
     if note:
         body += f"\nFOR THIS REPORT TYPE\n  {note}\n"
     return body
@@ -522,6 +524,13 @@ def compose_report(
             logger.warning("rga: compose attempt %d failed: %s", attempt, exc)
             break
         ast, fault = _attempt(raw, pack)
+        if ast is not None:
+            # The report type's rules on its sentences (the board paper: no claim that an
+            # approval happened). A draft that breaks one gets the corrective retry.
+            from src.services.rga.factpack import prose_faults_for
+            prose = prose_faults_for(report_type, ast)
+            if prose:
+                ast, fault = None, "; ".join(prose)
         if ast is not None:
             break
         faults.append(fault or "unknown fault")
