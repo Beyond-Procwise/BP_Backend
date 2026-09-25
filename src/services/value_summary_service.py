@@ -25,10 +25,21 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.value_ledger import SETTLED_STATES, current_state
 
 log = logging.getLogger(__name__)
 
-DISCREPANCY_VALUE_TYPES = ("amount_over_po", "line_amount_over_po", "duplicate_invoice")
+# Triage-sourced money findings (mirrored into proc.bp_extraction_discrepancy by
+# triage/writer.py): their figure is the triage exposure_gbp, never the legacy
+# computed_value/raw_value/expected_value delta (see classify_discrepancy).
+TRIAGE_VALUE_TYPES = ("quantity_invoiced_above_po", "invoices_exceed_po_total",
+                      "unit_price_differs_from_po")
+DISCREPANCY_VALUE_TYPES = ("amount_over_po", "line_amount_over_po", "duplicate_invoice",
+                           *TRIAGE_VALUE_TYPES)
+# A PO-level "invoices exceed PO total" finding already counts the overbilling once;
+# the per-invoice/per-line triage findings on invoices against that PO are the same
+# money seen line by line and are superseded under it (supersede_lines_under_overbilled_po).
+_PO_LEVEL_TYPES = ("invoices_exceed_po_total",)
 _EXCLUDED_STATUS = ("ignored", "superseded")
 _STAGE_TIER = {"identified": "potential", "negotiation": "verified", "agreed": "verified",
                "realised": "verified", "rejected": None, "closed": None}
@@ -67,30 +78,40 @@ def classify_discrepancy(row: dict) -> Optional[dict]:
         return None
     if row.get("status") in _EXCLUDED_STATUS:
         return None
-    delta = discrepancy_delta(row)
-    if delta is None:
-        return None
-    recovered = None
-    if row.get("status") == "resolved" and row.get("resolution_outcome") == "recovered":
-        recovered = parse_amount(row.get("recovered_amount"))
-        if recovered is None:
-            recovered = delta          # spec: reader falls back to the delta
+    # A triage mirror's figure is its exposure (already GBP): the mirror leaves
+    # computed_value NULL on purpose (triage/writer.py), and its raw/expected values
+    # are not a currency basis to difference.
+    if row.get("issue_type") in TRIAGE_VALUE_TYPES:
+        exposure = parse_amount(row.get("exposure_gbp"))
+        if exposure is None or exposure <= 0:
+            return None
+        delta, currency = round(exposure, 2), "GBP"
+    else:
+        delta = discrepancy_delta(row)
+        if delta is None:
+            return None
+        currency = row.get("currency") or None
     return {
         "id": f"disc:{row.get('discrepancy_id')}",
         "tier": "verified",
         "source": "discrepancy",
         "amount_gbp": delta,           # converted later if currency != GBP
-        "recovered_gbp": recovered,
+        # Recovered/avoided/realised/claimed now come only from the ledger
+        # (apply_ledger), never from the legacy resolution_outcome/recovered_amount
+        # columns -- see constraints.md.
+        "recovered_gbp": None,
         "converted_from": None,
         # Never assume GBP for a foreign (or unknown-currency) document: only an
         # explicit "GBP" passes straight through. Missing/blank currency is left
         # None here on purpose so the FX step excludes it from GBP sums and flags
         # it, instead of silently treating an unlabelled amount as sterling.
-        "currency": row.get("currency") or None,
-        "title": _disc_title(row, delta),
+        "currency": currency,
+        "title": _disc_title(row, delta, currency),
         "supplier_name": row.get("supplier_name"),
         "deal_id": row.get("deal_id") or None,
         "doc_pk": row.get("doc_pk_candidate"),
+        "issue_type": row.get("issue_type"),
+        "po_id": row.get("po_id"),
         "found_at": row.get("created_at").isoformat() if isinstance(row.get("created_at"), datetime) else None,
         "age_days": _age_days(row.get("created_at")),
         "link": {"screen": "actions", "id": row.get("discrepancy_id")},
@@ -98,21 +119,30 @@ def classify_discrepancy(row: dict) -> Optional[dict]:
         # When the finding was closed. The weekly digest needs it to answer "what did we
         # recover THIS week" — found_at slices what we found, this slices what came back.
         "resolved_at": row.get("resolved_at").isoformat() if isinstance(row.get("resolved_at"), datetime) else None,
-        "queryable": row.get("status") == "open" and bool(row.get("supplier_name")),
+        # A triage-sourced finding is not queryable by email yet: value_query_service's
+        # template reads computed_value/raw_value/expected_value, which for a triage
+        # mirror are not a currency basis (see above) -- see value_query_service's
+        # _require_queryable, which refuses the same three types for the same reason.
+        "queryable": (row.get("status") == "open" and bool(row.get("supplier_name"))
+                     and row.get("issue_type") not in TRIAGE_VALUE_TYPES),
         "query_sent_at": row.get("query_sent_at").isoformat() if isinstance(row.get("query_sent_at"), datetime) else None,
         "superseded_by": None,
     }
 
 
-def _disc_title(row: dict, delta: float) -> str:
-    """The delta here is the amount as BILLED, in the document's own currency — the row's
-    amount_gbp is the converted figure. Naming the currency keeps the two from reading as
-    two different numbers ("duplicate ... by 147,783.11" beside "£110,043.74"). An
-    unlabelled document's amount stays bare rather than wearing a guessed symbol."""
+def _disc_title(row: dict, delta: float, currency: Optional[str] = None) -> str:
+    """The delta here is the amount as BILLED, in ``currency`` — the row's amount_gbp is
+    the converted figure. Naming the currency keeps the two from reading as two different
+    numbers ("duplicate ... by 147,783.11" beside "£110,043.74"). An unlabelled document's
+    amount stays bare rather than wearing a guessed symbol.
+
+    ``currency`` defaults to the row's own currency column; a triage-sourced finding
+    passes its already-GBP exposure explicitly, since the document's own currency
+    (row["currency"]) would mislabel a sterling figure as e.g. "226.78 USD"."""
     kind = {"duplicate_invoice": "appears to duplicate another invoice"}.get(
         row.get("issue_type"), "bills over its purchase order")
-    currency = str(row.get("currency") or "").strip().upper()
-    amount = f"{delta:,.2f}{' ' + currency if currency else ''}"
+    ccy = str((currency if currency is not None else row.get("currency")) or "").strip().upper()
+    amount = f"{delta:,.2f}{' ' + ccy if ccy else ''}"
     return f"{row.get('doc_type', 'document').capitalize()} {row.get('doc_pk_candidate')} {kind} by {amount}"
 
 
@@ -124,15 +154,16 @@ def classify_opportunity(row: dict) -> Optional[dict]:
     if tier is None:
         return None
     amount = parse_amount(row.get("financial_impact_gbp")) or 0.0
-    recovered = parse_amount(row.get("realised_savings_gbp")) if stage == "realised" else None
-    if amount <= 0 and not recovered:
+    if amount <= 0:
         return None
     return {
         "id": f"opp:{row.get('opportunity_id')}",
         "tier": tier,
         "source": "opportunity",
         "amount_gbp": amount,          # financial_impact_gbp is already native GBP
-        "recovered_gbp": recovered,
+        # Realised/avoided/recovered now come only from the ledger (apply_ledger),
+        # never from the legacy realised_savings_gbp column -- see constraints.md.
+        "recovered_gbp": None,
         "converted_from": None,
         "title": f"Opportunity: {row.get('item_description') or row.get('supplier_name') or 'unnamed'}",
         "supplier_name": row.get("supplier_name"),
@@ -180,6 +211,99 @@ def dedupe(findings: list[dict]) -> list[dict]:
     return findings
 
 
+_KEY = {"finding": "disc", "opportunity": "opp"}
+
+
+def _by_source(ledger_rows: list[dict]) -> dict:
+    grouped: dict[str, list] = {}
+    for r in ledger_rows:
+        grouped.setdefault(f"{_KEY[r['source_type']]}:{r['source_id']}", []).append(r)
+    return grouped
+
+
+def _gbp(v) -> float:
+    return round(float(v), 2) if v is not None else 0.0
+
+
+def ledger_totals(ledger_rows: list[dict]) -> dict:
+    """Saved money from each source's CURRENT state (a correction replaces what it
+    supersedes). An unconvertible row (amount_gbp NULL) counts in no GBP total."""
+    totals = {"avoided_gbp": 0.0, "recovered_gbp": 0.0, "realised_gbp": 0.0,
+              "claimed_open_gbp": 0.0}
+    months: dict[str, dict] = {}
+    field = {"avoided": "avoided_gbp", "recovered": "recovered_gbp",
+             "realised_saving": "realised_gbp"}
+    for rows in _by_source(ledger_rows).values():
+        state = current_state(rows)
+        if state is None:
+            continue
+        kind = state["outcome_type"]
+        if kind == "claimed":
+            totals["claimed_open_gbp"] += _gbp(state["amount_gbp"])
+        elif kind in field:
+            totals[field[kind]] += _gbp(state["amount_gbp"])
+            m = months.setdefault(state["valid_from"].strftime("%Y-%m"),
+                                  {"avoided_gbp": 0.0, "recovered_gbp": 0.0, "realised_gbp": 0.0})
+            m[field[kind]] = round(m[field[kind]] + _gbp(state["amount_gbp"]), 2)
+    totals = {k: round(v, 2) for k, v in totals.items()}
+    totals["saved_gbp"] = round(totals["avoided_gbp"] + totals["recovered_gbp"]
+                                + totals["realised_gbp"], 2)
+    totals["by_month"] = [{"month": k, **v} for k, v in sorted(months.items())]
+    return totals
+
+
+def apply_ledger(findings: list[dict], ledger_rows: list[dict]) -> list[dict]:
+    """Stamp each finding with its ledger state. A finding with no ledger rows carries
+    no state and no claim -- it is still purely "found", per classify_discrepancy /
+    classify_opportunity above."""
+    grouped = _by_source(ledger_rows)
+    for f in findings:
+        rows = grouped.get(f["id"], [])
+        state = current_state(rows)
+        kind = state["outcome_type"] if state else None
+        f["ledger_state"] = kind
+        f["claim"] = ({"amount": str(state["amount"]), "currency": state["currency"],
+                       "amount_gbp": _gbp(state["amount_gbp"]) if state["amount_gbp"] is not None else None}
+                      if kind == "claimed" else None)
+        claimed = [r for r in rows if r["outcome_type"] == "claimed"]
+        f["claimed_at"] = claimed[0]["recorded_at"].isoformat() if claimed else None
+        f["recovered_gbp"] = _gbp(state["amount_gbp"]) if kind == "recovered" and state["amount_gbp"] is not None else None
+        f["avoided_gbp"] = _gbp(state["amount_gbp"]) if kind == "avoided" and state["amount_gbp"] is not None else None
+        f["realised_gbp"] = _gbp(state["amount_gbp"]) if kind == "realised_saving" and state["amount_gbp"] is not None else None
+        f["settled_at"] = (state["valid_from"].isoformat()
+                           if kind in SETTLED_STATES else None)
+    return findings
+
+
+def in_play_gbp(findings: list[dict]) -> float:
+    """Money still to act on: open findings, live opportunities, and claims not yet settled."""
+    total = 0.0
+    for f in findings:
+        if f.get("superseded_by") or f.get("amount_gbp") is None:
+            continue
+        if f.get("ledger_state") in SETTLED_STATES:
+            continue
+        live = (f.get("ledger_state") == "claimed"
+                or (f["source"] == "discrepancy" and f.get("status") == "open")
+                or (f["source"] == "opportunity" and f.get("status") in ("identified", "negotiation", "agreed")))
+        if live:
+            total += f["amount_gbp"]
+    return round(total, 2)
+
+
+def supersede_lines_under_overbilled_po(findings: list[dict]) -> list[dict]:
+    """A PO whose invoices exceed its total already counts the overbilled money once; the
+    line findings on invoices against that PO are the same money, seen line by line."""
+    po_level = {f["po_id"]: f["id"] for f in findings
+                if f.get("issue_type") in _PO_LEVEL_TYPES and f.get("po_id")
+                and f.get("superseded_by") is None}
+    for f in findings:
+        if (f.get("issue_type") in TRIAGE_VALUE_TYPES and f.get("issue_type") not in _PO_LEVEL_TYPES
+                and f.get("po_id") in po_level and f.get("superseded_by") is None):
+            f["superseded_by"] = po_level[f["po_id"]]
+    return findings
+
+
 def summarise(findings: list[dict]) -> dict:
     # amount_gbp can be None on a live finding whose native currency couldn't
     # be converted (unknown currency, or FX rates unavailable) -- that's an
@@ -198,7 +322,6 @@ def summarise(findings: list[dict]) -> dict:
         g["finding_count"] += 1
     return {
         "verified_found_gbp": round(sum(f["amount_gbp"] for f in verified if f["amount_gbp"] is not None), 2),
-        "recovered_gbp": round(sum(f["recovered_gbp"] or 0.0 for f in live), 2),
         "potential_gbp": round(sum(f["amount_gbp"] for f in live
                                    if f["tier"] == "potential" and f["amount_gbp"] is not None), 2),
         "finding_count": len(live),
@@ -219,19 +342,36 @@ def _rows(cur, sql, params=()) -> list[dict]:
 
 # Verified live 2026-07-30: proc.bp_extraction_discrepancy has no deal_id/supplier_name
 # of its own. proc.bp_invoice_trgt DOES carry deal_id + currency inline (and
-# supplier_id, but not supplier_name -- that needs proc.bp_supplier). Only doc_type
-# = 'invoice' rows exist for these issue_types in the live corpus today, but the
-# join is still gated on doc_type = 'invoice' so a future PO/quote-typed row of the
-# same issue_type doesn't silently mismatch against an unrelated invoice_id.
+# supplier_id, but not supplier_name -- that needs proc.bp_supplier). A PO-level triage
+# mirror (doc_type = 'purchase_order', from the cumulative_total rule) has no invoice to
+# join through -- it joins proc.bp_purchase_order_trgt/bp_supplier instead, and its own
+# doc_pk_candidate IS the PO id (verified live 2026-09-25). tx joins in the triage
+# exposure_gbp for the three triage-sourced issue types (see TRIAGE_VALUE_TYPES); a
+# non-triage discrepancy has no bp_triage_finding row, so tx.exposure_gbp is NULL for it.
 _DISCREPANCY_SQL = """
 SELECT e.discrepancy_id, e.doc_type, e.doc_pk_candidate, e.field_name, e.raw_value,
        e.expected_value, e.computed_value, e.issue_type, e.status, e.notes, e.created_at,
-       e.resolution_outcome, e.recovered_amount, e.query_sent_at, e.resolved_at,
-       i.deal_id, s.supplier_name, i.currency
+       e.query_sent_at, e.resolved_at,
+       coalesce(i.deal_id, p.deal_id) AS deal_id,
+       coalesce(s.supplier_name, ps.supplier_name) AS supplier_name,
+       coalesce(i.currency, p.currency) AS currency,
+       CASE WHEN e.doc_type = 'purchase_order' THEN e.doc_pk_candidate ELSE i.po_id END AS po_id,
+       tx.exposure_gbp
   FROM proc.bp_extraction_discrepancy e
   LEFT JOIN proc.bp_invoice_trgt i
          ON e.doc_type = 'invoice' AND i.invoice_id = e.doc_pk_candidate
   LEFT JOIN proc.bp_supplier s ON s.supplier_id = i.supplier_id
+  LEFT JOIN proc.bp_purchase_order_trgt p
+         ON e.doc_type = 'purchase_order' AND p.po_id = e.doc_pk_candidate
+  LEFT JOIN proc.bp_supplier ps ON ps.supplier_id = p.supplier_id
+  LEFT JOIN LATERAL (
+        SELECT r.exposure_gbp
+          FROM proc.bp_triage_finding m
+          JOIN proc.bp_triage_result r ON r.finding_id = m.finding_id
+          JOIN proc.bp_triage_run u ON u.run_id = r.run_id
+         WHERE m.mirror_id = e.discrepancy_id
+         ORDER BY u.started_at DESC
+         LIMIT 1) tx ON true
  WHERE e.issue_type IN %s
 """
 
@@ -240,6 +380,12 @@ SELECT opportunity_id, stage, financial_impact_gbp, realised_savings_gbp,
        supplier_name, deal_id, po_id, quote_id, invoice_id, item_description, created_at,
        stage_updated_at
   FROM proc.bp_opportunity
+"""
+
+_LEDGER_SQL = """
+SELECT outcome_id, source_type, source_id, outcome_type, amount, currency, amount_gbp,
+       supersedes_id, valid_from, recorded_at
+  FROM proc.bp_value_outcome
 """
 
 
@@ -254,6 +400,10 @@ def _load_discrepancies(cur) -> list[dict]:
 
 def _load_opportunities(cur) -> list[dict]:
     return _rows(cur, _OPPORTUNITY_SQL)
+
+
+def _load_ledger(cur) -> list[dict]:
+    return _rows(cur, _LEDGER_SQL)
 
 
 def _load_benchmark() -> list[dict]:
@@ -321,6 +471,7 @@ def build_value_summary(conn=None) -> dict:
     rather than silently zeroed."""
     sources: dict[str, str] = {}
     findings: list[dict] = []
+    ledger_rows: list[dict] = []
 
     def _own_conn():
         return get_conn()
@@ -352,6 +503,13 @@ def build_value_summary(conn=None) -> dict:
             sources["opportunities"] = "unavailable"
 
         try:
+            ledger_rows = _load_ledger(cur)
+            sources["ledger"] = "ok"
+        except Exception:
+            log.exception("value_summary_service: ledger source failed")
+            ledger_rows, sources["ledger"] = [], "unavailable"
+
+        try:
             cur.close()
         except Exception:
             pass
@@ -365,8 +523,11 @@ def build_value_summary(conn=None) -> dict:
         log.exception("value_summary_service: benchmark source failed")
         sources["benchmark"] = "unavailable"
 
-    findings = dedupe(findings)
+    findings = supersede_lines_under_overbilled_po(dedupe(findings))
+    findings = apply_ledger(findings, ledger_rows)
     summary = summarise(findings)
+    summary.update(ledger_totals(ledger_rows))
+    summary["in_play_gbp"] = in_play_gbp(findings)
     return {
         **summary,
         "findings": findings,
