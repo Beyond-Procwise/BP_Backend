@@ -33,8 +33,7 @@ import re
 from typing import Any, Optional
 
 from src.services.extraction.persistence import Discrepancy, get_conn
-from src.services.linking_engine import _norm_po, _PO_NORM_SQL
-from src.services.extraction.po_revision import po_base, revision_of
+from src.services.linking_engine import _norm_po, _pick_po, _PO_NORM_SQL
 from src.services.resolution import (
     CandidateEdge,
     CardinalityRule,
@@ -225,67 +224,44 @@ def _assign_lines(line_items: list[dict], po_lines: list[dict],
     return assigned
 
 
-# The PO number without its revision suffix, normalised as _PO_NORM_SQL does, and the
-# revision each row is: the column, else the "(Rev n)" in its id, else 1.
-_PO_BASE_NORM_SQL = _PO_NORM_SQL.format(
-    col="regexp_replace(po_id, '\\s*\\(\\s*rev\\M.*$', '', 'i')")
-_PO_REVISION_SQL = (
-    "COALESCE(po_revision, (regexp_match(po_id, '\\(\\s*rev\\s*(\\d+)', 'i'))[1]::int, 1)")
-
-
 def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
     """The referenced PO and its lines, from _trgt if promoted else _stg.
 
     Cited PO numbers arrive in inconsistent formats -- an invoice may say
     'PO502004' while the PO table stores the bare '502004'. Resolve on the
     same canonical PO number the linking engine already uses for
-    quote/invoice -> PO joins (_norm_po / _PO_NORM_SQL from linking_engine),
-    tolerant of a PO-prefix and separator differences on either side. Falls
-    back to an exact match on the raw citation for safety.
+    quote/invoice -> PO joins (linking_engine._pick_po), tolerant of a PO-prefix
+    and separator differences on either side. Falls back to an exact match on
+    the raw citation for safety.
 
     An invoice prints the bare PO number, never "(Rev 3)", so a bare citation resolves
-    to the latest revision whose approval is approved or unstated (po_revision); with
-    none, or a citation naming its revision, the lookup is as before."""
-    canonical = _norm_po(po_id)
-    cond = _PO_NORM_SQL.format(col="po_id")
-    base_canonical = _norm_po(po_base(po_id)) if revision_of(po_id) is None else None
+    to the latest revision whose approval is approved or unstated; a citation naming
+    its revision keeps it."""
     with get_conn() as conn:
         cur = conn.cursor()
         header = None
-        for table in ("proc.bp_purchase_order_trgt", "proc.bp_purchase_order_stg"):
-            row = None
-            if base_canonical:
+        row = None
+        try:
+            row = _pick_po(cur, po_id, cols="t.po_id, t.total_amount, t.currency")
+        except Exception:  # noqa: BLE001 - table may not exist in some envs
+            conn.rollback()
+        if row:
+            header = {"po_id": row["po_id"], "total_amount": row["total_amount"],
+                      "currency": row["currency"]}
+        else:
+            for table in ("proc.bp_purchase_order_trgt", "proc.bp_purchase_order_stg"):
                 try:
-                    cur.execute(
-                        f"SELECT po_id, total_amount, currency FROM {table} "
-                        f"WHERE {_PO_BASE_NORM_SQL} = %s "
-                        "AND (approval_status IS NULL OR approval_status = 'approved') "
-                        f"ORDER BY {_PO_REVISION_SQL} DESC LIMIT 1",
-                        (base_canonical,),
-                    )
-                    row = cur.fetchone()
-                except Exception:  # noqa: BLE001 - revision columns absent: look up as before
-                    conn.rollback()
-                    row = None
-            try:
-                if row is None and canonical:
-                    cur.execute(
-                        f"SELECT po_id, total_amount, currency FROM {table} WHERE {cond} = %s",
-                        (canonical,),
-                    )
-                    row = cur.fetchone()
-                if row is None:
                     cur.execute(
                         f"SELECT po_id, total_amount, currency FROM {table} WHERE po_id = %s",
                         (po_id,),
                     )
-                    row = cur.fetchone()
-            except Exception:  # noqa: BLE001 - table may not exist in some envs
-                conn.rollback()
-                continue
-            if row:
-                header = {"po_id": row[0], "total_amount": row[1], "currency": row[2]}
-                break
+                    r = cur.fetchone()
+                except Exception:  # noqa: BLE001 - table may not exist in some envs
+                    conn.rollback()
+                    continue
+                if r:
+                    header = {"po_id": r[0], "total_amount": r[1], "currency": r[2]}
+                    break
         if header is None:
             return None, []
 

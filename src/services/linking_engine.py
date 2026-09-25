@@ -26,6 +26,7 @@ import weakref
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.extraction.po_revision import pick_key, po_base, revision_of
 from src.services.agent_actions import record_action, PHASE_CONSOLIDATION
 
 log = logging.getLogger(__name__)
@@ -104,7 +105,17 @@ def _norm_po(v: Any) -> Optional[str]:
     inconsistent formats: the PO table stores it bare ('506789'), quotes prefix
     it ('PO506789'), invoices are mixed ('PO507269' / '389948'). Strip
     non-alphanumerics AND a leading 'po' so every form maps to the bare number,
-    so quote->PO and invoice->PO joins actually connect."""
+    so quote->PO and invoice->PO joins actually connect.
+
+    A revision ('506789 (Rev 3)', see extraction/po_revision.py) is the same PO:
+    invoices print the bare number, so every revision shares it and joins the same
+    deal. Where one PO has to be picked, _PO_PICK_ORDER_SQL picks the revision."""
+    return _norm_po_id(po_base(v)) if v is not None else None
+
+
+def _norm_po_id(v: Any) -> Optional[str]:
+    """_norm_po without folding revisions: one row's identity, '506789 (Rev 3)'
+    distinct from '506789'."""
     s = _norm_id(v)
     if s is None:
         return None
@@ -530,22 +541,62 @@ def _table_columns(cur, schema_table: str) -> list[str]:
 
 
 # SQL fragment that normalizes a po_id column the same way as _norm_po()
-# (strip non-alphanumerics, lowercase, drop a leading 'po').
-_PO_NORM_SQL = "regexp_replace(regexp_replace(lower({col}), '[^a-z0-9]', '', 'g'), '^po', '')"
+# (drop a "(Rev n)" suffix, strip non-alphanumerics, lowercase, drop a leading 'po'),
+# and the same without the revision fold, as _norm_po_id().
+_PO_ID_NORM_SQL = "regexp_replace(regexp_replace(lower({col}), '[^a-z0-9]', '', 'g'), '^po', '')"
+_PO_NORM_SQL = _PO_ID_NORM_SQL.format(
+    col="regexp_replace({col}, '\\s*\\(\\s*rev\\M.*$', '', 'i')")
+
+# Which row of a PO family a citation means, as an ORDER BY over a PO table aliased t
+# (params: _po_pick_params). The revision the citation names; else the latest revision
+# whose approval is approved or unstated; else the row the citation matches. Revision
+# columns are read through to_jsonb so it runs on a table that predates them.
+_PO_PICK_ORDER_SQL = (
+    "(%s AND " + _PO_ID_NORM_SQL.format(col="t.po_id") + " = %s) DESC, "
+    "(coalesce(to_jsonb(t)->>'approval_status', 'approved') = 'approved') DESC, "
+    "CASE WHEN coalesce(to_jsonb(t)->>'approval_status', 'approved') = 'approved' "
+    "THEN coalesce((to_jsonb(t)->>'po_revision')::int, "
+    "(regexp_match(t.po_id, '\\(\\s*rev\\s*(\\d+)', 'i'))[1]::int, 1) ELSE 0 END DESC, "
+    "(" + _PO_ID_NORM_SQL.format(col="t.po_id") + " = %s) DESC"
+)
+
+
+def _po_pick_params(po_id: Any) -> tuple:
+    ident = _norm_po_id(po_id)
+    return (revision_of(po_id) is not None, ident, ident)
+
+
+def _pick_po(cur, po_id, cols: str = "t.*", tables=None) -> Optional[dict]:
+    """The PO row a citation of ``po_id`` means, across _trgt and _stg together, so a
+    revision still in _stg outranks an older one already promoted; _trgt wins a tie.
+    Tolerant of PO-prefix and separator differences (_norm_po)."""
+    npo = _norm_po(po_id)
+    if npo is None:
+        return None
+    cond = _PO_NORM_SQL.format(col="t.po_id")
+    tables = tables or (_PO["trgt"], _PO["stg"])
+    best, best_key = None, None
+    for pref, tbl in enumerate(reversed(tables)):
+        rows = _rows(cur, f"select {cols}, to_jsonb(t)->>'approval_status' as _approval, "
+                          f"to_jsonb(t)->>'po_revision' as _revision, t.po_id as _po_id "
+                          f"from {tbl} t where {cond} = %s "
+                          f"order by {_PO_PICK_ORDER_SQL} limit 1",
+                     (npo, *_po_pick_params(po_id)))
+        if not rows:
+            continue
+        row = rows[0]
+        key = (pick_key({"po_id": row.pop("_po_id"), "approval_status": row.pop("_approval"),
+                         "po_revision": row.pop("_revision")}, po_id), pref)
+        if best_key is None or key > best_key:
+            best, best_key = row, key
+    return best
 
 
 def _find_parent_po(cur, po_id) -> Optional[dict]:
     """Resolve the parent PO by canonical PO number, tolerant of PO-prefix and
-    separator differences between the reference and the PO table."""
-    npo = _norm_po(po_id)
-    if npo is None:
-        return None
-    cond = _PO_NORM_SQL.format(col="po_id")
-    for tbl in (_PO["trgt"], _PO["stg"]):
-        rows = _rows(cur, f"select * from {tbl} where {cond} = %s limit 1", (npo,))
-        if rows:
-            return rows[0]
-    return None
+    separator differences between the reference and the PO table. Of a PO's
+    revisions, the one the reference means (_pick_po)."""
+    return _pick_po(cur, po_id)
 
 
 def _copyable_cols(cur, stg_table: str, trgt_table: str) -> list[str]:
