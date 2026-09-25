@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from src.services import guardrail
@@ -84,8 +84,28 @@ def _live(summary: dict) -> list[dict]:
             if f and not f.get("superseded_by")]
 
 
+def saved_window(now: datetime) -> tuple[date, date]:
+    """The week "saved this week" covers: the last WINDOW_DAYS calendar days, today
+    included, as inclusive valid_from dates -- the same shape as the exec summary's
+    period (valid_from BETWEEN start AND end)."""
+    today = now.date()
+    return today - timedelta(days=WINDOW_DAYS - 1), today
+
+
+def saved_this_week(ledger_rows: list, now: datetime) -> float:
+    """R18(2): saved money comes from the ledger through ledger_totals -- the one function
+    that owns the rules (current state only, corrections replace what they supersede,
+    avoided + recovered + realised, unpriced rows in no total) -- windowed by valid_from."""
+    from src.services.value_summary_service import ledger_totals
+    since, until = saved_window(now)
+    return ledger_totals(list(ledger_rows or []), since=since, until=until)["saved_gbp"]
+
+
 def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
-    """{'subject', 'body'} — or None when the week has nothing to report."""
+    """{'subject', 'body'} — or None when the week has nothing to report.
+
+    ``summary["ledger_rows"]`` (attached by _load_summary) is the ledger the saved figure
+    is read from."""
     if not summary:
         return None
     since = now - timedelta(days=WINDOW_DAYS)
@@ -93,13 +113,11 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
 
     found_this_week = [f for f in live if _within(f.get("found_at"), since)]
     # R8: "recovered this week" became "saved this week" -- avoided and realised savings
-    # are just as much this week's news as a recovered credit, and must not drop out of
-    # the digest. settled_at is the ledger's date for the finding's current state; a
-    # finding recorded before the ledger existed falls back to resolved_at.
-    saved_this_week = [f for f in live
-                       if (f.get("recovered_gbp") or f.get("avoided_gbp") or f.get("realised_gbp"))
-                       and _within(f.get("settled_at") or f.get("resolved_at"), since)]
-    if not found_this_week and not saved_this_week:
+    # are just as much this week's news as a recovered credit. R18(2): the figure is the
+    # ledger's own (ledger_totals over this week), not a sum over findings, so the digest,
+    # the drawer and the exec summary cannot disagree.
+    saved_total = saved_this_week(summary.get("ledger_rows"), now)
+    if not found_this_week and not saved_total:
         return None
 
     # A finding whose amount could not be converted is real but unpriced. It is counted,
@@ -108,8 +126,6 @@ def compose_digest(summary: Optional[dict], now: datetime) -> Optional[dict]:
     valued = [f for f in found_this_week if f.get("amount_gbp") is not None]
     unvalued = len(found_this_week) - len(valued)
     found_total = sum(f["amount_gbp"] for f in valued)
-    saved_total = sum((f.get("recovered_gbp") or 0) + (f.get("avoided_gbp") or 0)
-                      + (f.get("realised_gbp") or 0) for f in saved_this_week)
     found_headline = _money(found_total) if valued else _count(found_this_week)
 
     # The list is what somebody can still act on — a resolved finding is not a to-do. It
@@ -222,8 +238,18 @@ def _external(addresses: list[str]) -> list[str]:
 
 
 def _load_summary() -> dict:
-    from src.services.value_summary_service import build_value_summary
-    return build_value_summary()
+    """The summary every surface uses, plus the ledger rows the saved figure is read
+    from -- both on one connection, so they describe the same moment."""
+    from src.services.db import get_conn
+    from src.services.value_summary_service import _load_ledger, build_value_summary
+    with get_conn() as conn:
+        summary = build_value_summary(conn=conn)
+        cur = conn.cursor()
+        try:
+            summary["ledger_rows"] = _load_ledger(cur)
+        finally:
+            cur.close()
+    return summary
 
 
 def _send_email(*, to: list[str], subject: str, body: str, agent_nick=None) -> bool:

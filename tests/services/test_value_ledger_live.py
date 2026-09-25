@@ -265,3 +265,117 @@ def test_triage_prefill_matches_the_action_centres_own_figure(conn):
     pre = vl.finding_outcomes(7295, conn=conn)["prefill"]
     assert pre["amount"] == "226.78"
     assert pre["currency"] == "GBP"
+
+
+# --------------------------------------------------------------------------
+# Final-review fixes (R17, R18, R20, minors)
+# --------------------------------------------------------------------------
+
+def test_accepting_the_charge_sets_it_aside_and_drops_it_from_found(conn):
+    """R17: "accept the charge" is the gateway's dismiss -- status 'ignored' ('set aside'),
+    which the summary excludes. 'resolved' would leave the money in Value found and sync
+    the detection finding as resolved instead of accepted_risk."""
+    from src.services import value_ledger as vl, value_summary_service as vss
+    cur = conn.cursor()
+    # A GBP invoice nothing else has a finding on (and whose PO carries no PO-level
+    # finding), so the probe is priced, live, and moves the total by exactly its amount.
+    cur.execute("""
+        SELECT i.invoice_id FROM proc.bp_invoice_trgt i
+         WHERE i.currency = 'GBP'
+           AND NOT EXISTS (SELECT 1 FROM proc.bp_extraction_discrepancy d
+                            WHERE d.doc_pk_candidate IN (i.invoice_id, i.po_id))
+         LIMIT 1""")
+    invoice = cur.fetchone()
+    if not invoice:
+        pytest.skip("no finding-free GBP invoice in this corpus")
+    cur.execute(
+        "INSERT INTO proc.bp_extraction_discrepancy (doc_type, source_file, doc_pk_candidate, "
+        "field_name, raw_value, computed_value, issue_type, severity, status, blocks_promotion) "
+        "VALUES ('invoice', 'probe', %s, %s, '500.00', '+500.00', 'duplicate_invoice', "
+        "'warning', 'open', false) RETURNING discrepancy_id",
+        (invoice[0], f"probe_{uuid.uuid4().hex[:8]}"))
+    did = cur.fetchone()[0]
+    before = vss.build_value_summary(conn=conn)
+    mine = [f for f in before["findings"] if f["id"] == f"disc:{did}"]
+    assert mine and mine[0]["amount_gbp"] == 500.0 and mine[0]["superseded_by"] is None
+    vl.record_finding_outcome(did, "accepted", None, None, actor=ACTOR, conn=conn)
+    cur.execute("SELECT status, resolved_by FROM proc.bp_extraction_discrepancy "
+                "WHERE discrepancy_id=%s", (did,))
+    assert cur.fetchone() == ("ignored", ACTOR)
+    after = vss.build_value_summary(conn=conn)
+    assert not any(f["id"] == f"disc:{did}" for f in after["findings"])
+    assert round(before["verified_found_gbp"] - after["verified_found_gbp"], 2) == 500.0
+    assert _rows(cur, did) == []
+
+
+def _superseded_pair(cur):
+    """Two probe findings on the same document: dedupe() keeps one and supersedes the
+    other under it. Returns (superseded_id, live_id)."""
+    from src.services import value_summary_service as vss
+    doc = f"PROBE-{uuid.uuid4().hex[:8]}"
+    ids = []
+    for _ in range(2):
+        cur.execute(
+            "INSERT INTO proc.bp_extraction_discrepancy (doc_type, source_file, "
+            "doc_pk_candidate, field_name, raw_value, computed_value, issue_type, severity, "
+            "status, blocks_promotion) VALUES ('invoice', 'probe', %s, %s, '500.00', "
+            "'+500.00', 'duplicate_invoice', 'warning', 'open', false) "
+            "RETURNING discrepancy_id", (doc, f"probe_{uuid.uuid4().hex[:8]}"))
+        ids.append(cur.fetchone()[0])
+    by = {i: vss.superseded_by_for(i, cur.connection) for i in ids}
+    hidden = [i for i, s in by.items() if s]
+    assert len(hidden) == 1, by
+    live = [i for i in ids if i != hidden[0]][0]
+    assert by[hidden[0]] == f"disc:{live}"
+    return hidden[0], live
+
+
+@pytest.mark.parametrize("outcome", ["avoided", "claimed"])
+def test_money_on_a_superseded_finding_is_refused(conn, outcome):
+    """R18: a superseded finding's money is already counted under the live finding.
+    Stopping or claiming it here too would count the same money twice."""
+    from src.services import value_ledger as vl
+    cur = conn.cursor()
+    hidden, live = _superseded_pair(cur)
+    with pytest.raises(vl.LedgerError) as e:
+        vl.record_finding_outcome(hidden, outcome, "500", "GBP", actor=ACTOR, conn=conn)
+    assert e.value.code == "superseded"
+    assert f"disc:{live}" in str(e.value)
+    cur.execute("SELECT status FROM proc.bp_extraction_discrepancy WHERE discrepancy_id=%s",
+                (hidden,))
+    assert cur.fetchone()[0] == "open"
+    assert _rows(cur, hidden) == []
+    # the live finding still takes the outcome
+    assert vl.record_finding_outcome(live, outcome, "500", "GBP", actor=ACTOR,
+                                     conn=conn)["state"] == outcome
+
+
+def test_accepting_a_superseded_finding_is_allowed(conn):
+    """R18: accepting records no money, so it cannot double-count."""
+    from src.services import value_ledger as vl
+    cur = conn.cursor()
+    hidden, _ = _superseded_pair(cur)
+    assert vl.record_finding_outcome(hidden, "accepted", None, None, actor=ACTOR,
+                                     conn=conn)["state"] == "accepted"
+
+
+def test_triage_prefill_never_falls_back_to_a_unit_count(conn):
+    """R20(a): a triage finding's raw/expected values are quantities or unit prices, not
+    money. With no £ figure on its detection finding, the buyer types the amount."""
+    from src.services import value_ledger as vl
+    cur = conn.cursor()
+    did = _finding(cur, issue_type="quantity_invoiced_above_po", raw="12")
+    pre = vl.finding_outcomes(did, conn=conn)["prefill"]
+    assert pre["is_money"] is True
+    assert pre["amount"] is None and pre["currency"] is None
+
+
+def test_realising_a_rejected_opportunity_says_it_has_moved_on(conn):
+    from src.services import value_ledger as vl
+    cur = conn.cursor()
+    oid = f"probe-opp-{uuid.uuid4().hex[:12]}"
+    cur.execute("INSERT INTO proc.bp_opportunity (opportunity_id, opportunity_ref_id, stage) "
+                "VALUES (%s, %s, 'rejected')", (oid, oid))
+    with pytest.raises(vl.LedgerError) as e:
+        vl.realise_opportunity(oid, "100", "GBP", actor=ACTOR, conn=conn)
+    assert e.value.code == "opportunity_already_moved"

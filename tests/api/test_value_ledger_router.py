@@ -43,6 +43,8 @@ def test_outcome_passes_the_token_actor_not_the_body(client, monkeypatch):
 
 @pytest.mark.parametrize("code,status", [("finding_already_moved", 409), ("no_open_claim", 409),
                                          ("already_corrected", 409), ("not_current", 409),
+                                         ("superseded", 409),
+                                         ("opportunity_already_moved", 409),
                                          ("not_found", 404),
                                          ("evidence_required", 422), ("invalid_amount", 422),
                                          ("not_a_money_finding", 422)])
@@ -63,3 +65,17 @@ def test_history_is_readable(client, monkeypatch):
         "state": None, "history": [], "prefill": {"amount": "5.00", "currency": "GBP", "is_money": True}})
     r = c.get("/value/findings/3/outcomes")
     assert r.status_code == 200 and r.json()["prefill"]["amount"] == "5.00"
+
+
+def test_an_unexpected_failure_never_leaks_its_text(client, monkeypatch):
+    # The exception text can carry SQL, table names or values; the UI gets a fixed line
+    # and the detail goes to the log.
+    c, mod = client
+
+    def _raise(*a, **kw):
+        raise RuntimeError('relation "proc.secret" does not exist')
+    monkeypatch.setattr(mod.value_ledger, "record_finding_outcome", _raise)
+    r = c.post("/value/findings/1/outcome", json={"outcome": "claimed"})
+    assert r.status_code == 500
+    assert r.json()["detail"] == {"error": "write_failed",
+                                  "message": "the value could not be recorded"}

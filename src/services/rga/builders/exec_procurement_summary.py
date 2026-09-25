@@ -94,19 +94,31 @@ SELECT COUNT(*)::int                        AS n,
 """
 
 # Everything counted as "saved" this period: money stopped (avoided), credited back
-# (recovered) or booked as a realised opportunity saving. Grouped by outcome_type so the
-# caller can both total it and, if needed, see the split. Priced/unpriced counted
-# separately for the same reason as _REALISED above.
+# (recovered) or booked as a realised opportunity saving. R18(2): the SAME rules as
+# value_summary_service.ledger_totals, which the drawer and the weekly digest use --
+# each source's CURRENT state only (the latest row no correction supersedes, by
+# recorded_at then outcome_id, exactly current_state()), counted when that state is one
+# of the three types and its valid_from falls in the period. Pinned by the live test
+# tests/services/rga/test_saved_is_one_figure_live.py. Grouped by outcome_type so the
+# caller can both total it and see the split; priced/unpriced counted separately for the
+# same reason as _REALISED above.
 _SAVED = """
-SELECT o.outcome_type,
-       coalesce(sum(o.amount_gbp), 0)::numeric           AS gbp,
-       count(o.amount_gbp)::int                          AS priced_n,
-       count(*) FILTER (WHERE o.amount_gbp IS NULL)::int AS unpriced_n
-  FROM proc.bp_value_outcome o
- WHERE o.outcome_type IN ('avoided', 'recovered', 'realised_saving')
-   AND o.valid_from BETWEEN %s AND %s
-   AND NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s WHERE s.supersedes_id = o.outcome_id)
- GROUP BY o.outcome_type
+WITH current_state AS (
+    SELECT DISTINCT ON (o.source_type, o.source_id)
+           o.outcome_type, o.amount_gbp, o.valid_from
+      FROM proc.bp_value_outcome o
+     WHERE NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s
+                        WHERE s.supersedes_id = o.outcome_id)
+     ORDER BY o.source_type, o.source_id, o.recorded_at DESC, o.outcome_id DESC
+)
+SELECT c.outcome_type,
+       coalesce(sum(c.amount_gbp), 0)::numeric           AS gbp,
+       count(c.amount_gbp)::int                          AS priced_n,
+       count(*) FILTER (WHERE c.amount_gbp IS NULL)::int AS unpriced_n
+  FROM current_state c
+ WHERE c.outcome_type IN ('avoided', 'recovered', 'realised_saving')
+   AND c.valid_from BETWEEN %s AND %s
+ GROUP BY c.outcome_type
 """
 
 

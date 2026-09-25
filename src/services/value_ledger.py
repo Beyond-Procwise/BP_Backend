@@ -179,10 +179,24 @@ def record_finding_outcome(discrepancy_id: int, outcome: str, amount, currency, 
                               f"a {row['issue_type']} finding carries no recoverable amount")
         clean_amount, clean_ccy = (None, None) if outcome == "accepted" else \
             validate_outcome(outcome, amount, currency, None)
+        if outcome != "accepted":
+            # R18: a superseded finding's money is already counted under a stronger,
+            # live finding (dedupe / R6 / line-under-PO). Stopping or claiming it here
+            # as well would count the same money twice. Accepting records no money, so
+            # it stays allowed.
+            from src.services import value_summary_service
+            live_id = value_summary_service.superseded_by_for(discrepancy_id, c)
+            if live_id:
+                raise LedgerError("superseded",
+                                  f"counted under {live_id}; record it there")
+        # R17: accepting the charge is the gateway's dismiss -- 'ignored' ("set aside"),
+        # which Value found excludes and triage syncs as accepted_risk. Money stopped or
+        # claimed is 'resolved'.
+        new_status = "ignored" if outcome == "accepted" else "resolved"
         try:
-            cur.execute("UPDATE proc.bp_extraction_discrepancy SET status = 'resolved', "
+            cur.execute("UPDATE proc.bp_extraction_discrepancy SET status = %s, "
                         "resolved_by = %s, resolved_at = now() WHERE discrepancy_id = %s",
-                        (actor, int(discrepancy_id)))
+                        (new_status, actor, int(discrepancy_id)))
         except Exception as exc:
             reason = refusal(exc)
             if reason:
@@ -238,7 +252,7 @@ def realise_opportunity(opportunity_id: str, amount, currency, *, actor: str,
         try:
             set_stage(str(opportunity_id), "realised", conn=c)
         except IllegalTransition as exc:
-            raise LedgerError("finding_already_moved", str(exc)) from exc
+            raise LedgerError("opportunity_already_moved", str(exc)) from exc
         return _write(cur, c, source_type="opportunity", source_id=opportunity_id,
                       outcome_type="realised_saving", amount=clean_amount, currency=clean_ccy,
                       actor=actor, evidence_ref=evidence_ref, note=note, valid_from=valid_from)
@@ -317,7 +331,9 @@ def finding_outcomes(discrepancy_id: int, conn=None) -> dict:
             exposure = vss.parse_gbp_delta(r.get("triage_delta"))
             if exposure is not None:
                 prefill.update(amount=f"{exposure:.2f}", currency="GBP")
-            else:
+            elif r["issue_type"] not in vss.TRIAGE_VALUE_TYPES:
+                # R20(a): a triage mirror's raw/expected values are quantities or unit
+                # prices, never money -- with no £ figure the buyer types the amount.
                 delta = vss.discrepancy_delta(r)
                 if delta is not None:
                     prefill.update(amount=f"{delta:.2f}", currency=r.get("currency"))
