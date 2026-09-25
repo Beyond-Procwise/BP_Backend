@@ -291,6 +291,42 @@ def in_play_gbp(findings: list[dict]) -> float:
     return round(total, 2)
 
 
+def _id_num(finding_id: str) -> int:
+    try:
+        return int(str(finding_id).split(":", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def supersede_po_level_by_duplicate(findings: list[dict]) -> list[dict]:
+    """Controller ruling R6: a PO carrying both an "invoices exceed PO total" finding and
+    a live duplicate-invoice finding on an invoice against that PO double-counts the same
+    overage -- the duplicate is the stronger, whole-invoice explanation of it, so the
+    PO-level finding is superseded by the duplicate (largest amount_gbp; ties -> lowest
+    id). For a CFO headline an undercount is safer than a double count.
+
+    Must run BEFORE supersede_lines_under_overbilled_po: that function only supersedes a
+    line under a PO-level finding that is still live, so once this has demoted a PO-level
+    finding, its line findings correctly stay live (they are not the duplicate's money
+    unless dedupe() already collapsed them onto the same invoice)."""
+    dupes_by_po: dict[str, list[dict]] = {}
+    for f in findings:
+        if (f.get("issue_type") == "duplicate_invoice" and f.get("po_id")
+                and f.get("superseded_by") is None):
+            dupes_by_po.setdefault(f["po_id"], []).append(f)
+    for f in findings:
+        if (f.get("issue_type") in _PO_LEVEL_TYPES and f.get("po_id")
+                and f.get("superseded_by") is None):
+            candidates = dupes_by_po.get(f["po_id"])
+            if not candidates:
+                continue
+            best = max(candidates, key=lambda d: (
+                d["amount_gbp"] if d["amount_gbp"] is not None else float("-inf"),
+                -_id_num(d["id"])))
+            f["superseded_by"] = best["id"]
+    return findings
+
+
 def supersede_lines_under_overbilled_po(findings: list[dict]) -> list[dict]:
     """A PO whose invoices exceed its total already counts the overbilled money once; the
     line findings on invoices against that PO are the same money, seen line by line."""
@@ -523,7 +559,9 @@ def build_value_summary(conn=None) -> dict:
         log.exception("value_summary_service: benchmark source failed")
         sources["benchmark"] = "unavailable"
 
-    findings = supersede_lines_under_overbilled_po(dedupe(findings))
+    findings = dedupe(findings)
+    findings = supersede_po_level_by_duplicate(findings)     # R6: before the line pass
+    findings = supersede_lines_under_overbilled_po(findings)
     findings = apply_ledger(findings, ledger_rows)
     summary = summarise(findings)
     summary.update(ledger_totals(ledger_rows))

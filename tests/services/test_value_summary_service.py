@@ -253,6 +253,60 @@ def test_line_findings_under_an_overbilled_po_are_superseded():
     assert len(out) == 3                      # the drawer explains, never omits
 
 
+# --------------------------------------------------------------------------
+# R6: a PO-level finding is superseded by a live duplicate-invoice finding on an
+# invoice against that PO -- the duplicate is the stronger, whole-invoice explanation
+# of the overage, so the two do not both count.
+# --------------------------------------------------------------------------
+
+def test_po_level_finding_is_superseded_by_a_duplicate_on_the_same_po():
+    po = _disc_finding(20, 467.67, status="open", issue_type="invoices_exceed_po_total", doc="PO-7")
+    po["po_id"] = "PO-7"
+    dup = _disc_finding(21, 3385.72, status="open", doc="INV-77")   # default issue_type=duplicate_invoice
+    dup["po_id"] = "PO-7"
+    out = vss.supersede_po_level_by_duplicate([po, dup])
+    assert po["superseded_by"] == "disc:21"
+    assert dup["superseded_by"] is None                             # the duplicate itself stays live
+    assert len(out) == 2
+
+
+def test_po_level_and_duplicate_on_a_different_po_both_stay_live():
+    po = _disc_finding(22, 467.67, status="open", issue_type="invoices_exceed_po_total", doc="PO-7")
+    po["po_id"] = "PO-7"
+    dup = _disc_finding(23, 3385.72, status="open", doc="INV-88")
+    dup["po_id"] = "PO-8"
+    vss.supersede_po_level_by_duplicate([po, dup])
+    assert po["superseded_by"] is None and dup["superseded_by"] is None
+
+
+def test_a_line_finding_stays_live_under_a_po_level_finding_superseded_by_a_duplicate():
+    po = _disc_finding(24, 467.67, status="open", issue_type="invoices_exceed_po_total", doc="PO-7")
+    po["po_id"] = "PO-7"
+    dup = _disc_finding(25, 3385.72, status="open", doc="INV-77")
+    dup["po_id"] = "PO-7"
+    line = _disc_finding(26, 700, status="open", issue_type="quantity_invoiced_above_po", doc="INV-9")
+    line["po_id"] = "PO-7"
+    # R6 must run before the line pass, exactly as build_value_summary now wires it.
+    findings = vss.supersede_po_level_by_duplicate([po, dup, line])
+    findings = vss.supersede_lines_under_overbilled_po(findings)
+    assert po["superseded_by"] == "disc:25"
+    assert line["superseded_by"] is None       # not the duplicate's money; stays live
+    assert dup["superseded_by"] is None
+
+
+def test_po_level_superseded_by_the_largest_duplicate_ties_break_on_lowest_id():
+    po = _disc_finding(30, 100, status="open", issue_type="invoices_exceed_po_total", doc="PO-9")
+    po["po_id"] = "PO-9"
+    small = _disc_finding(31, 200, status="open", doc="INV-1")
+    small["po_id"] = "PO-9"
+    tie_hi_id = _disc_finding(33, 500, status="open", doc="INV-2")
+    tie_hi_id["po_id"] = "PO-9"
+    tie_lo_id = _disc_finding(32, 500, status="open", doc="INV-3")
+    tie_lo_id["po_id"] = "PO-9"
+    vss.supersede_po_level_by_duplicate([po, small, tie_hi_id, tie_lo_id])
+    assert po["superseded_by"] == "disc:32"    # largest amount (500); tie -> lowest id (32 < 33)
+
+
 def test_triage_row_takes_its_amount_from_exposure():
     row = {"discrepancy_id": 5, "issue_type": "quantity_invoiced_above_po", "status": "open",
            "raw_value": "340.17", "expected_value": "113.39", "computed_value": None,
