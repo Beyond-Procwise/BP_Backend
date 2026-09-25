@@ -26,14 +26,44 @@ class QuerySend(BaseModel):
     body: str
 
 
+def trim_findings_for_response(findings: list[dict], limit: int) -> list[dict]:
+    """HTTP-response-only trim (Ruling R15). Scrubbing 3,600+ findings through
+    OutputSafetyMiddleware stalls the whole event loop for ~28s, so the response
+    ships a bounded list while every summary total keeps counting every finding.
+
+    Order: every finding whose ledger_state == 'claimed' first (the Being-claimed
+    list needs them all, whatever the limit); then the remaining live findings
+    (superseded_by is None) sorted by amount_gbp descending, None last; then
+    superseded findings, only while room remains. A claimed finding is never
+    dropped, even if claimed findings alone exceed ``limit``."""
+    claimed = [f for f in findings if f.get("ledger_state") == "claimed"]
+    live = [f for f in findings
+            if f.get("ledger_state") != "claimed" and f.get("superseded_by") is None]
+    superseded = [f for f in findings
+                  if f.get("ledger_state") != "claimed" and f.get("superseded_by") is not None]
+
+    live_sorted = sorted(
+        live,
+        key=lambda f: (f.get("amount_gbp") is None, -(f.get("amount_gbp") or 0)),
+    )
+
+    cap = max(limit, len(claimed))
+    return (claimed + live_sorted + superseded)[:cap]
+
+
 @router.get("/value-summary", summary="Evidence-backed value found / recovered / potential")
-def get_value_summary() -> dict:
+def get_value_summary(limit: int = 200) -> dict:
+    limit = min(max(limit, 1), 1000)
     try:
         result = value_summary_service.build_value_summary()
     except Exception as exc:                     # the service isolates per-source failures;
         logger.exception("value-summary failed")  # reaching here means something structural
         raise HTTPException(status_code=500, detail=str(exc))
     result["generated_at"] = datetime.now(timezone.utc).isoformat()
+    findings = result.get("findings", [])
+    result["findings_total"] = len(findings)
+    result["findings"] = trim_findings_for_response(findings, limit)
+    result["findings_shown"] = len(result["findings"])
     return result
 
 
