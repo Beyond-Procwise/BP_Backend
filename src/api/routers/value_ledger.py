@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/value", tags=["Value ledger"])
 
 _STATUS = {"finding_already_moved": 409, "no_open_claim": 409, "already_corrected": 409,
-           "not_current": 409, "not_found": 404}
+           "not_current": 409, "superseded": 409, "opportunity_already_moved": 409,
+           "not_found": 404}
 
 
 def _actor(principal: Any) -> str:
@@ -40,10 +41,13 @@ def _call(fn, *args, **kwargs):
                             content={"detail": {"error": exc.code, "message": str(exc)}})
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
+        # The exception text can carry SQL, table names or values: it goes to the log,
+        # and the caller gets a fixed line.
         logger.exception("value ledger write failed")
         return JSONResponse(status_code=500,
-                            content={"detail": {"error": "write_failed", "message": str(exc)}})
+                            content={"detail": {"error": "write_failed",
+                                                "message": "the value could not be recorded"}})
 
 
 class OutcomeBody(BaseModel):

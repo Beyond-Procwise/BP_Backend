@@ -21,7 +21,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from src.services.db import get_conn
@@ -89,7 +89,11 @@ def _age_days(created_at) -> Optional[int]:
     return max((now - ca).days, 0)
 
 
-def classify_discrepancy(row: dict) -> Optional[dict]:
+def classify_discrepancy(row: dict, keep_unpriced: bool = False) -> Optional[dict]:
+    """``keep_unpriced`` (R20b): a finding with no readable figure is normally dropped --
+    there is nothing to count. A CLAIMED one must still be listed so "Being claimed" can
+    settle it, so the caller asks for it with its amount left None (it counts in no
+    total, and is never valued at zero)."""
     if row.get("issue_type") not in DISCREPANCY_VALUE_TYPES:
         return None
     if row.get("status") in _EXCLUDED_STATUS:
@@ -103,13 +107,16 @@ def classify_discrepancy(row: dict) -> Optional[dict]:
     if row.get("issue_type") in TRIAGE_VALUE_TYPES:
         exposure = parse_gbp_delta(row.get("triage_delta"))
         if exposure is None or exposure <= 0:
-            return None
-        delta, currency = round(exposure, 2), "GBP"
+            if not keep_unpriced:
+                return None
+            delta, currency = None, None
+        else:
+            delta, currency = round(exposure, 2), "GBP"
     else:
         delta = discrepancy_delta(row)
-        if delta is None:
+        if delta is None and not keep_unpriced:
             return None
-        currency = row.get("currency") or None
+        currency = (row.get("currency") or None) if delta is not None else None
     return {
         "id": f"disc:{row.get('discrepancy_id')}",
         "tier": "verified",
@@ -160,9 +167,12 @@ def _disc_title(row: dict, delta: float, currency: Optional[str] = None) -> str:
     (row["currency"]) would mislabel a sterling figure as e.g. "226.78 USD"."""
     kind = {"duplicate_invoice": "appears to duplicate another invoice"}.get(
         row.get("issue_type"), "bills over its purchase order")
+    head = f"{row.get('doc_type', 'document').capitalize()} {row.get('doc_pk_candidate')} {kind}"
+    if delta is None:          # R20b: an unpriced (claimed) finding states no figure
+        return head
     ccy = str((currency if currency is not None else row.get("currency")) or "").strip().upper()
     amount = f"{delta:,.2f}{' ' + ccy if ccy else ''}"
-    return f"{row.get('doc_type', 'document').capitalize()} {row.get('doc_pk_candidate')} {kind} by {amount}"
+    return f"{head} by {amount}"
 
 
 def classify_opportunity(row: dict) -> Optional[dict]:
@@ -244,9 +254,24 @@ def _gbp(v) -> float:
     return round(float(v), 2) if v is not None else 0.0
 
 
-def ledger_totals(ledger_rows: list[dict]) -> dict:
+def _as_date(v) -> Optional[date]:
+    if v is None or isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    if isinstance(v, datetime):
+        return v.date()
+    return date.fromisoformat(str(v)[:10])
+
+
+def ledger_totals(ledger_rows: list[dict], since=None, until=None) -> dict:
     """Saved money from each source's CURRENT state (a correction replaces what it
-    supersedes). An unconvertible row (amount_gbp NULL) counts in no GBP total."""
+    supersedes). An unconvertible row (amount_gbp NULL) counts in no GBP total.
+
+    THE rules for "saved": every surface that states a saved figure (the summary, the
+    weekly digest, and -- in SQL, pinned by a live test -- the exec summary) counts the
+    same thing. ``since``/``until`` (inclusive dates) window the settled money by the
+    current state's valid_from; claimed_open_gbp is what is open NOW and is never
+    windowed."""
+    since, until = _as_date(since), _as_date(until)
     totals = {"avoided_gbp": 0.0, "recovered_gbp": 0.0, "realised_gbp": 0.0,
               "claimed_open_gbp": 0.0}
     months: dict[str, dict] = {}
@@ -260,6 +285,9 @@ def ledger_totals(ledger_rows: list[dict]) -> dict:
         if kind == "claimed":
             totals["claimed_open_gbp"] += _gbp(state["amount_gbp"])
         elif kind in field:
+            if ((since is not None and state["valid_from"] < since)
+                    or (until is not None and state["valid_from"] > until)):
+                continue
             totals[field[kind]] += _gbp(state["amount_gbp"])
             m = months.setdefault(state["valid_from"].strftime("%Y-%m"),
                                   {"avoided_gbp": 0.0, "recovered_gbp": 0.0, "realised_gbp": 0.0})
@@ -444,6 +472,7 @@ _LEDGER_SQL = """
 SELECT outcome_id, source_type, source_id, outcome_type, amount, currency, amount_gbp,
        supersedes_id, valid_from, recorded_at
   FROM proc.bp_value_outcome
+ ORDER BY recorded_at, outcome_id
 """
 
 
@@ -508,7 +537,8 @@ def _get_rates() -> Optional[dict]:
 
 def _apply_discrepancy_fx(finding: dict, rates: Optional[dict]) -> dict:
     currency = finding.pop("currency", None)
-    amount_gbp, converted_from = _to_gbp(finding["amount_gbp"], currency, rates)
+    amount_gbp, converted_from = (_to_gbp(finding["amount_gbp"], currency, rates)
+                                  if finding["amount_gbp"] is not None else (None, None))
     # Honest None, never a silent zero: an unconvertible foreign amount is
     # real and non-zero, just not GBP-denominated yet. summarise() treats
     # None as excluded from every sum instead of rendering a fabricated
@@ -530,6 +560,9 @@ def build_value_summary(conn=None) -> dict:
     sources: dict[str, str] = {}
     findings: list[dict] = []
     ledger_rows: list[dict] = []
+    unpriced: list[dict] = []
+    claimed_unpriced: list[dict] = []
+    rates = None
 
     def _own_conn():
         return get_conn()
@@ -544,6 +577,8 @@ def build_value_summary(conn=None) -> dict:
                 f = classify_discrepancy(row)
                 if f is not None:
                     findings.append(_apply_discrepancy_fx(f, rates))
+                else:
+                    unpriced.append(row)
             sources["discrepancies"] = "ok"
         except Exception:
             log.exception("value_summary_service: discrepancy source failed")
@@ -567,6 +602,19 @@ def build_value_summary(conn=None) -> dict:
             log.exception("value_summary_service: ledger source failed")
             ledger_rows, sources["ledger"] = [], "unavailable"
 
+        # R20b: a claimed finding with no readable figure is still listed, so "Being
+        # claimed" can settle it (credit received / claim dropped). It counts in no
+        # found total: its amount stays None. It joins AFTER the supersede passes, so a
+        # figureless finding never hides a priced one (e.g. an unpriced PO-level claim
+        # superseding the priced lines under it).
+        claimed = {key for key, rows in _by_source(ledger_rows).items()
+                   if (current_state(rows) or {}).get("outcome_type") == "claimed"}
+        for row in unpriced:
+            if f"disc:{row.get('discrepancy_id')}" in claimed:
+                f = classify_discrepancy(row, keep_unpriced=True)
+                if f is not None:
+                    claimed_unpriced.append(_apply_discrepancy_fx(f, rates))
+
         try:
             cur.close()
         except Exception:
@@ -584,7 +632,7 @@ def build_value_summary(conn=None) -> dict:
     findings = dedupe(findings)
     findings = supersede_po_level_by_duplicate(findings)     # R6: before the line pass
     findings = supersede_lines_under_overbilled_po(findings)
-    findings = apply_ledger(findings, ledger_rows)
+    findings = apply_ledger(findings + claimed_unpriced, ledger_rows)
     summary = summarise(findings)
     summary.update(ledger_totals(ledger_rows))
     summary["in_play_gbp"] = in_play_gbp(findings)
@@ -594,6 +642,23 @@ def build_value_summary(conn=None) -> dict:
         "sources": sources,
         "since": None,
     }
+
+
+def superseded_by_for(discrepancy_id, conn) -> Optional[str]:
+    """R18: the live finding a discrepancy's money is counted under, or None when it is
+    itself live (or not a money finding at all). Runs the summary's own classification
+    and supersede passes (dedupe, R6, line-under-PO) -- the one set of rules -- rather
+    than re-deriving them. About 0.2-0.3 s on bp_testdb; called on a human click only.
+    Refuses to guess when the findings could not be read."""
+    summary = build_value_summary(conn=conn)
+    if summary["sources"].get("discrepancies") != "ok":
+        raise RuntimeError("findings unavailable; cannot tell whether this finding "
+                           "is counted under another")
+    key = f"disc:{int(discrepancy_id)}"
+    for f in summary["findings"]:
+        if f["id"] == key:
+            return f.get("superseded_by")
+    return None
 
 
 class _NullContext:

@@ -340,3 +340,75 @@ def test_parse_gbp_delta():
     assert vss.parse_gbp_delta(None) is None
     assert vss.parse_gbp_delta("abc") is None
     assert vss.parse_gbp_delta("315.21 USD (no FX rate)") is None
+
+
+# --------------------------------------------------------------------------
+# Final-review fixes: R18 window, R20(b) unpriced claims, ledger order
+# --------------------------------------------------------------------------
+
+def test_ledger_totals_windows_settled_money_by_valid_from():
+    """R18(2): the digest's "saved this week" is ledger_totals over a window -- the same
+    function, the same rules. The window is inclusive and reads the CURRENT state's
+    valid_from; an open claim is what is open now and is never windowed."""
+    rows = [_led(1, "avoided", 100, oid=1, valid_from=date(2026, 9, 18)),
+            _led(2, "claimed", 50, oid=2, valid_from=date(2026, 9, 1)),
+            _led(2, "recovered", 40, oid=3, valid_from=date(2026, 9, 25)),
+            _led(3, "avoided", 70, oid=4, valid_from=date(2026, 9, 17)),     # before
+            _led(4, "avoided", 30, oid=5, valid_from=date(2026, 9, 26)),     # after
+            _led(5, "claimed", 999, oid=6, valid_from=date(2026, 1, 1)),     # open claim
+            _led(1, "avoided", 90, oid=7, supersedes=1, valid_from=date(2026, 9, 18))]
+    t = vss.ledger_totals(rows, since=date(2026, 9, 18), until="2026-09-25")
+    assert (t["avoided_gbp"], t["recovered_gbp"], t["saved_gbp"]) == (90.0, 40.0, 130.0)
+    assert t["claimed_open_gbp"] == 999.0
+    assert vss.ledger_totals(rows)["saved_gbp"] == 230.0     # no window: everything
+
+
+def _triage_row(did, status="resolved", delta=None):
+    return {"discrepancy_id": did, "issue_type": "quantity_invoiced_above_po",
+            "status": status, "raw_value": "12", "expected_value": "10",
+            "computed_value": None, "triage_delta": delta, "currency": "USD",
+            "doc_type": "invoice", "doc_pk_candidate": f"INV{did}", "deal_id": f"D{did}",
+            "supplier_name": "Acme", "created_at": None, "resolved_at": None,
+            "query_sent_at": None, "po_id": None}
+
+
+def test_an_unpriced_claimed_finding_stays_listed_but_counts_in_no_total(monkeypatch):
+    """R20(b): a claim with no readable figure must still reach "Being claimed" so it can
+    be settled; it never counts in a found total, and is never valued at zero. An
+    unpriced finding nobody claimed is still dropped."""
+    monkeypatch.setattr(vss, "_load_discrepancies",
+                        lambda cur: [_triage_row(41), _triage_row(42, status="open")])
+    monkeypatch.setattr(vss, "_load_opportunities", lambda cur: [])
+    monkeypatch.setattr(vss, "_load_ledger", lambda cur: [_led(41, "claimed", 75, oid=1)])
+    monkeypatch.setattr(vss, "_get_rates", lambda: None)
+    out = vss.build_value_summary(conn=FakeConn())
+    ids = [f["id"] for f in out["findings"]]
+    assert ids == ["disc:41"]
+    f = out["findings"][0]
+    assert f["amount_gbp"] is None and f["ledger_state"] == "claimed"
+    assert f["claim"]["amount_gbp"] == 75.0
+    assert f["title"].endswith("bills over its purchase order")     # no invented figure
+    assert out["verified_found_gbp"] == 0.0 and out["in_play_gbp"] == 0.0
+    assert out["claimed_open_gbp"] == 75.0
+
+
+def test_the_ledger_is_read_in_the_order_it_was_written():
+    # claimed_at is the FIRST claimed row; with no ORDER BY a corrected claim could
+    # report the correction's time instead.
+    assert "ORDER BY recorded_at, outcome_id" in vss._LEDGER_SQL
+
+
+def test_an_unpriced_claimed_po_finding_never_hides_the_priced_lines_under_it(monkeypatch):
+    # Listed for settling only: it takes no part in the supersede passes.
+    po = _triage_row(51) | {"issue_type": "invoices_exceed_po_total",
+                            "doc_type": "purchase_order", "doc_pk_candidate": "PO-5",
+                            "po_id": "PO-5"}
+    line = _triage_row(52, status="open", delta="£40.00") | {"po_id": "PO-5"}
+    monkeypatch.setattr(vss, "_load_discrepancies", lambda cur: [po, line])
+    monkeypatch.setattr(vss, "_load_opportunities", lambda cur: [])
+    monkeypatch.setattr(vss, "_load_ledger", lambda cur: [_led(51, "claimed", 75, oid=1)])
+    monkeypatch.setattr(vss, "_get_rates", lambda: None)
+    out = vss.build_value_summary(conn=FakeConn())
+    by_id = {f["id"]: f for f in out["findings"]}
+    assert by_id["disc:52"]["superseded_by"] is None
+    assert out["verified_found_gbp"] == 40.0

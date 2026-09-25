@@ -7,7 +7,7 @@ miss it. So an empty week sends nothing at all.
 Composition is pure (summary dict + now -> {subject, body} | None); the scheduler wrapper
 is gated on two env vars and never raises.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -27,6 +27,15 @@ def _finding(**kw):
            "resolved_at": None, "status": "open", "superseded_by": None}
     row.update(kw)
     return row
+
+
+def _led(source_id, outcome_type, amount_gbp, *, oid, valid_from, supersedes=None,
+         source_type="finding"):
+    """A proc.bp_value_outcome row, as value_summary_service._load_ledger returns it."""
+    return {"outcome_id": oid, "source_type": source_type, "source_id": str(source_id),
+            "outcome_type": outcome_type, "amount": amount_gbp, "currency": "GBP",
+            "amount_gbp": amount_gbp, "supersedes_id": supersedes, "valid_from": valid_from,
+            "recorded_at": datetime(2026, 7, 1, tzinfo=timezone.utc) + timedelta(minutes=oid)}
 
 
 def _summary(findings, **kw):
@@ -54,7 +63,11 @@ def test_a_recovery_this_week_is_reason_enough_even_with_no_new_findings():
     # Nothing new found, but £950 came back — that is worth an email.
     recovered = _summary([_finding(found_at=_iso(40), age_days=40, status="resolved",
                                    recovered_gbp=950.0, resolved_at=_iso(2))],
-                         recovered_gbp=950.0)
+                         recovered_gbp=950.0,
+                         ledger_rows=[_led(80, "claimed", 950.0, oid=1,
+                                           valid_from=(NOW - timedelta(days=30)).date()),
+                                      _led(80, "recovered", 950.0, oid=2,
+                                           valid_from=(NOW - timedelta(days=2)).date())])
     digest = vd.compose_digest(recovered, NOW)
     assert digest is not None
     assert "950" in digest["subject"]
@@ -101,7 +114,11 @@ def test_the_subject_carries_both_figures():
     week = [_finding(),
             _finding(id="disc:81", amount_gbp=200.0, status="resolved",
                      recovered_gbp=200.0, resolved_at=_iso(1), found_at=_iso(1))]
-    d = vd.compose_digest(_summary(week, recovered_gbp=200.0), NOW)
+    d = vd.compose_digest(_summary(week, recovered_gbp=200.0, ledger_rows=[
+        _led(81, "recovered", 200.0, oid=1, valid_from=(NOW - timedelta(days=1)).date()),
+        # six months ago: in the all-time total, not this week's news
+        _led(99, "recovered", 5000.0, oid=2, valid_from=(NOW - timedelta(days=180)).date())]),
+        NOW)
     assert d["subject"].startswith("Value found this week")
     assert "1,150.00" in d["subject"] and "200.00" in d["subject"]
 
@@ -177,22 +194,36 @@ def test_sends_to_every_configured_recipient(monkeypatch):
 
 
 def test_saved_this_week_uses_the_ledger_date():
-    # R8: "recovered this week" became "saved this week" -- the sum of recovered_gbp,
-    # avoided_gbp and realised_gbp over live findings whose settled_at falls in the week.
-    # Three findings, one per outcome type, prove all three count toward the total.
-    from datetime import datetime, timezone
-    now = datetime(2026, 9, 25, tzinfo=timezone.utc)
-    recovered_find = _finding(found_at=_iso(40), age_days=40)
-    recovered_find.update(recovered_gbp=320.0, settled_at="2026-09-23", resolved_at=_iso(40))
-    avoided_find = _finding(id="disc:81", found_at=_iso(40), age_days=40)
-    avoided_find.update(recovered_gbp=None, avoided_gbp=150.0,
-                        settled_at="2026-09-22", resolved_at=_iso(40))
-    realised_find = _finding(id="disc:82", found_at=_iso(40), age_days=40)
-    realised_find.update(recovered_gbp=None, realised_gbp=75.0,
-                         settled_at="2026-09-24", resolved_at=_iso(40))
-    digest = vd.compose_digest(
-        _summary([recovered_find, avoided_find, realised_find]), now)
+    # R8: "saved this week" = recovered + avoided + realised. R18(2): read from the ledger
+    # through ledger_totals, windowed by valid_from over the last seven calendar days.
+    now = datetime(2026, 9, 25, 9, 0, tzinfo=timezone.utc)
+    rows = [_led(80, "claimed", 500.0, oid=1, valid_from=date(2026, 8, 1)),
+            _led(80, "recovered", 320.0, oid=2, valid_from=date(2026, 9, 23)),
+            _led(81, "avoided", 150.0, oid=3, valid_from=date(2026, 9, 19)),     # first day
+            _led("OPP-1", "realised_saving", 75.0, oid=4, valid_from=date(2026, 9, 25),
+                 source_type="opportunity"),
+            _led(82, "avoided", 999.0, oid=5, valid_from=date(2026, 9, 18)),     # 8 days ago
+            _led(83, "claimed", 400.0, oid=6, valid_from=date(2026, 9, 24))]     # open claim
+    old = [_finding(found_at=_iso(40), age_days=40)]
+    digest = vd.compose_digest(_summary(old, ledger_rows=rows), now)
     assert digest is not None and "£545.00 saved this week" in digest["body"]
+
+
+def test_saved_this_week_is_the_ledgers_figure_not_the_findings():
+    # One source of truth: a finding row claiming recovered money that the ledger does not
+    # hold is not saved money, and a correction replaces the figure it supersedes.
+    stale = _finding(found_at=_iso(40), age_days=40, status="resolved",
+                     recovered_gbp=9000.0, settled_at=_iso(1))
+    assert vd.compose_digest(_summary([stale]), NOW) is None
+    rows = [_led(80, "avoided", 500.0, oid=1, valid_from=(NOW - timedelta(days=1)).date()),
+            _led(80, "avoided", 450.0, oid=2, supersedes=1,
+                 valid_from=(NOW - timedelta(days=1)).date())]
+    body = vd.compose_digest(_summary([stale], ledger_rows=rows), NOW)["body"]
+    assert "£450.00 saved this week" in body
+    from src.services.value_summary_service import ledger_totals
+    since, until = vd.saved_window(NOW)
+    assert vd.saved_this_week(rows, NOW) == \
+        ledger_totals(rows, since=since, until=until)["saved_gbp"] == 450.0
 
 
 def test_an_empty_week_is_not_sent_even_when_enabled(monkeypatch):
