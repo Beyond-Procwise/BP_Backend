@@ -20,6 +20,14 @@ _OPEN = ("identified", "negotiation", "agreed")
 _INFLIGHT = ("negotiation", "agreed")
 _CLOSED = ("realised", "closed", "rejected")
 
+# Realised savings are recorded outcomes, not the legacy realised_savings_gbp column: a
+# scalar subquery on the ledger's CURRENT realised_saving rows (superseded rows excluded).
+# {when} adds an optional date filter on the ledger's own valid_from.
+_REALISED = """(SELECT coalesce(sum(o.amount_gbp), 0) FROM proc.bp_value_outcome o
+  WHERE o.source_type = 'opportunity' AND o.outcome_type = 'realised_saving'
+    AND NOT EXISTS (SELECT 1 FROM proc.bp_value_outcome s WHERE s.supersedes_id = o.outcome_id)
+    {when})"""
+
 
 def _rows(cur, sql, params=()) -> list[dict]:
     cur.execute(sql, params)
@@ -65,20 +73,24 @@ def opportunities_data(cur) -> dict:
         " count(*) filter (where stage = any(%s)) in_flight, "
         " coalesce(sum(financial_impact_gbp) filter (where stage = any(%s)),0) in_flight_value, "
         " coalesce(sum(financial_impact_gbp),0) potential, "
-        " coalesce(sum(realised_savings_gbp) filter (where stage='realised'),0) realised, "
+        f" {_REALISED.format(when='')} realised, "
         " count(distinct category_id) filter (where category_id is not null) cat_impact "
         "from proc.bp_opportunity",
         (list(_OPEN), list(_CLOSED), list(_INFLIGHT), list(_INFLIGHT)))
     a = agg[0] if agg else {}
-    # period-over-period change: this month vs previous month (by detected_on)
+    # period-over-period change: this month vs previous month (by detected_on for
+    # counts/potential; by the ledger's own valid_from for realised).
+    cur_r_when = "AND date_trunc('month', o.valid_from) = date_trunc('month', now())"
+    prev_r_when = ("AND date_trunc('month', o.valid_from) = "
+                  "date_trunc('month', now() - interval '1 month')")
     cur_prev = _rows(cur,
         "select "
         " count(*) filter (where date_trunc('month',detected_on)=date_trunc('month',now())) cur_n, "
         " count(*) filter (where date_trunc('month',detected_on)=date_trunc('month',now()-interval '1 month')) prev_n, "
         " coalesce(sum(financial_impact_gbp) filter (where date_trunc('month',detected_on)=date_trunc('month',now())),0) cur_p, "
         " coalesce(sum(financial_impact_gbp) filter (where date_trunc('month',detected_on)=date_trunc('month',now()-interval '1 month')),0) prev_p, "
-        " coalesce(sum(realised_savings_gbp) filter (where stage='realised' and date_trunc('month',stage_updated_at)=date_trunc('month',now())),0) cur_r, "
-        " coalesce(sum(realised_savings_gbp) filter (where stage='realised' and date_trunc('month',stage_updated_at)=date_trunc('month',now()-interval '1 month')),0) prev_r, "
+        f" {_REALISED.format(when=cur_r_when)} cur_r, "
+        f" {_REALISED.format(when=prev_r_when)} prev_r, "
         " count(*) filter (where stage=any(%s) and date_trunc('month',stage_updated_at)=date_trunc('month',now())) cur_if, "
         " count(*) filter (where stage=any(%s) and date_trunc('month',stage_updated_at)=date_trunc('month',now()-interval '1 month')) prev_if "
         "from proc.bp_opportunity", (list(_INFLIGHT), list(_INFLIGHT)))
@@ -109,7 +121,7 @@ def savings_pipeline(cur) -> list[dict]:
         " coalesce(sum(financial_impact_gbp),0) identified, "
         " coalesce(sum(financial_impact_gbp) filter (where stage=any(%s)),0) negotiation, "
         " coalesce(sum(financial_impact_gbp) filter (where stage in ('agreed','realised')),0) agreed, "
-        " coalesce(sum(realised_savings_gbp) filter (where stage='realised'),0) realised "
+        f" {_REALISED.format(when='')} realised "
         "from proc.bp_opportunity",
         (["negotiation", "agreed", "realised"],)) or [{}])[0]
     return [
@@ -128,10 +140,14 @@ def savings_identified_vs_completed(cur) -> list[dict]:
         "select to_char(date_trunc('month',detected_on),'Mon') mon, date_trunc('month',detected_on) m, "
         "coalesce(sum(financial_impact_gbp),0) v from proc.bp_opportunity "
         "where detected_on is not null group by 1,2")}
+    # Realised-by-month comes from the ledger's current realised_saving rows, grouped
+    # by the outcome's own valid_from -- not the legacy realised_savings_gbp column.
     comp = {r["mon"]: _f(r["v"]) for r in _rows(cur,
-        "select to_char(date_trunc('month',stage_updated_at),'Mon') mon, "
-        "coalesce(sum(realised_savings_gbp),0) v from proc.bp_opportunity "
-        "where stage='realised' and stage_updated_at is not null group by 1")}
+        "select to_char(date_trunc('month',o.valid_from),'Mon') mon, "
+        "coalesce(sum(o.amount_gbp),0) v from proc.bp_value_outcome o "
+        "where o.source_type='opportunity' and o.outcome_type='realised_saving' "
+        "and not exists (select 1 from proc.bp_value_outcome s where s.supersedes_id=o.outcome_id) "
+        "group by 1")}
     out = [{"month": mon, "identified": round(v), "completed": round(comp.get(mon, 0.0)), "_m": m}
            for mon, (v, m) in ident.items()]
     out.sort(key=lambda x: x["_m"])

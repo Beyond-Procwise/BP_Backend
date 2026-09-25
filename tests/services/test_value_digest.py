@@ -153,14 +153,46 @@ def test_disabled_by_default(monkeypatch):
 
 
 def test_sends_to_every_configured_recipient(monkeypatch):
+    # Since ee01b12 the digest sends only as a named identity, to in-domain recipients,
+    # through guardrail.authorize. The test sets all three.
+    from types import SimpleNamespace
     monkeypatch.setenv("VALUE_DIGEST_ENABLED", "1")
     monkeypatch.setenv("VALUE_DIGEST_RECIPIENTS", "ap@example.com, finance@example.com")
-    monkeypatch.setattr(vd, "_load_summary", lambda: _summary([_finding()]))
+    monkeypatch.setenv("VALUE_DIGEST_SENT_AS", "digest-service@example.com")
+    monkeypatch.setenv("SES_DEFAULT_SENDER", "noreply@example.com")
+    monkeypatch.setattr(vd.guardrail, "authorize",
+                        lambda *a, **kw: SimpleNamespace(allowed=True, reason=""))
+    # run_weekly_digest composes against the real wall clock, not the module's frozen
+    # NOW -- that mismatch is the other half of "stale digest test fixed": a finding
+    # dated relative to NOW eventually falls outside the 7-day window as real time
+    # moves past it. found_at is anchored to actual now so this cannot happen again.
+    from datetime import datetime as _dt, timezone as _tz
+    fresh = _finding(found_at=_dt.now(_tz.utc).isoformat())
+    monkeypatch.setattr(vd, "_load_summary", lambda: _summary([fresh]))
     sent = {}
     monkeypatch.setattr(vd, "_send_email", lambda **kw: sent.update(kw) or True)
     assert vd.run_weekly_digest() == 1
     assert sent["to"] == ["ap@example.com", "finance@example.com"]
     assert "Value found this week" in sent["subject"]
+
+
+def test_saved_this_week_uses_the_ledger_date():
+    # R8: "recovered this week" became "saved this week" -- the sum of recovered_gbp,
+    # avoided_gbp and realised_gbp over live findings whose settled_at falls in the week.
+    # Three findings, one per outcome type, prove all three count toward the total.
+    from datetime import datetime, timezone
+    now = datetime(2026, 9, 25, tzinfo=timezone.utc)
+    recovered_find = _finding(found_at=_iso(40), age_days=40)
+    recovered_find.update(recovered_gbp=320.0, settled_at="2026-09-23", resolved_at=_iso(40))
+    avoided_find = _finding(id="disc:81", found_at=_iso(40), age_days=40)
+    avoided_find.update(recovered_gbp=None, avoided_gbp=150.0,
+                        settled_at="2026-09-22", resolved_at=_iso(40))
+    realised_find = _finding(id="disc:82", found_at=_iso(40), age_days=40)
+    realised_find.update(recovered_gbp=None, realised_gbp=75.0,
+                         settled_at="2026-09-24", resolved_at=_iso(40))
+    digest = vd.compose_digest(
+        _summary([recovered_find, avoided_find, realised_find]), now)
+    assert digest is not None and "£545.00 saved this week" in digest["body"]
 
 
 def test_an_empty_week_is_not_sent_even_when_enabled(monkeypatch):

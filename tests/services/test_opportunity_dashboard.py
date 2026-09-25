@@ -59,6 +59,29 @@ def test_opportunities_data_kpis():
     assert d["potentialChange"] == "+10%"
 
 
+def test_realised_comes_from_the_ledger():
+    # The realised figures must be read from recorded outcomes, not the legacy column.
+    # The live proof is the Task 10 demo; this pins the source.
+    src = open(od.__file__).read()
+    assert "bp_value_outcome" in src
+    assert "sum(realised_savings_gbp)" not in src
+
+
+def test_opportunities_data_realised_reads_the_ledger_query():
+    # Behavioural companion to the source-level test above: the SQL text actually
+    # executed for "realised" targets the ledger's current realised_saving rows.
+    cur = _FakeCur(script=[
+        ("from proc.bp_value_outcome o where o.source_type = 'opportunity' "
+         "and o.outcome_type = 'realised_saving'",
+         [{"total": 5, "identified": 3, "closed": 1, "in_flight": 1,
+           "potential": 100000, "realised": 420000, "cat_impact": 1}]),
+        ("cur_n", [{"cur_n": 1, "prev_n": 0, "cur_p": 10, "prev_p": 0,
+                    "cur_r": 420000, "prev_r": 0, "cur_if": 1, "prev_if": 0}]),
+    ])
+    d = od.opportunities_data(cur)
+    assert d["realised"] == "£420k"
+
+
 def test_savings_pipeline_shape():
     cur = _FakeCur(script=[
         ("coalesce(sum(financial_impact_gbp),0) identified",
@@ -95,7 +118,7 @@ def test_savings_identified_vs_completed_sorted():
         ("from proc.bp_opportunity where detected_on is not null group by 1,2",
          [{"mon": "Feb", "m": dt.datetime(2026, 2, 1), "v": 640000},
           {"mon": "Jan", "m": dt.datetime(2026, 1, 1), "v": 210000}]),
-        ("stage='realised' and stage_updated_at is not null",
+        ("outcome_type='realised_saving'",
          [{"mon": "Jan", "v": 120000}]),
     ])
     out = od.savings_identified_vs_completed(cur)
