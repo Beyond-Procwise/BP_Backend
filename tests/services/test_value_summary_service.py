@@ -1,7 +1,8 @@
 """Unit tests for the Value Found aggregation core. Pure functions on dicts —
 no DB. Row shapes mirror proc.bp_extraction_discrepancy / proc.bp_opportunity."""
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
+from src.services import value_summary_service as vss
 from src.services.value_summary_service import (
     parse_amount, discrepancy_delta, classify_discrepancy,
     classify_opportunity, dedupe, summarise,
@@ -42,15 +43,13 @@ def test_discrepancy_tiering():
     # ignored (= dismissed false positive) and superseded never count
     assert classify_discrepancy(_disc(status="ignored")) is None
     assert classify_discrepancy(_disc(status="superseded")) is None
-    # historical resolved with NULL outcome: stays in found, NOT recovered
+    # historical resolved: stays in found; recovered now comes only from the ledger
+    # (apply_ledger), never from the legacy resolution_outcome/recovered_amount columns.
     f = classify_discrepancy(_disc(status="resolved"))
-    assert f["tier"] == "verified" and f["status"] == "resolved"
-    # resolved as recovered: amount falls back to delta when recovered_amount is null
-    f = classify_discrepancy(_disc(status="resolved", resolution_outcome="recovered"))
-    assert f["tier"] == "verified" and f["recovered_gbp"] == 950.0
+    assert f["tier"] == "verified" and f["status"] == "resolved" and f["recovered_gbp"] is None
     f = classify_discrepancy(_disc(status="resolved", resolution_outcome="recovered",
                                    recovered_amount=500))
-    assert f["recovered_gbp"] == 500.0
+    assert f["recovered_gbp"] is None
     # non-value issue types produce no finding
     assert classify_discrepancy(_disc(issue_type="po_not_found")) is None
 
@@ -66,8 +65,9 @@ def test_opportunity_tiering():
     assert classify_opportunity(_opp())["tier"] == "potential"
     assert classify_opportunity(_opp(stage="negotiation"))["tier"] == "verified"
     assert classify_opportunity(_opp(stage="agreed"))["tier"] == "verified"
+    # recovered now comes only from the ledger, never from realised_savings_gbp
     f = classify_opportunity(_opp(stage="realised", realised_savings_gbp=800))
-    assert f["tier"] == "verified" and f["recovered_gbp"] == 800.0
+    assert f["tier"] == "verified" and f["recovered_gbp"] is None
     assert classify_opportunity(_opp(stage="rejected")) is None
     assert classify_opportunity(_opp(stage="closed")) is None
     # unknown stage must raise, never be silently dropped (spec rule)
@@ -109,7 +109,7 @@ def test_summarise_totals():
     ]
     t = summarise(fs)
     assert t["verified_found_gbp"] == 1050.0
-    assert t["recovered_gbp"] == 950.0
+    assert "recovered_gbp" not in t     # the ledger owns recovered_gbp now, not summarise()
     assert t["potential_gbp"] == 500.0
     assert t["finding_count"] == 3
     assert t["by_supplier"][0] == {"supplier_name": "Techworld",
@@ -176,3 +176,89 @@ def test_a_title_names_the_currency_it_is_quoting():
     # A document that never stated its currency keeps a bare amount, never a guessed one.
     bare = classify_discrepancy(_disc(currency=None))
     assert bare["title"].endswith("950.00")
+
+
+# --------------------------------------------------------------------------
+# The value ledger: recovered/avoided/realised/claimed figures, and triage money
+# --------------------------------------------------------------------------
+
+def _led(source_id, outcome_type, amount_gbp, *, oid, supersedes=None, source_type="finding",
+         valid_from=date(2026, 9, 10), recorded_at=None, amount=None, currency="GBP"):
+    return {"outcome_id": oid, "source_type": source_type, "source_id": str(source_id),
+            "outcome_type": outcome_type, "amount": amount if amount is not None else amount_gbp,
+            "currency": currency, "amount_gbp": amount_gbp, "supersedes_id": supersedes,
+            "valid_from": valid_from,
+            "recorded_at": recorded_at or datetime(2026, 9, 10, oid, tzinfo=timezone.utc)}
+
+
+def _disc_finding(did, amount, status="resolved", issue_type="duplicate_invoice", deal="D1", doc=None):
+    return {"id": f"disc:{did}", "source": "discrepancy", "tier": "verified",
+            "amount_gbp": amount, "status": status, "deal_id": deal,
+            "doc_pk": doc or f"INV{did}", "issue_type": issue_type, "superseded_by": None,
+            "recovered_gbp": None}
+
+
+def test_partial_recovery_counts_the_recovered_figure():
+    rows = [_led(7, "claimed", 500, oid=1), _led(7, "recovered", 320, oid=2)]
+    t = vss.ledger_totals(rows)
+    assert t["recovered_gbp"] == 320.0 and t["claimed_open_gbp"] == 0.0
+    f = vss.apply_ledger([_disc_finding(7, 500)], rows)[0]
+    assert f["ledger_state"] == "recovered" and f["claim"] is None
+
+
+def test_open_claim_is_in_progress_not_saved():
+    t = vss.ledger_totals([_led(8, "claimed", 200, oid=1)])
+    assert t["claimed_open_gbp"] == 200.0 and t["saved_gbp"] == 0.0
+
+
+def test_saved_is_avoided_plus_recovered_plus_realised_and_split_by_month():
+    rows = [_led(1, "avoided", 100, oid=1, valid_from=date(2026, 8, 3)),
+            _led(2, "claimed", 50, oid=2), _led(2, "recovered", 50, oid=3),
+            _led("OPP-1", "realised_saving", 25, oid=4, source_type="opportunity")]
+    t = vss.ledger_totals(rows)
+    assert (t["avoided_gbp"], t["recovered_gbp"], t["realised_gbp"], t["saved_gbp"]) == \
+        (100.0, 50.0, 25.0, 175.0)
+    assert t["by_month"] == [
+        {"month": "2026-08", "avoided_gbp": 100.0, "recovered_gbp": 0.0, "realised_gbp": 0.0},
+        {"month": "2026-09", "avoided_gbp": 0.0, "recovered_gbp": 50.0, "realised_gbp": 25.0}]
+
+
+def test_a_correction_replaces_the_figure_it_supersedes():
+    rows = [_led(1, "avoided", 100, oid=1), _led(1, "avoided", 90, oid=2, supersedes=1)]
+    assert vss.ledger_totals(rows)["avoided_gbp"] == 90.0
+
+
+def test_unconverted_outcome_counts_in_no_gbp_total():
+    rows = [_led(1, "avoided", None, oid=1, amount=100, currency="NZD")]
+    assert vss.ledger_totals(rows)["avoided_gbp"] == 0.0
+
+
+def test_in_play_excludes_settled_findings():
+    findings = vss.apply_ledger(
+        [_disc_finding(1, 100, status="open"), _disc_finding(2, 200), _disc_finding(3, 300)],
+        [_led(2, "claimed", 200, oid=1), _led(3, "avoided", 300, oid=2)])
+    assert vss.in_play_gbp(findings) == 300.0   # open 100 + claimed 200; avoided 300 is settled
+
+
+def test_line_findings_under_an_overbilled_po_are_superseded():
+    po = _disc_finding(10, 20000, status="open", issue_type="invoices_exceed_po_total", doc="PO-1")
+    po["po_id"] = "PO-1"
+    line = _disc_finding(11, 700, status="open", issue_type="quantity_invoiced_above_po", doc="INV-9")
+    line["po_id"] = "PO-1"
+    other = _disc_finding(12, 50, status="open", issue_type="unit_price_differs_from_po", doc="INV-8")
+    other["po_id"] = "PO-2"
+    out = vss.supersede_lines_under_overbilled_po([po, line, other])
+    assert line["superseded_by"] == "disc:10"
+    assert other["superseded_by"] is None and po["superseded_by"] is None
+    assert len(out) == 3                      # the drawer explains, never omits
+
+
+def test_triage_row_takes_its_amount_from_exposure():
+    row = {"discrepancy_id": 5, "issue_type": "quantity_invoiced_above_po", "status": "open",
+           "raw_value": "340.17", "expected_value": "113.39", "computed_value": None,
+           "exposure_gbp": 226.78, "currency": "USD", "doc_type": "invoice",
+           "doc_pk_candidate": "INV5", "created_at": None, "resolved_at": None,
+           "query_sent_at": None}
+    f = vss.classify_discrepancy(row)
+    assert f["amount_gbp"] == 226.78
+    assert f["currency"] == "GBP"            # exposure is already sterling: no second FX

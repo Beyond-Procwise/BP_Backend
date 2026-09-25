@@ -22,7 +22,9 @@ from typing import Any, Optional
 
 from src.services import agent_actions, email_dispatch_guard, grounded_retone, guardrail
 from src.services.email_dispatch_guard import DispatchDenied
-from src.services.value_summary_service import DISCREPANCY_VALUE_TYPES, parse_amount
+from src.services.value_summary_service import (
+    DISCREPANCY_VALUE_TYPES, TRIAGE_VALUE_TYPES, parse_amount,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +127,21 @@ def _load(cur, discrepancy_id: int) -> dict:
 
 
 def _require_queryable(row: dict) -> None:
-    if row.get("issue_type") not in DISCREPANCY_VALUE_TYPES:
+    issue_type = row.get("issue_type")
+    if issue_type not in DISCREPANCY_VALUE_TYPES:
         raise ValueError(f"disc:{row.get('discrepancy_id')} is not a value finding "
-                         f"({row.get('issue_type')})")
+                         f"({issue_type})")
+    # Task 4 (value ledger) widened DISCREPANCY_VALUE_TYPES to also cover the three
+    # triage-sourced money types, so the Value Found headline can count them -- but
+    # this module's figures() reads computed_value/raw_value/expected_value, which for
+    # a triage mirror are not a currency basis (see classify_discrepancy): raw_value on
+    # a "quantity" finding, for instance, is a unit count, not an amount. Until this
+    # template is taught to read the triage exposure_gbp instead, a triage-sourced
+    # finding is refused here rather than risk a supplier email quoting the wrong
+    # figure -- or one that isn't money at all.
+    if issue_type in TRIAGE_VALUE_TYPES:
+        raise ValueError(f"disc:{row.get('discrepancy_id')} cannot be queried by email "
+                         f"yet ({issue_type})")
     if row.get("status") != "open":
         raise ValueError(f"disc:{row.get('discrepancy_id')} is not open "
                          f"(status {row.get('status')}) — nothing to query")

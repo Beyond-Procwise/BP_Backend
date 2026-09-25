@@ -231,6 +231,18 @@ def test_draft_refuses_a_non_value_issue_type(conn):
         vq.build_draft("disc:80", conn=conn)
 
 
+def test_draft_refuses_a_triage_sourced_finding(conn):
+    # Task 4 (value ledger) widened value_summary_service.DISCREPANCY_VALUE_TYPES to
+    # also cover the three triage-sourced money types, so they count towards the Value
+    # Found headline. This module's template reads computed_value/raw_value/
+    # expected_value, which for a triage mirror are not a currency basis (e.g. a
+    # "quantity" finding's raw_value is a unit count, not an amount) -- so drafting one
+    # must still be refused, not silently email a wrong or non-monetary figure.
+    conn.row["issue_type"] = "quantity_invoiced_above_po"
+    with pytest.raises(ValueError, match="cannot be queried by email"):
+        vq.build_draft("disc:80", conn=conn)
+
+
 def test_draft_refuses_an_opportunity_id(conn):
     # Only discrepancies are queryable — an opportunity has no supplier to challenge.
     with pytest.raises(ValueError, match="only discrepancy findings"):
