@@ -48,3 +48,29 @@ def test_every_labelled_row_carries_its_provenance(tmp_path):
     assert row["pk"] == 3
     assert row["fields"]["invoice_id"]["rule"] == "text-match"
     assert row["source"] == "corpus"
+
+
+def test_default_recover_reads_full_text_not_text(monkeypatch):
+    """ParsedDocument exposes `full_text`. Reading `text` returned None for every
+    document, so recovery silently recovered nothing while the S3 download and
+    the PDF conversion both succeeded."""
+    from src.services.truth import build_set
+
+    class FakeParsed:
+        full_text = "Invoice No: INV-7"
+
+    class FakeParser:
+        @staticmethod
+        def parse(path):
+            return FakeParsed()
+
+    import sys
+    import types
+    module = types.ModuleType("src.services.extraction.parser")
+    module.parse = FakeParser.parse
+    monkeypatch.setitem(sys.modules, "src.services.extraction.parser", module)
+    pkg = types.ModuleType("src.services.extraction")
+    pkg.parser = module
+    monkeypatch.setitem(sys.modules, "src.services.extraction", pkg)
+
+    assert build_set._default_recover("documents/x.pdf") == "Invoice No: INV-7"

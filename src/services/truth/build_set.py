@@ -30,7 +30,10 @@ def _default_recover(file_path: str) -> Optional[str]:
     try:
         from src.services.extraction import parser
         parsed = parser.parse(file_path)
-        return getattr(parsed, "text", None)
+        # ParsedDocument calls it full_text. Reading `text` returned None for
+        # every document, so recovery recovered nothing while the S3 download
+        # and the PDF conversion both quietly succeeded.
+        return getattr(parsed, "full_text", None)
     except Exception as exc:  # noqa: BLE001 - recovery is best effort by design
         logger.info("could not recover source for %s: %s", file_path, exc)
         return None
