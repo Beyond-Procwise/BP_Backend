@@ -25,7 +25,12 @@ from html import escape
 from email.utils import parsedate_to_datetime
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
-from agents.negotiation import parsing as _parsing, prose as _prose
+from agents.negotiation import (
+    email_shaping as _email_shaping,
+    parsing as _parsing,
+    prose as _prose,
+    rounds as _rounds,
+)
 from agents.email_drafting_agent import EmailDraftingAgent, DEFAULT_NEGOTIATION_SUBJECT
 from repositories import (
     supplier_response_repo,
@@ -2071,55 +2076,8 @@ class NegotiationAgent(BaseAgent):
         payload["_batch_execution"] = True
         return payload
 
-    def _bucket_entries_by_round(self, entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Group negotiation batch entries by round to enforce sequential execution."""
-
-        buckets: Dict[Tuple[Optional[int], Optional[Any]], Dict[str, Any]] = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            raw_round = None
-            for key in ("round", "round_number", "round_no"):
-                candidate = entry.get(key)
-                if candidate is not None:
-                    raw_round = candidate
-                    break
-
-            numeric_sort: Optional[int] = None
-            display_round: Optional[Any] = None
-            if raw_round is not None:
-                try:
-                    numeric_sort = int(float(raw_round))
-                    display_round = numeric_sort
-                except Exception:
-                    display_round = raw_round
-            else:
-                numeric_sort = 1
-
-            bucket_key = (numeric_sort, display_round)
-            bucket = buckets.get(bucket_key)
-            if not bucket:
-                bucket = {
-                    "round": display_round,
-                    "numeric_sort": numeric_sort,
-                    "entries": [],
-                }
-                buckets[bucket_key] = bucket
-            bucket["entries"].append(entry)
-
-        ordered = sorted(
-            buckets.values(),
-            key=lambda bucket: (
-                0,
-                bucket["numeric_sort"],
-            )
-            if bucket.get("numeric_sort") is not None
-            else (
-                1,
-                str(bucket.get("round") or "").lower(),
-            ),
-        )
-        return ordered
+    def _bucket_entries_by_round(self, entries: Sequence[Dict[str, Any]]):
+        return _rounds.bucket_entries_by_round(entries)
 
     def _compute_batch_workers(self, entries: Sequence[Dict[str, Any]]) -> int:
         """Determine worker pool size for the provided batch entries."""
@@ -2240,36 +2198,9 @@ class NegotiationAgent(BaseAgent):
         else:  # pragma: no cover - defensive fallback
             task_map[round_key].append(entry)
 
-    def _drain_pending_email_tasks(
-        self, context: AgentContext, round_number: Optional[int]
-    ) -> List[Dict[str, Any]]:
-        """Retrieve and clear pending email tasks for a negotiation round."""
-
-        try:
-            task_map = getattr(context, "_pending_email_round_tasks")
-        except AttributeError:
-            return []
-
-        if not task_map:
-            return []
-
-        try:
-            lock = getattr(context, "_pending_email_round_lock")
-        except AttributeError:
-            lock = None
-
-        try:
-            round_key = int(round_number) if round_number is not None else None
-        except Exception:
-            round_key = None
-
-        if round_key is None:
-            return []
-
-        if lock:
-            with lock:
-                return list(task_map.pop(round_key, []))
-        return list(task_map.pop(round_key, []))
+    def _drain_pending_email_tasks(self, context: AgentContext, round_number: Optional[int]
+):
+        return _rounds.drain_pending_email_tasks(context, round_number)
 
     def _combine_supplier_responses(
         self, responses: Sequence[Dict[str, Any]]
@@ -3051,53 +2982,13 @@ class NegotiationAgent(BaseAgent):
         except Exception:
             return True
 
-    def _extract_hitl_decisions(
-        self,
-        context: AgentContext,
-        shared_context: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Collect explicit HITL decisions provided in the inbound payload."""
+    def _extract_hitl_decisions(self, context: AgentContext,
+    shared_context: Dict[str, Any],
+):
+        return _rounds.extract_hitl_decisions(context, shared_context)
 
-        decisions: Dict[str, Any] = {}
-
-        def _merge(source: Optional[Dict[str, Any]]) -> None:
-            if not isinstance(source, dict):
-                return
-            for key in ("hitl_decisions", "hitl_approvals", "hitl_review", "hitl"):
-                value = source.get(key)
-                if isinstance(value, dict):
-                    for round_key, decision_value in value.items():
-                        decisions[str(round_key)] = decision_value
-
-        if isinstance(context.input_data, dict):
-            _merge(context.input_data)
-            nested_shared = context.input_data.get("shared_context")
-            if isinstance(nested_shared, dict):
-                _merge(nested_shared)
-        _merge(shared_context)
-        return decisions
-
-    @staticmethod
-    def _normalise_hitl_value(value: Any) -> Tuple[str, Optional[str]]:
-        """Normalise arbitrary decision tokens into approved/pending/rejected."""
-
-        reason: Optional[str] = None
-        candidate = value
-        if isinstance(candidate, dict):
-            reason = cast(Optional[str], candidate.get("reason") or candidate.get("notes"))
-            candidate = candidate.get("status") or candidate.get("decision")
-
-        if isinstance(candidate, bool):
-            return ("approved" if candidate else "rejected", reason)
-
-        token = str(candidate).strip().lower() if candidate is not None else ""
-        if token in {"approved", "approve", "ok", "okay", "yes", "true", "allow", "proceed"}:
-            return "approved", reason
-        if token in {"rejected", "reject", "no", "false", "deny", "denied", "blocked"}:
-            return "rejected", reason
-        if token in {"pending", "awaiting", "hold", "review"}:
-            return "pending", reason
-        return "pending", reason
+    def _normalise_hitl_value(self, value: Any):
+        return _rounds.normalise_hitl_value(value)
 
     def _resolve_hitl_decision(
         self,
@@ -3295,43 +3186,8 @@ class NegotiationAgent(BaseAgent):
         self._log_hitl_checkpoint(context, review_payload)
         return review_payload
 
-    def _compile_final_quotes(self, negotiation_state: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Compile supplier offers and counters for downstream evaluation."""
-
-        quotes: List[Dict[str, Any]] = []
-        active_suppliers = negotiation_state.get("active_suppliers", {})
-        if not isinstance(active_suppliers, dict):
-            return quotes
-
-        for supplier_id, supplier_state in active_suppliers.items():
-            if not isinstance(supplier_state, dict):
-                continue
-            entry_payload = supplier_state.get("entry") or {}
-            decisions = supplier_state.get("decisions") or []
-            latest_decision = decisions[-1] if decisions else {}
-            responses = supplier_state.get("responses") or []
-            latest_response = responses[-1] if responses else {}
-
-            currency = (
-                latest_decision.get("currency")
-                or entry_payload.get("currency")
-                or entry_payload.get("currency_code")
-            )
-
-            quotes.append(
-                {
-                    "supplier_id": supplier_id,
-                    "supplier_offer": entry_payload.get("current_offer")
-                    or entry_payload.get("price"),
-                    "counter_offer": latest_decision.get("counter_price"),
-                    "strategy": latest_decision.get("strategy"),
-                    "currency": currency,
-                    "rounds_completed": max(0, int(supplier_state.get("current_round", 1)) - 1),
-                    "latest_response": latest_response,
-                }
-            )
-
-        return quotes
+    def _compile_final_quotes(self, negotiation_state: Dict[str, Any]):
+        return _rounds.compile_final_quotes(negotiation_state)
 
     def _run_multi_round_negotiation(
         self,
@@ -4012,20 +3868,8 @@ class NegotiationAgent(BaseAgent):
                 mapped[supplier_id].append(row)
         return mapped
 
-    @staticmethod
-    def _run_async_task(coro: Awaitable[Any]) -> Any:
-        try:
-            return asyncio.run(coro)
-        except RuntimeError as exc:
-            if "asyncio.run() cannot be called" not in str(exc):
-                raise
-            loop = asyncio.new_event_loop()
-            try:
-                asyncio.set_event_loop(loop)
-                return loop.run_until_complete(coro)
-            finally:
-                asyncio.set_event_loop(None)
-                loop.close()
+    def _run_async_task(self, coro: Awaitable[Any]):
+        return _rounds.run_async_task(coro)
 
     def _record_round_status(
         self,
@@ -4933,15 +4777,8 @@ class NegotiationAgent(BaseAgent):
 
         return None
 
-    def _extract_message_from_response(self, response: Dict[str, Any]) -> Optional[str]:
-        """Extract plain text content from a supplier response."""
-
-        for key in ("message", "message_text", "body", "text", "content"):
-            value = response.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-
-        return None
+    def _extract_message_from_response(self, response: Dict[str, Any]):
+        return _rounds.extract_message_from_response(response)
 
     def _consolidate_multi_round_results(
         self,
@@ -5073,20 +4910,8 @@ class NegotiationAgent(BaseAgent):
             ),
         )
 
-    def _determine_overall_status(self, negotiation_state: Dict[str, Any]) -> str:
-        """Summarise the overall negotiation status for reporting."""
-
-        total = negotiation_state.get("total_suppliers", 0) or 0
-        completed = len(negotiation_state.get("completed_suppliers", set()))
-        failed = len(negotiation_state.get("failed_suppliers", {}))
-
-        if total > 0 and completed == total:
-            return "ALL_COMPLETED"
-        if total > 0 and failed == total:
-            return "ALL_FAILED"
-        if total > 0 and completed + failed == total:
-            return "PARTIALLY_COMPLETED"
-        return "IN_PROGRESS"
+    def _determine_overall_status(self, negotiation_state: Dict[str, Any]):
+        return _rounds.determine_overall_status(negotiation_state)
 
     def _run_single_negotiation(self, context: AgentContext) -> AgentOutput:
 
@@ -7382,22 +7207,8 @@ class NegotiationAgent(BaseAgent):
         setattr(self, attr_name, fallback_info)
         return fallback_info
 
-    @staticmethod
-    def _normalise_base_subject(subject: Optional[str]) -> Optional[str]:
-        if subject is None:
-            return None
-        if not isinstance(subject, str):
-            try:
-                subject = str(subject)
-            except Exception:
-                return None
-        trimmed = subject.strip()
-        if not trimmed:
-            return None
-        trimmed = re.sub(r"(?i)^(re|fw|fwd):\s*", "", trimmed)
-        cleaned = EmailDraftingAgent._strip_rfq_identifier_tokens(trimmed)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip("-–: ")
-        return cleaned or None
+    def _normalise_base_subject(self, subject: Optional[str]):
+        return _email_shaping.normalise_base_subject(subject)
 
     def _format_negotiation_subject(self, state: Dict[str, Any]) -> str:
         base = self._coerce_text(state.get("base_subject"))
@@ -9501,10 +9312,8 @@ class NegotiationAgent(BaseAgent):
                     self._supplier_agent = SupplierInteractionAgent(self.agent_nick)
         return self._supplier_agent
 
-    def _build_stop_message(self, status: str, reason: str, round_no: int) -> str:
-        status_text = status.capitalize()
-        reason_text = reason or "No further action required."
-        return f"Negotiation {status_text} after round {round_no}: {reason_text}"
+    def _build_stop_message(self, status: str, reason: str, round_no: int):
+        return _rounds.build_stop_message(status, reason, round_no)
 
     def _store_session(
         self, session_id: str, supplier: str, round_no: int, counter_price: Optional[float]
@@ -9776,23 +9585,8 @@ class NegotiationAgent(BaseAgent):
 
         return recipients
 
-    def _collect_supplier_snippets(self, payload: Dict[str, Any]) -> List[str]:
-        snippets: List[str] = []
-        for key in (
-            "supplier_snippets",
-            "snippets",
-            "highlights",
-            "supplier_highlights",
-            "response_text",
-            "message",
-            "raw_email",
-        ):
-            value = payload.get(key)
-            if isinstance(value, list):
-                snippets.extend(str(item).strip() for item in value if str(item).strip())
-            elif isinstance(value, str) and value.strip():
-                snippets.append(value.strip())
-        return snippets[:5]
+    def _collect_supplier_snippets(self, payload: Dict[str, Any]):
+        return _email_shaping.collect_supplier_snippets(payload)
 
     def _ensure_supplier_id_in_drafts(
         self,
@@ -9932,12 +9726,8 @@ class NegotiationAgent(BaseAgent):
             return None
         return text
 
-    @staticmethod
-    def _is_likely_identifier(value: str) -> bool:
-        token = value.strip()
-        if not token:
-            return False
-        return bool(re.match(r"^[A-Z]{2,}[A-Z0-9._-]*$", token))
+    def _is_likely_identifier(self, value: str):
+        return _email_shaping.is_likely_identifier(value)
 
     def _extract_name_from_email(self, value: Any) -> Optional[str]:
         email = self._coerce_text(value)
@@ -9953,22 +9743,8 @@ class NegotiationAgent(BaseAgent):
             return None
         return " ".join(token.capitalize() for token in tokens)
 
-    @staticmethod
-    def _has_explicit_greeting(message: Optional[str]) -> bool:
-        if not message:
-            return False
-        snippet = message.lstrip()
-        lowered = snippet.lower()
-        greeting_prefixes = (
-            "dear ",
-            "hi ",
-            "hello ",
-            "greetings",
-            "good morning",
-            "good afternoon",
-            "good evening",
-        )
-        return any(lowered.startswith(prefix) for prefix in greeting_prefixes)
+    def _has_explicit_greeting(self, message: Optional[str]):
+        return _email_shaping.has_explicit_greeting(message)
 
     def _build_personal_greeting(
         self, contact_name: Optional[str], supplier_name: Optional[str]
@@ -9984,38 +9760,13 @@ class NegotiationAgent(BaseAgent):
                 return f"Dear {parsed},"
         return None
 
-    def _build_decision_log(
-        self,
-        supplier: Optional[str],
-        session_reference: Optional[str],
-        price: Optional[float],
-        target_price: Optional[float],
-        decision: Dict[str, Any],
-    ) -> str:
-        base = (
-            f"Strategy={decision.get('strategy')} counter={decision.get('counter_price')}"
-            f" target={target_price} current={price} supplier={supplier} reference={session_reference}."
-        )
-        plays = decision.get("play_recommendations") or []
-        if plays:
-            top_snippets: List[str] = []
-            for play in plays[:3]:
-                if not isinstance(play, dict):
-                    continue
-                lever = play.get("lever") or play.get("category")
-                description = play.get("play") or play.get("description")
-                if not description:
-                    continue
-                if lever:
-                    top_snippets.append(f"{lever}: {description}")
-                else:
-                    top_snippets.append(str(description))
-            if top_snippets:
-                base = f"{base} Plays={' | '.join(top_snippets)}."
-        rationale = decision.get("rationale")
-        if rationale:
-            return f"{base} {rationale}"
-        return base
+    def _build_decision_log(self, supplier: Optional[str],
+    session_reference: Optional[str],
+    price: Optional[float],
+    target_price: Optional[float],
+    decision: Dict[str, Any],
+):
+        return _rounds.build_decision_log(supplier, session_reference, price, target_price, decision)
 
     # ------------------------------------------------------------------
     # Parsing helpers
@@ -10633,60 +10384,14 @@ class NegotiationAgent(BaseAgent):
             return None
         return self._email_agent
 
-    @staticmethod
-    def _simple_html_from_text(text: str) -> str:
-        lines = text.splitlines()
-        html_parts: List[str] = []
-        bullets: List[str] = []
+    def _simple_html_from_text(self, text: str):
+        return _email_shaping.simple_html_from_text(text)
 
-        def flush() -> None:
-            if bullets:
-                items = "".join(f"<li>{escape(item)}</li>" for item in bullets)
-                html_parts.append(f"<ul>{items}</ul>")
-                bullets.clear()
+    def _normalise_recipient_list(self, value: Any):
+        return _email_shaping.normalise_recipient_list(value)
 
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                flush()
-                continue
-            if re.match(r"^[-*•]\s+", stripped):
-                bullets.append(stripped[1:].strip())
-                continue
-            flush()
-            html_parts.append(f"<p>{escape(stripped)}</p>")
-        flush()
-        return "".join(html_parts)
-
-    @staticmethod
-    def _normalise_recipient_list(value: Any) -> List[str]:
-        if value is None:
-            return []
-        candidates: List[str] = []
-        if isinstance(value, str):
-            tokens = re.split(r"[;,]", value)
-            candidates.extend(token.strip() for token in tokens if token.strip())
-        elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-            for item in value:
-                if isinstance(item, str):
-                    tokens = re.split(r"[;,]", item)
-                    candidates.extend(token.strip() for token in tokens if token.strip())
-        return candidates
-
-    @staticmethod
-    def _merge_recipients_basic(to_list: List[str], cc_list: List[str]) -> List[str]:
-        merged: List[str] = []
-        seen: Set[str] = set()
-        for addr in list(to_list) + list(cc_list):
-            candidate = addr.strip()
-            if not candidate:
-                continue
-            key = candidate.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(candidate)
-        return merged
+    def _merge_recipients_basic(self, to_list: List[str], cc_list: List[str]):
+        return _email_shaping.merge_recipients_basic(to_list, cc_list)
 
     def _build_negotiation_html_shell(
         self,
@@ -11556,34 +11261,8 @@ class NegotiationAgent(BaseAgent):
         )
         return history_container
 
-    def _inject_history_into_html(self, html: str, transcript_html: str) -> str:
-        if not html or not transcript_html:
-            return html
-
-        insertion_marker = (
-            "          <tr>\n"
-            "            <td style=\"padding:20px 32px 28px 32px;background-color:#f8fafc;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;line-height:1.6;color:#64748b;border-top:1px solid #e2e8f0;\">\n"
-        )
-
-        history_row = (
-            "          <tr>\n"
-            "            <td style=\"padding:0 32px 32px 32px;font-family:'Segoe UI',Arial,sans-serif;\">\n"
-            f"              {transcript_html}\n"
-            "            </td>\n"
-            "          </tr>\n"
-        )
-
-        marker_index = html.find(insertion_marker)
-        if marker_index == -1:
-            closing_body = "</body>"
-            body_index = html.lower().rfind(closing_body)
-            if body_index == -1:
-                return f"{html}\n{transcript_html}"
-            return (
-                f"{html[:body_index]}\n{transcript_html}\n{html[body_index:]}"
-            )
-
-        return html[:marker_index] + history_row + html[marker_index:]
+    def _inject_history_into_html(self, html: str, transcript_html: str):
+        return _email_shaping.inject_history_into_html(html, transcript_html)
 
     def _get_email_thread_summary(
         self, workflow_id: Optional[str], supplier_id: Optional[str]
@@ -12928,14 +12607,8 @@ class NegotiationAgent(BaseAgent):
 
         return payload
 
-    def _build_email_context_snapshot(self, context: AgentContext) -> Dict[str, Any]:
-        snapshot = {
-            "workflow_id": getattr(context, "workflow_id", None),
-            "agent_id": "EmailDraftingAgent",
-            "user_id": getattr(context, "user_id", None),
-            "manifest": context.manifest(),
-        }
-        return {key: value for key, value in snapshot.items() if value}
+    def _build_email_context_snapshot(self, context: AgentContext):
+        return _email_shaping.build_email_context_snapshot(context)
 
     def _flush_email_draft_actions(
         self, context: AgentContext, result: AgentOutput
