@@ -46,3 +46,20 @@ def test_results_are_broken_down_by_document_type(tmp_path):
     r = score(_labelled(tmp_path, rows))
     assert r["by_doc_type"]["Invoice"]["accuracy"] == 1.0
     assert r["by_doc_type"]["Quote"]["accuracy"] == 0.0
+
+
+def test_a_malformed_line_in_the_labelled_set_does_not_crash_scoring(tmp_path):
+    p = tmp_path / "labelled.jsonl"
+    p.write_text(json.dumps(_row("Invoice", ["verified"])) + "\n{ broken\n")
+    r = score(str(p))
+    assert r["verified"] == 1
+    assert r["malformed"] == 1
+
+
+def test_counts_are_recomputed_from_fields_not_trusted(tmp_path):
+    """A stored count that disagrees with the fields it summarises is a lie the
+    scorer would otherwise repeat."""
+    row = _row("Invoice", ["verified", "unsupported"])
+    row["counts"] = {"verified": 99, "unsupported": 0, "unverifiable": 0}
+    r = score(_labelled(tmp_path, [row]))
+    assert r["verified"] == 1 and r["unsupported"] == 1

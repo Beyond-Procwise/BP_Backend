@@ -74,3 +74,16 @@ def test_default_recover_reads_full_text_not_text(monkeypatch):
     monkeypatch.setitem(sys.modules, "src.services.extraction", pkg)
 
     assert build_set._default_recover("documents/x.pdf") == "Invoice No: INV-7"
+
+
+def test_a_row_whose_extracted_is_not_a_dict_is_counted_not_fatal(tmp_path):
+    """It raised AttributeError mid-write, killing the run and leaving a
+    truncated labelled file that later scored as though it were complete."""
+    rows = [{"pk": 1, "doc_type": "Invoice", "source_text": "x", "extracted": [1, 2]},
+            {"pk": 2, "doc_type": "Invoice", "source_text": "Invoice No: INV-2",
+             "extracted": {"header": {"invoice_id": "INV-2"}}}]
+    out = tmp_path / "out.jsonl"
+    summary = build(_corpus(tmp_path, rows), str(out), recover=lambda fp: None)
+    assert summary["malformed"] == 1
+    assert summary["examples"] == 1
+    assert len(out.read_text().strip().splitlines()) == 1

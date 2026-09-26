@@ -29,7 +29,8 @@ def label_record(extracted: dict, source_text: Optional[str]) -> dict:
         v = _judge(field, value, source_text)
         fields[field] = {"value": value, "outcome": v.outcome, "rule": v.rule}
 
-    for i, line in enumerate(extracted.get("line_items") or []):
+    lines = extracted.get("line_items")
+    for i, line in enumerate(lines if isinstance(lines, list) else []):
         if not isinstance(line, dict):
             continue
         for field, value in line.items():
@@ -40,4 +41,8 @@ def label_record(extracted: dict, source_text: Optional[str]) -> dict:
     counts = {"verified": 0, "unsupported": 0, "unverifiable": 0}
     for f in fields.values():
         counts[f["outcome"]] = counts.get(f["outcome"], 0) + 1
+    # Neither accuracy nor coverage can see a field that was never emitted, so a
+    # model answering only where it is confident scores 100% on both. The count
+    # of what it actually produced is reported beside them.
+    counts["emitted"] = len(fields)
     return {"fields": fields, "counts": counts}

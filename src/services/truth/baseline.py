@@ -22,20 +22,36 @@ def score(labelled_path: str) -> dict:
     per_type: dict[str, dict] = defaultdict(
         lambda: {"verified": 0, "unsupported": 0, "unverifiable": 0})
 
+    malformed = 0
+    emitted = 0
     with open(labelled_path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
                 continue
-            row = json.loads(line)
-            counts = row.get("counts") or {}
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            # Recomputed from the fields rather than read from the stored
+            # counts: the two can drift, and the scorer would repeat the lie.
+            fields = row.get("fields") or {}
+            counts = {"verified": 0, "unsupported": 0, "unverifiable": 0}
+            for f in fields.values():
+                outcome = (f or {}).get("outcome")
+                if outcome in counts:
+                    counts[outcome] += 1
+            emitted += len(fields)
             doc_type = row.get("doc_type") or "unknown"
             for key in tally:
-                tally[key] += int(counts.get(key, 0))
-                per_type[doc_type][key] += int(counts.get(key, 0))
+                tally[key] += counts[key]
+                per_type[doc_type][key] += counts[key]
 
     total = sum(tally.values())
     return {
+        "malformed": malformed,
+        "emitted": emitted,
         "accuracy": _acc(tally["verified"], tally["unsupported"]),
         "coverage": ((tally["verified"] + tally["unsupported"]) / total) if total else 0.0,
         **tally,
@@ -60,6 +76,11 @@ def format_report(result: dict) -> str:
         f"accuracy {_pct(result['accuracy'])}  coverage {_pct(result['coverage'])}"
         f"   (verified {result['verified']}, unsupported {result['unsupported']},"
         f" unverifiable {result['unverifiable']})",
+        # Neither figure can see a field that was never emitted, so a model
+        # answering only where it is confident scores 100% on both. The count of
+        # what it produced is the third number that stops that reading.
+        f"fields emitted {result.get('emitted', 0)}"
+        + (f"   malformed rows {result['malformed']}" if result.get("malformed") else ""),
         "",
         f"{'document type':20} {'accuracy':>10} {'coverage':>10}",
     ]

@@ -72,7 +72,17 @@ def build(corpus_path: str, out_path: str, recover: Optional[Recover] = None) ->
                     summary["unrecoverable"] += 1
                     origin = "none"
 
-            labelled = label_record(row.get("extracted") or {}, source or None)
+            extracted = row.get("extracted") or {}
+            if not isinstance(extracted, dict):
+                # It raised AttributeError mid-write, killing the run and
+                # leaving a truncated labelled file that later scored as
+                # though it were complete.
+                summary["malformed"] += 1
+                logger.warning("%s:%d has a non-dict 'extracted' (%s); skipped",
+                               corpus_path, lineno, type(extracted).__name__)
+                continue
+
+            labelled = label_record(extracted, source or None)
             summary["examples"] += 1
             for key, value in labelled["counts"].items():
                 summary["counts"][key] = summary["counts"].get(key, 0) + value
