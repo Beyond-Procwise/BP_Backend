@@ -270,6 +270,12 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
 
     if intent == "quotes":
         return {
+            # As for purchase orders: "how many quotes are in the system" was
+            # answered "10" off the sample below, against a true 21,054.
+            "totals": _one(cur, """
+                SELECT COUNT(*)::int AS quotes_total,
+                       COUNT(DISTINCT supplier_id)::int AS suppliers_quoting
+                  FROM proc.bp_quote_trgt"""),
             "quotes": _rows(cur, """
                 SELECT q.quote_id, s.supplier_name, q.total_amount, q.currency, q.quote_date
                   FROM proc.bp_quote_trgt q
@@ -280,6 +286,15 @@ def _fetch(cur, intent: str) -> Dict[str, Any]:
 
     if intent == "purchase_orders":
         return {
+            # Asked "how many purchase orders are in the system" the model was
+            # handed only the sample below and answered "There are 10" -- the
+            # length of the list. The true figure was 5,042. Same rule as
+            # invoices above: if a number can be counted in SQL, it is counted
+            # here rather than left to be inferred from a top-N.
+            "totals": _one(cur, """
+                SELECT COUNT(*)::int AS purchase_orders_total,
+                       COUNT(DISTINCT supplier_id)::int AS suppliers_ordered_from
+                  FROM proc.bp_purchase_order_trgt"""),
             "purchase_orders": _rows(cur, """
                 SELECT p.po_id, s.supplier_name, p.total_amount, p.currency, p.order_date
                   FROM proc.bp_purchase_order_trgt p
