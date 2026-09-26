@@ -10,11 +10,15 @@ They are unchanged apart from losing that argument.
 """
 from __future__ import annotations
 
+import logging
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 # Imported rather than redefined so the hints cannot drift between the agent and
 # the advisor, which both read them.
 from services.negotiation_advice.ranking import TRADE_OFF_HINTS
+
+logger = logging.getLogger(__name__)
 
 
 def append_playbook_recommendations(summary: str,
@@ -530,3 +534,23 @@ def craft_closing_simple(round_no: int, strategy: str) -> str:
     return (
         "I'd welcome your feedback on this proposal. Happy to discuss any questions you might have."
     )
+
+
+def apply_prompt_template(template: str, values: Dict[str, str], lines: List[str]
+) -> str:
+    safe_values: defaultdict[str, str] = defaultdict(str)
+    for key, value in values.items():
+        if value is None:
+            continue
+        safe_values[key] = value
+
+    rendered: str = ""
+    try:
+        rendered = template.format_map(safe_values).strip()
+    except Exception:
+        logger.debug("Negotiation prompt template formatting failed", exc_info=True)
+
+    if not rendered:
+        rendered = "\n".join(lines)
+
+    return rendered

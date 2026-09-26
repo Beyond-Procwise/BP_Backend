@@ -10,9 +10,14 @@ They are unchanged apart from losing that argument.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Dict, List, Optional, Sequence, Tuple, cast
 
 from agents.base_agent import AgentContext
+
+logger = logging.getLogger(__name__)
 
 
 def bucket_entries_by_round(entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -261,3 +266,73 @@ def build_decision_log(supplier: Optional[str],
     if rationale:
         return f"{base} {rationale}"
     return base
+
+
+def log_round_event(*,
+    workflow_id: Optional[str],
+    round_number: Optional[int],
+    supplier_id: Optional[str],
+    status: str,
+    **extra: Any,
+) -> None:
+    payload: Dict[str, Any] = {
+        "workflow_id": workflow_id,
+        "round": round_number,
+        "supplier_id": supplier_id,
+        "status": status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    for key, value in extra.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            payload[key] = value
+        elif isinstance(value, (list, tuple)):
+            payload[key] = [
+                item
+                if isinstance(item, (str, int, float, bool)) or item is None
+                else str(item)
+                for item in value
+            ]
+        else:
+            payload[key] = str(value)
+    try:
+        message = json.dumps(payload)
+    except TypeError:
+        sanitised = {key: str(value) for key, value in payload.items()}
+        message = json.dumps(sanitised)
+    logger.info("NEGOTIATION_ROUND_EVENT %s", message)
+
+
+def log_response_wait_diagnostics(*,
+    workflow_id: Optional[str],
+    supplier_id: Optional[str],
+    drafts: List[Dict[str, Any]],
+    watch_payload: Dict[str, Any],
+) -> None:
+    """Log detailed diagnostics for response waiting."""
+
+    logger.info("=" * 80)
+    logger.info("RESPONSE WAIT DIAGNOSTICS")
+    logger.info("Workflow ID: %s", workflow_id)
+    logger.info("Supplier ID: %s", supplier_id)
+    logger.info("Number of drafts: %d", len(drafts))
+    logger.info("Expected responses: %d", watch_payload.get("expected_email_count", 0))
+    logger.info("Unique IDs being tracked: %s", watch_payload.get("unique_ids", []))
+    logger.info("Await response flag: %s", watch_payload.get("await_response"))
+    logger.info(
+        "Await all responses flag: %s", watch_payload.get("await_all_responses")
+    )
+
+    for idx, draft in enumerate(drafts[:3]):
+        logger.info("Draft %d:", idx)
+        logger.info("  - unique_id: %s", draft.get("unique_id"))
+        logger.info("  - supplier_id: %s", draft.get("supplier_id"))
+        logger.info("  - workflow_id: %s", draft.get("workflow_id"))
+        metadata = (
+            draft.get("metadata") if isinstance(draft.get("metadata"), dict) else {}
+        )
+        if isinstance(metadata, dict):
+            logger.info(
+                "  - metadata.supplier_id: %s",
+                metadata.get("supplier_id"),
+            )
+    logger.info("=" * 80)

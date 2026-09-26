@@ -26,6 +26,7 @@ from email.utils import parsedate_to_datetime
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
 from agents.negotiation import (
+    analysis as _analysis,
     email_shaping as _email_shaping,
     parsing as _parsing,
     prose as _prose,
@@ -1356,40 +1357,14 @@ class NegotiationAgent(BaseAgent):
         except Exception:
             logger.debug("Failed to clear negotiation session state", exc_info=True)
 
-    def _log_round_event(
-        self,
-        *,
-        workflow_id: Optional[str],
-        round_number: Optional[int],
-        supplier_id: Optional[str],
-        status: str,
-        **extra: Any,
-    ) -> None:
-        payload: Dict[str, Any] = {
-            "workflow_id": workflow_id,
-            "round": round_number,
-            "supplier_id": supplier_id,
-            "status": status,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        for key, value in extra.items():
-            if isinstance(value, (str, int, float, bool)) or value is None:
-                payload[key] = value
-            elif isinstance(value, (list, tuple)):
-                payload[key] = [
-                    item
-                    if isinstance(item, (str, int, float, bool)) or item is None
-                    else str(item)
-                    for item in value
-                ]
-            else:
-                payload[key] = str(value)
-        try:
-            message = json.dumps(payload)
-        except TypeError:
-            sanitised = {key: str(value) for key, value in payload.items()}
-            message = json.dumps(sanitised)
-        logger.info("NEGOTIATION_ROUND_EVENT %s", message)
+    def _log_round_event(self, *,
+    workflow_id: Optional[str],
+    round_number: Optional[int],
+    supplier_id: Optional[str],
+    status: str,
+    **extra: Any,
+):
+        return _rounds.log_round_event(workflow_id=workflow_id, round_number=round_number, supplier_id=supplier_id, status=status, **extra)
 
     @contextmanager
     def _session_lock(self, workflow_id: str, supplier_id: str, round_no: int):
@@ -5931,72 +5906,13 @@ class NegotiationAgent(BaseAgent):
     # ------------------------------------------------------------------
     # NEW: Intelligence helpers
     # ------------------------------------------------------------------
-    def _extract_negotiation_signals(
-        self,
-        *,
-        supplier_message: Optional[str],
-        snippets: List[str],
-        market: Dict[str, Any],
-        performance: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        text = " ".join([t for t in ([supplier_message] + snippets) if t])[:8000]
-        signals: Dict[str, Any] = {
-            "finality_hint": False,
-            "capacity_tight": False,
-            "moq": None,
-            "payment_terms_hint": None,
-            "delivery_flex": None,
-            "alt_part_offered": False,
-            "tone": "neutral",
-            "concession_band_pct": None,
-        }
-
-        lowered = text.lower() if text else ""
-        if any(p in lowered for p in ("capacity", "backlog", "constrained")):
-            signals["capacity_tight"] = True
-        if "moq" in lowered:
-            m = re.search(r"moq[^0-9]*([0-9]{2,})", lowered)
-            if m:
-                try:
-                    signals["moq"] = int(m.group(1))
-                except Exception:
-                    pass
-        if any(x in lowered for x in ("net-30", "net30", "net 30", "net-45", "net 45", "early payment")):
-            signals["payment_terms_hint"] = "tradeable"
-        if any(x in lowered for x in ("expedite", "split shipment", "partial", "air freight")):
-            signals["delivery_flex"] = "possible"
-        if any(x in lowered for x in ("alternate", "alternative", "equivalent", "substitute", "brand b")):
-            signals["alt_part_offered"] = True
-        if any(x in lowered for x in ("cannot go lower", "final", "last price", "our best price", "rock bottom")):
-            signals["finality_hint"] = True
-            signals["tone"] = "firm"
-
-        if LLM_ENABLED and text:
-            try:  # pragma: no cover - optional dependency
-                from services.ollama_client import ollama_generate  # type: ignore
-
-                prompt = (
-                    "Extract JSON with keys: tone (firm/flexible/neutral), finality_hint (bool), "
-                    "capacity_tight (bool), moq (int or null), payment_terms_hint (tradeable/fixed/null), "
-                    "delivery_flex (possible/unlikely/null), concession_band_pct (float or null). Only return JSON.\n\n"
-                    f"Text:\n{text}"
-                )
-                # Use the project-standard wrapper: handles timeout (default 600s),
-                # retries, and the GPU semaphore — avoids an indefinite hang.
-                content = ollama_generate(prompt, model=LLM_MODEL, temperature=0.1) or ""
-                if "{" in content and "}" in content:
-                    content = content[content.find("{") : content.rfind("}") + 1]
-                    parsed = json.loads(content)
-                    if isinstance(parsed, dict):
-                        for key in signals:
-                            if key in parsed and parsed[key] is not None:
-                                signals[key] = parsed[key]
-            except Exception:
-                logger.debug("LLM signal extraction skipped/failed", exc_info=True)
-
-        signals["market"] = market or {}
-        signals["performance"] = performance or {}
-        return signals
+    def _extract_negotiation_signals(self, *,
+    supplier_message: Optional[str],
+    snippets: List[str],
+    market: Dict[str, Any],
+    performance: Dict[str, Any],
+):
+        return _analysis.extract_negotiation_signals(supplier_message=supplier_message, snippets=snippets, market=market, performance=performance)
 
     def _estimate_zopa(
         self,
@@ -7633,37 +7549,15 @@ class NegotiationAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Decision support helpers
     # ------------------------------------------------------------------
-    def _detect_final_offer(
-        self, supplier_message: Optional[str], supplier_snippets: List[str]
-    ) -> Optional[str]:
-        texts: List[str] = []
-        if supplier_message:
-            texts.append(supplier_message)
-        texts.extend(snippet for snippet in supplier_snippets if snippet)
-        for text in texts:
-            lowered = text.lower()
-            for pattern in FINAL_OFFER_PATTERNS:
-                if pattern in lowered:
-                    return f"Supplier indicated final offer via phrase '{pattern}'."
-        return None
+    def _detect_final_offer(self, supplier_message: Optional[str], supplier_snippets: List[str]
+):
+        return _analysis.detect_final_offer(supplier_message, supplier_snippets)
 
-    def _should_continue(
-        self,
-        state: Dict[str, Any],
-        supplier_reply_registered: bool,
-        final_offer_reason: Optional[str],
-    ) -> Tuple[bool, str, str]:
-        status = state.get("status", "ACTIVE")
-        if status in {"COMPLETED", "EXHAUSTED"}:
-            return False, status, f"Session already {status.lower()}."
-        if final_offer_reason:
-            return False, "COMPLETED", final_offer_reason
-        replies = int(state.get("supplier_reply_count", 0))
-        if replies >= MAX_SUPPLIER_REPLIES():
-            return False, "EXHAUSTED", "Supplier reply cap reached."
-        if state.get("awaiting_response") and not supplier_reply_registered:
-            return False, "AWAITING_SUPPLIER", "Awaiting supplier response."
-        return True, "ACTIVE", ""
+    def _should_continue(self, state: Dict[str, Any],
+    supplier_reply_registered: bool,
+    final_offer_reason: Optional[str],
+):
+        return _analysis.should_continue(state, supplier_reply_registered, final_offer_reason)
 
     def _build_summary(
         self,
@@ -7740,30 +7634,12 @@ class NegotiationAgent(BaseAgent):
             )
         return message_text or ""
 
-    def _build_positions_from_decision(
-        self,
-        decision: Dict[str, Any],
-        price: Optional[float],
-        target_price: Optional[float],
-        round_no: int,
-    ) -> NegotiationPositions:
-        """Build NegotiationPositions object from decision data."""
-
-        positions_dict = decision.get("positions", {})
-        if isinstance(positions_dict, dict):
-            history = positions_dict.get("history", [])
-        else:
-            history = []
-
-        return NegotiationPositions(
-            start=decision.get("start_position") or positions_dict.get("start"),
-            desired=decision.get("desired_position")
-            or positions_dict.get("desired")
-            or target_price,
-            no_deal=decision.get("no_deal_position") or positions_dict.get("no_deal"),
-            supplier_offer=price,
-            history=history if isinstance(history, list) else [],
-        )
+    def _build_positions_from_decision(self, decision: Dict[str, Any],
+    price: Optional[float],
+    target_price: Optional[float],
+    round_no: int,
+):
+        return _analysis.build_positions_from_decision(decision, price, target_price, round_no)
 
     def _build_summary_fallback(
         self,
@@ -8195,25 +8071,9 @@ class NegotiationAgent(BaseAgent):
 
         return prompt_values
 
-    def _apply_prompt_template(
-        self, template: str, values: Dict[str, str], lines: List[str]
-    ) -> str:
-        safe_values: defaultdict[str, str] = defaultdict(str)
-        for key, value in values.items():
-            if value is None:
-                continue
-            safe_values[key] = value
-
-        rendered: str = ""
-        try:
-            rendered = template.format_map(safe_values).strip()
-        except Exception:
-            logger.debug("Negotiation prompt template formatting failed", exc_info=True)
-
-        if not rendered:
-            rendered = "\n".join(lines)
-
-        return rendered
+    def _apply_prompt_template(self, template: str, values: Dict[str, str], lines: List[str]
+):
+        return _prose.apply_prompt_template(template, values, lines)
 
     def _serialise_for_prompt(self, value: Any) -> str:
         if value is None:
@@ -8612,42 +8472,13 @@ class NegotiationAgent(BaseAgent):
 
         return watch_payload
 
-    def _log_response_wait_diagnostics(
-        self,
-        *,
-        workflow_id: Optional[str],
-        supplier_id: Optional[str],
-        drafts: List[Dict[str, Any]],
-        watch_payload: Dict[str, Any],
-    ) -> None:
-        """Log detailed diagnostics for response waiting."""
-
-        logger.info("=" * 80)
-        logger.info("RESPONSE WAIT DIAGNOSTICS")
-        logger.info("Workflow ID: %s", workflow_id)
-        logger.info("Supplier ID: %s", supplier_id)
-        logger.info("Number of drafts: %d", len(drafts))
-        logger.info("Expected responses: %d", watch_payload.get("expected_email_count", 0))
-        logger.info("Unique IDs being tracked: %s", watch_payload.get("unique_ids", []))
-        logger.info("Await response flag: %s", watch_payload.get("await_response"))
-        logger.info(
-            "Await all responses flag: %s", watch_payload.get("await_all_responses")
-        )
-
-        for idx, draft in enumerate(drafts[:3]):
-            logger.info("Draft %d:", idx)
-            logger.info("  - unique_id: %s", draft.get("unique_id"))
-            logger.info("  - supplier_id: %s", draft.get("supplier_id"))
-            logger.info("  - workflow_id: %s", draft.get("workflow_id"))
-            metadata = (
-                draft.get("metadata") if isinstance(draft.get("metadata"), dict) else {}
-            )
-            if isinstance(metadata, dict):
-                logger.info(
-                    "  - metadata.supplier_id: %s",
-                    metadata.get("supplier_id"),
-                )
-        logger.info("=" * 80)
+    def _log_response_wait_diagnostics(self, *,
+    workflow_id: Optional[str],
+    supplier_id: Optional[str],
+    drafts: List[Dict[str, Any]],
+    watch_payload: Dict[str, Any],
+):
+        return _rounds.log_response_wait_diagnostics(workflow_id=workflow_id, supplier_id=supplier_id, drafts=drafts, watch_payload=watch_payload)
 
     def _await_supplier_responses(
         self,
@@ -9224,47 +9055,10 @@ class NegotiationAgent(BaseAgent):
     def _collect_supplier_snippets(self, payload: Dict[str, Any]):
         return _email_shaping.collect_supplier_snippets(payload)
 
-    def _ensure_supplier_id_in_drafts(
-        self,
-        drafts: List[Dict[str, Any]],
-        fallback_supplier_id: Optional[str],
-    ) -> List[Dict[str, Any]]:
-        """Ensure all drafts have supplier_id populated."""
-
-        corrected_drafts: List[Dict[str, Any]] = []
-
-        for draft in drafts:
-            if not isinstance(draft, dict):
-                continue
-
-            draft_copy = dict(draft)
-
-            supplier_id = draft_copy.get("supplier_id") or draft_copy.get("supplier")
-
-            metadata = draft_copy.get("metadata")
-            if not supplier_id and isinstance(metadata, dict):
-                supplier_id = metadata.get("supplier_id") or metadata.get("supplier")
-
-            if not supplier_id:
-                supplier_id = fallback_supplier_id
-
-            if not supplier_id:
-                logger.warning("Draft missing supplier_id even after fallback: %s", draft_copy)
-                continue
-
-            draft_copy["supplier_id"] = supplier_id
-            draft_copy.setdefault("supplier", supplier_id)
-
-            if "metadata" not in draft_copy or not isinstance(draft_copy["metadata"], dict):
-                draft_copy["metadata"] = {}
-
-            draft_metadata = cast(Dict[str, Any], draft_copy["metadata"])
-            draft_metadata["supplier_id"] = supplier_id
-            draft_metadata.setdefault("supplier", supplier_id)
-
-            corrected_drafts.append(draft_copy)
-
-        return corrected_drafts
+    def _ensure_supplier_id_in_drafts(self, drafts: List[Dict[str, Any]],
+    fallback_supplier_id: Optional[str],
+):
+        return _email_shaping.ensure_supplier_id_in_drafts(drafts, fallback_supplier_id)
 
     def _resolve_contact_name(
         self, payload: Optional[Dict[str, Any]], *, fallback: Optional[str] = None
@@ -9602,71 +9396,13 @@ class NegotiationAgent(BaseAgent):
 
         return positions
 
-    def _respect_positions(
-        self, counter: Optional[float], positions: NegotiationPositions
-    ) -> Optional[float]:
-        if counter is None:
-            return None
-        try:
-            candidate = float(counter)
-        except (TypeError, ValueError):
-            return None
+    def _respect_positions(self, counter: Optional[float], positions: NegotiationPositions
+):
+        return _analysis.respect_positions(counter, positions)
 
-        if positions.desired is not None:
-            try:
-                candidate = max(candidate, float(positions.desired))
-            except (TypeError, ValueError):
-                pass
-        if positions.no_deal is not None:
-            try:
-                candidate = min(candidate, float(positions.no_deal))
-            except (TypeError, ValueError):
-                pass
-        if positions.start is not None:
-            try:
-                candidate = min(candidate, float(positions.start))
-            except (TypeError, ValueError):
-                pass
-
-        return round(candidate, 2)
-
-    def _resolve_authority_block(
-        self, context: AgentContext
-    ) -> Optional[Dict[str, Any]]:
-        """This agent's mandate for this run.
-
-        The orchestrator resolves it for the negotiation and supplier_interaction
-        workflows and injects it at ``input_data["authority"]``. The live
-        inbound-reply route has no orchestrator, so the agent resolves it itself
-        rather than read a missing block as permission -- which is the whole
-        reason `resolve_authority` fails closed.
-        """
-
-        injected = (context.input_data or {}).get("authority")
-        if isinstance(injected, dict):
-            block = injected.get(AUTHORITY_AGENT_KEY)
-            if isinstance(block, dict):
-                return block
-
-        try:
-            from src.engines.policy_engine import PolicyEngine
-            from src.services.db import get_conn
-            from src.services.governance_tools.authority import resolve_authority
-
-            resolved = resolve_authority(
-                PolicyEngine(connection_factory=get_conn), [AUTHORITY_AGENT_KEY]
-            )
-            return resolved.get(AUTHORITY_AGENT_KEY)
-        except Exception:
-            logger.exception(
-                "authority resolution failed for the negotiation agent; no price "
-                "will be proposed on this round"
-            )
-            from src.services.governance_tools.authority import ungoverned_block
-
-            return ungoverned_block(
-                AUTHORITY_AGENT_KEY, "the policy that sets its value limit could not be read"
-            )
+    def _resolve_authority_block(self, context: AgentContext
+):
+        return _analysis.resolve_authority_block(context)
 
     def _authority_refusal(
         self,
@@ -9827,100 +9563,15 @@ class NegotiationAgent(BaseAgent):
             alerts.append(alert)
         decision["alerts"] = alerts
 
-    def _detect_outliers(
-        self,
-        *,
-        supplier_offer: Optional[float],
-        target_price: Optional[float],
-        walkaway_price: Optional[float],
-        market_floor: Optional[float],
-        volume_units: Optional[float],
-        term_days: Optional[int],
-    ) -> Dict[str, Any]:
-        alerts: List[str] = []
-        requires_review = False
-        human_override = False
-        review_recommendation: Optional[str] = None
-        rationale_notes: List[str] = []
-
-        def _percentage_gap(reference: Optional[float], offer: Optional[float]) -> Optional[float]:
-            try:
-                if reference is None or offer is None or reference <= 0:
-                    return None
-                return (reference - offer) / reference
-            except (TypeError, ValueError):
-                return None
-
-        market_gap = _percentage_gap(market_floor, supplier_offer)
-        walkaway_gap = _percentage_gap(walkaway_price, supplier_offer)
-
-        if market_gap is not None and market_gap >= MARKET_REVIEW_THRESHOLD():
-            requires_review = True
-            review_recommendation = "query_for_human_review"
-            alerts.append(
-                f"Supplier offer is {market_gap * 100:.1f}% below market reference {market_floor:.2f}."
-            )
-            rationale_notes.append("Requested price is materially below market benchmarks; seek justification.")
-            if market_gap >= MARKET_ESCALATION_THRESHOLD():
-                human_override = True
-                rationale_notes.append(
-                    "Supplier offer breaches escalation threshold relative to market floor."
-                )
-
-        if walkaway_gap is not None and walkaway_gap >= MARKET_REVIEW_THRESHOLD():
-            requires_review = True
-            review_recommendation = review_recommendation or "query_for_human_review"
-            alerts.append(
-                f"Supplier offer is {walkaway_gap * 100:.1f}% below walk-away price {walkaway_price:.2f}."
-            )
-            rationale_notes.append(
-                "Requested price undercuts internal walk-away guardrail; confirm intent before proceeding."
-            )
-            if walkaway_gap >= MARKET_ESCALATION_THRESHOLD():
-                human_override = True
-                rationale_notes.append(
-                    "The requested price is more than 20% below our walk-away price; escalation required."
-                )
-
-        if volume_units is not None and volume_units > MAX_VOLUME_LIMIT():
-            requires_review = True
-            review_recommendation = review_recommendation or "query_for_human_review"
-            alerts.append(
-                f"Requested volume {volume_units:.0f} exceeds configured limit {MAX_VOLUME_LIMIT():.0f}."
-            )
-            rationale_notes.append("Request supplier rationale for above-capacity volume.")
-            if volume_units > MAX_VOLUME_LIMIT() * 1.5:
-                human_override = True
-                rationale_notes.append("Volume exceeds escalation ceiling; seek human approval.")
-
-        if term_days is not None and term_days > MAX_TERM_DAYS():
-            requires_review = True
-            review_recommendation = review_recommendation or "query_for_human_review"
-            alerts.append(
-                f"Requested payment term {term_days} days exceeds policy limit {MAX_TERM_DAYS()} days."
-            )
-            rationale_notes.append("Payment term exceeds policy; confirm via human review.")
-            if term_days > MAX_TERM_DAYS() * 2:
-                human_override = True
-                rationale_notes.append("Payment term far exceeds tolerance; human intervention required.")
-
-        message = None
-        if human_override:
-            for note in rationale_notes[::-1]:
-                if "escalation required" in note.lower():
-                    message = note
-                    break
-            message = message or "Escalation required before proceeding."
-        elif requires_review and rationale_notes:
-            message = rationale_notes[-1]
-
-        return {
-            "alerts": alerts,
-            "requires_review": requires_review,
-            "human_override": human_override,
-            "recommendation": review_recommendation,
-            "message": message,
-        }
+    def _detect_outliers(self, *,
+    supplier_offer: Optional[float],
+    target_price: Optional[float],
+    walkaway_price: Optional[float],
+    market_floor: Optional[float],
+    volume_units: Optional[float],
+    term_days: Optional[int],
+):
+        return _analysis.detect_outliers(supplier_offer=supplier_offer, target_price=target_price, walkaway_price=walkaway_price, market_floor=market_floor, volume_units=volume_units, term_days=term_days)
 
     def _compose_rationale(
         self,

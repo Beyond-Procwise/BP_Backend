@@ -9,12 +9,15 @@ They are unchanged apart from losing that argument.
 """
 from __future__ import annotations
 
+import logging
 import re
 from html import escape
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, cast
 
 from agents.base_agent import AgentContext
 from agents.email_drafting_agent import EmailDraftingAgent
+
+logger = logging.getLogger(__name__)
 
 
 def normalise_base_subject(subject: Optional[str]) -> Optional[str]:
@@ -170,3 +173,44 @@ def build_email_context_snapshot(context: AgentContext) -> Dict[str, Any]:
         "manifest": context.manifest(),
     }
     return {key: value for key, value in snapshot.items() if value}
+
+
+def ensure_supplier_id_in_drafts(drafts: List[Dict[str, Any]],
+    fallback_supplier_id: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Ensure all drafts have supplier_id populated."""
+
+    corrected_drafts: List[Dict[str, Any]] = []
+
+    for draft in drafts:
+        if not isinstance(draft, dict):
+            continue
+
+        draft_copy = dict(draft)
+
+        supplier_id = draft_copy.get("supplier_id") or draft_copy.get("supplier")
+
+        metadata = draft_copy.get("metadata")
+        if not supplier_id and isinstance(metadata, dict):
+            supplier_id = metadata.get("supplier_id") or metadata.get("supplier")
+
+        if not supplier_id:
+            supplier_id = fallback_supplier_id
+
+        if not supplier_id:
+            logger.warning("Draft missing supplier_id even after fallback: %s", draft_copy)
+            continue
+
+        draft_copy["supplier_id"] = supplier_id
+        draft_copy.setdefault("supplier", supplier_id)
+
+        if "metadata" not in draft_copy or not isinstance(draft_copy["metadata"], dict):
+            draft_copy["metadata"] = {}
+
+        draft_metadata = cast(Dict[str, Any], draft_copy["metadata"])
+        draft_metadata["supplier_id"] = supplier_id
+        draft_metadata.setdefault("supplier", supplier_id)
+
+        corrected_drafts.append(draft_copy)
+
+    return corrected_drafts

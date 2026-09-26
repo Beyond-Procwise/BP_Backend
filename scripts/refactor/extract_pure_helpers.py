@@ -133,9 +133,14 @@ def main(argv: list[str]) -> int:
         lines[start:node.end_lineno] = delegator.rstrip("\n").split("\n")
 
     Path(src_path).write_text("\n".join(lines) + "\n")
-    Path(target).write_text(
-        "\n\n\n".join(reversed(pieces)) + "\n"
-    )
+    body = "\n\n\n".join(reversed(pieces)) + "\n"
+    out = Path(target)
+    # Appending keeps a helper in the module it belongs to rather than spawning a
+    # new one per extraction run; the existing header and imports are left alone.
+    if out.exists():
+        out.write_text(out.read_text().rstrip("\n") + "\n\n\n" + body)
+    else:
+        out.write_text(body)
     print(f"moved {len(found)} helpers -> {target}")
     print("exports:", ", ".join(sorted(exports)))
     return 0
