@@ -25,6 +25,7 @@ from html import escape
 from email.utils import parsedate_to_datetime
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
+from agents.negotiation import parsing as _parsing
 from agents.email_drafting_agent import EmailDraftingAgent, DEFAULT_NEGOTIATION_SUBJECT
 from repositories import (
     supplier_response_repo,
@@ -10556,96 +10557,17 @@ class NegotiationAgent(BaseAgent):
 
         return normalised, issues
 
-    def _parse_money(self, value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return None
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return None
-            cleaned = re.sub(r"[\s,]", "", text)
-            match = re.search(r"-?\d+(?:\.\d+)?", cleaned)
-            if match:
-                try:
-                    return float(match.group())
-                except ValueError:
-                    return None
-        return None
+    def _parse_money(self, value: Any):
+        return _parsing.parse_money(value)
 
-    def _parse_quantity(self, value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return float(value)
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return None
-            match = re.search(r"\d+(?:\.\d+)?", text.replace(",", ""))
-            if match:
-                try:
-                    return float(match.group())
-                except ValueError:
-                    return None
-        return None
+    def _parse_quantity(self, value: Any):
+        return _parsing.parse_quantity(value)
 
-    def _parse_term_days(self, value: Any) -> Optional[int]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            candidate = int(round(float(value)))
-            return candidate if candidate > 0 else None
-        if isinstance(value, str):
-            text = value.strip().lower()
-            if not text:
-                return None
-            numbers = re.findall(r"\d+(?:\.\d+)?", text)
-            if not numbers:
-                return None
-            try:
-                numeric = float(numbers[0])
-            except ValueError:
-                return None
-            if "week" in text and numeric > 0:
-                return int(round(numeric * 7))
-            return int(round(numeric)) if numeric > 0 else None
-        return None
+    def _parse_term_days(self, value: Any):
+        return _parsing.parse_term_days(value)
 
-    def _parse_date(self, value: Any) -> Optional[str]:
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            return value.astimezone(timezone.utc).isoformat()
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return None
-            for fmt in (
-                "%Y-%m-%d",
-                "%d/%m/%Y",
-                "%m/%d/%Y",
-                "%d-%m-%Y",
-                "%d %b %Y",
-                "%b %d, %Y",
-            ):
-                try:
-                    dt = datetime.strptime(text, fmt)
-                    return dt.replace(tzinfo=timezone.utc).isoformat()
-                except ValueError:
-                    continue
-            try:
-                dt = datetime.fromisoformat(text)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt.astimezone(timezone.utc).isoformat()
-            except ValueError:
-                return None
-        return None
+    def _parse_date(self, value: Any):
+        return _parsing.parse_date(value)
 
     def _extract_reference_prices(self, payload: Dict[str, Any]) -> Dict[str, Optional[float]]:
         candidates: List[float] = []
@@ -11110,67 +11032,17 @@ class NegotiationAgent(BaseAgent):
 
         return " ".join(part for part in parts if part)
 
-    def _format_currency(self, value: Optional[float], currency: Optional[str]) -> str:
-        if value is None or (isinstance(value, float) and math.isnan(value)):
-            return ""
-        try:
-            amount = float(value)
-        except (TypeError, ValueError):
-            return ""
-        code = (currency or "GBP").upper()
-        symbol = (
-            "£"
-            if code == "GBP"
-            else "$"
-            if code == "USD"
-            else "€"
-            if code == "EUR"
-            else "₹"
-            if code == "INR"
-            else ""
-        )
-        formatted = f"{amount:,.2f}"
-        return f"{symbol}{formatted}" if symbol else f"{formatted} {code}"
+    def _format_currency(self, value: Optional[float], currency: Optional[str]):
+        return _parsing.format_currency(value, currency)
 
-    def _normalise_currency(self, value: Any) -> Optional[str]:
-        if not value:
-            return None
-        if isinstance(value, str):
-            trimmed = value.strip().upper()
-            if len(trimmed) == 3:
-                return trimmed
-        return None
+    def _normalise_currency(self, value: Any):
+        return _parsing.normalise_currency(value)
 
-    def _parse_lead_weeks(self, value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        try:
-            number = float(text)
-            return number if number <= 12 else round(number / 7.0, 2)
-        except ValueError:
-            pass
-        lowered = text.lower()
-        digits = "".join(ch for ch in lowered if (ch.isdigit() or ch == "."))
-        try:
-            numeric = float(digits)
-        except ValueError:
-            return None
-        if "week" in lowered:
-            return numeric
-        if "day" in lowered or "business" in lowered:
-            return round(numeric / 7.0, 2)
-        return None
+    def _parse_lead_weeks(self, value: Any):
+        return _parsing.parse_lead_weeks(value)
 
-    def _coerce_float(self, value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+    def _coerce_float(self, value: Any):
+        return _parsing.coerce_float(value)
 
     def _validate_buyer_max(self, value: Any) -> Optional[float]:
         parsed = self._coerce_float(value)
@@ -11182,26 +11054,14 @@ class NegotiationAgent(BaseAgent):
             return None
         return parsed
 
-    def _positive_int(self, value: Any, *, fallback: int) -> int:
-        try:
-            parsed = int(value)
-        except Exception:
-            return fallback
-        return parsed if parsed > 0 else fallback
+    def _positive_int(self, value: Any, *, fallback: int):
+        return _parsing.positive_int(value, fallback=fallback)
 
-    def _coerce_text(self, value: Any) -> Optional[str]:
-        if isinstance(value, str):
-            text = value.strip()
-            if text:
-                return text
-        return None
+    def _coerce_text(self, value: Any):
+        return _parsing.coerce_text(value)
 
-    def _ensure_list(self, value: Any) -> List[Any]:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        return [value]
+    def _ensure_list(self, value: Any):
+        return _parsing.ensure_list(value)
 
     def _ensure_email_agent(self) -> Optional[EmailDraftingAgent]:
         try:
