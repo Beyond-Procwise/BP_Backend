@@ -18,7 +18,7 @@ from src.services.i18n.prompts import (PROMPT_VERSION, build_ui_prompt, effectiv
                                        load_translation_config)
 from src.services.i18n.registry import Language, LanguageRegistry, is_source_language
 from src.services.i18n.store import MemoryLayer, source_hash
-from src.services.i18n.validate import read_flags, validate_batch
+from src.services.i18n.validate import read_flags, validate_batch, wrote_nothing
 
 logger = logging.getLogger(__name__)
 
@@ -160,11 +160,22 @@ class TranslationService:
         prompt = build_ui_prompt(system, lang.label(), lang.code, payload)
         raw = self.provider.complete_json(prompt, batch_schema(list(payload)))
         recognized, confidence = read_flags(raw)
+        good, bad = validate_batch(payload, raw, lang.code)
+        # "I do not know this language" is a claim, and the same reply either backs it up or
+        # refutes it. A model that cannot write a language hands the English back unchanged;
+        # one that answers in French can write French, whatever its flag says. Believing the
+        # flag on its own is what marked fr and nl unrecognised -- and because the verdict is
+        # sticky AND gates every later call, that is a state neither could ever leave.
+        # A reply that contradicts itself has its whole self-assessment dropped, confidence
+        # included: the translations are evidence, the commentary on them is not.
+        if recognized is False and not wrote_nothing(payload, good):
+            logger.warning("i18n: %s reported as unrecognised in a reply that translated it; "
+                           "the flag is ignored and %d translations kept", lang.code, len(good))
+            recognized, confidence = None, None
         self.store.record_language_status(lang.code, self.prompt_version, self.provider.model,
                                           recognized, confidence)
         if recognized is False:
             return {}, {h: "the model does not recognise this language" for h in batch}, False, confidence
-        good, bad = validate_batch(payload, raw, lang.code)
         return ({ids[s]: t for s, t in good.items()}, {ids[s]: why for s, why in bad.items()},
                 recognized, confidence)
 

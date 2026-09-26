@@ -343,3 +343,31 @@ def test_public_path_hides_unsupported_and_marks_experimental(public_client):
     router_mod.reset_public_cache()
     _flag(svc, "fr", False, None)
     assert "fr" not in [a["code"] for a in public_client.get("/i18n/public/en").json()["available"]]
+
+
+def test_meta_reports_what_the_device_cache_must_compare_against(client):
+    """Without these two values the UI's cache trusts itself for a week (cache.js MAX_AGE_MS),
+    so a prompt or glossary change takes that long to reach a browser."""
+    from api.routers import i18n as router_mod
+    svc = router_mod.i18n.get_service()
+
+    body = client.get("/i18n/meta").json()
+
+    assert body["prompt_version"] == svc.prompt_version
+    assert body["model"] == router_mod._model_fingerprint(svc.provider.model)
+    assert body["prompt_version"] and body["model"]
+
+
+def test_meta_model_survives_the_output_scrubber_and_still_tracks_the_model():
+    """The model NAME is rewritten to "default" on the way out, which would leave every model
+    looking alike to the cache. A fingerprint is not a name, so it travels -- and it still
+    changes when the model does, which is the whole point of sending it."""
+    from api.routers import i18n as router_mod
+    from services import output_safety as osafe
+
+    a = router_mod._model_fingerprint("BeyondProcwise/AgentNick:unified")
+    b = router_mod._model_fingerprint("BeyondProcwise/AgentNick:v2")
+
+    assert a != b
+    assert osafe.scrub_payload({"model": a}, where="/i18n/meta") == {"model": a}
+    assert "AgentNick" not in a

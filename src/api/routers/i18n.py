@@ -16,6 +16,7 @@ model, and serves only cached translations of the keys in proc.bp_i18n_public_ke
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -190,6 +191,29 @@ def put_preference(body: PreferenceIn, principal=Depends(require_user)) -> dict[
         logger.warning("i18n: saving the language preference failed: %s", exc)
         return {"language": value, "stored": False}
     return {"language": value, "stored": True}
+
+
+def _model_fingerprint(model: str) -> str:
+    """A stable stand-in for the model name, so the cache can spot a change without being
+    told what we run. The name itself is internal -- OutputSafetyMiddleware rewrites it to
+    "default" on the way out, which would make every model look like every other one to the
+    device cache and silently cost it the second half of its invalidation signal."""
+    return hashlib.sha256(model.encode("utf-8")).hexdigest()[:16]
+
+
+@router.get("/meta", summary="What every cached translation depends on")
+def meta(principal=Depends(require_user)) -> dict[str, Any]:
+    """The prompt version and model the service is answering with.
+
+    A translation is only valid for the pair that produced it, so the device cache in the UI
+    (src/lib/i18n/cache.js) throws its rows away when either changes. Without this endpoint
+    it had nothing to compare against and fell back to trusting itself for seven days -- so
+    a prompt or glossary change took a week to reach a browser that had already cached the
+    old wording. Both values are the service's own, not the caller's, and neither is secret:
+    they are the same two columns every row in proc.bp_translation carries.
+    """
+    svc = i18n.get_service()
+    return {"prompt_version": svc.prompt_version, "model": _model_fingerprint(svc.provider.model)}
 
 
 @router.get("/audit", summary="The translation audit trail (Admin)")

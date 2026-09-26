@@ -209,3 +209,21 @@ def validate_batch(sent: dict[str, str], raw: str | None,
         else:
             good[key] = value
     return good, bad
+
+
+def wrote_nothing(sent: dict[str, str], got: dict[str, str]) -> bool:
+    """True when the reply handed the English straight back instead of translating it.
+
+    This is what the model actually does when it cannot write a language: asked for Elvish
+    it returns `lang_recognized: false` and the batch verbatim. Asked for French it returns
+    French. So the claim in the flag can be checked against the work in the same reply
+    rather than taken on trust -- see TranslationService._call.
+
+    A translation that legitimately matches its source (a product name, "OK") is common in
+    ANY batch, so this asks whether the reply translated NOTHING, not whether some string
+    came back unchanged.
+    """
+    shared = [k for k in sent if k in got]
+    if not shared:
+        return True
+    return all(got[k].strip() == sent[k].strip() for k in shared)

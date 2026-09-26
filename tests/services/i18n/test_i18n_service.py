@@ -305,3 +305,34 @@ def test_status_of_an_unsupported_language_has_nothing_pending():
     svc.translate("x-elvish", {"a": "Save"}, lang_name="Elvish")
     hits, pending, failed = svc.status("x-elvish", {"a": "Save", "b": "Close"})
     assert hits == {} and pending == [] and sorted(failed) == ["a", "b"]
+
+
+class ClaimsItCannotButDoes(FakeProvider):
+    """The reply AgentNick actually produced for French once: the flag says the language is
+    unknown, and the strings under it are a perfectly good translation of the batch."""
+
+    def complete_json(self, prompt, schema):
+        payload = json.loads(prompt.split("Input JSON:\n", 1)[1])
+        self.calls.append(payload)
+        self.prompts.append(prompt)
+        return json.dumps({"lang_recognized": False, "confidence": "low",
+                           "strings": {k: v.upper() for k, v in payload.items()}})
+
+
+def test_a_language_the_model_wrote_is_not_branded_unrecognised():
+    """One bad flag must not condemn a language the same reply proves the model can write.
+
+    French carried 1,800 reviewed strings and was still marked unrecognised, which removed
+    it from the sign-in picker and stopped every later string being translated at all.
+    """
+    p, store = ClaimsItCannotButDoes(), InMemoryTranslationStore()
+    svc = make_cfg(p, {"do_not_translate": [], "glossary": {}, "tone": ""}, store)
+
+    r = svc.translate("fr", {"a": "Save", "b": "Close"})
+
+    assert r.supported is True
+    assert r.translations == {"a": "SAVE", "b": "CLOSE"}
+    assert store.language_status("fr", svc.prompt_version, p.model) is None
+    assert svc.quality("fr") == {"supported": True, "confidence": None, "experimental": False}
+    # and the next screen still gets translated rather than frozen in English
+    assert svc.status("fr", {"c": "Open"})[1] == ["c"]
