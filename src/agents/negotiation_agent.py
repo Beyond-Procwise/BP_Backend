@@ -63,101 +63,45 @@ from services.negotiation_advice.ranking import (
 
 logger = logging.getLogger(__name__)
 
-# -----------------------------
-# Tunables & feature toggles
-# -----------------------------
-def MAX_SUPPLIER_REPLIES() -> int:
-    """NegotiationBoundsPolicy (P9)."""
-    return _governed_limit("negotiation_bounds", "max_supplier_replies",
-                           env="NEG_MAX_SUPPLIER_REPLIES", cast=int)
-LLM_ENABLED = os.getenv("NEG_ENABLE_LLM", "1").strip() not in {"0", "false", "False"}
-# AgentNick, like every other non-extraction caller. The old default was
-# "llama3.2:latest", which is not a model this host has ever had installed, so the one
-# call that uses it (_llm_* in the counter composer) answered 404 on every attempt,
-# retried three times, and fell through to the non-LLM path -- silently, because the
-# fallback looks like an ordinary result. NEG_LLM_MODEL still overrides, and
-# AGENTNICK_MODEL is the same knob src/services/tool_runtime.py reads.
-LLM_MODEL = os.getenv("NEG_LLM_MODEL") or os.getenv(
-    "AGENTNICK_MODEL", "BeyondProcwise/AgentNick:unified"
-)
-def COST_OF_CAPITAL_APR() -> float:
-    """NegotiationBoundsPolicy (P9)."""
-    return _governed_limit("negotiation_bounds", "cost_of_capital_apr",
-                           env="NEG_COST_OF_CAPITAL_APR")
-def LEAD_TIME_VALUE_PCT_PER_WEEK() -> float:
-    """NegotiationBoundsPolicy (P9)."""
-    return _governed_limit("negotiation_bounds", "lt_value_pct_per_week",
-                           env="NEG_LT_VALUE_PCT_PER_WEEK")
-def _resolve_thread_transcript_limit() -> Optional[int]:
-    """How many thread entries the agent reads before it counters, or ``None``
-    for the full history. AgentReachPolicy (P9).
-
-    Policy states null for "no limit", which is a decision somebody made -- not
-    the same as the key being absent, which refuses. Zero or less also means the
-    full history, as it always has.
-
-    NEG_THREAD_TRANSCRIPT_LIMIT overrides for one release through
-    governed_limits, which warns when it disagrees with policy and ignores it in
-    favour of policy when it is not a number. It used to turn an unreadable
-    value into "full history": how much the agent sees before making an offer,
-    decided by a typo.
-
-    Read on every use rather than once at import, where it ran before anything
-    knew whether the governance store had answered, and pinned the value until
-    the process restarted.
-    """
-    limit = _governed_limit("agent_reach", "neg_thread_transcript_limit",
-                            env="NEG_THREAD_TRANSCRIPT_LIMIT", cast=int)
-    if limit is None or limit <= 0:
-        return None
-    return limit
-
-
-def AGGRESSIVE_FIRST_COUNTER_PCT() -> float:
-    """NegotiationBoundsPolicy (P9)."""
-    return _governed_limit("negotiation_bounds", "first_counter_aggr_pct",
-                           env="NEG_FIRST_COUNTER_AGGR_PCT")
-FINAL_OFFER_PATTERNS = (
-    "best and final",
-    "best final",
-    "best offer we can",
-    "best price we can",
-    "cannot go lower",
-    "final offer",
-    "final price",
-    "final quotation",
-    "last price",
-    "lowest we can do",
-    "our best price",
-    "rock bottom",
-    "take it or leave it",
-    "ultimatum",
+# Tunables, feature toggles and the governed bounds now live beside the helpers
+# that read them. Re-exported here because callers -- and the P9 governance tests --
+# reach for them on this module by name.
+# The value types moved next to the helpers that build them. Re-exported because
+# NegotiationIdentifier is imported from this module by name elsewhere.
+from agents.negotiation.models import (  # noqa: F401
+    EmailHistoryEntry,
+    EmailThreadState,
+    NegotiationContext,
+    NegotiationIdentifier,
+    NegotiationPositions,
+    SupplierSignals,
+    UniqueConstraintInfo,
 )
 
-#: The decisions that end a negotiation. `plan_counter` returns one of these when
-#: it has resolved the outcome -- an offer inside our threshold is accepted, one
-#: above it is declined -- and `_execute_negotiation_round` closes the supplier on
-#: them. Both readings must agree, so they share this definition rather than each
-#: spelling out the pair: they did not agree before, and a decision to accept was
-#: being reopened downstream (see `_adaptive_strategy`).
-TERMINAL_STRATEGIES = frozenset({"accept", "decline"})
-
-#: The key `resolve_authority` files this agent's mandate under, and the name in
-#: EmailReplyAutonomyPolicy.policy_linked_agents. Must match both.
-AUTHORITY_AGENT_KEY = "negotiation_agent"
-
-# LEVER_CATEGORIES and TRADE_OFF_HINTS now live in
-# services.negotiation_advice.ranking, next to the scoring that uses them.
+from agents.negotiation.config import (  # noqa: F401
+    AGGRESSIVE_FIRST_COUNTER_PCT,
+    AUTHORITY_AGENT_KEY,
+    BATCH_EXCLUDE_KEYS,
+    BATCH_INPUT_KEYS,
+    BATCH_SHARED_KEYS,
+    COST_OF_CAPITAL_APR,
+    DEFAULT_NEGOTIATION_MESSAGE_TEMPLATE,
+    FINAL_OFFER_PATTERNS,
+    LEAD_TIME_VALUE_PCT_PER_WEEK,
+    LLM_ENABLED,
+    LLM_MODEL,
+    MARKET_ESCALATION_THRESHOLD,
+    MARKET_REVIEW_THRESHOLD,
+    MAX_SUPPLIER_REPLIES,
+    MAX_TERM_DAYS,
+    MAX_VOLUME_LIMIT,
+    TERMINAL_STRATEGIES,
+    _resolve_thread_transcript_limit,
+)
 # TRADE_OFF_HINTS is imported above; it is still read by
 # _append_playbook_recommendations, which stays on this agent.
 
 
-@dataclass(frozen=True)
-class UniqueConstraintInfo:
-    columns: Tuple[str, ...]
-    constraint_name: Optional[str] = None
-    predicate: Optional[str] = None
-    index_name: Optional[str] = None
 
 
 class NegotiationEmailHTMLShellBuilder:
@@ -294,30 +238,8 @@ class NegotiationEmailHTMLShellBuilder:
         )
 
 
-@dataclass
-class NegotiationContext:
-    current_offer: float
-    target_price: float
-    round_index: int = 1
-    currency: Optional[str] = None
-    aggressiveness: float = 0.5
-    leverage: float = 0.5
-    urgency: float = 0.5
-    risk_buffer_pct: float = 0.05
-    min_abs_buffer: float = 0.0
-    step_pct_of_gap: float = 0.1
-    min_abs_step: float = 1.0
-    max_rounds: int = 3
-    walkaway_price: Optional[float] = None
-    ask_early_pay_disc: Optional[float] = None
-    ask_lead_time_keep: bool = True
 
 
-@dataclass
-class SupplierSignals:
-    offer_prev: Optional[float] = None
-    offer_new: Optional[float] = None
-    message_text: str = ""
 
 
 def _detect_finality(message: str) -> bool:
@@ -511,171 +433,10 @@ def plan_counter(ctx: NegotiationContext, signals: SupplierSignals) -> Dict[str,
 # PLAYBOOK_PATH moved to services.negotiation_advice.ranking with the loader that
 # reads it (re-rooted there: parents[2], not parent.parent).
 
-# NegotiationBoundsPolicy (P9): what this agent may put to a supplier. An agent
-# allowed to concede 40% instead of 20% is a different agent, so these are rules
-# rather than settings, and a missing one refuses rather than assuming.
-def MARKET_REVIEW_THRESHOLD() -> float:
-    return _governed_limit("negotiation_bounds", "market_review_pct",
-                           env="NEG_MARKET_REVIEW_PCT")
 
 
-def MARKET_ESCALATION_THRESHOLD() -> float:
-    return _governed_limit("negotiation_bounds", "market_escalation_pct",
-                           env="NEG_MARKET_ESCALATION_PCT")
 
 
-def MAX_VOLUME_LIMIT() -> float:
-    return _governed_limit("negotiation_bounds", "max_volume_limit",
-                           env="NEG_MAX_VOLUME_LIMIT")
-
-
-def MAX_TERM_DAYS() -> int:
-    return _governed_limit("negotiation_bounds", "max_term_days",
-                           env="NEG_MAX_TERM_DAYS", cast=int)
-
-DEFAULT_NEGOTIATION_MESSAGE_TEMPLATE = "{header}\n{details}{context_sections}"
-
-BATCH_INPUT_KEYS = ("negotiation_batch", "supplier_responses_batch", "batch_responses")
-BATCH_SHARED_KEYS = (
-    "shared_context",
-    "shared_payload",
-    "batch_defaults",
-    "shared_fields",
-    "defaults",
-)
-BATCH_EXCLUDE_KEYS = {
-    "negotiation_batch",
-    "supplier_responses_batch",
-    "batch_responses",
-    "shared_context",
-    "shared_payload",
-    "batch_defaults",
-    "shared_fields",
-    "defaults",
-    "batch_metadata",
-    "batch_results",
-    "batch_summary",
-    "agentic_plan",
-    "pass_fields",
-    "results",
-    "drafts",
-    "supplier_responses",
-}
-
-
-@dataclass
-class NegotiationIdentifier:
-    workflow_id: str
-    session_reference: str
-    supplier_id: str
-    round_number: int = 1
-    # True when nothing in the caller's payload named a supplier and the id below
-    # was minted here purely to key the lock and the session. It is not a real
-    # counterparty, and nothing may be sent to it.
-    supplier_synthesised: bool = False
-
-    def __post_init__(self) -> None:
-        self.workflow_id = self._normalise(self.workflow_id, fallback_prefix="WF")
-        self.session_reference = self._normalise(
-            self.session_reference, fallback_prefix="WF"
-        )
-        self.supplier_id = self._normalise(self.supplier_id, fallback_prefix="SUP")
-        try:
-            self.round_number = int(self.round_number) if self.round_number else 1
-        except Exception:
-            self.round_number = 1
-
-    @staticmethod
-    def _normalise(value: Optional[str], *, fallback_prefix: str = "") -> str:
-        if isinstance(value, str):
-            token = value.strip()
-        elif value is None:
-            token = ""
-        else:
-            token = str(value).strip()
-        if not token:
-            return f"{fallback_prefix}-{uuid.uuid4().hex[:12].upper()}" if fallback_prefix else ""
-        return token
-
-    @property
-    def unique_key(self) -> str:
-        return f"{self.workflow_id}:{self.supplier_id}:{self.round_number}"
-
-    @property
-    def thread_key(self) -> str:
-        return f"{self.workflow_id}:{self.supplier_id}"
-
-
-@dataclass
-class EmailThreadState:
-    thread_id: str
-    in_reply_to: Optional[str] = None
-    references: List[str] = field(default_factory=list)
-    subject_base: str = ""
-
-    def to_headers(self, round_number: int) -> Dict[str, Any]:
-        message_id = f"<{uuid.uuid4()}@procwise.co.uk>"
-        headers: Dict[str, Any] = {"Message-ID": message_id}
-        if self.references:
-            headers["References"] = " ".join(self.references[-10:])
-        if self.in_reply_to:
-            headers["In-Reply-To"] = self.in_reply_to
-        subject = self.subject_base or DEFAULT_NEGOTIATION_SUBJECT
-        if round_number > 1 and subject:
-            if subject.lower().startswith("re:"):
-                headers["Subject"] = subject
-            else:
-                headers["Subject"] = f"Re: {subject}".strip()
-        elif subject:
-            headers["Subject"] = subject
-        return headers
-
-    def update_after_send(self, message_id: Optional[str]) -> None:
-        token = self._normalise_token(message_id)
-        if not token:
-            return
-        if not self.thread_id:
-            self.thread_id = token
-        if token not in self.references:
-            self.references.append(token)
-        self.in_reply_to = token
-
-    def update_after_receive(self, message_id: Optional[str]) -> None:
-        token = self._normalise_token(message_id)
-        if not token:
-            return
-        if token not in self.references:
-            self.references.append(token)
-        self.in_reply_to = token
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            "thread_id": self.thread_id,
-            "in_reply_to": self.in_reply_to,
-            "references": list(self.references),
-            "subject_base": self.subject_base,
-        }
-
-    @staticmethod
-    def from_dict(data: Dict[str, Any], *, fallback_subject: str) -> "EmailThreadState":
-        thread_id = str(data.get("thread_id") or f"<{uuid.uuid4()}@procwise.co.uk>")
-        references = data.get("references") if isinstance(data.get("references"), list) else []
-        return EmailThreadState(
-            thread_id=thread_id,
-            in_reply_to=data.get("in_reply_to"),
-            references=[str(item) for item in references if item],
-            subject_base=str(data.get("subject_base") or fallback_subject or DEFAULT_NEGOTIATION_SUBJECT),
-        )
-
-    @staticmethod
-    def _normalise_token(token: Optional[str]) -> Optional[str]:
-        if isinstance(token, str):
-            value = token.strip()
-        elif token is None:
-            value = ""
-        else:
-            value = str(token).strip()
-        return value or None
 
 
 class ResponseMatcher:
@@ -740,73 +501,6 @@ class ResponseMatcher:
             return len(bucket)
 
 
-@dataclass
-class EmailHistoryEntry:
-    email_id: str
-    round_number: int
-    supplier_id: str
-    supplier_name: Optional[str]
-    subject: str
-    body_text: str
-    body_html: str
-    sender: str
-    recipients: List[str]
-    sent_at: datetime
-    message_id: Optional[str]
-    thread_headers: Dict[str, Any]
-    metadata: Dict[str, Any]
-    decision: Dict[str, Any]
-    negotiation_context: Dict[str, Any]
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "email_id": self.email_id,
-            "round_number": self.round_number,
-            "supplier_id": self.supplier_id,
-            "supplier_name": self.supplier_name,
-            "subject": self.subject,
-            "body_text": self.body_text,
-            "body_html": self.body_html,
-            "sender": self.sender,
-            "recipients": list(self.recipients),
-            "sent_at": self.sent_at.isoformat()
-            if isinstance(self.sent_at, datetime)
-            else self.sent_at,
-            "message_id": self.message_id,
-            "thread_headers": dict(self.thread_headers),
-            "metadata": dict(self.metadata),
-            "decision": dict(self.decision),
-            "negotiation_context": dict(self.negotiation_context),
-        }
-
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "EmailHistoryEntry":
-        sent_at = data.get("sent_at")
-        if isinstance(sent_at, str):
-            try:
-                sent_at = datetime.fromisoformat(sent_at)
-            except Exception:
-                sent_at = datetime.now(timezone.utc)
-        elif not isinstance(sent_at, datetime):
-            sent_at = datetime.now(timezone.utc)
-
-        return EmailHistoryEntry(
-            email_id=data.get("email_id") or str(uuid.uuid4()),
-            round_number=int(data.get("round_number", 1)),
-            supplier_id=str(data.get("supplier_id") or ""),
-            supplier_name=data.get("supplier_name"),
-            subject=data.get("subject", ""),
-            body_text=data.get("body_text", ""),
-            body_html=data.get("body_html", ""),
-            sender=data.get("sender", ""),
-            recipients=list(data.get("recipients") or []),
-            sent_at=sent_at,
-            message_id=data.get("message_id"),
-            thread_headers=dict(data.get("thread_headers") or {}),
-            metadata=dict(data.get("metadata") or {}),
-            decision=dict(data.get("decision") or {}),
-            negotiation_context=dict(data.get("negotiation_context") or {}),
-        )
 
 
 class EmailThreadManager:
@@ -1451,64 +1145,6 @@ class NegotiationEmailHTMLBuilder:
         """
 
 
-@dataclass
-class NegotiationPositions:
-    start: Optional[float]
-    desired: Optional[float]
-    no_deal: Optional[float]
-    supplier_offer: Optional[float] = None
-    history: List[Dict[str, Any]] = field(default_factory=list)
-
-    def serialise(self) -> Dict[str, Any]:
-        return {
-            "start": self.start,
-            "desired": self.desired,
-            "no_deal": self.no_deal,
-            "supplier_offer": self.supplier_offer,
-            "history": list(self.history),
-        }
-
-    def snapshot_for_next_round(
-        self, counter_price: Optional[float], round_no: int
-    ) -> Dict[str, Any]:
-        history = list(self.history)
-
-        def _append(entry_type: str, value: Optional[float]) -> None:
-            if value is None:
-                return
-            record = {
-                "round": round_no,
-                "type": entry_type,
-                "value": value,
-            }
-            if not any(
-                existing.get("round") == record["round"]
-                and existing.get("type") == record["type"]
-                and self._is_close(existing.get("value"), record["value"])
-                for existing in history
-            ):
-                history.append(record)
-
-        _append("supplier_offer", self.supplier_offer)
-        _append("counter", counter_price)
-
-        next_start = counter_price if counter_price is not None else self.start
-
-        return {
-            "start": next_start,
-            "desired": self.desired,
-            "no_deal": self.no_deal,
-            "supplier_offer": self.supplier_offer,
-            "history": history,
-            "last_counter": counter_price if counter_price is not None else next_start,
-        }
-
-    @staticmethod
-    def _is_close(value_a: Any, value_b: Any, *, tolerance: float = 1e-6) -> bool:
-        try:
-            return abs(float(value_a) - float(value_b)) <= tolerance
-        except (TypeError, ValueError):
-            return False
 
 
 def compute_decision(
