@@ -90,6 +90,18 @@ def rewrite(block: str, name: str, alias: str) -> tuple[str, str, str]:
             call_args.append(f"{a.arg}={a.arg}")
         if fn.args.kwarg:
             call_args.append("**" + fn.args.kwarg.arg)
+    # Dropping the leading underscore can collide with a name the method already
+    # called. _normalise_lever_category was a one-line delegate to an imported
+    # normalise_lever_category; renaming it turned that into infinite recursion,
+    # and nothing about the diff looked wrong. Refuse instead of shipping it.
+    for node in ast.walk(ast.parse(body)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == public):
+            raise SystemExit(
+                f"{name} calls {public!r}, so renaming it would make it call itself. "
+                "It is probably already a delegate to an imported function — leave it "
+                "on the class."
+            )
     joined = ", ".join(call_args)
     is_async = bool(sig.group(1))
     aw = "await " if is_async else ""
