@@ -40,6 +40,12 @@ def _headline(f: Finding) -> str:
         "no_po": lambda: "Invoice has no PO",
         "line_arithmetic": lambda: f"Line {r.claim_line} amount is not quantity × price",
         "invoice_totals": lambda: f"Invoice {r.field_name} does not add up",
+        "contract_cap": lambda: (f"Charged above the contract price cap on line "
+                                 f"{r.claim_line} (contract {r.auth_doc})"),
+        "contract_rate": lambda: (f"Charged {'above' if up else 'below'} the contract rate "
+                                  f"on line {r.claim_line} (contract {r.auth_doc})"),
+        "contract_included": lambda: (f"Charged for an item contract {r.auth_doc} includes "
+                                      f"at no charge, on line {r.claim_line}"),
     }
     head = heads.get(f.rule_id, lambda: f.rule_id.replace("_", " "))()
     if any(c.outcome == Outcome.UNVERIFIABLE for c in f.causes):

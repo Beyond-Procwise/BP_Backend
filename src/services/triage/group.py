@@ -12,9 +12,13 @@ from decimal import Decimal
 from .model import SCORED, Finding, Result, Severity, pct_change
 from .score import score_result
 
-_EXPLAINS_OVERAGE = ("duplicate", "quantity", "unit_price", "uniform_uplift", "unlinked_line")
+#: The contract is the higher authority: a breach of it explains the PO difference on the
+#: same line, not the other way round.
+_CONTRACT_RULES = frozenset({"contract_cap", "contract_rate", "contract_included"})
+_EXPLAINS_OVERAGE = ("duplicate", "quantity", "unit_price", "uniform_uplift",
+                     "unlinked_line", *sorted(_CONTRACT_RULES))
 _GROUPED = frozenset({"duplicate", "quantity", "unit_price", "cumulative_total",
-                      "unlinked_line"})
+                      "unlinked_line", *_CONTRACT_RULES})
 
 
 def _uplift_clusters(rs: list[Result], within: Decimal) -> list[list[Result]]:
@@ -48,6 +52,15 @@ def group(results: list[Result], cfg) -> list[Finding]:
             findings.append(f)
             dup_by_invoice[r.claim_doc] = f
 
+    # Built before the price findings it outranks: a line charged above its contract is
+    # one sum of money, and the PO difference on that same line is an effect of it.
+    contract_by_line: dict[tuple, Finding] = {}
+    for r in live:
+        if r.rule_id in _CONTRACT_RULES:
+            f = Finding(r.deal_id, r.rule_id, [r], r.cause_key)
+            findings.append(f)
+            contract_by_line.setdefault((r.claim_doc, r.claim_line), f)
+
     # Keyed on the PO alone: the quantity invoiced against a PO is one fact, whichever
     # invoice (or credit note) happens to be the latest, so a later document must not
     # re-key the finding a person may already be working on.
@@ -64,8 +77,13 @@ def group(results: list[Result], cfg) -> list[Finding]:
 
     by_invoice = defaultdict(list)
     for r in live:
-        if r.rule_id == "unit_price":
-            by_invoice[r.claim_doc].append(r)
+        if r.rule_id != "unit_price":
+            continue
+        governed = contract_by_line.get((r.claim_doc, r.claim_line))
+        if governed is not None:
+            governed.effects.append(r)
+            continue
+        by_invoice[r.claim_doc].append(r)
     for inv_id, rs in by_invoice.items():
         for cluster in _uplift_clusters(rs, cfg["uplift_same_pct_within"]):
             if len(cluster) >= cfg["uplift_min_lines"]:

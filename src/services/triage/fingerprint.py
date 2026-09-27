@@ -16,9 +16,10 @@ import json
 from .model import Doc, DocumentSet, DuplicateFlag, Line
 
 _DOC_FIELDS = ("supplier_id", "currency", "doc_date", "net", "tax", "gross",
-               "payment_terms", "po_id", "quote_ref", "confidence", "fx_to_gbp")
+               "payment_terms", "po_id", "quote_ref", "confidence", "fx_to_gbp",
+               "contract_ref", "parent_contract_id")
 _LINE_FIELDS = ("line_ref", "item_id", "description", "quantity", "uom", "unit_price",
-                "line_amount", "po_id", "delivery_date")
+                "line_amount", "po_id", "delivery_date", "term_basis", "qualifier")
 
 
 def _s(value):
@@ -44,7 +45,7 @@ def _dup(f: DuplicateFlag) -> list:
 
 
 def deal_content_hash(ds: DocumentSet) -> str:
-    docs = sorted((_doc(d) for d in (*ds.quotes, *ds.pos, *ds.invoices)),
+    docs = sorted((_doc(d) for d in (*ds.quotes, *ds.pos, *ds.invoices, *ds.contracts)),
                   key=lambda row: (row[0], row[1], json.dumps(row)))
     dups = sorted((_dup(f) for f in ds.duplicates), key=_key)
     blob = json.dumps({"deal_id": ds.deal_id, "docs": docs, "duplicates": dups},

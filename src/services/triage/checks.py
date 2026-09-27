@@ -428,8 +428,86 @@ def check_po_links(ds: DocumentSet, links: Links, cfg) -> list[Result]:
     return out
 
 
+# --- 16. what the contract allows -------------------------------------------------
+#
+# The higher authority. A PO may only buy what the contract permits, so a charge above a
+# cap or off the rate card is measured against the contract, not the PO. Until 2026-09-27
+# this comparison existed only in the gateway's Document match view, which drew a screen
+# and wrote nothing; it lives here now so a breach becomes a Finding that can carry an
+# outcome. group.py makes the PO price difference on the same line an EFFECT of the
+# contract finding, so the money is counted once.
+
+def _charged(line) -> tuple[Optional[Decimal], Optional[Decimal], bool]:
+    """(per-unit charge, line total, per_unit?) — a lump sum is judged on its total."""
+    if line.quantity is not None and line.unit_price is not None:
+        return line.unit_price, line.line_amount, True
+    if line.unit_price is not None and line.line_amount is None:
+        return line.unit_price, None, True
+    return None, line.line_amount, False
+
+
+def check_contract_terms(ds: DocumentSet, links: Links, cfg) -> list[Result]:
+    out = []
+    for tl in links.term_links:
+        if tl.invoice.is_credit_note:
+            continue
+        basis, allowed = tl.term.term_basis, tl.term.unit_price
+        per_unit, total, is_per_unit = _charged(tl.inv_line)
+        common = dict(claim_line=tl.inv_line.line_ref, auth_doc=tl.contract.doc_id,
+                      auth_line=tl.term.line_ref,
+                      confidence=_doc_conf(tl.invoice, tl.contract) * tl.confidence)
+        outcome = _fail(cfg, tl.confidence, tl.invoice, tl.contract)
+
+        if basis == "included":
+            charge = total if total is not None else per_unit
+            if charge is None or abs(charge) <= cfg["rounding_per_line"]:
+                continue
+            out.append(_r(ds, "contract_included", "money", outcome, tl.invoice,
+                          "line_amount", claim_value=_s(charge), auth_value=_s(allowed or 0),
+                          delta=charge, exposure=abs(charge), claim_amount=charge,
+                          auth_amount=ZERO,
+                          note=f"the contract includes this at no charge"
+                               f"{f' ({tl.term.qualifier})' if tl.term.qualifier else ''}",
+                          **common))
+            continue
+
+        if allowed is None:
+            continue
+        claim = per_unit if is_per_unit else total
+        if claim is None:
+            continue
+        qty = tl.inv_line.quantity if is_per_unit else None
+        over = claim - allowed
+
+        if basis == "cap":
+            tol = resolve_tolerance("unit_price_over", cfg)
+            if over <= tol.allowance(allowed, tl.invoice.fx_to_gbp):
+                continue     # at or under a ceiling is what a ceiling is for
+            exposure = over * qty if qty is not None else over
+            out.append(_r(ds, "contract_cap", "money", outcome, tl.invoice,
+                          "unit_price" if is_per_unit else "line_amount",
+                          claim_value=_s(claim), auth_value=_s(allowed), delta=over,
+                          exposure=abs(exposure), claim_amount=claim * (qty or 1),
+                          auth_amount=allowed * (qty or 1), tolerance=tol.as_dict(),
+                          note="above the contract's price cap", **common))
+            continue
+
+        if basis == "rate":
+            tol = resolve_tolerance("unit_price_over" if over > 0 else "unit_price_under", cfg)
+            if abs(over) <= tol.allowance(allowed, tl.invoice.fx_to_gbp):
+                continue
+            exposure = over * qty if qty is not None else over
+            out.append(_r(ds, "contract_rate", "money", outcome, tl.invoice,
+                          "unit_price" if is_per_unit else "line_amount",
+                          claim_value=_s(claim), auth_value=_s(allowed), delta=over,
+                          exposure=abs(exposure), claim_amount=claim * (qty or 1),
+                          auth_amount=allowed * (qty or 1), tolerance=tol.as_dict(),
+                          note="differs from the contract's agreed rate", **common))
+    return out
+
+
 LINE_CHECKS = (check_unit_price, check_quantity, check_line_arithmetic,
-               check_description, check_unlinked_lines)
+               check_description, check_unlinked_lines, check_contract_terms)
 DOC_CHECKS = (check_invoice_totals, check_cumulative_total, check_tax_rate, check_currency,
               check_supplier, check_invoice_date, check_payment_terms, check_duplicates,
               check_po_links)

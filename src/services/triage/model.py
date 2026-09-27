@@ -52,6 +52,8 @@ CATEGORY = {
     "payment_terms": "terms", "description": "description", "unlinked_line": "linking",
     "rollup": "linking", "bad_po_ref": "linking", "no_po": "linking",
     "line_arithmetic": "arithmetic", "invoice_totals": "arithmetic",
+    "contract_cap": "contract", "contract_rate": "contract",
+    "contract_included": "contract",
 }
 
 
@@ -79,12 +81,17 @@ class Line:
     line_amount: Optional[Decimal] = None
     po_id: Optional[str] = None
     delivery_date: Optional[date] = None
+    # Contract lines only: 'rate' | 'cap' | 'included', as extraction/contract_terms.py
+    # read it from the row's own wording. None means it could not be read, and an
+    # unreadable term judges nothing.
+    term_basis: Optional[str] = None
+    qualifier: Optional[str] = None
 
 
 @dataclass
 class Doc:
     doc_id: str
-    doc_type: str                         # quote | purchase_order | invoice
+    doc_type: str                         # quote | purchase_order | invoice | contract
     supplier_id: Optional[str] = None
     currency: Optional[str] = None
     doc_date: Optional[date] = None
@@ -94,6 +101,8 @@ class Doc:
     payment_terms: Optional[str] = None
     po_id: Optional[str] = None           # invoice -> PO number on its header
     quote_ref: Optional[str] = None       # PO -> quote
+    contract_ref: Optional[str] = None    # quote/PO/invoice -> the contract it cites
+    parent_contract_id: Optional[str] = None   # contract -> the contract it amends
     revision: Optional[int] = None        # PO revision (None = unstated)
     approval: Optional[str] = None        # PO approval_status (None = unstated)
     confidence: Optional[float] = None    # 0-1; None = not reported
@@ -124,6 +133,7 @@ class DocumentSet:
     quotes: list[Doc] = field(default_factory=list)
     pos: list[Doc] = field(default_factory=list)
     invoices: list[Doc] = field(default_factory=list)
+    contracts: list[Doc] = field(default_factory=list)
     duplicates: list[DuplicateFlag] = field(default_factory=list)
 
 
@@ -137,6 +147,16 @@ class LineLink:
     rollup: bool = False
 
 
+@dataclass(frozen=True)
+class TermLink:
+    """An invoice line and the contract term that governs it."""
+    invoice: Doc
+    inv_line: Line
+    contract: Doc
+    term: Line
+    confidence: float
+
+
 @dataclass
 class Links:
     invoice_po: dict = field(default_factory=dict)   # invoice id -> PO Doc, or None
@@ -144,6 +164,7 @@ class Links:
     no_ref: set = field(default_factory=set)         # invoice ids naming no PO at all
     line_links: list = field(default_factory=list)   # list[LineLink]
     po_quote: dict = field(default_factory=dict)     # PO id -> quote Doc, or None
+    term_links: list = field(default_factory=list)   # list[TermLink]
 
 
 @dataclass

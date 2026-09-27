@@ -10,7 +10,7 @@ from typing import Optional
 
 from src.services.extraction.po_revision import latest_approved
 
-from .model import Doc, DocumentSet, Line, LineLink, Links
+from .model import Doc, DocumentSet, Line, LineLink, Links, TermLink
 from .normalise import similarity
 
 
@@ -54,6 +54,39 @@ def _rollup(links: list[LineLink], po: Doc, cfg) -> list[LineLink]:
     return links
 
 
+def term_for(line: Line, contracts: list[Doc], cfg) -> Optional[tuple[Doc, Line, float]]:
+    """The contract term governing this invoice line, with a confidence, or None.
+
+    Same rule as the PO line link: an item-id match is certain, otherwise the best
+    description similarity, and below `unlinked_below` there is no link at all.
+
+    Two guards, both load-bearing and both tested by breaking them:
+
+    * A term whose basis could not be read (`term_basis is None`, which is what
+      extraction/contract_terms.py leaves rather than guessing) governs nothing. An
+      unreadable term must never judge a charge.
+    * Two item ids that differ are evidence of a *different* item, so such a term is
+      rejected outright rather than falling through to the description. Without that,
+      "Gadget" scores 0.67 against "Widget" and a line gets judged against another
+      item's cap — which is how this was found.
+    """
+    best: Optional[tuple[Doc, Line, float]] = None
+    for c in contracts:
+        for t in c.lines:
+            if t.term_basis is None:
+                continue
+            if line.item_id and t.item_id:
+                if line.item_id != t.item_id:
+                    continue
+                return c, t, 1.0
+            score = similarity(line.description, t.description)
+            if best is None or score > best[2]:
+                best = (c, t, round(score, 4))
+    if best is None or best[2] < cfg["unlinked_below"]:
+        return None
+    return best
+
+
 def link(ds: DocumentSet, cfg) -> Links:
     pos = {p.doc_id: p for p in ds.pos}
     quotes = {q.doc_id: q for q in ds.quotes}
@@ -70,4 +103,10 @@ def link(ds: DocumentSet, cfg) -> Links:
             continue
         out.line_links.extend(_rollup([_link_line(inv, l, po, cfg) for l in inv.lines], po, cfg))
     out.po_quote = {p.doc_id: (quotes.get(p.quote_ref) if p.quote_ref else None) for p in ds.pos}
+    for inv in ds.invoices:
+        for l in inv.lines:
+            found = term_for(l, ds.contracts, cfg)
+            if found is not None:
+                contract, t, conf = found
+                out.term_links.append(TermLink(inv, l, contract, t, conf))
     return out

@@ -64,10 +64,28 @@ def quote(quote_id="Q-1", lines=None, currency="GBP", supplier="SUP-1", fx="1") 
                doc_date=date(2026, 1, 1), net=n, fx_to_gbp=D(fx) if fx else None, lines=lines)
 
 
+def term(ref, basis: Optional[str] = "rate", price: Optional[str] = "12.00",
+         desc: str = "Widget", item: Optional[str] = "ITEM-1",
+         qualifier: Optional[str] = None) -> Line:
+    """One contract rate-card line: what the contract allows for this item."""
+    return Line(line_ref=str(ref), item_id=item, description=desc, quantity=None,
+                uom="each", unit_price=D(price) if price is not None else None,
+                line_amount=None, term_basis=basis, qualifier=qualifier)
+
+
+def contract(contract_id="C-1", lines=None, currency="GBP", supplier="SUP-1",
+             start=date(2026, 1, 1), fx="1") -> Doc:
+    lines = lines if lines is not None else [term(1)]
+    return Doc(doc_id=contract_id, doc_type="contract", supplier_id=supplier,
+               currency=currency, doc_date=start, fx_to_gbp=D(fx) if fx else None,
+               lines=lines)
+
+
 def deal(*docs, duplicates=(), deal_id="DEAL-1") -> DocumentSet:
     ds = DocumentSet(deal_id)
     for d in docs:
-        {"quote": ds.quotes, "purchase_order": ds.pos, "invoice": ds.invoices}[d.doc_type].append(d)
+        {"quote": ds.quotes, "purchase_order": ds.pos, "invoice": ds.invoices,
+         "contract": ds.contracts}[d.doc_type].append(d)
     ds.duplicates = list(duplicates)
     return ds
 

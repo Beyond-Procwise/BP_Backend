@@ -67,3 +67,35 @@ def test_a_document_added_or_moved_changes_the_hash():
     b.invoices.append(inv("INV-3"))
     c.invoices[1].doc_id = "INV-2b"
     assert len({deal_content_hash(a), deal_content_hash(b), deal_content_hash(c)}) == 3
+
+
+# --- contracts (2026-09-27: the contract leg became a check, so it must re-trigger) ---
+
+def _contract_deal():
+    from tests.triage.helpers import contract, term
+    return deal(contract(lines=[term(1, "cap", "10.00")]),
+                po(lines=[line(1)]), inv(lines=[line(1)]))
+
+
+def test_a_contract_is_part_of_the_hash():
+    """Without this the scheduler never re-triages a deal whose contract changed."""
+    with_contract = deal_content_hash(_contract_deal())
+    without = deal_content_hash(deal(po(lines=[line(1)]), inv(lines=[line(1)])))
+    assert with_contract != without
+
+
+def test_changing_a_contract_price_changes_the_hash():
+    from tests.triage.helpers import contract, term
+    a = _contract_deal()
+    b = deal(contract(lines=[term(1, "cap", "9.00")]), po(lines=[line(1)]),
+             inv(lines=[line(1)]))
+    assert deal_content_hash(a) != deal_content_hash(b)
+
+
+def test_changing_a_term_basis_changes_the_hash():
+    """cap -> rate is a different judgement on the same number."""
+    from tests.triage.helpers import contract, term
+    a = _contract_deal()
+    b = deal(contract(lines=[term(1, "rate", "10.00")]), po(lines=[line(1)]),
+             inv(lines=[line(1)]))
+    assert deal_content_hash(a) != deal_content_hash(b)

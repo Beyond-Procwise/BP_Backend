@@ -36,6 +36,9 @@ MIRROR_ISSUE_TYPE = {
     "line_arithmetic": "line_amount_not_qty_x_price",
     "invoice_totals": "invoice_totals_do_not_add_up",
     "description": "line_description_differs_from_po",
+    "contract_cap": "charged_above_contract_cap",
+    "contract_rate": "charged_off_contract_rate",
+    "contract_included": "charged_for_contract_included_item",
     "no_po": "invoice_has_no_po",
     "rollup": "invoice_lines_rolled_up",
 }
