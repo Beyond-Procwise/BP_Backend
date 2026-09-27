@@ -18,14 +18,44 @@ import pytest
 _SRC = Path(__file__).resolve().parents[2] / "src"
 
 
-def test_kg_sync_reads_the_trgt_tier():
+#: Document types with no _stg/_trgt pair at all, and the final table they promote to.
+#: A contract goes straight from _raw to proc.bp_contracts (contract.yaml, and the
+#: comment on _TRGT_TABLE), so there is no proc.bp_contract_trgt for it to read and
+#: the blanket "_trgt" rule cannot apply. Verified 2026-09-27: no bp_contract*_trgt
+#: table exists in either database. Anything added here needs the same justification.
+_NO_TRGT_TIER = {"contract": "proc.bp_contracts"}
+
+
+def test_kg_sync_never_reads_the_stg_tier():
+    """The original bug, guarded directly: a graph node built from _stg is swept by the
+    next reconciling rebuild, so the graph oscillates for exactly the unsettled documents.
+    """
     from src.services.extraction.kg_sync import _TRGT_TABLE
 
     assert _TRGT_TABLE, "the table map is empty"
     for doc_type, table in _TRGT_TABLE.items():
-        assert table.endswith("_trgt"), (
-            f"{doc_type} reads {table}; the graph mirrors _trgt, so syncing "
+        assert not table.endswith("_stg"), (
+            f"{doc_type} reads {table}; the graph mirrors final state, so syncing "
             f"from _stg creates nodes the next rebuild deletes"
+        )
+
+
+def test_kg_sync_reads_each_type_s_final_tier():
+    """Either the type's _trgt table, or -- for a type that has no _trgt tier -- exactly
+    the final table named in _NO_TRGT_TIER. A new type may not quietly join that list."""
+    from src.services.extraction.kg_sync import _TRGT_TABLE
+
+    for doc_type, table in _TRGT_TABLE.items():
+        if doc_type in _NO_TRGT_TIER:
+            assert table == _NO_TRGT_TIER[doc_type], (
+                f"{doc_type} reads {table}, not its documented final table "
+                f"{_NO_TRGT_TIER[doc_type]}"
+            )
+            continue
+        assert table.endswith("_trgt"), (
+            f"{doc_type} reads {table}; every type with a _trgt tier must read it. "
+            f"If {doc_type} genuinely has no _trgt table, say so in _NO_TRGT_TIER "
+            f"with the reason, rather than loosening this rule"
         )
 
 
