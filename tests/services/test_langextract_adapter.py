@@ -6,14 +6,10 @@ import pytest
 from services import langextract_adapter as lex
 
 # These tests monkeypatch langextract's own `extract`, so they need the package present.
-# The adapter treats it as optional on purpose -- both import sites are wrapped in
-# try/except ImportError and return {} ("langextract not installed -- skipping fallback",
-# adapter :67 and :231) -- so its absence is a supported state, not a failure, and these
-# tests skip rather than redden. It is installed in .venv (the runtime env, 1.2.1) but not
-# in venv (the test env) and appears in no requirements file: see the note raised with the
-# product owner on 2026-09-27 about declaring it.
-pytest.importorskip("langextract",
-                    reason="optional extraction fallback; adapter degrades without it")
+# It is a declared dependency as of 2026-09-27 (requirements.txt, pinned to 1.2.1 to match
+# the runtime env), so its absence is a broken environment and these tests are meant to say
+# so loudly. No importorskip: the adapter's try/except ImportError is a production safety
+# net, not a licence for the suite to go quiet about a missing dependency.
 
 
 # ---------------------------------------------------------------------------

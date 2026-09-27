@@ -70,5 +70,19 @@ docling==2.93.0
 paddlepaddle-gpu==3.1.0
 paddleocr==3.5.0
 ddgs
+# langextract -> services/langextract_adapter.py, the narrative-field fallback the
+# structural extractor calls for low-confidence party/address/terms fields
+# (structural_extractor/retry/attempts.py). It was installed in .venv by hand and never
+# declared, so a clean environment lost the fallback silently: both import sites are
+# wrapped in try/except ImportError and return {}, which is the right defensive shape but
+# means nothing ever said the package was missing. Floor is the version in use; capped
+# below 2 because the adapter binds to the provider factory API surface
+# (factory.ModelConfig with provider="OllamaLanguageModel", lx.data.ExampleData), which a
+# major bump could reasonably change. Pinned exactly, not floored: .venv (the runtime
+# env) runs 1.2.1, and a range let the test env resolve to 1.7.0 — which would have had
+# the suite validating a different version from the one serving traffic, and pulled a
+# protobuf 6->7 bump with it. Upgrading langextract is a deliberate decision, not
+# something a fresh pip install should make silently.
+langextract==1.2.1
 pyjwt[crypto]
 babel>=2.10
