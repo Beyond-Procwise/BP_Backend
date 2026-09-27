@@ -1,11 +1,19 @@
 """Database-backed policy loading utilities.
 
-The original implementation read bundled JSON fixtures for supplier ranking
-and opportunity policies.  Runtime environments now mandate that policy
-configuration is sourced directly from the PostgreSQL ``proc.bp_policy`` table
-so that agent behaviour reflects the latest governance rules without
-requiring code deploys.  This module therefore provides a lightweight
-repository for policy metadata with convenience helpers for common lookups.
+The original implementation read bundled JSON fixtures.  Runtime environments
+now mandate that policy configuration is sourced directly from the PostgreSQL
+``proc.bp_policy`` table so that agent behaviour reflects the latest governance
+rules without requiring code deploys.  This module therefore provides a
+lightweight repository for policy metadata with convenience helpers for common
+lookups.
+
+A **policy** answers "is this action allowed, does it need approval, is it
+forbidden".  It is not the place for detection rules: what the system looks
+for, and at what threshold, lives in ``proc.bp_rule`` behind
+:class:`engines.rule_book.RuleBook`.  Detector configuration used to sit in
+this table and be bound to detectors by fuzzy alias matching, which silently
+mis-bound four of five rows; keeping the two apart is what stops that
+recurring.
 """
 
 from __future__ import annotations
@@ -28,21 +36,6 @@ class PolicyEngine:
         "normalization_direction_policy",
     }
 
-    OPPORTUNITY_KEYWORDS = {
-        "opportunity",
-        "oppfinderpolicy",
-        "contract_expiry",
-        "maverick_spend",
-        "volume_consolidation",
-        "supplier_risk",
-        "duplicate_supplier",
-        "category_overspend",
-        "inflation_pass_through",
-        "unused_contract_value",
-        "supplier_performance",
-        "esg_opportunity",
-        "price_benchmark_variance",
-    }
 
     def __init__(
         self,
@@ -83,7 +76,6 @@ class PolicyEngine:
                     self._slug_index[alias] = policy
 
         self.supplier_policies = self._collect_supplier_policies()
-        self.opportunity_policies = self._collect_opportunity_policies()
         self._normalise_weight_policy()
         logger.info("PolicyEngine loaded %d policies", len(self._policies))
 
@@ -298,13 +290,6 @@ class PolicyEngine:
                 collected.append(policy)
         return collected
 
-    def _collect_opportunity_policies(self) -> List[Dict[str, Any]]:
-        collected: List[Dict[str, Any]] = []
-        for policy in self._policies:
-            aliases = policy.get("aliases", set())
-            if aliases & self.OPPORTUNITY_KEYWORDS:
-                collected.append(policy)
-        return collected
 
     def _normalise_weight_policy(self) -> None:
         """Ensure default supplier ranking weights sum to 1."""
@@ -335,7 +320,6 @@ class PolicyEngine:
                 if alias not in self._slug_index:
                     self._slug_index[alias] = policy
         self.supplier_policies = self._collect_supplier_policies()
-        self.opportunity_policies = self._collect_opportunity_policies()
         self._normalise_weight_policy()
         logger.info("PolicyEngine reloaded %d policies", len(self._policies))
 

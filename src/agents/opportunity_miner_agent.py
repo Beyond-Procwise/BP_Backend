@@ -22,6 +22,7 @@ from src.services.formulas import (
 )
 from services.data_flow_manager import DataFlowManager
 from services.facts.deprecation import read_calculation_detail
+from engines.rule_book import RuleBookUnavailable
 from services.opportunity_service import load_opportunity_feedback
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources, normalize_instruction_key
@@ -180,6 +181,11 @@ _CONDITION_KEY_ALIASES: Dict[str, set[str]] = {
     "variance_threshold_pct": {
         "variance_threshold",
         "variance_thresholdpct",
+        # The plain camelCase form normalises to "variancethresholdpct", which
+        # none of the entries above produce. Callers sending varianceThresholdPct
+        # were silently ignored; a bp_policy row happened to supply the same
+        # value by another route, which hid it.
+        "varianceThresholdPct",
         "variancepct",
         "threshold_pct",
         "thresholdpct",
@@ -4257,207 +4263,96 @@ class OpportunityMinerAgent(BaseAgent):
             return self.min_financial_impact
         return threshold
 
-    def _get_policy_registry(self) -> Dict[str, Dict[str, Any]]:
-        """Return policy metadata keyed by canonical workflow slug."""
+    #: Detectors that infer the supplier rather than being handed one.
+    _SUPPLIER_AUTODETECT_SLUGS = frozenset(
+        {"price_variance_check", "supplier_performance_check"}
+    )
 
-        def entry(
-            slug: str,
-            detector: str,
-            handler,
-            required: Iterable[str],
-            default_conditions: Optional[Dict[str, Any]] = None,
-            *,
-            supplier_autodetect: bool = False,
-        ) -> Dict[str, Any]:
-            aliases = {
-                self._normalise_policy_slug(slug),
-                self._normalise_policy_slug(detector),
-            }
-            autodetect_enabled = bool(
-                supplier_autodetect
-                or getattr(handler, "supports_supplier_autodetect", False)
-            )
-            return {
-                "policy_slug": slug,
-                "policy_id": slug,
-                "detector": detector,
-                "policy_name": detector,
-                "required_fields": list(required),
-                "handler": handler,
-                "default_conditions": dict(default_conditions or {}),
-                "supplier_autodetect": autodetect_enabled,
-                "aliases": {alias for alias in aliases if alias},
-            }
+    def _detector_handlers(self) -> Dict[str, Any]:
+        """Detector slug -> the code that implements it.
 
-        registry: Dict[str, Dict[str, Any]] = {
-            "price_variance_check": entry(
-                "price_variance_check",
-                "Price Benchmark Variance",
-                self._policy_price_benchmark_variance,
-                ["supplier_id", "item_id", "actual_price", "benchmark_price"],
-                supplier_autodetect=True,
-            ),
-            "volume_consolidation_check": entry(
-                "volume_consolidation_check",
-                "Volume Consolidation",
-                self._policy_volume_consolidation,
-                ["minimum_volume_gbp"],
-            ),
-            "contract_expiry_check": entry(
-                "contract_expiry_check",
-                "Contract Expiry Opportunity",
-                self._policy_contract_expiry,
-                ["negotiation_window_days"],
-                {"negotiation_window_days": 90},
-            ),
-            "supplier_risk_check": entry(
-                "supplier_risk_check",
-                "Supplier Risk Alert",
-                self._policy_supplier_risk,
-                ["risk_threshold"],
-            ),
-            "maverick_spend_check": entry(
-                "maverick_spend_check",
-                "Maverick Spend Detection",
-                self._policy_maverick_spend,
-                ["minimum_value_gbp"],
-            ),
-            "duplicate_supplier_check": entry(
-                "duplicate_supplier_check",
-                "Duplicate Supplier",
-                self._policy_duplicate_supplier,
-                ["minimum_overlap_gbp"],
-            ),
-            "category_overspend_check": entry(
-                "category_overspend_check",
-                "Category Overspend",
-                self._policy_category_overspend,
-                ["category_budgets"],
-            ),
-            "inflation_passthrough_check": entry(
-                "inflation_passthrough_check",
-                "Inflation Pass-Through",
-                self._policy_inflation_passthrough,
-                ["market_inflation_pct"],
-            ),
-            "unused_contract_value_check": entry(
-                "unused_contract_value_check",
-                "Unused Contract Value",
-                self._policy_unused_contract_value,
-                ["minimum_unused_value_gbp"],
-            ),
-            "supplier_performance_check": entry(
-                "supplier_performance_check",
-                "Supplier Performance Deviation",
-                self._policy_supplier_performance,
-                ["performance_records"],
-                supplier_autodetect=True,
-            ),
-            "esg_opportunity_check": entry(
-                "esg_opportunity_check",
-                "ESG Opportunity",
-                self._policy_esg_opportunity,
-                ["esg_scores"],
-            ),
-            "invoice_po_variance_check": entry(
-                "invoice_po_variance_check",
-                "Invoice Overbilling",
-                self._policy_invoice_po_variance,
-                ["variance_threshold_pct"],
-                {"variance_threshold_pct": 10.0},
-            ),
+        The handler is the one part of a rule that cannot live in a database:
+        it is a function. Everything else about a rule -- whether it runs, what
+        it is called, what inputs it needs, what thresholds it uses -- comes
+        from ``proc.bp_rule``.
+        """
+
+        return {
+            "price_variance_check": self._policy_price_benchmark_variance,
+            "volume_consolidation_check": self._policy_volume_consolidation,
+            "contract_expiry_check": self._policy_contract_expiry,
+            "supplier_risk_check": self._policy_supplier_risk,
+            "maverick_spend_check": self._policy_maverick_spend,
+            "duplicate_supplier_check": self._policy_duplicate_supplier,
+            "category_overspend_check": self._policy_category_overspend,
+            "inflation_passthrough_check": self._policy_inflation_passthrough,
+            "unused_contract_value_check": self._policy_unused_contract_value,
+            "supplier_performance_check": self._policy_supplier_performance,
+            "esg_opportunity_check": self._policy_esg_opportunity,
+            "invoice_po_variance_check": self._policy_invoice_po_variance,
         }
 
-        engine = getattr(self.agent_nick, "policy_engine", None)
-        policies = []
-        if engine is not None:
-            if hasattr(engine, "iter_policies"):
-                policies = list(engine.iter_policies())
-            elif hasattr(engine, "list_policies"):
-                policies = list(engine.list_policies())  # pragma: no cover - legacy
+    def _get_policy_registry(self) -> Dict[str, Dict[str, Any]]:
+        """The live detector registry, driven by ``proc.bp_rule``.
 
-        def aliases_for(policy: Dict[str, Any]) -> set[str]:
-            aliases: set[str] = set()
-            for key in ("policyName", "policy_desc", "policyId", "slug"):
-                alias = self._normalise_policy_slug(policy.get(key))
-                if alias:
-                    aliases.add(alias)
-            for alias in policy.get("aliases", []):
-                norm = self._normalise_policy_slug(alias)
-                if norm:
-                    aliases.add(norm)
-            details = policy.get("details", {})
-            if isinstance(details, dict):
-                for key in (
-                    "policy_name",
-                    "identifier",
-                    "policy_identifier",
-                    "name",
-                ):
-                    alias = self._normalise_policy_slug(details.get(key))
-                    if alias:
-                        aliases.add(alias)
-                rules = details.get("rules")
-                if isinstance(rules, dict):
-                    for key in ("policy_name", "name"):
-                        alias = self._normalise_policy_slug(rules.get(key))
-                        if alias:
-                            aliases.add(alias)
-            return aliases
+        Rules decide what runs; policies decide what is allowed. This reads the
+        rule book and nothing else, so no policy row can add a detector, remove
+        one, or move a threshold, whatever it happens to be called.
 
-        for policy in policies:
-            policy_aliases = aliases_for(policy)
-            if not policy_aliases:
+        That last point is not hypothetical. Detector configuration used to sit
+        in ``proc.bp_policy`` and was bound to detectors by fuzzy alias
+        matching which mutated each entry's alias set as it scanned. One entry
+        accumulated seventeen aliases -- including the bare policy ids and the
+        linked-agent name that every opportunity policy shares -- and ended up
+        bound to whichever policy matched last. Four of the five policy rows
+        collapsed onto a single detector, and three detectors that had a row
+        received none of its configuration.
+        """
+
+        book = getattr(self.agent_nick, "rule_book", None)
+        if book is None:
+            raise RuleBookUnavailable(
+                "no rule book available -- refusing to run opportunity "
+                "detection with no rules, which would report zero findings "
+                "and read as a clean scan"
+            )
+
+        handlers = self._detector_handlers()
+        registry: Dict[str, Dict[str, Any]] = {}
+        for rule in book.active_rules():
+            handler = handlers.get(rule.detector_slug)
+            if handler is None:
+                logger.error(
+                    "proc.bp_rule #%s (%r) names detector %r, which has no "
+                    "handler in code; the rule is skipped",
+                    rule.rule_id,
+                    rule.rule_name,
+                    rule.detector_slug,
+                )
                 continue
-            for slug, entry_data in registry.items():
-                entry_aliases = entry_data.setdefault("aliases", set())
-                base_aliases = {
-                    self._normalise_policy_slug(slug),
-                    self._normalise_policy_slug(entry_data.get("policy_id")),
-                    self._normalise_policy_slug(entry_data.get("policy_name")),
-                    self._normalise_policy_slug(entry_data.get("detector")),
-                }
-                entry_aliases.update(alias for alias in base_aliases if alias)
-                if entry_aliases & policy_aliases:
-                    entry_aliases.update(policy_aliases)
-                    policy_id = policy.get("policyId")
-                    if policy_id:
-                        entry_data["policy_id"] = str(policy_id)
-                    name = policy.get("policyName")
-                    if name:
-                        entry_data["policy_name"] = str(name)
-                    desc = policy.get("policy_desc")
-                    if desc:
-                        entry_data["policy_desc"] = desc
-                    entry_data["source_policy"] = policy
-                    details = policy.get("details", {})
-                    if isinstance(details, dict):
-                        rules = details.get("rules")
-                        if isinstance(rules, dict):
-                            params = rules.get("parameters")
-                            if isinstance(params, dict):
-                                existing = (
-                                    entry_data.get("parameters")
-                                    if isinstance(entry_data.get("parameters"), dict)
-                                    else {}
-                                )
-                                merged_params = {**existing, **params}
-                                entry_data["parameters"] = merged_params
-                                if not entry_data.get("required_fields"):
-                                    entry_data["required_fields"] = list(merged_params.keys())
-                            defaults = rules.get("default_conditions")
-                            if isinstance(defaults, dict):
-                                existing_defaults = (
-                                    entry_data.get("default_conditions")
-                                    if isinstance(entry_data.get("default_conditions"), dict)
-                                    else {}
-                                )
-                                entry_data["default_conditions"] = {
-                                    **existing_defaults,
-                                    **defaults,
-                                }
-                    break
-
+            aliases = {
+                self._normalise_policy_slug(rule.detector_slug),
+                self._normalise_policy_slug(rule.rule_name),
+            }
+            registry[rule.detector_slug] = {
+                "policy_slug": rule.detector_slug,
+                "policy_id": rule.detector_slug,
+                "detector": rule.rule_name,
+                "policy_name": rule.rule_name,
+                "required_fields": list(rule.required_fields),
+                "handler": handler,
+                "default_conditions": dict(rule.conditions),
+                "supplier_autodetect": bool(
+                    rule.detector_slug in self._SUPPLIER_AUTODETECT_SLUGS
+                    or getattr(handler, "supports_supplier_autodetect", False)
+                ),
+                "aliases": {alias for alias in aliases if alias},
+                "rule_id": rule.rule_id,
+                "rule_version": rule.version,
+                "finding_type": rule.finding_type,
+                "severity": rule.severity,
+                "scope": rule.scope,
+            }
         return registry
 
     def _to_float(self, value: Any, default: float = 0.0) -> float:

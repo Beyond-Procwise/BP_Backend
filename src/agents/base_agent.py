@@ -31,6 +31,7 @@ from ollama._types import ResponseError
 from config.settings import settings
 from orchestration.prompt_engine import PromptEngine
 from engines.policy_engine import PolicyEngine
+from engines.rule_book import load_rule_book
 from engines.query_engine import QueryEngine
 from engines.routing_engine import RoutingEngine
 from services.process_routing_service import ProcessRoutingService
@@ -1637,6 +1638,11 @@ class AgentNick:
         logger.info("Initializing core engines...")
         self.prompt_engine = PromptEngine(self)
         self.policy_engine = PolicyEngine(self)
+        # Rules decide what is detected; policies decide what is allowed. The
+        # two are separate tables and separate engines so that neither can
+        # quietly become the other. A missing rule book is carried as None --
+        # detection refuses, the rest of the API boots.
+        self.rule_book = load_rule_book(self)
         self.query_engine = QueryEngine(self)
         self.routing_engine = RoutingEngine(self)
         self.process_routing_service = ProcessRoutingService(self)

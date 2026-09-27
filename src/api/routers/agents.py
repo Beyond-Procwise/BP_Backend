@@ -136,14 +136,38 @@ async def reload_policies(
 
 
 def _do_reload_governance(agent_nick) -> Dict[str, Any]:
-    """The one governance hot-reload: prompts + policies + extraction hints."""
+    """The one governance hot-reload: prompts + policies + rules + hints.
+
+    Rules are in here for the same reason prompts are: a threshold you have to
+    restart the service to change is a threshold nobody changes.
+    """
     agent_nick.policy_engine.reload_policies()
     agent_nick.prompt_engine.refresh()
     from src.services.extraction_feedback.hint_store import HINT_STORE
     hints = HINT_STORE.refresh()
+
+    # A rule book that was unreadable at boot is retried here, so recovering
+    # from an outage does not need a restart either.
+    rule_book = getattr(agent_nick, "rule_book", None)
+    if rule_book is None:
+        from engines.rule_book import load_rule_book
+
+        rule_book = load_rule_book(agent_nick)
+        agent_nick.rule_book = rule_book
+    else:
+        from engines.rule_book import RuleBookUnavailable
+
+        try:
+            rule_book.reload()
+        except RuleBookUnavailable as exc:
+            # Keep serving the rules we already hold rather than dropping to
+            # none: stale detection beats silent no detection.
+            logger.error("rule book reload failed, keeping cached rules: %s", exc)
+
     return {
         "prompts": len(agent_nick.prompt_engine.all_prompts()),
         "policies": len(agent_nick.policy_engine.list_policies()),
+        "rules": len(rule_book.active_rules()) if rule_book else 0,
         "extraction_vendor_hints": hints,
     }
 
