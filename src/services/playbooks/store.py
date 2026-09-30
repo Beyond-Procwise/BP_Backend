@@ -26,6 +26,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+from src.services.db import get_conn
+
 from .finding_source import MATCH_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -203,8 +205,18 @@ def load_playbook_store(
     the whole API down with it.
     """
 
+    # The sweep has no agent_nick to borrow a connection from, so when neither
+    # a principal nor injected rows are given this resolves its own. Without it
+    # the store is built with no connection factory at all, reads nothing, and
+    # every sweep reports every finding unmatched -- which looks exactly like
+    # nobody having authored a strategy yet.
+    factory = None if (agent_nick is not None or playbook_rows is not None) else get_conn
     try:
-        return PlaybookStore(agent_nick=agent_nick, playbook_rows=playbook_rows)
+        return PlaybookStore(
+            agent_nick=agent_nick,
+            connection_factory=factory,
+            playbook_rows=playbook_rows,
+        )
     except PlaybookStoreUnavailable:
         logger.exception(
             "playbook store unavailable -- no playbook will be proposed until "

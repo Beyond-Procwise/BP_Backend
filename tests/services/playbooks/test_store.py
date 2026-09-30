@@ -141,3 +141,44 @@ def test_loader_carries_failure_rather_than_raising():
     assert load_playbook_store(agent_nick=nick) is None
     # And a healthy one still loads.
     assert load_playbook_store(playbook_rows=[row()]) is not None
+
+
+def test_the_production_loader_actually_reads_the_table(monkeypatch):
+    """load_playbook_store() takes no agent_nick from the sweep, so it has to
+    resolve its own connection. Without that it builds a store with no
+    connection factory, reads nothing, and every sweep reports every finding
+    unmatched -- which is indistinguishable from nobody having authored a
+    strategy yet."""
+    import src.services.playbooks.store as mod
+
+    class Cur:
+        description = [
+            ("playbook_id",), ("playbook_name",), ("trigger_source",),
+            ("trigger_match",), ("agent_workflow_id",), ("params",),
+            ("playbook_status",), ("version",), ("workflow_is_active",),
+        ]
+
+        def execute(self, sql, params=None):
+            pass
+
+        def fetchall(self):
+            return [(1, "Recover the duplicate", "detection_finding",
+                     {"rule_id": "duplicate"}, 958, {}, "active", 1, True)]
+
+        def close(self):
+            pass
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(mod, "get_conn", lambda: Conn())
+    store = load_playbook_store()
+    assert store is not None
+    assert [p.playbook_id for p in store.active_playbooks()] == [1]
