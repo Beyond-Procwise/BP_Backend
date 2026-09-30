@@ -149,22 +149,42 @@ better — attaching the missing rounds would treble-count three negotiations.
 ### Change
 
 A migration, `scripts/migrations/2026-09-30-deal-overview-quote-rounds.sql`,
-redefines `proc.bp_deal_overview` so its quote aggregates keep only the highest
-round per `(deal_id, base_reference)`:
+redefines `proc.bp_deal_overview`.
 
-- `quote_count`
-- `quote_total`
-- `converted_total_usd` — the quote contribution only; excluding superseded rounds
-  here as well, or it would contradict `quote_total`
-- `cycle_days_quote_to_po` reads `min(doc_date)` over quotes; superseded rounds are
-  excluded from the deduped set, so the first activity date is taken from the
-  surviving round. This is a behaviour change and is intended: the cycle is measured
-  from the bid that stands.
+**Superseded rounds are not removed from the aggregate's input.** They are marked
+and then excluded from the *money* aggregates only. This is the formulation that
+keeps the two questions separate: "what did this deal cost" counts one bid per
+negotiation, while "when did this deal start" and "how long did it take" must
+still see the opening bid, which is the document that actually began the
+sourcing event.
 
-The base reference is computed in SQL as
-`regexp_replace(quote_id, '\s*\(\s*[vV][0-9]+.*\)\s*$', '')`, mirroring
-`version_collapse.base_reference`. The two must not drift; the test suite asserts
-they agree on a shared fixture set.
+Each quote row carries a derived `is_latest_round` — true when its version
+ordinal is the highest for its `(deal_id, base_reference)` group. Then:
+
+| Aggregate | Treatment |
+|---|---|
+| `quote_count` | `count(*) FILTER (WHERE doc_type='quote' AND is_latest_round)` |
+| `quote_total` | `sum(amount) FILTER (WHERE doc_type='quote' AND is_latest_round)` |
+| `converted_total_usd` | excludes superseded quote rounds, or it would contradict `quote_total`; all non-quote rows unaffected |
+| `first_activity_date` | **unchanged** — every round, so the opening bid dates the deal |
+| `last_activity_date` | **unchanged** |
+| `cycle_days_quote_to_po` | **unchanged** — `min(doc_date)` over *all* quote rounds, so the cycle runs from the opening bid |
+| `cycle_days_po_to_invoice`, `po_*`, `invoice_*`, `three_way_match`, `price_variance_pct` | untouched |
+
+This resolves the question the previous revision of this spec left open, per
+Nick's ruling on 2026-09-30: **measure from the opening bid.** Only the money
+aggregates dedupe.
+
+The version ordinal and base reference are computed in SQL as:
+
+```sql
+regexp_replace(quote_id, '\s*\(\s*[vV][0-9]+.*\)\s*$', '')          -- base
+coalesce(nullif(substring(quote_id from '\(\s*[vV]([0-9]+)'), '')::int, 1)  -- ordinal
+```
+
+mirroring `version_collapse.base_reference` and `version_collapse.version_ordinal`
+— an unversioned id is ordinal 1, matching the Python. The two implementations
+must not drift; the test suite asserts they agree on a shared fixture set.
 
 `proc.bp_deal_documents` is **not** changed. Every round stays listed, so the deal
 screen still shows the full negotiation history. Only the arithmetic changes.
@@ -189,6 +209,30 @@ counting.
 their counts and totals are **unchanged**, because the round they already held is
 the one that survives the dedupe. Both affected deals are test deals. **No
 production deal moves.**
+
+#### Cycle time also moves, on two further deals
+
+A direct consequence of the opening-bid ruling, and worth stating separately
+because it is a different KPI on a different set of deals. Attaching the opening
+bids gives two deals an earlier first activity date than they have today:
+
+| Deal | first_activity_date | cycle_days_quote_to_po |
+|---|---|---|
+| `DEALV3-77` | 2025-04-19 → **2025-03-15** | 17 → **52** |
+| `DEALV3-78` | 2025-04-17 → **2025-03-13** | 13 → **48** |
+| `TESTDEAL2026072901` | 2024-03-08 (unchanged) | 54 (unchanged) |
+| `TESTDATA_3007262026073025` | 2025-03-04 (unchanged) | 55 (unchanged) |
+| `DEALV3-76` | 2025-04-08 (unchanged) | NULL (unchanged) |
+
+This is a correction, not a regression. Those sourcing events genuinely began in
+March; the opening bids were stranded with `deal_id` NULL, so the deal appeared to
+start at its second or third round and the measured cycle was artificially short
+by roughly five weeks. Under the ruling the cycle now runs from the bid that
+opened the negotiation.
+
+It is nonetheless a **tripling of a headline cycle-time figure on two deals**, and
+anyone reading those deals will see it. Both are test deals; no production deal is
+affected.
 
 The two effects must be measured together, not separately: Part 1 adds rows that
 Part 2 then removes from the arithmetic, so the blast radius of either in
@@ -285,6 +329,14 @@ Every guard is proved to fail before it is made to pass.
    collapsing unrelated quotes.
 9. The SQL base-reference expression and `version_collapse.base_reference` agree on
    a shared fixture set, including `(V3 (BAFO))`, `( v2 )` and unversioned ids.
+   The SQL ordinal expression and `version_collapse.version_ordinal` likewise,
+   including the unversioned-is-1 case.
+9b. **The opening-bid ruling.** Deal with `X` dated 2025-03-15, `X (V2)` dated
+   2025-04-19, and a PO dated 2025-05-06 → `first_activity_date` is 2025-03-15
+   and `cycle_days_quote_to_po` is 52, **not** 17. Red if the dedupe is applied
+   to the date aggregates as well as the money ones — which is exactly what the
+   first draft of this spec called for, so this test is the guard against
+   implementing the superseded design.
 
 **Endpoint**
 
@@ -306,9 +358,13 @@ On the running local server against `bp_testdb`, not tests alone:
    £5,327,600 → £3,110,000; count 5 → 3; `ORB-Q-6612 (V3)` at £1,096,000 present
    and attributed to Orbis Platform Solutions Ltd.
 4. `TESTDATA_3007262026073025`: quote total £1,164,750 → £574,396, count 6 → 3.
-5. `DEALV3-77` and `DEALV3-78`: document list grows, `quote_count` and
-   `quote_total` **identical** to the snapshot. This is the check that the dedupe
-   is keeping the right round rather than an arbitrary one.
+5. `DEALV3-77` and `DEALV3-78`: document list grows; `quote_count` and
+   `quote_total` **identical** to the snapshot — the check that the dedupe keeps
+   the right round rather than an arbitrary one — while
+   `cycle_days_quote_to_po` moves 17 → 52 and 13 → 48 and
+   `first_activity_date` moves to 2025-03-15 and 2025-03-13. Both halves must
+   hold: money steady, cycle corrected. If the cycle did **not** move, the
+   opening-bid ruling has not been implemented.
 6. `GET /promotion/unattached` → `items` empty, `counts.total` 5,536.
 7. Re-run the deal-less census: 5,550 → 5,536, and the 14 named rows are absent
    from it. Diff the full snapshot from step 1: exactly two deals differ.
@@ -323,10 +379,18 @@ On the running local server against `bp_testdb`, not tests alone:
 | Ambiguous base on multiple deals | Holds rather than guesses; test 2 |
 | `items` grows large if the attach pass regresses | That is the alarm working as designed |
 
-## Open question for review
+## Decisions taken
 
-Part 2 excludes superseded rounds from `cycle_days_quote_to_po`, so the
-quote-to-PO cycle is measured from the surviving round rather than the first bid.
-That is the defensible reading — the cycle is from the bid that stands — but it is a
-judgement call, and measuring from the *opening* bid is equally arguable as "how
-long did this sourcing event take". Flagging it rather than deciding it silently.
+**Cycle time is measured from the opening bid** (Nick, 2026-09-30). The earlier
+draft of this spec measured it from the surviving round and flagged the choice.
+Ruled the other way: a sourcing event starts when the first bid arrives, so
+`first_activity_date` and `cycle_days_quote_to_po` read every round, and only the
+money aggregates dedupe. Effect measured above — cycle time tripling on
+`DEALV3-77` and `DEALV3-78`, which is the artificially-short figure being
+corrected rather than a new error.
+
+**Quote rounds count once, at the latest round** (Nick, 2026-09-30). Earlier
+rounds stay listed on the deal as history but stop contributing to `quote_count`
+and `quote_total`.
+
+No open questions remain. This spec is ready for an implementation plan.
