@@ -249,6 +249,35 @@ def approve_proposal(
         return {"proposal_id": proposal_id, "proposal_status": "superseded",
                 "detail": "the finding this was raised for is no longer open"}
 
+    # Retiring is how a strategy is withdrawn. It stops the playbook proposing;
+    # it has to stop the proposals it already raised from running the graph too,
+    # or "retired" means the queue keeps executing it for as long as the queue
+    # is long. Rejecting one stays available either way, which is what the spec
+    # means by an existing proposal staying decidable.
+    playbook = repo.get(proposal["playbook_id"]) or {}
+    if playbook.get("playbook_status") != "active":
+        repo.mark_proposal_superseded(proposal_id, subject)
+        _audit("proposal.superseded", proposal, subject, status="superseded")
+        return {
+            "proposal_id": proposal_id, "proposal_status": "superseded",
+            "detail": (
+                f"the playbook that raised this is "
+                f"{playbook.get('playbook_status') or 'gone'}, so its strategy "
+                "is no longer in service"
+            ),
+        }
+
+    # THE CLAIM, and it happens before anything runs. get_conn() is autocommit,
+    # so the status read above took no lock: two approvals arriving together --
+    # a double-clicked button, a gateway retry -- both pass it. Whoever wins
+    # this UPDATE runs the graph; the loser is told it is already decided. With
+    # the claim after the run instead, both would already have sent the email.
+    if not repo.claim_proposal(proposal_id, subject):
+        raise HTTPException(
+            status_code=409,
+            detail=f"proposal {proposal_id} has already been decided",
+        )
+
     payload = dict(proposal.get("params") or {})
     # The strategy is told which finding it is answering. A graph that does not
     # know that can only act on the whole corpus.
@@ -260,6 +289,17 @@ def approve_proposal(
         "proposal_id": proposal_id,
     })
     result = start_run(request, proposal["agent_workflow_id"], payload, principal)
+
+    if result.get("status") == "awaiting_input":
+        # It stopped to ask a person a question, which is not executing.
+        # Calling it executed would close the proposal for ever while nothing
+        # had happened, and the unique index would block a fresh one for that
+        # finding. It stays claimed, with its run recorded, until the run ends.
+        repo.note_proposal_run(proposal_id, result.get("run_id"))
+        _audit("proposal.approved", proposal, subject, status="awaiting_input",
+               extra={"run_id": result.get("run_id")})
+        return {"proposal_id": proposal_id, "proposal_status": "approved", **result}
+
     repo.mark_proposal_executed(proposal_id, result.get("run_id"), subject)
     _audit("proposal.executed", proposal, subject, status="executed",
            extra={"run_id": result.get("run_id")})

@@ -115,6 +115,10 @@ def test_approving_a_proposal_gates_on_workflow_run_and_uses_the_one_run_path(
         "deal_id": "D-900", "agent_workflow_id": 958, "params": {"tier": "gold"},
     })
     monkeypatch.setattr(mod, "finding_is_open", lambda source, fid: True)
+    # The playbook must still be active, and the proposal is claimed before the
+    # run -- see test_a_proposal_is_claimed_before_its_workflow_runs.
+    monkeypatch.setattr(mod.repo, "get", lambda pid: {"playbook_status": "active"})
+    monkeypatch.setattr(mod.repo, "claim_proposal", lambda pid, by: True)
     started = {}
     def fake_start_run(request, workflow_id, payload, principal):
         started.update(workflow_id=workflow_id, payload=payload)
@@ -233,3 +237,93 @@ def test_a_rejection_must_say_why(client, monkeypatch):
     })
     r = client.post("/playbooks/proposals/5/reject", json={"reason": "   "})
     assert r.status_code == 400
+
+
+def _proposal(**over):
+    base = {
+        "proposal_id": 5, "playbook_id": 12, "proposal_status": "proposed",
+        "playbook_name": "Recover the duplicate",
+        "finding_source": "detection_finding", "finding_id": "4211",
+        "deal_id": "D-900", "agent_workflow_id": 958, "params": {},
+    }
+    base.update(over)
+    return base
+
+
+def test_a_proposal_is_claimed_before_its_workflow_runs(client, monkeypatch):
+    """Two approvals arriving together must not both run the graph.
+
+    _decidable reads the status, but with get_conn() on autocommit there is no
+    transaction holding it. The claim has to happen BEFORE start_run, not
+    after, or a double-clicked Approve sends the supplier two emails.
+    """
+    monkeypatch.setattr(mod.repo, "get_proposal", lambda pid: _proposal())
+    monkeypatch.setattr(mod.repo, "get", lambda pid: {"playbook_status": "active"})
+    monkeypatch.setattr(mod, "finding_is_open", lambda source, fid: True)
+    order = []
+    monkeypatch.setattr(mod.repo, "claim_proposal",
+                        lambda pid, by: order.append("claim") or True)
+    monkeypatch.setattr(mod, "start_run",
+                        lambda *a, **kw: order.append("run") or {"run_id": "r1", "status": "completed"})
+    monkeypatch.setattr(mod.repo, "mark_proposal_executed", lambda pid, run_id, by: None)
+
+    assert client.post("/playbooks/proposals/5/approve").status_code == 200
+    assert order == ["claim", "run"], "the claim must precede the run"
+
+
+def test_a_second_approval_that_loses_the_claim_runs_nothing(client, monkeypatch):
+    monkeypatch.setattr(mod.repo, "get_proposal", lambda pid: _proposal())
+    monkeypatch.setattr(mod.repo, "get", lambda pid: {"playbook_status": "active"})
+    monkeypatch.setattr(mod, "finding_is_open", lambda source, fid: True)
+    monkeypatch.setattr(mod.repo, "claim_proposal", lambda pid, by: False)
+
+    def never(*a, **kw):
+        raise AssertionError("losing the claim must not start a run")
+    monkeypatch.setattr(mod, "start_run", never)
+
+    r = client.post("/playbooks/proposals/5/approve")
+    assert r.status_code == 409
+
+
+def test_a_run_that_stopped_to_ask_is_not_recorded_as_executed(client, monkeypatch):
+    """start_run has two outcomes. Marking awaiting_input 'executed' makes the
+    proposal undecidable for ever while nothing has actually run."""
+    monkeypatch.setattr(mod.repo, "get_proposal", lambda pid: _proposal())
+    monkeypatch.setattr(mod.repo, "get", lambda pid: {"playbook_status": "active"})
+    monkeypatch.setattr(mod, "finding_is_open", lambda source, fid: True)
+    monkeypatch.setattr(mod.repo, "claim_proposal", lambda pid, by: True)
+    monkeypatch.setattr(mod, "start_run", lambda *a, **kw: {
+        "run_id": "r1", "status": "awaiting_input", "pending": [{"node_name": "ask"}]})
+
+    def never(pid, run_id, by):
+        raise AssertionError("a run that only asked a question has not executed")
+    monkeypatch.setattr(mod.repo, "mark_proposal_executed", never)
+    noted = {}
+    monkeypatch.setattr(mod.repo, "note_proposal_run",
+                        lambda pid, run_id: noted.update(pid=pid, run_id=run_id))
+
+    r = client.post("/playbooks/proposals/5/approve")
+    assert r.status_code == 200
+    assert r.json()["proposal_status"] == "approved"
+    assert r.json()["status"] == "awaiting_input"
+    assert noted == {"pid": 5, "run_id": "r1"}
+
+
+def test_a_retired_playbooks_proposal_does_not_execute_its_workflow(client, monkeypatch):
+    """Retiring is how a strategy is withdrawn. It stops the playbook
+    proposing; it must also stop the proposals it already raised from running
+    the graph somebody deliberately took out of service."""
+    monkeypatch.setattr(mod.repo, "get_proposal", lambda pid: _proposal())
+    monkeypatch.setattr(mod.repo, "get", lambda pid: {"playbook_status": "retired"})
+    monkeypatch.setattr(mod, "finding_is_open", lambda source, fid: True)
+    monkeypatch.setattr(mod.repo, "mark_proposal_superseded", lambda pid, by: None)
+
+    def never(*a, **kw):
+        raise AssertionError("a retired strategy must not run")
+    monkeypatch.setattr(mod, "start_run", never)
+    monkeypatch.setattr(mod.repo, "claim_proposal", never)
+
+    r = client.post("/playbooks/proposals/5/approve")
+    assert r.status_code == 200
+    assert r.json()["proposal_status"] == "superseded"
+    assert "retired" in r.json()["detail"]

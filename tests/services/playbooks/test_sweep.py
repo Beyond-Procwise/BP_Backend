@@ -155,3 +155,41 @@ def test_the_report_renders_every_count():
     for fragment in ("10 scanned", "2 proposed", "7 already queued",
                      "1 ambiguous", "0 unmatched"):
         assert fragment in text
+
+
+def test_one_failing_proposal_does_not_abort_the_whole_sweep(monkeypatch, caplog):
+    """A dropped connection on finding 3,000 of 4,838 used to skip every
+    finding after it -- in both sources -- and, because the exception escaped
+    before the log line, the run reported no count at all. _pages restarts from
+    the beginning each tick, so a deterministic failure repeated for ever."""
+    boom = {"n": 0}
+
+    def sometimes(finding, selection, conn=None):
+        boom["n"] += 1
+        if boom["n"] == 1:
+            raise RuntimeError("connection reset by peer")
+        return 99
+
+    monkeypatch.setattr(mod.proposer, "propose", sometimes)
+    conn = FakeConn(FakeCursor(pages(detection_rows=[
+        (1, "duplicate", "duplicate", "critical", "invoice", True, "D-1"),
+        (2, "duplicate", "duplicate", "critical", "invoice", True, "D-2"),
+    ])))
+    report = mod.sweep(store=store_with(pb(7, {"rule_id": "duplicate"})), conn=conn)
+    assert (report.scanned, report.proposed, report.failed) == (2, 1, 1)
+    assert "1 failed" in report.render()
+
+
+def test_the_count_is_logged_even_when_the_sweep_blows_up(monkeypatch, caplog):
+    """The sweep's whole promise is that zero is visible. A run that dies
+    without a count is indistinguishable from one that stopped running."""
+    import logging
+
+    def explode(*a, **kw):
+        raise RuntimeError("the store vanished")
+
+    monkeypatch.setattr(mod, "_run", explode)
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError):
+            mod.sweep(store=store_with(), conn=FakeConn(FakeCursor(pages())))
+    assert "playbook sweep:" in caplog.text

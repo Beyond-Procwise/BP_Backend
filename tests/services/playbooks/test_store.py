@@ -110,13 +110,50 @@ def test_jsonb_arriving_as_text_is_parsed():
 
 
 def test_reload_picks_up_a_change():
-    rows = [row()]
-    store = PlaybookStore(connection_factory=None, playbook_rows=rows)
-    assert len(store.active_playbooks()) == 1
-    # No connection factory: reload finds nothing and empties the store rather
-    # than keeping a stale cache.
+    """reload() re-reads through the factory rather than keeping a stale cache.
+
+    It used to assert that a store with no factory empties itself on reload,
+    which documented the silent empty read as the contract. That read is the
+    bug that made the first live sweep report every finding unmatched, so the
+    test now exercises a factory whose rows change.
+    """
+
+    class Cur:
+        description = [
+            ("playbook_id",), ("playbook_name",), ("trigger_source",),
+            ("trigger_match",), ("agent_workflow_id",), ("params",),
+            ("playbook_status",), ("version",), ("workflow_is_active",),
+        ]
+
+        def __init__(self, rows):
+            self._rows = rows
+
+        def execute(self, sql, params=None):
+            pass
+
+        def fetchall(self):
+            return self._rows
+
+        def close(self):
+            pass
+
+    live = [(1, "first", "detection_finding", {}, 958, {}, "active", 1, True)]
+
+    class Conn:
+        def cursor(self):
+            return Cur(live)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    store = PlaybookStore(connection_factory=lambda: Conn())
+    assert [p.playbook_name for p in store.active_playbooks()] == ["first"]
+    live[:] = [(2, "second", "detection_finding", {}, 958, {}, "active", 2, True)]
     store.reload()
-    assert store.active_playbooks() == []
+    assert [p.playbook_name for p in store.active_playbooks()] == ["second"]
 
 
 def test_a_playbook_whose_workflow_is_gone_is_skipped():
@@ -182,3 +219,26 @@ def test_the_production_loader_actually_reads_the_table(monkeypatch):
     store = load_playbook_store()
     assert store is not None
     assert [p.playbook_id for p in store.active_playbooks()] == [1]
+
+
+def test_a_row_with_a_null_match_value_is_skipped():
+    """The endpoint refuses a null match value, but a hand-written row can
+    still carry one. Loading it gives a playbook that matches nothing and says
+    nothing -- the unknown-key sibling of this is already logged and skipped."""
+    store = PlaybookStore(playbook_rows=[row(trigger_match={"rule_id": "duplicate",
+                                                            "doc_type": None})])
+    assert store.active_playbooks() == []
+
+
+def test_a_row_with_a_non_scalar_match_value_is_skipped():
+    store = PlaybookStore(playbook_rows=[row(trigger_match={"severity": ["critical"]})])
+    assert store.active_playbooks() == []
+
+
+def test_a_store_with_no_way_to_read_raises_rather_than_reporting_empty():
+    """The silent empty read is what made the first live sweep report every
+    finding unmatched with an active playbook in the table. An agent_nick that
+    cannot supply a connection is an outage, not an empty table."""
+    nick = type("N", (), {})()          # no get_db_connection
+    with pytest.raises(PlaybookStoreUnavailable):
+        PlaybookStore(agent_nick=nick)

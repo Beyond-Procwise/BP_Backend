@@ -84,6 +84,20 @@ def check_approval(
         )
 
 
+def _require_one(cur, playbook_id: int) -> None:
+    """Raise unless the UPDATE matched the row it was decided against.
+
+    ``rowcount`` of 0 means somebody else changed the row between the read and
+    the write. Discarding it would report a transition that never happened.
+    """
+
+    if getattr(cur, "rowcount", 1) == 0:
+        raise LifecycleError(
+            f"playbook {playbook_id} changed while this was being decided. "
+            "Re-read it and try again."
+        )
+
+
 _COLUMNS = (
     "playbook_id, playbook_name, description, trigger_source, trigger_match, "
     "agent_workflow_id, params, playbook_status, version, authored_by, "
@@ -203,11 +217,18 @@ def update(
                 "  approved_by = CASE WHEN %s THEN NULL ELSE approved_by END, "
                 "  approved_at = CASE WHEN %s THEN NULL ELSE approved_at END, "
                 "  last_modified_at = now(), last_modified_by = %s "
-                "WHERE playbook_id = %s",
+                # The status and version this edit was decided against travel
+                # into the WHERE. get_conn() is autocommit and hands out a new
+                # connection per call, so the read above holds no lock and no
+                # snapshot: without these, a concurrent approval lands between
+                # the two and this write silently overwrites it.
+                "WHERE playbook_id = %s AND playbook_status = %s AND version = %s",
                 (name, description, trigger_source, json.dumps(match),
                  agent_workflow_id, json.dumps(params or {}), status,
-                 1 if bump else 0, bump, bump, modified_by, playbook_id),
+                 1 if bump else 0, bump, bump, modified_by, playbook_id,
+                 existing["playbook_status"], existing["version"]),
             )
+            _require_one(cur, playbook_id)
         finally:
             cur.close()
     return get(playbook_id)
@@ -227,9 +248,10 @@ def submit(playbook_id: int, *, modified_by: str) -> None:
             cur.execute(
                 "UPDATE proc.bp_playbook SET playbook_status = 'pending_approval', "
                 "last_modified_at = now(), last_modified_by = %s "
-                "WHERE playbook_id = %s",
-                (modified_by, playbook_id),
+                "WHERE playbook_id = %s AND playbook_status = %s",
+                (modified_by, playbook_id, existing["playbook_status"]),
             )
+            _require_one(cur, playbook_id)
         finally:
             cur.close()
 
@@ -265,9 +287,14 @@ def approve(playbook_id: int, *, approver: str) -> Dict[str, Any]:
                 "UPDATE proc.bp_playbook SET playbook_status = 'active', "
                 "approved_by = %s, approved_at = now(), "
                 "last_modified_at = now(), last_modified_by = %s "
-                "WHERE playbook_id = %s",
-                (approver, approver, playbook_id),
+                # Pinned to the status AND the version this approval was given
+                # against, so an edit that lands between the read and the write
+                # cannot end up approved by somebody who never saw it.
+                "WHERE playbook_id = %s AND playbook_status = %s AND version = %s",
+                (approver, approver, playbook_id,
+                 existing["playbook_status"], existing["version"]),
             )
+            _require_one(cur, playbook_id)
         finally:
             cur.close()
     return get(playbook_id)
@@ -352,12 +379,13 @@ def list_proposals(status: Optional[str] = "proposed", limit: int = 100) -> List
 
 
 def _decide(proposal_id: int, status: str, by: str,
-            reason: Optional[str] = None, run_id: Optional[str] = None) -> None:
-    """Record a decision, once.
+            reason: Optional[str] = None, run_id: Optional[str] = None,
+            from_status: str = "proposed") -> bool:
+    """Move a proposal out of ``from_status``, once. True if this call did it.
 
-    The WHERE clause pins proposal_status = 'proposed' so two people clicking
-    approve at the same moment cannot both write a decision -- only the first
-    UPDATE matches.
+    The WHERE pins the status, so of two callers arriving together only one
+    UPDATE matches. The RETURN VALUE is the point: discarding it is what let
+    the loser of that race carry on and start a second workflow run.
     """
 
     with get_conn() as conn:
@@ -368,15 +396,55 @@ def _decide(proposal_id: int, status: str, by: str,
                 "   SET proposal_status = %s, decided_by = %s, decided_at = now(), "
                 "       decision_reason = COALESCE(%s, decision_reason), "
                 "       run_id = COALESCE(%s, run_id) "
-                " WHERE proposal_id = %s AND proposal_status = 'proposed'",
-                (status, by, reason, run_id, proposal_id),
+                " WHERE proposal_id = %s AND proposal_status = %s",
+                (status, by, reason, run_id, proposal_id, from_status),
+            )
+            return getattr(cur, "rowcount", 1) != 0
+        finally:
+            cur.close()
+
+
+def claim_proposal(proposal_id: int, by: str) -> bool:
+    """Take this proposal, exclusively, BEFORE anything runs.
+
+    ``proposed -> approved`` under a conditional UPDATE. Whoever gets the row
+    starts the workflow; everybody else is told it is already decided.
+
+    This has to happen before ``start_run``, not after. get_conn() is
+    autocommit, so reading the status takes no lock and holds no snapshot: two
+    approvals a few hundred milliseconds apart -- a double-clicked button, a
+    gateway retry -- both read 'proposed', and if the claim came afterwards
+    both would already have run the graph. If that graph sends an email, the
+    supplier gets it twice.
+    """
+
+    return _decide(proposal_id, "approved", by, from_status="proposed")
+
+
+def note_proposal_run(proposal_id: int, run_id: Optional[str]) -> None:
+    """Record the run a claimed proposal started, without calling it finished.
+
+    A run that halted to ask a human a question has not executed. Marking it
+    executed would make the proposal undecidable for ever while nothing had
+    actually happened.
+    """
+
+    if not run_id:
+        return
+    with get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE proc.bp_playbook_proposal SET run_id = %s "
+                " WHERE proposal_id = %s AND run_id IS NULL",
+                (run_id, proposal_id),
             )
         finally:
             cur.close()
 
 
 def mark_proposal_executed(proposal_id: int, run_id: Optional[str], by: str) -> None:
-    _decide(proposal_id, "executed", by, run_id=run_id)
+    _decide(proposal_id, "executed", by, run_id=run_id, from_status="approved")
 
 
 def mark_proposal_rejected(proposal_id: int, by: str, reason: str) -> None:

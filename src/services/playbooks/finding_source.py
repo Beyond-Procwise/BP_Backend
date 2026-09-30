@@ -138,4 +138,20 @@ def validate_trigger_match(source: str, match: Mapping[str, Any]) -> Dict[str, A
             "would mean 'fires only when this column is unset', which is never "
             "what an author means. Omit the key to ignore the column."
         )
+    # A match is equality against one column value, so the value has to be
+    # something a column can hold. A list or an object can never equal one, and
+    # it is stored without complaint -- which is the same silent never-fires
+    # failure the key allow-list exists to prevent, arriving through the value
+    # instead of the key.
+    unusable = [
+        key for key, value in match.items()
+        if not isinstance(value, (str, int, float, bool))
+    ]
+    if unusable:
+        raise ValueError(
+            f"{', '.join(sorted(unusable))} must be a single value. A match is "
+            "equality against one column, so a list or an object can never "
+            "equal it and the playbook would never fire. Write one playbook "
+            "per value."
+        )
     return dict(match)

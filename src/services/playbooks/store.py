@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from src.services.db import get_conn
 
-from .finding_source import MATCH_FIELDS
+from .finding_source import MATCH_FIELDS, validate_trigger_match
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +111,14 @@ class PlaybookStore:
     def _connect(self):
         factory = self._connection_factory
         if factory is None:
-            yield None
-            return
+            # Not an empty table -- no way to look. Returning [] here is what
+            # made the first live sweep report every one of 5,146 findings
+            # unmatched while an active playbook sat in the table, with nothing
+            # logged to say why.
+            raise PlaybookStoreUnavailable(
+                "no connection factory: the store has no way to read "
+                "proc.bp_playbook, which is an outage and not an empty table"
+            )
         resolved = factory() if callable(factory) else factory
         if resolved is None:
             yield None
@@ -162,14 +168,17 @@ class PlaybookStore:
             )
             return None
         match = self._as_mapping(row.get("trigger_match"))
-        unknown = [key for key in match if key not in MATCH_FIELDS[source]]
-        if unknown:
-            # The endpoint validates, so this row was hand-written. Loading it
-            # would give a playbook that never fires and nothing to say why.
+        try:
+            # The same validation the endpoint applies, applied again on the
+            # way in. The endpoint is not the only way a row gets here -- a
+            # hand-fix or a seed script writes straight to the table -- and an
+            # unusable trigger_match loaded silently is a playbook that matches
+            # nothing and never says so.
+            validate_trigger_match(source, match)
+        except ValueError as exc:
             logger.error(
-                "skipping proc.bp_playbook row %s (%s): trigger_match keys %s "
-                "are not match fields for %s",
-                pid, row.get("playbook_name"), sorted(unknown), source,
+                "skipping proc.bp_playbook row %s (%s): %s",
+                pid, row.get("playbook_name"), exc,
             )
             return None
         return Playbook(

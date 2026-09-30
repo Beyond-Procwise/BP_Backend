@@ -57,16 +57,22 @@ def propose(
     )
     if conn is not None:
         proposal_id = _insert(conn, params)
+        audit_conn = conn
     else:
         with get_conn() as own:
             proposal_id = _insert(own, params)
+        audit_conn = None
 
     if proposal_id is None:
         # Already queued. Auditing it again would write one row per open
         # finding per sweep, saying nothing happened.
         return None
 
+    # On the sweep's own connection. record_action opens a fresh one when it is
+    # given none, and a catch-all playbook proposes on every open finding --
+    # ~5,000 short-lived connections to a shared cluster in one scheduler tick.
     agent_actions.record_action(
+        conn=audit_conn,
         phase=PHASE,
         action_type="playbook.propose",
         agent="PlaybookProposer",

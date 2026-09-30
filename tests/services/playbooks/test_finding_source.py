@@ -123,3 +123,18 @@ def test_canonical_folds_both_sides_to_one_form(value, expected):
     """A boolean column compared against a JSON string, or a capitalised
     severity, must not silently fail to match."""
     assert canonical(value) == expected
+
+
+@pytest.mark.parametrize("value", [["critical", "warning"], {"eq": "critical"}, ("a",)])
+def test_a_non_scalar_match_value_is_refused(value):
+    """A list can never equal a column value, so it is a playbook that silently
+    never fires -- the same failure the key allow-list exists to prevent,
+    entering through the value instead of the key."""
+    with pytest.raises(ValueError) as exc:
+        validate_trigger_match(DETECTION_FINDING, {"severity": value})
+    assert "severity" in str(exc.value)
+
+
+@pytest.mark.parametrize("value", ["critical", 3, 2.5, True])
+def test_a_scalar_match_value_is_accepted(value):
+    assert validate_trigger_match(DETECTION_FINDING, {"severity": value}) == {"severity": value}

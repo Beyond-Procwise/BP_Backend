@@ -35,12 +35,13 @@ class SweepReport:
     already_queued: int = 0
     ambiguous: int = 0
     unmatched: int = 0
+    failed: int = 0
 
     def render(self) -> str:
         return (
             f"playbook sweep: {self.scanned} scanned, {self.proposed} proposed, "
             f"{self.already_queued} already queued, {self.ambiguous} ambiguous, "
-            f"{self.unmatched} unmatched"
+            f"{self.unmatched} unmatched, {self.failed} failed"
         )
 
 
@@ -84,13 +85,17 @@ def sweep(
         return SweepReport()
 
     report = SweepReport()
-    if conn is not None:
-        _run(conn, active, batch_size, report)
-    else:
-        with get_conn() as own:
-            _run(own, active, batch_size, report)
-
-    logger.info("%s", report.render())
+    try:
+        if conn is not None:
+            _run(conn, active, batch_size, report)
+        else:
+            with get_conn() as own:
+                _run(own, active, batch_size, report)
+    finally:
+        # In a finally because the count is the whole point. A run that died
+        # without logging one is indistinguishable from a run that never
+        # happened, which is exactly the confusion this line exists to prevent.
+        logger.info("%s", report.render())
     return report
 
 
@@ -108,16 +113,33 @@ def _run(conn: Any, store: PlaybookStore, batch_size: int, report: SweepReport) 
                 if not playbooks:
                     report.unmatched += 1
                     continue
-                selection = select(finding, playbooks)
-                if selection is None:
-                    tied = tied_candidates(finding, playbooks)
-                    if tied:
-                        proposer.record_ambiguous(finding, tied)
-                        report.ambiguous += 1
-                    else:
-                        report.unmatched += 1
-                    continue
-                if proposer.propose(finding, selection, conn=conn) is None:
-                    report.already_queued += 1
-                else:
-                    report.proposed += 1
+                try:
+                    _consider(conn, finding, playbooks, report)
+                except Exception:  # noqa: BLE001 - one row must not end the run
+                    # _pages restarts from the first key on every tick, so a
+                    # failure that ends the loop is a failure that repeats for
+                    # ever, and it takes the second source down with it.
+                    report.failed += 1
+                    logger.exception(
+                        "playbook sweep could not handle %s finding %s; "
+                        "continuing with the rest",
+                        source, finding.finding_id,
+                    )
+
+
+def _consider(conn: Any, finding: Any, playbooks: Any, report: SweepReport) -> None:
+    """Select and propose for one finding. Raises, and the caller counts it."""
+
+    selection = select(finding, playbooks)
+    if selection is None:
+        tied = tied_candidates(finding, playbooks)
+        if tied:
+            proposer.record_ambiguous(finding, tied)
+            report.ambiguous += 1
+        else:
+            report.unmatched += 1
+        return
+    if proposer.propose(finding, selection, conn=conn) is None:
+        report.already_queued += 1
+    else:
+        report.proposed += 1

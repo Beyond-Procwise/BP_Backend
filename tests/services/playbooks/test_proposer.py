@@ -164,3 +164,16 @@ def test_ambiguity_is_recorded_as_its_own_event(no_audit):
     assert event["action_type"] == "playbook.ambiguous"
     assert event["status"] == "skipped"
     assert "1" in event["summary"] and "2" in event["summary"]
+
+
+def test_the_audit_row_rides_the_callers_connection(monkeypatch):
+    """A catch-all playbook proposes on every open finding. Opening a second
+    connection per audit row would mean ~5,000 short-lived connections to a
+    shared cluster inside one scheduler tick -- the shape of a scaling problem
+    this codebase already has on record."""
+    recorded = []
+    monkeypatch.setattr(proposer.agent_actions, "record_action",
+                        lambda **kw: recorded.append(kw))
+    conn = FakeConn(FakeCursor([(55,)]))
+    proposer.propose(finding(), selection(), conn=conn)
+    assert recorded[0]["conn"] is conn
