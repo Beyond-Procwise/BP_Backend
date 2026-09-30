@@ -426,6 +426,7 @@ class BackendScheduler:
         self._register_mailbox_health_job()
         self._register_style_feedback_job()
         self._register_triage_job()
+        self._register_playbook_sweep_job()
 
     TRIAGE_JOB_NAME = "discrepancy-triage"
 
@@ -461,6 +462,40 @@ class BackendScheduler:
                 logger.info("Discrepancy triage: %s", report.render().splitlines()[1])
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Discrepancy triage job failed")
+
+    PLAYBOOK_SWEEP_JOB_NAME = "playbook-sweep"
+
+    def _register_playbook_sweep_job(self) -> None:
+        """Propose a playbook for every open finding that one governs.
+
+        Proposes only — a proposal waits for a person, and nothing in this job
+        can start a workflow. It ships against an empty proc.bp_playbook, so it
+        is a deliberate no-op until an expert authors a strategy.
+
+        Interval via PLAYBOOK_SWEEP_INTERVAL_MINUTES (default 30).
+        """
+        import os
+        if self.PLAYBOOK_SWEEP_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("PLAYBOOK_SWEEP_INTERVAL_MINUTES", "30"))
+        except ValueError:
+            minutes = 30
+        self.register_job(
+            self.PLAYBOOK_SWEEP_JOB_NAME,
+            self._run_playbook_sweep,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=5),
+        )
+
+    def _run_playbook_sweep(self) -> None:
+        """Run one playbook sweep, logging the count whatever it is."""
+        try:
+            from services.playbooks.sweep import sweep
+
+            sweep()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Playbook sweep failed")
 
     def _register_style_staging_sweep_job(self) -> None:
         """Register the style-staging TTL sweep.
