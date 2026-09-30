@@ -421,6 +421,32 @@ def claim_proposal(proposal_id: int, by: str) -> bool:
     return _decide(proposal_id, "approved", by, from_status="proposed")
 
 
+def release_proposal_claim(proposal_id: int) -> None:
+    """Give a claimed proposal back, because its run never started.
+
+    ``approved -> proposed``, and only while ``run_id IS NULL`` so a proposal
+    whose workflow really did start is never un-decided. Without this, one 503
+    from an orchestrator that had not finished loading left the proposal at
+    'approved' with no run: it could not be approved (409), could not be
+    rejected, and the unique index blocked a fresh proposal for that finding.
+    A transient failure became permanent.
+    """
+
+    with get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE proc.bp_playbook_proposal "
+                "   SET proposal_status = 'proposed', decided_by = NULL, "
+                "       decided_at = NULL "
+                " WHERE proposal_id = %s AND proposal_status = 'approved' "
+                "   AND run_id IS NULL",
+                (proposal_id,),
+            )
+        finally:
+            cur.close()
+
+
 def note_proposal_run(proposal_id: int, run_id: Optional[str]) -> None:
     """Record the run a claimed proposal started, without calling it finished.
 

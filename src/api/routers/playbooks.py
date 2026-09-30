@@ -288,7 +288,17 @@ def approve_proposal(
         "playbook_id": proposal["playbook_id"],
         "proposal_id": proposal_id,
     })
-    result = start_run(request, proposal["agent_workflow_id"], payload, principal)
+    try:
+        result = start_run(request, proposal["agent_workflow_id"], payload, principal)
+    except Exception:
+        # The claim was taken before the run, which is what stops a double
+        # execution. If the run could not be started at all, that claim has to
+        # go back -- otherwise one 503 from an orchestrator still loading leaves
+        # the proposal undecidable for ever, with the unique index preventing a
+        # replacement. Released only while run_id IS NULL, so a run that did
+        # start is never un-decided.
+        repo.release_proposal_claim(proposal_id)
+        raise
 
     if result.get("status") == "awaiting_input":
         # It stopped to ask a person a question, which is not executing.

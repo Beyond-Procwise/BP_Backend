@@ -9,7 +9,7 @@ import os
 import sys
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -327,3 +327,30 @@ def test_a_retired_playbooks_proposal_does_not_execute_its_workflow(client, monk
     assert r.status_code == 200
     assert r.json()["proposal_status"] == "superseded"
     assert "retired" in r.json()["detail"]
+
+
+def test_a_run_that_could_not_start_releases_the_claim(client, monkeypatch):
+    """Found by approving a real proposal while the orchestrator was down.
+
+    The claim is taken before the run, which is right. But if start_run then
+    raises -- a 503 from an orchestrator that has not loaded, a dropped
+    connection -- the proposal was left at 'approved' with no run_id, and from
+    there it could not be approved (409), could not be rejected, and the unique
+    index blocked a fresh proposal for that finding. One transient failure
+    stranded the work for ever.
+    """
+    monkeypatch.setattr(mod.repo, "get_proposal", lambda pid: _proposal())
+    monkeypatch.setattr(mod.repo, "get", lambda pid: {"playbook_status": "active"})
+    monkeypatch.setattr(mod, "finding_is_open", lambda source, fid: True)
+    monkeypatch.setattr(mod.repo, "claim_proposal", lambda pid, by: True)
+    released = []
+    monkeypatch.setattr(mod.repo, "release_proposal_claim",
+                        lambda pid: released.append(pid))
+
+    def orchestrator_is_down(*a, **kw):
+        raise HTTPException(status_code=503, detail="Orchestrator not available")
+    monkeypatch.setattr(mod, "start_run", orchestrator_is_down)
+
+    r = client.post("/playbooks/proposals/5/approve")
+    assert r.status_code == 503
+    assert released == [5], "the claim must go back so the work can be retried"
