@@ -139,13 +139,19 @@ def delete_workflow(
     return {"ok": True}
 
 
-@router.post("/{workflow_id}/run")
-def run_workflow(
-    workflow_id: int, body: RunBody, request: Request,
-    principal=Depends(require_user),
+def start_run(
+    request: Request,
+    workflow_id: int,
+    payload: Dict[str, Any],
+    principal: Any,
 ) -> Dict[str, Any]:
-    gate("workflow.run", principal, agent="AgentWorkflowsRouter",
-         context={"workflow_id": workflow_id})
+    """Start a saved workflow, or stop and ask. THE run path.
+
+    Lifted out of ``run_workflow`` so the playbook router can accept a proposal
+    without copying it. A second copy would be a second place that claims a
+    run, and claiming is what stops a replay from sending the same email twice.
+    """
+
     wf = repo.get(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="No such workflow")
@@ -156,7 +162,7 @@ def run_workflow(
     # resumed by whoever ANSWERS -- who is not necessarily who started it.
     started_by = getattr(principal, "subject", None) or None
 
-    missing = pending_requests(wf["graph"], body.payload, answers)
+    missing = pending_requests(wf["graph"], payload, answers)
     if missing:
         # The workflow does not guess. It stops and asks. The ORIGINAL payload
         # is persisted here — BEFORE returning awaiting_input — so it survives
@@ -164,7 +170,7 @@ def run_workflow(
         # answers and the run resumes. agent_workflow_id is recorded too, so
         # submit_input can resolve this run back to its saved workflow later
         # without parsing the run_id string.
-        reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=body.payload,
+        reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=payload,
                             status="awaiting_input", initiated_by=started_by)
         reqrepo.raise_requests(run_id, missing, agent_workflow_id=workflow_id)
         return {
@@ -176,9 +182,19 @@ def run_workflow(
     # Nothing outstanding — but this run must still be claimed atomically
     # before it executes, exactly like the resume path in submit_input, so a
     # replay of this same request can never execute the workflow twice.
-    reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=body.payload,
+    reqrepo.create_run(run_id, agent_workflow_id=workflow_id, payload=payload,
                         status="pending", initiated_by=started_by)
-    return _claim_and_execute(request, run_id, wf, {**body.payload, **answers}, started_by)
+    return _claim_and_execute(request, run_id, wf, {**payload, **answers}, started_by)
+
+
+@router.post("/{workflow_id}/run")
+def run_workflow(
+    workflow_id: int, body: RunBody, request: Request,
+    principal=Depends(require_user),
+) -> Dict[str, Any]:
+    gate("workflow.run", principal, agent="AgentWorkflowsRouter",
+         context={"workflow_id": workflow_id})
+    return start_run(request, workflow_id, body.payload, principal)
 
 
 @router.get("/runs/{run_id}")

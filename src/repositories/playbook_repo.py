@@ -287,3 +287,102 @@ def retire(playbook_id: int, *, modified_by: str) -> None:
             )
         finally:
             cur.close()
+
+
+# -- proposals -----------------------------------------------------------
+
+_PROPOSAL_COLUMNS = (
+    "p.proposal_id, p.playbook_id, p.finding_source, p.finding_id, p.deal_id, "
+    "p.proposal_status, p.evidence, p.run_id, p.proposed_at, p.decided_by, "
+    "p.decided_at, p.decision_reason, b.playbook_name, b.agent_workflow_id, b.params"
+)
+
+
+def _proposal_row(r) -> Dict[str, Any]:
+    def _obj(value):
+        return json.loads(value) if isinstance(value, str) else (value or {})
+
+    return {
+        "proposal_id": r[0], "playbook_id": r[1], "finding_source": r[2],
+        "finding_id": r[3], "deal_id": r[4], "proposal_status": r[5],
+        "evidence": _obj(r[6]), "run_id": r[7],
+        "proposed_at": r[8].isoformat() if r[8] else None,
+        "decided_by": r[9],
+        "decided_at": r[10].isoformat() if r[10] else None,
+        "decision_reason": r[11], "playbook_name": r[12],
+        "agent_workflow_id": r[13], "params": _obj(r[14]),
+    }
+
+
+def get_proposal(proposal_id: int) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT {_PROPOSAL_COLUMNS} FROM proc.bp_playbook_proposal p "
+                "JOIN proc.bp_playbook b ON b.playbook_id = p.playbook_id "
+                "WHERE p.proposal_id = %s",
+                (proposal_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+    return _proposal_row(row) if row else None
+
+
+def list_proposals(status: Optional[str] = "proposed", limit: int = 100) -> List[Dict[str, Any]]:
+    sql = (
+        f"SELECT {_PROPOSAL_COLUMNS} FROM proc.bp_playbook_proposal p "
+        "JOIN proc.bp_playbook b ON b.playbook_id = p.playbook_id"
+    )
+    params: tuple = ()
+    if status:
+        sql += " WHERE p.proposal_status = %s"
+        params = (status,)
+    sql += " ORDER BY p.proposed_at DESC LIMIT %s"
+    params = params + (max(1, min(int(limit), 1000)),)
+    with get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    return [_proposal_row(r) for r in rows]
+
+
+def _decide(proposal_id: int, status: str, by: str,
+            reason: Optional[str] = None, run_id: Optional[str] = None) -> None:
+    """Record a decision, once.
+
+    The WHERE clause pins proposal_status = 'proposed' so two people clicking
+    approve at the same moment cannot both write a decision -- only the first
+    UPDATE matches.
+    """
+
+    with get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE proc.bp_playbook_proposal "
+                "   SET proposal_status = %s, decided_by = %s, decided_at = now(), "
+                "       decision_reason = COALESCE(%s, decision_reason), "
+                "       run_id = COALESCE(%s, run_id) "
+                " WHERE proposal_id = %s AND proposal_status = 'proposed'",
+                (status, by, reason, run_id, proposal_id),
+            )
+        finally:
+            cur.close()
+
+
+def mark_proposal_executed(proposal_id: int, run_id: Optional[str], by: str) -> None:
+    _decide(proposal_id, "executed", by, run_id=run_id)
+
+
+def mark_proposal_rejected(proposal_id: int, by: str, reason: str) -> None:
+    _decide(proposal_id, "rejected", by, reason=reason)
+
+
+def mark_proposal_superseded(proposal_id: int, by: str) -> None:
+    _decide(proposal_id, "superseded", by,
+            reason="the finding this was raised for is no longer open")
