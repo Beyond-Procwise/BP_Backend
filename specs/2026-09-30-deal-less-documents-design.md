@@ -94,10 +94,21 @@ On attach, the row receives `deal_id`, `deal_name`, and
 `document_id = '{deal_id}::quote::{quote_id}'`, matching the existing minting
 convention.
 
-`award_status` is **left as-is**. A later round of the deal's own quote is part of
-the transaction. This is the deliberate difference from `_attach_rival_quotes`,
-which sets `not_awarded` to keep a rival bid out of `bp_deal_documents`: a rival
-bid is evidence about the sourcing event, a revision is the event.
+`award_status` is **inherited from the anchor rows** when they agree on one
+value, and left NULL when they do not.
+
+The naive rule — leave it as-is — is wrong, and writing the implementation plan
+is what surfaced it. `bp_deal_documents` excludes `award_status = 'not_awarded'`,
+which is how a rival bid stays out of a deal's `quote_total`. But this pass reads
+`bp_quote_trgt` directly, so a base whose deal-bearing rows are *all* losing bids
+would have one of its other rounds attached with `award_status` NULL — and that
+round would then **count** in the deal's money, entering through a door its own
+siblings are deliberately shut out of. A losing bid would inflate the deal.
+
+Inheritance is still the deliberate difference from `_attach_rival_quotes`, which
+*forces* `not_awarded`: a rival bid is evidence about the sourcing event, a
+revision is the event, and a revision of a rival is still a rival. Where the
+anchors disagree the value is left NULL rather than guessed.
 
 ### Placement
 
@@ -313,7 +324,15 @@ Every guard is proved to fail before it is made to pass.
    This is the coin-toss guard; it must fail if the "exactly one deal" condition is
    removed.
 3. Base `X` on deal `D` under supplier `S1`, `X (V2)` under `S2` → stays unattached.
-4. Attached revision keeps `award_status` NULL — it is not marked `not_awarded`.
+4. Attached revision of an ordinary quote keeps `award_status` NULL — it is not
+   forced to `not_awarded` the way a rival bid is.
+4b. Attached revision whose anchor rows are all `not_awarded` **inherits**
+   `not_awarded`, so a losing bid cannot reach the deal's `quote_total` through a
+   sibling round. Red if inheritance is dropped.
+4c. Anchor rows disagreeing on `deal_name` (one `deal_id`, two names) → the
+   attached row gets the `deal_id` and a NULL name, not an invented third answer.
+4d. A deal-less quote that already carries a stale `document_id` has it
+   overwritten to match the deal it is now on.
 5. `document_id` is minted as `{deal_id}::quote::{quote_id}`.
 
 **`test_deal_overview_quote_rounds.py`**
