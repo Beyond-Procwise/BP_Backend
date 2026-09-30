@@ -82,6 +82,12 @@ ACTIONS: Dict[str, str] = {
     "policy.write": "configure",
     "policy.reload": "configure",
     "prompt.write": "configure",
+    # Authoring a strategy and approving one are configuration: they change
+    # what the system will recommend, for every finding that matches, until
+    # someone changes it back. Approving a PROPOSAL is a different act -- it
+    # runs a workflow -- and gates on workflow.run, which already exists.
+    "playbook.write": "configure",
+    "playbook.approve": "configure",
     "model.train": "configure",
     "mailbox.bind": "configure",
     # --- delegating ------------------------------------------------------
