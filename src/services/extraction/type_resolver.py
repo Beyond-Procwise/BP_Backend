@@ -105,6 +105,16 @@ _WEIGHT = {"title_alias": 5.0, "body_alias": 1.0, "structural_signal": 0.5}
 # add to a concept that already has an alias hit and can break a tier-2 tie,
 # but never name a type alone. A page with no title segment is decided by
 # volume, which is the honest answer for a page that does not say what it is.
+#
+# WHAT "MEASURED" MEANS ABOVE, stated so nobody reads more into it. Every
+# measurement quoted in this block was taken over a SAMPLE: 63 real documents
+# plus the 50 documents then in proc.process_monitor, and 12-14 local files
+# under ~/Downloads/SpendIQDocs. It is NOT a statement about any whole corpus.
+# That directory alone holds 1,930 parseable files, and one top-level file
+# outside the measured set (po_invoice_linked_data.csv) returns `unresolved`.
+# So "nothing came back unknown or unresolved" is true of the sample and of
+# nothing wider; a page that returns unknown or unresolved is a correct answer
+# this module is designed to give, not evidence that a measurement was wrong.
 # ---------------------------------------------------------------------------
 
 #: Markup the parsers wrap a title in: markdown heading hashes and bold stars,
@@ -388,9 +398,22 @@ def resolve_document_type(
     # (concept, kind, start, length, folded alias) for every alias hit.
     hits: List[Tuple[str, str, int, int, str]] = []
     signals: List[Tuple[str, int, int]] = []
-    # ONE loop, so the status rule is enforced in exactly one place. A second
-    # copy of this `continue` downstream could not fire and so could not fail,
-    # and a check that cannot fail hides which line is load-bearing.
+    # ONE loop, so the status rule is enforced in exactly one place.
+    #
+    # This `continue` IS REACHABLE AND IS LOAD-BEARING — do not delete it on the
+    # assumption that the loader already filtered. `Vocabulary` is a PUBLIC
+    # frozen dataclass, so any caller can build one by hand or derive one with
+    # dataclasses.replace() and hand this function a document_types mapping that
+    # still holds a non-active row; vocabulary.build_vocabulary is only the
+    # commonest way to get one, not the only way, and this module takes a
+    # Vocabulary rather than a connection precisely so that CI, a live check and
+    # a unit test can all supply one.
+    # (test_a_proposed_type_inside_a_hand_built_vocabulary_never_resolves does
+    # exactly that, and goes red if this line goes.)
+    #
+    # What WOULD be unreachable is a SECOND copy of it downstream, which could
+    # not fire and so could not fail — and a check that cannot fail hides which
+    # line is load-bearing. That is why there is one and not two.
     for code, dt in vocab.document_types.items():
         if dt.status != "active":
             continue
@@ -437,6 +460,26 @@ def resolve_document_type(
 
     # Rules A, B and C: the document's title is the FIRST segment that IS a
     # type phrase, and only the concepts it names reach tier 1.
+    #
+    # ACCEPTED RESIDUALS of this loop — ruled, recorded, and NOT defects to fix
+    # in passing. Each one costs a REVIEW ITEM, never a routing decision (the
+    # pipeline is chosen from the declared category in
+    # src/services/concepts/routing.py and nothing here can change it):
+    #   * a covering page or email whose title precedes the real document's;
+    #   * a stray parser-artefact line sitting above the real title;
+    #   * a contents page with no title of its own (pinned in
+    #     test_a_contents_page_with_no_title_of_its_own_reads_as_a_schedule);
+    #   * a lone 'Invoice' footer line on a covering letter;
+    #   * '| Document type | Purchase Order |' resolving by accident;
+    #   * a title row whose LAST cell is a date or 'Page 1 of 2' — rule B's
+    #     last-cell reading loses the title and the page returns unknown;
+    #   * _REF_TOKEN's roman-numeral branch making 'QUOTE MIX' a quote;
+    #   * 6 of 12 local SpendIQDocs files having no title-like segment at all.
+    # And the one that was separately ADJUDICATED: a title sitting directly
+    # above a bare reference loses its title and the body may answer
+    # confidently wrong. That one is pinned as a positive assertion in
+    # test_a_title_directly_above_a_bare_reference_loses_its_title_ACCEPTED,
+    # whose docstring records why fixing it reopens a worse shape.
     title_concepts: Tuple[str, ...] = ()
     title_span: Tuple[int, int] = (-1, -1)
     segs = _segments(text)
@@ -695,6 +738,15 @@ def type_resolution_discrepancies(resolution: TypeResolution) -> List["object"]:
         )]
 
     if resolution.status == "unknown":
+        # 'unknown_document_type' is WITHDRAWN from the pipeline but still
+        # buildable here, and the single record of that decision is the comment
+        # on TYPE_FINDING_ISSUE_TYPES in src/services/extraction/persistence.py
+        # (around the tuple's definition) — read it before reinstating this
+        # issue type anywhere. In short: with a declared concept the resolver
+        # always returns 'matched', and dispatch queues nothing when nothing was
+        # declared, so the live path can never write this row. It stays here for
+        # a direct caller that passes declared_concept=None, which is the only
+        # subject it has.
         return [Discrepancy(
             field_name="document_type",
             issue_type="unknown_document_type",

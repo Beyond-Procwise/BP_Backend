@@ -548,6 +548,31 @@ def resolve_stale_type_findings(
                 AND ( (coalesce(e.doc_pk_candidate, '') = coalesce(%s, '')
                        AND NOT (e.issue_type = ANY(%s)))
                       OR coalesce(e.doc_pk_candidate, '') = ANY(%s)
+                      -- ACCEPTED RESIDUAL (ruled, not an oversight). This branch
+                      -- is how the pk-LOST direction gets closed: a later run
+                      -- with no doc_pk cannot name the pk-keyed row, so the row
+                      -- is found by the source_file it already carries. The
+                      -- cost is that it does NOT apply the keep-list, so a
+                      -- DIFFERENT key under the same file is closed whatever
+                      -- its issue type. Everything else still binds it:
+                      -- doc_type, field_name, the type-finding issue types,
+                      -- open status, no query sent, no resolved_by, no
+                      -- bp_decision row — so it cannot cross doc_type and
+                      -- cannot touch anything a human, the gateway or the
+                      -- decision engine has acted on.
+                      --
+                      -- It is quote-only BY CORPUS ACCIDENT, NOT BY STRUCTURE:
+                      -- one file yielding several documents is what makes a
+                      -- sibling reachable, and in bp_testdb only
+                      -- bp_quote_raw has that shape (4 source_file values
+                      -- mapping to more than one quote_id; invoices, POs and
+                      -- contracts have none). Any pipeline that later ingests
+                      -- several documents from one workbook inherits it.
+                      -- Low risk because the type evidence comes from the
+                      -- file's text and the declared concept, which are shared
+                      -- per file, so siblings almost always raise the same
+                      -- finding. Cost if wrong: an occasional still-valid type
+                      -- finding closed for a sibling document in the same file.
                       OR (e.source_file = %s
                           AND coalesce(e.doc_pk_candidate, '') <> coalesce(%s, '')) )"""
     with get_conn() as conn:
