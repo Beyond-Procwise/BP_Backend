@@ -34,17 +34,41 @@ Each claim was checked against the current code and holds:
 | 5 of 12 graphs and all 12 section cards are fixtures | `GRAPHS` 12 keys, `LIVE_GRAPHS` 7 → exactly 5 static. `SECTION_CARDS` 12, all static. |
 | Renaming a report forks it | `createReport` sets `report_key = $1 = title` (`spendiq.service.ts:~1988`). |
 
-### §3.2 prerequisite fixes — revised status
+### §3.2 prerequisite fixes — ALL DONE 2026-10-01
 
-1. **UI cumulative streaming** — real, outstanding. Fix `streamed += d` → `streamed = d`.
-2. **`format` on the chat path** — real, outstanding. Note: per
+1. **UI cumulative streaming** — done, UI `17b73b0`. `streamed += d` → `streamed = (soFar||'')`,
+   and the bridge's own comment ("a piece of answer prose, append it") corrected, since that
+   comment is what the append was written against. Two guards: one that the consumer assigns,
+   one that the bridge really does send cumulative text — if that ever changes to deltas, the
+   assignment becomes the bug. Both proven red by deliberate breakage.
+2. **`format` on the chat path** — done, BP_Backend `83819a9`. Forwarded on both endpoints and
+   typed `str | dict`; the key is omitted rather than sent as `None`, because its presence
+   reads as a request for JSON on some client versions. Note: per
    `reference_ollama_schema_no_unions`, never put a union (`oneOf`/discriminator) in a
    `format=` schema; Ollama ignores it.
-3. **Gateway stable report key** — real, outstanding (optional `key` on `createReport`).
-4. **Docs drift** — real but minor: `endpoints.js:39` lists 3 report routes; 6 exist
-   (`reports/index`, `reports/key/:key`, `DELETE reports/key/:key` are missing).
-5. **`src/agent_definitions.json`** — **already done.** The file no longer exists; only the
+3. **Gateway stable report key** — done, gateway `36d4bf5`. Optional `key` on `createReport`,
+   wired through the controller; omitted, behaviour is byte-identical. The `MAX(version)`
+   lookup binds the **same parameter** the key is stored from.
+   *One guard here was vacuous on the first attempt and nearly shipped:* asserting the lookup
+   matched `/\$\d+::text/` passes while the lookup uses the title, which is exactly the bug.
+   It now pins the parameter number and goes red both ways.
+4. **Docs drift** — done, UI `70d41a4`. `endpoints.js` and `BACKEND_GAPS.md` now list the real
+   six routes; `REPORT_BUILDER.md`'s own "endpoint drift" item is marked closed. The route
+   table's line numbers were all out by ~10,500 lines (`loadReports` cited at `:12532`,
+   actually `:23034`), so it now names functions instead.
+5. **`src/agent_definitions.json`** — **was already done.** The file no longer exists; only the
    real 17.7 KB root `agent_definitions.json`.
+
+Libraries: nothing to add. `python-pptx`, `python-docx`, `openpyxl` and `jsonschema` are all
+installed and in `requirements.txt`.
+
+**Shared-checkout note.** Three sessions were live in these repos. Fixes 1 and 3 landed in files
+carrying another session's uncommitted work, so each was committed as a **filtered blob** —
+`git hash-object -w` of (HEAD + only my hunk), staged with `git update-index --cacheinfo`, so
+nothing of theirs was swept in. For the gateway that content never existed in any working tree,
+so it was verified in a throwaway worktree at HEAD (56 passed) before committing. Never
+`git add -A` in these checkouts; the BP_Backend index holds 498 staged entries owned by someone
+else.
 
 Libraries the brief asks to add are already installed *and* in `requirements.txt`:
 `python-pptx`, `python-docx`, `openpyxl`, `jsonschema`.
