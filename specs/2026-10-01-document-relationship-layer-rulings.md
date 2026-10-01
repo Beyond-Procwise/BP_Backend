@@ -225,3 +225,80 @@ Credit: the third consequence was found by a concurrent session's pre-flight sca
 Task 7 (`bp-backend-28`), which independently reviewed the same plan for part of the
 day before the two controllers discovered each other and it stood down. Its note
 called the coupling "a coupling, not a defect", which is the right reading.
+
+## Three things this file was missing (added after the final re-review)
+
+### 1. Three of this layer's test files run in no automated job
+
+`.github/workflows/reference-data-checks.yml` runs nine files. These three do not,
+because they need dependencies the job does not install:
+
+| File | Needs | What is unguarded |
+|---|---|---|
+| `tests/services/concepts/test_gate_wiring.py` | spacy | all 8 tests over the **live upload gate** |
+| `tests/services/test_agent_manifest_slices.py` | botocore + qdrant_client | 1 of 15 tests (see below) |
+| `tests/services/extraction/test_type_findings_lifecycle.py` | numpy + scipy | 1 of 19 tests (see below) |
+
+**Two of those three are avoidable at zero dependency cost**, verified in a simulated
+CI environment by the final re-reviewer: under the job's *existing* install set,
+`test_agent_manifest_slices` is 14 passed / 1 failed and `test_type_findings_lifecycle`
+is 5 passed / 13 skipped / 1 failed. Deselecting the two heavy tests —
+
+```
+  --deselect tests/services/test_agent_manifest_slices.py::test_the_negotiation_prompt_no_longer_carries_the_knowledge_bundle
+  --deselect tests/services/extraction/test_type_findings_lifecycle.py::test_session_warning_count_mentions_every_type_finding
+```
+
+— adds **19 tests to CI for free**. Only `test_gate_wiring.py` genuinely needs spacy
+for all of its tests. Separately: the second deselected test needs numpy only because
+it imports `src.services.session_postprocess` to call `inspect.getsource` on it;
+reading that module as a text file instead would remove the dependency entirely.
+
+This was not done in the final fix wave because the wave had already been dispatched
+and the process allows only one. It is a two-line change to the workflow.
+
+### 2. `bp_sqldb` — what IS done, and the one thing that is not
+
+The final re-reviewer could not connect to `bp_sqldb` (barred by its brief) and
+inferred that neither alias migration had been applied there. **That inference was
+wrong.** Verified directly:
+
+- `2026-10-01_concept_vocabulary.sql` — applied (47 concepts, 19 document types).
+- `2026-10-01_concept_vocabulary_aliases.sql` — applied; `quotes` and `contracts` present.
+- `2026-10-01_concept_vocabulary_restored_aliases.sql` — applied; `framework` and
+  `notice` present. Alias md5 parity with `bp_testdb` confirmed after each.
+- **Half-promotion check, which the new loader rule makes consequential — clean.**
+  Zero active `bp_document_type` rows whose `bp_concept` row is not active. The only
+  row with a non-active concept on *either* database is `doctype.policy_document`,
+  whose document-type row is itself `proposed` — the legitimate seeded state. So the
+  new rule drops nothing that resolves today, on either database.
+
+**Still not done, and deliberately referred rather than actioned:** `bp_sqldb` has no
+`ix_bp_extraction_discrepancy_open_key`. Because `write_discrepancies` has inferred an
+`ON CONFLICT` on that key since 2026-07-30, Postgres rejects the inference (42P10), so
+**every** discrepancy write on that database already fails — pre-existing, not caused
+by this layer. 1,072 open rows there, 151 duplicate groups.
+`deploy/sql/2026-07-30_discrepancy_dedup.sql` would fix it by **DELETING 587 rows** and
+rewriting the status of others, and it has no rollback. That is destructive and
+irreversible on a production-lineage database, so it was not run. Until it is,
+document-type findings are a `bp_testdb`-only feature.
+
+### 3. Restoring bare `framework` and `notice` changes classification on prose
+
+The reversal of Task 1's first ruling restored two aliases that are ordinary English
+words, unlike the rest of the seeded vocabulary. The final re-reviewer measured the
+before/after and the effect is wider than "one evidence span":
+
+- a call-off contract whose prose says "the Framework" three times: `matched
+  doctype.call_off_contract` → `unresolved {call_off_contract, framework_agreement}`
+- a letter saying "notice" three times: `unknown` → `matched doctype.notice_general`
+- a heading-like line reading `Framework` or `Notice`: `unknown` → `matched`
+
+Bounded, and worth stating why it was still the right reversal: the classifier only
+reports, routing comes from the uploader's declared category, and `notice_general` has
+no pipeline so it cannot route at all. The cost is review-queue noise, not a routing
+change. `framework` does now route, at the `contract` pipeline — the same one every
+other contract-class type uses, and a category that previously hard-errored.
+
+No corpus re-run was done after restoring them. If the review queue looks noisy,
+these two aliases are the first place to look, and removing one is an `UPDATE`.
