@@ -368,12 +368,20 @@ def write_discrepancies(
     Re-processing a document (new raw_id, same findings) must REFRESH its open
     findings, not stack duplicates — the Test Data_300726 re-extraction left
     identical warnings 7-deep. The open-findings identity is
-    (doc_type, doc_pk_candidate, issue_type, field_name), enforced by the
-    partial unique index ix_bp_extraction_discrepancy_open_key (deploy/sql/
-    2026-07-30_discrepancy_dedup.sql); on conflict the row's evidence is
-    refreshed from the latest run while created_at/status survive. Resolved
-    rows sit outside the partial index, so a finding that recurs after being
-    resolved is a NEW row — resolution history is never overwritten.
+    (doc_type, doc_pk_candidate, source_file, issue_type, field_name), enforced
+    by the partial unique index ix_bp_extraction_discrepancy_open_key (deploy/
+    sql/2026-10-01_discrepancy_open_key_per_document.sql); on conflict the row's
+    evidence is refreshed from the latest run while created_at/status survive.
+    Resolved rows sit outside the partial index, so a finding that recurs after
+    being resolved is a NEW row — resolution history is never overwritten.
+
+    source_file is in the key because doc_pk_candidate is the number read OUT of
+    the document, not an identifier OF it. Without it, two DIFFERENT documents
+    carrying one invoice number collided and the later overwrote the earlier --
+    which is the same invoice submitted twice, the case
+    duplicate_invoice_detector exists to catch. A re-read keeps the same
+    source_file so it still refreshes; raw_id could not be used for this because
+    it changes on every re-read, restoring the stacking bug.
     """
     # Materialize: `discrepancies` may be a one-shot generator that we iterate
     # twice (rows build below + action_rows comprehension).
@@ -400,6 +408,7 @@ def write_discrepancies(
               evidence_page, evidence_bbox, evidence_text, notes)
              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
              ON CONFLICT (doc_type, coalesce(doc_pk_candidate, ''),
+                          coalesce(source_file, ''),
                           issue_type, coalesce(field_name, ''))
              WHERE coalesce(status, 'open') <> 'resolved'
              DO UPDATE SET

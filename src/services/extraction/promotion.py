@@ -236,10 +236,14 @@ _TAX_PERCENT_TRIPLE = {
 }
 
 # A re-read of the same document REFRESHES its open finding rather than stacking
-# a second one: the open finding is unique on (doc_type, doc_pk, issue_type,
-# field_name) -- ix_bp_extraction_discrepancy_open_key -- and a plain INSERT raised
-# UniqueViolation there, failing the whole promotion and leaving the stale first
-# read in _trgt. Same identity and refresh as persistence.write_discrepancies.
+# a second one: the open finding is unique on (doc_type, doc_pk, source_file,
+# issue_type, field_name) -- ix_bp_extraction_discrepancy_open_key -- and a plain
+# INSERT raised UniqueViolation there, failing the whole promotion and leaving the
+# stale first read in _trgt. Same identity and refresh as
+# persistence.write_discrepancies -- and it must STAY the same: the clause and the
+# index are matched by shape, so if these two sites ever disagree, Postgres rejects
+# every write here with "there is no unique or exclusion constraint matching the ON
+# CONFLICT specification" rather than warning.
 _DISCREPANCY_UPSERT = """
     INSERT INTO proc.bp_extraction_discrepancy
         (doc_type, raw_id, source_file, doc_pk_candidate,
@@ -247,6 +251,7 @@ _DISCREPANCY_UPSERT = """
          issue_type, severity, status, notes, blocks_promotion)
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (doc_type, coalesce(doc_pk_candidate, ''),
+                 coalesce(source_file, ''),
                  issue_type, coalesce(field_name, ''))
     WHERE coalesce(status, 'open') <> 'resolved'
     DO UPDATE SET
