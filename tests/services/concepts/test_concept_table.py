@@ -205,8 +205,22 @@ def test_no_alias_is_claimed_by_two_concepts(doc_type_rows):
 def test_an_alias_never_equals_another_concepts_code(concept_rows, doc_type_rows):
     """'contract' as an alias of doctype.master_agreement while
     doctype.contract exists would make the resolver's answer depend on which
-    table it looked at first."""
-    codes = {r["concept_code"].split(".", 1)[-1].lower() for r in concept_rows}
+    table it looked at first.
+
+    Scoped to DOCUMENT_TYPE codes, and the narrowing is the point. The alias
+    index is built from bp_document_type rows ALONE (vocabulary.py's doc-type
+    loop), so nothing ever resolves an alias against a role.*, link.*, exec.* or
+    event.* local name — an alias equal to one of those creates no ambiguity of
+    any kind. The wider reading cost the vocabulary two real aliases (bare
+    'framework' against role.framework, bare 'notice' against role.notice) for
+    a collision that cannot happen, and both are restored. The docstring's own
+    example is two DOCUMENT_TYPE codes, which this still catches, with
+    test_no_alias_is_claimed_by_two_concepts behind it.
+    """
+    codes = {
+        r["concept_code"].split(".", 1)[-1].lower() for r in concept_rows
+        if r["domain"] == "DOCUMENT_TYPE"
+    }
     collisions = {}
     for r in doc_type_rows:
         own = r["concept_code"].split(".", 1)[-1].lower()

@@ -159,7 +159,14 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
     dt.concept_code: dt for dt in (
         DocumentType(
             "doctype.framework_agreement", "role.framework", None, "exec.bilateral",
-            ("framework agreement", "framework contract"),
+            # "framework" stays last: matches the migration's append order, and
+            # the seed-vs-table drift test compares aliases as ordered lists.
+            # It was dropped in Task 1 to satisfy a guard that compared aliases
+            # against EVERY concept's local name, including role.framework —
+            # but the alias index is built from bp_document_type rows alone, so
+            # a role code can never contest an alias. The guard is now scoped to
+            # DOCUMENT_TYPE codes and the alias is back.
+            ("framework agreement", "framework contract", "framework"),
             ({"field": "framework_ref", "pattern": r"^[A-Z]{2}\d{4,6}$", "parent_type": None},),
             ("sets terms without ordering", "names a call-off procedure"),
             "contract",
@@ -249,7 +256,14 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
         ),
         DocumentType(
             "doctype.notice_general", "role.notice", None, "exec.unilateral",
-            ("general notice",),
+            # "notice" stays last: matches the migration's append order, and the
+            # seed-vs-table drift test compares aliases as ordered lists. Bare
+            # "notice" was renamed to "general notice" in Task 1 against the
+            # same over-wide guard (role.notice); restored for the same reason,
+            # and "general notice" is kept beside it. doctype.termination_notice
+            # claims "termination notice"/"notice of termination", NOT bare
+            # "notice", so there is no two-owner collision.
+            ("general notice", "notice"),
             (),
             ("cites a notice clause", "creates no new obligation"),
             None,
