@@ -205,7 +205,7 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
         ),
         DocumentType(
             "doctype.quote", "role.supporting", None, "exec.unilateral",
-            ("quote", "quotation", "estimate", "price quotation"),
+            ("quote", "quotation", "estimate", "price quotation", "quotes"),
             ({"field": "quote_id", "pattern": None, "parent_type": None},),
             ("validity or expiry date", "prices with no order reference"),
             "quote",
@@ -282,7 +282,7 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
         ),
         DocumentType(
             "doctype.contract_unspecified", "role.master", None, None,
-            ("contract", "agreement"),
+            ("contract", "agreement", "contracts"),
             ({"field": "contract_id", "pattern": None, "parent_type": None},),
             ("numbered clauses", "a signature block"),
             "contract",
