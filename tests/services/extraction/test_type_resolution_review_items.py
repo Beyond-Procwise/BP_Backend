@@ -120,11 +120,19 @@ def test_notes_carry_every_evidence_span_unclipped():
 
 
 def test_same_shape_documents_share_one_group_key():
-    """Twelve workbooks with the same 'Order Form' cell are ONE decision."""
+    """Documents that disagree for the same reason are ONE decision, not N.
+
+    This was written on the twelve workbooks whose 'Order Form' title cell made
+    them disagree with their declared quote. That alias has since been dropped
+    from doctype.call_off_contract -- it produced 12 false disagreements and no
+    true positive -- so the shape is exercised here on a framework agreement
+    instead. The property under test is unchanged: same issue type, same declared
+    and evidence concepts, therefore one group key for the UI to collapse on.
+    """
     keys = set()
     seen_items = []
-    for body in ("Order Form\nSupplier: A\n",
-                 "Quotation reference 99\nOrder Form\nSupplier: B\nTotal 5\n"):
+    for body in ("Framework Agreement\nSupplier: A\n",
+                 "Quotation reference 99\nFramework Agreement\nSupplier: B\nTotal 5\n"):
         r = resolve_document_type(
             declared_concept="doctype.quote", full_text=body, vocabulary=V)
         for d in type_resolution_discrepancies(r):

@@ -302,3 +302,55 @@ other contract-class type uses, and a category that previously hard-errored.
 
 No corpus re-run was done after restoring them. If the review queue looks noisy,
 these two aliases are the first place to look, and removing one is an `UPDATE`.
+
+## Resolved after the fact: the `order form` alias is dropped
+
+The record above says 12 of 64 documents disagree with their declared type, all of
+them the `order form` class, and that the alias is a product decision. **That decision
+has been taken: drop it.**
+
+`order form` is a genuine name for a call-off contract, which is why it was seeded.
+On this corpus it is also the title cell that every quote-template workbook carries,
+so it produced **12 disagreements out of 12 uses and no true positive**. Measured over
+the same 50 live documents before and after, with every evidence span re-checked
+byte-exact:
+
+| | agreed | disagreed | unresolved |
+|---|---|---|---|
+| before | 38 | 12 | 0 |
+| after | 47 | **0** | 3 |
+
+The twelve were `Aureus_Workflow_Ltd` V1/V2/V3, `Lattice_Systems_Ltd` V1/V2/V3,
+`Meridia_Cloud_Platforms_Ltd` V1/V2/V3 and `Orbis_Platform_Solutions_Ltd` V1/V2/V3 —
+each declared `quote`, each reporting evidence of `doctype.call_off_contract`.
+
+**Nine became `agreed`. Three became `unresolved`, and that is worth knowing**:
+`Meridia V3`, `Orbis V2` and `Orbis V3` now tie between `doctype.quote` — the right
+answer, carrying its own title evidence (`Quotation`, `Quote`) — and a type named only
+in their body text (`contract_unspecified` twice, `schedule` once). Both sides are
+tier 2, within the 1.0 margin, so the resolver declines to choose. They will raise an
+`unresolved_document_type` review item carrying both candidates rather than a false
+disagreement. That is the designed behaviour, and it is the generic-word problem again,
+the same family as restoring bare `framework` and `notice`.
+
+Shipped as:
+- `src/services/concepts/seed.py` — the alias removed, with the reason inline.
+- `deploy/sql/2026-10-01_concept_vocabulary_drop_order_form_alias.sql` + rollback —
+  idempotent, scoped to one `concept_code`. **Applied to both databases**; alias md5
+  parity re-verified (`a588615cdda3ca8c4fc8871f511f0a16`).
+- `tests/services/extraction/test_type_resolver.py` —
+  `test_order_form_is_not_a_call_off_alias_and_quote_workbooks_stay_agreed` pins it
+  positively and carries the reason, so re-adding the alias goes red. Proven: with the
+  alias restored in the seed, `resolve_alias` returns the call-off code and the real
+  workbook row returns `disagreed / doctype.call_off_contract`; the file was restored
+  byte-identically afterwards (sha1 `871d38fa…`).
+
+**One consequence to note:** an alias is also an acceptable upload category, because
+the gate and the classifier read the same column. `order form` is therefore no longer
+accepted as a `process_monitor.category`. Nothing that routes today stops routing —
+the only categories in use are `quote`, `invoice` and `po`.
+
+Two test fixtures were rebuilt rather than relaxed, because both had been written on
+this alias: the last-non-empty-cell row test keeps its call-off case on
+`Call-Off Contract`, and the review-item grouping test now groups on a framework
+agreement. Each says so, and what each tests is unchanged.

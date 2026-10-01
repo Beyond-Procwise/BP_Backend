@@ -575,7 +575,11 @@ def test_the_last_non_empty_cell_of_a_row_can_still_be_the_title():
     for row, want in [
         ("| O | Orbis Platform Solutions Ltd |  | INVOICE |  |", "doctype.invoice"),
         ("| Assurity Ltd |  |  | PURCHASE ORDER |  |", "doctype.order"),
-        ("| A | Aureus Workflow Ltd |  | Order Form |  |", "doctype.call_off_contract"),
+        # Was "Order Form" until that alias was dropped from doctype.call_off_contract
+        # (it titled every quote-template workbook; see the rulings doc). The row shape
+        # is what this test is about, so the case is kept on a surviving call-off alias.
+        ("| A | Aureus Workflow Ltd |  | Call-Off Contract |  |",
+         "doctype.call_off_contract"),
         ("| **Assurity Ltd**   | **PURCHASE ORDER**   |", "doctype.order"),
         ("| INVOICE |", "doctype.invoice"),
     ]:
@@ -1123,3 +1127,39 @@ def test_no_matched_or_unresolved_result_is_ever_evidence_free():
     assert seen_matched and seen_unresolved, (seen_matched, seen_unresolved)
     assert seen_matched + seen_unresolved == len(pages), (
         seen_matched, seen_unresolved, len(pages))
+
+
+def test_order_form_is_not_a_call_off_alias_and_quote_workbooks_stay_agreed():
+    """'order form' was dropped from doctype.call_off_contract, deliberately.
+
+    It is a real name for a call-off, which is why it was seeded. On this corpus
+    it is also the title cell every quote-template workbook carries, so it
+    produced 12 disagreements out of 12 uses and no true positive: measured over
+    50 live documents, 38 agreed / 12 disagreed before the drop and 50 agreed /
+    0 disagreed after. See specs/2026-10-01-document-relationship-layer-rulings.md.
+
+    Re-adding it needs a way to tell a quote template's 'Order Form' heading from
+    a real call-off's, which needs the golden-set documents. If you re-add it,
+    this test goes red and the 12 false disagreements come back with it.
+
+    A real call-off still matches: that is the second half of this test.
+    """
+    from src.services.concepts.vocabulary import SEED_VOCABULARY, resolve_alias
+
+    assert resolve_alias("order form", SEED_VOCABULARY) == (), (
+        "'order form' resolves again — see this test's docstring before keeping it"
+    )
+
+    workbook = "| A | Aureus Workflow Ltd |  | Order Form |  |\n| --- | --- |\n"
+    r = resolve_document_type(
+        declared_concept="doctype.quote", full_text=workbook,
+        vocabulary=SEED_VOCABULARY)
+    assert r.agreement != "disagreed", r
+    assert r.evidence_concept != "doctype.call_off_contract", r
+
+    # The type is still reachable by its own names, so dropping the alias cost
+    # recognition of the phrase, not of the document type.
+    call_off = resolve_document_type(
+        declared_concept=None, full_text="Call-Off Contract\nFramework Ref: RM6100\n",
+        vocabulary=SEED_VOCABULARY)
+    assert call_off.evidence_concept == "doctype.call_off_contract", call_off

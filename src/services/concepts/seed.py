@@ -189,7 +189,14 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
         DocumentType(
             "doctype.call_off_contract", "role.master", "doctype.framework_agreement",
             "exec.bilateral",
-            ("call-off contract", "call off contract", "call-off", "order form"),
+            # NOT "order form": it is a real name for a call-off, but on this corpus
+            # it is also the title cell every quote-template workbook carries, and it
+            # produced 12 false disagreements out of 12 uses — no true positive. See
+            # specs/2026-10-01-document-relationship-layer-rulings.md. Re-adding it
+            # needs a way to tell a quote template's heading from a real call-off's,
+            # which needs the golden-set documents. A real call-off still matches on
+            # "call-off contract" / "call off contract" / "call-off".
+            ("call-off contract", "call off contract", "call-off"),
             ({"field": "framework_ref", "pattern": None, "parent_type": "doctype.framework_agreement"},),
             ("lists incorporated documents", "states an order of precedence"),
             "contract",
