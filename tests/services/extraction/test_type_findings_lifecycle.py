@@ -8,6 +8,7 @@ they are test residue, not real agent activity.
 from __future__ import annotations
 
 import inspect
+import re
 import os
 import sys
 import uuid
@@ -49,6 +50,21 @@ def test_unknown_document_type_is_unreachable_with_a_declared_concept():
     assert "unknown_document_type" not in persistence.TYPE_FINDING_ISSUE_TYPES
 
 
+def _without_sql_comments(text: str) -> str:
+    """``text`` with its SQL comments removed, lowercased.
+
+    A source-level guard that counts a COMMENTED-OUT clause as present is a
+    guard that checks nothing — the defect this plan has now found fourteen
+    times. Both SQL comment forms go: `/* ... */` blocks first (they can wrap
+    lines, so they cannot be handled per line), then `--` to end of line. `#`
+    is deliberately not treated as a comment: it is not one in PostgreSQL, and
+    the clauses these guards look for live inside SQL string literals where a
+    Python `#` is just a character.
+    """
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return " ".join(line.split("--")[0] for line in text.splitlines()).lower()
+
+
 def test_benchmark_flagging_query_excludes_every_type_finding_without_a_database():
     """NON-LIVE guard (most runs have no PROCWISE_TEST_LIVE_DB): the SQL the
     function sends must carry a NOT IN list naming every type finding. Source-level,
@@ -60,8 +76,7 @@ def test_benchmark_flagging_query_excludes_every_type_finding_without_a_database
         def execute(self, sql, params=None): Cur.sql = sql
         def fetchall(self): return []
     benchmark_live.load_flagged_documents(Cur())
-    flat = " ".join(
-        line.split("--")[0] for line in Cur.sql.splitlines()).lower()  # comments don't count
+    flat = _without_sql_comments(Cur.sql)
     assert "and issue_type not in (" in flat
     for t in persistence.TYPE_FINDING_ISSUE_TYPES:
         assert f"'{t}'" in flat, t
@@ -69,9 +84,17 @@ def test_benchmark_flagging_query_excludes_every_type_finding_without_a_database
 
 def test_session_warning_count_mentions_every_type_finding():
     """SOURCE-LEVEL only (the session query needs raw/process_monitor rows to
-    run behaviourally); the benchmark filter has a behavioural live test below."""
+    run behaviourally); the benchmark filter has a behavioural live test below.
+
+    The comment stripping is load-bearing, not tidiness: _session_facts carries
+    the clause inside a SQL string beside a three-line `--` comment that names
+    both issue types, so without stripping, commenting the clause out leaves
+    this test green — it would have been the fourteenth guard in this plan to
+    pass while checking nothing.
+    """
     from src.services import session_postprocess
-    src = inspect.getsource(session_postprocess._session_facts)
+    src = _without_sql_comments(inspect.getsource(session_postprocess._session_facts))
+    assert "and d.issue_type not in (" in src
     for t in persistence.TYPE_FINDING_ISSUE_TYPES:
         assert f"'{t}'" in src, t
 
