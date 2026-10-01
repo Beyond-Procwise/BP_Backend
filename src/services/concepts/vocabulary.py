@@ -14,6 +14,10 @@ Three properties this must have, each a way it goes wrong:
     common case (nothing changed) cheap.
   * Only status='active' loads, filtered in SQL. A 'proposed' concept is an
     observation awaiting a human; if it resolved, confirming it would be moot.
+    `status` exists on BOTH tables for the same type, so BOTH halves must be
+    active: a document type whose concept did not load is dropped by
+    build_vocabulary, because a type that routes uploads with no definition
+    behind it is the inverse of what this layer is for.
 
 This mirrors src/services/facts/uom.py, deliberately: one loading pattern for
 reference data is easier to reason about than two.
@@ -115,6 +119,26 @@ def build_vocabulary(
     for row in doc_type_rows:
         code = (row.get("concept_code") or "").strip()
         if not code or row.get("status") != "active":
+            continue
+        # `status` lives on BOTH tables for the same type, so a person can
+        # promote one half and leave the other. The concept is the type's
+        # MEANING — its definition, its domain, what it must not be confused
+        # with — and a type that resolves and routes live uploads while its
+        # concept is absent is the exact inverse of this layer's invariant.
+        # Proven on bp_testdb: demoting only bp_concept('doctype.invoice') to
+        # 'proposed' left resolve_alias('invoice') answering and
+        # pipeline_for_category('Invoice') routing to the invoice pipeline.
+        # One source of truth per fact (principle 6) means the CONCEPT decides,
+        # so a type whose concept did not load does not load either.
+        # validate.check_concepts_exist_for_every_document_type reports the
+        # same half-promotion as a violation; this skip is what makes it safe.
+        if code not in concepts:
+            logger.warning(
+                "document type %s is active but its concept is not (absent from "
+                "the active concept map), so it is NOT loaded: it would resolve "
+                "and route uploads with no definition behind it. Promote "
+                "proc.bp_concept.status for %s as well.", code, code,
+            )
             continue
         aliases = tuple(row.get("aliases") or ())
         identifiers = tuple(row.get("identifiers") or ())

@@ -26,6 +26,30 @@ def _row(code, aliases, *, status="active", signals=()):
         "identifiers": [], "pipeline_doc_type": None,
     }
 
+
+def _build(rows, *, source="test"):
+    """build_vocabulary over ``rows`` with the concepts they need.
+
+    Not optional scaffolding: `status` lives on proc.bp_concept AND
+    proc.bp_document_type for the same type, and build_vocabulary drops a type
+    whose concept is absent — otherwise a type promoted on one table alone
+    resolves and routes with no definition behind it. Concepts are always
+    ACTIVE here so that each test's own `status=` on the TYPE row is what it is
+    testing.
+    """
+    concepts = [
+        {"concept_code": "role.master", "domain": "RELATIONSHIP_ROLE",
+         "definition": "Governs a relationship.", "not_to_be_confused_with": [],
+         "status": "active", "rejection_reason": None},
+    ]
+    concepts += [
+        {"concept_code": r["concept_code"], "domain": "DOCUMENT_TYPE",
+         "definition": "x", "not_to_be_confused_with": [],
+         "status": "active", "rejection_reason": None}
+        for r in rows
+    ]
+    return build_vocabulary(concepts, rows, source=source)
+
 FRAMEWORK_PAGE = (
     "FRAMEWORK AGREEMENT\n"
     "Framework Ref: RM6100\n"
@@ -119,7 +143,7 @@ def test_a_tie_is_unresolved_and_carries_both_candidates():
 def test_two_concepts_claiming_one_alias_is_a_tie_not_a_choice():
     """resolve_alias returns a tuple; a two-owner tuple is still truthy, so the
     collision must come out as unresolved, never as owners[0]."""
-    vocab = build_vocabulary([], [
+    vocab = _build([
         _row("doctype.alpha", ["shared heading"]),
         _row("doctype.beta", ["shared heading"]),
     ], source="test")
@@ -208,7 +232,7 @@ def test_declared_only_when_the_page_is_silent():
 def test_structural_signals_corroborate_but_never_name_a_type_alone():
     """Three phrase-shaped signals and no alias anywhere: still unknown, and the
     signals are not shown as a reason because they decided nothing."""
-    vocab = build_vocabulary([], [
+    vocab = _build([
         _row("doctype.alpha", ["alpha heading"],
              signals=["order of precedence", "ship to address", "bill to address"]),
     ], source="test")
@@ -225,7 +249,7 @@ def test_structural_signals_corroborate_but_never_name_a_type_alone():
 
 
 def test_a_signal_alongside_an_alias_is_evidence_verbatim():
-    vocab = build_vocabulary([], [
+    vocab = _build([
         _row("doctype.alpha", ["alpha heading"], signals=["order of precedence"]),
     ], source="test")
     page = "ALPHA HEADING\nThe Order of Precedence is as follows.\n"
@@ -239,7 +263,7 @@ def test_a_signal_alongside_an_alias_is_evidence_verbatim():
 def test_a_signal_can_break_a_tie_between_equal_aliases():
     """Tier 2 only. A tier-1 tie is two types named by the document's own
     title, and no amount of corroboration may pick one of those (rule D)."""
-    vocab = build_vocabulary([], [
+    vocab = _build([
         _row("doctype.alpha", ["shared"], signals=["order of precedence"]),
         _row("doctype.beta", ["shared"]),
     ], source="test")
@@ -252,7 +276,7 @@ def test_a_signal_can_break_a_tie_between_equal_aliases():
 
 def test_a_signal_cannot_break_a_tie_the_title_itself_states():
     """Rule D: a title naming two types is unresolved, full stop."""
-    vocab = build_vocabulary([], [
+    vocab = _build([
         _row("doctype.alpha", ["shared"], signals=["order of precedence"]),
         _row("doctype.beta", ["shared"]),
     ], source="test")
@@ -323,7 +347,7 @@ def test_a_proposed_type_is_never_the_evidence_answer():
 
 
 def test_a_proposed_row_handed_to_the_builder_still_never_resolves():
-    vocab = build_vocabulary([], [
+    vocab = _build([
         _row("doctype.pol", ["policy"], status="proposed"),
     ], source="test")
     r = resolve_document_type(
@@ -354,7 +378,7 @@ def test_a_concepts_own_name_does_not_double_count_against_a_shared_alias():
     beat doctype.beta, which claims the same word once: a collision silently
     won by whichever concept happened to repeat itself. Stated on a page with
     no title, because that is where counting happens at all."""
-    vocab = build_vocabulary([], [
+    vocab = _build([
         _row("doctype.alpha", ["alpha"]),
         _row("doctype.beta", ["alpha"]),
     ], source="test")
@@ -899,6 +923,71 @@ def test_a_key_above_a_bare_reference_value_is_not_the_title():
     assert letterhead.evidence_concept == "doctype.invoice"
 
 
+#: Rule B's vertical form takes a real title with it when the title happens to
+#: sit immediately above a bare reference. Pinned as a POSITIVE assertion, not a
+#: bug: see the test below.
+ADJUDICATED_RESIDUAL_PO_BODY = (
+    "Terms: the buyer shall raise a purchase order. A purchase order is "
+    "required before delivery. The purchase order number must appear on every "
+    "despatch note. No order will be accepted without a purchase order.\n"
+)
+
+
+def test_a_title_directly_above_a_bare_reference_loses_its_title_ACCEPTED():
+    """ACCEPTED RESIDUAL, ruled and pinned — do not "fix" this without reading
+    the whole docstring, because fixing it provably reopens a shape that is
+    worse.
+
+    What it asserts: 'INVOICE' on line 1 with 'INV-2026-0001' on line 2 is read
+    by rule B's vertical form as a KEY above its VALUE, so the page has no title
+    and a purchase-order-heavy body answers instead. Declared doctype.invoice, it
+    returns matched / doctype.order / disagreed. Delete the reference line and it
+    returns matched / doctype.invoice / agreed — one line decides it.
+
+    Why it is accepted rather than fixed, verbatim from the ruling:
+
+      * Measured incidence is ZERO across the 63 real documents and the 50
+        process_monitor documents examined for this layer.
+      * The defect and its fix are THE SAME SHAPE. In the shape rule B's vertical
+        form exists to fix ('Purchase Order' above 'PO-2024-0145'), the key is
+        ALSO the first segment. The only discriminator between that and this is
+        whether a later title-like segment exists — and adopting that rule
+        provably returns the third shape rule B was built for (a workbook header
+        row ending '| PO |', pinned in
+        test_a_key_above_a_bare_reference_value_is_not_the_title) to a confident
+        wrong answer.
+      * It cannot reach routing. Routing comes from the declared category via
+        src/services/concepts/routing.py; this module only reports.
+
+    Consequence of it being wrong: a page whose title sits immediately above a
+    bare reference loses its title and may be typed from its body clauses — a
+    latent risk, not an observed error. It raises a review item for a human, it
+    changes no pipeline.
+
+    A future round that wants to revisit it MUST carry BOTH shapes as tests,
+    because fixing either one alone reopens the other.
+    """
+    page = "INVOICE\nINV-2026-0001\n" + ADJUDICATED_RESIDUAL_PO_BODY
+    r = resolve_document_type(declared_concept="doctype.invoice",
+                              full_text=page, vocabulary=V)
+    assert (r.status, r.evidence_concept, r.agreement) == (
+        "matched", "doctype.order", "disagreed")
+    # It is the bare reference line alone that does this — nothing else.
+    without = resolve_document_type(
+        declared_concept="doctype.invoice", vocabulary=V,
+        full_text="INVOICE\n" + ADJUDICATED_RESIDUAL_PO_BODY)
+    assert (without.status, without.evidence_concept, without.agreement) == (
+        "matched", "doctype.invoice", "agreed")
+    # And the shape that a "fix" would break, asserted here too so the pair
+    # travels together: the workbook header row whose last cell is '| PO |'.
+    workbook = resolve_document_type(
+        declared_concept="doctype.invoice", vocabulary=V,
+        full_text="## Sheet: INVOICE\n"
+                  "| Ironbridge Managed IT Ltd |  | INVOICE |  | 15/02/2026 |\n"
+                  "| Item | Qty | Price | PO |\n| Widget | 2 | 5.00 | PO-1 |\n")
+    assert workbook.evidence_concept != "doctype.order"
+
+
 def test_a_trailing_colon_means_the_value_follows_not_a_title():
     """Rule B applied consistently to the one mark whose whole meaning is 'the
     value follows'. 'Order Date:' is a real parsed segment in a live quote PDF."""
@@ -963,15 +1052,29 @@ def test_the_evidence_cap_never_adds_rows_instead_of_trimming_them():
 
 def test_every_matched_and_every_candidate_carries_at_least_one_span():
     """fold() collapses internal whitespace but the match copy keeps the page's
-    length, so 'FRAMEWORK  AGREEMENT' named a concept with no hit in its own
-    span and returned ZERO evidence rows. The title segment is the reason."""
+    length, so a double-spaced title named a concept with no hit in its own span
+    and returned ZERO evidence rows. The title segment is the reason.
+
+    Stated on 'MASTER  SERVICE  AGREEMENT': none of its words is an alias of
+    doctype.master_agreement on its own, so the fallback is the only thing that
+    can produce a span. 'FRAMEWORK  AGREEMENT' no longer reaches the fallback —
+    bare 'framework' was restored as an alias, so it hits inside the title span
+    — and that case is kept below for exactly that reason."""
     single = resolve_document_type(
         declared_concept=None, vocabulary=V,
-        full_text="FRAMEWORK  AGREEMENT\nThis agreement sets out terms.\n")
-    assert single.evidence_concept == "doctype.framework_agreement"
+        full_text="MASTER  SERVICE  AGREEMENT\nThis agreement sets out terms.\n")
+    assert single.evidence_concept == "doctype.master_agreement"
     assert single.evidence, "a matched result with no reason is unreviewable"
-    assert single.evidence[0].text == "FRAMEWORK  AGREEMENT"
+    assert single.evidence[0].text == "MASTER  SERVICE  AGREEMENT"
     assert single.evidence[0].start == 0
+
+    # The restored bare alias supplies its own span, at a real offset.
+    framework = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="FRAMEWORK  AGREEMENT\nThis agreement sets out terms.\n")
+    assert framework.evidence_concept == "doctype.framework_agreement"
+    assert framework.evidence[0].text == "FRAMEWORK"
+    assert framework.evidence[0].start == 0
 
     pair = resolve_document_type(
         declared_concept=None, vocabulary=V,
@@ -982,7 +1085,7 @@ def test_every_matched_and_every_candidate_carries_at_least_one_span():
     # both sides shown, each with its OWN words, each byte-exact
     assert {e.concept_code for e in pair.evidence} == set(pair.candidates)
     by_code = {e.concept_code: e for e in pair.evidence}
-    assert by_code["doctype.framework_agreement"].text == "FRAMEWORK  AGREEMENT"
+    assert by_code["doctype.framework_agreement"].text == "FRAMEWORK"
     assert by_code["doctype.master_agreement"].text == "MASTER  SERVICE  AGREEMENT"
     page = "FRAMEWORK  AGREEMENT / MASTER  SERVICE  AGREEMENT\n"
     for e in pair.evidence:
@@ -999,11 +1102,24 @@ def test_no_matched_or_unresolved_result_is_ever_evidence_free():
     pages = [w + "\n" for w in words]
     pages += [a + " / " + b + "\n" for a, b in itertools.combinations(words, 2)]
     pages += ["Acme Ltd\n" + w + "\nAmount due: 1.00\n" for w in words]
+    seen_matched = seen_unresolved = 0
     for page in pages:
         r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
         if r.status == "matched" and r.evidence_concept:
+            seen_matched += 1
             assert r.evidence, page
         if r.status == "unresolved":
+            seen_unresolved += 1
             assert {e.concept_code for e in r.evidence} >= set(r.candidates), page
         for e in r.evidence:
             assert page[e.start:e.start + len(e.text)] == e.text, (page, e)
+    # The FLOOR. Both assertions above sit behind an `if`, so a change that made
+    # every page come back 'unknown' would leave this sweep green over 65 pages
+    # while checking nothing — this plan's recurring failure. Live counts today
+    # are 32 matched and 33 unresolved; the floor is deliberately loose (it pins
+    # that both branches are reached, not the exact split, which legitimate
+    # vocabulary edits move).
+    assert len(pages) == 65, len(pages)
+    assert seen_matched and seen_unresolved, (seen_matched, seen_unresolved)
+    assert seen_matched + seen_unresolved == len(pages), (
+        seen_matched, seen_unresolved, len(pages))

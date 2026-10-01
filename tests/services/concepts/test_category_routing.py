@@ -62,15 +62,41 @@ def test_a_new_type_routes_as_soon_as_it_is_in_the_vocabulary():
 
 
 def test_a_recognised_type_with_no_pipeline_refuses():
-    """(The brief probed the bare word "notice", which is NOT an alias and so
-    only proves the unknown path; "general notice" is the real alias.)
-    doctype.notice_general is a real concept that nothing can ingest yet.
+    """doctype.notice_general is a real concept that nothing can ingest yet.
     Routing it at the contract tables because 'contract' is the closest match
-    is the forcing principle 4 forbids."""
-    with pytest.raises(R.UnknownDocumentCategory) as exc:
-        R.pipeline_for_category("general notice", vocabulary=V)
-    assert "no pipeline" in str(exc.value).lower()
-    assert "doctype.notice_general" in str(exc.value)
+    is the forcing principle 4 forbids.
+
+    Both of its aliases take this path now. Bare "notice" was restored (Task 1
+    had dropped it against a guard that compared aliases to role.notice's local
+    name, which the alias index never consults), so it is no longer the
+    unknown-category path it was when Task 5 shipped."""
+    for category in ("general notice", "notice", "NOTICE"):
+        with pytest.raises(R.UnknownDocumentCategory) as exc:
+            R.pipeline_for_category(category, vocabulary=V)
+        assert "no pipeline" in str(exc.value).lower(), category
+        assert "doctype.notice_general" in str(exc.value), category
+
+
+def test_the_two_restored_bare_word_aliases_resolve_to_one_owner_each():
+    """Task 1 dropped bare "framework" and renamed bare "notice" to satisfy a
+    guard that compared aliases against EVERY concept's local name, including
+    role.framework and role.notice. The alias index is built from
+    bp_document_type rows alone, so a role code can never contest an alias; the
+    guard is now scoped to DOCUMENT_TYPE codes and both words are back.
+
+    An alias is also an acceptable upload category, so this is a ROUTING change:
+    'framework' now routes at the contract pipeline, and 'notice' reaches
+    doctype.notice_general, which has no pipeline and so still refuses — with
+    "no pipeline" rather than "no document type claims it"."""
+    from src.services.concepts.vocabulary import resolve_alias
+    assert resolve_alias("framework", V) == ("doctype.framework_agreement",)
+    assert resolve_alias("notice", V) == ("doctype.notice_general",)
+    # not stolen from the types that carry the longer spellings
+    assert resolve_alias("framework agreement", V) == ("doctype.framework_agreement",)
+    assert resolve_alias("termination notice", V) == ("doctype.termination_notice",)
+    assert resolve_alias("notice of termination", V) == ("doctype.termination_notice",)
+    assert R.pipeline_for_category("framework", vocabulary=V) == (
+        "contract", "doctype.framework_agreement")
 
 
 def test_an_ambiguous_category_refuses_rather_than_choosing():
@@ -135,7 +161,15 @@ def test_the_collision_raise_is_not_the_unknown_raise():
          "pipeline_doc_type": p, "status": "active"}
         for n, p in (("a", "contract"), ("b", "purchase_order"))
     ]
-    v = build_vocabulary([], rows, source="test")
+    # build_vocabulary drops a type whose concept is absent, so the concept rows
+    # are not optional scaffolding — a type with no concept never loads.
+    concept_rows = [
+        {"concept_code": c, "domain": d, "definition": "x",
+         "not_to_be_confused_with": [], "status": "active", "rejection_reason": None}
+        for c, d in (("role.master", "RELATIONSHIP_ROLE"),
+                     ("doctype.a", "DOCUMENT_TYPE"), ("doctype.b", "DOCUMENT_TYPE"))
+    ]
+    v = build_vocabulary(concept_rows, rows, source="test")
     assert len(R.resolve_alias("order form", v)) == 2
     with pytest.raises(R.AmbiguousDocumentCategory):
         R.pipeline_for_category("order form", vocabulary=v)
@@ -143,10 +177,46 @@ def test_the_collision_raise_is_not_the_unknown_raise():
 
 
 def test_a_proposed_type_never_routes():
-    rows = [{"concept_code": "doctype.draftthing", "role": "role.master",
-             "default_parent_type": None, "execution_mode": None,
-             "aliases": ["draft thing"], "identifiers": [], "structural_signals": [],
-             "pipeline_doc_type": "contract", "status": "proposed"}]
-    v = build_vocabulary([], rows, source="test")
+    """BOTH halves. `status` sits on proc.bp_concept and on
+    proc.bp_document_type for the same type, so there are two ways to be
+    proposed, and flipping one column proves only one of them. The dangerous
+    half is the type being active while its concept is not: on bp_testdb,
+    demoting ONLY bp_concept('doctype.invoice') to 'proposed' left
+    pipeline_for_category('Invoice') routing live uploads to the invoice
+    pipeline with validate.run_all() == [].
+    """
+    def rows(status):
+        return [{"concept_code": "doctype.draftthing", "role": "role.master",
+                 "default_parent_type": None, "execution_mode": None,
+                 "aliases": ["draft thing"], "identifiers": [],
+                 "structural_signals": [], "pipeline_doc_type": "contract",
+                 "status": status}]
+
+    def concepts(status):
+        return [
+            {"concept_code": "role.master", "domain": "RELATIONSHIP_ROLE",
+             "definition": "x", "not_to_be_confused_with": [],
+             "status": "active", "rejection_reason": None},
+            {"concept_code": "doctype.draftthing", "domain": "DOCUMENT_TYPE",
+             "definition": "x", "not_to_be_confused_with": [],
+             "status": status, "rejection_reason": None},
+        ]
+
+    # half one: the concept is active, the TYPE row is proposed
+    concept_only = build_vocabulary(concepts("active"), rows("proposed"), source="test")
+    assert "doctype.draftthing" in concept_only.concepts
     with pytest.raises(R.UnknownDocumentCategory):
-        R.pipeline_for_category("draft thing", vocabulary=v)
+        R.pipeline_for_category("draft thing", vocabulary=concept_only)
+
+    # half two: the TYPE row is active, the concept is proposed. This is the
+    # half-promotion that routed: the type carries pipeline_doc_type='contract',
+    # so without the loader's concept check this call RETURNS ('contract', ...).
+    type_only = build_vocabulary(concepts("proposed"), rows("active"), source="test")
+    assert "doctype.draftthing" not in type_only.concepts
+    with pytest.raises(R.UnknownDocumentCategory):
+        R.pipeline_for_category("draft thing", vocabulary=type_only)
+
+    # and with neither promoted
+    neither = build_vocabulary(concepts("proposed"), rows("proposed"), source="test")
+    with pytest.raises(R.UnknownDocumentCategory):
+        R.pipeline_for_category("draft thing", vocabulary=neither)

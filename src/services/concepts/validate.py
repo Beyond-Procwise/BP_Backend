@@ -15,6 +15,11 @@ honest state rather than an omission:
 
 Either, written now, would be a check that passes over an empty set — which
 reports success while checking nothing.
+
+One check here is NOT from the spec: check_concepts_exist_for_every_document_type.
+The spec did not foresee that `status` would end up on both tables for the same
+type, and a half-promoted type resolved and routed live uploads while every
+spec check passed.
 """
 from __future__ import annotations
 
@@ -96,6 +101,33 @@ def check_every_reference_resolves(vocabulary: Vocabulary) -> List[Violation]:
     return out
 
 
+def check_concepts_exist_for_every_document_type(
+    vocabulary: Vocabulary,
+) -> List[Violation]:
+    """Every loaded document type must have a loaded concept.
+
+    `status` lives on proc.bp_concept AND proc.bp_document_type for the same
+    type — two columns for one fact — so a person can promote one half. The
+    half that matters is the type: with bp_document_type.status='active' and
+    bp_concept.status='proposed' the type resolved aliases and routed live
+    uploads while its concept (its definition, its domain, its
+    not_to_be_confused_with list) was absent, and every other check here passed.
+
+    build_vocabulary now drops such a type, so on a built Vocabulary this check
+    can only fire if that skip is removed — which is precisely what it is for.
+    check_every_reference_resolves catches the OTHER direction (an active
+    concept with no type row); this one catches the dangerous direction.
+    """
+    return [
+        Violation("concepts_exist_for_every_document_type", code,
+                  "bp_document_type row is loaded but its concept is not — the "
+                  "type would resolve and route with no definition behind it; "
+                  "promote proc.bp_concept.status too, or demote the type")
+        for code in sorted(vocabulary.document_types)
+        if code not in vocabulary.concepts
+    ]
+
+
 def check_active_concepts_are_defined(vocabulary: Vocabulary) -> List[Violation]:
     """An active concept with no definition is a name with no meaning behind
     it, and the next reader will supply their own."""
@@ -130,6 +162,7 @@ def run_all(vocabulary: Vocabulary) -> List[Violation]:
     out: List[Violation] = []
     out.extend(check_aliases_are_unambiguous(vocabulary))
     out.extend(check_every_reference_resolves(vocabulary))
+    out.extend(check_concepts_exist_for_every_document_type(vocabulary))
     out.extend(check_active_concepts_are_defined(vocabulary))
     out.extend(check_pipeline_targets_exist(vocabulary))
     return out
@@ -138,5 +171,6 @@ def run_all(vocabulary: Vocabulary) -> List[Violation]:
 __all__ = [
     "Violation", "run_all",
     "check_aliases_are_unambiguous", "check_every_reference_resolves",
+    "check_concepts_exist_for_every_document_type",
     "check_active_concepts_are_defined", "check_pipeline_targets_exist",
 ]

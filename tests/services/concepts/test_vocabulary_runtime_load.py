@@ -62,12 +62,73 @@ def test_build_vocabulary_indexes_aliases_case_and_space_insensitively():
     assert V.resolve_alias("  TAX   invoice ", v) == ("doctype.invoice",)
 
 
+def _with_status(rows, code, status):
+    """A copy of ``rows`` with one row's status changed."""
+    return [dict(r, status=status) if r["concept_code"] == code else dict(r)
+            for r in rows]
+
+
 def test_a_proposed_type_never_resolves():
-    """The load-bearing rule of the status column. If a proposed type resolved,
-    the review step would be decoration."""
+    """The load-bearing rule of the status column, in BOTH halves.
+
+    `status` sits on proc.bp_concept AND proc.bp_document_type for the same
+    type, so there are two ways to be proposed and a test that flips only one
+    column proves only one of them. The dangerous half is the type being active
+    while its concept is not: on bp_testdb, demoting ONLY
+    bp_concept('doctype.invoice') to 'proposed' left resolve_alias('invoice')
+    answering ('doctype.invoice',) and pipeline_for_category('Invoice') routing
+    live uploads to the invoice pipeline, with validate.run_all() == [].
+    """
+    # both halves proposed (the seeded shape)
     v = V.build_vocabulary(CONCEPT_ROWS, DOC_TYPE_ROWS, source="test")
     assert V.resolve_alias("policy", v) == ()
     assert "doctype.policy_document" not in v.document_types
+
+    # half one: the CONCEPT is active, the TYPE is still proposed
+    concept_active = V.build_vocabulary(
+        _with_status(CONCEPT_ROWS, "doctype.policy_document", "active"),
+        DOC_TYPE_ROWS, source="test")
+    assert "doctype.policy_document" in concept_active.concepts
+    assert V.resolve_alias("policy", concept_active) == ()
+    assert "doctype.policy_document" not in concept_active.document_types
+
+    # half two: the TYPE is active, the CONCEPT is still proposed. This is the
+    # half-promotion that resolved and routed.
+    type_active = V.build_vocabulary(
+        CONCEPT_ROWS,
+        _with_status(DOC_TYPE_ROWS, "doctype.policy_document", "active"),
+        source="test")
+    assert "doctype.policy_document" not in type_active.concepts
+    assert V.resolve_alias("policy", type_active) == (), (
+        "a type resolving while its concept is absent means it classifies and "
+        "routes documents with no definition behind it")
+    assert "doctype.policy_document" not in type_active.document_types
+
+
+def test_the_half_promoted_type_is_reported_as_a_violation():
+    """The skip in build_vocabulary is silent by design (a warning in the log,
+    not a refusal to load the other 18 types), so run_all must be able to NAME
+    the half-promotion. It runs over a Vocabulary, and the only Vocabulary that
+    can carry one is a hand-built one — which is exactly what a caller gets from
+    dataclasses.replace."""
+    import dataclasses
+
+    from src.services.concepts import validate
+
+    good = V.build_vocabulary(CONCEPT_ROWS, DOC_TYPE_ROWS, source="test")
+    assert validate.check_concepts_exist_for_every_document_type(good) == []
+
+    # The frozen dataclass is public, so a caller CAN assemble this state.
+    orphan = dataclasses.replace(good.document_types["doctype.invoice"],
+                                 concept_code="doctype.policy_document")
+    half = dataclasses.replace(good, document_types={
+        **good.document_types, "doctype.policy_document": orphan,
+    })
+    bad = validate.check_concepts_exist_for_every_document_type(half)
+    assert [v.subject for v in bad] == ["doctype.policy_document"]
+    assert bad[0].check == "concepts_exist_for_every_document_type"
+    assert bad == [v for v in validate.run_all(half)
+                   if v.check == "concepts_exist_for_every_document_type"]
 
 
 def test_a_colliding_alias_returns_both_candidates():
