@@ -71,16 +71,25 @@ _WEIGHT = {"title_alias": 5.0, "body_alias": 1.0, "structural_signal": 0.5}
 #      right, which makes it a key. That separates '| PO # | 4412 |',
 #      '| Contract sum | 1,936,000.00 |' and '| Quotation to | Smith Ltd |'
 #      from a real title row. It must be the last-cell reading and NOT "a row
-#      with two or more non-empty cells has no title": there is no single-cell
-#      title row anywhere in the live corpus. Every workbook titles itself as
+#      with two or more non-empty cells has no title": NONE of the 50
+#      process_monitor documents measured has a single-cell title row (local
+#      files do — 'quote_scenario_1.xlsx' titles itself '| Quotation |  |  |'),
+#      so the cell-count reading throws those 50 away. They title themselves
 #
 #          | Ironbridge Managed IT Ltd |  |  | INVOICE |  |
 #          | M | Meridia Cloud Platforms Ltd |  | INVOICE |  |
 #
 #      because the spreadsheet parser renders a sheet row at the full sheet
-#      width. Measured over 50 live documents, the cell-count reading scores
+#      width. Measured over those 50 documents, the cell-count reading scores
 #      7/10 invoices and calls MCP-INV-1148 an ORDER, confidently and wrongly;
 #      the last-cell reading scores 10/10 invoices and 5/5 POs.
+#      B's premise is "a key's value sits in the next position the layout
+#      provides", and beside-it is only one such layout. VERTICALLY, the value
+#      sits BELOW: a segment whose value position holds a bare reference token
+#      (one token carrying a digit and naming no type) is a key too. That is
+#      what stops 'Purchase Order' above 'PO-2024-0145' and the last column
+#      header of '| Line | Description | Order |' above '| … | PO-1 |' from
+#      being read as the page's title. Still categorical, still no threshold.
 #   C. THE FIRST ONE WINS. Among title segments the first in document order is
 #      the document's title, and only its concepts reach tier 1. This is
 #      ordinal: no character count decides it and inserting a word cannot
@@ -105,13 +114,37 @@ _MARKUP = "#*|"
 #: Punctuation that can sit around a title without changing what it says.
 _PUNCT = "\"'`()[]{}<>«».,;:!?-–—…/\\&+=~^%$£€@"
 
+#: ...but NOT on the tail. A trailing ',', ';' or ':' is the one typographic
+#: mark whose whole meaning is "the value follows", so stripping it would turn
+#: 'Order:' and 'Order Date:' — both real parsed segments in the live corpus —
+#: into confident titles. This is rule B applied consistently rather than a
+#: separate label rule. The cost is that a genuine 'INVOICE:' title falls to
+#: tier 2, and vertical reference blocks are far commoner than those.
+_PUNCT_TAIL = "\"'`()[]{}<>«».!?-–—…/\\&+=~^%$£€@"
+
 #: A trailing token that NUMBERS a title rather than naming it: 'Schedule 1',
 #: 'Annex A', 'Appendix 2.1', 'Part IV'. Deliberately narrow — 'No' is not in
 #: it, so 'Order No' and 'Contract No' stay labels.
 _REF_TOKEN = re.compile(r"^(?:\d+(?:[.,/]\d+)*|[a-z]|[ivxlcdm]+)$", re.IGNORECASE)
 
+#: A trailing '#'-prefixed reference, as one token ('INVOICE #9920') or two
+#: ('Quotation  # WSG100024'). Real documents title themselves this way, and
+#: without this the whole segment is not an alias and the page falls through to
+#: whatever its body clauses happen to mention. '#' already means "number", so
+#: the token after it is not required to carry a digit — a digit test there
+#: changed no outcome any test could reach, and a condition that cannot fail
+#: hides which line is load-bearing.
+_HASH_REF = re.compile(r"^#\S*\d\S*$")
+_HAS_DIGIT = re.compile(r"\d")
+
 #: The one separator a title uses to name two types at once: 'INVOICE / QUOTE'.
 _TITLE_SPLIT = "/"
+
+#: A segment that is somebody's VALUE, not a name: one whitespace-separated
+#: token carrying a digit and naming no type ('PO-2024-0145', '4412', 'PO-1').
+#: A segment whose value position holds one of these is a key (rule B,
+#: vertical form) — see _is_reference_value.
+_VALUE_MAX_TOKENS = 1
 
 _OCCURRENCE_CAP = 3.0
 _SIGNAL = 1.0
@@ -126,8 +159,12 @@ _MIN_SCORE = 1.0
 #: evidence has not chosen, and saying it has would be fabrication.
 _MIN_MARGIN = 1.0
 
-#: Cap on evidence rows (a review row a person reads, not a log). Each
-#: candidate of an unresolved result is guaranteed at least one of them.
+#: Cap on DISCRETIONARY evidence rows (a review row a person reads, not a log).
+#: The per-candidate reservation is a FLOOR that outranks it: every candidate of
+#: an unresolved result keeps at least one span, so the true bound is
+#: max(_MAX_EVIDENCE, len(candidates)) and a 15-candidate tie returns 15 rows.
+#: Capping below the candidate count would hide options from the person being
+#: asked to choose, which is worse than a long row.
 _MAX_EVIDENCE = 12
 
 
@@ -161,18 +198,43 @@ def _normalise(raw: str) -> str:
     """A segment reduced to what it CALLS itself, folded for comparison.
 
     Whitespace (so '\\r' and '\\t' cannot make a one-character cliff), then
-    markup, then surrounding punctuation, then a trailing reference token —
-    repeatedly, because '## Schedule 1 ##' needs all four.
+    markup, then surrounding punctuation — but NOT a trailing ',', ';' or ':',
+    which mean "the value follows" — then a trailing '#'-prefixed reference,
+    then a trailing bare reference token. Repeatedly, because '## Schedule 1 ##'
+    needs several passes.
     """
     s = raw
     while True:
-        t = s.strip().strip(_MARKUP).strip(_PUNCT).strip()
+        t = s.strip().strip(_MARKUP).lstrip(_PUNCT).rstrip(_PUNCT_TAIL).strip()
         words = t.split()
-        if len(words) > 1 and _REF_TOKEN.match(words[-1]):
-            t = " ".join(words[:-1])
+        if len(words) > 1 and _HASH_REF.match(words[-1]):
+            t = " ".join(words[:-1])            # 'INVOICE #9920'
+        elif len(words) > 2 and words[-2] == "#":
+            t = " ".join(words[:-2])            # 'Quotation  # WSG100024'
+        elif len(words) > 1 and _REF_TOKEN.match(words[-1]):
+            t = " ".join(words[:-1])            # 'Schedule 1', 'Annex A'
         if t == s:
             return fold(s)
         s = t
+
+
+def _is_reference_value(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> bool:
+    """Is this segment somebody's VALUE rather than a name of its own?
+
+    One whitespace-separated token carrying a digit and naming no type:
+    'PO-2024-0145', '4412', 'PO-1'. Rule B's vertical form uses it twice: the
+    segment ABOVE one of these is its key, and the value itself is not a title.
+
+    'Naming no type' is tested on the token WITH its digits intact, deliberately
+    not through _normalise(): that strips trailing numbers repeatedly, so
+    'PO-2024-0145' reduces through 'po 2024' to the bare alias 'po' and the
+    reference would claim to name an order. A real alias carries no digits, so
+    folding the token once is the whole test.
+    """
+    body = raw.strip()
+    if not body or len(body.split()) > _VALUE_MAX_TOKENS:
+        return False
+    return bool(_HAS_DIGIT.search(body)) and fold(body) not in owners
 
 
 def _title_owners(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> Tuple[str, ...]:
@@ -199,37 +261,101 @@ def _title_owners(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> Tuple[str,
     return tuple(named)
 
 
-def _segments(text: str) -> List[Tuple[int, int, bool]]:
-    """``(start, end, may_be_a_title)`` for every line and every table cell.
+def _segments(text: str) -> List[Tuple[int, int, bool, int, int]]:
+    """``(start, end, may_be_a_title, line_index, column)`` for every line and
+    every table cell, in document order. ``column`` is -1 for a plain line, else
+    the cell's index among the pipe-separated pieces of its row.
 
     Cells are segments because the spreadsheet parser renders a whole sheet row
     as one '| a | b | c |' line, so a line-only rule cannot see a spreadsheet's
     title at all. In a row with more than one non-empty cell only the LAST
     non-empty cell may be a title: anything with a further non-empty cell to
-    its right is a key whose value that cell is (rule B).
+    its right is a key whose value that cell is (rule B, horizontal form).
     """
-    out: List[Tuple[int, int, bool]] = []
-    pos, n = 0, len(text)
+    out: List[Tuple[int, int, bool, int, int]] = []
+    pos, n, ln = 0, len(text), 0
     while True:
         nl = text.find("\n", pos)
         end = n if nl < 0 else nl
         line = text[pos:end]
         if "|" in line:
-            cells: List[Tuple[int, int]] = []
+            cells: List[Tuple[int, int, int]] = []
             cs = pos
-            for piece in line.split("|"):
+            for col, piece in enumerate(line.split("|")):
                 ce = cs + len(piece)
                 if piece.strip():
-                    cells.append((cs, ce))
+                    cells.append((cs, ce, col))
                 cs = ce + 1
             last = len(cells) - 1
-            for i, (a, b) in enumerate(cells):
-                out.append((a, b, i == last))
+            for i, (a, b, col) in enumerate(cells):
+                out.append((a, b, i == last, ln, col))
         else:
-            out.append((pos, end, True))
+            out.append((pos, end, True, ln, -1))
         if nl < 0:
             return out
         pos = nl + 1
+        ln += 1
+
+
+def _value_position(
+    segs: List[Tuple[int, int, bool, int, int]], i: int, text: str
+) -> Optional[Tuple[int, int]]:
+    """Where this segment's value would sit, if it were a key.
+
+    Rule B's premise is that a key's value sits in the next position the layout
+    provides. For a plain LINE that is the next non-empty segment in document
+    order. For a table CELL it is the same COLUMN of the next row, because a
+    column header's value sits below it rather than beside it — which is what
+    stops the last column header of '| Line | Description | Order |' becoming
+    the page's title.
+    """
+    a, b, _, ln, col = segs[i]
+    if col < 0:
+        for j in range(i + 1, len(segs)):
+            if text[segs[j][0]:segs[j][1]].strip():
+                return segs[j][0], segs[j][1]
+        return None
+    for j in range(i + 1, len(segs)):
+        if segs[j][3] != ln + 1:
+            if segs[j][3] > ln + 1:
+                return None
+            continue
+        if segs[j][4] == col:
+            return segs[j][0], segs[j][1]
+    return None
+
+
+def _title_parts(
+    text: str, span: Tuple[int, int], code: str,
+    owners: Mapping[str, Tuple[str, ...]],
+) -> List[Tuple[int, int]]:
+    """Tight spans within the title segment that name ``code``.
+
+    The '/'-delimited part that names this concept, where one can be identified,
+    otherwise the whole segment. Offsets are into the ORIGINAL text and the
+    content is trimmed of surrounding whitespace, so the span stays verbatim and
+    byte-exact.
+    """
+    lo, hi = span
+
+    def tight(a: int, b: int) -> Tuple[int, int]:
+        piece = text[a:b]
+        return (a + len(piece) - len(piece.lstrip()),
+                b - (len(piece) - len(piece.rstrip())))
+
+    found: List[Tuple[int, int]] = []
+    start = lo
+    for raw in text[lo:hi].split(_TITLE_SPLIT):
+        stop = start + len(raw)
+        if code in _title_owners(raw, owners):
+            a, b = tight(start, stop)
+            if b > a:
+                found.append((a, b))
+        start = stop + 1
+    if found:
+        return found
+    a, b = tight(lo, hi)
+    return [(a, b)] if b > a else []
 
 
 def resolve_document_type(
@@ -313,13 +439,29 @@ def resolve_document_type(
     # type phrase, and only the concepts it names reach tier 1.
     title_concepts: Tuple[str, ...] = ()
     title_span: Tuple[int, int] = (-1, -1)
-    for a, b, may_be_a_title in _segments(text):
+    segs = _segments(text)
+    for i, (a, b, may_be_a_title, _ln, _col) in enumerate(segs):
         if not may_be_a_title:
             continue
         named = _title_owners(text[a:b], owners)
-        if named:
-            title_concepts, title_span = named, (a, b)
-            break
+        if not named:
+            continue
+        # Rule B, vertical form, twice over.
+        # (i) A reference is not a name. 'PO-2024-0145' would otherwise BE a
+        #     title, because _normalise strips its numbers down to the alias
+        #     'po' — so without this the defect merely moves one line down from
+        #     the key to its own value.
+        if _is_reference_value(text[a:b], owners):
+            continue
+        # (ii) If this segment's value position holds a bare reference token then
+        #     this segment is that value's KEY, not the page's title. 'Purchase
+        #     Order' above 'PO-2024-0145' is a reference block, and 'Order' as
+        #     the last column header above 'PO-1' is a column name.
+        value = _value_position(segs, i, text)
+        if value is not None and _is_reference_value(text[value[0]:value[1]], owners):
+            continue
+        title_concepts, title_span = named, (a, b)
+        break
 
     # A concept's region is the evidence that COUNTED for it. For a tier-1
     # concept that is the title segment alone; its other mentions decided
@@ -331,6 +473,25 @@ def resolve_document_type(
                 region.setdefault(h[0], []).append(h)
         else:
             region.setdefault(h[0], []).append(h)
+
+    # Rule A compares a FOLDED segment against a folded alias, and fold()
+    # collapses internal whitespace while the match copy keeps the page's own
+    # length. So 'FRAMEWORK  AGREEMENT' names a concept that has NO alias hit
+    # inside its own span, and without this a 'matched' result — or a candidate
+    # a person is asked to choose between — would carry no reason at all. The
+    # title segment itself is the reason: verbatim original text at a real
+    # offset. Attributed per '/'-part where the title names more than one type,
+    # so both sides of a tie get their own words.
+    if title_concepts:
+        for code in title_concepts:
+            if region.get(code):
+                continue
+            for lo, hi in _title_parts(text, title_span, code, owners):
+                region.setdefault(code, []).append((
+                    code,
+                    "title_alias" if lo < title_chars else "body_alias",
+                    lo, hi - lo, _normalise(text[lo:hi]) or code,
+                ))
 
     alias_sub: Dict[str, float] = {}
     for code, rhits in region.items():
@@ -424,7 +585,13 @@ def resolve_document_type(
             best = next((ev for ev in ordered if ev.concept_code == cand), None)
             if best is not None:
                 chosen.append(best)
-    chosen += [ev for ev in ordered if ev not in chosen][:_MAX_EVIDENCE - len(chosen)]
+    # max(0, ...): once the reservation alone exceeds the cap, a plain
+    # subtraction is NEGATIVE and the slice then ADDS rows instead of none — a
+    # 15-candidate page returned 15 rows plus whatever the negative slice let
+    # through. Rule D is what makes more than 12 candidates reachable, where the
+    # deleted phrase cap used to bound it at 2.
+    room = max(0, _MAX_EVIDENCE - len(chosen))
+    chosen += [ev for ev in ordered if ev not in chosen][:room]
     kept = sorted(chosen, key=key)
 
     return TypeResolution(
