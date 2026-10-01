@@ -554,7 +554,7 @@ def dispatch_document(
         # Nothing declared means nothing to contradict (a script or direct
         # caller; the live path always declares): the resolution is still
         # computed and returned, but "unknown type" is not queued for a human.
-        if declared_concept is not None:
+        if declared_concept:
             discrepancies.extend(type_resolution_discrepancies(type_resolution))
             # Only now do we KNOW what the document raises. If the builder had
             # raised above, an empty current set must not be read as "raises
@@ -857,6 +857,7 @@ def dispatch_document(
             persistence.resolve_stale_type_findings(
                 doc_type=doc_type, doc_pk_candidate=_type_key,
                 current_issue_types={d.issue_type for d in _type_items},
+                source_file=file_path,
                 other_doc_keys=persistence.type_finding_doc_keys(
                     columns.get(persistence._DOC_PK_FIELD[doc_type]),
                     process_monitor_id, file_path),

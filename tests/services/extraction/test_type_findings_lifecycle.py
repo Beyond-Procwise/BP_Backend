@@ -49,6 +49,24 @@ def test_unknown_document_type_is_unreachable_with_a_declared_concept():
     assert "unknown_document_type" not in persistence.TYPE_FINDING_ISSUE_TYPES
 
 
+def test_benchmark_flagging_query_excludes_every_type_finding_without_a_database():
+    """NON-LIVE guard (most runs have no PROCWISE_TEST_LIVE_DB): the SQL the
+    function sends must carry a NOT IN list naming every type finding. Source-level,
+    so the behavioural live test below is the stronger guard; both are kept."""
+    from src.services import benchmark_live
+
+    class Cur:
+        sql = ""
+        def execute(self, sql, params=None): Cur.sql = sql
+        def fetchall(self): return []
+    benchmark_live.load_flagged_documents(Cur())
+    flat = " ".join(
+        line.split("--")[0] for line in Cur.sql.splitlines()).lower()  # comments don't count
+    assert "and issue_type not in (" in flat
+    for t in persistence.TYPE_FINDING_ISSUE_TYPES:
+        assert f"'{t}'" in flat, t
+
+
 def test_session_warning_count_mentions_every_type_finding():
     """SOURCE-LEVEL only (the session query needs raw/process_monitor rows to
     run behaviourally); the benchmark filter has a behavioural live test below."""
@@ -82,7 +100,7 @@ def pks():
         # decision rows this test wrote for its own probe findings (by id, then the
         # findings); if a trigger ever makes bp_decision append-only they stay as residue.
         try:
-            cur.execute("DELETE FROM proc.bp_decision WHERE rationale = 'PROBE-TYPE test row' "
+            cur.execute("DELETE FROM proc.bp_decision WHERE subject_type = 'finding' "
                         "AND subject_id IN (SELECT discrepancy_id::text FROM "
                         "proc.bp_extraction_discrepancy WHERE doc_pk_candidate = ANY(%s))", (keys,))
         except Exception:
@@ -91,11 +109,11 @@ def pks():
             "DELETE FROM proc.bp_extraction_discrepancy WHERE doc_pk_candidate = ANY(%s)", (keys,))
 
 
-def _write(pk, declared, page, raw_id=1):
+def _write(pk, declared, page, raw_id=1, source_file=None):
     r = resolve_document_type(declared_concept=declared, full_text=page, vocabulary=V)
     items = type_resolution_discrepancies(r)
     persistence.write_discrepancies(
-        doc_type="invoice", raw_id=raw_id, source_file=f"{pk}.pdf",
+        doc_type="invoice", raw_id=raw_id, source_file=source_file or f"{pk}.pdf",
         doc_pk_candidate=pk, discrepancies=items)
     return {d.issue_type for d in items}
 
@@ -109,10 +127,10 @@ def _rows(pk):
         return cur.fetchall()
 
 
-def _clear(pk, current, other_doc_keys=()):
+def _clear(pk, current, other_doc_keys=(), source_file=None):
     return persistence.resolve_stale_type_findings(
         doc_type="invoice", doc_pk_candidate=pk, current_issue_types=current,
-        other_doc_keys=other_doc_keys)
+        other_doc_keys=other_doc_keys, source_file=source_file)
 
 
 @live
@@ -202,20 +220,71 @@ def test_benchmark_flagging_behaviour_ignores_type_findings_but_counts_real_ones
 
 @live
 def test_a_row_the_decision_engine_escalated_is_never_auto_closed(pks):
-    """Mirrors DecisionEngine.execute for 'escalate': status stays open,
-    resolution_action NULL, and a proc.bp_decision row (subject_type='finding')
-    is the only trace."""
+    """Drives the REAL DecisionEngine.execute('escalate'), so the
+    subject_type/subject_id the closer's anti-join depends on is written by the
+    code that owns the convention. A rename there breaks this test instead of
+    silently disabling the guard (a mirrored INSERT here would not)."""
+    from contextlib import contextmanager
+    from src.engines.decision_engine import DecisionEngine
     from src.services.db import get_conn
+
+    class _Nick:
+        @contextmanager
+        def get_db_connection(self):
+            with get_conn() as c:
+                c.autocommit = False
+                yield c
+
     pk = pks[0]
     _write(pk, "doctype.quote", INVOICE_PAGE)
     did = _first_id(pk)
-    with get_conn() as c:
-        c.cursor().execute(
-            "INSERT INTO proc.bp_decision (subject_type, subject_id, decision, resolution, "
-            "rationale, facts, evidence, status, actioned_by, actioned_at, agent, created_by) "
-            "VALUES ('finding', %s, 'escalate', 'probe', 'PROBE-TYPE test row', '{}', '[]', "
-            "'actioned', 'probe', now(), 'decision_engine', 'probe')", (str(did),))
+    out = DecisionEngine(_Nick()).execute(str(did), "escalate", user_id="probe-user")
+    assert out["applied"] and out["new_status"] == "open"
+    assert out["decision_id"], "the engine must have written its decision row"
+    assert _rows(pk)[0][1:4] == ("open", None, None), "an escalation leaves no row-level trace"
     assert _clear(pk, set()) == 0
+    assert _rows(pk)[0][1] == "open"
+
+
+@live
+def test_a_row_the_gateway_flagged_is_never_auto_closed(pks):
+    """The Node gateway's resolveDiscrepancy maps flag (and unknown verbs) to
+    status open / resolution_action NULL, writes no bp_decision row, and sets
+    resolved_by."""
+    from src.services.db import get_conn
+    pk = pks[0]
+    _write(pk, "doctype.quote", INVOICE_PAGE)
+    with get_conn() as c:
+        c.cursor().execute("UPDATE proc.bp_extraction_discrepancy SET resolved_by = 'gateway-user' "
+                           "WHERE doc_pk_candidate=%s", (pk,))
+    assert _clear(pk, set()) == 0
+    assert _rows(pk)[0][1] == "open"
+
+
+@live
+def test_a_pk_that_was_lost_on_the_later_read_still_closes_the_earlier_row(pks):
+    """Run 1 extracted a pk and filed under it; run 2 extracted none, so it has
+    only the monitor key and no way to name the pk. The file is the shared fact."""
+    pk, later_key = pks[0], pks[1]
+    _write(pk, "doctype.quote", INVOICE_PAGE, source_file="same_doc.pdf")
+    assert _clear(later_key, set(), source_file="same_doc.pdf") == 1
+    assert _rows(pk)[0][1] == "resolved"
+
+
+@live
+def test_a_pk_lost_read_that_still_disagrees_replaces_the_old_row(pks):
+    pk, later_key = pks[0], pks[1]
+    _write(pk, "doctype.quote", INVOICE_PAGE, source_file="same_doc.pdf")
+    now = _write(later_key, "doctype.quote", INVOICE_PAGE, raw_id=2, source_file="same_doc.pdf")
+    assert _clear(later_key, now, source_file="same_doc.pdf") == 1
+    assert _rows(pk)[0][1] == "resolved" and _rows(later_key)[0][1] == "open"
+
+
+@live
+def test_a_different_document_is_not_closed_by_source_file(pks):
+    pk, other = pks[0], pks[1]
+    _write(pk, "doctype.quote", INVOICE_PAGE, source_file="doc_one.pdf")
+    assert _clear(other, set(), source_file="doc_two.pdf") == 0
     assert _rows(pk)[0][1] == "open"
 
 

@@ -501,7 +501,7 @@ def type_finding_doc_keys(
 
 def resolve_stale_type_findings(
     *, doc_type: str, doc_pk_candidate: str | None, current_issue_types,
-    other_doc_keys=(),
+    other_doc_keys=(), source_file: str | None = None,
 ) -> int:
     """Close this document's OPEN type findings that the latest read no longer
     raises. Follows the table's existing convention for a finding that went away
@@ -511,8 +511,15 @@ def resolve_stale_type_findings(
 
     Under ``doc_pk_candidate`` (the key the latest run filed under) a row closes
     when its issue type is not in ``current_issue_types``. Under any of
-    ``other_doc_keys`` (the same document's other key forms) every open type
-    finding closes: the current run's own row supersedes them.
+    ``other_doc_keys`` (the same document's other key forms), and under any other
+    key carrying the same ``source_file``, every open type finding closes: the
+    current run's own row supersedes them. source_file is what makes this work in
+    BOTH directions (a run that gained a pk, and a later one that lost it): the
+    stranded row's key is unknowable from the new run, its file is not.
+
+    Rows with resolved_by set are skipped too: the gateway's resolveDiscrepancy
+    maps flag (and any unrecognised verb) to status 'open' / resolution_action
+    NULL, writes no bp_decision row, and does stamp resolved_by.
 
     A row somebody has acted on is never closed. The decision engine's
     escalations (flag/hold/escalate/assign/investigate/query) deliberately keep
@@ -534,17 +541,20 @@ def resolve_stale_type_findings(
                 AND e.issue_type = ANY(%s)
                 AND coalesce(e.status, 'open') = 'open'
                 AND e.query_sent_at IS NULL
+                AND e.resolved_by IS NULL
                 AND NOT EXISTS (SELECT 1 FROM proc.bp_decision d
                                  WHERE d.subject_type = 'finding'
                                    AND d.subject_id = e.discrepancy_id::text)
                 AND ( (coalesce(e.doc_pk_candidate, '') = coalesce(%s, '')
                        AND NOT (e.issue_type = ANY(%s)))
-                      OR coalesce(e.doc_pk_candidate, '') = ANY(%s) )"""
+                      OR coalesce(e.doc_pk_candidate, '') = ANY(%s)
+                      OR (e.source_file = %s
+                          AND coalesce(e.doc_pk_candidate, '') <> coalesce(%s, '')) )"""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(sql, (TYPE_FINDING_RESOLVER, doc_type, TYPE_FINDING_FIELD,
                           list(TYPE_FINDING_ISSUE_TYPES), doc_pk_candidate, keep,
-                          others))
+                          others, source_file, doc_pk_candidate))
         n = cur.rowcount or 0
         conn.commit()
         return n
