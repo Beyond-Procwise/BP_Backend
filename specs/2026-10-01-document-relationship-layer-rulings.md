@@ -56,9 +56,9 @@ settled after argument on both sides.
 
 ### Task 3
 
-- minor (deferred): the execution_mode dangling-reference branch (validate.py:171-177) has no planted test, though every other reference kind does — one test would close it.
-- minor (deferred): validate.py:121-125 docstring says "active document type" but the check relies on build_vocabulary having dropped non-active rows; say so.
-- minor (deferred): validate.py:194-195 `_PIPELINES` is a hard-coded copy of the four pipeline names that can drift from the extraction code (plan-mandated).
+- minor (deferred): the execution_mode dangling-reference branch (`validate.py`'s `check_every_reference_resolves`, its `execution_mode` branch — line numbers moved when the half-promotion check landed) has no planted test, though every other reference kind does — one test would close it.
+- minor (deferred): `validate.py`'s `check_aliases_are_unambiguous` docstring (line numbers moved when the half-promotion check landed) says "active document type" but the check relies on build_vocabulary having dropped non-active rows; say so.
+- minor (deferred): `validate.py`'s `_PIPELINES` constant is a hard-coded copy of the four pipeline names that can drift from the extraction code (plan-mandated).
 - minor (deferred): the workflow's `cache: pip` keys on requirements.txt but the install step does not use it — vestigial, consistent with the sibling workflow.
 
 ### Task 4
