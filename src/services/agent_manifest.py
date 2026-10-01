@@ -55,6 +55,34 @@ _PROC_RELATIONSHIPS: List[Dict[str, str]] = [
     },
 ]
 
+#: Per-task knowledge slices (build spec §3.7). An agent receives the rows its
+#: step needs to decide, not the data dictionary.
+#:
+#: Only DOC_CLASSIFY is declared. The spec also lists CONFLICT_RESOLVE and
+#: REL_VALIDATE, which have no subject until rulings and the R-REL rule group
+#: exist, and REL_SCORE, whose profile reaches the scorer directly as a Python
+#: constant rather than through a manifest. Declaring them now would be three
+#: rows that filter nothing.
+#:
+#: ``fields`` may only name columns the declared tables' profiles carry (a test
+#: holds this): a field no profile has narrows nothing and reads as if it did.
+#: ``max_rows`` bounds the columns a slice may carry across all its tables.
+MANIFEST_TASKS: Dict[str, Dict[str, Any]] = {
+    "DOC_CLASSIFY": {
+        "tables": (
+            "proc.bp_contracts",
+            "proc.bp_supplier",
+        ),
+        # Identity columns only: a classifier does not need every money, date
+        # and risk column on the table.
+        "fields": (
+            "contract_id", "contract_title",
+            "supplier_id", "supplier_name",
+        ),
+        "max_rows": 200,
+    },
+}
+
 
 @dataclass
 class AgentDefinition:
@@ -235,15 +263,62 @@ class AgentManifestService:
         }
         return mapping.get(slug)
 
-    def build_manifest(self, agent_key: str) -> Dict[str, Any]:
+    def build_manifest(
+        self, agent_key: str, *, task_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         slug = self._normalise(agent_key)
         definition = self._definitions.get(slug)
         policy_bundle = self._policy_bundle_for_agent(slug)
         workflow = self._derive_workflow_hint(slug)
+
+        if task_id is None:
+            # Unsliced, for the callers that have not declared a task yet.
+            tables = self._table_profiles
+            relationships = list(_PROC_RELATIONSHIPS)
+        else:
+            # KeyError on an unknown task is deliberate: falling back to the
+            # unfiltered bundle on a typo is the failure this slicing removes.
+            spec = MANIFEST_TASKS[task_id]
+            wanted_fields = set(spec["fields"])
+            budget = spec["max_rows"]
+            tables = {}
+            for name in spec["tables"]:
+                profile = self._table_profiles.get(name)
+                if profile is None:
+                    continue
+                columns = [c for c in profile["columns"] if c in wanted_fields][:budget]
+                budget -= len(columns)
+                kept = set(columns)
+                tables[name] = {
+                    "columns": columns,
+                    "required": [c for c in profile["required"] if c in kept],
+                    "synonyms": {
+                        k: v for k, v in (profile.get("synonyms") or {}).items()
+                        if k in kept
+                    },
+                    **({"available": profile["available"]} if "available" in profile else {}),
+                }
+            relationships = [
+                r for r in _PROC_RELATIONSHIPS
+                if any(r["from"].startswith(t) or r["to"].startswith(t)
+                       for t in spec["tables"])
+            ]
+
+        row_count = sum(len(p["columns"]) for p in tables.values())
+        logger.info(
+            "manifest for %s task=%s: %d tables, %d rows",
+            slug, task_id, len(tables), row_count,
+        )
+
         knowledge = {
-            "tables": self._table_profiles,
-            "relationships": list(_PROC_RELATIONSHIPS),
+            "tables": tables,
+            "relationships": relationships,
             "workflow": workflow,
+            "loaded": {
+                "task_id": task_id,
+                "tables": len(tables),
+                "rows": row_count,
+            },
         }
         task_profile = {
             "agent_type": definition.agent_type if definition else agent_key,
@@ -283,4 +358,4 @@ class AgentManifestService:
         return slug
 
 
-__all__ = ["AgentManifestService"]
+__all__ = ["AgentManifestService", "MANIFEST_TASKS"]

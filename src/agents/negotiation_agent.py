@@ -8043,7 +8043,14 @@ class NegotiationAgent(BaseAgent):
             "supplier_performance": performance_text,
             "market_context": market_text,
             "task_profile": self._serialise_for_prompt(context.task_profile),
-            "knowledge_base": self._serialise_for_prompt(context.knowledge_base),
+            # The manifest knowledge bundle is a data dictionary, not negotiation
+            # context: every table's columns and synonyms, for every agent, on
+            # every step. It told this prompt nothing it uses and cost a large
+            # slice of the window. Only what was loaded is reported, so the size
+            # stays visible. Build spec principle 5.
+            "knowledge_loaded": self._serialise_for_prompt(
+                (context.knowledge_base or {}).get("loaded")
+            ),
             "workflow_id": str(context.workflow_id),
             "agent_id": str(context.agent_id),
             "agentic_plan": "\n".join(self.AGENTIC_PLAN_STEPS),
