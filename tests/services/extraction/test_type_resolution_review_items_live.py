@@ -38,9 +38,19 @@ def pk():
         cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE doc_pk_candidate=%s", (key,))
 
 
-def _write(pk, resolution, raw_id):
+def _write(pk, resolution, raw_id, source_file=None):
+    """One write of a document's type findings.
+
+    ``source_file`` defaults to a value fixed per ``pk`` because it is part of the
+    open-row key (`2026-10-01_discrepancy_open_key_per_document.sql`): a finding
+    belongs to a DOCUMENT, and `doc_pk_candidate` is a number read out of the page
+    rather than an identifier of it. A re-read of the same document keeps the same
+    source_file and therefore refreshes; two different files are two documents and
+    must not collide. Pass ``source_file`` explicitly to exercise that second case.
+    """
     return persistence.write_discrepancies(
-        doc_type="invoice", raw_id=raw_id, source_file=f"probe_{raw_id}.pdf",
+        doc_type="invoice", raw_id=raw_id,
+        source_file=source_file or f"{pk}.pdf",
         doc_pk_candidate=pk, discrepancies=type_resolution_discrepancies(resolution))
 
 
@@ -53,6 +63,16 @@ def _rows(pk):
             "evidence_text, source_file, status FROM proc.bp_extraction_discrepancy "
             "WHERE doc_pk_candidate=%s ORDER BY issue_type", (pk,))
         return cur.fetchall()
+
+
+def _raw_ids(pk):
+    from src.services.db import get_conn
+    with get_conn() as c:
+        cur = c.cursor()
+        cur.execute(
+            "SELECT raw_id FROM proc.bp_extraction_discrepancy "
+            "WHERE doc_pk_candidate=%s ORDER BY raw_id", (pk,))
+        return [r[0] for r in cur.fetchall()]
 
 
 def test_a_disagreement_is_recorded_faithfully_as_one_non_blocking_row(pk):
@@ -74,7 +94,26 @@ def test_re_extraction_refreshes_the_open_finding_instead_of_stacking(pk):
     _write(pk, r, 3)
     rows = _rows(pk)
     assert len(rows) == 1, rows
-    assert rows[0][6] == "probe_3.pdf", "the surviving row must carry the latest run"
+    assert rows[0][6] == f"{pk}.pdf", rows
+    # The surviving row must carry the LATEST run, not the first: raw_id is the
+    # per-run identity, and it changes on every re-read.
+    assert _raw_ids(pk) == [3], "the surviving row must carry the latest run"
+
+
+def test_two_different_files_sharing_a_read_value_are_two_findings(pk):
+    """The collision the source_file half of the key exists to stop.
+
+    Two different documents can carry the same invoice number — that is the case
+    duplicate_invoice_detector exists for — and before source_file joined the key
+    the later one silently overwrote the earlier.
+    """
+    r = resolve_document_type(
+        declared_concept="doctype.quote", full_text=INVOICE_PAGE, vocabulary=V)
+    _write(pk, r, 1, source_file=f"{pk}_first.pdf")
+    _write(pk, r, 2, source_file=f"{pk}_second.pdf")
+    rows = _rows(pk)
+    assert len(rows) == 2, rows
+    assert {row[6] for row in rows} == {f"{pk}_first.pdf", f"{pk}_second.pdf"}
 
 
 def test_two_different_type_findings_are_two_rows_not_one(pk):

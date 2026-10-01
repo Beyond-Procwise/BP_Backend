@@ -354,3 +354,28 @@ Two test fixtures were rebuilt rather than relaxed, because both had been writte
 this alias: the last-non-empty-cell row test keeps its call-off case on
 `Call-Off Contract`, and the review-item grouping test now groups on a framework
 agreement. Each says so, and what each tests is unchanged.
+
+## The open-row key changed under this layer (same day, another session)
+
+`099b123` added `source_file` to the open-row key:
+`(doc_type, doc_pk_candidate, coalesce(source_file,''), issue_type, field_name)`,
+migration `deploy/sql/2026-10-01_discrepancy_open_key_per_document.sql`. Every
+reference above to the four-column key is therefore historical.
+
+The reason is sound and it supersedes part of what this layer built: `doc_pk_candidate`
+is a number read OUT of a document, not an identifier OF it, so two different documents
+carrying one invoice number collided and the later overwrote the earlier — which is the
+very case `duplicate_invoice_detector` exists to catch. A re-read keeps the same
+`source_file`, so refresh-rather-than-stack still holds.
+
+What it means for Task 7's keying: the `process_monitor:<id>` / `file:<path>` fallback
+this layer added for pk-less documents is now belt-and-braces rather than the only thing
+separating two such documents. It is left in place — it still carries the document's
+identity where no pk was read at all.
+
+One of this layer's tests had to be corrected, not relaxed:
+`test_re_extraction_refreshes_the_open_finding_instead_of_stacking` varied `source_file`
+across its three writes, which under the new key means three *different documents*. A
+real re-read keeps it constant, so the fixture now does, and it asserts on `raw_id` to
+prove the surviving row carries the latest run. A second test was added for the case the
+new key half exists for — two files sharing one read value stay two findings.
