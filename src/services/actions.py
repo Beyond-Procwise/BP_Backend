@@ -53,6 +53,12 @@ ACTIONS: Dict[str, str] = {
     "contract.write": "write",
     "deal.write": "write",
     "finding.resolve": "write",
+    # Rejecting an opportunity is permanent in the sense that matters: the reason is
+    # written against it and the stage moves, and the opportunity card is where a person
+    # does it. "Pursue", the card's other verb, gets NO name of its own -- it opens a
+    # draft to the supplier, which is email.draft below, and a second name for the same
+    # act is exactly what this module's header warns against.
+    "opportunity.reject": "write",
     "document.upload": "write",
     "document.promote": "write",
     "email.draft": "write",

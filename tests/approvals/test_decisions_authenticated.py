@@ -246,10 +246,18 @@ def test_the_request_models_no_longer_accept_an_actor():
 
 @pytest.fixture
 def authenticated_app(monkeypatch):
+    # `finding.resolve` gates the action route now. These tests are about ATTRIBUTION --
+    # that the actor is the token subject and never the request body -- so the gate is
+    # faked to a recorder in the house pattern, and the refusal itself is proved in
+    # tests/api/test_card_action_gates.py. The recorder is asserted below so a gate that
+    # stopped being asked would still be caught here.
+    asked = []
+    monkeypatch.setattr(decisions_router, "gate", lambda action, *a, **k: asked.append(action))
     app = FastAPI()
     app.include_router(decisions_router.router)
     app.dependency_overrides[decisions_router.require_user] = lambda: _Principal()
     app.state.agent_nick = _agent_nick([])
+    app.state.gates_asked = asked
     return app
 
 
@@ -299,6 +307,8 @@ def test_acting_on_a_finding_records_the_token_subject_as_actor(authenticated_ap
     response = client.post("/decisions/finding/F-1/action", json={"action": "dismiss"})
     assert response.status_code == 200
     assert captured["user_id"] == _Principal.subject
+    assert authenticated_app.state.gates_asked == ["finding.resolve"], (
+        "the Action Centre's own route must ask the gate, not only the reports route")
 
 
 def test_acting_on_an_email_reply_records_the_token_subject_as_actor(

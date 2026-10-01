@@ -17,6 +17,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 
 from orchestration.orchestrator import Orchestrator
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 from services.model_selector import RAGPipeline
 from services.opportunity_service import record_opportunity_feedback
 from services.email_dispatch_service import EmailDispatchService
@@ -1084,6 +1085,14 @@ def reject_opportunity(
     if not opportunity_id or not opportunity_id.strip():
         raise HTTPException(status_code=400, detail="opportunity_id must be provided")
 
+    # Before the write, not after. The opportunity card's Reject button lands here, and
+    # until now `require_user` asked only WHO was calling -- a Viewer could reject any
+    # opportunity in the corpus. `write` is reversible under RoleDefinitionPolicy, so with
+    # no policy row the role cap decides: Viewer refused, Buyer and above through, every
+    # attempt audited. A policy row can narrow it later without touching this line.
+    gate("opportunity.reject", principal, agent="workflows_api",
+         context={"opportunity_id": opportunity_id.strip()})
+
     try:
         # Who rejected it is the token. `req.user_id` is kept -- clients send
         # it and it sometimes carries something a person meant -- but as a
@@ -1404,6 +1413,15 @@ def prepare_email_draft(
         raise HTTPException(
             status_code=400, detail="At least one recipient email is required"
         )
+
+    # `email.draft` has been in the vocabulary since it was written and had never been
+    # called from anywhere -- a governed name nothing consulted. This is where it belongs:
+    # the opportunity card's "Pursue" and the report panel both reach this handler, and a
+    # persisted draft addressed to a supplier is a write. SENDING it is a separate,
+    # stricter gate (email.send, in email_dispatch_guard); this one does not stand in for it.
+    gate("email.draft", principal, agent="workflows_api",
+         context={"deal_id": payload.deal_id, "recipients": len(recipients),
+                  "reply_to_unique_id": payload.reply_to_unique_id})
 
     source_draft: Optional[Dict[str, Any]] = None
     if payload.reply_to_unique_id:

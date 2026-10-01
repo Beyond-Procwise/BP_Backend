@@ -95,6 +95,21 @@ def _fast_gpu_stub(monkeypatch):
     monkeypatch.setattr(base_agent_mod, "configure_gpu", lambda *_, **__: "cpu")
 
 
+@pytest.fixture(autouse=True)
+def asked(monkeypatch):
+    """`email.draft` is gated now; these tests are about what prepare PERSISTS.
+
+    The gate is faked to a recorder, in the house pattern (see test_catalog_router):
+    a router test proves the router ASKS, and tests/api/test_card_action_gates.py
+    proves the answer is no for a caller who may not write. Without this the real
+    gate's audit write hits the fake connection and every test here fails on the
+    audit rather than on what it is testing.
+    """
+    asked = []
+    monkeypatch.setattr(mod, "gate", lambda action, *a, **k: asked.append(action))
+    return asked
+
+
 def _insert_call(conn):
     inserts = [
         c for c in conn.calls if c[0].startswith("INSERT INTO proc.draft_rfq_emails")
@@ -206,6 +221,23 @@ def test_prepare_email_draft_never_touches_the_send_path(monkeypatch):
     assert response.unique_id
     assert send_calls == []
     assert conn.committed is True
+
+
+def test_prepare_asks_the_draft_gate_before_persisting(asked):
+    """The recorder above must be recording something: prove the handler asks.
+
+    Named `email.draft` and not a new name of its own. "Pursue" on an opportunity
+    card reaches this handler, and a draft addressed to a supplier is the act the
+    existing name already describes.
+    """
+    conn = _FakeConn()
+    mod.prepare_email_draft(
+        mod.EmailPrepareRequest(deal_id="DEAL-1", to=["s@example.com"],
+                               subject="s", body="b"),
+        agent_nick=_make_agent_nick(conn),
+    )
+
+    assert asked == ["email.draft"]
 
 
 def test_prepare_email_draft_rejects_empty_recipients():

@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from api.auth import require_user
+from api.endpoint_gate import require as gate
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,14 @@ def act_on_finding(
     finding, so what the document actually said stays intact.
     """
     actor = _actor(principal)
+
+    # `finding.resolve` was gated on the REPORTS router only, which left the Action
+    # Centre -- the surface the name was written for, and the one every finding card
+    # posts to -- governed by nothing but authentication. Same name, because it is the
+    # same act: closing a finding. The engine still advises rather than vetoes; this
+    # decides only whether the caller may act at all.
+    gate("finding.resolve", principal, agent="decisions_api",
+         context={"finding_id": finding_id, "action": body.action})
 
     from engines.decision_engine import DecisionEngine
 
