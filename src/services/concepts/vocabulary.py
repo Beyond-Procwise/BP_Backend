@@ -189,6 +189,10 @@ _loaded_at: Optional[float] = None
 _probed_at: float = 0.0
 _version: Optional[Tuple[Any, ...]] = None
 _invalidated: bool = False
+#: When the last load failed or came back unusable. While it is recent, calls
+#: return the current vocabulary without querying: an outage must not become
+#: one query per document.
+_failed_at: Optional[float] = None
 
 
 def resolve_alias(text: str, vocabulary: Vocabulary) -> Tuple[str, ...]:
@@ -240,9 +244,11 @@ def ensure_vocabulary(
 ) -> Vocabulary:
     """The current vocabulary, reloading when it is stale or has changed.
 
-    Never raises and never returns an empty vocabulary.
+    Never raises and never returns an empty vocabulary. A failed or unusable
+    load is not retried for ``probe_seconds``, so an outage costs one query per
+    window, not one per document.
     """
-    global _active, _loaded_at, _probed_at, _version, _invalidated
+    global _active, _loaded_at, _probed_at, _version, _invalidated, _failed_at
 
     now = time.monotonic()
     with _lock:
@@ -252,11 +258,20 @@ def ensure_vocabulary(
             and (now - _loaded_at) < ttl_seconds
         )
         due_a_probe = _loaded_at is not None and (now - _probed_at) >= probe_seconds
+        backing_off = (
+            _failed_at is not None
+            and not _invalidated
+            and (now - _failed_at) < probe_seconds
+        )
         current = _active
 
     if fresh_enough and not due_a_probe:
         return current
+    if backing_off and not fresh_enough:
+        return current
 
+    version: Optional[Tuple[Any, ...]] = None
+    version_known = False
     if fresh_enough and due_a_probe:
         # Still inside the TTL: ask the cheap question, and only then the
         # expensive one.
@@ -267,43 +282,51 @@ def ensure_vocabulary(
             with _lock:
                 _probed_at = now
             return current
+        version_known = True
         with _lock:
             _probed_at = now
             unchanged = version == _version
         if unchanged:
             return current
 
+    def _keep_current() -> Vocabulary:
+        global _probed_at, _invalidated, _failed_at
+        with _lock:
+            _probed_at = now
+            _failed_at = now
+            _invalidated = False
+        return current
+
+    # The version is read BEFORE the rows. A version older than the rows is
+    # safe (one redundant reload); a version newer than the rows would let an
+    # edit that landed between the two reads be reported as "unchanged".
+    if not version_known:
+        try:
+            version = _fetch_version()
+        except Exception:
+            version = None
+
     try:
         concept_rows, doc_type_rows = _fetch_rows()
+        candidate = build_vocabulary(
+            concept_rows, doc_type_rows,
+            source=f"bp_concept@{len(concept_rows)}+bp_document_type@{len(doc_type_rows)}",
+        )
     except Exception:
         logger.exception(
-            "could not read proc.bp_concept / proc.bp_document_type; continuing "
-            "with the %s vocabulary", current.source,
+            "could not read or build proc.bp_concept / proc.bp_document_type; "
+            "continuing with the %s vocabulary", current.source,
         )
-        with _lock:
-            _probed_at = now
-            _invalidated = False
-        return current
+        return _keep_current()
 
-    candidate = build_vocabulary(
-        concept_rows, doc_type_rows,
-        source=f"bp_concept@{len(concept_rows)}+bp_document_type@{len(doc_type_rows)}",
-    )
-    if not candidate.document_types:
+    if not candidate.document_types or not candidate.concepts:
         logger.error(
-            "proc.bp_document_type yielded no active types from %d row(s); "
-            "keeping the %s vocabulary rather than recognising nothing",
-            len(doc_type_rows), current.source,
+            "the tables yielded %d active type(s) and %d active concept(s) from "
+            "%d + %d row(s); keeping the %s vocabulary rather than recognising nothing",
+            len(candidate.document_types), len(candidate.concepts),
+            len(doc_type_rows), len(concept_rows), current.source,
         )
-        with _lock:
-            _probed_at = now
-            _invalidated = False
-        return current
-
-    try:
-        version = _fetch_version()
-    except Exception:
-        version = None
+        return _keep_current()
 
     with _lock:
         _active = candidate
@@ -311,6 +334,7 @@ def ensure_vocabulary(
         _probed_at = now
         _version = version
         _invalidated = False
+        _failed_at = None
     logger.info(
         "loaded %d active concepts and %d active document types",
         len(candidate.concepts), len(candidate.document_types),

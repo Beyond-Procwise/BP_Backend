@@ -16,6 +16,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from src.services.concepts import vocabulary as V  # noqa: E402
 
 
+_CACHE_GLOBALS = ("_active", "_loaded_at", "_probed_at", "_version",
+                  "_invalidated", "_failed_at")
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_module_cache():
+    """ensure_vocabulary publishes several module globals. Without this, a test
+    that exercises the cache leaves its fake vocabulary live for every later
+    test in the process."""
+    saved = {name: getattr(V, name) for name in _CACHE_GLOBALS}
+    yield
+    for name, value in saved.items():
+        setattr(V, name, value)
+
+
 CONCEPT_ROWS = [
     {"concept_code": "role.master", "domain": "RELATIONSHIP_ROLE",
      "definition": "Governs a relationship.", "not_to_be_confused_with": [],
@@ -168,6 +183,91 @@ def test_one_row_added_while_another_is_removed_still_reloads(monkeypatch):
     """Count identical again; the new row's recorded_at is what differs."""
     assert _reload_count_after(
         monkeypatch, (3, "t1", 2, "t1"), (3, "t2", 2, "t2")) == 2
+
+
+def test_a_test_that_loaded_a_fake_vocabulary_leaves_no_trace(monkeypatch):
+    """Runs straight after the tests above, which publish fakes through
+    ensure_vocabulary. If the cache fixture stops restoring, this sees one."""
+    assert not str(V._active.source).startswith("bp_concept@3")
+    assert not V._active.source.startswith("bp_concept@2")
+
+
+def _count_calls(monkeypatch, rows_fn):
+    calls = {"rows": 0}
+
+    def counting():
+        calls["rows"] += 1
+        return rows_fn()
+
+    monkeypatch.setattr(V, "_fetch_rows", counting)
+    monkeypatch.setattr(V, "_fetch_version", lambda: (1, "t", 1, "t"))
+    return calls
+
+
+def _boom():
+    raise RuntimeError("connection refused")
+
+
+def test_a_failing_load_is_not_retried_inside_the_backoff_window(monkeypatch):
+    """An outage must not become one query per document."""
+    monkeypatch.setattr(V, "_active", V.SEED_VOCABULARY)
+    monkeypatch.setattr(V, "_loaded_at", None)
+    monkeypatch.setattr(V, "_failed_at", None)
+    calls = _count_calls(monkeypatch, _boom)
+    V.invalidate()
+    V.ensure_vocabulary()
+    V.ensure_vocabulary()
+    V.ensure_vocabulary()
+    assert calls["rows"] == 1
+
+
+def test_an_empty_load_is_not_retried_inside_the_backoff_window(monkeypatch):
+    monkeypatch.setattr(V, "_active", V.SEED_VOCABULARY)
+    monkeypatch.setattr(V, "_loaded_at", None)
+    monkeypatch.setattr(V, "_failed_at", None)
+    calls = _count_calls(monkeypatch, lambda: ([], []))
+    V.invalidate()
+    V.ensure_vocabulary()
+    V.ensure_vocabulary()
+    assert calls["rows"] == 1
+
+
+def test_the_version_is_read_before_the_rows(monkeypatch):
+    """An edit landing between the two reads must leave the stored version
+    OLDER than the rows (one redundant reload), never newer (stale forever)."""
+    order = []
+    monkeypatch.setattr(V, "_fetch_version", lambda: order.append("version") or (1, "t", 1, "t"))
+    monkeypatch.setattr(V, "_fetch_rows",
+                        lambda: order.append("rows") or (CONCEPT_ROWS, DOC_TYPE_ROWS))
+    V.invalidate()
+    V.ensure_vocabulary()
+    assert order == ["version", "rows"]
+
+
+def test_a_load_with_no_active_concepts_keeps_the_previous_vocabulary(monkeypatch):
+    """Document types alone are not a vocabulary: an empty concepts map would
+    blank every definition and role lookup."""
+    good = V.build_vocabulary(CONCEPT_ROWS, DOC_TYPE_ROWS, source="good")
+    monkeypatch.setattr(V, "_active", good)
+    monkeypatch.setattr(V, "_loaded_at", 0.0)
+    monkeypatch.setattr(V, "_failed_at", None)
+    proposed_only = [r for r in CONCEPT_ROWS if r["status"] != "active"]
+    _count_calls(monkeypatch, lambda: (proposed_only, DOC_TYPE_ROWS))
+    V.invalidate()
+    assert V.ensure_vocabulary().source == "good"
+
+
+def test_a_row_that_cannot_be_built_keeps_the_previous_vocabulary(monkeypatch):
+    """ensure_vocabulary never raises: a malformed row (an alias that is not a
+    string) must come back as the last good vocabulary, not an exception."""
+    good = V.build_vocabulary(CONCEPT_ROWS, DOC_TYPE_ROWS, source="good")
+    monkeypatch.setattr(V, "_active", good)
+    monkeypatch.setattr(V, "_loaded_at", 0.0)
+    monkeypatch.setattr(V, "_failed_at", None)
+    bad = [dict(DOC_TYPE_ROWS[0], aliases=[12345])]
+    _count_calls(monkeypatch, lambda: (CONCEPT_ROWS, bad))
+    V.invalidate()
+    assert V.ensure_vocabulary().source == "good"
 
 
 # ---------------------------------------------------------------------------
