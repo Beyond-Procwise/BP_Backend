@@ -62,11 +62,36 @@ def test_a_sliced_manifest_carries_fewer_tables_than_the_unsliced_one(service):
     )
 
 
-def test_a_slice_is_measurably_smaller_in_bytes(service):
-    """Principle 5 with numbers: under a quarter of the whole bundle."""
+def test_a_slice_is_much_smaller_than_the_whole_bundle_at_table_level(service):
+    """A TABLE-level size guard only. It catches a slice that carries many more
+    tables than it declares. It cannot see column narrowing: relationships and
+    workflow dominate the slice's bytes, so unfiltered columns move it by tens
+    of characters. Column narrowing is guarded by the rows tests below."""
     full = _chars(service.build_manifest("data_extraction"))
     sliced = _chars(service.build_manifest("data_extraction", task_id="DOC_CLASSIFY"))
     assert sliced * 4 < full, f"slice {sliced} chars vs whole {full} chars"
+
+
+def test_a_slice_loads_fewer_rows_than_its_tables_hold_and_exactly_what_it_declares(service):
+    """The metric that moves when columns are filtered: loaded rows, compared
+    with the real column counts of the very tables the slice draws on."""
+    spec = MANIFEST_TASKS["DOC_CLASSIFY"]
+    profiles = service._table_profiles
+    unfiltered = sum(len(profiles[t]["columns"]) for t in spec["tables"])
+    expected = sum(
+        1 for t in spec["tables"] for c in profiles[t]["columns"] if c in set(spec["fields"])
+    )
+    rows = service.build_manifest("data_extraction", task_id="DOC_CLASSIFY")["knowledge"]["loaded"]["rows"]
+    assert unfiltered == 12 and expected == 5  # the real numbers, so a profile change is noticed
+    assert rows == expected < unfiltered
+
+
+def test_a_declared_table_with_no_profile_raises_rather_than_thinning_the_slice(service, monkeypatch):
+    spec = dict(MANIFEST_TASKS["DOC_CLASSIFY"])
+    spec["tables"] = spec["tables"] + ("proc.bp_no_such_table",)
+    monkeypatch.setitem(MANIFEST_TASKS, "DOC_CLASSIFY", spec)
+    with pytest.raises(KeyError, match="bp_no_such_table"):
+        service.build_manifest("data_extraction", task_id="DOC_CLASSIFY")
 
 
 def test_a_slice_carries_only_the_tables_its_task_declares(service):

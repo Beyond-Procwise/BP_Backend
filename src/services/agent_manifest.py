@@ -285,7 +285,12 @@ class AgentManifestService:
             for name in spec["tables"]:
                 profile = self._table_profiles.get(name)
                 if profile is None:
-                    continue
+                    # A declared table that has no profile is a broken
+                    # declaration. Dropping it would hand the caller a thinner
+                    # slice than the one it asked for, with nothing to show it.
+                    raise KeyError(
+                        f"task {task_id} declares table {name!r}, which has no profile"
+                    )
                 columns = [c for c in profile["columns"] if c in wanted_fields][:budget]
                 budget -= len(columns)
                 kept = set(columns)
