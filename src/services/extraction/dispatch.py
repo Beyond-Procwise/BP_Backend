@@ -550,7 +550,11 @@ def dispatch_document(
         type_resolution = resolve_document_type(
             declared_concept=declared_concept, full_text=full_text,
         )
-        discrepancies.extend(type_resolution_discrepancies(type_resolution))
+        # Nothing declared means nothing to contradict (a script or direct
+        # caller; the live path always declares): the resolution is still
+        # computed and returned, but "unknown type" is not queued for a human.
+        if declared_concept is not None:
+            discrepancies.extend(type_resolution_discrepancies(type_resolution))
         log.info(
             "type resolution trace=%s declared=%s evidence=%s status=%s agreement=%s",
             trace_id, type_resolution.declared_concept,
@@ -820,13 +824,37 @@ def dispatch_document(
         except Exception as exc:
             log.warning("line_items_raw write failed: %s", exc)
 
-    if discrepancies:
+    # Type findings are filed under persistence.type_finding_doc_key (a pk-less
+    # document must not share one open row with every other pk-less document)
+    # and are cleared when a re-read no longer raises them. Neither may fail the
+    # extraction.
+    _type_items = [d for d in discrepancies
+                   if d.issue_type in persistence.TYPE_FINDING_ISSUE_TYPES]
+    _other_items = [d for d in discrepancies
+                    if d.issue_type not in persistence.TYPE_FINDING_ISSUE_TYPES]
+    if _other_items:
         persistence.write_discrepancies(
             doc_type=doc_type, raw_id=raw_id,
             source_file=file_path,
             doc_pk_candidate=columns.get(persistence._DOC_PK_FIELD[doc_type]),
-            discrepancies=discrepancies,
+            discrepancies=_other_items,
         )
+    if declared_concept is not None and type_resolution is not None:
+        try:
+            _type_key = persistence.type_finding_doc_key(
+                columns.get(persistence._DOC_PK_FIELD[doc_type]),
+                process_monitor_id, file_path)
+            if _type_items:
+                persistence.write_discrepancies(
+                    doc_type=doc_type, raw_id=raw_id, source_file=file_path,
+                    doc_pk_candidate=_type_key, discrepancies=_type_items,
+                )
+            persistence.resolve_stale_type_findings(
+                doc_type=doc_type, doc_pk_candidate=_type_key,
+                current_issue_types={d.issue_type for d in _type_items},
+            )
+        except Exception:
+            log.exception("type finding write/clear failed (extraction continues)")
 
     # Provenance (only when we have a doc_pk — required by the table's NOT NULL)
     # Header AND line-item evidence. Line values were previously written to the

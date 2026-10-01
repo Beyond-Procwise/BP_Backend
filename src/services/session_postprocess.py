@@ -155,6 +155,12 @@ def _session_facts(cur, session_id: str) -> dict:
           from proc.bp_extraction_discrepancy d
          where coalesce(d.status, 'open') <> 'resolved'
            and d.doc_pk_candidate in (select doc_pk_candidate from pks)
+           -- Document-type findings are reporting notes, not problems with the
+           -- document's data; keep in step with
+           -- extraction.persistence.TYPE_FINDING_ISSUE_TYPES (a test enforces it).
+           and d.issue_type not in ('document_type_disagreement',
+                                    'unresolved_document_type',
+                                    'unknown_document_type')
          group by d.issue_type, d.severity
          order by (d.severity = 'critical') desc, count(*) desc
         """, {"sid": session_id})

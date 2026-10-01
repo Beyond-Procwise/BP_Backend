@@ -174,6 +174,12 @@ def load_flagged_documents(cur) -> set[str]:
         SELECT DISTINCT doc_type, doc_pk_candidate
           FROM proc.bp_extraction_discrepancy
          WHERE status = 'open' AND doc_pk_candidate IS NOT NULL
+           -- A document-type finding says nothing about whether a price on that
+           -- document is wrong. Keep this in step with
+           -- extraction.persistence.TYPE_FINDING_ISSUE_TYPES (a test enforces it).
+           AND issue_type NOT IN ('document_type_disagreement',
+                                  'unresolved_document_type',
+                                  'unknown_document_type')
         """
     )
     flagged = set()

@@ -447,6 +447,70 @@ def write_discrepancies(
             raise
 
 
+#: The findings the document-type resolver raises. They share field_name
+#: 'document_type', never block promotion, and are the only rows the helpers
+#: below touch.
+TYPE_FINDING_ISSUE_TYPES = (
+    "document_type_disagreement",
+    "unresolved_document_type",
+    "unknown_document_type",
+)
+TYPE_FINDING_FIELD = "document_type"
+TYPE_FINDING_RESOLVER = "extraction_type_resolution"
+
+
+def type_finding_doc_key(
+    doc_pk: str | None, process_monitor_id: int | None, file_path: str | None,
+) -> str | None:
+    """The doc_pk_candidate to file a type finding under.
+
+    A real primary key when the document has one. Otherwise a visibly-not-a-key
+    reference ('process_monitor:<id>', or 'file:<path>' when there is no
+    monitor row) so two pk-less documents do not share the open-row identity
+    (doc_type, coalesce(doc_pk_candidate,''), issue_type, field_name) and
+    overwrite each other.
+    """
+    if doc_pk:
+        return doc_pk
+    if process_monitor_id is not None:
+        return f"process_monitor:{process_monitor_id}"
+    if file_path:
+        return f"file:{file_path}"
+    return None
+
+
+def resolve_stale_type_findings(
+    *, doc_type: str, doc_pk_candidate: str | None, current_issue_types,
+) -> int:
+    """Close this document's OPEN type findings that the latest read no longer
+    raises. Follows the table's existing convention for a finding that went away
+    on its own (dedup-migration, session_postprocess, reextraction_*): status
+    'resolved', resolution_action 'dismiss', a system resolved_by, and an
+    '[auto-resolved: ...]' note. Only status='open' rows move: a finding a person
+    ignored or already resolved is left alone. Returns rows closed."""
+    keep = list(current_issue_types)
+    sql = """UPDATE proc.bp_extraction_discrepancy
+                SET status = 'resolved',
+                    resolved_at = now(),
+                    resolution_action = 'dismiss',
+                    resolved_by = %s,
+                    notes = coalesce(notes, '')
+                        || ' [auto-resolved: the document was re-read and its type no longer raises this finding]'
+              WHERE doc_type = %s
+                AND coalesce(doc_pk_candidate, '') = coalesce(%s, '')
+                AND field_name = %s
+                AND issue_type = ANY(%s)
+                AND NOT (issue_type = ANY(%s))
+                AND coalesce(status, 'open') = 'open'"""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (TYPE_FINDING_RESOLVER, doc_type, doc_pk_candidate,
+                          TYPE_FINDING_FIELD, list(TYPE_FINDING_ISSUE_TYPES), keep))
+        n = cur.rowcount or 0
+        conn.commit()
+        return n
+
+
 def update_promotion_status(*, doc_type: str, raw_id: int, status: str,
                             promoted_at: bool = False) -> None:
     table = _RAW_TABLES[doc_type]
