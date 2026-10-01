@@ -36,7 +36,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pyyaml psycopg2-binary
+          # pydantic/pydantic-settings are for config/settings.py, which
+          # src/services/extraction/persistence.py reaches transitively. They are
+          # the whole cost of running the doc-type-map and review-item tests here;
+          # everything else in this job needs only pytest/pyyaml/psycopg2-binary.
+          pip install pytest pyyaml psycopg2-binary pydantic pydantic-settings
 
       # No database: these run over the seed, which a live test
       # (tests/services/concepts/test_concept_table.py) separately asserts
@@ -53,9 +57,32 @@ jobs:
           sys.exit(1 if bad else 0)
           "
 
+      # Every test below is a deliverable of this layer that ran in NO automated
+      # job before. The repo has two workflows and neither runs the wider suite,
+      # so a file left out here is guarded only by whoever remembers to run it.
+      #
+      # Three files of this layer are still NOT here, each because it imports a
+      # production module with a heavy dependency chain that this deliberately
+      # light job will not carry (verified in a clean env with only the install
+      # step above):
+      #   * tests/services/concepts/test_gate_wiring.py — patches
+      #     src.services.extraction.dispatch, which imports spacy.
+      #   * tests/services/test_agent_manifest_slices.py — src/agents/base_agent.py
+      #     imports botocore and qdrant_client.
+      #   * tests/services/extraction/test_type_findings_lifecycle.py —
+      #     src/services/session_postprocess reaches numpy and scipy.
+      # Adding those four-to-six packages for three files would turn a 20-second
+      # reference-data job into a full-environment one; they stay a local and
+      # review-time responsibility, which the fix-wave report records.
       - name: Vocabulary unit tests
         run: |
           python -m pytest -q \
             tests/services/concepts/test_validation_checks.py \
             tests/services/concepts/test_vocabulary_runtime_load.py \
-            tests/services/test_language_index_not_matched.py
+            tests/services/concepts/test_category_routing.py \
+            tests/services/test_language_index_not_matched.py \
+            tests/services/test_doc_type_map_single_owner.py \
+            tests/services/extraction/test_type_resolver.py \
+            tests/services/extraction/test_type_resolver_matched_evidence.py \
+            tests/services/extraction/test_type_resolution_review_items.py \
+            tests/services/test_telemetry_type_finding_filter.py
