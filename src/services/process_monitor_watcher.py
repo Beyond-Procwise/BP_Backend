@@ -520,16 +520,12 @@ class ProcessMonitorWatcher:
             # writes plausible-looking rows, and nothing tells you. The losing branch is
             # gone and the flag with it.
             from src.services.extraction.dispatch import dispatch_document as _dispatch
-            doc_type_map = {
-                "invoice": "invoice", "Invoice": "invoice",
-                "purchase_order": "purchase_order", "PurchaseOrder": "purchase_order",
-                "po": "purchase_order", "PO": "purchase_order",
-                "quote": "quote", "Quote": "quote",
-                "contract": "contract", "Contract": "contract",
-            }
-            doc_type = doc_type_map.get(category, category.lower() if category else "")
-            if doc_type not in ("invoice", "purchase_order", "quote", "contract"):
-                raise RuntimeError(f"unsupported doc_type: {category!r}")
+            # The acceptable spellings come from proc.bp_document_type, not from
+            # a literal here — see src/services/concepts/routing.py. Still
+            # raises on an unrecognised category: that error is the only signal
+            # a human gets today and a permissive gate would lose it.
+            from src.services.concepts.routing import pipeline_for_category
+            doc_type, declared_concept = pipeline_for_category(category)
             result = _dispatch(
                 process_monitor_id=record_id,
                 file_path=file_path,
