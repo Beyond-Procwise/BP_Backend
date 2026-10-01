@@ -109,7 +109,7 @@ def test_a_tie_is_unresolved_and_carries_both_candidates():
     """An invoice heading and a quote heading are equal evidence. Equal evidence
     must not be broken by row order or alphabet."""
     r = resolve_document_type(
-        declared_concept=None, full_text="INVOICE\nQUOTE\n", vocabulary=V,
+        declared_concept=None, full_text="INVOICE / QUOTE\n", vocabulary=V,
     )
     assert r.status == "unresolved"
     assert r.evidence_concept is None
@@ -132,10 +132,67 @@ def test_two_concepts_claiming_one_alias_is_a_tie_not_a_choice():
 
 
 def test_a_title_hit_outweighs_a_body_mention():
-    """An invoice that merely cites a purchase order is still an invoice."""
-    page = "TAX INVOICE\nInvoice No: 1\nAgainst purchase order PO123456.\n"
+    """An invoice that merely cites a purchase order is still an invoice. The
+    page is longer than the title zone, so the citation is a BODY hit; the
+    winning span must be a title_alias, not just the one with more hits."""
+    page = ("TAX INVOICE\nInvoice No: 1\n" + "x" * 700
+            + "\nAgainst purchase order PO123456. Purchase order again.\n")
     r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
     assert r.evidence_concept == "doctype.invoice"
+    top = [e for e in r.evidence if e.concept_code == "doctype.invoice"]
+    assert top and top[0].kind == "title_alias" and top[0].start < 600
+    order_kinds = {e.kind for e in r.evidence if e.concept_code == "doctype.order"}
+    assert order_kinds <= {"body_alias"}
+
+
+def test_title_chars_moves_the_boundary_between_title_and_body():
+    page = "TAX INVOICE\n" + "y" * 50 + "\nsee the quote. the quote again.\n"
+    def kinds(title_chars):
+        r = resolve_document_type(declared_concept="doctype.quote", full_text=page,
+                                  vocabulary=V, title_chars=title_chars)
+        return {e.kind for e in r.evidence if e.concept_code == "doctype.quote"}
+    assert kinds(600) == {"title_alias"}
+    assert kinds(20) == {"body_alias"}
+
+
+def test_body_repetition_never_buries_the_title():
+    """A real contract says 'Agreement' dozens of times."""
+    page = "MASTER SERVICE AGREEMENT\n" + "This Agreement governs the parties. " * 40
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+    assert r.status == "matched"
+    assert r.evidence_concept == "doctype.master_agreement"
+
+
+def test_one_passing_mention_past_the_title_zone_is_not_a_classification():
+    page = "Dear Sir,\n" + "z" * 700 + "\nPlease see the invoice attached.\n"
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+    assert r.status == "unknown"
+    assert r.evidence_concept is None
+
+
+def test_two_body_mentions_do_classify():
+    page = "Dear Sir,\n" + "z" * 700 + "\nThe invoice is attached. Pay the invoice.\n"
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+    assert r.evidence_concept == "doctype.invoice"
+
+
+def test_agreement_value_for_every_situation():
+    cases = [
+        ("doctype.invoice", INVOICE_PAGE, "agreed"),
+        ("doctype.quote", INVOICE_PAGE, "disagreed"),
+        ("doctype.invoice", BLANK_PAGE, "declared_only"),
+        (None, INVOICE_PAGE, "evidence_only"),
+        (None, BLANK_PAGE, "neither"),
+        (None, "INVOICE / QUOTE\n", "neither"),
+        ("doctype.sow", "INVOICE / QUOTE\n", "declared_only"),
+    ]
+    for declared, page, want in cases:
+        r = resolve_document_type(declared_concept=declared, full_text=page, vocabulary=V)
+        assert r.agreement == want, (declared, page, r)
+    tie = resolve_document_type(declared_concept="doctype.sow",
+                                full_text="INVOICE / QUOTE\n", vocabulary=V)
+    assert tie.status == "unresolved"
+    assert set(tie.candidates) == {"doctype.invoice", "doctype.quote"}
 
 
 def test_declared_only_when_the_page_is_silent():
@@ -164,11 +221,10 @@ def test_structural_signals_are_evidence_but_do_not_decide_alone():
     assert r.agreement == "declared_only"
 
 
-def test_seeded_structural_signals_are_prose_and_never_match_a_page():
-    """FINDING: the seed's structural_signals are descriptions of a page
-    ('lists incorporated documents'), not phrases on it, so they cannot be
-    matched as verbatim substrings. Pinned so that it is noticed if the seed
-    ever starts carrying phrases."""
+def test_the_order_forms_call_off_signals_are_prose_and_do_not_match():
+    """The call-off contract's seeded signals ('lists incorporated documents')
+    are descriptions, not phrases, so this order-form page yields none. Other
+    types' signals ('ship-to address') are phrase-shaped and do match."""
     r = resolve_document_type(
         declared_concept="doctype.call_off_contract",
         full_text=ORDER_FORM_PAGE, vocabulary=V,
@@ -264,3 +320,33 @@ def test_a_concepts_own_name_does_not_double_count_against_a_shared_alias():
     )
     assert r.status == "unresolved"
     assert set(r.candidates) == {"doctype.alpha", "doctype.beta"}
+
+
+def test_a_phrase_shaped_seed_signal_matches_verbatim():
+    page = "PURCHASE ORDER\nPO: 1234\nShip-To Address: 1 High St\n"
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+    sig = [e for e in r.evidence if e.kind == "structural_signal"]
+    assert [e.text for e in sig] == ["Ship-To Address"]
+    assert page[sig[0].start:sig[0].start + len(sig[0].text)] == sig[0].text
+
+
+def test_the_heading_line_outranks_a_citation_on_the_next_line():
+    r = resolve_document_type(declared_concept=None,
+                              full_text="INVOICE\nQUOTE\n", vocabulary=V)
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.invoice")
+
+
+def test_the_single_sweep_drops_exactly_what_the_quadratic_rule_dropped():
+    """Reference: a hit is dropped iff a DIFFERENT span covers it."""
+    import random
+    words = ["master service agreement", "service agreement", "agreement",
+             "invoice", "tax invoice", "po", "purchase order", "order", "x", "-"]
+    rng = random.Random(7)
+    for _ in range(200):
+        page = " ".join(rng.choice(words) for _ in range(rng.randint(1, 12)))
+        r = resolve_document_type(declared_concept=None, full_text=page,
+                                  vocabulary=V, title_chars=10_000)
+        spans = {(e.start, e.start + len(e.text)) for e in r.evidence
+                 if e.kind == "title_alias"}
+        for a in spans:
+            assert not any(b != a and b[0] <= a[0] and a[1] <= b[1] for b in spans), page
