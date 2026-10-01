@@ -23,6 +23,7 @@ way every other model output in this pipeline is.
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -37,31 +38,33 @@ _TITLE_CHARS = 600
 #: Ordering of evidence kinds when a reviewer is shown the strongest first.
 _WEIGHT = {"title_alias": 5.0, "body_alias": 1.0, "structural_signal": 0.5}
 
-#: Scoring is per concept and BOUNDED, never a plain sum over occurrences. A
-#: contract says "Agreement" forty times in its clauses, and most of them fall
-#: inside the 600-character title zone; if every mention counted, repetition
-#: would bury the one heading that names the type. So:
-#:   title  : _TITLE_BASE for the first title-zone alias, +1 per further
-#:            DISTINCT alias (not per occurrence), up to _TITLE_EXTRA; plus
-#:            _HEADING_BONUS when a hit sits on the first non-empty line, the
-#:            heading, which is where a document names itself.
-#:   body   : 1 per hit, capped at _BODY_CAP, and only for a concept with no
-#:            title hit (body text never adds to a title score).
-#: _BODY_CAP < _TITLE_BASE, so any title hit outranks any amount of body text.
-_TITLE_BASE = 5.0
-_TITLE_EXTRA = 3.0
-_HEADING_BONUS = 2.0
-_BODY_CAP = 3.0
+#: How the evidence is compared. NOT one summed score: scores summed in a narrow
+#: numeric range let each new term outbid the last, so a passing citation in a
+#: header or a list of schedules could bury the document's own heading. Instead
+#: a concept lands in a TIER and tiers are compared first, ordinally:
+#:   tier 1 : an alias hit on the heading (the first non-blank line, bounded by
+#:            _HEADING_CHARS). A document names itself there; nothing below it
+#:            can outweigh it, however much there is.
+#:   tier 2 : alias hits anywhere else, title zone and body alike. The
+#:            600-character title zone is only a proxy for a heading, so it earns
+#:            nothing extra here.
+#: Only within one tier does a bounded sub-score decide: distinct aliases, plus
+#: a damped (log2, capped) occurrence count. Structural signals are
+#: corroboration only: they add to a concept that already has an alias hit and
+#: can break a tie, but never name a type alone.
+_HEADING_CHARS = 120
+_OCCURRENCE_CAP = 3.0
 _SIGNAL = 0.5
+_SIGNAL_CAP = 1.0
 
-#: A score must be STRICTLY above this before the evidence names a type. One
-#: passing mention in a clause (a single body hit scores 1.0) is not a
-#: classification.
+#: A tier-2 concept's alias sub-score must be STRICTLY above this to name a
+#: type. One passing mention in a clause scores exactly 1.0 and is not a
+#: classification. (Tier 1 needs no minimum: the heading is the claim.)
 _MIN_SCORE = 1.0
 
 #: How far ahead of the runner-up the winner must be. Below this the evidence
 #: has not chosen, and saying it has would be fabrication.
-_MIN_MARGIN = 1.0
+_MIN_MARGIN = 0.5
 
 
 @dataclass(frozen=True)
@@ -153,68 +156,87 @@ def resolve_document_type(
         max_end = max(max_end, span[1])
         i = j
 
-    evidence: List[Evidence] = []
-    n_title: Dict[str, int] = {}
-    n_body: Dict[str, int] = {}
-    n_signal: Dict[str, int] = {}
-
     first = re.search(r"\S", text)
-    heading_end = (
-        (text.find("\n", first.start()) if "\n" in text[first.start():] else len(text))
-        if first else -1
-    )
-    heading_hit: Dict[str, bool] = {}
-    title_aliases: Dict[str, set] = {}
+    # The heading ends at the first newline, but never later than
+    # _HEADING_CHARS in: parsed text with unreliable line breaks must not turn
+    # the whole document into "the heading", which would hand every concept
+    # tier 1 and cancel the signal.
+    heading_start = first.start() if first else 0
+    heading_end = heading_start
+    if first:
+        nl = text.find("\n", heading_start)
+        heading_end = min(len(text) if nl < 0 else nl, heading_start + _HEADING_CHARS)
 
-    def credit(concept_code: str, kind: str, start: int, length: int) -> None:
-        counter = {"title_alias": n_title, "body_alias": n_body,
-                   "structural_signal": n_signal}[kind]
-        counter[concept_code] = counter.get(concept_code, 0) + 1
-        evidence.append(Evidence(
-            kind=kind, text=text[start:start + length], start=start,
-            concept_code=concept_code,
-        ))
+    region: Dict[str, List[Tuple[str, str, int, int, str]]] = {}
+    tier: Dict[str, int] = {}
+    for h in kept_hits:
+        on_heading = first is not None and heading_start <= h[2] < heading_end
+        t = 1 if on_heading else 2
+        code = h[0]
+        if code not in tier or t < tier[code]:
+            tier[code], region[code] = t, []
+        if t == tier[code]:
+            region[code].append(h)
 
-    for code, kind, start, length, folded in kept_hits:
-        credit(code, kind, start, length)
-        if kind == "title_alias":
-            title_aliases.setdefault(code, set()).add(folded)
-            if first and first.start() <= start < heading_end:
-                heading_hit[code] = True
-    for code, start, length in signals:
-        credit(code, "structural_signal", start, length)
-
-    scores: Dict[str, float] = {}
-    for code in {*n_title, *n_body, *n_signal}:
-        if n_title.get(code, 0):
-            base = (
-                _TITLE_BASE
-                + min(_TITLE_EXTRA, len(title_aliases.get(code, ())) - 1.0)
-                + (_HEADING_BONUS if heading_hit.get(code) else 0.0)
-            )
-        else:
-            base = min(_BODY_CAP, float(n_body.get(code, 0)))
-        scores[code] = base + _SIGNAL * n_signal.get(code, 0)
+    alias_sub: Dict[str, float] = {}
+    for code, rhits in region.items():
+        alias_sub[code] = (
+            len({h[4] for h in rhits})
+            + min(_OCCURRENCE_CAP, math.log2(len(rhits)))
+        )
+    sig_for: Dict[str, List[Tuple[str, int, int]]] = {}
+    for sig in signals:
+        if sig[0] in region:  # corroboration only: needs an alias hit already
+            sig_for.setdefault(sig[0], []).append(sig)
+    sub = {
+        code: alias_sub[code] + min(_SIGNAL_CAP, _SIGNAL * len(sig_for.get(code, ())))
+        for code in region
+    }
+    # Eligible to be named at all: a heading hit, or more than a passing mention.
+    eligible = [
+        c for c in region if tier[c] == 1 or alias_sub[c] > _MIN_SCORE
+    ]
 
     evidence_concept: Optional[str] = None
     candidates: Tuple[str, ...] = ()
     status = "unknown"
 
-    if scores:
-        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
-        best_code, best_score = ranked[0]
-        runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
-        if best_score <= _MIN_SCORE:
-            status = "unknown"
-        elif (best_score - runner_up) < _MIN_MARGIN:
+    if eligible:
+        best_tier = min(tier[c] for c in eligible)
+        in_tier = sorted(
+            (c for c in eligible if tier[c] == best_tier),
+            key=lambda c: (-sub[c], c),
+        )
+        best_score = sub[in_tier[0]]
+        runner_up = sub[in_tier[1]] if len(in_tier) > 1 else None
+        if runner_up is not None and (best_score - runner_up) < _MIN_MARGIN:
             status = "unresolved"
             candidates = tuple(
-                code for code, score in ranked if score >= best_score - _MIN_MARGIN
+                c for c in in_tier if sub[c] > best_score - _MIN_MARGIN
             )
         else:
             status = "matched"
-            evidence_concept = best_code
-            candidates = (best_code,)
+            evidence_concept = in_tier[0]
+            candidates = (in_tier[0],)
+
+    # Only evidence that COUNTED is returned: a human reading "why" must not be
+    # shown spans that scored nothing. That is the hits in the concept's own
+    # tier region, plus its corroborating signals, and only for a concept that
+    # was eligible to be named.
+    # ...and only for concepts that bear on the answer: the declared one, the
+    # winner and any tied candidates. A runner-up that lost is not the reason.
+    relevant = {c for c in (declared_concept, evidence_concept, *candidates) if c}
+    evidence: List[Evidence] = []
+    for code in eligible:
+        if code not in relevant:
+            continue
+        for c, kind, start, length, _ in region[code]:
+            evidence.append(Evidence(kind=kind, text=text[start:start + length],
+                                     start=start, concept_code=c))
+        for c, start, length in sig_for.get(code, ()):
+            evidence.append(Evidence(kind="structural_signal",
+                                     text=text[start:start + length],
+                                     start=start, concept_code=c))
 
     if declared_concept:
         # A declared type is a human's statement and always stands. The page
@@ -230,11 +252,9 @@ def resolve_document_type(
     else:
         agreement = "evidence_only" if evidence_concept else "neither"
 
-    # Keep the evidence that bears on the answer, strongest first, and cap it:
-    # this is written to a review row a person reads, not a log.
-    relevant = {c for c in (declared_concept, evidence_concept, *candidates) if c}
+    # Strongest first, capped: this is written to a review row a person reads.
     kept = sorted(
-        (ev for ev in evidence if ev.concept_code in relevant),
+        evidence,
         key=lambda ev: (-_WEIGHT[ev.kind], ev.start, ev.concept_code),
     )[:12]
 

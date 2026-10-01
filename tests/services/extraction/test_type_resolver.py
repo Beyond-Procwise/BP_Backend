@@ -205,20 +205,46 @@ def test_declared_only_when_the_page_is_silent():
     assert r.status == "matched"
 
 
-def test_structural_signals_are_evidence_but_do_not_decide_alone():
-    """A signal that appears on the page as a phrase is evidence, verbatim, but
-    a page with only that signal names no type."""
+def test_structural_signals_corroborate_but_never_name_a_type_alone():
+    """Three phrase-shaped signals and no alias anywhere: still unknown, and the
+    signals are not shown as a reason because they decided nothing."""
+    vocab = build_vocabulary([], [
+        _row("doctype.alpha", ["alpha heading"],
+             signals=["order of precedence", "ship to address", "bill to address"]),
+    ], source="test")
+    page = ("Order of Precedence.\nShip-To Address: 1 High St\n"
+            "Bill-To Address: 2 Low St\n")
+    r = resolve_document_type(declared_concept="doctype.alpha", full_text=page,
+                              vocabulary=vocab)
+    assert r.status == "matched" and r.evidence_concept is None
+    assert r.agreement == "declared_only"
+    assert r.evidence == ()
+    undeclared = resolve_document_type(declared_concept=None, full_text=page,
+                                       vocabulary=vocab)
+    assert undeclared.status == "unknown"
+
+
+def test_a_signal_alongside_an_alias_is_evidence_verbatim():
     vocab = build_vocabulary([], [
         _row("doctype.alpha", ["alpha heading"], signals=["order of precedence"]),
     ], source="test")
-    page = "Intro\nThe Order of Precedence is as follows.\n"
-    r = resolve_document_type(declared_concept="doctype.alpha", full_text=page,
-                              vocabulary=vocab)
+    page = "ALPHA HEADING\nThe Order of Precedence is as follows.\n"
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=vocab)
+    assert r.evidence_concept == "doctype.alpha"
     sig = [e for e in r.evidence if e.kind == "structural_signal"]
     assert [e.text for e in sig] == ["Order of Precedence"]
     assert page[sig[0].start:sig[0].start + len(sig[0].text)] == sig[0].text
-    assert r.evidence_concept is None  # 0.5 is below the naming threshold
-    assert r.agreement == "declared_only"
+
+
+def test_a_signal_can_break_a_tie_between_equal_aliases():
+    vocab = build_vocabulary([], [
+        _row("doctype.alpha", ["shared"], signals=["order of precedence"]),
+        _row("doctype.beta", ["shared"]),
+    ], source="test")
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=vocab,
+        full_text="SHARED\nThe order of precedence applies.\n")
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.alpha")
 
 
 def test_the_order_forms_call_off_signals_are_prose_and_do_not_match():
@@ -336,17 +362,95 @@ def test_the_heading_line_outranks_a_citation_on_the_next_line():
     assert (r.status, r.evidence_concept) == ("matched", "doctype.invoice")
 
 
-def test_the_single_sweep_drops_exactly_what_the_quadratic_rule_dropped():
-    """Reference: a hit is dropped iff a DIFFERENT span covers it."""
+def _quadratic_survivors(spans):
+    """Reference rule: a hit is dropped iff a DIFFERENT span covers it."""
+    return [a for a in spans
+            if not any(b != a and b[0] <= a[0] and a[1] <= b[1] for b in spans)]
+
+
+def test_the_single_sweep_matches_the_quadratic_reference_filter():
+    """Differential: run the real resolver with every concept eligible and
+    compare the surviving heading-tier spans with the reference rule over all
+    raw alias occurrences."""
     import random
+    from src.services.concepts.vocabulary import fold
+    from src.services.extraction.type_resolver import _find_all
     words = ["master service agreement", "service agreement", "agreement",
-             "invoice", "tax invoice", "po", "purchase order", "order", "x", "-"]
+             "invoice", "tax invoice", "po", "purchase order", "order", "x"]
     rng = random.Random(7)
-    for _ in range(200):
-        page = " ".join(rng.choice(words) for _ in range(rng.randint(1, 12)))
-        r = resolve_document_type(declared_concept=None, full_text=page,
-                                  vocabulary=V, title_chars=10_000)
-        spans = {(e.start, e.start + len(e.text)) for e in r.evidence
-                 if e.kind == "title_alias"}
-        for a in spans:
-            assert not any(b != a and b[0] <= a[0] and a[1] <= b[1] for b in spans), page
+    for _ in range(300):
+        # One line so everything within 120 chars is the heading tier.
+        page = " ".join(rng.choice(words) for _ in range(rng.randint(1, 6)))
+        raw = set()
+        for dt in V.document_types.values():
+            for alias in {fold(a) for a in (*dt.aliases, dt.concept_code.split(".", 1)[-1])}:
+                for st in _find_all(alias, page.lower()):
+                    raw.add((st, st + len(alias)))
+        want = {sp for sp in _quadratic_survivors(sorted(raw)) if sp[0] < 120}
+        wide = resolve_document_type(
+            declared_concept=None, full_text=page, vocabulary=V)
+        got = {(e.start, e.start + len(e.text)) for e in wide.evidence
+               if e.kind != "structural_signal"}
+        # evidence only lists eligible concepts' spans, so it is a subset of the
+        # reference survivors, and never contains a covered span.
+        assert got <= want, page
+        assert not (got & (raw - set(want))), page
+
+
+def test_a_glancing_header_citation_does_not_bury_body_evidence():
+    page = ("Acme Ltd\nRef: your quotation of 1 January\n" + "f" * 600
+            + "\n" + "This invoice is due. Pay the invoice. " * 20)
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.invoice")
+
+
+def test_a_documents_list_of_cross_references_does_not_outrank_its_heading():
+    sched = ("The Schedules form part of this Agreement: Schedule 1, Annex A, "
+             "Appendix 2, Exhibit B.\n")
+    for heading, want in [("FRAMEWORK AGREEMENT", "doctype.framework_agreement"),
+                          ("MASTER SERVICE AGREEMENT", "doctype.master_agreement"),
+                          ("NON-DISCLOSURE AGREEMENT", "doctype.nda")]:
+        page = heading + "\nRef: RM6100\n" + sched
+        r = resolve_document_type(declared_concept=want, full_text=page, vocabulary=V)
+        assert r.evidence_concept == want, heading
+        assert r.agreement == "agreed", heading
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="INVOICE\nSee our Quotation, Estimate, Price Quotation and prior Quotes.\n")
+    assert r.evidence_concept == "doctype.invoice"
+
+
+def test_the_heading_is_bounded_when_there_is_no_newline():
+    """Unreliable line breaks must not make the whole page 'the heading'."""
+    page = "TAX INVOICE " + "lorem ipsum dolor " * 40 + "purchase order PO1 purchase order"
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.invoice")
+    swapped = "TAX INVOICE " + "lorem ipsum dolor " * 40 + "purchase order"
+    assert resolve_document_type(declared_concept=None, full_text=swapped,
+                                 vocabulary=V).evidence_concept == "doctype.invoice"
+
+
+def test_evidence_returned_is_only_what_counted():
+    page = "Dear Sir,\n" + "z" * 10 + "\nPay the invoice. The invoice is due. Quote.\n"
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+    assert r.evidence_concept == "doctype.invoice"
+    assert {e.concept_code for e in r.evidence} == {"doctype.invoice"}
+    # tier-1 concept: its non-heading mentions did not count and are not shown
+    page2 = "INVOICE\nPay the invoice. The invoice is due.\n"
+    r2 = resolve_document_type(declared_concept=None, full_text=page2, vocabulary=V)
+    assert [e.start for e in r2.evidence] == [0]
+
+
+def test_a_declared_concept_that_only_glanced_off_the_page_shows_no_evidence():
+    page = "INVOICE\nWe also saw the quote once.\n"
+    r = resolve_document_type(declared_concept="doctype.quote", full_text=page,
+                              vocabulary=V)
+    assert r.agreement == "disagreed"
+    assert {e.concept_code for e in r.evidence} == {"doctype.invoice"}
+
+
+def test_a_losing_runner_up_is_not_shown_as_the_reason():
+    page = "INVOICE\nPay the invoice.\n" + "x" * 5 + "\nquote quote quote\n"
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+    assert r.evidence_concept == "doctype.invoice"
+    assert {e.concept_code for e in r.evidence} == {"doctype.invoice"}
