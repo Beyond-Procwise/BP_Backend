@@ -205,6 +205,8 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
         ),
         DocumentType(
             "doctype.quote", "role.supporting", None, "exec.unilateral",
+            # "quotes" stays last: matches the migration's append order, and the
+            # seed-vs-table drift test compares aliases as ordered lists.
             ("quote", "quotation", "estimate", "price quotation", "quotes"),
             ({"field": "quote_id", "pattern": None, "parent_type": None},),
             ("validity or expiry date", "prices with no order reference"),
@@ -282,6 +284,8 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
         ),
         DocumentType(
             "doctype.contract_unspecified", "role.master", None, None,
+            # "contracts" stays last: matches the migration's append order, and
+            # the seed-vs-table drift test compares aliases as ordered lists.
             ("contract", "agreement", "contracts"),
             ({"field": "contract_id", "pattern": None, "parent_type": None},),
             ("numbered clauses", "a signature block"),

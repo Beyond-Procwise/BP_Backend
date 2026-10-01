@@ -83,3 +83,45 @@ def test_every_legacy_category_value_resolves_in_the_vocabulary():
     assert not unresolved, (
         f"legacy category values the vocabulary cannot resolve: {sorted(unresolved)}"
     )
+
+
+# --- the reverse direction: no map may hold a type the vocabulary lacks -----
+
+def _physical_maps() -> dict:
+    """Looked up at call time so a monkeypatch on the module is honoured."""
+    from src.services.extraction import kg_sync, persistence
+    from src.services.extraction_v2 import provenance
+    return {
+        "persistence._DOC_PK_FIELD": persistence._DOC_PK_FIELD,
+        "kg_sync._TRGT_TABLE": kg_sync._TRGT_TABLE,
+        "kg_sync._PK_COL": kg_sync._PK_COL,
+        "provenance.PARENT_TABLE_FOR_DOC_TYPE": provenance.PARENT_TABLE_FOR_DOC_TYPE,
+    }
+
+
+def _stale_keys_by_map() -> dict:
+    known = _pipelines_in_the_vocabulary()
+    stale = {
+        name: sorted({str(k).lower() for k in mapping} - known)
+        for name, mapping in _physical_maps().items()
+    }
+    return {name: keys for name, keys in stale.items() if keys}
+
+
+def test_no_physical_map_holds_a_type_the_vocabulary_does_not_know():
+    """Case-folded, so display-form keys such as 'Purchase_Order' compare
+    equal; only capitalisation is ignored, never presence."""
+    stale = _stale_keys_by_map()
+    assert not stale, (
+        "physical maps keyed by a document type the vocabulary does not "
+        f"know (stale or ahead of the vocabulary): {stale}"
+    )
+
+
+def test_the_reverse_check_fails_when_a_map_gains_a_stale_key(monkeypatch):
+    """Proves the guard above can go red. Patches a copy in via monkeypatch;
+    the real map is restored on teardown."""
+    from src.services.extraction import kg_sync
+    monkeypatch.setitem(kg_sync._TRGT_TABLE, "delivery_note", "bp_delivery_note")
+    stale = _stale_keys_by_map()
+    assert stale == {"kg_sync._TRGT_TABLE": ["delivery_note"]}
