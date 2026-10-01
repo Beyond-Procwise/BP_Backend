@@ -48,6 +48,9 @@ def test_disagreement_produces_one_non_blocking_item_with_both_readings():
 
 
 def test_unknown_type_produces_one_non_blocking_item():
+    """BUILDER capability only. dispatch never reaches it: it queues nothing when
+    declared_concept is None, and a declared concept always gives status
+    'matched'. The issue type is therefore not in TYPE_FINDING_ISSUE_TYPES."""
     r = resolve_document_type(declared_concept=None, full_text=BLANK_PAGE, vocabulary=V)
     items = type_resolution_discrepancies(r)
     assert len(items) == 1

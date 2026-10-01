@@ -159,8 +159,7 @@ def _session_facts(cur, session_id: str) -> dict:
            -- document's data; keep in step with
            -- extraction.persistence.TYPE_FINDING_ISSUE_TYPES (a test enforces it).
            and d.issue_type not in ('document_type_disagreement',
-                                    'unresolved_document_type',
-                                    'unknown_document_type')
+                                    'unresolved_document_type')
          group by d.issue_type, d.severity
          order by (d.severity = 'critical') desc, count(*) desc
         """, {"sid": session_id})

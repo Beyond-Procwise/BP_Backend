@@ -543,6 +543,7 @@ def dispatch_document(
     # the declared category, and this must not change it. A failure here is a
     # reporting gap, not an extraction failure, so it never propagates.
     type_resolution = None
+    type_findings_built = False
     try:
         from src.services.extraction.type_resolver import (
             resolve_document_type, type_resolution_discrepancies,
@@ -555,6 +556,10 @@ def dispatch_document(
         # computed and returned, but "unknown type" is not queued for a human.
         if declared_concept is not None:
             discrepancies.extend(type_resolution_discrepancies(type_resolution))
+            # Only now do we KNOW what the document raises. If the builder had
+            # raised above, an empty current set must not be read as "raises
+            # nothing" and close a still-valid finding.
+            type_findings_built = True
         log.info(
             "type resolution trace=%s declared=%s evidence=%s status=%s agreement=%s",
             trace_id, type_resolution.declared_concept,
@@ -839,7 +844,7 @@ def dispatch_document(
             doc_pk_candidate=columns.get(persistence._DOC_PK_FIELD[doc_type]),
             discrepancies=_other_items,
         )
-    if declared_concept is not None and type_resolution is not None:
+    if type_findings_built:
         try:
             _type_key = persistence.type_finding_doc_key(
                 columns.get(persistence._DOC_PK_FIELD[doc_type]),
@@ -852,6 +857,9 @@ def dispatch_document(
             persistence.resolve_stale_type_findings(
                 doc_type=doc_type, doc_pk_candidate=_type_key,
                 current_issue_types={d.issue_type for d in _type_items},
+                other_doc_keys=persistence.type_finding_doc_keys(
+                    columns.get(persistence._DOC_PK_FIELD[doc_type]),
+                    process_monitor_id, file_path),
             )
         except Exception:
             log.exception("type finding write/clear failed (extraction continues)")

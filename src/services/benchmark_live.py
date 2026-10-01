@@ -178,8 +178,7 @@ def load_flagged_documents(cur) -> set[str]:
            -- document is wrong. Keep this in step with
            -- extraction.persistence.TYPE_FINDING_ISSUE_TYPES (a test enforces it).
            AND issue_type NOT IN ('document_type_disagreement',
-                                  'unresolved_document_type',
-                                  'unknown_document_type')
+                                  'unresolved_document_type')
         """
     )
     flagged = set()

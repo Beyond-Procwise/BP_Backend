@@ -60,7 +60,7 @@ class Discrepancy:
     field_name: str
     issue_type: str          # invariant_failed | missing_required | type_bind_error
                              # | judge_incoherent | document_type_disagreement
-                             # | unresolved_document_type | unknown_document_type
+                             # | unresolved_document_type
     severity: str            # critical | warning | info
     raw_value: str | None = None
     expected_value: str | None = None
@@ -450,10 +450,14 @@ def write_discrepancies(
 #: The findings the document-type resolver raises. They share field_name
 #: 'document_type', never block promotion, and are the only rows the helpers
 #: below touch.
+#: 'unknown_document_type' is deliberately NOT here: with a declared concept the
+#: resolver always returns status 'matched', and dispatch queues nothing when
+#: nothing was declared, so the pipeline can never write it. Re-adding it needs a
+#: real subject first (the type_resolver builder can still produce it for a
+#: direct caller that passes declared_concept=None).
 TYPE_FINDING_ISSUE_TYPES = (
     "document_type_disagreement",
     "unresolved_document_type",
-    "unknown_document_type",
 )
 TYPE_FINDING_FIELD = "document_type"
 TYPE_FINDING_RESOLVER = "extraction_type_resolution"
@@ -479,33 +483,68 @@ def type_finding_doc_key(
     return None
 
 
+def type_finding_doc_keys(
+    doc_pk: str | None, process_monitor_id: int | None, file_path: str | None,
+) -> list[str]:
+    """Every key form one document can be filed under across runs. A run that
+    extracts a pk files under the pk, a later one that does not files under
+    process_monitor:<id>; clearing must see both or one of them is stranded."""
+    keys = []
+    if doc_pk:
+        keys.append(doc_pk)
+    if process_monitor_id is not None:
+        keys.append(f"process_monitor:{process_monitor_id}")
+    if file_path:
+        keys.append(f"file:{file_path}")
+    return keys
+
+
 def resolve_stale_type_findings(
     *, doc_type: str, doc_pk_candidate: str | None, current_issue_types,
+    other_doc_keys=(),
 ) -> int:
     """Close this document's OPEN type findings that the latest read no longer
     raises. Follows the table's existing convention for a finding that went away
     on its own (dedup-migration, session_postprocess, reextraction_*): status
     'resolved', resolution_action 'dismiss', a system resolved_by, and an
-    '[auto-resolved: ...]' note. Only status='open' rows move: a finding a person
-    ignored or already resolved is left alone. Returns rows closed."""
+    '[auto-resolved: ...]' note. Never deleted.
+
+    Under ``doc_pk_candidate`` (the key the latest run filed under) a row closes
+    when its issue type is not in ``current_issue_types``. Under any of
+    ``other_doc_keys`` (the same document's other key forms) every open type
+    finding closes: the current run's own row supersedes them.
+
+    A row somebody has acted on is never closed. The decision engine's
+    escalations (flag/hold/escalate/assign/investigate/query) deliberately keep
+    status='open' and resolution_action NULL, so the row alone cannot say so;
+    the trace is a proc.bp_decision row (subject_type='finding', subject_id =
+    the discrepancy id) and, for 'query', query_sent_at. Either one protects it.
+    Returns rows closed."""
     keep = list(current_issue_types)
-    sql = """UPDATE proc.bp_extraction_discrepancy
+    others = [k for k in other_doc_keys if k and k != doc_pk_candidate]
+    sql = """UPDATE proc.bp_extraction_discrepancy e
                 SET status = 'resolved',
                     resolved_at = now(),
                     resolution_action = 'dismiss',
                     resolved_by = %s,
-                    notes = coalesce(notes, '')
+                    notes = coalesce(e.notes, '')
                         || ' [auto-resolved: the document was re-read and its type no longer raises this finding]'
-              WHERE doc_type = %s
-                AND coalesce(doc_pk_candidate, '') = coalesce(%s, '')
-                AND field_name = %s
-                AND issue_type = ANY(%s)
-                AND NOT (issue_type = ANY(%s))
-                AND coalesce(status, 'open') = 'open'"""
+              WHERE e.doc_type = %s
+                AND e.field_name = %s
+                AND e.issue_type = ANY(%s)
+                AND coalesce(e.status, 'open') = 'open'
+                AND e.query_sent_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM proc.bp_decision d
+                                 WHERE d.subject_type = 'finding'
+                                   AND d.subject_id = e.discrepancy_id::text)
+                AND ( (coalesce(e.doc_pk_candidate, '') = coalesce(%s, '')
+                       AND NOT (e.issue_type = ANY(%s)))
+                      OR coalesce(e.doc_pk_candidate, '') = ANY(%s) )"""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute(sql, (TYPE_FINDING_RESOLVER, doc_type, doc_pk_candidate,
-                          TYPE_FINDING_FIELD, list(TYPE_FINDING_ISSUE_TYPES), keep))
+        cur.execute(sql, (TYPE_FINDING_RESOLVER, doc_type, TYPE_FINDING_FIELD,
+                          list(TYPE_FINDING_ISSUE_TYPES), doc_pk_candidate, keep,
+                          others))
         n = cur.rowcount or 0
         conn.commit()
         return n
