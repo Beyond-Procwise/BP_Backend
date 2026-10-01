@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Mapping
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, Mapping
 from urllib.parse import quote_plus
 import threading
 
@@ -1100,7 +1100,7 @@ class BaseAgent:
         self,
         prompt: Optional[str] = None,
         model: Optional[str] = None,
-        format: Optional[str] = None,
+        format: Optional[Union[str, Dict[str, Any]]] = None,
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
@@ -1255,12 +1255,21 @@ class BaseAgent:
             try:
                 attempt_options = dict(options)
                 if messages is not None:
+                    # format travels on BOTH endpoints. It used to be passed to
+                    # generate and dropped here, so an agent that sent messages
+                    # asked for grammar-guided decoding and silently got prose
+                    # back. The key is omitted rather than sent as None because
+                    # its mere presence reads as a request for JSON on some
+                    # client versions.
+                    chat_kwargs = dict(base_kwargs)
+                    if format is not None:
+                        chat_kwargs["format"] = format
                     return ollama.chat(
                         model=model_to_use,
                         messages=messages,
                         options=attempt_options,
                         stream=False,
-                        **base_kwargs,
+                        **chat_kwargs,
                     )
                 return ollama.generate(
                     model=model_to_use,
@@ -1325,7 +1334,7 @@ class BaseAgent:
         self,
         prompt: Optional[str],
         model: Optional[str],
-        format: Optional[str],
+        format: Optional[Union[str, Dict[str, Any]]],
         messages: Optional[List[Dict[str, str]]],
         **kwargs,
     ) -> Dict[str, Any]:

@@ -238,3 +238,68 @@ def test_execute_persists_agentic_plan(monkeypatch):
     assert second_params[0] == "wf-2"
     assert second_params[3] == "action-2"
     assert second_params[4] == expected_plan
+
+
+def _chat_capture(monkeypatch):
+    """Route call_ollama down the chat path and capture what ollama.chat got."""
+    monkeypatch.setattr(base_agent.ollama, "list", lambda: {"models": []})
+    captured = {}
+
+    def fake_chat(model, **kwargs):
+        captured["model"] = model
+        captured["kwargs"] = kwargs
+        return {"message": {"content": "{}"}, "model": model}
+
+    monkeypatch.setattr(base_agent.ollama, "chat", fake_chat)
+    return captured
+
+
+def test_call_ollama_forwards_format_on_the_chat_path(monkeypatch):
+    """JSON mode must survive the chat endpoint.
+
+    ``ollama.generate`` was given ``format`` and ``ollama.chat`` was not, so
+    every agent that passed ``messages`` silently lost grammar-guided decoding
+    and got prose back where it had asked for JSON.
+    """
+    captured = _chat_capture(monkeypatch)
+    agent = make_base_agent()
+
+    agent.call_ollama(messages=[{"role": "user", "content": "hi"}], format="json")
+
+    assert captured["kwargs"].get("format") == "json", (
+        "format was dropped on the chat path, so the model was never put in JSON mode"
+    )
+
+
+def test_call_ollama_accepts_a_json_schema_as_format(monkeypatch):
+    """A schema dict is passed through unchanged.
+
+    Ollama takes a full JSON schema as ``format`` and masks invalid tokens
+    during decoding, which is what makes a slot contract unbreakable rather
+    than merely requested. A dict must not be coerced to the string "json".
+    """
+    captured = _chat_capture(monkeypatch)
+    agent = make_base_agent()
+
+    schema = {
+        "type": "object",
+        "properties": {"title": {"type": "string"}},
+        "required": ["title"],
+    }
+    agent.call_ollama(messages=[{"role": "user", "content": "hi"}], format=schema)
+
+    assert captured["kwargs"].get("format") == schema
+
+
+def test_call_ollama_omits_format_on_the_chat_path_when_none(monkeypatch):
+    """No format asked for means none sent.
+
+    Passing ``format=None`` explicitly is not the same as not passing it: some
+    client versions treat the key's presence as a request for JSON.
+    """
+    captured = _chat_capture(monkeypatch)
+    agent = make_base_agent()
+
+    agent.call_ollama(messages=[{"role": "user", "content": "hi"}])
+
+    assert "format" not in captured["kwargs"]
