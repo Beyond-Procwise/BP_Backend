@@ -57,4 +57,5 @@ jobs:
         run: |
           python -m pytest -q \
             tests/services/concepts/test_validation_checks.py \
-            tests/services/concepts/test_vocabulary_runtime_load.py
+            tests/services/concepts/test_vocabulary_runtime_load.py \
+            tests/services/test_language_index_not_matched.py
