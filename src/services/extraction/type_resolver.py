@@ -580,8 +580,13 @@ def resolve_document_type(
     key = lambda ev: (-_WEIGHT[ev.kind], ev.start, ev.concept_code)
     ordered = sorted(evidence, key=key)
     chosen: List[Evidence] = []
-    if status == "unresolved":
-        for cand in candidates:
+    # A matched result reserves a span for the concept that WON as well: without
+    # it a page repeating its declared type's wording 12+ times filled every row
+    # with the type that did not win and none with the one that did.
+    reserve = candidates if status == "unresolved" else (
+        (evidence_concept,) if status == "matched" and evidence_concept else ())
+    if reserve:
+        for cand in reserve:
             best = next((ev for ev in ordered if ev.concept_code == cand), None)
             if best is not None:
                 chosen.append(best)
@@ -604,4 +609,111 @@ def resolve_document_type(
     )
 
 
-__all__ = ["Evidence", "TypeResolution", "resolve_document_type"]
+def _spans_for(resolution: TypeResolution, concepts) -> List[Evidence]:
+    return [ev for ev in resolution.evidence if ev.concept_code in concepts]
+
+
+def _span_listing(resolution: TypeResolution) -> str:
+    """Every evidence span, unclipped: ``evidence`` is variable-length on
+    purpose (a person asked to break an N-way tie is shown N spans), so no
+    caller may truncate it."""
+    return "; ".join(
+        f"{ev.concept_code} [{ev.kind}] {ev.text!r} @{ev.start}"
+        for ev in resolution.evidence
+    )
+
+
+def type_resolution_discrepancies(resolution: TypeResolution) -> List["object"]:
+    """Review items for a classification a human should look at.
+
+    None of these block promotion. A document whose type the uploader stated
+    and whose content merely suggests another still extracted correctly, and
+    holding it would stop live ingestion over a reporting improvement -- the
+    build spec's principle 2, expressed through the product's existing
+    blocks_promotion boolean.
+
+    Read ``status`` and ``candidates``, never ``agreement`` alone: agreement is
+    deliberately coarse and says 'declared_only' when the declared type
+    produced a concept and the evidence TIED. That contradiction reaches a human
+    only through status == 'unresolved'.
+
+    field_name is always 'document_type' so the open-row identity
+    (doc_type, doc_pk_candidate, issue_type, field_name) stays stable across
+    re-extraction and the finding is refreshed rather than duplicated.
+
+    Grouping: every document with the same shape (e.g. uploaded as an order,
+    reads as a call-off contract because of an 'Order Form' cell) carries the
+    same (issue_type, raw_value, expected_value) and the same opening sentence
+    in ``notes``, so a queue can present them as one decision rather than N.
+    """
+    from src.services.extraction.persistence import Discrepancy
+
+    if resolution.agreement == "disagreed":
+        winner = _spans_for(resolution, (resolution.evidence_concept,))
+        return [Discrepancy(
+            field_name="document_type",
+            issue_type="document_type_disagreement",
+            severity="warning",
+            raw_value=resolution.declared_concept,
+            expected_value=resolution.evidence_concept,
+            computed_value=", ".join(resolution.candidates) or None,
+            blocks_promotion=False,
+            # The span that supports the type that WON, not whichever span
+            # happens to sort first.
+            evidence_text=winner[0].text if winner else None,
+            notes=(
+                f"Uploaded as {resolution.declared_concept}; the document reads "
+                f"as {resolution.evidence_concept}. The declared type was kept "
+                "and nothing was rerouted - confirm which is right. "
+                f"Evidence: {_span_listing(resolution)}"
+            ),
+        )]
+
+    if resolution.status == "unresolved":
+        # One verbatim span per candidate, so the person choosing sees every
+        # option, not the first one that sorted to the top.
+        per_candidate = []
+        for cand in resolution.candidates:
+            spans = _spans_for(resolution, (cand,))
+            if spans:
+                per_candidate.append(spans[0].text)
+        return [Discrepancy(
+            field_name="document_type",
+            issue_type="unresolved_document_type",
+            severity="warning",
+            raw_value=resolution.declared_concept,
+            expected_value=None,
+            computed_value=", ".join(resolution.candidates) or None,
+            blocks_promotion=False,
+            evidence_text=" | ".join(per_candidate) or None,
+            notes=(
+                "The document's own wording fits more than one type with equal "
+                f"evidence ({', '.join(resolution.candidates)}); no ruling exists "
+                "to settle it. "
+                f"Evidence: {_span_listing(resolution)}"
+            ),
+        )]
+
+    if resolution.status == "unknown":
+        return [Discrepancy(
+            field_name="document_type",
+            issue_type="unknown_document_type",
+            severity="warning",
+            raw_value=resolution.declared_concept,
+            expected_value=None,
+            computed_value=None,
+            blocks_promotion=False,
+            evidence_text=resolution.evidence[0].text if resolution.evidence else None,
+            notes=(
+                "No document type in the vocabulary fits this document. Recorded "
+                "with no type rather than the nearest option."
+            ),
+        )]
+
+    return []
+
+
+__all__ = [
+    "Evidence", "TypeResolution", "resolve_document_type",
+    "type_resolution_discrepancies",
+]

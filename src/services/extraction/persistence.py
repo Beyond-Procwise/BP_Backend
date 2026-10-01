@@ -58,7 +58,9 @@ _DOC_PK_FIELD = {
 @dataclass
 class Discrepancy:
     field_name: str
-    issue_type: str          # invariant_failed | missing_required | type_bind_error | judge_incoherent
+    issue_type: str          # invariant_failed | missing_required | type_bind_error
+                             # | judge_incoherent | document_type_disagreement
+                             # | unresolved_document_type | unknown_document_type
     severity: str            # critical | warning | info
     raw_value: str | None = None
     expected_value: str | None = None

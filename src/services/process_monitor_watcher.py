@@ -530,6 +530,7 @@ class ProcessMonitorWatcher:
                 process_monitor_id=record_id,
                 file_path=file_path,
                 doc_type=doc_type,
+                declared_concept=declared_concept,
             )
             status = str(result.get("status", "error")).lower()
             if status in ("error", "failed"):

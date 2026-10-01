@@ -278,6 +278,7 @@ def _serialize_parsed(parsed) -> dict[str, Any]:
 
 def dispatch_document(
     *, process_monitor_id: int | None, file_path: str, doc_type: str,
+    declared_concept: str | None = None,
 ) -> dict[str, Any]:
     """Run a single document through the renovation pipeline end-to-end.
 
@@ -537,6 +538,27 @@ def dispatch_document(
                          _sub_col, _sub, len(line_items))
 
     discrepancies: list[Discrepancy] = []
+    # What the page says about its own type, next to what the uploader declared.
+    # Recorded, never acted on: doc_type above already decided the pipeline from
+    # the declared category, and this must not change it. A failure here is a
+    # reporting gap, not an extraction failure, so it never propagates.
+    type_resolution = None
+    try:
+        from src.services.extraction.type_resolver import (
+            resolve_document_type, type_resolution_discrepancies,
+        )
+        type_resolution = resolve_document_type(
+            declared_concept=declared_concept, full_text=full_text,
+        )
+        discrepancies.extend(type_resolution_discrepancies(type_resolution))
+        log.info(
+            "type resolution trace=%s declared=%s evidence=%s status=%s agreement=%s",
+            trace_id, type_resolution.declared_concept,
+            type_resolution.evidence_concept, type_resolution.status,
+            type_resolution.agreement,
+        )
+    except Exception:
+        log.exception("type resolution failed (extraction continues)")
     # Re-bind any synthesized values that conflict with column types is
     # already handled by context_layer's _validate_and_bind. Bind errors
     # from the L1 layer are stale once synthesis ran — drop them.
@@ -892,6 +914,11 @@ def dispatch_document(
         "trace_id": str(trace_id),
         "pipeline_version": pipeline_version,
         "raw_persisted": True,
+        "declared_concept": declared_concept,
+        "evidence_concept": (
+            type_resolution.evidence_concept if type_resolution else None
+        ),
+        "type_agreement": type_resolution.agreement if type_resolution else None,
         # New keys for the training-data collector. Defaults are safe
         # (empty / zero) so non-collector callers are unaffected.
         "_source_text": source_text,
