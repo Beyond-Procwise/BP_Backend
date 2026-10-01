@@ -23,64 +23,98 @@ way every other model output in this pipeline is.
 """
 from __future__ import annotations
 
-import bisect
 import math
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from src.services.concepts.vocabulary import Vocabulary, ensure_vocabulary, fold
 
 #: ``title_chars`` only LABELS evidence: a hit before this offset is reported as
 #: kind='title_alias', after it 'body_alias'. It does not influence status,
-#: concept or candidates. What a document is called is decided by LINES (below),
-#: not by an offset, because an offset cliff lets one character invert an answer.
+#: concept or candidates. What a document is called is decided by its TITLE
+#: SEGMENT (below), not by an offset, because an offset cliff lets one
+#: character invert an answer.
 _TITLE_CHARS = 600
 
 #: Ordering of evidence kinds when a reviewer is shown the strongest first.
 _WEIGHT = {"title_alias": 5.0, "body_alias": 1.0, "structural_signal": 0.5}
 
-#: How the evidence is compared. NOT one summed score: a summed score in a narrow
-#: range let each new term outbid the last. A concept lands in a TIER and tiers
-#: are compared first, ordinally (so a sub-score change can never leap a tier):
-#:   tier 1 : an alias hit on a HEADING-LIKE LINE, wherever in the document that
-#:            line is (a letterhead above the title is normal). A line is
-#:            heading-like when it is short (<= _HEADING_LINE_MAX characters
-#:            after stripping, so a sentence is not a heading) and the type
-#:            phrases on it make up at least _HEADING_COVERAGE of its
-#:            non-whitespace characters (so 'PURCHASE ORDER', '## INVOICE' and
-#:            'INVOICE / QUOTE' qualify while 'Ref: your quotation of 1 January'
-#:            and 'Invoice No: INV-2026-0001' do not), and it carries at most
-#:            _HEADING_MAX_PHRASES distinct type phrases and does not end like
-#:            a sentence or a label. Case is NOT required.
-#:   tier 2 : every other alias hit.
-#: Only within one tier does a bounded sub-score decide: distinct aliases plus a
-#: damped (log2, capped) occurrence count. Structural signals are corroboration:
-#: they add to a concept that already has an alias hit and can break a tie, but
-#: never name a type alone. A text with no line breaks has no heading-like line,
-#: so volume decides there; that is the honest answer for a page with no title.
-_HEADING_LINE_MAX = 80
-_HEADING_COVERAGE = 0.75
-#: A title names its type once, or twice ('INVOICE / QUOTE'). A short line that
-#: is nothing but a list of type words ('Schedule 1, Annex A, Appendix 2,
-#: Exhibit B.' or 'See our Quotation, Estimate and prior Quotes') is a list of
-#: cross-references, not a heading.
-_HEADING_MAX_PHRASES = 2
-#: ...and never the SAME phrase twice ('purchase order PO1 and purchase order
-#: PO2' is a sentence citing orders), and never ends like a sentence or a label
-#: ('Please see the purchase order.', 'Bill To:').
-_SENTENCE_END = (".", ",", ";", ":")
+# ---------------------------------------------------------------------------
+# How a document's own title is found.
+#
+# A concept lands in a TIER, and tiers are compared first, ordinally, so no
+# sub-score can ever leap a tier:
+#
+#   tier 1 : the concept is named by the document's TITLE SEGMENT — the FIRST
+#            segment of the page that, once stripped of markup and numbering,
+#            *is* a type phrase rather than merely containing one.
+#   tier 2 : every other alias hit, ranked by a bounded sub-score.
+#
+# Three rules decide that, and all three are categorical. Earlier rounds used a
+# length bound plus a "the type words cover >= 75% of the line" fraction, and a
+# continuous fraction cannot make a categorical distinction: measured on real
+# pages, 'Bill To' scores 0.667, 'Order No' 0.714, 'Contract sum' 0.727,
+# 'Quotation to' 0.818 and 'Contract #', 'PO #', 'Invoice #' and 'Quote #' all
+# score 1.000 — exactly what 'PURCHASE ORDER' scores. There is no cut point.
+#
+#   A. EQUALITY, not coverage. Normalise a segment (strip whitespace — which
+#      also disposes of '\r' and '\t' — then markup, then surrounding
+#      punctuation, then a trailing bare number or reference token) and require
+#      what remains to EQUAL a matched alias. So '## INVOICE', '| INVOICE |',
+#      '**PURCHASE ORDER**', 'Schedule 1' and 'tax invoice' are titles, while
+#      'TAX INVOICE for services rendered in period', 'Against purchase order
+#      PO1 and purchase order PO2.' and 'purchase order purchase order' are
+#      not. Nothing here has a threshold to tune.
+#   B. A LABEL IS NOT A TITLE. In a rendered table row with more than one
+#      non-empty cell, every cell except the last has its value sitting to its
+#      right, which makes it a key, not a heading. That is what separates the
+#      live invoice workbook's title row (where 'INVOICE' is the last non-empty
+#      cell) from '| PO # | 4412 |', '| Contract sum | 1,936,000.00 |' and
+#      '| Quotation to | Smith Ltd |'.
+#   C. THE FIRST ONE WINS. Among title segments the first in document order is
+#      the document's title, and only its concepts reach tier 1. This is
+#      ordinal: no character count decides it and inserting a word cannot
+#      change which segment comes first. It is what stops a multi-schedule
+#      contract being classified by its own schedule headings — 'FRAMEWORK
+#      AGREEMENT' precedes 'Schedule 1', so the schedules never compete.
+#      REPETITION PLAYS NO PART IN TIER 1 AT ALL.
+#   D. A title naming two or more types is a tie: 'INVOICE / QUOTE' gives
+#      status='unresolved' with both candidates, never a choice.
+#
+# Within tier 2 a bounded sub-score decides: distinct aliases plus a damped
+# (log2, capped) occurrence count. Structural signals are corroboration — they
+# add to a concept that already has an alias hit and can break a tier-2 tie,
+# but never name a type alone. A page with no title segment is decided by
+# volume, which is the honest answer for a page that does not say what it is.
+# ---------------------------------------------------------------------------
+
+#: Markup the parsers wrap a title in: markdown heading hashes and bold stars,
+#: and the pipes of a rendered table row.
+_MARKUP = "#*|"
+
+#: Punctuation that can sit around a title without changing what it says.
+_PUNCT = "\"'`()[]{}<>«».,;:!?-–—…/\\&+=~^%$£€@"
+
+#: A trailing token that NUMBERS a title rather than naming it: 'Schedule 1',
+#: 'Annex A', 'Appendix 2.1', 'Part IV'. Deliberately narrow — 'No' is not in
+#: it, so 'Order No' and 'Contract No' stay labels.
+_REF_TOKEN = re.compile(r"^(?:\d+(?:[.,/]\d+)*|[a-z]|[ivxlcdm]+)$", re.IGNORECASE)
+
+#: The one separator a title uses to name two types at once: 'INVOICE / QUOTE'.
+_TITLE_SPLIT = "/"
+
 _OCCURRENCE_CAP = 3.0
 _SIGNAL = 1.0
 _SIGNAL_CAP = 1.0
 
 #: A tier-2 concept's ALIAS sub-score must be STRICTLY above this to name a
 #: type. One passing mention in a clause scores exactly 1.0 and is not a
-#: classification. (Tier 1 needs no minimum: the heading is the claim.)
+#: classification. (Tier 1 needs no minimum: the title is the claim.)
 _MIN_SCORE = 1.0
 
-#: How far ahead of the runner-up the winner must be. Below this the evidence
-#: has not chosen, and saying it has would be fabrication.
+#: How far ahead of the runner-up a tier-2 winner must be. Below this the
+#: evidence has not chosen, and saying it has would be fabrication.
 _MIN_MARGIN = 1.0
 
 #: Cap on evidence rows (a review row a person reads, not a log). Each
@@ -114,6 +148,81 @@ def _find_all(needle: str, haystack_lower: str) -> List[int]:
     return [m.start() for m in re.finditer(pattern, haystack_lower)]
 
 
+def _normalise(raw: str) -> str:
+    """A segment reduced to what it CALLS itself, folded for comparison.
+
+    Whitespace (so '\\r' and '\\t' cannot make a one-character cliff), then
+    markup, then surrounding punctuation, then a trailing reference token —
+    repeatedly, because '## Schedule 1 ##' needs all four.
+    """
+    s = raw
+    while True:
+        t = s.strip().strip(_MARKUP).strip(_PUNCT).strip()
+        words = t.split()
+        if len(words) > 1 and _REF_TOKEN.match(words[-1]):
+            t = " ".join(words[:-1])
+        if t == s:
+            return fold(s)
+        s = t
+
+
+def _title_owners(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> Tuple[str, ...]:
+    """Every concept this segment NAMES, or () if it is not a title at all.
+
+    Equality, not coverage: each '/'-separated part must itself be an alias, so
+    'INVOICE', '## INVOICE' and 'INVOICE / QUOTE' are titles while 'Invoice To',
+    'PO #4412' and 'TAX INVOICE for services rendered' are not.
+    """
+    norm = _normalise(raw)
+    if not norm:
+        return ()
+    named: List[str] = []
+    for part in norm.split(_TITLE_SPLIT):
+        key = _normalise(part)
+        if not key:
+            return ()
+        claiming = owners.get(key)
+        if not claiming:
+            return ()
+        for code in claiming:
+            if code not in named:
+                named.append(code)
+    return tuple(named)
+
+
+def _segments(text: str) -> List[Tuple[int, int, bool]]:
+    """``(start, end, may_be_a_title)`` for every line and every table cell.
+
+    Cells are segments because the spreadsheet parser renders a whole sheet row
+    as one '| a | b | c |' line, so a line-only rule cannot see a spreadsheet's
+    title at all. In a row with more than one non-empty cell only the LAST
+    non-empty cell may be a title: anything with a further non-empty cell to
+    its right is a key whose value that cell is (rule B).
+    """
+    out: List[Tuple[int, int, bool]] = []
+    pos, n = 0, len(text)
+    while True:
+        nl = text.find("\n", pos)
+        end = n if nl < 0 else nl
+        line = text[pos:end]
+        if "|" in line:
+            cells: List[Tuple[int, int]] = []
+            cs = pos
+            for piece in line.split("|"):
+                ce = cs + len(piece)
+                if piece.strip():
+                    cells.append((cs, ce))
+                cs = ce + 1
+            last = len(cells) - 1
+            for i, (a, b) in enumerate(cells):
+                out.append((a, b, i == last))
+        else:
+            out.append((pos, end, True))
+        if nl < 0:
+            return out
+        pos = nl + 1
+
+
 def resolve_document_type(
     *,
     declared_concept: Optional[str],
@@ -130,27 +239,33 @@ def resolve_document_type(
     text = full_text or ""
     # Match on a lowercase copy with EXACTLY the same length as the page, so an
     # offset found in it is an offset in the page. str.lower() alone cannot
-    # promise that ("\u0130".lower() is two characters), so a character whose
+    # promise that ("İ".lower() is two characters), so a character whose
     # lowercase is not one character is left as it is. fold() serves only the
     # alias side, because it collapses whitespace and would shift offsets.
     lowered = "".join(
         (lc if len(lc := ch.lower()) == 1 else ch) for ch in text
     ).replace("_", " ").replace("-", " ")
 
-    # (concept, kind, start, length) for every alias hit, before scoring.
+    # folded alias -> the concepts claiming it. Built here rather than taken
+    # from vocab.alias_index so the status rule is held by THIS module: only
+    # status='active' types resolve, whatever a caller hands in.
+    owners: Dict[str, Tuple[str, ...]] = {}
+    # (concept, kind, start, length, folded alias) for every alias hit.
     hits: List[Tuple[str, str, int, int, str]] = []
     signals: List[Tuple[str, int, int]] = []
-
-    # Only active types are in vocabulary.document_types, so a proposed type
-    # can never become the evidence answer.
+    # ONE loop, so the status rule is enforced in exactly one place. A second
+    # copy of this `continue` downstream could not fire and so could not fail,
+    # and a check that cannot fail hides which line is load-bearing.
     for code, dt in vocab.document_types.items():
         if dt.status != "active":
-            continue  # belt and braces: build_vocabulary already filters
+            continue
         # A set: a concept's own name is also an alias, and counting the same
         # phrase twice would hand that concept a spurious double score.
-        for folded in {fold(a) for a in (*dt.aliases, code.split(".", 1)[-1])}:
-            if not folded:
-                continue
+        folded_aliases = {
+            f for f in (fold(a) for a in (*dt.aliases, code.split(".", 1)[-1])) if f
+        }
+        for folded in folded_aliases:
+            owners[folded] = (*owners.get(folded, ()), code)
             for start in _find_all(folded, lowered):
                 kind = "title_alias" if start < title_chars else "body_alias"
                 hits.append((code, kind, start, len(folded), folded))
@@ -185,37 +300,28 @@ def resolve_document_type(
         max_end = max(max_end, span[1])
         i = j
 
-    # Which lines are heading-like: short, and mostly made of type phrases.
-    line_starts = [0] + [m.end() for m in re.finditer(r"[\n|]", text)]
-    def _line_of(pos: int) -> int:
-        return bisect.bisect_right(line_starts, pos) - 1
-    covered: Dict[int, set] = {}
-    for h in kept_hits:
-        covered.setdefault(_line_of(h[2]), set()).add((h[2], h[2] + h[3]))
-    heading_lines = set()
-    for ln, spans in covered.items():
-        lo = line_starts[ln]
-        hi = line_starts[ln + 1] - 1 if ln + 1 < len(line_starts) else len(text)
-        line = text[lo:hi]
-        content = len(re.sub(r"[\s#*]", "", line))
-        if (not content or len(line.strip()) > _HEADING_LINE_MAX
-                or len(spans) > _HEADING_MAX_PHRASES
-                or line.rstrip(" *").endswith(_SENTENCE_END)
-                or len({fold(text[a:b]) for a, b in spans}) < len(spans)):
+    # Rules A, B and C: the document's title is the FIRST segment that IS a
+    # type phrase, and only the concepts it names reach tier 1.
+    title_concepts: Tuple[str, ...] = ()
+    title_span: Tuple[int, int] = (-1, -1)
+    for a, b, may_be_a_title in _segments(text):
+        if not may_be_a_title:
             continue
-        said = sum(len(re.sub(r"[\s#*]", "", text[a:b])) for a, b in spans)
-        if said >= _HEADING_COVERAGE * content:
-            heading_lines.add(ln)
+        named = _title_owners(text[a:b], owners)
+        if named:
+            title_concepts, title_span = named, (a, b)
+            break
 
+    # A concept's region is the evidence that COUNTED for it. For a tier-1
+    # concept that is the title segment alone; its other mentions decided
+    # nothing and must not be shown as the reason.
     region: Dict[str, List[Tuple[str, str, int, int, str]]] = {}
-    tier: Dict[str, int] = {}
     for h in kept_hits:
-        t = 1 if _line_of(h[2]) in heading_lines else 2
-        code = h[0]
-        if code not in tier or t < tier[code]:
-            tier[code], region[code] = t, []
-        if t == tier[code]:
-            region[code].append(h)
+        if h[0] in title_concepts:
+            if title_span[0] <= h[2] and h[2] + h[3] <= title_span[1]:
+                region.setdefault(h[0], []).append(h)
+        else:
+            region.setdefault(h[0], []).append(h)
 
     alias_sub: Dict[str, float] = {}
     for code, rhits in region.items():
@@ -232,42 +338,49 @@ def resolve_document_type(
         code: alias_sub[code] + min(_SIGNAL_CAP, _SIGNAL * len(sig_for.get(code, ())))
         for code in region
     }
-    # Eligible to be named at all: a heading hit, or more than a passing mention.
-    eligible = [
-        c for c in region if tier[c] == 1 or alias_sub[c] > _MIN_SCORE
-    ]
 
     evidence_concept: Optional[str] = None
     candidates: Tuple[str, ...] = ()
     status = "unknown"
 
-    if eligible:
-        best_tier = min(tier[c] for c in eligible)
-        in_tier = sorted(
-            (c for c in eligible if tier[c] == best_tier),
+    if title_concepts:
+        # Tier 1. The title is the claim: no score, no repetition, no margin.
+        if len(title_concepts) == 1:
+            status = "matched"
+            evidence_concept = title_concepts[0]
+            candidates = title_concepts
+        else:
+            status = "unresolved"
+            candidates = tuple(sorted(title_concepts))
+    else:
+        # Tier 2. Nothing on the page says what it is, so volume decides, and
+        # only above a floor and by a margin.
+        ranked = sorted(
+            (c for c in region if alias_sub[c] > _MIN_SCORE),
             key=lambda c: (-sub[c], c),
         )
-        best_score = sub[in_tier[0]]
-        runner_up = sub[in_tier[1]] if len(in_tier) > 1 else None
-        if runner_up is not None and (best_score - runner_up) < _MIN_MARGIN:
-            status = "unresolved"
-            candidates = tuple(
-                c for c in in_tier if sub[c] > best_score - _MIN_MARGIN
-            )
-        else:
-            status = "matched"
-            evidence_concept = in_tier[0]
-            candidates = (in_tier[0],)
+        if ranked:
+            best_score = sub[ranked[0]]
+            runner_up = sub[ranked[1]] if len(ranked) > 1 else None
+            if runner_up is not None and (best_score - runner_up) < _MIN_MARGIN:
+                status = "unresolved"
+                candidates = tuple(
+                    c for c in ranked if sub[c] > best_score - _MIN_MARGIN
+                )
+            else:
+                status = "matched"
+                evidence_concept = ranked[0]
+                candidates = (ranked[0],)
 
     # Only evidence that COUNTED is returned: a human reading "why" must not be
-    # shown spans that scored nothing. That is the hits in the concept's own
-    # tier region, plus its corroborating signals, and only for a concept that
-    # was eligible to be named.
+    # shown spans that scored nothing. That is a concept's own region plus its
+    # corroborating signals, and only for a concept that could be named at all.
     # ...and only for concepts that bear on the answer: the declared one, the
     # winner and any tied candidates. A runner-up that lost is not the reason.
+    shown = {c for c in region if c in title_concepts or alias_sub[c] > _MIN_SCORE}
     relevant = {c for c in (declared_concept, evidence_concept, *candidates) if c}
     evidence: List[Evidence] = []
-    for code in eligible:
+    for code in shown:
         if code not in relevant:
             continue
         for c, kind, start, length, _ in region[code]:

@@ -237,6 +237,21 @@ def test_a_signal_alongside_an_alias_is_evidence_verbatim():
 
 
 def test_a_signal_can_break_a_tie_between_equal_aliases():
+    """Tier 2 only. A tier-1 tie is two types named by the document's own
+    title, and no amount of corroboration may pick one of those (rule D)."""
+    vocab = build_vocabulary([], [
+        _row("doctype.alpha", ["shared"], signals=["order of precedence"]),
+        _row("doctype.beta", ["shared"]),
+    ], source="test")
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=vocab,
+        full_text="Dear Sir\nWe hold the shared and the shared.\n"
+                  "The order of precedence applies.\n")
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.alpha")
+
+
+def test_a_signal_cannot_break_a_tie_the_title_itself_states():
+    """Rule D: a title naming two types is unresolved, full stop."""
     vocab = build_vocabulary([], [
         _row("doctype.alpha", ["shared"], signals=["order of precedence"]),
         _row("doctype.beta", ["shared"]),
@@ -244,7 +259,8 @@ def test_a_signal_can_break_a_tie_between_equal_aliases():
     r = resolve_document_type(
         declared_concept=None, vocabulary=vocab,
         full_text="SHARED\nThe order of precedence applies.\n")
-    assert (r.status, r.evidence_concept) == ("matched", "doctype.alpha")
+    assert (r.status, r.evidence_concept) == ("unresolved", None)
+    assert set(r.candidates) == {"doctype.alpha", "doctype.beta"}
 
 
 def test_the_order_forms_call_off_signals_are_prose_and_do_not_match():
@@ -336,16 +352,23 @@ def test_a_proposed_type_inside_a_hand_built_vocabulary_never_resolves():
 def test_a_concepts_own_name_does_not_double_count_against_a_shared_alias():
     """doctype.alpha lists 'alpha' AND is named alpha. Counted twice it would
     beat doctype.beta, which claims the same word once: a collision silently
-    won by whichever concept happened to repeat itself."""
+    won by whichever concept happened to repeat itself. Stated on a page with
+    no title, because that is where counting happens at all."""
     vocab = build_vocabulary([], [
         _row("doctype.alpha", ["alpha"]),
         _row("doctype.beta", ["alpha"]),
     ], source="test")
     r = resolve_document_type(
-        declared_concept=None, full_text="ALPHA\n", vocabulary=vocab,
+        declared_concept=None, vocabulary=vocab,
+        full_text="Dear Sir\nWe hold the alpha thing. The alpha again.\n",
     )
     assert r.status == "unresolved"
     assert set(r.candidates) == {"doctype.alpha", "doctype.beta"}
+    titled = resolve_document_type(
+        declared_concept=None, full_text="ALPHA\n", vocabulary=vocab,
+    )
+    assert titled.status == "unresolved"
+    assert set(titled.candidates) == {"doctype.alpha", "doctype.beta"}
 
 
 def test_a_phrase_shaped_seed_signal_matches_verbatim():
@@ -363,14 +386,31 @@ def test_a_heading_line_outranks_a_citation_on_a_prose_line():
     assert (r.status, r.evidence_concept) == ("matched", "doctype.invoice")
 
 
-def test_two_heading_like_lines_naming_different_types_are_a_tie():
-    """CONFLICT with the earlier 'INVOICE\nQUOTE -> invoice' expectation: a
-    one-word second line is as heading-like as the first, so it is honestly a
-    tie, not a pretence that line 1 is stronger."""
+def test_a_title_naming_two_types_on_one_segment_is_a_tie():
+    """Rule D. The tie that stays reachable is a title that says both, in a
+    line or in a cell of its own."""
+    for page in ("INVOICE / QUOTE\n", "| INVOICE / QUOTE |\n",
+                 "Acme Ltd\n## INVOICE / QUOTE ##\nAmount due: 1.00\n"):
+        r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+        assert (r.status, r.evidence_concept) == ("unresolved", None), page
+        assert set(r.candidates) == {"doctype.invoice", "doctype.quote"}, page
+    three = resolve_document_type(declared_concept=None, vocabulary=V,
+                                  full_text="INVOICE / QUOTE / ORDER\n")
+    assert three.status == "unresolved"
+    assert set(three.candidates) == {
+        "doctype.invoice", "doctype.quote", "doctype.order"}
+
+
+def test_the_first_title_in_the_page_wins_and_later_ones_do_not_compete():
+    """Rule C, and the answer to the round-3 'INVOICE\\nQUOTE' conflict: the
+    second line is a second title-like segment, not a competitor. Ordinal, so
+    no character count and no repetition decides it."""
     r = resolve_document_type(declared_concept=None, full_text="INVOICE\nQUOTE\n",
                               vocabulary=V)
-    assert r.status == "unresolved"
-    assert set(r.candidates) == {"doctype.invoice", "doctype.quote"}
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.invoice")
+    swapped = resolve_document_type(declared_concept=None, full_text="QUOTE\nINVOICE\n",
+                                    vocabulary=V)
+    assert swapped.evidence_concept == "doctype.quote"
 
 
 LETTERHEAD_ROWS = [
@@ -421,14 +461,131 @@ def _who(first_line):
                                  full_text=first_line + "\n" + QUOTE_BODY).evidence_concept
 
 
-def test_heading_line_length_boundary_is_80_characters():
-    assert _who("INVOICE" + " " * 72 + "b") == "doctype.invoice"   # 80 chars
-    assert _who("INVOICE" + " " * 73 + "b") == "doctype.quote"     # 81 chars
+#: Every label the reviewer measured against the coverage fraction, with the
+#: fraction it scored. The fractions run from 0.667 to 1.000 and 'PURCHASE
+#: ORDER' also scores 1.000, so no cut point separates them. Rule A does it by
+#: equality instead: none of these IS a type phrase...
+MEASURED_LABELS = [
+    "Bill To", "Order No", "Contract sum", "Agreement ref", "Invoice To",
+    "Contract No", "Quotation to", "PURCHASE ORDER FORM",
+    "TAX INVOICE for services rendered in period",
+]
+#: ...except the four that are a type phrase plus a bare '#'. Markup stripping
+#: is what rule A asks for, so as a line of their own these DO name a type —
+#: the same accepted class as a lone 'Invoice' footer. Rule B is what retires
+#: them, because that is the shape they were measured in: a table cell with its
+#: value in the next cell.
+HASH_LABELS = {"Contract #": "doctype.contract_unspecified", "PO #": "doctype.order",
+               "Invoice #": "doctype.invoice", "Quote #": "doctype.quote"}
+
+#: And what IS a title, by equality, with no fraction involved.
+REAL_TITLES = {
+    "PURCHASE ORDER": "doctype.order",
+    "## INVOICE": "doctype.invoice",
+    "## INVOICE ##": "doctype.invoice",
+    "**PURCHASE ORDER**": "doctype.order",
+    "tax invoice": "doctype.invoice",
+    "Schedule 1": "doctype.schedule",
+    "Annex A": "doctype.schedule",
+    "Appendix 2.1": "doctype.schedule",
+    "Part IV": None,          # not a type phrase at all
+    "'INVOICE'": "doctype.invoice",
+    "INVOICE.": "doctype.invoice",
+}
 
 
-def test_heading_coverage_boundary_is_three_quarters_of_the_line():
-    assert _who("INVOICE ab") == "doctype.invoice"    # 7 of 9 = 0.78
-    assert _who("INVOICE abc") == "doctype.quote"     # 7 of 10 = 0.70
+def test_a_segment_is_a_title_only_when_it_IS_the_type_phrase():
+    """Rule A. Equality after normalisation, never 'mostly'. A continuous
+    coverage fraction cannot make this categorical distinction: 'Bill To'
+    scored 0.667, 'Schedule 1' 0.889 and 'PO #' 1.000, the same as 'PURCHASE
+    ORDER'."""
+    for label in MEASURED_LABELS:
+        assert _who(label) == "doctype.quote", label  # the body decides, not the label
+    for label, names in HASH_LABELS.items():
+        # A line of its own, so accepted: '#' is markup and rule A strips it.
+        assert _who(label) == names, label
+    for title, want in REAL_TITLES.items():
+        r = resolve_document_type(declared_concept=None, vocabulary=V,
+                                  full_text=title + "\n" + QUOTE_BODY)
+        assert r.evidence_concept == (want or "doctype.quote"), title
+
+
+def test_a_long_line_that_merely_contains_a_type_word_is_not_a_title():
+    """What the deleted 80-character bound and 0.75 coverage fraction were for.
+    Equality subsumes both: the line is not the phrase at any length."""
+    assert _who("INVOICE") == "doctype.invoice"
+    assert _who("INVOICE ab") == "doctype.quote"
+    assert _who("INVOICE" + " " * 72 + "bc") == "doctype.quote"
+    assert _who("INVOICE" + " " * 73 + "bc") == "doctype.quote"
+    # These two tie with the body's quotes in tier 2. A title would have been a
+    # decided 'order', so 'not order' is exactly the claim: they are not titles.
+    assert _who("Against purchase order PO1 and purchase order PO2.") != "doctype.order"
+    assert _who("purchase order purchase order") != "doctype.order"
+
+
+def test_a_multi_cell_table_row_is_field_data_not_a_title():
+    """Rule B, and the reviewer's finding 2. 'PO #' normalises to 'PO', which
+    IS an alias, so equality alone would make this page an order. In a row
+    with a further non-empty cell to its right a cell is a key whose value that
+    cell is, and a key is not a heading."""
+    page = ("## Sheet: Billing\n"
+            "| Orbis Industrial Supplies Limited, 14 Dock Road, Hull | "
+            "TAX INVOICE for services rendered in period |\n"
+            "| PO # | 4412 |\n"
+            "| Amount due | 1,250.00 |\n")
+    r = resolve_document_type(declared_concept="doctype.invoice", full_text=page,
+                              vocabulary=V)
+    assert r.evidence_concept != "doctype.order"
+    assert (r.evidence_concept, r.agreement) == (None, "declared_only")
+    for label in [*MEASURED_LABELS, *HASH_LABELS, "Schedule 1", "PURCHASE ORDER"]:
+        cell = resolve_document_type(
+            declared_concept=None, vocabulary=V,
+            full_text="| " + label + " | Smith Ltd |\n" + QUOTE_BODY)
+        assert cell.evidence_concept == "doctype.quote", label
+
+
+def test_the_last_non_empty_cell_of_a_row_can_still_be_the_title():
+    """The live invoice/PO/quote workbooks put the title in the last non-empty
+    cell of row 1, beside the supplier's name and a logo letter. Nothing sits
+    to its right, so it is not a key."""
+    for row, want in [
+        ("| O | Orbis Platform Solutions Ltd |  | INVOICE |  |", "doctype.invoice"),
+        ("| Assurity Ltd |  |  | PURCHASE ORDER |  |", "doctype.order"),
+        ("| A | Aureus Workflow Ltd |  | Order Form |  |", "doctype.call_off_contract"),
+        ("| **Assurity Ltd**   | **PURCHASE ORDER**   |", "doctype.order"),
+        ("| INVOICE |", "doctype.invoice"),
+    ]:
+        r = resolve_document_type(
+            declared_concept=None, vocabulary=V,
+            full_text="## Sheet: Data\n\n" + row + "\n| --- | --- |\n" + QUOTE_BODY)
+        assert r.evidence_concept == want, row
+
+
+def test_a_title_keeps_its_markup_and_its_number_off_the_comparison():
+    """Rule A's normalisation, each part of it load-bearing on its own."""
+    assert _who("## PURCHASE ORDER") == "doctype.order"        # markdown hashes
+    assert _who("**PURCHASE ORDER**") == "doctype.order"       # bold stars
+    assert _who("  \tPURCHASE ORDER\t  ") == "doctype.order"   # whitespace
+    assert _who("(PURCHASE ORDER)") == "doctype.order"         # punctuation
+    assert _who("Schedule 1") == "doctype.schedule"            # trailing number
+    assert _who("Annex B") == "doctype.schedule"               # trailing letter
+    assert _who("Order No") == "doctype.quote"                 # ...but not 'No'
+
+
+def test_carriage_returns_and_tabs_give_the_same_answer_as_spaces():
+    """The reviewer's finding 4: a tail rule that listed its own characters
+    ('rstrip(" *")') let '\\r' invert the answer. Normalisation now ends in
+    fold(), which is whitespace-insensitive, so there is no such character
+    list to get wrong."""
+    answers = {
+        ws: resolve_document_type(
+            declared_concept=None, vocabulary=V,
+            full_text=("Acme Ltd" + ws + "TAX INVOICE" + ws + "Order:" + ws
+                       + "Order:" + ws)
+        ).evidence_concept
+        for ws in ("\n", "\r\n", "\n\t")
+    }
+    assert set(answers.values()) == {"doctype.invoice"}, answers
 
 
 def test_a_label_cell_that_merely_contains_a_type_word_is_not_a_heading():
@@ -451,15 +608,20 @@ def test_a_title_in_its_own_table_cell_is_a_heading():
     assert r.evidence_concept == "doctype.invoice"
 
 
-def test_a_line_listing_many_type_words_is_not_a_heading():
+def test_a_line_listing_many_type_words_is_not_a_title():
+    """A list of cross-references is not the document's name. Equality does
+    this on its own: the line is not any one type phrase."""
     sched = "Schedule 1, Annex A, Appendix 2, Exhibit B."
     r = resolve_document_type(
         declared_concept="doctype.framework_agreement", vocabulary=V,
         full_text="FRAMEWORK AGREEMENT\n" + sched + "\n")
     assert (r.evidence_concept, r.agreement) == ("doctype.framework_agreement", "agreed")
-    three = resolve_document_type(declared_concept=None, vocabulary=V,
-                                  full_text="INVOICE / QUOTE / ORDER\n")
-    assert three.status == "unknown"
+    # A list of one type's own references is not that type's title either. Said
+    # with one alias twice, so tier-2 volume cannot answer it instead: a title
+    # would be a decided 'schedule', a non-title ties with the body's quotes.
+    r2 = resolve_document_type(declared_concept=None, vocabulary=V,
+                               full_text="Schedule 1, Schedule 2.\n" + QUOTE_BODY)
+    assert (r2.status, r2.evidence_concept) == ("unresolved", None)
 
 
 def test_title_chars_labels_evidence_and_never_changes_the_outcome():
@@ -601,17 +763,47 @@ def test_a_losing_runner_up_is_not_shown_as_the_reason():
     assert {e.concept_code for e in r.evidence} == {"doctype.invoice"}
 
 
-def test_a_line_repeating_one_phrase_is_a_citation_not_a_heading():
-    """No sentence punctuation, so only the repeated-phrase rule can stop
-    'purchase order PO1 and purchase order PO2' being a heading."""
-    r = resolve_document_type(
-        declared_concept=None, vocabulary=V,
-        full_text="Acme Ltd\nTAX INVOICE\nRe purchase order PO1 and purchase order PO2\n")
-    assert r.evidence_concept == "doctype.invoice"
+def test_a_citation_after_the_title_does_not_compete_with_it():
+    """Rule C does what round 3 needed a repeated-phrase rule and a
+    sentence/label-ending rule for: whatever follows the title is not it."""
+    for after in ("Re purchase order PO1 and purchase order PO2",
+                  "Please see the purchase order.",
+                  "Order:",
+                  "purchase order purchase order",
+                  "Order of precedence: see the purchase order."):
+        r = resolve_document_type(
+            declared_concept=None, vocabulary=V,
+            full_text="Acme Ltd\nTAX INVOICE\n" + after + "\n")
+        assert r.evidence_concept == "doctype.invoice", after
 
 
-def test_a_label_ending_in_a_colon_is_not_a_heading():
-    r = resolve_document_type(
-        declared_concept=None, vocabulary=V,
-        full_text="Acme Ltd\nTAX INVOICE\nOrder:\n")
-    assert r.evidence_concept == "doctype.invoice"
+def test_repetition_plays_no_part_in_naming_the_title():
+    """The reviewer's finding 1, which is why rule C exists. Two repeated
+    'Schedule n' headings used to outvote the document's own title, which would
+    have mislabelled nearly every multi-schedule contract."""
+    framework = ("FRAMEWORK AGREEMENT\n"
+                 "Framework Ref: RM6100\n"
+                 "1. This agreement sets out terms.\n\n"
+                 "Schedule 1\nPricing and rates.\n\n"
+                 "Schedule 2\nService levels.\n")
+    msa = ("MASTER SERVICE AGREEMENT\n"
+           "Contract No: MSA-7781\n"
+           "1. This agreement governs the parties.\n\n"
+           "Annex A\nData processing terms.\n\n"
+           "Annex B\nSecurity requirements.\n")
+    contents = ("MASTER SERVICE AGREEMENT\nContents\n\n"
+                "Schedule 1\nSchedule 2\nSchedule 3\nAnnex A\nAnnex B\n"
+                "Appendix 1\nExhibit A\n")
+    for page, want in [(framework, "doctype.framework_agreement"),
+                       (msa, "doctype.master_agreement"),
+                       (contents, "doctype.master_agreement")]:
+        r = resolve_document_type(declared_concept=want, full_text=page, vocabulary=V)
+        assert (r.status, r.evidence_concept, r.agreement) == (
+            "matched", want, "agreed"), page[:40]
+        assert "doctype.schedule" not in r.candidates
+        # ...and the schedules' spans are not offered as the reason, either.
+        assert {e.concept_code for e in r.evidence} == {want}
+    # A document that really IS a schedule still says so.
+    alone = resolve_document_type(declared_concept=None, vocabulary=V,
+                                  full_text="Schedule 1\nPricing and rates.\n")
+    assert alone.evidence_concept == "doctype.schedule"
