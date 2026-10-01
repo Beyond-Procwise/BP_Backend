@@ -1,0 +1,60 @@
+name: Reference data checks
+
+# The document and relationship vocabulary is data, so a bad edit cannot be
+# caught by a type checker. These checks are what turns "two types now claim the
+# same alias" from something noticed in production into something noticed in the
+# pull request.
+
+on:
+  push:
+    branches: [main, Development]
+  pull_request:
+
+jobs:
+  reference-data:
+    runs-on: ubuntu-latest
+    env:
+      DB_HOST: ci-placeholder
+      DB_PORT: "5432"
+      DB_NAME: ci-placeholder
+      DB_USER: ci-placeholder
+      DB_PASSWORD: ci-placeholder
+      S3_BUCKET_NAME: ci-placeholder
+      S3_PREFIXES: '["ci"]'
+      QDRANT_URL: http://127.0.0.1:9
+      QDRANT_API_KEY: ci-placeholder
+      SES_DEFAULT_SENDER: ci-placeholder
+      CUDA_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pyyaml psycopg2-binary
+
+      # No database: these run over the seed, which a live test
+      # (tests/services/concepts/test_concept_table.py) separately asserts
+      # matches the tables.
+      - name: Validation checks over the seeded vocabulary
+        run: |
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          from src.services.concepts.vocabulary import SEED_VOCABULARY
+          from src.services.concepts.validate import run_all
+          bad = run_all(SEED_VOCABULARY)
+          for x in bad:
+              print(f'{x.check}: {x.subject} - {x.detail}')
+          sys.exit(1 if bad else 0)
+          "
+
+      - name: Vocabulary unit tests
+        run: |
+          python -m pytest -q \
+            tests/services/concepts/test_validation_checks.py \
+            tests/services/concepts/test_vocabulary_runtime_load.py
