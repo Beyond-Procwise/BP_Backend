@@ -624,7 +624,16 @@ class ProcessMonitorWatcher:
 
         except Exception as exc:
             logger.exception("Extraction failed for record %s", record_id)
-            _da = "unsupported" if "unsupported" in str(exc).lower() else None
+            # A refused category is "unsupported" by TYPE, not by message
+            # wording: operators and the UI read doc_action, and a reworded
+            # refusal must not silently change it.
+            from src.services.concepts.routing import (
+                AmbiguousDocumentCategory, UnknownDocumentCategory,
+            )
+            if isinstance(exc, (UnknownDocumentCategory, AmbiguousDocumentCategory)):
+                _da = "unsupported"
+            else:
+                _da = "unsupported" if "unsupported" in str(exc).lower() else None
             self._mark_failed(record_id, str(exc), doc_action=_da)
 
     def _collect_training_example(
