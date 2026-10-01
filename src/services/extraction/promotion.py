@@ -19,6 +19,7 @@ import psycopg2
 
 from config.settings import Settings
 from src.services.db import get_conn
+from src.services.extraction.persistence import normalise_source_file
 
 log = logging.getLogger(__name__)
 
@@ -337,7 +338,7 @@ def _log_derived_money(
         return 0
     pk_col = _STG_PK.get(doc_type)
     doc_pk = derived.get(pk_col) if pk_col else None
-    source_file = derived.get("source_file")
+    source_file = normalise_source_file(derived.get("source_file"))
     n = 0
     for f in fields:
         present = derived.get(f) not in (None, "")
@@ -394,7 +395,7 @@ def _log_imprecise_dates(
         return 0
     pk_col = _STG_PK.get(doc_type)
     doc_pk = row.get(pk_col) if pk_col else None
-    source_file = row.get("source_file")
+    source_file = normalise_source_file(row.get("source_file"))
     months = {(m.group(1)[:3].lower(), m.group(2)) for m in _MONTH_ONLY.finditer(full_text)}
     if not months:
         return 0
@@ -455,7 +456,7 @@ def _check_tax_total_consistency(
     n_logged = 0
     pk_col = _STG_PK.get(doc_type)
     doc_pk = row.get(pk_col) if pk_col else None
-    source_file = row.get("source_file")
+    source_file = normalise_source_file(row.get("source_file"))
 
     def _log(field_name: str, issue: str, expected, computed, notes,
              severity: str = "warning"):

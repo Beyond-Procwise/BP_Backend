@@ -355,6 +355,54 @@ def write_provenance(
             raise
 
 
+#: Two or more consecutive separators. Not anchored, so it also catches them mid-path.
+_REPEATED_SEPARATOR = re.compile(r"/{2,}")
+
+
+def normalise_source_file(value: str | None) -> str | None:
+    """One canonical spelling per document reference.
+
+    source_file is part of the open-findings key (see write_discrepancies), so from the
+    moment it became load-bearing, the SAME document arriving spelled two ways would split
+    into two findings instead of refreshing one -- the stacking bug the key exists to
+    prevent. This collapses the spellings that mean the same thing: surrounding whitespace,
+    repeated separators, a leading ``./`` and a leading ``/``.
+
+    IT FIXES SPELLING, NOT IDENTITY, and the distinction is the whole design. It does NOT
+    reduce the value to a basename: that is currently lossless (38,511 distinct document
+    references across the raw tables give 38,511 distinct basenames) but it would make the
+    key blind to the directory, so two folders each holding ``invoice.pdf`` would merge two
+    DIFFERENT documents and silently discard one's findings -- the defect
+    2026-10-01_discrepancy_open_key_per_document.sql exists to fix. Nothing here may ever
+    map two distinct references onto one.
+
+    source_file is not uniformly a filesystem path, so the shapes in use survive intact:
+    ``triage:<ref>``, ``process_monitor:<id>`` and ``file:<path>`` synthetic references
+    (4,539 of 5,373 findings rows on bp_testdb are ``triage:``), and ``s3://`` URIs, whose
+    scheme separator is deliberately not read as a repeated separator.
+
+    Applied on write at every point a value enters a findings row, and verified against the
+    live tables not to alter a single stored value -- which is why it shipped with no
+    backfill (tests/extraction/test_source_file_normalised.py holds that invariant).
+    """
+
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return text
+
+    scheme, separator, remainder = text.partition("://")
+    if separator:
+        # A URI: keep the scheme's own "//" and canonicalise only the part after it.
+        return f"{scheme}://{_REPEATED_SEPARATOR.sub('/', remainder.lstrip('/'))}"
+
+    text = _REPEATED_SEPARATOR.sub("/", text)
+    if text.startswith("./"):
+        text = text[2:]
+    return text.lstrip("/")
+
+
 def write_discrepancies(
     *,
     doc_type: str,
@@ -383,6 +431,10 @@ def write_discrepancies(
     source_file so it still refreshes; raw_id could not be used for this because
     it changes on every re-read, restoring the stacking bug.
     """
+    # Canonical spelling before the value reaches the key. See normalise_source_file:
+    # source_file is part of the open-findings identity, so two spellings of one document
+    # would stack two findings instead of refreshing one.
+    source_file = normalise_source_file(source_file)
     # Materialize: `discrepancies` may be a one-shot generator that we iterate
     # twice (rows build below + action_rows comprehension).
     discrepancies = list(discrepancies)
