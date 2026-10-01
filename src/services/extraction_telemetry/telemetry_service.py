@@ -83,12 +83,28 @@ def _match_pk(cur, stg_table: str, pk_col: str, file_path: str) -> str | None:
 
 
 def _discrepancy_summary(cur, doc_pk: str | None, source_file: str) -> tuple[int, dict]:
-    """(total, {issue_type: count}) for this document from bp_extraction_discrepancy."""
+    """(total, {issue_type: count}) for this document from bp_extraction_discrepancy.
+
+    Document-type findings are excluded. They are reporting notes about what a
+    page CALLS itself, never problems with the document's extracted data, and
+    this function's n_discrepancies is written into a PERSISTED per-document row
+    in proc.bp_extraction_telemetry — so counting them would move a stored
+    quality number permanently because a reporting feature shipped. The other
+    analytics consumers that compute on READ (corpus_facts, summary_agent,
+    analysis_findings) are deliberately left alone; each needs its own product
+    judgement about what its figure is for. The same filter is applied in
+    src/services/benchmark_live.py and src/services/session_postprocess.py; keep
+    all three in step with extraction.persistence.TYPE_FINDING_ISSUE_TYPES,
+    which is imported here rather than copied so it cannot drift.
+    """
+    from src.services.extraction.persistence import TYPE_FINDING_ISSUE_TYPES
+
     cur.execute(
         "select issue_type, count(*) from proc.bp_extraction_discrepancy "
-        "where (doc_pk_candidate = %s and %s <> '') or source_file = %s "
+        "where ((doc_pk_candidate = %s and %s <> '') or source_file = %s) "
+        "  and coalesce(issue_type, '') <> ALL(%s) "
         "group by issue_type",
-        (doc_pk, doc_pk or "", source_file),
+        (doc_pk, doc_pk or "", source_file, list(TYPE_FINDING_ISSUE_TYPES)),
     )
     by_type: dict[str, int] = {}
     for issue_type, n in cur.fetchall():

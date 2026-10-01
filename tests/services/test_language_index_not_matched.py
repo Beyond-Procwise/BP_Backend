@@ -168,6 +168,10 @@ def test_allowed_files_exist_so_the_allowlist_cannot_go_stale():
 
 
 def test_no_matching_module_can_reach_the_translation_store():
+    """Note the breadth, which is the intent and not an accident: matching_roots
+    includes dispatch and process_monitor_watcher, so ANY new i18n import
+    anywhere in their transitive import closure fails this reference-data job,
+    however distant from matching the importing module feels."""
     bad = matching_paths_reaching_readers(ROOT)
     assert not bad, (
         "matching code reaches display-label machinery (import chain shown): "
