@@ -66,12 +66,21 @@ _WEIGHT = {"title_alias": 5.0, "body_alias": 1.0, "structural_signal": 0.5}
 #      'TAX INVOICE for services rendered in period', 'Against purchase order
 #      PO1 and purchase order PO2.' and 'purchase order purchase order' are
 #      not. Nothing here has a threshold to tune.
-#   B. A LABEL IS NOT A TITLE. In a rendered table row with more than one
-#      non-empty cell, every cell except the last has its value sitting to its
-#      right, which makes it a key, not a heading. That is what separates the
-#      live invoice workbook's title row (where 'INVOICE' is the last non-empty
-#      cell) from '| PO # | 4412 |', '| Contract sum | 1,936,000.00 |' and
-#      '| Quotation to | Smith Ltd |'.
+#   B. A LABEL IS NOT A TITLE. Only the LAST non-empty cell of a rendered table
+#      row may be a title: every earlier cell has its value sitting to its
+#      right, which makes it a key. That separates '| PO # | 4412 |',
+#      '| Contract sum | 1,936,000.00 |' and '| Quotation to | Smith Ltd |'
+#      from a real title row. It must be the last-cell reading and NOT "a row
+#      with two or more non-empty cells has no title": there is no single-cell
+#      title row anywhere in the live corpus. Every workbook titles itself as
+#
+#          | Ironbridge Managed IT Ltd |  |  | INVOICE |  |
+#          | M | Meridia Cloud Platforms Ltd |  | INVOICE |  |
+#
+#      because the spreadsheet parser renders a sheet row at the full sheet
+#      width. Measured over 50 live documents, the cell-count reading scores
+#      7/10 invoices and calls MCP-INV-1148 an ORDER, confidently and wrongly;
+#      the last-cell reading scores 10/10 invoices and 5/5 POs.
 #   C. THE FIRST ONE WINS. Among title segments the first in document order is
 #      the document's title, and only its concepts reach tier 1. This is
 #      ordinal: no character count decides it and inserting a word cannot

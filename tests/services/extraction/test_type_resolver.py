@@ -807,3 +807,21 @@ def test_repetition_plays_no_part_in_naming_the_title():
     alone = resolve_document_type(declared_concept=None, vocabulary=V,
                                   full_text="Schedule 1\nPricing and rates.\n")
     assert alone.evidence_concept == "doctype.schedule"
+
+
+def test_a_contents_page_with_no_title_of_its_own_reads_as_a_schedule():
+    """An accepted cost, pinned so it is visible rather than a surprise. 'Schedule
+    1' IS a title (rule A strips the number), and a bare 'CONTENTS' heading names
+    no type, so the first title segment is the first contents entry. Where the
+    contents list sits inside a document that names itself — the real shape —
+    rule C answers correctly, which is what the assertions below pin."""
+    for page in ("CONTENTS\nSchedule 1\nSchedule 2\n",
+                 "TABLE OF CONTENTS\nAnnex A\nAppendix 2\n"):
+        bare = resolve_document_type(declared_concept=None, full_text=page,
+                                     vocabulary=V)
+        assert bare.evidence_concept == "doctype.schedule", page
+        titled = resolve_document_type(
+            declared_concept="doctype.framework_agreement", vocabulary=V,
+            full_text="FRAMEWORK AGREEMENT\n" + page)
+        assert titled.evidence_concept == "doctype.framework_agreement", page
+        assert titled.agreement == "agreed", page
