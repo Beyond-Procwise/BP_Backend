@@ -23,6 +23,7 @@ way every other model output in this pipeline is.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import re
 from dataclasses import dataclass
@@ -30,41 +31,61 @@ from typing import Dict, List, Optional, Tuple
 
 from src.services.concepts.vocabulary import Vocabulary, ensure_vocabulary, fold
 
-#: How much of the start of the document counts as the title zone. A type named
-#: in the heading is far stronger evidence than one mentioned in a clause, and
-#: an invoice citing a purchase order must stay an invoice.
+#: ``title_chars`` only LABELS evidence: a hit before this offset is reported as
+#: kind='title_alias', after it 'body_alias'. It does not influence status,
+#: concept or candidates. What a document is called is decided by LINES (below),
+#: not by an offset, because an offset cliff lets one character invert an answer.
 _TITLE_CHARS = 600
 
 #: Ordering of evidence kinds when a reviewer is shown the strongest first.
 _WEIGHT = {"title_alias": 5.0, "body_alias": 1.0, "structural_signal": 0.5}
 
-#: How the evidence is compared. NOT one summed score: scores summed in a narrow
-#: numeric range let each new term outbid the last, so a passing citation in a
-#: header or a list of schedules could bury the document's own heading. Instead
-#: a concept lands in a TIER and tiers are compared first, ordinally:
-#:   tier 1 : an alias hit on the heading (the first non-blank line, bounded by
-#:            _HEADING_CHARS). A document names itself there; nothing below it
-#:            can outweigh it, however much there is.
-#:   tier 2 : alias hits anywhere else, title zone and body alike. The
-#:            600-character title zone is only a proxy for a heading, so it earns
-#:            nothing extra here.
-#: Only within one tier does a bounded sub-score decide: distinct aliases, plus
-#: a damped (log2, capped) occurrence count. Structural signals are
-#: corroboration only: they add to a concept that already has an alias hit and
-#: can break a tie, but never name a type alone.
-_HEADING_CHARS = 120
+#: How the evidence is compared. NOT one summed score: a summed score in a narrow
+#: range let each new term outbid the last. A concept lands in a TIER and tiers
+#: are compared first, ordinally (so a sub-score change can never leap a tier):
+#:   tier 1 : an alias hit on a HEADING-LIKE LINE, wherever in the document that
+#:            line is (a letterhead above the title is normal). A line is
+#:            heading-like when it is short (<= _HEADING_LINE_MAX characters
+#:            after stripping, so a sentence is not a heading) and the type
+#:            phrases on it make up at least _HEADING_COVERAGE of its
+#:            non-whitespace characters (so 'PURCHASE ORDER', '## INVOICE' and
+#:            'INVOICE / QUOTE' qualify while 'Ref: your quotation of 1 January'
+#:            and 'Invoice No: INV-2026-0001' do not), and it carries at most
+#:            _HEADING_MAX_PHRASES distinct type phrases and does not end like
+#:            a sentence or a label. Case is NOT required.
+#:   tier 2 : every other alias hit.
+#: Only within one tier does a bounded sub-score decide: distinct aliases plus a
+#: damped (log2, capped) occurrence count. Structural signals are corroboration:
+#: they add to a concept that already has an alias hit and can break a tie, but
+#: never name a type alone. A text with no line breaks has no heading-like line,
+#: so volume decides there; that is the honest answer for a page with no title.
+_HEADING_LINE_MAX = 80
+_HEADING_COVERAGE = 0.75
+#: A title names its type once, or twice ('INVOICE / QUOTE'). A short line that
+#: is nothing but a list of type words ('Schedule 1, Annex A, Appendix 2,
+#: Exhibit B.' or 'See our Quotation, Estimate and prior Quotes') is a list of
+#: cross-references, not a heading.
+_HEADING_MAX_PHRASES = 2
+#: ...and never the SAME phrase twice ('purchase order PO1 and purchase order
+#: PO2' is a sentence citing orders), and never ends like a sentence or a label
+#: ('Please see the purchase order.', 'Bill To:').
+_SENTENCE_END = (".", ",", ";", ":")
 _OCCURRENCE_CAP = 3.0
-_SIGNAL = 0.5
+_SIGNAL = 1.0
 _SIGNAL_CAP = 1.0
 
-#: A tier-2 concept's alias sub-score must be STRICTLY above this to name a
+#: A tier-2 concept's ALIAS sub-score must be STRICTLY above this to name a
 #: type. One passing mention in a clause scores exactly 1.0 and is not a
 #: classification. (Tier 1 needs no minimum: the heading is the claim.)
 _MIN_SCORE = 1.0
 
 #: How far ahead of the runner-up the winner must be. Below this the evidence
 #: has not chosen, and saying it has would be fabrication.
-_MIN_MARGIN = 0.5
+_MIN_MARGIN = 1.0
+
+#: Cap on evidence rows (a review row a person reads, not a log). Each
+#: candidate of an unresolved result is guaranteed at least one of them.
+_MAX_EVIDENCE = 12
 
 
 @dataclass(frozen=True)
@@ -100,7 +121,11 @@ def resolve_document_type(
     vocabulary: Optional[Vocabulary] = None,
     title_chars: int = _TITLE_CHARS,
 ) -> TypeResolution:
-    """Classify a document from its own text, reporting rather than deciding."""
+    """Classify a document from its own text, reporting rather than deciding.
+
+    ``title_chars`` labels evidence as title_alias / body_alias; it does not
+    change the outcome.
+    """
     vocab = vocabulary if vocabulary is not None else ensure_vocabulary()
     text = full_text or ""
     # Match on a lowercase copy with EXACTLY the same length as the page, so an
@@ -136,6 +161,10 @@ def resolve_document_type(
             found = _find_all(folded, lowered)
             if found:
                 signals.append((code, found[0], len(folded)))
+                for st in found:
+                    # Pseudo-hit: suppresses alias hits inside the phrase ('bill'
+                    # inside 'Bill-To Address'). Never scored or returned.
+                    hits.append((code, "signal_span", st, len(folded), folded))
 
     # Longest match wins: 'agreement' inside 'framework agreement' is the same
     # words read twice, not a second type claiming the page. Identical spans
@@ -152,26 +181,36 @@ def resolve_document_type(
         while j < len(hits) and (hits[j][2], hits[j][2] + hits[j][3]) == span:
             j += 1
         if span[1] > max_end:
-            kept_hits.extend(hits[i:j])
+            kept_hits.extend(h for h in hits[i:j] if h[1] != "signal_span")
         max_end = max(max_end, span[1])
         i = j
 
-    first = re.search(r"\S", text)
-    # The heading ends at the first newline, but never later than
-    # _HEADING_CHARS in: parsed text with unreliable line breaks must not turn
-    # the whole document into "the heading", which would hand every concept
-    # tier 1 and cancel the signal.
-    heading_start = first.start() if first else 0
-    heading_end = heading_start
-    if first:
-        nl = text.find("\n", heading_start)
-        heading_end = min(len(text) if nl < 0 else nl, heading_start + _HEADING_CHARS)
+    # Which lines are heading-like: short, and mostly made of type phrases.
+    line_starts = [0] + [m.end() for m in re.finditer(r"[\n|]", text)]
+    def _line_of(pos: int) -> int:
+        return bisect.bisect_right(line_starts, pos) - 1
+    covered: Dict[int, set] = {}
+    for h in kept_hits:
+        covered.setdefault(_line_of(h[2]), set()).add((h[2], h[2] + h[3]))
+    heading_lines = set()
+    for ln, spans in covered.items():
+        lo = line_starts[ln]
+        hi = line_starts[ln + 1] - 1 if ln + 1 < len(line_starts) else len(text)
+        line = text[lo:hi]
+        content = len(re.sub(r"[\s#*]", "", line))
+        if (not content or len(line.strip()) > _HEADING_LINE_MAX
+                or len(spans) > _HEADING_MAX_PHRASES
+                or line.rstrip(" *").endswith(_SENTENCE_END)
+                or len({fold(text[a:b]) for a, b in spans}) < len(spans)):
+            continue
+        said = sum(len(re.sub(r"[\s#*]", "", text[a:b])) for a, b in spans)
+        if said >= _HEADING_COVERAGE * content:
+            heading_lines.add(ln)
 
     region: Dict[str, List[Tuple[str, str, int, int, str]]] = {}
     tier: Dict[str, int] = {}
     for h in kept_hits:
-        on_heading = first is not None and heading_start <= h[2] < heading_end
-        t = 1 if on_heading else 2
+        t = 1 if _line_of(h[2]) in heading_lines else 2
         code = h[0]
         if code not in tier or t < tier[code]:
             tier[code], region[code] = t, []
@@ -186,8 +225,9 @@ def resolve_document_type(
         )
     sig_for: Dict[str, List[Tuple[str, int, int]]] = {}
     for sig in signals:
-        if sig[0] in region:  # corroboration only: needs an alias hit already
-            sig_for.setdefault(sig[0], []).append(sig)
+        sig_for.setdefault(sig[0], []).append(sig)
+    # Only concepts in `region` (those with an alias hit) are ever scored, so a
+    # signal-only concept has no score and cannot be named.
     sub = {
         code: alias_sub[code] + min(_SIGNAL_CAP, _SIGNAL * len(sig_for.get(code, ())))
         for code in region
@@ -252,11 +292,18 @@ def resolve_document_type(
     else:
         agreement = "evidence_only" if evidence_concept else "neither"
 
-    # Strongest first, capped: this is written to a review row a person reads.
-    kept = sorted(
-        evidence,
-        key=lambda ev: (-_WEIGHT[ev.kind], ev.start, ev.concept_code),
-    )[:12]
+    # Strongest first, capped, but every candidate of an unresolved result keeps
+    # at least its best span: a person asked to choose must be shown both sides.
+    key = lambda ev: (-_WEIGHT[ev.kind], ev.start, ev.concept_code)
+    ordered = sorted(evidence, key=key)
+    chosen: List[Evidence] = []
+    if status == "unresolved":
+        for cand in candidates:
+            best = next((ev for ev in ordered if ev.concept_code == cand), None)
+            if best is not None:
+                chosen.append(best)
+    chosen += [ev for ev in ordered if ev not in chosen][:_MAX_EVIDENCE - len(chosen)]
+    kept = sorted(chosen, key=key)
 
     return TypeResolution(
         declared_concept=declared_concept,

@@ -356,10 +356,166 @@ def test_a_phrase_shaped_seed_signal_matches_verbatim():
     assert page[sig[0].start:sig[0].start + len(sig[0].text)] == sig[0].text
 
 
-def test_the_heading_line_outranks_a_citation_on_the_next_line():
-    r = resolve_document_type(declared_concept=None,
-                              full_text="INVOICE\nQUOTE\n", vocabulary=V)
+def test_a_heading_line_outranks_a_citation_on_a_prose_line():
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="INVOICE\nPlease see the quote attached.\n")
     assert (r.status, r.evidence_concept) == ("matched", "doctype.invoice")
+
+
+def test_two_heading_like_lines_naming_different_types_are_a_tie():
+    """CONFLICT with the earlier 'INVOICE\nQUOTE -> invoice' expectation: a
+    one-word second line is as heading-like as the first, so it is honestly a
+    tie, not a pretence that line 1 is stronger."""
+    r = resolve_document_type(declared_concept=None, full_text="INVOICE\nQUOTE\n",
+                              vocabulary=V)
+    assert r.status == "unresolved"
+    assert set(r.candidates) == {"doctype.invoice", "doctype.quote"}
+
+
+LETTERHEAD_ROWS = [
+    ("doctype.order", "Acme Global Ltd\nPURCHASE ORDER\nShip-To Address: 1 High St\n"
+                      "Bill-To Address: 2 Low St\nPlease bill monthly.\n",
+     "doctype.order"),
+    ("doctype.invoice", "Acme Ltd\nTAX INVOICE\nAgainst purchase order PO1 and "
+                        "purchase order PO2.\n", "doctype.invoice"),
+    ("doctype.invoice", "Acme Ltd, 1 High St\nINVOICE\nThe order of precedence and "
+                        "the order of works.\n", "doctype.invoice"),
+    ("doctype.invoice", "Acme Ltd\nTAX INVOICE\nAgainst purchase order PO123456.\n",
+     "doctype.invoice"),
+]
+
+
+def test_a_heading_after_a_letterhead_still_names_the_document():
+    for declared, page, want in LETTERHEAD_ROWS:
+        r = resolve_document_type(declared_concept=declared, full_text=page, vocabulary=V)
+        assert (r.status, r.evidence_concept, r.agreement) == ("matched", want, "agreed"), page
+
+
+def test_one_character_of_padding_cannot_invert_the_answer():
+    for n in (119, 120, 121):
+        page = "x" * n + " tax invoice is due\nAgainst purchase order. purchase order.\n"
+        r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
+        assert r.evidence_concept == "doctype.order", n  # prose line: volume decides
+    answers = {resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="x" * n + "\ntax invoice\nAgainst purchase order. purchase order.\n"
+    ).evidence_concept for n in (119, 120, 121, 500)}
+    assert answers == {"doctype.invoice"}
+
+
+def test_a_page_with_no_line_breaks_has_no_heading_so_volume_decides():
+    flat = "TAX INVOICE " + "lorem ipsum dolor " * 40 + "purchase order PO1 purchase order"
+    r = resolve_document_type(declared_concept=None, full_text=flat, vocabulary=V)
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.order")
+    broken = flat.replace("TAX INVOICE ", "TAX INVOICE\n", 1)
+    assert resolve_document_type(declared_concept=None, full_text=broken,
+                                 vocabulary=V).evidence_concept == "doctype.invoice"
+
+
+QUOTE_BODY = "The quote is here. Pay the quote.\n"
+
+
+def _who(first_line):
+    return resolve_document_type(declared_concept=None, vocabulary=V,
+                                 full_text=first_line + "\n" + QUOTE_BODY).evidence_concept
+
+
+def test_heading_line_length_boundary_is_80_characters():
+    assert _who("INVOICE" + " " * 72 + "b") == "doctype.invoice"   # 80 chars
+    assert _who("INVOICE" + " " * 73 + "b") == "doctype.quote"     # 81 chars
+
+
+def test_heading_coverage_boundary_is_three_quarters_of_the_line():
+    assert _who("INVOICE ab") == "doctype.invoice"    # 7 of 9 = 0.78
+    assert _who("INVOICE abc") == "doctype.quote"     # 7 of 10 = 0.70
+
+
+def test_a_label_cell_that_merely_contains_a_type_word_is_not_a_heading():
+    """Real counter-example from the live PO corpus: the table cell
+    'Contract sum' (8 of 11 characters = 0.73) must not be a tier-1 claim that
+    ties the PO's own 'PURCHASE ORDER' cell."""
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="| **Assurity Ltd**   | **PURCHASE ORDER**   |\n"
+                  "| Contract sum                  | 1,936,000.00 |\n")
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.order")
+
+
+def test_a_title_in_its_own_table_cell_is_a_heading():
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="## Sheet: INVOICE\n| O | Orbis Ltd |  | INVOICE |  |\n"
+                  "| Reference: Against PO-2024-0145 | Purchase order cited, "
+                  "purchase order again |\n")
+    assert r.evidence_concept == "doctype.invoice"
+
+
+def test_a_line_listing_many_type_words_is_not_a_heading():
+    sched = "Schedule 1, Annex A, Appendix 2, Exhibit B."
+    r = resolve_document_type(
+        declared_concept="doctype.framework_agreement", vocabulary=V,
+        full_text="FRAMEWORK AGREEMENT\n" + sched + "\n")
+    assert (r.evidence_concept, r.agreement) == ("doctype.framework_agreement", "agreed")
+    three = resolve_document_type(declared_concept=None, vocabulary=V,
+                                  full_text="INVOICE / QUOTE / ORDER\n")
+    assert three.status == "unknown"
+
+
+def test_title_chars_labels_evidence_and_never_changes_the_outcome():
+    page = "Acme\nTAX INVOICE\n" + "q" * 300 + "\nPay the invoice. See purchase order.\n"
+    seen = set()
+    for tc in (0, 20, 600, 10_000):
+        r = resolve_document_type(declared_concept=None, full_text=page,
+                                  vocabulary=V, title_chars=tc)
+        seen.add((r.status, r.evidence_concept, r.candidates))
+    assert len(seen) == 1
+
+
+# --- enforcement points that earlier rounds left unguarded -------------------
+
+def test_the_minimum_applies_to_aliases_not_to_aliases_plus_signals():
+    """One passing mention plus a signal must not become a classification."""
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="Dear Sir\nzzz\nPlease see the purchase order.\nShip-To Address: 1 High St\n")
+    assert r.status == "unknown"
+
+
+def test_a_signal_phrase_does_not_leak_aliases_from_inside_itself():
+    """'bill' (an invoice alias) sits inside the signal 'Bill-To Address'."""
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="Delivery Note\nzzzzzzzzzz\nBill-To Address: 1 High St\n"
+                  "Bill-To Address: 2 Low St\n")
+    assert r.status == "unknown" and r.evidence_concept is None
+
+
+def test_distinct_aliases_are_counted_once_each_not_per_occurrence():
+    """3.0 (two distinct aliases) vs 2.0 (one alias twice) is a decided win;
+    counting occurrences as variety would tie them at 3.0."""
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="Dear Sir\n\nWe hold your quote and quotation.\n"
+                  "The invoice is due; pay the invoice.\n")
+    assert (r.status, r.evidence_concept) == ("matched", "doctype.quote")
+
+
+def test_three_mentions_against_two_is_noise_and_stays_unresolved():
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="Dear Sir\n\nthe invoice, the invoice, the invoice.\n"
+                  "the quote, the quote.\n")
+    assert r.status == "unresolved"
+    assert set(r.candidates) == {"doctype.invoice", "doctype.quote"}
+
+
+def test_every_tie_candidate_is_shown_at_least_one_span():
+    r = resolve_document_type(declared_concept=None, vocabulary=V,
+                              full_text="Dear Sir\n" + "po " * 12 + "quote " * 8)
+    assert r.status == "unresolved"
+    assert len(r.evidence) <= 12
+    assert {e.concept_code for e in r.evidence} >= set(r.candidates)
 
 
 def _quadratic_survivors(spans):
@@ -379,14 +535,13 @@ def test_the_single_sweep_matches_the_quadratic_reference_filter():
              "invoice", "tax invoice", "po", "purchase order", "order", "x"]
     rng = random.Random(7)
     for _ in range(300):
-        # One line so everything within 120 chars is the heading tier.
         page = " ".join(rng.choice(words) for _ in range(rng.randint(1, 6)))
         raw = set()
         for dt in V.document_types.values():
             for alias in {fold(a) for a in (*dt.aliases, dt.concept_code.split(".", 1)[-1])}:
                 for st in _find_all(alias, page.lower()):
                     raw.add((st, st + len(alias)))
-        want = {sp for sp in _quadratic_survivors(sorted(raw)) if sp[0] < 120}
+        want = set(_quadratic_survivors(sorted(raw)))
         wide = resolve_document_type(
             declared_concept=None, full_text=page, vocabulary=V)
         got = {(e.start, e.start + len(e.text)) for e in wide.evidence
@@ -420,16 +575,6 @@ def test_a_documents_list_of_cross_references_does_not_outrank_its_heading():
     assert r.evidence_concept == "doctype.invoice"
 
 
-def test_the_heading_is_bounded_when_there_is_no_newline():
-    """Unreliable line breaks must not make the whole page 'the heading'."""
-    page = "TAX INVOICE " + "lorem ipsum dolor " * 40 + "purchase order PO1 purchase order"
-    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
-    assert (r.status, r.evidence_concept) == ("matched", "doctype.invoice")
-    swapped = "TAX INVOICE " + "lorem ipsum dolor " * 40 + "purchase order"
-    assert resolve_document_type(declared_concept=None, full_text=swapped,
-                                 vocabulary=V).evidence_concept == "doctype.invoice"
-
-
 def test_evidence_returned_is_only_what_counted():
     page = "Dear Sir,\n" + "z" * 10 + "\nPay the invoice. The invoice is due. Quote.\n"
     r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
@@ -454,3 +599,19 @@ def test_a_losing_runner_up_is_not_shown_as_the_reason():
     r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=V)
     assert r.evidence_concept == "doctype.invoice"
     assert {e.concept_code for e in r.evidence} == {"doctype.invoice"}
+
+
+def test_a_line_repeating_one_phrase_is_a_citation_not_a_heading():
+    """No sentence punctuation, so only the repeated-phrase rule can stop
+    'purchase order PO1 and purchase order PO2' being a heading."""
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="Acme Ltd\nTAX INVOICE\nRe purchase order PO1 and purchase order PO2\n")
+    assert r.evidence_concept == "doctype.invoice"
+
+
+def test_a_label_ending_in_a_colon_is_not_a_heading():
+    r = resolve_document_type(
+        declared_concept=None, vocabulary=V,
+        full_text="Acme Ltd\nTAX INVOICE\nOrder:\n")
+    assert r.evidence_concept == "doctype.invoice"
