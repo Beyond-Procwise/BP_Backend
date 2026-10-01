@@ -184,3 +184,44 @@ followed it did these things to the entries above, and nothing else:
   now drops such a type and `validate.check_concepts_exist_for_every_document_type`
   names it.
 
+
+## A coupling nobody should relax without reading this
+
+`src/services/extraction/type_resolver.py:616-617`:
+
+```python
+        if status != "unresolved":
+            status = "matched"
+```
+
+That one line, inside the branch taken when a concept **was** declared, forces a
+declared-but-silent page to `status="matched"` rather than `"unknown"`. It is
+load-bearing in three separate places, none of which is obvious from the line:
+
+1. **It is why `status == "matched"` can coexist with `evidence_concept is None`.**
+   A reader — or a future dashboard — will read "matched" as "the page confirmed the
+   type". It means "a human declared one and the page said nothing". `agreement`
+   carries the truth (`declared_only`); `status` does not. Renaming it was considered
+   and deliberately NOT done in the final fix wave, because Task 7 consumes this
+   vocabulary and the change is larger than that wave could safely carry.
+2. **It is why `unknown_document_type` was withdrawn.** `status == "unknown"` requires
+   `declared_concept` to be falsy, and the live gate (`routing.pipeline_for_category`)
+   raises rather than returning an empty concept, so the pipeline can never produce
+   that status. The issue type was removed from the advertised set on that basis
+   (`src/services/extraction/persistence.py`, the `TYPE_FINDING_ISSUE_TYPES` comment).
+   Relax this line and the withdrawn type becomes reachable again while still being
+   withdrawn — the worst of both.
+3. **A Task 7 test passes only because of it.**
+   `test_declared_only_produces_no_review_item` expects NO review item for a declared
+   page whose text says nothing. It passes because this line prevents Task 7's
+   `status == "unknown"` branch from firing. Relax the line and silent declared pages
+   start raising review items for every upload whose text the parser could not read.
+
+So: if you are here because `status="matched"` looked wrong, you are right that it
+reads wrong — but change it deliberately, with those three consequences in hand, and
+expect to touch the withdrawn issue type and that test in the same change.
+
+Credit: the third consequence was found by a concurrent session's pre-flight scan of
+Task 7 (`bp-backend-28`), which independently reviewed the same plan for part of the
+day before the two controllers discovered each other and it stood down. Its note
+called the coupling "a coupling, not a defect", which is the right reading.
