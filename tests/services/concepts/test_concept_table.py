@@ -53,7 +53,7 @@ def doc_type_rows():
         cur.execute("""
             SELECT concept_code, role, default_parent_type, execution_mode,
                    aliases, identifiers, structural_signals, pipeline_doc_type,
-                   status
+                   status, source
               FROM proc.bp_document_type
         """)
         cols = [d[0] for d in cur.description]
@@ -215,3 +215,61 @@ def test_an_alias_never_equals_another_concepts_code(concept_rows, doc_type_rows
             if a in codes and a != own:
                 collisions.setdefault(r["concept_code"], []).append(alias)
     assert not collisions, f"aliases that are another concept's own name: {collisions}"
+
+
+def _jsonable(identifiers):
+    """Seed identifiers as plain lists of dicts; key order is irrelevant to
+    equality, list order is kept because it is part of the data."""
+    return [dict(i) for i in identifiers]
+
+
+def test_concept_rows_equal_the_seed_column_for_column(concept_rows):
+    """Set membership proves a row exists, not that it says the same thing.
+    A changed definition or status would otherwise pass green."""
+    drift = []
+    for r in concept_rows:
+        seed = CONCEPTS.get(r["concept_code"])
+        if seed is None:
+            continue  # reported by test_every_table_concept_exists_in_the_seed
+        pairs = [
+            ("domain", r["domain"], seed.domain),
+            ("definition", r["definition"], seed.definition),
+            ("not_to_be_confused_with", list(r["not_to_be_confused_with"] or []),
+             list(seed.not_to_be_confused_with)),
+        ]
+        # A person may have confirmed or rejected a seeded row since; that is
+        # ownership, not drift. Only rows still marked source='seed' are held.
+        if r["source"] == "seed":
+            pairs.append(("status", r["status"], seed.status))
+        for col, got, want in pairs:
+            if got != want:
+                drift.append(f"{r['concept_code']}.{col}: table={got!r} seed={want!r}")
+    assert not drift, "bp_concept differs from seed.py:\n  " + "\n  ".join(drift)
+
+
+def test_document_type_rows_equal_the_seed_column_for_column(doc_type_rows):
+    drift = []
+    for r in doc_type_rows:
+        seed = DOCUMENT_TYPES.get(r["concept_code"])
+        if seed is None:
+            continue
+        ident = r["identifiers"]
+        if isinstance(ident, str):
+            import json
+            ident = json.loads(ident)
+        pairs = [
+            ("role", r["role"], seed.role),
+            ("default_parent_type", r["default_parent_type"], seed.default_parent_type),
+            ("execution_mode", r["execution_mode"], seed.execution_mode),
+            ("aliases", list(r["aliases"] or []), list(seed.aliases)),
+            ("identifiers", ident, _jsonable(seed.identifiers)),
+            ("structural_signals", list(r["structural_signals"] or []),
+             list(seed.structural_signals)),
+            ("pipeline_doc_type", r["pipeline_doc_type"], seed.pipeline_doc_type),
+        ]
+        if r["source"] == "seed":
+            pairs.append(("status", r["status"], seed.status))
+        for col, got, want in pairs:
+            if got != want:
+                drift.append(f"{r['concept_code']}.{col}: table={got!r} seed={want!r}")
+    assert not drift, "bp_document_type differs from seed.py:\n  " + "\n  ".join(drift)

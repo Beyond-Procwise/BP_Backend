@@ -33,7 +33,7 @@ class DocumentType:
     default_parent_type: Optional[str]
     execution_mode: Optional[str]
     aliases: Tuple[str, ...]
-    identifiers: Tuple[Mapping[str, str], ...]
+    identifiers: Tuple[Mapping[str, Optional[str]], ...]
     structural_signals: Tuple[str, ...]
     #: Which of the four physical pipelines ingests this type. None means the
     #: type is recognised but nothing can ingest it yet — an honest state.
