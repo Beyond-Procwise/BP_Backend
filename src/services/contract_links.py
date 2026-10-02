@@ -35,6 +35,7 @@ from typing import Optional
 
 from src.services import linking_engine as _le
 from src.services.concepts.contract_type_map import structure_for_contract_type
+from src.services.concepts.vocabulary import ensure_vocabulary
 from src.services.db import get_conn
 from src.services.extraction.persistence import normalise_source_file
 from src.services.graph_resolution.profiles import contract_hierarchy as _ch
@@ -62,6 +63,37 @@ _CHILD_SQL = """
 """
 
 
+def _is_variation(child: dict) -> bool:
+    """A document that changes another one: variation, addendum, CCN."""
+    dt = ensure_vocabulary().document_types.get(child.get("resolved_doc_type"))
+    return (dt.role if dt else child.get("resolved_role")) == "role.variation"
+
+
+def _wanted_parent_types(child: dict) -> set[str]:
+    """The structures this child may sit under. Two paths, on purpose.
+
+    A SOW's parent is identifiable BY TYPE: the vocabulary says it sits under a
+    master agreement, so only master agreements are considered. A variation's
+    parent is NOT identifiable by type -- it can amend any contract, which is why
+    default_parent_type is NULL for it and correctly so. Its parent is
+    identifiable only by the reference it carries. So the structure signal steps
+    aside (it reads MISSING, which scores 0.5 and penalises nothing) and the
+    reference, supplier, term and title signals do the work. The candidate set is
+    every contract-family structure, except other variations: a variation
+    amends a contract, not another variation.
+    """
+    if _is_variation(child):
+        return {code for code, dt in ensure_vocabulary().document_types.items()
+                if dt.pipeline_doc_type == "contract" and dt.role != "role.variation"}
+    want = _ch.expected_parent_type(child.get("resolved_doc_type"))
+    return {want} if want else set()
+
+
+def is_child(child: dict) -> bool:
+    """Does this document sit under something at all?"""
+    return bool(_wanted_parent_types(child))
+
+
 def candidate_parents(cur, child: dict) -> list[dict]:
     """Contracts that could be this child's parent.
 
@@ -75,8 +107,8 @@ def candidate_parents(cur, child: dict) -> list[dict]:
     score_link calls per child, and the deal-assignment service has already
     taught this product what an unnarrowed per-document query costs.
     """
-    want = _ch.expected_parent_type(child.get("resolved_doc_type"))
-    if not want:
+    wanted = _wanted_parent_types(child)
+    if not wanted:
         return []
     supplier = child.get("supplier_id")
     if not supplier:
@@ -87,9 +119,9 @@ def candidate_parents(cur, child: dict) -> list[dict]:
         """SELECT contract_id, contract_title, supplier_id, resolved_doc_type,
                   contract_start_date, contract_end_date
              FROM proc.bp_contracts
-            WHERE supplier_id = %s AND resolved_doc_type = %s
+            WHERE supplier_id = %s AND resolved_doc_type = ANY(%s)
               AND contract_id <> %s""",
-        (supplier, want, child.get("contract_id")),
+        (supplier, sorted(wanted), child.get("contract_id")),
     )
     for r in cur.fetchall():
         out.append(dict(zip(
@@ -110,7 +142,7 @@ def candidate_parents(cur, child: dict) -> list[dict]:
         # The corpus's free-text type, read as a structure. Not written back:
         # contract_type is source data.
         row["resolved_doc_type"] = structure_for_contract_type(row.pop("contract_type"))
-        if row["resolved_doc_type"] == want:
+        if row["resolved_doc_type"] in wanted:
             out.append(row)
     return out
 
@@ -193,7 +225,7 @@ def propose_parent_links(limit: Optional[int] = None) -> dict:
 
         for child in children:
             considered["children"] += 1
-            if not _ch.expected_parent_type(child.get("resolved_doc_type")):
+            if not is_child(child):
                 continue              # sits under nothing: not a child at all
             considered["with_structure"] += 1
 

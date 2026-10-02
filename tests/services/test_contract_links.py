@@ -456,3 +456,82 @@ def test_a_dismissed_proposal_still_occupies_the_slot(fixture_contracts):
         cur.execute("""SELECT status FROM proc.bp_extraction_discrepancy
                         WHERE doc_pk_candidate = %s AND issue_type = %s""", (sow, ISSUE))
         assert [r[0] for r in cur.fetchall()] == ["ignored"]
+
+
+# --------------------------------------------------------------------------
+# The third headline relationship: a variation against the contract it changes.
+# Its parent cannot be identified by TYPE (default_parent_type is NULL), only by
+# the reference it carries, so candidate_parents takes a different path for it.
+# --------------------------------------------------------------------------
+
+def _candidates_for(child):
+    from src.services.db import get_conn
+    with get_conn() as conn:
+        return CL.candidate_parents(conn.cursor(), child)
+
+
+def _variation_child(fx, doc_type="doctype.variation", suffix="VAR", **extra):
+    cid = f"{suffix}-{fx['tag']}"
+    from src.services.db import get_conn
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cols = {"contract_start_date": "2026-03-01", "contract_end_date": "2026-09-30",
+                "parent_agreement_ref": fx["msa"], **extra}
+        _insert_contract(cur, cid, "Variation Helix Migration", fx["supplier"], doc_type,
+                         **cols)
+        cur.execute("UPDATE proc.bp_contracts SET resolved_role = 'role.variation' "
+                    "WHERE contract_id = %s", (cid,))
+    return cid
+
+
+@pytest.mark.parametrize("doc_type,suffix", [
+    ("doctype.variation", "VAR"), ("doctype.addendum", "ADD"), ("doctype.ccn", "CCN")])
+def test_a_variation_is_proposed_the_contract_it_names(fixture_contracts, doc_type, suffix):
+    """variation, addendum and CCN are all role.variation and take the same path."""
+    cid = _variation_child(fixture_contracts, doc_type, suffix)
+    try:
+        CL.propose_parent_links()
+        rows = _open_proposals(cid)
+        assert len(rows) == 1, "a variation was never proposed a parent"
+        assert rows[0]["expected_value"] == fixture_contracts["msa"]
+    finally:
+        _delete_contracts(cid)
+
+
+def test_a_variation_is_not_proposed_a_variation_as_its_parent(fixture_contracts):
+    """A variation amends a contract, not another variation."""
+    other = f"VAR-OTHER-{fixture_contracts['tag']}"
+    from src.services.db import get_conn
+    with get_conn() as conn:
+        cur = conn.cursor()
+        _insert_contract(cur, other, "Variation Helix Migration", fixture_contracts["supplier"],
+                         "doctype.variation", contract_start_date="2026-01-01",
+                         contract_end_date="2027-12-31")
+        cur.execute("UPDATE proc.bp_contracts SET resolved_role = 'role.variation' "
+                    "WHERE contract_id = %s", (other,))
+    cid = _variation_child(fixture_contracts)
+    try:
+        ids = {c["contract_id"] for c in _candidates_for(
+            {"contract_id": cid, "resolved_doc_type": "doctype.variation",
+             "resolved_role": "role.variation", "supplier_id": fixture_contracts["supplier"]})}
+        assert other not in ids, ids
+        assert fixture_contracts["msa"] in ids, ids
+    finally:
+        _delete_contracts(cid, other)
+
+
+def test_a_sow_still_considers_only_master_agreements(fixture_contracts):
+    """The variation path must not have widened the exact path for everyone."""
+    fw = f"FW-{fixture_contracts['tag']}"
+    from src.services.db import get_conn
+    with get_conn() as conn:
+        _insert_contract(conn.cursor(), fw, "Framework Helix Migration",
+                         fixture_contracts["supplier"], "doctype.framework_agreement")
+    try:
+        ids = {c["contract_id"] for c in _candidates_for(
+            {"contract_id": fixture_contracts["sow"], "resolved_doc_type": "doctype.sow",
+             "resolved_role": "role.master", "supplier_id": fixture_contracts["supplier"]})}
+        assert fixture_contracts["msa"] in ids
+        assert fw not in ids, "a SOW was offered a framework agreement as a parent"
+    finally:
+        _delete_contracts(fw)
