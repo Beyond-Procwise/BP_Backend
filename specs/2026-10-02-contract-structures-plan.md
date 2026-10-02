@@ -1235,7 +1235,15 @@ VALUES
      true,
      -- Phrases, not prose: these are compared against the page with the same
      -- fold() normalisation as an alias, so 'Call-Off' satisfies 'call off'.
-     ARRAY['framework','order of precedence','incorporated','call off',
+     -- 'incorporated' alone is NOT here, deliberately. Phrases match whole-word
+     -- (type_resolver._names_a_parent uses _find_all), and bare 'incorporated'
+     -- still matches a SUPPLIER NAME -- "Acme Incorporated" -- which is a hole
+     -- straight back into the 13-workbook defect this rule exists to close.
+     -- Measured 2026-10-02: substring matching claimed 3 false pages; whole-word
+     -- matching fixed 2 of them; narrowing this phrase fixed the third, and all
+     -- five genuine order-form shapes still match.
+     ARRAY['framework','order of precedence',
+           'incorporated into','incorporated by reference','call off',
            'framework agreement no','framework agreement number','framework agreement ref',
            'master agreement no','master agreement number','master agreement ref',
            'parent agreement no','parent contract no','principal agreement no']::text[]),
@@ -1324,8 +1332,12 @@ Append two `DocumentType` entries to `DOCUMENT_TYPES`, after `doctype.policy_doc
             ("lists incorporated documents", "states an order of precedence"),
             "contract",
             requires_parent_evidence=True,
+            # NOT bare "incorporated": phrases match whole-word, and it would
+            # still match the supplier name "Acme Incorporated". See the
+            # migration's comment for the measurement.
             parent_evidence_phrases=(
-                "framework", "order of precedence", "incorporated", "call off",
+                "framework", "order of precedence",
+                "incorporated into", "incorporated by reference", "call off",
                 "framework agreement no", "framework agreement number",
                 "framework agreement ref", "master agreement no",
                 "master agreement number", "master agreement ref",

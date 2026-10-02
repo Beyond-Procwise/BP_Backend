@@ -137,9 +137,22 @@ no evidence calling for it. The column exists so flagging them later is an `UPDA
 
 **What counts as parent evidence.** Matchable phrases only, because the existing prose `structural_signals`
 ("lists incorporated documents") cannot match a page — open item 5 of the rulings. The initial set:
-`framework`, `order of precedence`, `incorporat…`, `call-off`/`call off`, and
-`(framework|master|parent|principal) (agreement|contract) (no|number|ref)`. These live beside the flag as
-data, not as a regex buried in the resolver.
+`framework`, `order of precedence`, `incorporated into`, `incorporated by reference`,
+`call-off`/`call off`, and `(framework|master|parent|principal) (agreement|contract) (no|number|ref)`.
+These live beside the flag as data, not as a regex buried in the resolver, and they match **whole-word**,
+the same way every alias in the resolver matches.
+
+Bare `incorporated` is deliberately absent. Measured 2026-10-02: with substring matching, three pages
+satisfied the rule without naming any parent — a supplier called "Acme Incorporated", the plural
+"frameworks", and "recall off-site". Whole-word matching fixes the latter two; only narrowing the phrase
+fixes the first, because `Incorporated` is a whole word in a company name. All five genuine order-form
+shapes still match.
+
+One limitation, stated because the helper's first draft claimed otherwise: `fold()` collapses whitespace
+on the phrase side and the page copy keeps its own length, so a multi-word phrase does **not** match
+across a line break — "order of\nprecedence" misses. That fails safe (the structure stands down and the
+page is not mislabelled) but a real order form can be missed. It is the same whitespace limitation as open
+item 6 of the predecessor's rulings.
 
 **Measured, both directions.** On the 53 corpus documents with stored parsed text:
 
