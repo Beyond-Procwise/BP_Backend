@@ -539,9 +539,11 @@ def dispatch_document(
 
     discrepancies: list[Discrepancy] = []
     # What the page says about its own type, next to what the uploader declared.
-    # Recorded, never acted on: doc_type above already decided the pipeline from
-    # the declared category, and this must not change it. A failure here is a
-    # reporting gap, not an extraction failure, so it never propagates.
+    # Recorded on the row, never used to reroute: write_raw stores it as
+    # resolved_doc_type / resolved_role / type_agreement, but doc_type above
+    # already decided the pipeline from the declared category
+    # (routing.pipeline_for_category), and this must not change it. A failure
+    # here is a reporting gap, not an extraction failure, so it never propagates.
     type_resolution = None
     type_findings_built = False
     try:

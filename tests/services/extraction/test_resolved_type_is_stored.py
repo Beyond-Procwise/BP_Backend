@@ -138,11 +138,12 @@ def test_a_reread_refreshes_the_stored_structure(cleanup):
     promotion.promote(first, "contract")
     assert _read("bp_contracts", cid)["resolved_doc_type"] == "doctype.contract_unspecified"
 
-    second = _write(cid, resolved="doctype.sow", agreement="refined")
+    second = _write(cid, resolved="doctype.sow", role="role.variation",
+                    agreement="refined")
     promotion.promote(second, "contract")
     assert _read("bp_contracts", cid) == {
         "resolved_doc_type": "doctype.sow",
-        "resolved_role": "role.master",
+        "resolved_role": "role.variation",
         "type_agreement": "refined",
     }, "the promoted row kept the first read's structure"
 
