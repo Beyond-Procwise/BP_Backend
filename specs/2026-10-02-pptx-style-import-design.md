@@ -1,6 +1,7 @@
 # Design — reading a style pack and a layout registry out of a PowerPoint
 
-**Status:** awaiting review (written 2026-10-02).
+**Status:** approved 2026-10-02 — §6a option 1, the 10-use floor, and hand-defined rating
+scales all ruled by Nick. Implementation plan next.
 **Repo:** BP_Backend (the importer and its tables), with one small schema addition consumed by
 `beyond_procwise_ui`.
 **Approved in conversation:** approach A ("derive it"), step 1 of three, 2026-10-02.
@@ -158,6 +159,7 @@ same file supersedes it. Half-imported state is invisible rather than wrong.
 | `GET /atb/layouts?status=approved` | what the builder's pickers read |
 | `POST /atb/layouts/{layout_id}` | rename |
 | `POST /atb/layouts/{layout_id}/approve` · `/reject` | the gate |
+| `POST /atb/packs/{pack_id}/rating-scales` | define a scale by hand; promote a column to it |
 | `POST /atb/packs/{pack_id}/approve` | the gate |
 
 Responses carry **ids, never route paths or table names** — the output-safety layer replaces any
@@ -233,6 +235,13 @@ hand-authored pack (`hml`, `influence`, `confidence`) came from the brief, not f
 reason recorded. The alternative is a pack and a layout that are individually valid and illegal
 together, which `validateLayoutAgainstStyle` would then reject at render time.
 
+**DECIDED (Nick, 2026-10-02): the review screen can define a scale by hand.** You name it, add
+its labels in order, and pick each label's chip and ink from the pack's own swatches; the column
+is then promoted from `text` to `rating` on that scale. A hand-defined scale is a human decision,
+so §5b carries it forward across re-imports, and the evidence records it as `defined_by: user`
+rather than measured. The promotion is refused unless every label the column's cells use has a
+chip, because a half-defined scale renders a blank chip on a real page.
+
 **`writing.locale`.** Taken from the runs' declared language — and then checked. The reference
 file declares `en-US` on all 6,940 runs while spelling *Virtualisation*, *Mobilise*, *Optimise*,
 *utilisation*, with 8 `-ize/-ization` uses in the whole deck. So the declared language is wrong
@@ -297,17 +306,19 @@ signature describes them as "6-up cards + 3-up cards + 2-up cards", which is a t
 where the boxes sit and a **useless** description of what the page is.
 
 **Emitting 26 single-use layouts would reproduce the original complaint in a new form** — a Layout
-picker full of near-identical generic skeletons, one per slide, none of them reusable. Three ways
-to go, and this is the one open decision in step 1:
+picker full of near-identical generic skeletons, one per slide, none of them reusable.
 
-1. **Emit the 8 templates now; the 26 wait for step 2** and are then imported as *composed pages*
-   — the boxes arrive as placed components you can move and replace, which is exactly the drag-
-   and-drop machinery step 2 builds. **Recommended.** Step 1 then delivers the pack plus 8
-   layouts, and the pack is what makes everything look right.
-2. **Emit all 34 now.** 26 of them are single-use and the picker gets long, but nothing waits.
-3. **Emit the 8 and discard the 26.** Loses the most characteristic pages in the deck.
+**DECIDED (Nick, 2026-10-02): emit the 8 templates now; the 26 wait for step 2** and are then
+imported as *composed pages* — their boxes arriving as placed components you can move and
+replace, which is exactly the drag-and-drop machinery step 2 builds. A quadrant is not a
+template; it is a page someone arranged.
 
-Until this is settled the spec assumes (1), and §10's acceptance criterion is written against 8.
+So step 1 delivers the pack plus 8 layouts. The 26 are **listed, not emitted**: the import result
+names each one with its slide number and its structure, so nothing is lost track of and step 2
+has its worklist. The two rejected alternatives, recorded so the decision is not relitigated:
+emitting all 34 (26 single-use layouts, a picker full of near-identical skeletons — the original
+complaint in a new form), and emitting 8 while discarding the 26 (loses the most characteristic
+pages in the deck).
 
 **Regions.** Each layout's regions are the median box of its members' rows, in inches. A member
 whose box differs from the median by more than 0.15in in any dimension is reported as a
@@ -377,6 +388,11 @@ shows its tokens as swatches, its evidence behind a disclosure, and each candida
 from the page the report prints. Per layout: rename, approve, reject. Loose fits and unresolved
 regions are marked on the card.
 
+**Rating scales are editable here** (§5a): add a scale, name it, list its labels in the order they
+rank, and pick each label's chip and ink from the pack's swatches. A table column whose cells all
+carry labels the scale defines can then be promoted from text to a rating column; a column with a
+label the scale does not define cannot, and says which label is missing.
+
 It reuses the builder's existing panel, swatch and popover styling. No new visual language.
 
 **The gate.** Only `approved` layouts reach a page's Layout picker; only `approved` packs reach
@@ -403,7 +419,10 @@ reports.
    half-imported pack, because the `importing` status is never served.
 8. Guessing a slot type from one member when the layout has many.
 9. A rating column it cannot back with a derived scale → emitted as a `text` column, with the
-   reason recorded, rather than a pack and layout that are illegal together.
+   reason recorded, rather than a pack and layout that are illegal together. Promotion to a
+   rating column happens on the review screen, once a human has defined the scale.
+10. Promoting a column to a scale that does not define every label its cells use → refused,
+   naming the missing label.
 
 ## 10. Acceptance criteria
 
@@ -436,17 +455,17 @@ reports.
 
 ## 11. To confirm before building
 
-- **The 10-use floor** and the 0.15in loose-fit tolerance are my choices from this one file. They
-  are constants in one place and the evidence reports what they excluded.
+- **The 10-use floor is confirmed** (Nick, 2026-10-02). The 0.15in loose-fit tolerance is still my
+  choice from this one file. Both are constants in one place and the evidence reports what they
+  excluded.
 - **Role assignment for a second pack.** The rules in §5 are written against a deck whose palette
   is unambiguous. A pack with two equally-used accents will assign them in count order, which may
   not be the designer's intent; the review screen is where that gets corrected, and a later
   version can let you drag a swatch between roles.
 - **Charts.** Only 8 of 85 slides hold a real chart. A `chart` slot is emitted with
   `fill: "bind"` and no binding — binding a chart to live data is step 2's business.
-- **Rating scales are probably not in the file.** If the review screen should let you define a
-  scale by hand (pick the labels, pick the swatches), say so and I will scope it; otherwise a
-  rating column stays text until a later version.
+- **Rating scales are probably not in the file**, and defining them by hand is now in scope
+  (§5a, §8), which adds one write endpoint: `POST /atb/packs/{pack_id}/rating-scales`.
 
 ## 12. What this design does not do
 
