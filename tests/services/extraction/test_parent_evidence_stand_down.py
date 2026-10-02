@@ -17,11 +17,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from src.services.concepts.seed import Concept, DocumentType          # noqa: E402
+from src.services.concepts.seed import DocumentType          # noqa: E402
 from src.services.concepts.vocabulary import build_vocabulary          # noqa: E402
 from src.services.extraction.type_resolver import resolve_document_type  # noqa: E402
 
-PHRASES = ("framework", "order of precedence", "incorporated", "call off")
+PHRASES = ("framework", "order of precedence", "incorporated into",
+           "incorporated by reference", "call off")
 
 
 def _vocab(*types: DocumentType):
@@ -147,10 +148,36 @@ def test_a_flagged_structure_with_no_phrases_claims_nothing():
 def test_parent_evidence_matches_with_alias_normalisation():
     """'Call-Off' on the page satisfies the phrase 'call off'.
 
-    The match copy treats '_' and '-' as spaces exactly as fold() does, so the
-    two sides agree without the phrase list having to spell both.
+    Exercises only the '-'-to-space replacement in the match copy; it does not
+    cover whitespace-run agreement (a phrase does not match across a line break).
     """
     page = "ORDER FORM\n\nissued under the Call-Off procedure.\n"
     r = resolve_document_type(declared_concept=None, full_text=page,
                               vocabulary=_vocab(ORDER_FORM, QUOTE))
     assert r.evidence_concept == "doctype.order_form", r
+
+
+def _claims(page):
+    r = resolve_document_type(declared_concept=None, full_text=page,
+                              vocabulary=_vocab(ORDER_FORM, QUOTE))
+    return r.evidence_concept == "doctype.order_form"
+
+
+def test_a_company_named_incorporated_is_not_parent_evidence():
+    assert not _claims("ORDER FORM\n\nAcme Incorporated\nQuote Ref Q-1\n")
+
+
+def test_the_plural_frameworks_is_not_parent_evidence():
+    assert not _claims("ORDER FORM\n\nour frameworks for delivery\n")
+
+
+def test_recall_off_site_is_not_a_call_off():
+    assert not _claims("ORDER FORM\n\nplease recall off-site stock\n")
+
+
+def test_incorporated_into_is_parent_evidence():
+    assert _claims("ORDER FORM\n\nThe terms are incorporated into this order form.\n")
+
+
+def test_incorporated_by_reference_is_parent_evidence():
+    assert _claims("ORDER FORM\n\nThe master terms are incorporated by reference.\n")

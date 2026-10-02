@@ -250,9 +250,15 @@ def _is_reference_value(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> bool
 def _names_a_parent(dt: "DocumentType", lowered: str) -> bool:
     """Does this page name the parent the structure must sit under?
 
-    Compared against ``lowered`` -- the same match copy every alias uses, whose
-    length equals the page's -- so the phrase side is folded and the page side is
-    not. A phrase found here sits at a real offset in the document.
+    Whole-word, through ``_find_all`` -- the same matcher every alias uses -- so
+    "frameworks" or "recall off-site" do not satisfy "framework" or "call off".
+    The phrase side is folded and the page side (``lowered``) is not, which
+    keeps offsets byte-exact. The cost: fold() collapses whitespace runs and
+    ``lowered`` does not, so a multi-word phrase does not match across a line
+    break ("order of\nprecedence"). A real order form can therefore be missed;
+    that fails safe, surfacing as a review item rather than a mislabelling. It
+    is the same whitespace limitation as open item 6 of
+    specs/2026-10-01-document-relationship-layer-rulings.md.
 
     An empty phrase list returns False, so a structure flagged with nothing to
     recognise a parent by claims nothing. That is deliberate: inferring a default
@@ -262,7 +268,7 @@ def _names_a_parent(dt: "DocumentType", lowered: str) -> bool:
     """
     for phrase in dt.parent_evidence_phrases:
         folded = fold(phrase)
-        if folded and folded in lowered:
+        if folded and _find_all(folded, lowered):
             return True
     return False
 
