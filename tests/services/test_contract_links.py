@@ -277,6 +277,21 @@ def test_confirming_sets_the_parent_and_closes_the_proposal(fixture_contracts):
     assert _open_proposals(fixture_contracts["sow"]) == []
 
 
+def test_confirming_leaves_the_proposal_resolved_by_the_reviewer(fixture_contracts):
+    """The other half of what confirm() promises: the finding is CLOSED, not deleted."""
+    from src.services.db import get_conn
+    sow = fixture_contracts["sow"]
+    CL.propose_parent_links()
+    sf = _open_proposals(sow)[0]["source_file"]
+    assert CL.confirm(sow, fixture_contracts["msa"], sf, reviewer="rev-1") is True
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""SELECT status, resolved_by, resolved_at IS NOT NULL
+                         FROM proc.bp_extraction_discrepancy
+                        WHERE doc_pk_candidate = %s AND issue_type = %s""", (sow, ISSUE))
+        assert cur.fetchall() == [("resolved", "rev-1", True)]
+
+
 def test_the_notes_say_why_in_words_a_person_can_check(fixture_contracts):
     CL.propose_parent_links()
     notes = _open_proposals(fixture_contracts["sow"])[0]["notes"]
@@ -704,6 +719,23 @@ def test_confirm_of_a_dismissed_proposal_links_nothing(fixture_contracts):
     with get_conn() as conn:
         conn.cursor().execute(
             """UPDATE proc.bp_extraction_discrepancy SET status = 'ignored'
+                WHERE doc_pk_candidate = %s AND issue_type = %s""", (sow, ISSUE))
+    assert CL.confirm(sow, fixture_contracts["msa"], sf) is False
+    assert _parent_of(sow) is None
+
+
+def test_confirm_claims_the_proposal_before_linking(fixture_contracts):
+    """With the proposal already resolved (someone else's confirm or a close got
+    there first) the claim matches zero rows, so confirm() returns False and links
+    nothing. The claim is the atomic step; the link must come after it."""
+    from src.services.db import get_conn
+    sow = fixture_contracts["sow"]
+    CL.propose_parent_links()
+    sf = _open_proposals(sow)[0]["source_file"]
+    with get_conn() as conn:
+        conn.cursor().execute(
+            """UPDATE proc.bp_extraction_discrepancy SET status = 'resolved',
+                      resolved_by = 'someone-else', resolved_at = now()
                 WHERE doc_pk_candidate = %s AND issue_type = %s""", (sow, ISSUE))
     assert CL.confirm(sow, fixture_contracts["msa"], sf) is False
     assert _parent_of(sow) is None

@@ -16,9 +16,10 @@ NOTHING RUNS THIS MODULE. READ THIS BEFORE ASSUMING OTHERWISE.
 deal_link_proposals.propose has the same shape (a writer with no caller).
 
 WHY A PROPOSAL AND NOT A LINK. proc.bp_contract_master.parent_contract_id is
-populated on 1,561 contracts and resolves to a real contract on ZERO of them.
+populated on 1,561 bp_contract_master rows (the table that supplies
+candidate PARENTS, not the children this module scores) and resolves to a real contract on ZERO of them.
 Writing a parent on a score would be writing the same kind of value that is
-already wrong 1,561 times over. A person confirms, through the queue they
+already wrong 1,561 times over on the parent side. A person confirms, through the queue they
 already work.
 
 WHERE IT LANDS. proc.bp_extraction_discrepancy, the Action Centre findings
@@ -385,38 +386,45 @@ def confirm(contract_id: str, parent_contract_id: str, source_file: str,
     would set any parent it was handed, and a dismissed proposal (status ignored)
     could still be turned into a link.
     """
+    key = (contract_id, normalise_source_file(source_file) or "", ISSUE_TYPE, FIELD_NAME)
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute(
-            """SELECT 1 FROM proc.bp_extraction_discrepancy
-                WHERE doc_type = 'contract' AND doc_pk_candidate = %s
-                  AND coalesce(source_file,'') = %s AND issue_type = %s
-                  AND field_name = %s AND status = 'open'
-                  AND expected_value = %s LIMIT 1""",
-            (contract_id, normalise_source_file(source_file) or "", ISSUE_TYPE,
-             FIELD_NAME, parent_contract_id),
-        )
+        # 1. Cheap existence check, so the common failure is caught before anything
+        #    mutates.
+        cur.execute("SELECT 1 FROM proc.bp_contracts WHERE contract_id = %s", (contract_id,))
         if not cur.fetchone():
             return False
-        cur.execute(
-            "UPDATE proc.bp_contracts SET parent_contract_id = %s WHERE contract_id = %s",
-            (parent_contract_id, contract_id),
-        )
-        if cur.rowcount == 0:
-            return False
-        # `status = 'open'` here is deliberate and NOT the index's clause. A
-        # proposal a human has dismissed must not be silently resurrected and
-        # resolved by a confirm; and bp_lifecycle_guard blocks ignored -> resolved
-        # outright, so attempting it would raise rather than no-op.
+        # 2. CLAIM the proposal in ONE conditional statement, before linking.
+        #    get_conn() is AUTOCOMMIT: there is no transaction to wrap this in, and a
+        #    FOR UPDATE lock would end with its own statement. A single conditional
+        #    UPDATE is the lock that works here. rowcount 0 means a dismissal or
+        #    another confirm got there first, so nothing is written. The ordering
+        #    decides the failure direction: if anything goes wrong after the claim
+        #    the proposal is closed WITHOUT a link (a person sees it disappear), never
+        #    a link with no valid proposal (silent and wrong).
+        #    `status = 'open'` is deliberate and NOT the index's clause: a dismissed
+        #    proposal must not be resurrected, and bp_lifecycle_guard blocks
+        #    ignored -> resolved outright.
         cur.execute(
             """UPDATE proc.bp_extraction_discrepancy
                   SET status = 'resolved', resolved_by = %s, resolved_at = now()
                 WHERE doc_type = 'contract' AND doc_pk_candidate = %s
                   AND coalesce(source_file,'') = %s AND issue_type = %s
-                  AND field_name = %s AND status = 'open'""",
-            (reviewer or "contract-parent-confirm", contract_id,
-             normalise_source_file(source_file) or "", ISSUE_TYPE, FIELD_NAME),
+                  AND field_name = %s AND expected_value = %s AND status = 'open'""",
+            (reviewer or "contract-parent-confirm", *key, parent_contract_id),
         )
+        if cur.rowcount == 0:
+            return False
+        # 3. Only now link.
+        cur.execute(
+            "UPDATE proc.bp_contracts SET parent_contract_id = %s WHERE contract_id = %s",
+            (parent_contract_id, contract_id),
+        )
+        if cur.rowcount == 0:
+            log.error("confirm(%s -> %s): the contract vanished after its proposal was "
+                      "claimed; the proposal is closed WITHOUT a link", contract_id,
+                      parent_contract_id)
+            return False
     return True
 
 
