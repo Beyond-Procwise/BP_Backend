@@ -166,10 +166,20 @@ def write_raw(
     columns: Mapping[str, Any],
     parser_snapshot: Mapping[str, Any],
     promotion_status: str,
+    resolved_doc_type: str | None = None,
+    resolved_role: str | None = None,
+    type_agreement: str | None = None,
 ) -> int:
     """INSERT one row into proc.bp_<doctype>_raw. Returns raw_id.
 
     `columns` already has only db_columns present in the _raw table.
+
+    The three ``resolved_*`` / ``type_agreement`` arguments carry what the
+    document's own text said it was. They are accepted for every doc_type and
+    WRITTEN only for 'contract', because only proc.bp_contract_raw has the
+    columns -- sending them elsewhere would be an UndefinedColumn error on the
+    live ingestion path for the other three pipelines. Callers therefore need no
+    doc-type branch of their own.
     """
     table = _RAW_TABLES[doc_type]
     pk_field = _DOC_PK_FIELD[doc_type]
@@ -189,6 +199,13 @@ def write_raw(
         json.dumps(parser_snapshot), str(trace_id), promotion_status, doc_pk_candidate,
         "{}",
     ]
+    # Only proc.bp_contract_raw has these columns
+    # (deploy/sql/2026-10-02_contract_raw_resolved_type.sql). Gated here rather
+    # than at the call site so dispatch stays free of a doc-type branch, and so
+    # the gate lives next to the SQL it protects.
+    if doc_type == "contract":
+        base_cols += ["resolved_doc_type", "resolved_role", "type_agreement"]
+        base_vals += [resolved_doc_type, resolved_role, type_agreement]
     field_cols = list(columns.keys())
     field_vals = [columns[c] for c in field_cols]
 

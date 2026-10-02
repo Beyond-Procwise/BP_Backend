@@ -582,7 +582,7 @@ def _carry_pm_deal(cur, raw_data: dict[str, Any]) -> None:
 
 def promote(raw_id: int, doc_type: str, *,
             hitl_fields: Optional[Iterable[str]] = None) -> dict[str, Any]:
-    """Copy _raw flat columns into _stg, delete _raw, update audit cols.
+    """Copy _raw flat columns into _stg, keep _raw (marked promoted), update audit cols.
 
     Resolves supplier_name → supplier_id via the existing
     supplier_resolver when supplier_id is unset and supplier_name is present.

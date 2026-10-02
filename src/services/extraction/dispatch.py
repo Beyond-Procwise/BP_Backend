@@ -795,6 +795,17 @@ def dispatch_document(
     except Exception:
         log.exception("dispatch: provenance snapshot failed (non-fatal)")
 
+    # What the document said it was, carried to the row so something other than a
+    # log line can read it. type_resolution is None when the resolver raised --
+    # extraction continues in that case, and the columns stay NULL rather than
+    # recording a structure nobody derived.
+    _resolved = type_resolution.evidence_concept if type_resolution else None
+    _role = None
+    if _resolved:
+        from src.services.concepts.vocabulary import ensure_vocabulary
+        _dt = ensure_vocabulary().document_types.get(_resolved)
+        _role = _dt.role if _dt else None
+
     raw_id = persistence.write_raw(
         doc_type=doc_type,
         file_path=file_path,
@@ -804,6 +815,9 @@ def dispatch_document(
         columns=columns,
         parser_snapshot=_parser_snapshot,
         promotion_status=promotion_status,
+        resolved_doc_type=_resolved,
+        resolved_role=_role,
+        type_agreement=type_resolution.agreement if type_resolution else None,
     )
     record_action(
         phase=PHASE_EXTRACTION,
