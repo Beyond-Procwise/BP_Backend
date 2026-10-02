@@ -266,9 +266,48 @@ the one part nobody can automate.
 3. a row holding a table never merges with a row holding a chart, and neither merges with a row
    of plain shapes.
 
-Nothing else merges. The importer **reports the resulting count** — on the reference file the raw
-count is 34 and the merged count is whatever these rules give; this spec does not promise 21,
-and a number invented in advance would be a target to overfit to.
+Nothing else merges. The importer **reports the resulting count.**
+
+**Measured, not guessed (probe run 2026-10-02 against the reference file).** These rules give
+**34 layouts** from 85 slides: **8 are used by more than one slide and cover 59 of them (69%)**;
+**26 are used once.** An earlier draft of this spec guessed "somewhere in the mid-teens" — that
+was wrong, and the merges barely bite. I also tested the obvious improvement, generalising rule 2
+from a repeating *row* to a repeating *sequence* of rows: it changes the count not at all. Slides
+8 and 28 against 10, 25 and 29 are the same page with one extra (panel + cards) pair and still do
+not merge.
+
+The eight that earn a template:
+
+| slides | structure |
+|---|---|
+| 21 | full-width table |
+| 10 | 8-up + 3-up + 4-up + 3-up + 3-up cards (the category profile) |
+| 10 | 6-up cards + 3-up table + full-width panel |
+| 9 | 2-up table + 8-up cards + 6-up cards repeating |
+| 3 | 3-up chart + panel + 2-up cards repeating + panel |
+| 2 | 4-up cards, repeating down the page |
+| 2 | 3-up chart + panel + 2-up cards + panel |
+| 2 | 3-up chart + full-width panel |
+
+### 6a. The 26 single-use pages — an open decision
+
+The 26 are the drawn set pieces: the spend-against-supply-risk quadrant (9), the market calendar
+(15), the eight forces (12), the price outlook (13), the market-intelligence flow (16). The row
+signature describes them as "6-up cards + 3-up cards + 2-up cards", which is a true description of
+where the boxes sit and a **useless** description of what the page is.
+
+**Emitting 26 single-use layouts would reproduce the original complaint in a new form** — a Layout
+picker full of near-identical generic skeletons, one per slide, none of them reusable. Three ways
+to go, and this is the one open decision in step 1:
+
+1. **Emit the 8 templates now; the 26 wait for step 2** and are then imported as *composed pages*
+   — the boxes arrive as placed components you can move and replace, which is exactly the drag-
+   and-drop machinery step 2 builds. **Recommended.** Step 1 then delivers the pack plus 8
+   layouts, and the pack is what makes everything look right.
+2. **Emit all 34 now.** 26 of them are single-use and the picker gets long, but nothing waits.
+3. **Emit the 8 and discard the 26.** Loses the most characteristic pages in the deck.
+
+Until this is settled the spec assumes (1), and §10's acceptance criterion is written against 8.
 
 **Regions.** Each layout's regions are the median box of its members' rows, in inches. A member
 whose box differs from the median by more than 0.15in in any dimension is reported as a
@@ -390,7 +429,9 @@ reports.
    a table row and a chart row never merge.
 5. **Every guard broken on purpose and watched go red** before it is trusted.
 6. **Demonstrated on the real file end to end** — not only on fixtures — reporting the layout
-   count, the loose fits, the unresolved regions and the token diff.
+   count, the loose fits, the unresolved regions and the token diff. The expected count is
+   **8 reusable layouts covering 59 slides**, with the 26 single-use structures listed and not
+   emitted (§6a option 1). A different number is a finding to explain, not a tolerance to widen.
 7. **An `importing` pack is never served**, proven by a test that leaves one behind.
 
 ## 11. To confirm before building
