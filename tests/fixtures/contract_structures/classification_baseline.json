@@ -1,32 +1,4 @@
 {
-  "/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/bb5521da-4de9-4779-8024-3eb0cc564dda/scratchpad/zzprobe_a.csv": {
-    "agreement": "neither",
-    "candidates": [],
-    "evidence_concept": null,
-    "status": "unknown"
-  },
-  "/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/bb5521da-4de9-4779-8024-3eb0cc564dda/scratchpad/zzprobe_b.csv": {
-    "agreement": "neither",
-    "candidates": [],
-    "evidence_concept": null,
-    "status": "unknown"
-  },
-  "/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/bb5521da-4de9-4779-8024-3eb0cc564dda/scratchpad/zzprobe_c.csv": {
-    "agreement": "evidence_only",
-    "candidates": [
-      "doctype.quote"
-    ],
-    "evidence_concept": "doctype.quote",
-    "status": "matched"
-  },
-  "/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/bb5521da-4de9-4779-8024-3eb0cc564dda/scratchpad/zzprobe_d.csv": {
-    "agreement": "evidence_only",
-    "candidates": [
-      "doctype.quote"
-    ],
-    "evidence_concept": "doctype.quote",
-    "status": "matched"
-  },
   "documents/invoice/IMI-INV-Q2_INVOICE.xlsx": {
     "agreement": "agreed",
     "candidates": [

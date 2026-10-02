@@ -6,9 +6,10 @@ which classifies correctly today classifies differently afterwards. That is a
 measurement, not an assertion, so the outcome is captured here as a fixture and
 compared on every run.
 
-115 raw rows carry parsed text, covering 57 distinct documents (the same document
-has several raw rows from repeated extractions); the newest row per source_file
-is the one read.
+103 raw rows under documents/ carry a parser snapshot, covering 53 distinct
+documents (50 agreed, 3 declared_only); the same document has several raw rows
+from repeated extractions, and the newest row per source_file is the one read.
+Probe rows outside documents/ are excluded (see _stored_documents).
 
 Live-only. Run with:
     set -a && . ./.env && set +a
@@ -74,6 +75,13 @@ def _stored_documents() -> dict[str, str]:
             for source_file, snapshot in cur.fetchall():
                 snap = snapshot if isinstance(snapshot, dict) else json.loads(snapshot)
                 text = (snap or {}).get("full_text") or ""
+                # Corpus documents are S3 keys of the form documents/<zone>/<file>;
+                # an absolute path or a scratchpad path is a probe, not a document.
+                # A genuine document stored under a different prefix would be
+                # excluded here, which is safe: it shows up immediately as a
+                # coverage-count change rather than silently.
+                if not str(source_file).startswith("documents/"):
+                    continue
                 if text.strip():
                     out[source_file] = text   # ORDER BY ASC: the last write wins
     return out
