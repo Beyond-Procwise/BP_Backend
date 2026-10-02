@@ -8,7 +8,9 @@ compared on every run.
 
 103 raw rows under documents/ carry a parser snapshot, covering 53 distinct
 documents (50 agreed, 3 declared_only); the same document has several raw rows
-from repeated extractions, and the newest row per source_file is the one read.
+from repeated extractions. Rows are read per table in raw_id order and the last
+row by raw_id within each table wins (a later table in _RAW_TABLES overrides an
+earlier one; a last row with empty full_text is skipped).
 Probe rows outside documents/ are excluded (see _stored_documents).
 
 Live-only. Run with:
@@ -59,7 +61,7 @@ def declared_concept_for(source_file: str) -> str | None:
 
 
 def _stored_documents() -> dict[str, str]:
-    """source_file -> full_text, taking the NEWEST raw row per document."""
+    """source_file -> full_text, taking the last row by raw_id within each table."""
     from src.services.db import get_conn
 
     out: dict[str, str] = {}
@@ -78,8 +80,9 @@ def _stored_documents() -> dict[str, str]:
                 # Corpus documents are S3 keys of the form documents/<zone>/<file>;
                 # an absolute path or a scratchpad path is a probe, not a document.
                 # A genuine document stored under a different prefix would be
-                # excluded here, which is safe: it shows up immediately as a
-                # coverage-count change rather than silently.
+                # silently excluded and unmeasured: this filter drops the row
+                # before anything counts it. That is accepted because every corpus
+                # key in this product is documents/<zone>/<file>.
                 if not str(source_file).startswith("documents/"):
                     continue
                 if text.strip():
@@ -109,6 +112,15 @@ def test_the_baseline_covers_every_stored_document():
     assert BASELINE.exists(), f"baseline fixture missing: {BASELINE}"
     recorded = json.loads(BASELINE.read_text())
     live = _stored_documents()
+    # Guard against a vacuous pass: an empty read on both sides would compare 0 == 0.
+    assert recorded, (
+        "the baseline fixture is empty: every other assertion in this file would "
+        "pass vacuously, so this is the guard that makes them mean anything"
+    )
+    assert live, (
+        "no stored documents were read from the database: the count comparison "
+        "would pass vacuously on an empty read"
+    )
     assert len(recorded) == len(live), (
         f"baseline holds {len(recorded)} documents, the database has {len(live)}. "
         "A document was added or removed; re-capture deliberately."
@@ -118,6 +130,16 @@ def test_the_baseline_covers_every_stored_document():
 def test_no_stored_document_classifies_differently_than_the_baseline():
     recorded = json.loads(BASELINE.read_text())
     live = _resolve_stored_documents()
+    # Guard against a vacuous pass: with nothing recorded or nothing read, the
+    # loop below checks no document at all and the test goes green.
+    assert recorded, (
+        "the baseline fixture is empty: every other assertion in this file would "
+        "pass vacuously, so this is the guard that makes them mean anything"
+    )
+    assert live, (
+        "no stored documents were read from the database: the drift loop would "
+        "check nothing and pass vacuously"
+    )
     drift = []
     for source_file, want in sorted(recorded.items()):
         got = live.get(source_file)
