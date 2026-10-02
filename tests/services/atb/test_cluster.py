@@ -74,6 +74,20 @@ def test_groups_slides_by_signature_and_orders_by_use():
     assert clusters[1].reused is False
 
 
+def test_a_cluster_carries_every_member_s_rows_not_just_the_first_s():
+    # Without this a region's box could only be derived from one slide, and "this member is off
+    # the median" had nothing to compare across. Every test that builds a Cluster by hand passes
+    # rows_by_slide itself, so only this one exercises group() filling it in.
+    first = (_shape(0.5, 2.0, 12.0, 1.0, slide=1),)
+    second = (_shape(0.5, 2.0, 11.0, 1.0, slide=2),)
+    clusters = group(_deck([first, second]))
+    assert len(clusters) == 1
+    cluster = clusters[0]
+    assert len(cluster.rows_by_slide) == 2
+    assert [rows[0][0].box.w for rows in cluster.rows_by_slide] == [12.0, 11.0]
+    assert cluster.rows == cluster.rows_by_slide[0]
+
+
 def test_the_footer_band_follows_the_page_height():
     # On a portrait page 7.02in is in the BODY, not the footer.
     shapes = (_shape(0.5, 7.02, 11.7, 0.3),)

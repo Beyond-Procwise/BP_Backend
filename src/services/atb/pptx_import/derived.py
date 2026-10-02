@@ -14,7 +14,10 @@ from .evidence import Evidence
 from .read import Deck
 
 BRITISH_RE = re.compile(r'\b\w+(?:isation|ise[sd]?|ising|our|ours)\b', re.I)
-AMERICAN_RE = re.compile(r'\b\w+(?:ization|ize[sd]?|izing|or|ors)\b', re.I)
+# NOT `-or`: that is only an Americanism in contrast to a -our spelling, and as a suffix on its
+# own it matches for, sector, vendor, major, contractor — 124 of them in the reference deck, which
+# outvoted its 116 British spellings and left a plainly British deck uncontested.
+AMERICAN_RE = re.compile(r'\b\w+(?:ization|ize[sd]?|izing)\b', re.I)
 
 # Words that end -ise or -our and are not a British spelling of anything. Without these, any deck
 # that says "four hours" reads as British English.

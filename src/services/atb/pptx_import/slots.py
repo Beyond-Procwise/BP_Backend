@@ -32,13 +32,23 @@ def _slug(text: str, fallback: str) -> str:
     return out or fallback
 
 
-def _median_box(shapes: tuple[Shape, ...]) -> dict:
-    return {
-        'x': round(median(s.box.x for s in shapes), 3),
-        'y': round(median(s.box.y for s in shapes), 3),
-        'w': round(median(s.box.w for s in shapes), 3),
-        'h': round(median(s.box.h for s in shapes), 3),
-    }
+def row_span(row: tuple[Shape, ...]) -> dict:
+    """The box a whole row occupies — its union, not the median of its parts.
+
+    A four-up card row's REGION is the band from the first card's left edge to the last card's
+    right edge. Taking the median of the four cards' boxes returned something the size of one
+    card, sitting in the middle of the row, and then reported each card as an outlier against it.
+    """
+    left = min(s.box.x for s in row)
+    top = min(s.box.y for s in row)
+    right = max(s.box.x + s.box.w for s in row)
+    bottom = max(s.box.y + s.box.h for s in row)
+    return {'x': round(left, 3), 'y': round(top, 3),
+            'w': round(right - left, 3), 'h': round(bottom - top, 3)}
+
+
+def _median_of(boxes: list[dict]) -> dict:
+    return {key: round(median(b[key] for b in boxes), 3) for key in ('x', 'y', 'w', 'h')}
 
 
 def _max_chars(width_in: float, height_in: float, size_pt: float, lines: int | None = None) -> int:
@@ -71,19 +81,23 @@ def regions_and_slots(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence):
         'max_chars': _max_chars(title_w, 0.4, scale['subtitle'], _SUBTITLE_LINES),
     }
 
+    members = cluster.rows_by_slide or (cluster.rows,)
     for index, row in enumerate(cluster.rows, 1):
         if not row:
             continue
-        box = _median_box(row)
-        for shape in row:
-            off = max(abs(shape.box.x - box['x']), abs(shape.box.y - box['y']),
-                      abs(shape.box.w - box['w']), abs(shape.box.h - box['h']))
+        # The same row ACROSS the member slides. A member with fewer rows contributes nothing to
+        # this one rather than shifting the median.
+        spans = [(cluster.slides[i] if i < len(cluster.slides) else 0, row_span(member[index - 1]))
+                 for i, member in enumerate(members) if len(member) >= index and member[index - 1]]
+        box = _median_of([span for _, span in spans]) if spans else row_span(row)
+        for slide_no, span in spans:
+            off = max(abs(span[key] - box[key]) for key in ('x', 'y', 'w', 'h'))
             if off > LOOSE_FIT_IN:
                 problems.append({
                     'kind': 'loose_fit', 'region': f'row{index}',
-                    'why': f'slide {shape.slide} is {round(off, 2)}in off the median box, more '
+                    'why': f'slide {slide_no} is {round(off, 2)}in off the median box, more '
                            f'than the {LOOSE_FIT_IN}in tolerance',
-                    'slides': [shape.slide],
+                    'slides': [slide_no],
                 })
 
         content = {s.kind for s in row} & {'table', 'chart'}

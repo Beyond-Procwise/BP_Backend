@@ -43,6 +43,45 @@ def test_measures_the_gutter_between_cards_in_a_row(build_deck):
     assert ev.as_dict()['values']['grid.gutter_in']['gaps'] == 32   # four gaps a slide, eight slides
 
 
+def test_the_gutter_ignores_neighbours_of_unequal_width(build_deck):
+    # A gutter is the gap in a multi-column band. The reference deck's modal gap between ANY two
+    # adjacent shapes is 0.1in, because a deck is full of tightly-packed unequal things, and that
+    # is not its gutter. Here: three equal cards 0.25in apart, and a wide panel 0.5in from the
+    # last of them. The 0.5in gap must not count.
+    ev = Evidence()
+    band = [(0.5, 0.35, 12.33, 0.6, 'title', 30, '#172033')] + \
+           [(0.5 + i * 2.25, 1.5, 2.0, 2.0, 'card %d' % i, 12, '#172033') for i in range(3)] + \
+           [(7.5, 1.5, 4.0, 2.0, 'a wide panel', 12, '#172033')]
+    # cards end at 7.0 and the panel starts at 7.5, so the unequal gap is a real 0.5in — in the
+    # first version of this fixture the panel overlapped a card, the gap was negative, and the
+    # census skipped it for the wrong reason.
+    g = grid(read_deck(build_deck([band] * 8)), ev)
+    assert g['gutter_in'] == 0.25
+    distribution = dict((v, n) for v, n in ev.as_dict()['values']['grid.gutter_in']['distribution'])
+    assert 0.5 not in distribution, 'the unequal neighbour must not reach the census'
+
+
+def test_the_footer_line_is_content_not_the_page_number(build_deck):
+    # The reference deck's page-number placeholder sits at 7.05in on 84 slides and its footnote at
+    # 7.02in. Taking the mode of everything in the bottom band gives the page number's edge.
+    ev = Evidence()
+    band = [(0.5, 0.35, 12.33, 0.6, 'title', 30, '#172033'),
+            (0.5, 1.5, 12.33, 4.0, 'body', 12, '#172033'),
+            (0.5, 7.02, 11.73, 0.3, 'a footnote', 9, '#56627A'),
+            (12.38, 7.05, 0.6, 0.28, '4', 9, '#56627A'),
+            (11.5, 7.05, 0.6, 0.28, 'x', 9, '#56627A')]
+    assert grid(read_deck(build_deck([band] * 8)), ev)['footer_top_in'] == 7.02
+
+
+def test_a_body_row_low_on_the_page_is_not_the_footer(build_deck):
+    # At a 0.85 band boundary a body row at 6.45in outvoted the footnote at 7.02in.
+    ev = Evidence()
+    band = [(0.5, 0.35, 12.33, 0.6, 'title', 30, '#172033')] + \
+           [(0.5, 6.45, 12.33, 0.4, 'a low body row', 12, '#172033')] * 1 + \
+           [(0.5, 7.02, 11.73, 0.3, 'a footnote', 9, '#56627A')]
+    assert grid(read_deck(build_deck([band] * 8)), ev)['footer_top_in'] == 7.02
+
+
 def test_finds_the_chapter_chip(build_deck):
     ev = Evidence()
     assert chapter_chip_in(read_deck(build_deck([GRIDDED] * 8)), ev) == 0.32

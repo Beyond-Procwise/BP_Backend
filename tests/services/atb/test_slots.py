@@ -66,28 +66,49 @@ def test_members_that_disagree_leave_the_region_unresolved_and_emit_nothing():
     assert sorted(problems[kinds.index('unresolved')]['slides']) == [1, 2]
 
 
+def _cluster_across(slides_rows):
+    """One cluster whose members are separate SLIDES, which is what a loose fit compares."""
+    return Cluster(signature=((1, 'SHAPE'),), slides=tuple(range(1, len(slides_rows) + 1)),
+                   rows=slides_rows[0], rows_by_slide=tuple(slides_rows))
+
+
 def test_a_member_whose_box_is_off_by_more_than_the_tolerance_is_a_loose_fit():
-    a = _shape(0.5, 1.5, 12.33, 4.2, slide=1)
-    b = _shape(0.5, 1.5, 11.0, 4.2, slide=2)
-    cluster = Cluster(signature=((1, 'SHAPE'),), slides=(1, 2), rows=((a, b),))
-    _, _, problems = regions_and_slots(cluster, _deck([(a,), (b,)]), PACK, Evidence())
+    wide = ((_shape(0.5, 1.5, 12.33, 4.2, slide=1),),)
+    narrow = ((_shape(0.5, 1.5, 11.0, 4.2, slide=2),),)
+    cluster = _cluster_across([wide, narrow])
+    _, _, problems = regions_and_slots(cluster, _deck([wide[0], narrow[0]]), PACK, Evidence())
     loose = [p for p in problems if p['kind'] == 'loose_fit']
-    # With exactly two members that disagree the median sits between them, so BOTH are loose —
-    # the honest reading: the cluster is bimodal and neither box is the shape.
+    # Two members that disagree put the median between them, so BOTH are loose — the honest
+    # reading of a bimodal cluster: neither box is the shape.
     assert {slide for problem in loose for slide in problem['slides']} == {1, 2}
     assert 'off the median' in loose[0]['why']
     assert str(LOOSE_FIT_IN) in loose[0]['why']
 
 
 def test_the_median_of_three_members_is_a_real_box_and_only_the_outlier_is_loose():
-    a = _shape(0.5, 1.5, 12.33, 4.2, slide=1)
-    b = _shape(0.5, 1.5, 12.33, 4.2, slide=2)
-    c = _shape(0.5, 1.5, 11.0, 4.2, slide=3)
-    cluster = Cluster(signature=((1, 'SHAPE'),), slides=(1, 2, 3), rows=((a, b, c),))
-    regions, _, problems = regions_and_slots(cluster, _deck([(a,), (b,), (c,)]), PACK, Evidence())
+    wide = ((_shape(0.5, 1.5, 12.33, 4.2, slide=1),),)
+    same = ((_shape(0.5, 1.5, 12.33, 4.2, slide=2),),)
+    narrow = ((_shape(0.5, 1.5, 11.0, 4.2, slide=3),),)
+    cluster = _cluster_across([wide, same, narrow])
+    regions, _, problems = regions_and_slots(cluster, _deck([wide[0], same[0], narrow[0]]),
+                                             PACK, Evidence())
     loose = [p for p in problems if p['kind'] == 'loose_fit']
     assert {slide for problem in loose for slide in problem['slides']} == {3}
     assert [r for r in regions if r['component'] == 'paragraph'][0]['box_in']['w'] == 12.33
+
+
+def test_a_four_up_card_row_spans_the_whole_row_not_one_card():
+    # The region for a band of cards is the band. Taking the median of the four cards' boxes gave
+    # something one card wide sitting in the middle of the row, and then called every card an
+    # outlier against it — 114 meaningless problems on the reference deck.
+    row = tuple(_shape(0.5 + i * 3.2, 1.5, 2.9, 2.0, slide=1) for i in range(4))
+    cluster = Cluster(signature=((4, 'SHAPE'),), slides=(1, 2), rows=(row,),
+                      rows_by_slide=((row,), (row,)))
+    regions, slots, problems = regions_and_slots(cluster, _deck([row, row]), PACK, Evidence())
+    cards = [r for r in regions if r['component'] == 'text_card'][0]
+    assert cards['box_in']['x'] == 0.5
+    assert cards['box_in']['w'] == round(0.5 + 3 * 3.2 + 2.9 - 0.5, 3)
+    assert not [p for p in problems if p['kind'] == 'loose_fit']
 
 
 def test_a_member_inside_the_tolerance_is_not_a_loose_fit():

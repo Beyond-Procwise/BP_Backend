@@ -21,6 +21,7 @@ _THEME_INK_KEYS = ('dk1', 'dk2')
 _PANEL_LUMINANCE = 0.85
 _ACCENT_SATURATION = 0.3
 _ACCENT_LUMINANCE = (0.2, 0.7)
+_RULE_RATIO = 3
 
 
 def _rgb(colour: str) -> tuple[int, int, int]:
@@ -85,8 +86,12 @@ def colours(deck: Deck, ev: Evidence, floor: int = COLOUR_FLOOR) -> dict[str, st
 
     by_runs = sorted(eligible, key=lambda c: (-eligible[c]['runs'], c))
     by_fills = sorted(eligible, key=lambda c: (-eligible[c]['fills'], c))
-    line_only = [c for c in by_fills
-                 if eligible[c]['lines'] and not eligible[c]['fills'] and not eligible[c]['runs']]
+    # PREDOMINANTLY on lines, not exclusively. The reference deck's rule colour (#D5DBE5) paints
+    # 61 lines and 8 fills, so "only on lines" found nothing and the pack came back with no rule.
+    line_led = [c for c in sorted(eligible, key=lambda c: -eligible[c]['lines'])
+                if eligible[c]['lines'] >= _RULE_RATIO * (eligible[c]['fills']
+                                                          + eligible[c]['runs'])
+                and eligible[c]['lines'] > 0]
     pale = [c for c in by_fills if eligible[c]['fills'] and _luminance(c) > _PANEL_LUMINANCE]
     saturated = [c for c in by_fills
                  if _saturation(c) > _ACCENT_SATURATION
@@ -94,7 +99,7 @@ def colours(deck: Deck, ev: Evidence, floor: int = COLOUR_FLOOR) -> dict[str, st
 
     take('ink', [c for c in by_runs if eligible[c]['runs']], 'most-used text colour')
     take('muted', [c for c in by_runs if eligible[c]['runs']], 'second most-used text colour')
-    take('rule', line_only, 'used only on lines')
+    take('rule', line_led, f'used on lines at least {_RULE_RATIO}x as often as anywhere else')
     take('panel', pale, 'palest frequently-filled colour')
     for name, hues in (('panel_blue', (190, 260)), ('panel_teal', (150, 190)),
                        ('panel_amber', (20, 60)), ('panel_violet', (260, 300))):

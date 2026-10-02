@@ -12,14 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .grid import FOOTER_BAND_FRACTION
 from .read import Deck, Shape
 
 TITLE_BAND_IN = 1.25
-# The footer band is a FRACTION of the page, not a constant. 0.92 of a 7.5in deck is 6.9in, which
-# sits between the reference deck's lowest body row (6.6in) and its footnote line (7.02in); on an
-# 11.69in portrait sheet the same fraction is 10.75in, just above its 10.9in footnote. A constant
-# 6.9in would have called a portrait page's body content a footer.
-FOOTER_BAND_FRACTION = 0.92
 SAME_ROW_IN = 0.45
 SAME_COL_IN = 0.1
 DECORATION_IN = 0.5
@@ -30,7 +26,13 @@ EMPTY_ROW = ('empty', 'NONE')
 class Cluster:
     signature: tuple
     slides: tuple[int, ...]
+    # The representative slide's rows — what the example fill is taken from.
     rows: tuple[tuple[Shape, ...], ...]
+    # EVERY member's rows, slide by slide, in the same order as `slides`. Without this a region's
+    # box could only be derived from one slide, and "this member is off the median" could only
+    # compare a shape against the row it is part of — which reported each card of a four-up row as
+    # an outlier. Measured on the reference deck: 114 such meaningless problems.
+    rows_by_slide: tuple[tuple[tuple[Shape, ...], ...], ...] = ()
 
     @property
     def reused(self) -> bool:
@@ -92,13 +94,15 @@ def signature(shapes: tuple[Shape, ...], height_in: float) -> tuple:
 
 def group(deck: Deck) -> list[Cluster]:
     found: dict[tuple, list[int]] = {}
-    rows_by_signature: dict[tuple, tuple] = {}
+    rows_by_signature: dict[tuple, list[tuple]] = {}
     for index, shapes in enumerate(deck.slides, 1):
         sig = signature(shapes, deck.height_in)
         found.setdefault(sig, []).append(index)
-        rows_by_signature.setdefault(
-            sig, tuple(tuple(r) for r in rows_of(shapes, deck.height_in)))
-    clusters = [Cluster(signature=sig, slides=tuple(slides), rows=rows_by_signature[sig])
+        rows_by_signature.setdefault(sig, []).append(
+            tuple(tuple(r) for r in rows_of(shapes, deck.height_in)))
+    clusters = [Cluster(signature=sig, slides=tuple(slides),
+                        rows=rows_by_signature[sig][0],
+                        rows_by_slide=tuple(rows_by_signature[sig]))
                 for sig, slides in found.items()]
     clusters.sort(key=lambda c: (-len(c.slides), c.slides[0]))
     return clusters
