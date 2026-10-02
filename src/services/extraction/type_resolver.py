@@ -247,6 +247,26 @@ def _is_reference_value(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> bool
     return bool(_HAS_DIGIT.search(body)) and fold(body) not in owners
 
 
+def _names_a_parent(dt: "DocumentType", lowered: str) -> bool:
+    """Does this page name the parent the structure must sit under?
+
+    Compared against ``lowered`` -- the same match copy every alias uses, whose
+    length equals the page's -- so the phrase side is folded and the page side is
+    not. A phrase found here sits at a real offset in the document.
+
+    An empty phrase list returns False, so a structure flagged with nothing to
+    recognise a parent by claims nothing. That is deliberate: inferring a default
+    phrase set is how a classifier starts inventing parents.
+    ``validate.check_flagged_types_have_parent_evidence_phrases`` reports the
+    row so the silence is visible.
+    """
+    for phrase in dt.parent_evidence_phrases:
+        folded = fold(phrase)
+        if folded and folded in lowered:
+            return True
+    return False
+
+
 def _title_owners(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> Tuple[str, ...]:
     """Every concept this segment NAMES, or () if it is not a title at all.
 
@@ -416,6 +436,20 @@ def resolve_document_type(
     # line is load-bearing. That is why there is one and not two.
     for code, dt in vocab.document_types.items():
         if dt.status != "active":
+            continue
+        # A child structure stands down on a page that does not name its parent.
+        #
+        # HERE, beside the status rule, and not by filtering title_concepts
+        # later: this is the one place the module decides whether a type exists
+        # for this document at all, so standing down here removes it from
+        # `owners`, `hits`, `signals`, tier 1 AND tier 2 together. A filter
+        # further down would leave the structure winning on body mentions alone
+        # -- the same defect, one line later, and invisible in any single score.
+        #
+        # This is also precisely what the design's measurement simulated: two
+        # vocabularies, one holding the structure and one without. 13 quote
+        # workbooks turn on this line.
+        if dt.requires_parent_evidence and not _names_a_parent(dt, lowered):
             continue
         # A set: a concept's own name is also an alias, and counting the same
         # phrase twice would hand that concept a spurious double score.
