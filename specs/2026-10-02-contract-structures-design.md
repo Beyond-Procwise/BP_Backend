@@ -1,7 +1,7 @@
 # Contract structures the maths can use — design
 
 **Date:** 2026-10-02
-**Status:** awaiting review
+**Status:** APPROVED by Nick 2026-10-02, including both stated assumptions (§3 sales order pipeline, §4 initial flag scope)
 **Predecessor:** `specs/2026-10-01-document-relationship-layer-plan.md` (nine tasks, built and pushed)
 **Rulings carried in:** `specs/2026-10-01-document-relationship-layer-rulings.md` — read it before changing any
 classification behaviour.
@@ -109,8 +109,8 @@ Two notes on those rows.
 - **`sales_order`'s pipeline is `purchase_order`, not `contract`** — a sales order is the supplier's mirror of
   a purchase order and carries lines, quantities and a total, so the purchase-order extraction schema is the
   one that fits it. `pipeline_doc_type` only takes effect when an uploader types that category; a document
-  dropped in the Contracts zone still routes on the category `contract`. Stated as an assumption for Nick to
-  overturn if a sales order should extract as a contract instead.
+  dropped in the Contracts zone still routes on the category `contract`. **CONFIRMED by Nick, 2026-10-02:**
+  a sales order extracts with the purchase-order schema, not the contract one.
 
 `sales order` is longer than the existing `order` alias of `doctype.order`, and the resolver's longest-match
 sweep (`type_resolver.py:442`) therefore gives it to `doctype.sales_order` without contest. Measured: adding
@@ -133,6 +133,7 @@ the flag when selecting tier-1 title concepts (`type_resolver.py:483-506`); a fl
 `schedule` are conceptually just as much children, but their behaviour today is measured — 47 agreed, 0
 disagreed, 3 unresolved over 50 live documents (2026-10-01) — and flagging them would change outcomes with
 no evidence calling for it. The column exists so flagging them later is an `UPDATE`.
+**CONFIRMED by Nick, 2026-10-02:** the rule governs `doctype.order_form` alone to start.
 
 **What counts as parent evidence.** Matchable phrases only, because the existing prose `structural_signals`
 ("lists incorporated documents") cannot match a page — open item 5 of the rulings. The initial set:
@@ -181,13 +182,19 @@ This is the blocker. A structure nothing records cannot feed any maths.
 Writing `NULL` when the page says nothing is deliberate and follows `feedback_no_fabrication_null_when_absent`:
 an unrecognised page records no structure rather than a guessed one.
 
-**The existing corpus.** The 13 free-text `contract_type` values map onto concept codes; 11 of 13 already
-match a seeded name or alias (`Consulting`→`doctype.consulting_agreement`, `NDA`→`doctype.nda`,
-`SLA`→`doctype.sla`, `Master Agreement`→`doctype.master_agreement`, `Service Agreement` and
-`Service Contract`→`doctype.service_agreement`, `Amendment`→`doctype.variation`,
-`Policy`→`doctype.policy_document`, `Purchase Order`→`doctype.order`, `Invoice`→`doctype.invoice`). The
-remaining two — `Service` (2 rows) and `Indirect Procurement` (1 row) — plus the 29 `NULL`s resolve to no
-structure and stay `NULL`. **The source column is not modified**
+**The existing corpus.** The 13 free-text `contract_type` values map onto concept codes through the
+vocabulary's own alias index. **Measured 2026-10-02: 9 of the 13 resolve, covering 3,016 of the 3,051 rows
+(98.9%)** — `Consulting`→`doctype.consulting_agreement` (645), `NDA`→`doctype.nda` (612),
+`SLA`→`doctype.sla` (585), `Master Agreement`→`doctype.master_agreement` (581),
+`Service Agreement` (579) and `Service Contract` (7)→`doctype.service_agreement`,
+`Invoice`→`doctype.invoice` (4), `Amendment`→`doctype.variation` (2),
+`Purchase Order`→`doctype.order` (1).
+
+The 35 rows that do not resolve stay `NULL`: `NULL` already (29), `Service` (2), `Indirect Procurement` (1),
+and `Policy` (3). **`Policy` is the interesting one** — `doctype.policy_document` claims the alias `policy`,
+but its concept is `status='proposed'`, and a proposed concept deliberately never resolves. So those 3 rows
+are not a gap in the vocabulary; they are a row awaiting confirmation, which is the mechanism working. An
+earlier draft of this section counted `Policy` as mapped; it does not. **The source column is not modified**
 (`project_extraction_accuracy_priority`: never modify source data); the mapping is read through a view or a
 resolved column written beside it.
 
