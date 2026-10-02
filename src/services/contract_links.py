@@ -53,13 +53,38 @@ MIN_SCORE = 65.0
 #: "confirm this" rather than "choose between these".
 SEPARATION = 8.0
 
+# "Unparented" means the pointer does not RESOLVE, not that it is absent.
+#
+# This filter used to say `AND parent_contract_id IS NULL`, meaning "skip contracts
+# that already have a parent". On this corpus those are different populations:
+#     parent_contract_id IS NULL ........ 1,490
+#     pointer set and RESOLVES .......... 0
+#     pointer set but DANGLING .......... 1,561
+# so IS NULL excluded exactly the 1,561 dangling-pointer contracts -- the very
+# population contract_hierarchy._cmp_reference was changed to rescue (a dangling
+# reference reads MISSING, 75.59, instead of CONFLICT, 45.00). The scorer fix was
+# right, the filter hid its inputs, and together they did nothing.
+#
+# A pointer resolves when it equals a contract_id in EITHER table candidate_parents
+# reads. A contract naming itself is not parented. The OR group is parenthesised so
+# it cannot widen the resolved_doc_type condition by precedence.
 _CHILD_SQL = """
-    SELECT contract_id, contract_title, supplier_id, resolved_doc_type,
-           resolved_role, framework_ref, parent_agreement_ref, parent_contract_id,
-           contract_start_date, contract_end_date, total_contract_value, currency
-      FROM proc.bp_contracts
-     WHERE resolved_doc_type IS NOT NULL
-       AND parent_contract_id IS NULL
+    SELECT c.contract_id, c.contract_title, c.supplier_id, c.resolved_doc_type,
+           c.resolved_role, c.framework_ref, c.parent_agreement_ref, c.parent_contract_id,
+           c.contract_start_date, c.contract_end_date, c.total_contract_value, c.currency
+      FROM proc.bp_contracts c
+     WHERE c.resolved_doc_type IS NOT NULL
+       AND (
+            c.parent_contract_id IS NULL
+            OR (
+                NOT EXISTS (SELECT 1 FROM proc.bp_contracts p
+                             WHERE p.contract_id = c.parent_contract_id
+                               AND p.contract_id <> c.contract_id)
+                AND NOT EXISTS (SELECT 1 FROM proc.bp_contract_master m
+                                 WHERE m.contract_id = c.parent_contract_id
+                                   AND m.contract_id <> c.contract_id)
+            )
+       )
 """
 
 

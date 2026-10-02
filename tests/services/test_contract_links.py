@@ -535,3 +535,113 @@ def test_a_sow_still_considers_only_master_agreements(fixture_contracts):
         assert fw not in ids, "a SOW was offered a framework agreement as a parent"
     finally:
         _delete_contracts(fw)
+
+
+# --------------------------------------------------------------------------
+# "Unparented" means the pointer does not RESOLVE, not that it is absent. On the
+# corpus 1,490 contracts have a NULL pointer, 0 have one that resolves and 1,561
+# have one that dangles; the filter used to be IS NULL and so excluded exactly
+# the dangling ones. Each case below is independently provable.
+# --------------------------------------------------------------------------
+
+def _sow_with_pointer(fx, label, pointer):
+    cid = f"SOW-{label}-{fx['tag']}"
+    from src.services.db import get_conn
+    with get_conn() as conn:
+        _insert_contract(conn.cursor(), cid, "Statement of Work Helix Migration",
+                         fx["supplier"], "doctype.sow",
+                         contract_start_date="2026-03-01", contract_end_date="2026-09-30",
+                         parent_agreement_ref=fx["msa"], parent_contract_id=pointer)
+    return cid
+
+
+def test_a_child_with_a_dangling_parent_pointer_is_considered(fixture_contracts):
+    cid = _sow_with_pointer(fixture_contracts, "DANG", f"GHOST-{fixture_contracts['tag']}")
+    try:
+        CL.propose_parent_links()
+        rows = _open_proposals(cid)
+        assert len(rows) == 1, "a dangling pointer excluded the child from scoring"
+        assert rows[0]["expected_value"] == fixture_contracts["msa"]
+    finally:
+        _delete_contracts(cid)
+
+
+def test_a_child_whose_pointer_resolves_is_skipped(fixture_contracts):
+    cid = _sow_with_pointer(fixture_contracts, "RES", fixture_contracts["msa"])
+    try:
+        CL.propose_parent_links()
+        assert _open_proposals(cid) == []
+    finally:
+        _delete_contracts(cid)
+
+
+def test_a_child_whose_pointer_resolves_in_the_corpus_table_is_skipped(fixture_contracts):
+    """A parent may live in bp_contract_master rather than bp_contracts."""
+    from src.services.db import get_conn
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT contract_id FROM proc.bp_contract_master LIMIT 1")
+        row = cur.fetchone()
+    assert row, "bp_contract_master is empty"
+    cid = _sow_with_pointer(fixture_contracts, "MRES", row[0])
+    try:
+        CL.propose_parent_links()
+        assert _open_proposals(cid) == []
+    finally:
+        _delete_contracts(cid)
+
+
+def test_a_child_with_a_null_pointer_is_still_considered(fixture_contracts):
+    cid = _sow_with_pointer(fixture_contracts, "NULLP", None)
+    try:
+        CL.propose_parent_links()
+        assert len(_open_proposals(cid)) == 1
+    finally:
+        _delete_contracts(cid)
+
+
+def test_after_confirm_the_child_resolves_and_drops_out(fixture_contracts):
+    """The exit condition, end to end: confirm writes a resolving id, so the next
+    pass proposes nothing further for that child."""
+    cid = _sow_with_pointer(fixture_contracts, "EXIT", f"GHOST-{fixture_contracts['tag']}")
+    try:
+        CL.propose_parent_links()
+        sf = _open_proposals(cid)[0]["source_file"]
+        assert CL.confirm(cid, fixture_contracts["msa"], sf, reviewer="test") is True
+        before = CL.propose_parent_links()
+        assert cid not in {d["contract_id"] for d in before["details"]}
+        assert _open_proposals(cid) == []
+    finally:
+        _delete_contracts(cid)
+
+
+def test_a_variation_with_a_dangling_parent_contract_id_and_a_resolvable_reference_is_proposed(
+        fixture_contracts):
+    """parent_contract_id is the realistic field for an amendment. A dangling value
+    there used to exclude the variation before it reached candidate_parents, even
+    when another pointer on the same document named a real contract. Proposed now."""
+    cid = _variation_child(fixture_contracts, "doctype.variation", "VARPC",
+                           parent_contract_id=f"{fixture_contracts['msa']}-OLDREV")
+    try:
+        CL.propose_parent_links()
+        rows = _open_proposals(cid)
+        assert len(rows) == 1, rows
+        assert rows[0]["expected_value"] == fixture_contracts["msa"]
+    finally:
+        _delete_contracts(cid)
+
+
+def test_a_variation_whose_only_pointer_dangles_is_considered_but_not_proposed(
+        fixture_contracts):
+    """Considered, then honestly below the gate: with no resolvable reference and no
+    parent type to lean on, supplier + term + title score 38.46 against 65. The
+    filter lets it reach the scorer; the scorer declines. Documents the limit."""
+    cid = _variation_child(fixture_contracts, "doctype.variation", "VARONLY",
+                           parent_agreement_ref=None,
+                           parent_contract_id=f"GHOST-{fixture_contracts['tag']}")
+    try:
+        result = CL.propose_parent_links()
+        assert _open_proposals(cid) == []
+        assert result["considered"]["with_candidates"] >= 1
+    finally:
+        _delete_contracts(cid)
