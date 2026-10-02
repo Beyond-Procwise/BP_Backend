@@ -1956,7 +1956,9 @@ CUDA_VISIBLE_DEVICES="" PROCWISE_TEST_LIVE_DB=1 ./venv/bin/python -m pytest \
 
 Expected: all FAIL — the column test on an empty set, the rest with `TypeError: write_raw() got an unexpected keyword argument 'resolved_doc_type'`.
 
-**`promotion.promote(raw_id, doc_type)` DELETES the `_raw` row once it has copied the columns** (`promotion.py:583` — "Copy _raw flat columns into _stg, delete _raw"). So never assert on `bp_contract_raw` after promoting, and expect the `cleanup` fixture's delete from that table to match nothing for a promoted document. The re-read test works with this rather than against it: each read writes a fresh raw row and promotes it, which is exactly what a live re-extraction does.
+**`promotion.promote(raw_id, doc_type)` does NOT delete the `_raw` row — its own docstring is stale and says it does.** `promotion.py:585` reads "Copy _raw flat columns into _stg, delete _raw, update audit cols", but the code at `promotion.py:941-944` does the opposite and says so explicitly: *"Do NOT delete on clean promotion. The row is marked promotion_status='promoted' for audit."* It runs `UPDATE {raw_t} SET promotion_status='promoted', promoted_at=NOW()`.
+
+So the raw row SURVIVES promotion, and asserting on `bp_contract_raw` afterwards is valid — a promoted row is still there with `promotion_status='promoted'`. The `cleanup` fixture's delete from that table does match. **Correct that stale docstring as part of this task**: it is one line, it is directly load-bearing for this task's test reasoning, and it misled the author of this plan. The re-read test still works the way it is written — each read writes a fresh raw row and promotes it, which is what a live re-extraction does — and it can additionally assert that the earlier raw row is marked `promoted` rather than gone.
 
 - [ ] **Step 3: Write the migration**
 
