@@ -1130,24 +1130,36 @@ def test_no_matched_or_unresolved_result_is_ever_evidence_free():
 
 
 def test_order_form_is_not_a_call_off_alias_and_quote_workbooks_stay_agreed():
-    """'order form' was dropped from doctype.call_off_contract, deliberately.
+    """'order form' is not an alias of doctype.call_off_contract, and must never be.
 
-    It is a real name for a call-off, which is why it was seeded. On this corpus
-    it is also the title cell every quote-template workbook carries, so it
-    produced 12 disagreements out of 12 uses and no true positive: measured over
-    50 live documents, 38 agreed / 12 disagreed before the drop and 50 agreed /
-    0 disagreed after. See specs/2026-10-01-document-relationship-layer-rulings.md.
+    On 2026-10-01 'order form' was dropped as an alias of doctype.call_off_contract.
+    It is the title cell every quote-template workbook carries, so it produced 12
+    disagreements out of 12 uses and no true positive: measured over 50 live
+    documents, 38 agreed / 12 disagreed before the drop and 50 agreed / 0 disagreed
+    after. See specs/2026-10-01-document-relationship-layer-rulings.md.
 
-    Re-adding it needs a way to tell a quote template's 'Order Form' heading from
-    a real call-off's, which needs the golden-set documents. If you re-add it,
-    this test goes red and the 12 false disagreements come back with it.
+    That half of the ruling stands. The other half -- "re-adding it needs a way to
+    tell a quote template's 'Order Form' heading from a real call-off's" -- was
+    superseded by evidence on 2026-10-02, not ignored. 'order form' is now a
+    structure in its own right, doctype.order_form. What makes that safe is
+    requires_parent_evidence: it claims a page only when the page names its parent
+    agreement. See specs/2026-10-02-contract-structures-design.md section 4.
 
-    A real call-off still matches: that is the second half of this test.
+    The old prediction (re-add it and the 12 false disagreements come back) now
+    holds only if that flag is cleared. Measured: clearing it flips exactly 13 of
+    the 53 stored documents to 'disagreed'.
+
+    The call-off protection is also asserted by
+    test_order_form_is_not_an_alias_of_the_call_off_contract in
+    tests/services/extraction/test_order_form_and_sales_order.py.
+
+    A real call-off still matches: that is the last part of this test.
     """
     from src.services.concepts.vocabulary import SEED_VOCABULARY, resolve_alias
 
-    assert resolve_alias("order form", SEED_VOCABULARY) == (), (
-        "'order form' resolves again — see this test's docstring before keeping it"
+    assert resolve_alias("order form", SEED_VOCABULARY) == ("doctype.order_form",), (
+        "'order form' must resolve to its OWN structure and to nothing else — "
+        "see this test's docstring before changing it"
     )
 
     workbook = "| A | Aureus Workflow Ltd |  | Order Form |  |\n| --- | --- |\n"
