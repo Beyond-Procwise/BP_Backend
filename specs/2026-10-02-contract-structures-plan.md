@@ -62,8 +62,8 @@ Five input classes the spec implies but no task's own tests would otherwise exer
 
 | File | Responsibility | Task |
 |---|---|---|
-| `tests/fixtures/contract_structures/classification_baseline.json` | Create: today's resolver outcome for all 57 documents with stored text | 1 |
-| `tests/services/extraction/test_classification_baseline.py` | Create: fails if any of the 57 documents resolves differently | 1 |
+| `tests/fixtures/contract_structures/classification_baseline.json` | Create: today's resolver outcome for all 53 corpus documents with stored text | 1 |
+| `tests/services/extraction/test_classification_baseline.py` | Create: fails if any of the 53 documents resolves differently | 1 |
 | `deploy/sql/2026-10-02_document_type_parent_evidence.sql` + `_rollback.sql` | Create: the two new columns | 2 |
 | `src/services/concepts/seed.py` | Modify: `DocumentType` gains two fields; two new rows | 2, 4 |
 | `src/services/concepts/vocabulary.py` | Modify: `_DOC_TYPE_SQL`, `build_vocabulary`, `SEED_VOCABULARY` thread the two columns | 2 |
@@ -105,7 +105,8 @@ which classifies correctly today classifies differently afterwards. That is a
 measurement, not an assertion, so the outcome is captured here as a fixture and
 compared on every run.
 
-115 raw rows carry parsed text, covering 57 distinct documents (the same document
+115 raw rows carry parsed text, covering 57 distinct source_file values of which 53 are
+corpus documents under `documents/` (the same document
 has several raw rows from repeated extractions); the newest row per source_file
 is the one read.
 
@@ -248,9 +249,9 @@ CUDA_VISIBLE_DEVICES="" PROCWISE_TEST_LIVE_DB=1 ./venv/bin/python \
     tests/services/extraction/test_classification_baseline.py --recapture
 ```
 
-Expected: `captured 57 documents to .../classification_baseline.json`.
+Expected: `captured 53 documents to .../classification_baseline.json`.
 
-If the count is not 57, stop and report it. The design's measurements rest on that number; a different one means the corpus changed and §4's figures need re-measuring before anything is built.
+If the count is not 53, stop and report it. The design's measurements rest on that number; a different one means the corpus changed and §4's figures need re-measuring before anything is built.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -272,7 +273,7 @@ CUDA_VISIBLE_DEVICES="" PROCWISE_TEST_LIVE_DB=1 ./venv/bin/python -m pytest \
 
 Expected: FAIL, naming that one document with `baseline=` and `now=` lines. Then restore the fixture (`git checkout -- <fixture>` is unsafe on this shared index — re-run `--recapture` instead) and confirm it passes again.
 
-Also prove the coverage guard: delete one entry from the fixture and confirm `test_the_baseline_covers_every_stored_document` fails with "baseline holds 56 documents, the database has 57". Re-capture to restore.
+Also prove the coverage guard: delete one entry from the fixture and confirm `test_the_baseline_covers_every_stored_document` fails with "baseline holds 56 documents, the database has 53". Re-capture to restore.
 
 - [ ] **Step 6: Commit**
 
@@ -284,7 +285,7 @@ git add tests/fixtures/contract_structures/classification_baseline.json \
 TREE=$(git write-tree)
 COMMIT=$(printf '%s\n' \
   "test(contracts): baseline every stored document's classification" "" \
-  "Task 1 of specs/2026-10-02-contract-structures-plan.md. 57 documents," \
+  "Task 1 of specs/2026-10-02-contract-structures-plan.md. 53 documents," \
   "captured before any change, so 'nothing regresses' is measured rather" \
   "than asserted. Both guards proven red." "" \
   "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" | git commit-tree "$TREE" -p HEAD)
@@ -699,7 +700,7 @@ COMMIT=$(printf '%s\n' \
   "proc.bp_document_type, threaded to Vocabulary, plus a validation check that" \
   "a flagged structure with no phrases is a violation rather than a structure" \
   "that silently matches nothing." "" \
-  "No row sets the flag, so no document classifies differently: the 57-document" \
+  "No row sets the flag, so no document classifies differently: the 53-document" \
   "baseline is unchanged. Three guards proven red." "" \
   "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" | git commit-tree "$TREE" -p HEAD)
 git update-ref refs/heads/Development "$COMMIT"
@@ -735,7 +736,7 @@ Create `tests/services/extraction/test_parent_evidence_stand_down.py`:
 
 Measured reason this exists: 'order form' titles every quote-template workbook
 on this corpus. Added as a plain structure it flips 13 quote documents to
-'disagreed' with no true positive. With this rule all 57 documents resolve
+'disagreed' with no true positive. With this rule all 53 documents resolve
 exactly as they do today, and a real order form that names its framework still
 classifies. See specs/2026-10-02-contract-structures-design.md §4.
 
@@ -990,7 +991,7 @@ COMMIT=$(printf '%s\n' \
   "absent from tier 1 AND tier 2 together. Filtering title_concepts instead" \
   "leaves it winning on body mentions alone -- proven by moving the check and" \
   "watching the tier-2 test go red." "" \
-  "No seeded row sets the flag, so the 57-document baseline is unchanged." \
+  "No seeded row sets the flag, so the 53-document baseline is unchanged." \
   "Three guards proven red." "" \
   "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" | git commit-tree "$TREE" -p HEAD)
 git update-ref refs/heads/Development "$COMMIT"
@@ -1166,7 +1167,7 @@ Create `deploy/sql/2026-10-02_document_type_order_form_sales_order.sql`:
 -- What makes it safe now is requires_parent_evidence, added by
 -- 2026-10-02_document_type_parent_evidence.sql. An order form only claims a
 -- document that names the agreement it sits under or states an order of
--- precedence. Measured over the 57 documents with stored parsed text: without
+-- precedence. Measured over the 53 corpus documents with stored parsed text: without
 -- the rule, 13 quote workbooks flip to 'disagreed'; with it, every document
 -- resolves exactly as it does today. This is the build spec's own distinction --
 -- "'order form' means one thing under a framework and another on its own".
@@ -1370,7 +1371,7 @@ CUDA_VISIBLE_DEVICES="" PROCWISE_TEST_LIVE_DB=1 ./venv/bin/python -m pytest \
     tests/services/extraction/test_classification_baseline.py -v
 ```
 
-Expected: all pass — including the 57-document baseline, unchanged. The predecessor's own guard
+Expected: all pass — including the 53-document baseline, unchanged. The predecessor's own guard
 `test_order_form_is_not_a_call_off_alias_and_quote_workbooks_stay_agreed` must also still pass; run the file it lives in and do not edit it.
 
 - [ ] **Step 7: Prove the guard fails (required)**
@@ -1414,7 +1415,7 @@ COMMIT=$(printf '%s\n' \
   "carrying requires_parent_evidence, so it claims only a document naming the" \
   "agreement it sits under." "" \
   "Measured: clearing the flag flips 13 stored quote workbooks to disagreed;" \
-  "with it all 57 documents resolve exactly as before. sales order routes at" \
+  "with it all 53 documents resolve exactly as before. sales order routes at" \
   "the purchase-order pipeline per Nick's ruling." "" \
   "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" | git commit-tree "$TREE" -p HEAD)
 git update-ref refs/heads/Development "$COMMIT"
@@ -2319,10 +2320,11 @@ def test_an_ambiguous_value_resolves_to_nothing_rather_than_picking():
     assert M.structure_for_contract_type("consulting", vocabulary=contested) is None
 
 
+@pytest.mark.skipif(not _LIVE, reason="needs PROCWISE_TEST_LIVE_DB=1")
 def test_blank_and_whitespace_are_not_a_structure():
-    """Offline: no vocabulary needed to refuse an empty value."""
-    for value in (None, "", "   ", "\n"):
-        assert M.structure_for_contract_type(value, vocabulary=None) is None or True
+    """An absent type is not a structure, and must not become one by accident."""
+    for value in (None, "", "   ", "\n", "\t  \n"):
+        assert M.structure_for_contract_type(value) is None, repr(value)
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -2987,6 +2989,22 @@ def test_a_reference_naming_a_different_contract_conflicts():
     assert detail["declared_reference"] == "CONFLICT", detail
 
 
+def test_a_shared_generic_word_is_not_title_evidence():
+    """Every contract shares 'Agreement' and 'Services' with every other one.
+
+    Without the stopword set this signal would score the vocabulary rather than
+    the documents, and two unrelated contracts from one supplier would look like
+    a parent and child.
+    """
+    r = le.score_link(
+        _sow(contract_title="Services Agreement"),
+        _msa(contract_title="Services Agreement"),
+        ch.PROFILE,
+    )
+    detail = {d["id"]: d["status"] for d in r["signals"]}
+    assert detail["title_overlap"] != "OK", detail
+
+
 def test_observations_are_reported_for_every_signal():
     """composition.remap_clusters needs one observation set per signal id."""
     obs = ch.observations_for(_sow(), _msa())
@@ -3244,7 +3262,7 @@ CUDA_VISIBLE_DEVICES="" ./venv/bin/python -m pytest \
     tests/services/graph_resolution/test_contract_hierarchy.py -v
 ```
 
-Expected: 16 passed.
+Expected: 17 passed.
 
 **If `test_an_exact_reference_alone_does_not_reach_the_auto_band` fails**, the weights are wrong and the fix is the weights, never the assertion. Record the measured `F` for a reference-only match in the module docstring so the next reader knows the headroom.
 
@@ -3263,7 +3281,7 @@ CUDA_VISIBLE_DEVICES="" ./venv/bin/python -m pytest tests/services/graph_resolut
 3. **MISSING is not CONFLICT.** In `_cmp_term_containment`, change the `cs is None or ps is None` branch to `return 0.0, "CONFLICT"`. Expected: `test_a_missing_field_is_missing_not_a_conflict` FAILS. Restore.
 4. **Normalisation is load-bearing.** Make `_norm_ref` return `str(value or "")`. Expected: `test_the_reference_is_compared_after_normalisation` FAILS. Restore.
 5. **The hierarchy is read from the vocabulary.** Make `expected_parent_type` return `None` unconditionally. Expected: the two `expected_parent_type` tests and `test_the_wrong_structure_of_parent_conflicts` FAIL. Restore.
-6. **Stopwords are load-bearing.** Empty `_STOPWORDS`. Expected: `test_the_wrong_structure_of_parent_conflicts`' sibling behaviour shifts — at minimum confirm `_cmp_title_overlap` now scores `OK` for two unrelated contracts both titled "Services Agreement", by adding a throwaway assertion, observing it, then removing it. Restore.
+6. **Stopwords are load-bearing.** Empty `_STOPWORDS`. Expected: `test_a_shared_generic_word_is_not_title_evidence` FAILS — two contracts both titled "Services Agreement" now score `title_overlap` as `OK`, so the signal is scoring the vocabulary rather than the documents. Restore.
 
 - [ ] **Step 8: Commit**
 
@@ -4093,7 +4111,7 @@ Run after the plan is written, before handing it over.
 |---|---|---|
 | 1 order form with no parent does not claim | 3, 4 | `test_an_order_form_that_names_no_parent_does_not_claim_the_page`, `test_no_quote_workbook_became_a_disagreement` |
 | 2 order form naming its framework does classify | 3 | `test_an_order_form_that_names_its_framework_does_claim_the_page` |
-| 3 the 57 documents resolve identically | 1 | `test_no_stored_document_classifies_differently_than_the_baseline` |
+| 3 the 53 documents resolve identically | 1 | `test_no_stored_document_classifies_differently_than_the_baseline` |
 | 4 sales order wins over the `order` alias | 4 | `test_sales_order_wins_over_the_bare_order_alias` |
 | 5 the structure reaches raw and survives promotion | 6 | `test_the_structure_survives_promotion` |
 | 6 a silent page stores NULL | 6 | `test_a_page_that_states_nothing_stores_null_never_a_guess` |

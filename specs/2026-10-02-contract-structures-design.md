@@ -51,7 +51,7 @@ Measured on 2026-10-02 against the configured database (`bp_testdb`, per
 | No SOW, CCN, order form or sales order anywhere in the corpus | none of the 13 values is one |
 | `proc.process_monitor` holds 178 uploaded documents: 134 quote, 30 invoice, 14 po | `group by category` |
 | **Zero contract-category uploads have ever happened** | same query — so nothing here regresses live contract behaviour, because there is none |
-| 115 raw rows carry parsed text (`parser_snapshot.full_text`), covering **57 distinct documents** | those 57 are this design's measurement set; the same document has several raw rows from repeated extractions |
+| 115 raw rows carry parsed text (`parser_snapshot.full_text`), covering 57 distinct `source_file` values, of which **53 are corpus documents** | those 53 are this design's measurement set. The same document has several raw rows from repeated extractions. The other 4 are another session's probe debris (`/tmp/.../scratchpad/zzprobe_*.csv`) and are excluded — they were the only `neither` and `evidence_only` outcomes |
 | `proc.bp_contract_raw` carries `process_monitor_id` and `source_file` | the per-document anchor; `bp_contracts` and `bp_contract_master` carry neither |
 
 Three code facts, each cited because a design decision rests on it:
@@ -114,7 +114,7 @@ Two notes on those rows.
 
 `sales order` is longer than the existing `order` alias of `doctype.order`, and the resolver's longest-match
 sweep (`type_resolver.py:442`) therefore gives it to `doctype.sales_order` without contest. Measured: adding
-it changes **0** of the 57 documents.
+it changes **0** of the 53 documents.
 
 ---
 
@@ -141,13 +141,13 @@ no evidence calling for it. The column exists so flagging them later is an `UPDA
 `(framework|master|parent|principal) (agreement|contract) (no|number|ref)`. These live beside the flag as
 data, not as a regex buried in the resolver.
 
-**Measured, both directions.** On the 57 distinct documents with stored parsed text:
+**Measured, both directions.** On the 53 corpus documents with stored parsed text:
 
 | Run | Result |
 |---|---|
-| Today | 50 agreed, 3 declared_only, 2 neither, 2 evidence_only |
-| `order form` added, **no** rule | 40 agreed, **13 disagreed**, 2 neither, 2 evidence_only |
-| `order form` added, **with** the rule | 50 agreed, 3 declared_only, 2 neither, 2 evidence_only — **identical to today** |
+| Today | 50 agreed, 3 declared_only |
+| `order form` added, **no** rule | 40 agreed, **13 disagreed** |
+| `order form` added, **with** the rule | 50 agreed, 3 declared_only — **identical to today** |
 
 The 13 are the Aureus / Meridia / Orbis / Lattice / UITEST quote workbooks. Every document on this corpus
 containing the words "order form" carries quote markers (`Quote Ref`, `Valid Until`, `Quotation`) and **not
@@ -291,7 +291,7 @@ go green. A test whose red state was never observed is not evidence.
 |---|---|---|
 | 1 | `order form` with no parent named does not claim the page | clear `requires_parent_evidence` on the row → the 13 quote workbooks go `disagreed` |
 | 2 | `order form` naming its framework **does** classify as `doctype.order_form` | remove `framework` from the parent-evidence phrases → the real order form reads as unknown |
-| 3 | The 57 distinct stored-text documents resolve identically before and after | an end-to-end comparison against a committed baseline of today's outcomes |
+| 3 | The 53 corpus documents resolve identically before and after | an end-to-end comparison against a committed baseline of today's outcomes |
 | 4 | `sales order` wins over the `order` alias | shorten the alias to `sales` → `doctype.order` takes the page |
 | 5 | A resolved structure reaches `bp_contract_raw` and survives promotion into `bp_contracts` | drop the column write → the row holds `NULL` |
 | 6 | A page that says nothing stores `NULL`, never a guess | make the writer fall back to the declared type → the test sees a structure where there is no evidence |
