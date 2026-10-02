@@ -108,21 +108,37 @@ def layouts(conn, *, pack_id: str | None = None, status: str | None = None) -> l
     return _rows(cursor, _LAYOUT_COLUMNS)
 
 
-def rename_layout(conn, layout_id: str, name: str, user: str) -> None:
-    conn.cursor().execute('UPDATE proc.bp_page_layout SET name = %s WHERE layout_id = %s',
-                          (name, layout_id))
+def rename_layout(conn, layout_id: str, name: str, user: str) -> int:
+    """-> rows changed, so a rename of something that does not exist is not a 200."""
+    cursor = conn.cursor()
+    cursor.execute('UPDATE proc.bp_page_layout SET name = %s WHERE layout_id = %s',
+                   (name, layout_id))
+    return int(cursor.rowcount or 0)
 
 
-def set_layout_status(conn, layout_id: str, status: str, user: str) -> None:
-    conn.cursor().execute(
-        'UPDATE proc.bp_page_layout SET status = %s, approved_by = %s, approved_at = now() '
-        'WHERE layout_id = %s', (status, user, layout_id))
+def set_layout_status(conn, layout_id: str, status: str, user: str) -> int:
+    """-> rows changed, so the caller can answer 404 rather than 200 for an id that is not there.
+
+    Guarded on the layout's pack NOT being `importing`: every read path excludes an importing
+    pack, and an unguarded UPDATE walked straight around that filter.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        'UPDATE proc.bp_page_layout l SET status = %s, approved_by = %s, approved_at = now() '
+        'WHERE l.layout_id = %s AND EXISTS (SELECT 1 FROM proc.bp_style_pack p '
+        "  WHERE p.pack_id = l.pack_id AND p.status <> 'importing')",
+        (status, user, layout_id))
+    return int(cursor.rowcount or 0)
 
 
-def set_pack_status(conn, pack_id: str, status: str, user: str) -> None:
-    conn.cursor().execute(
+def set_pack_status(conn, pack_id: str, status: str, user: str) -> int:
+    """-> rows changed. An `importing` pack is not approvable: it has no layouts yet, and
+    approving it would publish an incomplete import past the filter the invariant rests on."""
+    cursor = conn.cursor()
+    cursor.execute(
         'UPDATE proc.bp_style_pack SET status = %s, approved_by = %s, approved_at = now() '
-        'WHERE pack_id = %s', (status, user, pack_id))
+        "WHERE pack_id = %s AND status <> 'importing'", (status, user, pack_id))
+    return int(cursor.rowcount or 0)
 
 
 def define_rating_scale(conn, pack_id: str, name: str, chips: dict, user: str) -> None:
@@ -145,13 +161,49 @@ def define_rating_scale(conn, pack_id: str, name: str, chips: dict, user: str) -
          pack_id))
 
 
+def promote_column(conn, *, pack_id: str, layout_key: str, column: str, scale: str) -> int:
+    """Turn a text column into a rating column on a named scale. -> rows changed.
+
+    The endpoint used to validate the promotion and then throw it away, returning 200 as though it
+    had happened. The slots blob is read, mutated and written back, because a jsonb_set path into
+    an ARRAY element needs the index, and the index is what we are searching for.
+    """
+    cursor = conn.cursor()
+    cursor.execute('SELECT layout_id, slots FROM proc.bp_page_layout '
+                   'WHERE pack_id = %s AND layout_key = %s', (pack_id, layout_key))
+    found = cursor.fetchall()
+    if not found:
+        return 0
+    layout_id, slots = found[0]
+    slots = slots or {}
+    changed = False
+    for slot in slots.values():
+        if not isinstance(slot, dict) or slot.get('type') != 'table':
+            continue
+        for definition in slot.get('columns') or []:
+            if isinstance(definition, dict) and definition.get('id') == column:
+                definition['type'] = 'rating'
+                definition['scale'] = scale
+                definition.pop('max_chars', None)
+                changed = True
+    if not changed:
+        return 0
+    cursor.execute('UPDATE proc.bp_page_layout SET slots = %s::jsonb WHERE layout_id = %s',
+                   (_js(slots), layout_id))
+    return int(cursor.rowcount or 0)
+
+
 def inherited(conn, pack_key: str) -> dict:
     """What a human decided about the previous version of this key."""
     empty: dict = {'names': {}, 'rating_scales': {}, 'locale': None, 'rejected': []}
     cursor = conn.cursor()
     cursor.execute(
+        # `importing` is excluded as well as `rejected`: a crash leaves a pack row with no
+        # layouts, and inheriting from it threw away every name and hand-defined scale from the
+        # last good version — the one part of this the spec says nobody can automate.
         'SELECT pack_id, tokens, evidence FROM proc.bp_style_pack '
-        "WHERE pack_key = %s AND status <> 'rejected' ORDER BY version DESC LIMIT 1",
+        "WHERE pack_key = %s AND status NOT IN ('rejected', 'importing') "
+        'ORDER BY version DESC LIMIT 1',
         (pack_key,))
     found = cursor.fetchall()
     if not found:

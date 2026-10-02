@@ -99,6 +99,10 @@ def import_pack(data: bytes, filename: str, user: str, conn=None) -> ImportResul
         problems.extend(layout['problems'])
         layouts.append(layout)
 
+    # A value the deck did not give us is a PROBLEM, not just an evidence note: the review screen
+    # shows problems, and a pack built entirely of assumptions looked exactly like a measured one.
+    problems = [{'kind': 'assumed', 'region': a['path'], 'slides': [], 'why': a['why']}
+                for a in ev.assumptions] + problems
     result = ImportResult(pack_key=key, version=1, pack=pack, layouts=layouts,
                           single_use=single_use, evidence=ev.as_dict(), problems=problems)
     if conn is None:

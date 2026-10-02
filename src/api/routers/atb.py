@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from src.services.atb.pptx_import import store
+from src.services.atb.pptx_import.contract import validate_rating_scale
 from src.services.atb.pptx_import.import_pack import ImportRefused, import_pack
 from src.services.db import get_conn
 
@@ -156,7 +157,8 @@ def post_rename(layout_id: str, body: RenameBody, principal=Depends(require_user
     if not body.name.strip():
         raise HTTPException(status_code=400, detail="a layout needs a name")
     with get_conn() as conn:
-        store.rename_layout(conn, layout_id, body.name.strip(), _subject(principal))
+        if not store.rename_layout(conn, layout_id, body.name.strip(), _subject(principal)):
+            raise HTTPException(status_code=404, detail="no such layout")
         return {"layout_id": layout_id, "name": body.name.strip()}
 
 
@@ -164,7 +166,9 @@ def post_rename(layout_id: str, body: RenameBody, principal=Depends(require_user
 def post_approve_layout(layout_id: str, principal=Depends(require_user)):
     gate("style_pack.approve", principal, agent=_AGENT, context={"layout_id": layout_id})
     with get_conn() as conn:
-        store.set_layout_status(conn, layout_id, "approved", _subject(principal))
+        if not store.set_layout_status(conn, layout_id, "approved", _subject(principal)):
+            raise HTTPException(status_code=404,
+                                detail="no such layout, or its pack is still importing")
         return {"layout_id": layout_id, "status": "approved"}
 
 
@@ -172,7 +176,9 @@ def post_approve_layout(layout_id: str, principal=Depends(require_user)):
 def post_reject_layout(layout_id: str, principal=Depends(require_user)):
     gate("style_pack.write", principal, agent=_AGENT, context={"layout_id": layout_id})
     with get_conn() as conn:
-        store.set_layout_status(conn, layout_id, "rejected", _subject(principal))
+        if not store.set_layout_status(conn, layout_id, "rejected", _subject(principal)):
+            raise HTTPException(status_code=404,
+                                detail="no such layout, or its pack is still importing")
         return {"layout_id": layout_id, "status": "rejected"}
 
 
@@ -180,7 +186,9 @@ def post_reject_layout(layout_id: str, principal=Depends(require_user)):
 def post_approve_pack(pack_id: str, principal=Depends(require_user)):
     gate("style_pack.approve", principal, agent=_AGENT, context={"pack_id": pack_id})
     with get_conn() as conn:
-        store.set_pack_status(conn, pack_id, "approved", _subject(principal))
+        if not store.set_pack_status(conn, pack_id, "approved", _subject(principal)):
+            raise HTTPException(status_code=404,
+                                detail="no such pack, or it is still importing")
         return {"pack_id": pack_id, "status": "approved"}
 
 
@@ -188,8 +196,12 @@ def post_approve_pack(pack_id: str, principal=Depends(require_user)):
 def post_rating_scale(pack_id: str, body: RatingScaleBody, principal=Depends(require_user)):
     gate("style_pack.write", principal, agent=_AGENT,
          context={"pack_id": pack_id, "scale": body.name})
-    if not body.name.strip() or not body.chips:
-        raise HTTPException(status_code=400, detail="a scale needs a name and at least one chip")
+    errors = validate_rating_scale(body.name, body.chips)
+    if errors:
+        # Unchecked, a chip of "navy-ish" went into the pack, could be approved, and then failed
+        # the browser's validator at render time.
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    promoted = None
     with get_conn() as conn:
         if body.promote:
             # A column may only be promoted to a scale that defines EVERY label its cells use. A
@@ -202,5 +214,18 @@ def post_rating_scale(pack_id: str, body: RatingScaleBody, principal=Depends(req
                     detail=f'the scale does not define {", ".join(sorted(missing))}')
         store.define_rating_scale(conn, pack_id, body.name.strip(), body.chips,
                                   _subject(principal))
-        return {"pack_id": pack_id, "scale": body.name.strip(),
-                "labels": sorted(body.chips)}
+        if body.promote:
+            layout_key = body.promote.get("layout_key")
+            column = body.promote.get("column")
+            if not layout_key or not column:
+                raise HTTPException(status_code=400,
+                                    detail="a promotion names a layout_key and a column")
+            # The promotion is applied, not merely checked: returning 200 for a promotion that
+            # never happened is the shape of bug this whole build is about.
+            if not store.promote_column(conn, pack_id=pack_id, layout_key=layout_key,
+                                        column=column, scale=body.name.strip()):
+                raise HTTPException(status_code=404,
+                                    detail="no such layout, or it has no such table column")
+            promoted = {"layout_key": layout_key, "column": column}
+    return {"pack_id": pack_id, "scale": body.name.strip(),
+            "labels": sorted(body.chips), "promoted": promoted}

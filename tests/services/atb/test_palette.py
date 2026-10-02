@@ -22,13 +22,20 @@ def test_the_theme_dark_colour_is_the_ink_of_last_resort():
     ev = Evidence()
     out = colours(_deck(_uncoloured_runs(), theme={'colours': {'dk1': '#123456'}, 'fonts': {}}), ev)
     assert out['ink'] == '#123456'
-    assert 'theme dk1' in ev.as_dict()['values']['colours.ink']['why']
+    record = ev.as_dict()['values']['colours.ink']
+    assert record['assumed'] is True, 'a theme colour is not a measurement of the deck'
+    assert "theme's dk1" in record['why']
+    # A deck that states no colour at all assumes its ink, its muted, its panel AND its accent —
+    # and every one of them is a problem the review screen must show, not a note in the evidence.
+    assert [a['path'] for a in ev.assumptions] == [
+        'colours.ink', 'colours.muted', 'colours.panel', 'colours.accent']
 
 
 def test_without_a_theme_dark_colour_the_ink_is_black_and_says_so():
     ev = Evidence()
     out = colours(_deck(_uncoloured_runs()), ev)
     assert out['ink'] == '#000000'
+    assert ev.as_dict()['values']['colours.ink']['assumed'] is True
     assert 'black assumed' in ev.as_dict()['values']['colours.ink']['why']
 
 
@@ -85,9 +92,14 @@ def test_a_colour_under_the_floor_is_incidental_not_a_token(filled_deck):
     assert incidental and 'under the 10-use floor' in incidental[0]['why']
 
 
-def test_resolves_theme_colours_or_the_pack_has_no_ink(build_deck):
-    # Review Focus 2: a deck whose runs carry no explicit colour. Without a fallback,
-    # colours.ink is missing and the pack cannot validate.
+def test_a_deck_whose_runs_state_no_colour_still_gets_an_ink(build_deck):
+    # Review Focus 2: a deck whose runs carry no explicit colour. Without a fallback, colours.ink
+    # is missing and the pack cannot validate.
+    #
+    # NOTE ON THE OLD NAME: this was called "resolves theme colours", which it never did — the
+    # stock template's dk1 is a sysClr, so the assertion was satisfied by the black of last resort.
+    # Resolving a scheme colour reference to RGB is NOT implemented (design §5 asks for it); the
+    # two tests above cover the fallbacks that stand in for it, and it is an open item.
     from io import BytesIO
 
     from pptx import Presentation

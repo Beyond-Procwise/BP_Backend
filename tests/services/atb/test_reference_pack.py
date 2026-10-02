@@ -35,8 +35,40 @@ def test_rediscovers_the_hand_authored_palette(result):
     assert colours['ink'] == '#172033'
     assert colours['muted'] == '#56627A'
     assert colours['panel'] == '#F3F5F8'
+    assert colours['panel_blue'] == '#E4EBFB'
+    assert colours['panel_teal'] == '#E0F2F3'
+    assert colours['panel_amber'] == '#FCEFD9'
+    assert colours['alert_ink'] == '#B42D2D'
+    assert colours['caution'] == '#9A5B00'
     assert {colours['accent'], colours['accent_2']} == {'#2350C8', '#0F6E78'}
-    assert colours['rule'] == '#D5DBE5'
+
+
+def test_which_accent_is_primary_is_disclosed_as_a_close_call(result):
+    # Counted by FILLS the blue leads 31 to 19; counted by total use the teal leads 133 to 98. The
+    # hand-authored pack calls the blue primary. The measurement takes total use and says so,
+    # rather than picking one and sounding certain — the review screen offers the swap.
+    colours = result.pack['colours']
+    assert colours['accent'] == '#0F6E78'
+    assert colours['accent_2'] == '#2350C8'
+    close = result.evidence['values']['colours.accent.close_call']
+    assert close['value'] == ['#0F6E78', '#2350C8']
+    assert close['uses'] == [133, 98]
+    assert 'human call' in close['why']
+
+
+def test_a_colour_the_deck_barely_uses_does_not_become_a_token(result):
+    # The hand-authored pack has rule #D5DBE5. Honestly counted it paints EIGHT outlines in 85
+    # slides and no fills, which is under the ten-use floor — so it is incidental, and the pack has
+    # no rule rather than a token invented from a hairline.
+    assert 'rule' not in result.pack['colours']
+    incidental = [i for i in result.evidence['incidental'] if i['value'] == '#D5DBE5']
+    assert incidental and 'under the 10-use floor' in incidental[0]['why']
+
+
+def test_the_green_the_deck_leads_with_wins_over_the_brief_s(result):
+    # #3A7A5C on 23 uses against #1F7A5A on 18. The brief named the second; the deck uses the
+    # first more. A difference the importer has to be allowed to report.
+    assert result.pack['colours']['positive'] == '#3A7A5C'
 
 
 def test_rediscovers_the_type_scale_and_the_fonts(result):
@@ -55,8 +87,11 @@ def test_rediscovers_the_grid_and_corrects_the_body_top_i_authored(result):
     assert grid['margin_in'] == 0.5
     assert grid['title_top_in'] == 0.35
     assert grid['footer_top_in'] == 7.02
-    # The hand-authored pack says 1.65in. The file says 1.5in, in 99 shapes.
-    assert grid['body_top_in'] == 1.5
+    # The hand-authored pack says 1.65in. The file's FIRST body row starts at 1.45in, on 30 of its
+    # 85 slides. (An earlier version took the modal edge of everything in the band and reported
+    # 1.5in — true of this deck by weight of numbers, and 3.0in on a probe deck whose biggest card
+    # row sat there.)
+    assert grid['body_top_in'] == 1.45
     assert result.pack['chapter_chip_in'] == 0.32
 
 

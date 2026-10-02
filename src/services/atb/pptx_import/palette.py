@@ -86,6 +86,12 @@ def colours(deck: Deck, ev: Evidence, floor: int = COLOUR_FLOOR) -> dict[str, st
 
     by_runs = sorted(eligible, key=lambda c: (-eligible[c]['runs'], c))
     by_fills = sorted(eligible, key=lambda c: (-eligible[c]['fills'], c))
+    # Accents and semantic colours rank by TOTAL use, not by fills. An accent earns its name by
+    # how much of the deck it marks — the reference deck's teal is on 94 runs and 19 fills, its
+    # blue on 45 runs and 31 fills — and a semantic colour (a red figure, an amber warning) is
+    # mostly TEXT, so ranking those by fill alone picked a different amber and a different green
+    # than the deck leads with.
+    by_use = sorted(eligible, key=lambda c: (-sum(eligible[c].values()), c))
     # PREDOMINANTLY on lines, not exclusively. The reference deck's rule colour (#D5DBE5) paints
     # 61 lines and 8 fills, so "only on lines" found nothing and the pack came back with no rule.
     line_led = [c for c in sorted(eligible, key=lambda c: -eligible[c]['lines'])
@@ -93,7 +99,7 @@ def colours(deck: Deck, ev: Evidence, floor: int = COLOUR_FLOOR) -> dict[str, st
                                                           + eligible[c]['runs'])
                 and eligible[c]['lines'] > 0]
     pale = [c for c in by_fills if eligible[c]['fills'] and _luminance(c) > _PANEL_LUMINANCE]
-    saturated = [c for c in by_fills
+    saturated = [c for c in by_use
                  if _saturation(c) > _ACCENT_SATURATION
                  and _ACCENT_LUMINANCE[0] <= _luminance(c) <= _ACCENT_LUMINANCE[1]]
 
@@ -104,8 +110,18 @@ def colours(deck: Deck, ev: Evidence, floor: int = COLOUR_FLOOR) -> dict[str, st
     for name, hues in (('panel_blue', (190, 260)), ('panel_teal', (150, 190)),
                        ('panel_amber', (20, 60)), ('panel_violet', (260, 300))):
         take(name, [c for c in pale if hues[0] <= _hue(c) <= hues[1]], f'pale fill, hue in {hues}')
-    take('accent', saturated, 'most-used saturated colour')
-    take('accent_2', saturated, 'second most-used saturated colour')
+    take('accent', saturated, 'most-used saturated colour, by total use')
+    take('accent_2', saturated, 'second most-used saturated colour, by total use')
+    # WHICH ACCENT IS PRIMARY IS A CLOSE CALL ON A REAL DECK, and not one to decide silently: the
+    # reference deck's two are 133 and 98 uses apart. Recorded so the review screen can offer the
+    # swap rather than the measurement pretending to certainty it does not have.
+    if 'accent' in out and 'accent_2' in out:
+        first, second = sum(counts[out['accent']].values()), sum(counts[out['accent_2']].values())
+        if second and first < second * 1.5:
+            ev.record('colours.accent.close_call', [out['accent'], out['accent_2']],
+                      uses=[first, second],
+                      why='the two accents are within half of each other; which one is primary '
+                          'is a human call, offered on the review screen')
     for name, hues in (('alert_ink', (0, 20)), ('caution', (20, 60)), ('positive', (90, 160))):
         take(name, [c for c in saturated if hues[0] <= _hue(c) <= hues[1]],
              f'saturated, hue in {hues}')
@@ -118,23 +134,23 @@ def colours(deck: Deck, ev: Evidence, floor: int = COLOUR_FLOOR) -> dict[str, st
             theme_ink = (deck.theme.get('colours') or {}).get(key)
             if theme_ink:
                 out['ink'] = theme_ink
-                ev.record('colours.ink', theme_ink, fills=0, runs=0, lines=0,
-                          why=f'no run in the deck states a colour; theme {key}')
+                ev.assumed('colours.ink', theme_ink,
+                           f'no run in this deck states a colour, so the theme\'s {key} stands '
+                           'in — nothing here was measured from the deck itself')
                 break
     if 'ink' not in out:
         out['ink'] = '#000000'
-        ev.record('colours.ink', '#000000', fills=0, runs=0, lines=0,
-                  why='no run states a colour and the theme names no dark colour; black assumed')
+        ev.assumed('colours.ink', '#000000',
+                   'no run states a colour and the theme names no dark colour; black assumed')
     if 'muted' not in out:
         out['muted'] = out['ink']
-        ev.record('colours.muted', out['ink'], fills=0, runs=0, lines=0,
-                  why='the deck uses one text colour; muted follows the ink')
+        ev.assumed('colours.muted', out['ink'],
+                   'the deck uses one text colour, so muted follows the ink')
     if 'panel' not in out:
         out['panel'] = '#FFFFFF'
-        ev.record('colours.panel', '#FFFFFF', fills=0, runs=0, lines=0,
-                  why='the deck fills nothing pale; white assumed')
+        ev.assumed('colours.panel', '#FFFFFF', 'the deck fills nothing pale; white assumed')
     if 'accent' not in out:
         out['accent'] = out['ink']
-        ev.record('colours.accent', out['ink'], fills=0, runs=0, lines=0,
-                  why='the deck uses no saturated fill; the accent follows the ink')
+        ev.assumed('colours.accent', out['ink'],
+                   'the deck uses no saturated colour, so the accent follows the ink')
     return out

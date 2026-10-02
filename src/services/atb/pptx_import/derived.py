@@ -27,10 +27,12 @@ _FALSE_FRIENDS = re.compile(
     r'franchises|compromise|compromises|compromised|merchandise|supervise|supervises|'
     r'supervised|televise|revise|revises|revised|devise|devises|devised|arise|arises|'
     r'otherwise|likewise|clockwise|paradise|expertise|disguise|'
-    r'four|fours|hour|hours|your|yours|tour|tours|pour|pours|flour|our|ours|labour|colour|'
-    r'honour|favour|neighbour|behaviour|armour|humour|rumour|vapour|savour|harbour|'
-    r'contour|contours|detour|detours|velour|glamour|parlour|valour|vigour|candour|'
-    r'clamour|endeavour|fervour|rigour|saviour|splendour|tumour)$', re.I)
+    # ONLY words that are nobody's British spelling. The first version of this list also held
+    # labour, colour, honour, favour, neighbour, behaviour, humour, rigour, splendour… which ARE
+    # the British forms — so a deck declaring en-US and writing "colour" and "behaviour" fifty
+    # times scored ZERO British spellings and was never contested.
+    r'four|fours|hour|hours|your|yours|tour|tours|pour|pours|flour|our|ours|'
+    r'contour|contours|detour|detours|velour|velours)$', re.I)
 
 _MIN_BRITISH = 3
 
@@ -95,8 +97,13 @@ def writing(deck: Deck, ev: Evidence) -> dict:
                      and len(british) >= _MIN_BRITISH
                      and len(british) > len(american))
     suggested = 'en-GB' if contested else locale
+    if not declared:
+        ev.assumed('writing.locale', locale,
+                   'no run in the deck declares a language; en-GB assumed')
+        return {'locale': locale, 'locale_contested': False, 'locale_suggested': locale,
+                'title_max_words': 12, 'title_style': 'assertion', 'subtitle_style': 'basis'}
     ev.record('writing.locale', locale,
-              runs=declared[0][1] if declared else 0,
+              runs=declared[0][1],
               british_spellings=len(british), american_spellings=len(american),
               contested=contested,
               why='declared by the runs'

@@ -25,6 +25,8 @@ _CHARS_PER_WORD = 6.1
 _TITLE_LINES = 2
 _SUBTITLE_LINES = 2
 _HEADING_LINES = 2
+_MIN_REGION_H_IN = 0.2
+_ROW_GAP_IN = 0.05
 
 
 def _slug(text: str, fallback: str) -> str:
@@ -58,6 +60,65 @@ def _max_chars(width_in: float, height_in: float, size_pt: float, lines: int | N
     return per_line * max(1, lines)
 
 
+def _rows_per_signature_row(cluster: Cluster) -> list[list[int]]:
+    """Which of the representative slide's rows each signature row stands for.
+
+    All 1:1, except a signature row marked `repeat`, which stands for itself and every row after
+    it — that is what the collapse in `cluster.signature` means.
+    """
+    rows = list(range(len(cluster.rows)))
+    plan: list[list[int]] = []
+    for position, entry in enumerate(cluster.signature):
+        if len(entry) > 2 and entry[2] == 'repeat':
+            plan.append(rows[position:] or [position])
+            return plan
+        if position < len(rows):
+            plan.append([position])
+    return plan or [[i] for i in rows]
+
+
+def _stack_and_check(regions: list[dict], problems: list[dict], deck: Deck, pack: dict,
+                     cluster: Cluster) -> None:
+    """A band ends where the next band begins, and whatever is left must fit on the page.
+
+    A row's span is the union of its shapes, so one tall panel beside a stack of small cards gave a
+    region that swallowed every row below it: 7 of the reference deck's 8 layouts had overlapping
+    regions and two crossed the footer line — acceptance criterion 3 failed by this module's own
+    output before the browser ever saw it. Rows are stacked in document order, so clipping each to
+    the next one's top is the geometry, not a patch. Anything still wrong is reported rather than
+    drawn on top of its neighbour.
+    """
+    body = [r for r in regions if 'box_in' in r and r['id'] != 'title']
+    for current, following in zip(body, body[1:]):
+        box, below = current['box_in'], following['box_in']
+        if box['y'] + box['h'] > below['y'] and below['y'] > box['y']:
+            box['h'] = round(max(_MIN_REGION_H_IN, below['y'] - box['y'] - _ROW_GAP_IN), 3)
+
+    margin = pack['grid']['margin_in']
+    footer_line = pack['grid']['footer_top_in']
+    right_edge = deck.width_in - margin
+    for region in body:
+        box = region['box_in']
+        if round(box['x'] + box['w'], 2) > round(right_edge, 2) + 0.05:
+            problems.append({'kind': 'off_page', 'region': region['id'],
+                             'why': f'ends at {round(box["x"] + box["w"], 2)}in, past the '
+                                    f'{round(right_edge, 2)}in right margin',
+                             'slides': list(cluster.slides)})
+        if round(box['y'] + box['h'], 2) > round(footer_line, 2) + 0.05:
+            problems.append({'kind': 'into_footer', 'region': region['id'],
+                             'why': f'ends at {round(box["y"] + box["h"], 2)}in, below the '
+                                    f'{footer_line}in footer line',
+                             'slides': list(cluster.slides)})
+    for index, first in enumerate(body):
+        for second in body[index + 1:]:
+            a, b = first['box_in'], second['box_in']
+            if a['x'] < b['x'] + b['w'] - 0.01 and b['x'] < a['x'] + a['w'] - 0.01 \
+                    and a['y'] < b['y'] + b['h'] - 0.01 and b['y'] < a['y'] + a['h'] - 0.01:
+                problems.append({'kind': 'overlap', 'region': f'{first["id"]}~{second["id"]}',
+                                 'why': 'the two regions cover the same part of the page',
+                                 'slides': list(cluster.slides)})
+
+
 def regions_and_slots(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence):
     """-> (regions, slots, problems)"""
     scale = pack['type_scale_pt']
@@ -82,16 +143,33 @@ def regions_and_slots(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence):
     }
 
     members = cluster.rows_by_slide or (cluster.rows,)
-    for index, row in enumerate(cluster.rows, 1):
+    # Walk the SIGNATURE, not the representative slide's rows. The signature collapses a trailing
+    # repeated row into one marked `repeat`; iterating the raw rows emitted six card regions copied
+    # from whichever slide happened to be first, which a renderer cannot know to repeat and a human
+    # approves without knowing what they are approving.
+    plan = _rows_per_signature_row(cluster)
+    for index, row_indices in enumerate(plan, 1):
+        row = tuple(shape for i in row_indices for shape in cluster.rows[i])
+        repeats = len(row_indices) > 1
         if not row:
             continue
         # The same row ACROSS the member slides. A member with fewer rows contributes nothing to
         # this one rather than shifting the median.
-        spans = [(cluster.slides[i] if i < len(cluster.slides) else 0, row_span(member[index - 1]))
-                 for i, member in enumerate(members) if len(member) >= index and member[index - 1]]
+        spans = []
+        for i, member in enumerate(members):
+            mine = [member[j] for j in row_indices if j < len(member) and member[j]]
+            if not mine:
+                continue
+            flattened = tuple(shape for part in mine for shape in part)
+            spans.append((cluster.slides[i] if i < len(cluster.slides) else 0,
+                          row_span(flattened)))
         box = _median_of([span for _, span in spans]) if spans else row_span(row)
         for slide_no, span in spans:
-            off = max(abs(span[key] - box[key]) for key in ('x', 'y', 'w', 'h'))
+            # x, y and w only. A row's HEIGHT is its content — a table's height is its row count —
+            # so comparing it reported `slide 4 is 3.8in off` for the 21-slide table layout and
+            # made 41 of the reference deck's 45 problems artefacts. The height RANGE is recorded
+            # on the region instead.
+            off = max(abs(span[key] - box[key]) for key in ('x', 'y', 'w'))
             if off > LOOSE_FIT_IN:
                 problems.append({
                     'kind': 'loose_fit', 'region': f'row{index}',
@@ -100,6 +178,7 @@ def regions_and_slots(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence):
                     'slides': [slide_no],
                 })
 
+        heights = sorted({round(span['h'], 2) for _, span in spans})
         content = {s.kind for s in row} & {'table', 'chart'}
         if len(content) > 1:
             problems.append({
@@ -115,7 +194,8 @@ def regions_and_slots(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence):
             rows_in_members = [len(s.table) - 1 for s in row if s.table]
             per_column = box['w'] / max(1, len(header))
             region_id = f'rows{index}'
-            regions.append({'id': region_id, 'component': 'table', 'box_in': box})
+            regions.append({'id': region_id, 'component': 'table', 'box_in': box,
+                            **({'height_range_in': heights} if len(heights) > 1 else {})})
             slots[region_id] = {
                 'type': 'table', 'fill': 'agent',
                 'max_rows': max(rows_in_members) if rows_in_members else 1,
@@ -143,9 +223,12 @@ def regions_and_slots(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence):
         if columns > 1:
             region_id = f'cards{index}'
             per_card = box['w'] / columns
-            regions.append({'id': region_id, 'component': 'text_card', 'box_in': box})
+            regions.append({'id': region_id, 'component': 'text_card', 'box_in': box,
+                            **({'repeat_over': region_id} if repeats else {}),
+                            **({'height_range_in': heights} if len(heights) > 1 else {})})
             slots[region_id] = {
-                'type': 'list', 'fill': 'agent', 'min': 2, 'max': columns,
+                'type': 'list', 'fill': 'agent', 'min': 2,
+                'max': columns * len(row_indices) if repeats else columns,
                 'item': {
                     'heading': {'type': 'text',
                                 'max_chars': _max_chars(per_card, 0.4,
@@ -161,6 +244,7 @@ def regions_and_slots(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence):
             slots[region_id] = {'type': 'text', 'fill': 'agent',
                                 'max_chars': _max_chars(box['w'], box['h'], scale['body'])}
 
+    _stack_and_check(regions, problems, deck, pack, cluster)
     regions.append({'id': 'footer', 'component': 'source_footer'})
     slots['sources'] = {'type': 'sources', 'fill': 'auto'}
     ev.record(f'layout.{cluster.signature}',

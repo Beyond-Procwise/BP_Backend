@@ -17,7 +17,7 @@ from .slots import regions_and_slots
 def build_pack(deck: Deck, ev: Evidence, key: str, name: str) -> dict:
     colours = palette.colours(deck, ev)
     scale = typescale.type_scale(deck, ev)
-    fonts = typescale.fonts(deck, ev)
+    fonts = typescale.fonts(deck, ev, title_pt=scale.get('title'))
     grid = grid_module.grid(deck, ev)
     chip = grid_module.chapter_chip_in(deck, ev)
 
@@ -31,6 +31,10 @@ def build_pack(deck: Deck, ev: Evidence, key: str, name: str) -> dict:
                    'the deck paints its own shapes; a theme colour is not what it looks like')
 
     pack = {
+        # The shape the hand-authored packs use; without these two the browser's validateStyle
+        # rejects the pack and silently falls back to the bundled layouts.
+        'kind': 'atb_style',
+        'schema_version': 1,
         'key': key,
         'name': name,
         'format': fmt,
@@ -68,13 +72,16 @@ def proposed_name(cluster: Cluster) -> str:
     return ' + '.join(parts)
 
 
-def layout_key(cluster: Cluster) -> str:
+def layout_key(cluster: Cluster, pack_key: str = '') -> str:
     """Stable across runs, and lower_snake_case as the contract requires.
 
-    Derived from the signature rather than from a counter or a uuid, because importing the same
-    deck twice has to produce the same ids — that is an acceptance criterion, not a nicety.
+    Derived from the signature AND the pack it belongs to, rather than from a counter or a uuid:
+    importing the same deck twice has to produce the same ids (an acceptance criterion), but two
+    DIFFERENT packs with the same structure must not collide — the browser keys its layout
+    registry by this id, so two approved packs would otherwise offer one picker entry and render
+    the other pack's geometry.
     """
-    digest = hashlib.sha256(repr(cluster.signature).encode()).hexdigest()[:10]
+    digest = hashlib.sha256(f'{pack_key}|{cluster.signature!r}'.encode()).hexdigest()[:10]
     return f'imported_{digest}'
 
 
@@ -83,7 +90,7 @@ def build_layout(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence, filenam
     fill, source = example_fill(cluster, deck, slots)
     name = proposed_name(cluster)
     layout = {
-        'id': layout_key(cluster),
+        'id': layout_key(cluster, pack.get('key', '')),
         'version': 1,
         # The contract requires a non-empty `name`. It starts as the proposed one so the layout is
         # valid from the moment it is built; `proposed_name` is kept beside it so the review screen

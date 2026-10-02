@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 
 from .evidence import Evidence
+from .grid import TITLE_BAND_FRACTION
 from .read import Deck
 
 SERIF_FAMILIES = frozenset({
@@ -24,7 +25,7 @@ _SANS_STACK = "'Segoe UI', system-ui, -apple-system, Arial, sans-serif"
 _ROLES = ('title', 'subtitle', 'kpi_value', 'card_title', 'body', 'table', 'small', 'footer')
 _REQUIRED = ('title', 'subtitle', 'body', 'table', 'footer')
 _MERGE_PT = 0.6
-_TITLE_BAND_IN = 1.0
+
 _FALLBACK_SCALE = {'title': 30.0, 'subtitle': 14.0, 'kpi_value': 24.0, 'card_title': 13.0,
                    'body': 11.0, 'table': 10.0, 'small': 9.5, 'footer': 9.0}
 
@@ -33,7 +34,7 @@ def _sizes(deck: Deck, title_band_only: bool = False) -> Counter:
     sizes: Counter = Counter()
     for slide in deck.slides:
         for shape in slide:
-            if title_band_only and shape.box.y >= _TITLE_BAND_IN:
+            if title_band_only and shape.box.y >= deck.height_in * TITLE_BAND_FRACTION:
                 continue
             for run in shape.runs:
                 if run.size_pt and run.text.strip():
@@ -44,8 +45,9 @@ def _sizes(deck: Deck, title_band_only: bool = False) -> Counter:
 def type_scale(deck: Deck, ev: Evidence) -> dict[str, float]:
     sizes = _sizes(deck)
     if not sizes:
-        ev.record('type_scale_pt', dict(_FALLBACK_SCALE),
-                  why='the deck states no run sizes; the platform default scale stands in')
+        ev.assumed('type_scale_pt', dict(_FALLBACK_SCALE),
+                   'the deck states no run size at all; the platform default scale stands in and '
+                   'nothing here was measured')
         return dict(_FALLBACK_SCALE)
 
     distinct: list[float] = []
@@ -76,6 +78,10 @@ def type_scale(deck: Deck, ev: Evidence) -> dict[str, float]:
 
     def most_used(candidates: list[float], why: str, role: str) -> float | None:
         if not candidates:
+            # Recorded even when there is nothing to pick: a role that silently fell through left
+            # no evidence entry at all, so a 30pt body size looked measured.
+            ev.assumed(f'type_scale_pt.{role}', None,
+                       f'the deck has no distinct size for {role} ({why})')
             return None
         # Ties go to the larger size: on a page the body is set larger than the table.
         pick = sorted(candidates, key=lambda s: (-sizes[s], -s))[0]
@@ -100,8 +106,8 @@ def type_scale(deck: Deck, ev: Evidence) -> dict[str, float]:
     for role in _REQUIRED:
         if role not in scale:
             scale[role] = body
-            ev.record(f'type_scale_pt.{role}', body, runs=0,
-                      why='the deck has no distinct size for this role; it follows the body')
+            ev.assumed(f'type_scale_pt.{role}', body,
+                       'the deck has no distinct size for this role, so it follows the body')
     return scale
 
 
@@ -111,15 +117,27 @@ def _stack_for(family: str | None) -> tuple[str, bool]:
     return _SANS_STACK, False
 
 
-def fonts(deck: Deck, ev: Evidence) -> dict[str, dict[str, str]]:
+def fonts(deck: Deck, ev: Evidence, title_pt: float | None = None) -> dict[str, dict[str, str]]:
+    """The heading font is the TITLE's font, not the most common font in the title band.
+
+    The band holds the subtitle too, and on the reference deck its 77 Calibri subtitles outvoted
+    its Cambria titles — so widening the band to a page fraction silently changed the heading
+    family. A size is the right discriminator: the heading font is what the title is set in.
+    """
     body_counts: Counter = Counter()
     heading_counts: Counter = Counter()
     for slide in deck.slides:
         for shape in slide:
-            target = heading_counts if shape.box.y < _TITLE_BAND_IN else body_counts
+            in_title_band = shape.box.y < deck.height_in * TITLE_BAND_FRACTION
             for run in shape.runs:
-                if run.font and run.text.strip():
-                    target[run.font] += 1
+                if not run.font or not run.text.strip():
+                    continue
+                at_title_size = (title_pt is not None and run.size_pt
+                                 and abs(run.size_pt - title_pt) < 0.01)
+                if in_title_band and (title_pt is None or at_title_size):
+                    heading_counts[run.font] += 1
+                else:
+                    body_counts[run.font] += 1
     body_family = body_counts.most_common(1)[0][0] if body_counts else None
     heading_family = heading_counts.most_common(1)[0][0] if heading_counts else body_family
     if body_family is None:
@@ -135,7 +153,14 @@ def fonts(deck: Deck, ev: Evidence) -> dict[str, dict[str, str]]:
     for role, family in (('heading', heading_family), ('body', body_family)):
         stack, serif = _stack_for(family)
         out[role] = {'family': family or 'inherit', 'fallback': stack}
-        ev.record(f'fonts.{role}', out[role], invented=True,
-                  why='family measured from the runs; fallback stack invented '
-                      f'({"serif" if serif else "sans"})')
+        if family:
+            ev.record(f'fonts.{role}', out[role], invented=True,
+                      why='family measured from the runs; fallback stack invented '
+                          f'({"serif" if serif else "sans"})')
+        else:
+            # 'inherit' is not a measurement. Saying "measured from the runs" about it was a false
+            # provenance, and validateStyle accepts 'inherit' as a family, so nothing caught it.
+            ev.assumed(f'fonts.{role}', out[role],
+                       'no run in the deck names a family, so the page inherits one; the deck '
+                       'may be using its theme fonts, which this importer does not read')
     return out

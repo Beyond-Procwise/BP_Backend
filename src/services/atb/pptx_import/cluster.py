@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .grid import FOOTER_BAND_FRACTION
+from .grid import FOOTER_BAND_FRACTION, TITLE_BAND_FRACTION
 from .read import Deck, Shape
 
-TITLE_BAND_IN = 1.25
+# Shared with grid.py: a band is a fraction of the page, not an absolute inch count.
+TITLE_BAND_FRACTION = 0.167
 SAME_ROW_IN = 0.45
 SAME_COL_IN = 0.1
 DECORATION_IN = 0.5
@@ -41,8 +42,9 @@ class Cluster:
 
 def _body(shapes: tuple[Shape, ...], height_in: float) -> list[Shape]:
     footer = height_in * FOOTER_BAND_FRACTION
+    title_band_to = height_in * TITLE_BAND_FRACTION
     return [s for s in shapes
-            if TITLE_BAND_IN <= s.box.y <= footer
+            if title_band_to <= s.box.y <= footer
             and not (s.box.w < DECORATION_IN and s.box.h < DECORATION_IN)]
 
 

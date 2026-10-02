@@ -74,21 +74,42 @@ def _hex(value: str | None) -> str | None:
     return None if value is None else '#' + value.upper()
 
 
+def _shape_properties(xml: str) -> str:
+    """Just the shape's own properties — NOT its text body.
+
+    Searching the whole element counted a text box's RUN colour as a fill and as a line. On the
+    reference deck that was 1,185 of 1,807 "fills" and 1,101 of 1,723 "lines", and it swapped the
+    two accents: the blue is on 31 real fills against the teal's 19, but the teal won on the
+    contaminated count. It also broke the ten-use floor, since a bordered panel was counted twice.
+    """
+    start = xml.find('<p:spPr')
+    if start < 0:
+        return ''
+    end = xml.find('</p:spPr>', start)
+    return xml[start:end if end > 0 else len(xml)]
+
+
 def _fill_of(element) -> str | None:
-    xml = element.xml
-    start = xml.find('<a:solidFill>')
+    properties = _shape_properties(element.xml)
+    start = properties.find('<a:solidFill>')
     if start < 0:
         return None
-    match = _SRGB.search(xml, start)
+    # The fill is the FIRST solidFill in spPr; a later one inside <a:ln> is the outline.
+    line_at = properties.find('<a:ln')
+    if 0 <= line_at < start:
+        return None
+    match = _SRGB.search(properties, start)
     return _hex(match.group(1)) if match else None
 
 
 def _line_of(element) -> str | None:
-    xml = element.xml
-    start = xml.find('<a:ln')
+    properties = _shape_properties(element.xml)
+    start = properties.find('<a:ln')
     if start < 0:
         return None
-    match = _SRGB.search(xml, start)
+    end = properties.find('</a:ln>', start)
+    outline = properties[start:end if end > 0 else len(properties)]
+    match = _SRGB.search(outline)
     return _hex(match.group(1)) if match else None
 
 

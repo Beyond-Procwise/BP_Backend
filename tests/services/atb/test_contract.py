@@ -14,7 +14,7 @@ LAYOUT_JS = os.path.join(UI, 'src/modules/SpendIQ/atb/validateLayout.js')
 
 
 def _pack(**over):
-    pack = {'key': 'k', 'name': 'K',
+    pack = {'kind': 'atb_style', 'schema_version': 1, 'key': 'k', 'name': 'K',
             'format': {'kind': 'deck', 'width_in': 13.333, 'height_in': 7.5},
             'colours': {c: '#172033' for c in REQUIRED_COLOURS},
             'type_scale_pt': {r: 10 for r in REQUIRED_TYPE_SCALE},
@@ -131,3 +131,53 @@ def test_does_not_drift_from_the_javascript_contract():
     assert layout_arr('SLOT_TYPES') == list(SLOT_TYPES)
     assert layout_arr('FILL_MODES') == list(FILL_MODES)
     assert layout_arr('PROSE_TYPES') == list(PROSE_TYPES)
+
+
+# ---------------------------------------------------------------- review findings C2 and I14
+# The vendored contract was missing five rules the JavaScript enforces. Every one of them is a
+# layout or pack that passes here, is stored, and is then rejected in the browser — so the review
+# screen cannot draw the card it is meant to approve.
+
+def test_a_pack_must_say_what_kind_of_document_it_is():
+    assert any('atb_style' in e for e in validate_pack(_pack(kind=None)))
+    assert any('schema_version' in e for e in validate_pack(_pack(schema_version=0)))
+
+
+def test_the_shipped_pack_shape_is_what_the_hand_authored_packs_use():
+    import json
+    import os
+    authored = os.path.join(UI, 'src/modules/SpendIQ/atb/styles/consulting-navy-16x9.json')
+    if not os.path.exists(authored):
+        import pytest
+        pytest.skip('set BEYOND_PROCWISE_UI to the UI checkout')
+    pack = json.load(open(authored, encoding='utf-8'))
+    assert validate_pack(pack) == [], 'the vendored contract must accept a pack the UI ships'
+
+
+def test_a_chart_slot_must_be_bound():
+    bad = _layout(regions=[{'id': 'c', 'component': 'chart',
+                            'box_in': {'x': 0.5, 'y': 1.5, 'w': 6, 'h': 3}}],
+                  slots={'c': {'type': 'chart', 'fill': 'agent'}})
+    assert any('fill:"bind"' in e for e in validate_layout(bad))
+
+
+def test_a_list_slot_must_declare_min_max_and_an_item():
+    bad = _layout(slots={'cards': {'type': 'list', 'fill': 'agent'}})
+    errors = validate_layout(bad)
+    assert any('numeric min and max' in e for e in errors)
+    assert any('item shape' in e for e in errors)
+
+
+def test_a_table_slot_must_declare_columns_with_types_and_max_rows():
+    bad = _layout(slots={'rows': {'type': 'table', 'fill': 'agent', 'columns': []}})
+    errors = validate_layout(bad)
+    assert any('must declare columns' in e for e in errors)
+    assert any('max_rows' in e for e in errors)
+    untyped = _layout(slots={'rows': {'type': 'table', 'fill': 'agent', 'max_rows': 8,
+                                      'columns': [{'id': 'a'}]}})
+    assert any('must declare a type' in e for e in validate_layout(untyped))
+
+
+def test_a_rating_slot_must_name_its_scale():
+    bad = _layout(slots={'risk': {'type': 'rating', 'fill': 'agent'}})
+    assert any('name the scale' in e for e in validate_layout(bad))

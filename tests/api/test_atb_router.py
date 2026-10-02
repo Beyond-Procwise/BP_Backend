@@ -35,9 +35,9 @@ def client(monkeypatch):
     monkeypatch.setattr(ar.store, 'packs', lambda conn, **k: [PACK_ROW])
     monkeypatch.setattr(ar.store, 'pack', lambda conn, pack_id: PACK_ROW if pack_id == 'p-1' else None)
     monkeypatch.setattr(ar.store, 'layouts', lambda conn, **k: [LAYOUT_ROW])
-    monkeypatch.setattr(ar.store, 'rename_layout', lambda *a, **k: None)
-    monkeypatch.setattr(ar.store, 'set_layout_status', lambda *a, **k: None)
-    monkeypatch.setattr(ar.store, 'set_pack_status', lambda *a, **k: None)
+    monkeypatch.setattr(ar.store, 'rename_layout', lambda *a, **k: 1)
+    monkeypatch.setattr(ar.store, 'set_layout_status', lambda *a, **k: 1)
+    monkeypatch.setattr(ar.store, 'set_pack_status', lambda *a, **k: 1)
     monkeypatch.setattr(ar.store, 'define_rating_scale', lambda *a, **k: None)
     app = FastAPI()
     app.include_router(ar.router)
@@ -125,7 +125,10 @@ def test_a_column_cannot_be_promoted_to_a_scale_missing_a_label(client):
     assert 'Low' in response.json()['detail']
 
 
-def test_a_scale_whose_labels_are_all_defined_is_accepted(client):
+def test_a_scale_whose_labels_are_all_defined_is_accepted(client, monkeypatch):
+    promotions = []
+    monkeypatch.setattr(ar.store, 'promote_column',
+                        lambda conn, **k: promotions.append(k) or 1)
     response = client.post('/atb/packs/p-1/rating-scales', json={
         'name': 'hml', 'chips': {'High': {'bg': '#eee', 'ink': '#222'},
                                  'Low': {'bg': '#efe', 'ink': '#232'}},
@@ -133,6 +136,26 @@ def test_a_scale_whose_labels_are_all_defined_is_accepted(client):
                     'labels': ['High', 'Low']}})
     assert response.status_code == 200
     assert response.json()['labels'] == ['High', 'Low']
+    # The promotion is APPLIED, not merely checked. The first version validated it and threw it
+    # away, returning 200 as though the column had become a rating column.
+    assert promotions == [{'pack_id': 'p-1', 'layout_key': 'imported_abc1234567',
+                           'column': 'risk', 'scale': 'hml'}]
+    assert response.json()['promoted'] == {'layout_key': 'imported_abc1234567', 'column': 'risk'}
+
+
+def test_a_chip_that_is_not_a_colour_is_refused(client):
+    response = client.post('/atb/packs/p-1/rating-scales',
+                           json={'name': 'hml', 'chips': {'High': {'bg': 'navy-ish'}}})
+    assert response.status_code == 400
+    assert 'navy-ish' in response.json()['detail']
+
+
+def test_a_promotion_that_matches_no_column_is_a_404(client, monkeypatch):
+    monkeypatch.setattr(ar.store, 'promote_column', lambda conn, **k: 0)
+    response = client.post('/atb/packs/p-1/rating-scales', json={
+        'name': 'hml', 'chips': {'High': {'bg': '#eee'}},
+        'promote': {'layout_key': 'imported_abc1234567', 'column': 'nope', 'labels': ['High']}})
+    assert response.status_code == 404
 
 
 def test_an_unknown_pack_is_a_404(client):
@@ -160,3 +183,16 @@ def test_one_pack_carries_its_tokens_and_its_layouts(client):
     assert body['tokens']['colours']['ink'] == '#172033'
     assert body['layouts'][0]['layout_key'] == 'imported_abc1234567'
     assert body['layouts'][0]['example_source']['slide'] == 4
+
+
+# ------------------------------------------------------------------ review finding I6
+def test_approving_something_that_does_not_exist_is_a_404(client, monkeypatch):
+    """Every write returned 200 for any id. An importing pack also reached `approved` that way,
+    stepping around the status filter every read path depends on."""
+    monkeypatch.setattr(ar.store, 'set_pack_status', lambda *a, **k: 0)
+    monkeypatch.setattr(ar.store, 'set_layout_status', lambda *a, **k: 0)
+    monkeypatch.setattr(ar.store, 'rename_layout', lambda *a, **k: 0)
+    assert client.post('/atb/packs/nope/approve').status_code == 404
+    assert client.post('/atb/layouts/nope/approve').status_code == 404
+    assert client.post('/atb/layouts/nope/reject').status_code == 404
+    assert client.post('/atb/layouts/nope', json={'name': 'x'}).status_code == 404

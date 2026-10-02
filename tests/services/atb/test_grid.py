@@ -57,7 +57,8 @@ def test_the_gutter_ignores_neighbours_of_unequal_width(build_deck):
     # census skipped it for the wrong reason.
     g = grid(read_deck(build_deck([band] * 8)), ev)
     assert g['gutter_in'] == 0.25
-    distribution = dict((v, n) for v, n in ev.as_dict()['values']['grid.gutter_in']['distribution'])
+    distribution = dict((v, n) for v, n
+                        in ev.as_dict()['values']['grid.gutter_in']['distribution'])
     assert 0.5 not in distribution, 'the unequal neighbour must not reach the census'
 
 

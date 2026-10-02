@@ -29,10 +29,25 @@ _SAME_WIDTH_IN = 0.1   # two shapes this close in width are one column pitch
 # portrait sheet the same fraction is 10.75in, just above its 10.9in footnote. At 0.85 the band
 # swallowed body rows at 6.45in and reported those as the footer. cluster.py shares this.
 FOOTER_BAND_FRACTION = 0.92
+# And the title band, for the same reason. 0.167 of a 7.5in deck is 1.25in, which holds the
+# reference deck's title (0.35) and subtitle (1.0) and excludes its body (1.5). On PowerPoint's
+# other 16:9 size, 10 x 5.625in, the same fraction is 0.94in and the same three land the same way
+# — where the absolute 1.25in swallowed that deck's body row at 1.125in and the row VANISHED from
+# every layout with no problem recorded. cluster.py and typescale.py share this.
+TITLE_BAND_FRACTION = 0.167
+# A full-bleed background rectangle is in every real deck and is not a measurement: counted, it
+# set title_top_in to 0.0 on a probe deck, because 12 shapes at y=0 beat 12 at y=0.35.
+_FULL_BLEED_W = 0.98
+_FULL_BLEED_H = 0.9
 
 
-def _measurable(shape: Shape) -> bool:
-    return shape.box.w >= _MIN_W_IN and shape.box.h >= _MIN_H_IN
+def _measurable(shape: Shape, page_w: float = 0.0, page_h: float = 0.0) -> bool:
+    if shape.box.w < _MIN_W_IN or shape.box.h < _MIN_H_IN:
+        return False
+    if page_w and page_h and shape.box.w >= page_w * _FULL_BLEED_W \
+            and shape.box.h >= page_h * _FULL_BLEED_H:
+        return False          # a full-bleed background
+    return True
 
 
 def _modal(values: list[float], default: float) -> tuple[float, int]:
@@ -53,12 +68,14 @@ def grid(deck: Deck, ev: Evidence) -> dict:
     bottom_from = deck.height_in * FOOTER_BAND_FRACTION
     wide_enough = (deck.width_in - 2 * _DEFAULT_MARGIN) * 0.5
 
+    title_band_to = deck.height_in * TITLE_BAND_FRACTION
     for slide in deck.slides:
-        shapes = [s for s in slide if _measurable(s)]
+        shapes = [s for s in slide if _measurable(s, deck.width_in, deck.height_in)]
+        body_tops: list[float] = []
         for shape in shapes:
             lefts.append(shape.box.x)
             widths.append(shape.box.w)
-            if shape.box.y < 1.0:
+            if shape.box.y < title_band_to:
                 top_band.append(shape.box.y)
             elif shape.box.y > bottom_from:
                 # The footer line is where footer CONTENT sits, not where the page number sits.
@@ -68,7 +85,12 @@ def grid(deck: Deck, ev: Evidence) -> dict:
                 if shape.box.w >= wide_enough:
                     bottom_band.append(shape.box.y)
             else:
-                mid_band.append(shape.box.y)
+                body_tops.append(shape.box.y)
+        # THE FIRST body row's top edge, not the modal edge of everything in the band. The mode
+        # landed on the biggest card row — 3.0in and 4.0in on two probe decks — and was 1.5in on
+        # the reference deck only because 99 shapes happen to sit there.
+        if body_tops:
+            mid_band.append(min(body_tops))
         rows: dict[float, list[Shape]] = {}
         for shape in shapes:
             key = next((k for k in rows if abs(k - shape.box.y) <= _SAME_ROW_IN), shape.box.y)
@@ -98,7 +120,17 @@ def grid(deck: Deck, ev: Evidence) -> dict:
     content_w = round(deck.width_in - 2 * margin, 2)
     content_n = sum(1 for w in widths if abs(w - content_w) <= 0.05)
 
-    ev.record('grid.margin_in', margin, shapes=margin_n, why='modal left edge')
+    def state(path: str, value: float, count: int, why: str, count_key: str = 'shapes',
+              **extra) -> None:
+        """A measurement when something was measured; an assumption, loudly, when nothing was."""
+        if count:
+            ev.record(path, value, why=why, **{count_key: count}, **extra)
+        else:
+            ev.assumed(path, value,
+                       f'nothing in this deck gave a {path.split(".")[-1]} ({why}); '
+                       'the platform default stands in')
+
+    state('grid.margin_in', margin, margin_n, 'modal left edge')
     # THE DECK MAY NOT HAVE ONE GUTTER. The reference deck's equal-width bands sit at 0.1, 0.15,
     # 0.3, 0.45, 0.65 and 0.8in, which is the same finding as the grid not being strictly twelve
     # columns: each band divides the content width its own way. The modal value is reported as the
@@ -106,17 +138,17 @@ def grid(deck: Deck, ev: Evidence) -> dict:
     # as a design rule the deck does not follow. The brief's 0.3in is the deck's fourth most
     # common gap, not its gutter.
     spread = sorted(Counter(round(g, 2) for g in gutters).items(), key=lambda kv: -kv[1])
-    ev.record('grid.gutter_in', gutter, gaps=gutter_n,
-              why='modal gap between two shapes of equal width in a row'
-                  + ('; THE DECK USES SEVERAL: ' + ', '.join(f'{v}in x{n}' for v, n in spread[:6])
-                     if len(spread) > 1 else ''),
-              distribution=[[v, n] for v, n in spread])
-    ev.record('grid.title_top_in', title_top, shapes=title_n,
-              why='modal top edge above 1in, decorations excluded')
-    ev.record('grid.body_top_in', body_top, shapes=body_n, why='modal top edge in the body band')
-    ev.record('grid.footer_top_in', footer_top, shapes=footer_n,
-              why='modal top edge in the bottom band, among shapes spanning at least half the '
-                  'content width — a page number is furniture, not the footer line')
+    state('grid.gutter_in', gutter, gutter_n,
+          'modal gap between two shapes of equal width in a row'
+          + ('; THE DECK USES SEVERAL: ' + ', '.join(f'{v}in x{n}' for v, n in spread[:6])
+             if len(spread) > 1 else ''),
+          count_key='gaps', distribution=[[v, n] for v, n in spread])
+    state('grid.title_top_in', title_top, title_n,
+          'modal top edge in the title band, decorations excluded')
+    state('grid.body_top_in', body_top, body_n, 'the top edge of the first body row')
+    state('grid.footer_top_in', footer_top, footer_n,
+          'modal top edge in the bottom band, among shapes spanning at least half the content '
+          'width — a page number is furniture, not the footer line')
     ev.record('grid.content_width_in', content_w, shapes=content_n,
               why=f'the page ({deck.width_in}in) less two {margin}in margins is {content_w}in; '
                   f'{content_n} shapes span it'

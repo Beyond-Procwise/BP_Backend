@@ -14,9 +14,24 @@ class Evidence:
         self._values: dict[str, dict[str, Any]] = {}
         self._incidental: list[dict[str, Any]] = []
         self._ignored: dict[str, dict[str, Any]] = {}
+        self._assumed: list[dict[str, Any]] = []
 
     def record(self, path: str, value: Any, **facts: Any) -> None:
         self._values[path] = {'value': value, **facts}
+
+    def assumed(self, path: str, value: Any, why: str) -> None:
+        """A value the deck did not give us. Recorded AND surfaced as a problem.
+
+        An evidence note alone is not enough: the review screen shows problems, and a pack built
+        entirely of assumptions looked exactly like a measured one. Every fallback goes through
+        here so "an absent measurement must be stated" is true where a human actually looks.
+        """
+        self._values[path] = {'value': value, 'assumed': True, 'why': why}
+        self._assumed.append({'path': path, 'value': value, 'why': why})
+
+    @property
+    def assumptions(self) -> list[dict[str, Any]]:
+        return list(self._assumed)
 
     def incidental(self, kind: str, value: Any, why: str) -> None:
         self._incidental.append({'kind': kind, 'value': value, 'why': why})
@@ -29,4 +44,5 @@ class Evidence:
             'values': dict(self._values),
             'incidental': list(self._incidental),
             'ignored': dict(self._ignored),
+            'assumed': list(self._assumed),
         }

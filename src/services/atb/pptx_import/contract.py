@@ -53,6 +53,15 @@ def validate_pack(pack: dict) -> list[str]:
     if not isinstance(pack, dict):
         return ['pack must be an object']
 
+    # The two the first version of this port omitted. Both hand-authored packs start with them,
+    # and without them the browser rejects every imported pack and falls back to the bundled ones
+    # — an import that looks successful end to end and does nothing.
+    if pack.get('kind') != 'atb_style':
+        errors.append('kind must be "atb_style"')
+    version = pack.get('schema_version')
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        errors.append('schema_version must be an integer >= 1')
+
     fmt = pack.get('format')
     if not isinstance(fmt, dict) or fmt.get('kind') not in STYLE_FORMATS:
         errors.append(f'format.kind must be one of {list(STYLE_FORMATS)}')
@@ -122,6 +131,33 @@ def validate_pack(pack: dict) -> list[str]:
     if not isinstance(writing, dict) or not writing.get('locale'):
         errors.append('writing.locale is required — it decides the spelling list and number '
                       'formats')
+    return errors
+
+
+def validate_rating_scale(name: str, chips: dict) -> list[str]:
+    """A hand-defined scale, held to the same rule as a measured one.
+
+    Without this a scale went into the pack unchecked, so `{"High": {"bg": "navy-ish"}}` could be
+    approved and would then fail validateStyle at render time — the outcome the design's §5a exists
+    to avoid.
+    """
+    errors: list[str] = []
+    if not isinstance(name, str) or not name.strip():
+        errors.append('a rating scale needs a name')
+    if not isinstance(chips, dict) or not chips:
+        return errors + ['a rating scale needs at least one label']
+    for label, chip in chips.items():
+        if not isinstance(label, str) or not label.strip():
+            errors.append('every label in a rating scale needs a name')
+        if not isinstance(chip, dict):
+            errors.append(f'rating_scales.{name}.{label} must be an object')
+            continue
+        if not chip.get('bg') and not chip.get('ink'):
+            errors.append(f'rating_scales.{name}.{label} needs a bg or an ink')
+        for part in ('bg', 'ink'):
+            if part in chip and not is_colour(chip[part]):
+                errors.append(f'rating_scales.{name}.{label}.{part} "{chip[part]}" is not a '
+                              'usable CSS colour')
     return errors
 
 
@@ -205,4 +241,26 @@ def validate_layout(layout: dict) -> list[str]:
                     and slot.get('max_words') is None and slot.get('max_chars') is None:
                 errors.append(f'{at} is agent-written prose and must declare max_words '
                               'or max_chars')
+            # The model never supplies chart data, so a chart slot is bound from facts.
+            if slot.get('type') == 'chart' and slot.get('fill') != 'bind':
+                errors.append(f'{at} is a chart and must be fill:"bind" — the model never '
+                              'supplies chart data')
+            if slot.get('type') == 'list':
+                if not _is_num(slot.get('min')) or not _is_num(slot.get('max')):
+                    errors.append(f'{at} is a list and must declare numeric min and max')
+                if not isinstance(slot.get('item'), dict):
+                    errors.append(f'{at} is a list and must declare an item shape')
+            if slot.get('type') == 'table':
+                columns = slot.get('columns')
+                if not isinstance(columns, list) or not columns:
+                    errors.append(f'{at} is a table and must declare columns')
+                else:
+                    for index, column in enumerate(columns):
+                        if not isinstance(column, dict) or not column.get('type'):
+                            errors.append(f'{at}.columns[{index}] must declare a type')
+                if not _is_num(slot.get('max_rows')):
+                    errors.append(f'{at} is a table and must declare max_rows so the planner '
+                                  'can paginate')
+            if slot.get('type') == 'rating' and not isinstance(slot.get('scale'), str):
+                errors.append(f'{at} is a rating and must name the scale it uses')
     return errors
