@@ -184,6 +184,26 @@ def build_vocabulary(
     )
 
 
+#: The seed's bp_document_type rows as plain dicts: the shape the table query
+#: returns. One copy, used both to build SEED_VOCABULARY and by validate.run_all,
+#: whose rows-based checks see a row even when loading would discard it.
+SEED_DOC_TYPE_ROWS = [
+    {
+        "concept_code": d.concept_code,
+        "role": d.role,
+        "default_parent_type": d.default_parent_type,
+        "execution_mode": d.execution_mode,
+        "aliases": list(d.aliases),
+        "identifiers": list(d.identifiers),
+        "structural_signals": list(d.structural_signals),
+        "pipeline_doc_type": d.pipeline_doc_type,
+        "status": d.status,
+        "requires_parent_evidence": d.requires_parent_evidence,
+        "parent_evidence_phrases": list(d.parent_evidence_phrases),
+    }
+    for d in DOCUMENT_TYPES.values()
+]
+
 SEED_VOCABULARY = build_vocabulary(
     [
         {
@@ -196,22 +216,7 @@ SEED_VOCABULARY = build_vocabulary(
         }
         for c in CONCEPTS.values()
     ],
-    [
-        {
-            "concept_code": d.concept_code,
-            "role": d.role,
-            "default_parent_type": d.default_parent_type,
-            "execution_mode": d.execution_mode,
-            "aliases": list(d.aliases),
-            "identifiers": list(d.identifiers),
-            "structural_signals": list(d.structural_signals),
-            "pipeline_doc_type": d.pipeline_doc_type,
-            "status": d.status,
-            "requires_parent_evidence": d.requires_parent_evidence,
-            "parent_evidence_phrases": list(d.parent_evidence_phrases),
-        }
-        for d in DOCUMENT_TYPES.values()
-    ],
+    SEED_DOC_TYPE_ROWS,
     source="builtin-seed",
 )
 
@@ -375,6 +380,6 @@ def ensure_vocabulary(
 
 
 __all__ = [
-    "Vocabulary", "SEED_VOCABULARY", "build_vocabulary", "ensure_vocabulary",
+    "Vocabulary", "SEED_VOCABULARY", "SEED_DOC_TYPE_ROWS", "build_vocabulary", "ensure_vocabulary",
     "invalidate", "resolve_alias", "fold",
 ]

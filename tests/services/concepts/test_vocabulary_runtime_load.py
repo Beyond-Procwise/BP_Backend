@@ -127,7 +127,7 @@ def test_the_half_promoted_type_is_reported_as_a_violation():
     bad = validate.check_concepts_exist_for_every_document_type(half)
     assert [v.subject for v in bad] == ["doctype.policy_document"]
     assert bad[0].check == "concepts_exist_for_every_document_type"
-    assert bad == [v for v in validate.run_all(half)
+    assert bad == [v for v in validate.run_all(half, DOC_TYPE_ROWS)
                    if v.check == "concepts_exist_for_every_document_type"]
 
 

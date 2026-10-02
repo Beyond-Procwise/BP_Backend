@@ -149,7 +149,7 @@ def check_flagged_types_have_parent_evidence_phrases(doc_type_rows) -> List[Viol
 
     Takes bp_document_type ROWS, not a Vocabulary: the other checks run over a
     built Vocabulary, but this one must see a flagged row even if loading would
-    discard it, so it is not part of run_all.
+    discard it (a proposed status, or a concept that failed to load).
     """
     out: List[Violation] = []
     for row in doc_type_rows:
@@ -185,14 +185,19 @@ def check_pipeline_targets_exist(vocabulary: Vocabulary) -> List[Violation]:
     ]
 
 
-def run_all(vocabulary: Vocabulary) -> List[Violation]:
-    """Every check, in a stable order."""
+def run_all(vocabulary: Vocabulary, doc_type_rows) -> List[Violation]:
+    """Every check, in a stable order.
+
+    doc_type_rows is REQUIRED, not optional: a check that silently skips when an
+    argument is omitted reports success while checking nothing.
+    """
     out: List[Violation] = []
     out.extend(check_aliases_are_unambiguous(vocabulary))
     out.extend(check_every_reference_resolves(vocabulary))
     out.extend(check_concepts_exist_for_every_document_type(vocabulary))
     out.extend(check_active_concepts_are_defined(vocabulary))
     out.extend(check_pipeline_targets_exist(vocabulary))
+    out.extend(check_flagged_types_have_parent_evidence_phrases(doc_type_rows))
     return out
 
 

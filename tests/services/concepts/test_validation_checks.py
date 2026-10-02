@@ -101,7 +101,7 @@ def test_a_document_type_with_no_attributes_row_is_caught():
 
 
 def test_the_real_seed_passes_every_check():
-    assert VAL.run_all(V.SEED_VOCABULARY) == []
+    assert VAL.run_all(V.SEED_VOCABULARY, V.SEED_DOC_TYPE_ROWS) == []
 
 
 def test_duplicate_alias_inside_the_seed_itself_is_caught():
@@ -136,4 +136,4 @@ def test_duplicate_alias_inside_the_seed_itself_is_caught():
     assert len(v.alias_index[V.fold(stolen)]) == 2
     violations = VAL.check_aliases_are_unambiguous(v)
     assert [x.subject for x in violations] == [V.fold(stolen)]
-    assert VAL.run_all(V.SEED_VOCABULARY) == []
+    assert VAL.run_all(V.SEED_VOCABULARY, V.SEED_DOC_TYPE_ROWS) == []

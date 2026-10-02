@@ -49,9 +49,9 @@ jobs:
         run: |
           python -c "
           import sys; sys.path.insert(0, '.')
-          from src.services.concepts.vocabulary import SEED_VOCABULARY
+          from src.services.concepts.vocabulary import SEED_VOCABULARY, SEED_DOC_TYPE_ROWS
           from src.services.concepts.validate import run_all
-          bad = run_all(SEED_VOCABULARY)
+          bad = run_all(SEED_VOCABULARY, SEED_DOC_TYPE_ROWS)
           for x in bad:
               print(f'{x.check}: {x.subject} - {x.detail}')
           sys.exit(1 if bad else 0)

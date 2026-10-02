@@ -109,3 +109,12 @@ def test_the_live_table_has_both_columns_with_the_right_defaults():
     assert "false" in (got["requires_parent_evidence"][2] or "")
     assert got["parent_evidence_phrases"][0] == "ARRAY"
     assert got["parent_evidence_phrases"][1] == "NO"
+
+
+def test_run_all_reports_a_flagged_type_with_no_phrases():
+    """The check must be reachable through run_all, which is what CI calls."""
+    from src.services.concepts.vocabulary import SEED_VOCABULARY
+    rows = [_doc_row("doctype.a", requires_parent_evidence=True, parent_evidence_phrases=[])]
+    got = V.run_all(SEED_VOCABULARY, rows)
+    assert [x.check for x in got] == ["flagged_types_have_parent_evidence_phrases"]
+    assert got[0].subject == "doctype.a"
