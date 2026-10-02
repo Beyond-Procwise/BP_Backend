@@ -258,6 +258,26 @@ one sits under" and "the document this one changes" the same fact.
 
 Both are `required: false`. A contract with no parent named extracts and promotes exactly as it does now.
 
+**One overlap, measured 2026-10-02 and recorded rather than changed.** A colon form —
+`Master Agreement: MSA-4417` — populates **both** `parent_contract_id` and
+`parent_agreement_ref`, because `parent_contract_id`'s existing `anchored_parent_contract`
+pattern has always matched `(parent|master|principal) (contract|agreement)` followed by a
+colon. The two forms that carry distinct meaning stay clean:
+
+| page form | `parent_contract_id` | `parent_agreement_ref` | `framework_ref` |
+|---|---|---|---|
+| `issued under Master Agreement MSA-4417` | — | ✓ | — |
+| `amends Contract MSA-4417` | ✓ | — | — |
+| `Master Agreement: MSA-4417` | ✓ | ✓ | — |
+| `Framework Agreement No: FW-2024-0012` | — | — | ✓ |
+
+So "sits under" and "changes" remain distinguishable in the cases where the document says
+which it means, which is what §8's maths needs. The overlap is harmless there — the
+`declared_reference` signal reads all three fields as equal candidates and only asks whether
+the parent's id is among them, so a duplicated value changes no score. Narrowing
+`parent_contract_id`'s anchor would alter extraction on live documents for a case that has
+behaved this way for months, so it is pinned by a test instead.
+
 ---
 
 ## 8. The maths runs, and proposes
