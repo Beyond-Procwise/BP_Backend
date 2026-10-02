@@ -110,3 +110,26 @@ def test_a_contract_naming_no_parent_reads_neither_field(registry):
     text = "MASTER AGREEMENT\n\nbetween Acme Ltd and Beta Ltd, numbered clauses.\n"
     assert _value(text, "framework_ref") is None
     assert _value(text, "parent_agreement_ref") is None
+
+
+def test_the_colon_form_fills_both_reference_fields_known_overlap(registry):
+    """"Master Agreement: X" populates parent_contract_id AND parent_agreement_ref.
+
+    PRE-EXISTING, not introduced here: parent_contract_id's `anchored_parent_contract`
+    pattern has always matched "(parent|master|principal) (contract|agreement)" followed
+    by a colon, and this task's parent_agreement_ref matches the same text. The two
+    forms that carry distinct meaning stay clean -- "issued under Master Agreement X"
+    fills only parent_agreement_ref, and "amends Contract X" fills only
+    parent_contract_id -- so the distinction the two fields exist for survives.
+
+    Harmless for the hierarchy scoring in the next task, which reads all three
+    reference fields as equal candidates and only asks whether the parent's id is
+    among them; a duplicated value changes no score.
+
+    Narrowing parent_contract_id's anchor to fix this would change extraction on
+    live documents for a case that has behaved this way for months, so it is
+    recorded rather than changed.
+    """
+    text = "STATEMENT OF WORK\n\nMaster Agreement: MSA-4417\n"
+    assert _value(text, "parent_agreement_ref") == "MSA-4417"
+    assert _value(text, "parent_contract_id") == "MSA-4417"
