@@ -109,15 +109,16 @@ def test_disagreement_is_recorded_and_the_declared_type_is_kept():
 
 
 def test_a_more_specific_type_in_the_page_is_reported_not_applied():
-    """Declared 'contract', page says 'framework agreement'. That is a
-    refinement a human confirms, not one this layer makes on its own."""
+    """Declared 'contract', page says 'framework agreement'. The declaration
+    stands (declared_concept is untouched); the page is reported as a
+    refinement of it, not a disagreement -- see _is_refinement."""
     r = resolve_document_type(
         declared_concept="doctype.contract_unspecified",
         full_text=FRAMEWORK_PAGE, vocabulary=V,
     )
     assert r.declared_concept == "doctype.contract_unspecified"
     assert r.evidence_concept == "doctype.framework_agreement"
-    assert r.agreement == "disagreed"
+    assert r.agreement == "refined"
 
 
 def test_a_page_matching_nothing_is_unknown_not_the_nearest_option():

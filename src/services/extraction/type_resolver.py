@@ -191,7 +191,7 @@ class TypeResolution:
     declared_concept: Optional[str]
     evidence_concept: Optional[str]
     status: str         # matched | unknown | unresolved
-    agreement: str      # agreed | declared_only | evidence_only | disagreed | neither
+    agreement: str      # agreed | refined | declared_only | evidence_only | disagreed | neither
     candidates: Tuple[str, ...]
     evidence: Tuple[Evidence, ...]
 
@@ -245,6 +245,30 @@ def _is_reference_value(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> bool
     if not body or len(body.split()) > _VALUE_MAX_TOKENS:
         return False
     return bool(_HAS_DIGIT.search(body)) and fold(body) not in owners
+
+
+def _is_refinement(declared: str, evidence: str, vocab: "Vocabulary") -> bool:
+    """Has the page named which KIND of contract this is, rather than contradicted it?
+
+    'contract' is the name of the upload zone, not a claim about which contract
+    the document is: routing.pipeline_for_category maps it to
+    doctype.contract_unspecified, whose whole purpose is to say "a contract, kind
+    not stated". A page that then says "Master Agreement" has refined that, and
+    calling it a disagreement would put a review item on every contract uploaded.
+
+    Bounded two ways, because a refinement SILENCES a finding and a silence that
+    is too wide is the expensive direction:
+      * only the generic declaration can be refined -- declaring a SOW and
+        reading a master agreement is a real contradiction, since the uploader
+        made a specific claim;
+      * only by a structure the contract pipeline actually ingests. A structure
+        with pipeline_doc_type NULL is "recognised, but nothing ingests it",
+        which is not a kind of contract.
+    """
+    if declared != "doctype.contract_unspecified" or evidence == declared:
+        return False
+    dt = vocab.document_types.get(evidence)
+    return bool(dt is not None and dt.pipeline_doc_type == "contract")
 
 
 def _names_a_parent(dt: "DocumentType", lowered: str) -> bool:
@@ -651,6 +675,13 @@ def resolve_document_type(
             agreement = "declared_only"
         elif evidence_concept == declared_concept:
             agreement = "agreed"
+        elif _is_refinement(declared_concept, evidence_concept, vocab):
+            # Not a contradiction: the zone said "a contract", the page said
+            # which one. type_resolution_discrepancies raises on 'disagreed' and
+            # on an unresolved status, so this falls through and raises nothing
+            # -- the suppression is structural, not a second branch that could
+            # drift from the first.
+            agreement = "refined"
         else:
             agreement = "disagreed"
         if status != "unresolved":
@@ -719,6 +750,10 @@ def type_resolution_discrepancies(resolution: TypeResolution) -> List["object"]:
     deliberately coarse and says 'declared_only' when the declared type
     produced a concept and the evidence TIED. That contradiction reaches a human
     only through status == 'unresolved'.
+
+    'refined' raises nothing by falling through: the Contracts zone declares the
+    generic 'contract' and a page naming its actual structure has not
+    contradicted anybody. See _is_refinement for the two bounds on that silence.
 
     field_name is always 'document_type' so the open-row identity
     (doc_type, doc_pk_candidate, issue_type, field_name) stays stable across
