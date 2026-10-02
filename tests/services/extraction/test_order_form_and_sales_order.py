@@ -32,7 +32,17 @@ pytestmark = pytest.mark.skipif(not _LIVE, reason="needs PROCWISE_TEST_LIVE_DB=1
 @pytest.fixture()
 def vocab():
     V.invalidate()
-    return V.ensure_vocabulary()
+    v = V.ensure_vocabulary()
+    # ensure_vocabulary is deliberately fail-soft: on a failed or empty read it
+    # returns the vocabulary it already had, which at process start is the seed
+    # (vocabulary.py:329, _keep_current). Without this assertion a database
+    # outage would turn every "live" test in this file into a seed test that
+    # passes -- an outage looking exactly like agreement.
+    assert v.source.startswith("bp_concept@"), (
+        f"vocabulary came from {v.source!r}, not the database: these tests would "
+        "be asserting against the seed while claiming to read live data"
+    )
+    return v
 
 
 def test_both_structures_are_live_in_the_vocabulary(vocab):
