@@ -1,0 +1,457 @@
+{
+  "/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/bb5521da-4de9-4779-8024-3eb0cc564dda/scratchpad/zzprobe_a.csv": {
+    "agreement": "neither",
+    "candidates": [],
+    "evidence_concept": null,
+    "status": "unknown"
+  },
+  "/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/bb5521da-4de9-4779-8024-3eb0cc564dda/scratchpad/zzprobe_b.csv": {
+    "agreement": "neither",
+    "candidates": [],
+    "evidence_concept": null,
+    "status": "unknown"
+  },
+  "/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/bb5521da-4de9-4779-8024-3eb0cc564dda/scratchpad/zzprobe_c.csv": {
+    "agreement": "evidence_only",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "/tmp/claude-1001/-home-muthu-PycharmProjects-BP-Backend/bb5521da-4de9-4779-8024-3eb0cc564dda/scratchpad/zzprobe_d.csv": {
+    "agreement": "evidence_only",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/invoice/IMI-INV-Q2_INVOICE.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/IMI-INV-Q3_INVOICE.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/IMI-INV-Q4_INVOICE.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/KLG-INV-4412_INVOICE.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/KLG-INV-4437_INVOICE.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/KLG-INV-4461_INVOICE.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/MASTER Invoice for PO1.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/MCP-INV-1120_INVOICE.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/MCP-INV-1148_INVOICE.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/ORB-INV-9901_INVOICE.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/ORB-INV-9920_INVOICE.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/PO1_IT_Invoice_LowerCost.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/invoice/PO23_Marketing_Invoice_IncorrectPO.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.invoice"
+    ],
+    "evidence_concept": "doctype.invoice",
+    "status": "matched"
+  },
+  "documents/po/PO-2024-0145_PO.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.order"
+    ],
+    "evidence_concept": "doctype.order",
+    "status": "matched"
+  },
+  "documents/po/PO-2024-0163_PO.docx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.order"
+    ],
+    "evidence_concept": "doctype.order",
+    "status": "matched"
+  },
+  "documents/po/PO-2025-0244_PO.docx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.order"
+    ],
+    "evidence_concept": "doctype.order",
+    "status": "matched"
+  },
+  "documents/po/PO-2025-0257_PO.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.order"
+    ],
+    "evidence_concept": "doctype.order",
+    "status": "matched"
+  },
+  "documents/po/PO-2025-0270_PO.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.order"
+    ],
+    "evidence_concept": "doctype.order",
+    "status": "matched"
+  },
+  "documents/quote/Aureus_Workflow_Ltd_V1.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Aureus_Workflow_Ltd_V2.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Aureus_Workflow_Ltd_V3_BAFO.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Brightwater_Transport_Ltd_V1.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Brightwater_Transport_Ltd_V2.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Brightwater_Transport_Ltd_V3_BAFO.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/ClearPath_Systems_Ltd_V1.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/ClearPath_Systems_Ltd_V2.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/ClearPath_Systems_Ltd_V3_BAFO.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Cobalt_Operations_Ltd_V1.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Cobalt_Operations_Ltd_V2.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Cobalt_Operations_Ltd_V3_BAFO.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Ironbridge_Managed_IT_Ltd_V1_WINNER.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Ironbridge_Managed_IT_Ltd_V2_WINNER.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Ironbridge_Managed_IT_Ltd_V3_BAFO_WINNER.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Kestrel_Logistics_Group_Ltd_V1_WINNER.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Kestrel_Logistics_Group_Ltd_V2_WINNER.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Kestrel_Logistics_Group_Ltd_V3_BAFO_WINNER.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Lattice_Systems_Ltd_V1.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Lattice_Systems_Ltd_V2.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Lattice_Systems_Ltd_V3_BAFO.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Meridia_Cloud_Platforms_Ltd_V1_WINNER.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Meridia_Cloud_Platforms_Ltd_V2_WINNER.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Meridia_Cloud_Platforms_Ltd_V3_BAFO_WINNER.xlsx": {
+    "agreement": "declared_only",
+    "candidates": [
+      "doctype.quote",
+      "doctype.contract_unspecified"
+    ],
+    "evidence_concept": null,
+    "status": "unresolved"
+  },
+  "documents/quote/NexusFlow_Platform_Ltd_V1.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/NexusFlow_Platform_Ltd_V2.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/NexusFlow_Platform_Ltd_V3_BAFO.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Northsea_Haulage_Partners_LLP_V1.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Northsea_Haulage_Partners_LLP_V2.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Northsea_Haulage_Partners_LLP_V3_BAFO.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Orbis_Platform_Solutions_Ltd_V1.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/Orbis_Platform_Solutions_Ltd_V2.xlsx": {
+    "agreement": "declared_only",
+    "candidates": [
+      "doctype.quote",
+      "doctype.schedule"
+    ],
+    "evidence_concept": null,
+    "status": "unresolved"
+  },
+  "documents/quote/Orbis_Platform_Solutions_Ltd_V3_BAFO_WINNER.xlsx": {
+    "agreement": "declared_only",
+    "candidates": [
+      "doctype.quote",
+      "doctype.contract_unspecified"
+    ],
+    "evidence_concept": null,
+    "status": "unresolved"
+  },
+  "documents/quote/TEST-QUOTE-Q-90011.pdf": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  },
+  "documents/quote/UITEST_OrderForm_205008.xlsx": {
+    "agreement": "agreed",
+    "candidates": [
+      "doctype.quote"
+    ],
+    "evidence_concept": "doctype.quote",
+    "status": "matched"
+  }
+}
