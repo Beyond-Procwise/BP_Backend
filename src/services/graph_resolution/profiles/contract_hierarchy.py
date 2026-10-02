@@ -20,17 +20,24 @@ MEASURED HEADROOM (test fixtures, 2026-10-02):
 
     F      decision             case
     96.95  auto_link            everything present
+    75.59  review               no reference, dates and titles present
+    75.59  review               DANGLING reference (_ref_resolves False or absent)
+                                with everything else present: same as none
     69.32  review               ref + supplier + structure, no dates, no titles
                                 (the realistic floor: Task 10 narrows candidates
                                 by supplier and structure first)
-    75.59  review               no ref, dates and titles present
-    30.82  block_or_exception   supplier + structure only
-    30.82  block_or_exception   synthetic reference-only (cannot arise via Task 10)
+    45.00  weak_relation        a reference naming a DIFFERENT REAL contract
+                                (_ref_resolves True): a genuine CONFLICT
+    30.82  block_or_exception   ref + structure only (no supplier, dates, titles)
+    30.82  block_or_exception   supplier + structure only, no reference
+     6.91  block_or_exception   reference ONLY (structure stripped from both rows;
+                                cannot arise via Task 10)
 
 The margin between the realistic floor (69.32) and Task 10's MIN_SCORE of 65 is
 only 4.32 points. A reference with zero corroboration is deliberately not
-proposed: 0 of 1,561 references resolve. test_an_exact_reference_alone_does_not_
-reach_the_auto_band and ..._even_reach_review protect this.
+proposed: 0 of 1,561 references resolve. The reference+structure case is what
+test_an_exact_reference_alone_does_not_reach_the_auto_band and ..._even_reach_
+review pin; test_a_genuinely_reference_only_match_scores_lowest pins the last row.
 
 THE CAP. The profile is in edge_writer.UNCALIBRATED_PROFILES, so
 edge_writer.cypher_for refuses an edge at the auto_link band (F >= 92). It does
@@ -61,7 +68,8 @@ VERSION = "1.0.0"
 _REFERENCE_FIELDS = ("framework_ref", "parent_agreement_ref", "parent_contract_id")
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
-_PLACEHOLDERS = {"", "na", "n a", "tbc", "tbd", "none", "see"}
+_PLACEHOLDERS = {"", "na", "tbc", "tbd", "tba", "none", "see", "nil", "null",
+                 "nan", "unknown", "notapplicable"}
 
 
 def _norm_ref(value) -> str:
@@ -106,9 +114,25 @@ def expected_parent_type(
 def _cmp_reference(src, tgt) -> tuple[float, str]:
     """Does the child name this parent's identifier?
 
-    MISSING when the child names no parent at all -- absence is not a
-    contradiction, and treating it as one would make every standalone document
-    look like a wrong parent.
+    Three answers, not two. OK when a claimed reference matches this candidate.
+    CONFLICT only when a claimed reference names a contract that REALLY EXISTS and
+    is not this one -- a genuine contradiction. MISSING when the child names no
+    parent, or names one that resolves to nothing at all.
+
+    That last case is why this is not a two-way test. 1,561 of 3,051 contracts in
+    this corpus carry a parent_contract_id that resolves to ZERO real contracts,
+    because the references were minted in another namespace. Reading those as
+    CONFLICT scored them 45.00 against a 65 gate -- worse than carrying no
+    reference at all (75.59) -- so the documents most in need of a parent were the
+    only ones guaranteed never to get a proposal.
+
+    ``src["_ref_resolves"]`` is set by the caller, which knows the corpus:
+      True   at least one claimed reference names a known contract -> non-match is
+             a real CONFLICT
+      False  no claimed reference names any known contract -> dangling -> MISSING
+      absent default to MISSING on a non-match. On this corpus a non-matching
+             reference is overwhelmingly dangling, so the conservative reading is
+             the default and the sharper one is opt-in.
     """
     parent_id = _norm_ref(tgt.get("contract_id"))
     if not parent_id:
@@ -121,7 +145,9 @@ def _cmp_reference(src, tgt) -> tuple[float, str]:
         return 0.5, "MISSING"
     if parent_id in claimed:
         return 1.0, "OK"
-    return 0.0, "CONFLICT"
+    if src.get("_ref_resolves") is True:
+        return 0.0, "CONFLICT"
+    return 0.5, "MISSING"
 
 
 def _cmp_expected_structure(src, tgt) -> tuple[float, str]:
@@ -164,7 +190,9 @@ def _cmp_term_containment(src, tgt) -> tuple[float, str]:
 
 _STOPWORDS = {"the", "and", "of", "for", "agreement", "contract", "services",
               "service", "statement", "work", "master", "framework", "order",
-              "form", "schedule", "ltd", "limited", "plc"}
+              "form", "schedule", "ltd", "limited", "plc",
+              "terms", "conditions", "general", "supply", "call", "off",
+              "sow", "msa", "addendum", "amendment"}
 
 
 def _cmp_title_overlap(src, tgt) -> tuple[float, str]:
@@ -196,12 +224,15 @@ _le.register_signal("csh_term", lambda s, t, sl, tl: _cmp_term_containment(s, t)
 _le.register_signal("csh_title", lambda s, t, sl, tl: _cmp_title_overlap(s, t))
 
 SIGNALS = [
-    # The reference is tier 1 and weight 5 -- the heaviest available -- and its
-    # conflict_cap of 0.45 is what stops it deciding alone. See the module
-    # docstring: 1,561 references resolve to nothing.
+    # The reference is tier 1 and weight 5, level with expected_structure and
+    # supplier. The cap (0.45) applies only on CONFLICT, so a MATCHING reference
+    # is never capped: what keeps it from deciding alone is its weight plus the
+    # other signals (raising the weight breaks the guard tests, raising the cap
+    # does not). See the module docstring: 1,561 references resolve to nothing.
     {"id": "declared_reference", "cluster": "reference", "tier": 1, "weight": 5,
      "appl": 1.0, "cap": 0.45, "kind": "csh_reference",
-     "reads": ["framework_ref", "parent_agreement_ref", "parent_contract_id"]},
+     "reads": ["framework_ref", "parent_agreement_ref", "parent_contract_id",
+               "_ref_resolves"]},
     {"id": "expected_structure", "cluster": "structure", "tier": 1, "weight": 5,
      "appl": 1.0, "cap": 0.45, "kind": "csh_structure",
      "reads": ["resolved_doc_type"]},

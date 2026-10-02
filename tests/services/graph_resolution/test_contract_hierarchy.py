@@ -73,12 +73,20 @@ def test_the_profile_is_capped_at_the_auto_link_band():
     """
     from src.services.graph_resolution.edge_writer import UNCALIBRATED_PROFILES
     assert ch.PROFILE in UNCALIBRATED_PROFILES
-    # ... and what that membership actually refuses, verbatim from the guard.
-    import inspect
-    from src.services.graph_resolution import edge_writer
-    assert 'edge.band == "auto_link"' in inspect.getsource(edge_writer.cypher_for), (
-        "the guard no longer keys on the auto_link band; this profile's cap may have moved"
-    )
+    # ... and what that membership actually refuses, behaviourally.
+    from src.services.graph_resolution.edge_writer import DerivedEdge, cypher_for
+
+    def edge(band):
+        return DerivedEdge(
+            rel_type="CHILD_OF", from_label="Contract", from_key="contract_id",
+            from_value="SOW-001", to_label="Contract", to_key="contract_id",
+            to_value="MSA-4417", F=95.0, band=band, P_raw=0.9, L_evidence=0.0,
+            profile=ch.PROFILE, profile_version=ch.VERSION, signals=None,
+            observations="")
+
+    with pytest.raises(ValueError):
+        cypher_for(edge("auto_link"))
+    cypher_for(edge("auto_link_with_warning"))   # the documented limit: not refused
 
 
 def test_the_expected_parent_of_a_sow_is_a_master_agreement():
@@ -100,7 +108,9 @@ def test_a_full_match_scores_in_a_band_a_person_sees():
 
 
 def test_an_exact_reference_alone_does_not_reach_the_auto_band():
-    """THE rule. Everything else missing, the reference matching exactly.
+    """THE rule. Reference matching exactly, plus the structure (both fixtures
+    keep resolved_doc_type, so expected_structure is OK); supplier, dates and
+    titles missing.
 
     1,561 existing parent pointers resolve to 0 real contracts. A reference that
     matches is evidence; on its own it must still put a person in the loop.
@@ -117,10 +127,11 @@ def test_an_exact_reference_alone_does_not_reach_the_auto_band():
 def test_an_exact_reference_alone_does_not_even_reach_review():
     """Tighter than the auto-band test above, which a weight of 20 slips past.
 
-    Measured: reference-only F=30.82 (block_or_exception). Raising the weight
+    Measured: reference + structure (no supplier/dates/titles) F=30.82
+    (block_or_exception). Raising the weight
     to 20 gives F=85.6 (auto_link_with_warning) and the auto-band test stays
     green, so the reference would already be deciding in all but name. A
-    reference with nothing corroborating it stays below the review band (65).
+    reference with little corroborating it stays below the review band (65).
     """
     n = dict(supplier_id=None, contract_title=None,
              contract_start_date=None, contract_end_date=None)
@@ -184,7 +195,7 @@ def test_any_of_the_three_reference_fields_can_carry_the_pointer():
 
 
 def test_a_reference_naming_a_different_contract_conflicts():
-    r = ch.score(_sow(parent_agreement_ref="MSA-9999"), _msa())
+    r = ch.score(_sow(parent_agreement_ref="MSA-9999", _ref_resolves=True), _msa())
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["declared_reference"] == "CONFLICT", detail
 
@@ -204,7 +215,78 @@ def test_a_shared_generic_word_is_not_title_evidence():
     assert detail["title_overlap"] != "OK", detail
 
 
+def test_distinctive_title_overlap_is_ok():
+    """Positive counterpart: shared distinctive words ARE evidence."""
+    r = ch.score(_sow(contract_title="SOW Data Migration"),
+                 _msa(contract_title="Master Agreement Data Migration"))
+    detail = {d["id"]: d["status"] for d in r["signals"]}
+    assert detail["title_overlap"] == "OK", detail
+
+
+def test_shared_contract_boilerplate_is_not_title_evidence():
+    r = ch.score(_sow(contract_title="Call Off Terms and Conditions"),
+                 _msa(contract_title="Framework Terms and Conditions"))
+    detail = {d["id"]: d["status"] for d in r["signals"]}
+    assert detail["title_overlap"] != "OK", detail
+
+
 def test_observations_are_reported_for_every_signal():
     """composition.remap_clusters needs one observation set per signal id."""
     obs = ch.observations_for(_sow(), _msa())
     assert set(obs) == {s["id"] for s in ch.SIGNALS}
+
+
+def _detail(r):
+    return {d["id"]: d["status"] for d in r["signals"]}
+
+
+def test_a_genuinely_reference_only_match_scores_lowest():
+    n = dict(supplier_id=None, contract_title=None, contract_start_date=None,
+             contract_end_date=None, resolved_doc_type=None)
+    r = ch.score(_sow(**n), _msa(**n))
+    assert r["F"] < 30.82 and r["decision"] == "block_or_exception", r
+
+
+def test_a_dangling_reference_is_missing_and_still_proposable():
+    child = _sow(parent_agreement_ref=None, parent_contract_id="C1543",
+                 _ref_resolves=False)
+    r = ch.score(child, _msa())
+    assert _detail(r)["declared_reference"] == "MISSING", _detail(r)
+    assert r["F"] >= 65, r
+
+
+def test_a_reference_to_a_different_real_contract_conflicts():
+    child = _sow(parent_agreement_ref="MSA-9999", _ref_resolves=True)
+    assert _detail(ch.score(child, _msa()))["declared_reference"] == "CONFLICT"
+
+
+def test_an_absent_resolves_flag_reads_a_non_match_as_missing():
+    child = _sow(parent_agreement_ref="MSA-9999")
+    assert _detail(ch.score(child, _msa()))["declared_reference"] == "MISSING"
+
+
+def test_no_reference_is_missing():
+    child = _sow(parent_agreement_ref=None)
+    assert _detail(ch.score(child, _msa()))["declared_reference"] == "MISSING"
+
+
+def test_a_missing_expected_structure_is_missing_not_conflict():
+    r = ch.score(_sow(resolved_doc_type=None), _msa())
+    assert _detail(r)["expected_structure"] == "MISSING"
+
+
+def test_a_missing_supplier_is_missing_not_conflict():
+    r = ch.score(_sow(supplier_id=None), _msa())
+    assert _detail(r)["supplier"] == "MISSING"
+
+
+def test_a_missing_title_is_missing_not_conflict():
+    r = ch.score(_sow(contract_title=None), _msa())
+    assert _detail(r)["title_overlap"] == "MISSING"
+
+
+@pytest.mark.parametrize("ph", ["n/a", "N/A", "TBC", "tbd", "TBA", "none", "see",
+                                "nil", "null", "NaN", "unknown", "Not Applicable", " "])
+def test_a_placeholder_is_no_reference(ph):
+    child = _sow(parent_agreement_ref=ph)
+    assert _detail(ch.score(child, _msa(contract_id=ph)))["declared_reference"] == "MISSING"
