@@ -7,12 +7,20 @@ values — a reviewer can be shown the exact words.
 
 Three things this module refuses to do:
 
-  * It never refines the declared type. Declared 'contract', page says
-    'framework agreement' -> both are recorded and agreement='disagreed'. A
-    human confirms the refinement from the review queue. declared_linkage.py
-    already holds the principle: a human's decision outranks an inference.
-  * It never touches routing. Task 5's gate already decided which physical
-    pipeline runs, from the declared category. Nothing here can change that.
+  * It never APPLIES a refinement of the declared type. The declared type
+    stands and is recorded as declared; the page is only a second reading. A
+    specific contract structure read under the generic
+    'doctype.contract_unspecified' declaration (declared 'contract', page says
+    'framework agreement') is recorded as agreement='refined' and raises no
+    review item: the zone named a contract, the page said which. That is
+    bounded twice -- only the generic declaration can be refined, and only by
+    a structure whose pipeline_doc_type is 'contract' (see _is_refinement).
+    Every other mismatch is still agreement='disagreed' and still raises.
+    declared_linkage.py already holds the principle: a human's decision
+    outranks an inference.
+  * It never touches routing. routing.pipeline_for_category already decided
+    which physical pipeline runs, from the declared category. Nothing here can
+    change that.
   * It never breaks a tie. Two concepts with equal evidence give
     status='unresolved' and both candidates.
 
@@ -265,6 +273,8 @@ def _is_refinement(declared: str, evidence: str, vocab: "Vocabulary") -> bool:
         with pipeline_doc_type NULL is "recognised, but nothing ingests it",
         which is not a kind of contract.
     """
+    # `evidence == declared` is belt-and-braces: the one caller pre-checks
+    # equality, but a future caller that does not must not read it as a refinement.
     if declared != "doctype.contract_unspecified" or evidence == declared:
         return False
     dt = vocab.document_types.get(evidence)

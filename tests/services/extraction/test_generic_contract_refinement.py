@@ -124,7 +124,9 @@ def test_one_specific_structure_declared_against_another_still_disagrees():
     assert len(type_resolution_discrepancies(r)) == 1
 
 
-def test_a_generic_contract_reading_as_generic_is_agreed_not_refined():
+def test_a_generic_contract_reading_as_generic_is_agreed():
+    """Regression pin, not a guard on the refinement bounds: it passed before
+    refinement existed and would not notice refinement being widened."""
     r = resolve_document_type(
         declared_concept="doctype.contract_unspecified",
         full_text="CONTRACT\n\nnumbered clauses and a signature block.\n", vocabulary=V,
@@ -150,3 +152,35 @@ def test_an_unresolved_tie_under_a_generic_declaration_still_reaches_a_human():
     )
     assert r.status == "unresolved", r
     assert len(type_resolution_discrepancies(r)) == 1
+
+
+def test_exactly_the_contract_family_structures_can_refine():
+    """The data behind the rule, not just the rule.
+
+    _is_refinement bounds a SILENCE by pipeline_doc_type == 'contract'. A
+    structure wrongly given that pipeline would have its findings silenced
+    without anything noticing, so the set is pinned here. Adding a
+    contract-family structure widens a silence and must be a deliberate edit
+    to this list.
+    """
+    from src.services.concepts.vocabulary import SEED_VOCABULARY as SV
+    can_refine = {
+        code for code, dt in SV.document_types.items()
+        if dt.pipeline_doc_type == "contract" and code != "doctype.contract_unspecified"
+    }
+    assert can_refine == {
+        "doctype.addendum", "doctype.call_off_contract", "doctype.ccn",
+        "doctype.consulting_agreement", "doctype.framework_agreement",
+        "doctype.master_agreement", "doctype.nda", "doctype.order_form",
+        "doctype.schedule", "doctype.service_agreement", "doctype.sla",
+        "doctype.sow", "doctype.termination_notice", "doctype.variation",
+    }
+
+
+def test_no_transaction_or_notice_structure_can_refine():
+    """Separate from the set pin so the dangerous direction fails on its own
+    line: a single test would stop at the set comparison and never reach this."""
+    from src.services.concepts.vocabulary import SEED_VOCABULARY as SV
+    for code in ("doctype.invoice", "doctype.order", "doctype.quote",
+                 "doctype.sales_order", "doctype.notice_general"):
+        assert SV.document_types[code].pipeline_doc_type != "contract", code
