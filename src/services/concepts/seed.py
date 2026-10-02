@@ -101,10 +101,11 @@ _DOCUMENT_TYPE_CONCEPTS = (
      ("doctype.call_off_contract", "doctype.order")),
     ("doctype.call_off_contract",
      "The contract formed when work is ordered under a framework; incorporates the framework's terms and sets their precedence.",
-     ("doctype.order", "doctype.sow", "doctype.framework_agreement")),
+     ("doctype.order", "doctype.sow", "doctype.framework_agreement",
+      "doctype.order_form")),
     ("doctype.order",
      "Instructs a supplier to deliver a stated quantity at a stated price.",
-     ("doctype.call_off_contract",)),
+     ("doctype.call_off_contract", "doctype.sales_order")),
     ("doctype.invoice", "Demands payment for goods or services supplied.", ()),
     ("doctype.quote", "Offers a price before any order exists.", ()),
     ("doctype.variation",
@@ -143,6 +144,12 @@ _DOCUMENT_TYPE_CONCEPTS = (
     ("doctype.policy_document",
      "Observed as a contract_type value; what it denotes here is not yet established.",
      ()),
+    ("doctype.order_form",
+     "Orders specific goods or services on the terms of an agreement it names.",
+     ("doctype.call_off_contract", "doctype.quote", "doctype.order")),
+    ("doctype.sales_order",
+     "The supplier's own confirmation of an order it has received.",
+     ("doctype.order", "doctype.invoice")),
 )
 
 
@@ -323,6 +330,43 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
             ("policy",),
             (), (), None,
             status="proposed",
+        ),
+        DocumentType(
+            # NOT an alias of doctype.call_off_contract -- that alias titled every
+            # quote-template workbook and gave 12 false disagreements out of 12
+            # uses. As its own structure with requires_parent_evidence it claims
+            # only a document that names the agreement it sits under, which is the
+            # build spec's own distinction: "'order form' means one thing under a
+            # framework and another on its own".
+            "doctype.order_form", "role.master", "doctype.framework_agreement",
+            "exec.bilateral",
+            ("order form",),
+            ({"field": "framework_ref", "pattern": None,
+              "parent_type": "doctype.framework_agreement"},),
+            ("lists incorporated documents", "states an order of precedence"),
+            "contract",
+            requires_parent_evidence=True,
+            # NOT bare "incorporated": phrases match whole-word, and it would
+            # still match the supplier name "Acme Incorporated". See the
+            # migration's comment for the measurement.
+            parent_evidence_phrases=(
+                "framework", "order of precedence",
+                "incorporated into", "incorporated by reference", "call off",
+                "framework agreement no", "framework agreement number",
+                "framework agreement ref", "master agreement no",
+                "master agreement number", "master agreement ref",
+                "parent agreement no", "parent contract no", "principal agreement no",
+            ),
+        ),
+        DocumentType(
+            # The supplier's mirror of a purchase order, so it extracts with the
+            # PO schema (Nick's ruling, 2026-10-02): lines, quantities, a total.
+            "doctype.sales_order", "role.transaction", "doctype.order",
+            "exec.unilateral",
+            ("sales order", "sales order acknowledgement", "order acknowledgement"),
+            ({"field": "po_id", "pattern": None, "parent_type": "doctype.order"},),
+            ("line items with quantities and a total",),
+            "purchase_order",
         ),
     )
 }
