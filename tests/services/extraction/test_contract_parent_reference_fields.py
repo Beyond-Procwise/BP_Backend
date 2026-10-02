@@ -148,3 +148,35 @@ def test_prose_mentioning_agreements_names_no_parent(registry):
     )
     assert _value(text, "framework_ref") is None
     assert _value(text, "parent_agreement_ref") is None
+
+
+# --- the optional "no" connector must not eat the front of a reference ---------
+#
+# In the connector-less prose patterns the optional `(?:number|no\.?|#)?` token
+# used to swallow the leading "NO" of a real reference: "NOVA-123" was stored as
+# "VA-123". A clipped value is worse than a missing one downstream -- a wrong
+# reference scores CONFLICT, an absent one MISSING.
+
+@pytest.mark.parametrize("field,template", [
+    ("framework_ref",        "ORDER FORM\n\nmade under Framework Agreement {ref}\n"),
+    ("parent_agreement_ref", "STATEMENT OF WORK\n\nissued under Master Agreement {ref}\n"),
+    ("parent_contract_id",   "VARIATION\n\nThis deed amends Contract {ref}\n"),
+])
+@pytest.mark.parametrize("ref", ["NOVA-123", "NORTH-99"])
+def test_a_reference_beginning_no_is_extracted_whole(field, template, ref):
+    assert _value(template.format(ref=ref), field) == ref
+
+
+@pytest.mark.parametrize("field,template", [
+    ("framework_ref",        "ORDER FORM\n\nmade under Framework Agreement {c} MSA-4417\n"),
+    ("parent_agreement_ref", "STATEMENT OF WORK\n\nissued under Master Agreement {c} MSA-4417\n"),
+    ("parent_contract_id",   "VARIATION\n\nThis deed amends Contract {c} MSA-4417\n"),
+])
+@pytest.mark.parametrize("connector", ["No:", "No.", "No", "Number:", "#"])
+def test_an_explicit_connector_still_works(field, template, connector):
+    assert _value(template.format(c=connector), field) == "MSA-4417"
+
+
+def test_a_hash_directly_before_the_reference_still_works():
+    text = "STATEMENT OF WORK\n\nissued under Master Agreement #MSA-4417\n"
+    assert _value(text, "parent_agreement_ref") == "MSA-4417"

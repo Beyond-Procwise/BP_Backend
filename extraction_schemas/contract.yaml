@@ -373,7 +373,7 @@ fields:
       # The connector stays optional here — "amends Contract MSA-1234" is prose
       # and carries no colon. The value regex does the rejecting instead.
       - name: amends_contract
-        anchor: '(?i)\b(?:amends|amendment\s+to|supplements|varies)\s+(?:the\s+)?(?:contract|agreement)\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        anchor: '(?i)\b(?:amends|amendment\s+to|supplements|varies)\s+(?:the\s+)?(?:contract|agreement)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.84
@@ -405,7 +405,7 @@ fields:
       # "made under Framework Agreement RM6187" is prose and carries no colon,
       # so the connector stays optional and the value regex does the rejecting.
       - name: made_under_framework
-        anchor: '(?i)\b(?:made|issued|called\s+off|placed)\s+under\s+(?:the\s+)?framework\s+(?:agreement|contract)\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        anchor: '(?i)\b(?:made|issued|called\s+off|placed)\s+under\s+(?:the\s+)?framework\s+(?:agreement|contract)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.84
@@ -436,7 +436,7 @@ fields:
         max_span_after_anchor_chars: 60
         prior_confidence: 0.90
       - name: issued_under_agreement
-        anchor: '(?i)\b(?:issued|made|entered\s+into|executed)\s+(?:under|pursuant\s+to)\s+(?:the\s+)?(?:master\s+(?:services?\s+)?)?agreement\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        anchor: '(?i)\b(?:issued|made|entered\s+into|executed)\s+(?:under|pursuant\s+to)\s+(?:the\s+)?(?:master\s+(?:services?\s+)?)?agreement\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.84
