@@ -116,3 +116,35 @@ def test_no_quote_workbook_became_a_disagreement(vocab):
     )
     disagreed = {s: o for s, o in live.items() if o["agreement"] == "disagreed"}
     assert not disagreed, f"disagreements appeared: {sorted(disagreed)}"
+
+
+def test_a_supplier_named_incorporated_is_not_parent_evidence(vocab):
+    """The one measured decision of this task, pinned against the SEEDED data.
+
+    Bare "incorporated" matches a company name whole-word, so it would let any
+    quote workbook titled ORDER FORM from an "... Incorporated" supplier claim the
+    page -- the 13-workbook defect through a side door. Task 3 proves the rule on
+    a hand-built phrase list; this proves the list we actually seeded.
+    """
+    page = "ORDER FORM\n\nAcme Incorporated\nQuote Ref Q-1234   Valid Until 2026-12-01\n"
+    r = resolve_document_type(declared_concept="doctype.quote", full_text=page,
+                              vocabulary=vocab)
+    assert r.evidence_concept != "doctype.order_form", r
+    assert r.agreement != "disagreed", r
+
+
+def test_the_seeded_phrases_do_not_include_bare_incorporated(vocab):
+    phrases = vocab.document_types["doctype.order_form"].parent_evidence_phrases
+    assert "incorporated" not in phrases, (
+        "bare 'incorporated' matches a supplier name — use 'incorporated into' "
+        "and 'incorporated by reference'; see specs/2026-10-02-contract-structures-design.md §4"
+    )
+    assert "incorporated into" in phrases
+    assert "incorporated by reference" in phrases
+
+
+def test_an_order_form_naming_its_framework_resolves_through_the_live_vocabulary(vocab):
+    """Positive path: over-tightening the seeded list must break something visible."""
+    page = "ORDER FORM\n\nMade under Framework Agreement FW-2024-0012\nSupplier: Acme Ltd\n"
+    r = resolve_document_type(declared_concept=None, full_text=page, vocabulary=vocab)
+    assert r.evidence_concept == "doctype.order_form", r

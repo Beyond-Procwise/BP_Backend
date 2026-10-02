@@ -1139,8 +1139,11 @@ def test_order_form_is_not_a_call_off_alias_and_quote_workbooks_stay_agreed():
     after. See specs/2026-10-01-document-relationship-layer-rulings.md.
 
     That half of the ruling stands. The other half -- "re-adding it needs a way to
-    tell a quote template's 'Order Form' heading from a real call-off's" -- was
-    superseded by evidence on 2026-10-02, not ignored. 'order form' is now a
+    tell a quote template's 'Order Form' heading from a real call-off's, which
+    needs the golden-set documents" -- was superseded by evidence on 2026-10-02,
+    not ignored. The condition was met by a DIFFERENT means than the golden-set
+    documents it asked for: the parent-evidence rule, checked against the 53
+    documents with stored parsed text. 'order form' is now a
     structure in its own right, doctype.order_form. What makes that safe is
     requires_parent_evidence: it claims a page only when the page names its parent
     agreement. See specs/2026-10-02-contract-structures-design.md section 4.
@@ -1148,6 +1151,9 @@ def test_order_form_is_not_a_call_off_alias_and_quote_workbooks_stay_agreed():
     The old prediction (re-add it and the 12 false disagreements come back) now
     holds only if that flag is cleared. Measured: clearing it flips exactly 13 of
     the 53 stored documents to 'disagreed'.
+    ("12 of 50" above and "13 of 53" here are different corpus snapshots, not an
+    inconsistency.) The first assertion below changed from == () to
+    == ("doctype.order_form",); the other assertions are unchanged.
 
     The call-off protection is also asserted by
     test_order_form_is_not_an_alias_of_the_call_off_contract in
