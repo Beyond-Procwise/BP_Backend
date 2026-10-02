@@ -384,6 +384,69 @@ fields:
       ner_type_check: "none"
     invariants: []
 
+  # The framework this document is called off under. proc.bp_document_type has
+  # declared this field as doctype.call_off_contract's pointer at its framework
+  # since the vocabulary was seeded; until now no field filled it.
+  - name: framework_ref
+    type: string
+    required: false
+    db_column: framework_ref
+    canonical_labels:
+      - "Framework Agreement"
+      - "Framework Contract"
+      - "Framework Reference"
+      - "Framework No"
+    patterns:
+      - name: anchored_framework_ref
+        anchor: '(?i)\bframework\s+(?:agreement|contract)\s*(?:number|no\.?|reference|ref\.?|#)?\s*[:\-]\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      # "made under Framework Agreement RM6187" is prose and carries no colon,
+      # so the connector stays optional and the value regex does the rejecting.
+      - name: made_under_framework
+        anchor: '(?i)\b(?:made|issued|called\s+off|placed)\s+under\s+(?:the\s+)?framework\s+(?:agreement|contract)\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.84
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  # The agreement this document sits under WITHOUT amending it -- a SOW under its
+  # MSA. Deliberately separate from parent_contract_id, which anchors on
+  # amends/supplements/varies: "sits under" and "changes" are different facts,
+  # and the hierarchy maths needs to tell a child from an amendment.
+  - name: parent_agreement_ref
+    type: string
+    required: false
+    db_column: parent_agreement_ref
+    canonical_labels:
+      - "Master Agreement"
+      - "Master Services Agreement"
+      - "Under Agreement"
+      - "Pursuant To"
+    patterns:
+      - name: anchored_parent_agreement
+        anchor: '(?i)\bmaster\s+(?:services?\s+)?agreement\s*(?:number|no\.?|reference|ref\.?|#)?\s*[:\-]\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.90
+      - name: issued_under_agreement
+        anchor: '(?i)\b(?:issued|made|entered\s+into|executed)\s+(?:under|pursuant\s+to)\s+(?:the\s+)?(?:master\s+(?:services?\s+)?)?agreement\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.84
+    confidence_threshold: 0.75
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
   - name: cost_centre_id
     type: string
     required: false
