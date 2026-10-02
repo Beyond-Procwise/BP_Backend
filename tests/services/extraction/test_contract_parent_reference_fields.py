@@ -79,14 +79,35 @@ def test_a_parent_agreement_reference_is_read(registry):
     assert _value(text, "parent_agreement_ref") == "MSA-4417"
 
 
-def test_a_placeholder_is_refused_not_stored(registry):
-    """'N/A' is not a reference. Storing it would make the maths link on a word.
+@pytest.mark.parametrize("placeholder", ["N/A", "NA", "TBC", "TBD", "NONE", "SEE"])
+@pytest.mark.parametrize("field,text_template", [
+    ("framework_ref",        "ORDER FORM\n\nFramework Agreement No: {ph}\n"),
+    ("framework_ref",        "ORDER FORM\n\nmade under Framework Agreement {ph}\n"),
+    ("parent_agreement_ref", "STATEMENT OF WORK\n\nMaster Agreement: {ph}\n"),
+    ("parent_agreement_ref", "STATEMENT OF WORK\n\nissued under Master Agreement {ph}\n"),
+])
+def test_a_placeholder_is_refused_in_every_pattern(field, text_template, placeholder):
+    """'N/A' is not a reference, in any of the four patterns.
 
-    Matches the rejection branch parent_contract_id already carries.
+    Each of the four value regexes carries the same rejection branch. Testing one
+    of them left three unproven: removing the branch from the other three would
+    have kept the suite green. All 24 combinations were measured as rejected
+    before this test was written.
     """
-    for placeholder in ("N/A", "NA", "TBC", "TBD", "NONE"):
-        text = f"ORDER FORM\n\nFramework Agreement No: {placeholder}\n"
-        assert _value(text, "framework_ref") is None, placeholder
+    assert _value(text_template.format(ph=placeholder), field) is None
+
+
+def test_unqualified_under_agreement_is_read_but_prose_is_not(registry):
+    """issued_under_agreement's "master" qualifier is deliberately optional.
+
+    A SOW may name its parent as "Agreement MSA-4417" without the word "master",
+    so the pattern matches an agreement reference with no qualifier at all. What
+    stops ordinary prose matching is the value regex, which needs capitals or four
+    or more digits: "the agreement dated 1 March" yields nothing.
+    """
+    assert _value("SOW\n\nexecuted under Agreement ABC-123\n", "parent_agreement_ref") == "ABC-123"
+    assert _value("SOW\n\nentered into pursuant to the agreement X123\n", "parent_agreement_ref") == "X123"
+    assert _value("SOW\n\nissued under the agreement dated 1 March\n", "parent_agreement_ref") is None
 
 
 def test_a_sow_naming_its_msa_does_not_populate_parent_contract_id(registry):
@@ -112,24 +133,18 @@ def test_a_contract_naming_no_parent_reads_neither_field(registry):
     assert _value(text, "parent_agreement_ref") is None
 
 
-def test_the_colon_form_fills_both_reference_fields_known_overlap(registry):
-    """"Master Agreement: X" populates parent_contract_id AND parent_agreement_ref.
+def test_prose_mentioning_agreements_names_no_parent(registry):
+    """A page that talks about agreements and frameworks but cites no reference.
 
-    PRE-EXISTING, not introduced here: parent_contract_id's `anchored_parent_contract`
-    pattern has always matched "(parent|master|principal) (contract|agreement)" followed
-    by a colon, and this task's parent_agreement_ref matches the same text. The two
-    forms that carry distinct meaning stay clean -- "issued under Master Agreement X"
-    fills only parent_agreement_ref, and "amends Contract X" fills only
-    parent_contract_id -- so the distinction the two fields exist for survives.
-
-    Harmless for the hierarchy scoring in the next task, which reads all three
-    reference fields as equal candidates and only asks whether the parent's id is
-    among them; a duplicated value changes no score.
-
-    Narrowing parent_contract_id's anchor to fix this would change extraction on
-    live documents for a case that has behaved this way for months, so it is
-    recorded rather than changed.
+    Every anchor phrase appears here, with connectors, so a loosened anchor or
+    value regex would pick up an ordinary word.
     """
-    text = "STATEMENT OF WORK\n\nMaster Agreement: MSA-4417\n"
-    assert _value(text, "parent_agreement_ref") == "MSA-4417"
-    assert _value(text, "parent_contract_id") == "MSA-4417"
+    text = (
+        "MASTER AGREEMENT\n\n"
+        "This Master Agreement: the parties agree that each Statement of Work is made\n"
+        "under the agreement and is issued under this agreement. The Framework Agreement:\n"
+        "see the terms below. Pursuant to the agreement, the supplier shall perform.\n"
+        "Nothing in this Framework Agreement - or in any agreement - limits liability.\n"
+    )
+    assert _value(text, "framework_ref") is None
+    assert _value(text, "parent_agreement_ref") is None
