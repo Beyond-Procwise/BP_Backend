@@ -28,6 +28,7 @@ from typing import Dict, FrozenSet
 ACTIONS: Dict[str, str] = {
     # --- reading ---------------------------------------------------------
     "supplier.read": "read",
+    "style_pack.read": "read",
     "contract.read": "read",
     "quote.read": "read",
     # Internal cost and margin. A read, but restricted by required_role in
@@ -94,10 +95,16 @@ ACTIONS: Dict[str, str] = {
     # runs a workflow -- and gates on workflow.run, which already exists.
     "playbook.write": "configure",
     "playbook.approve": "configure",
+    # A style pack measured from an uploaded PowerPoint. Importing one is `write`: it lands as a
+    # candidate that no report can use. APPROVING one is `configure`, the same class as a
+    # playbook's approval, because it changes what every report built from that pack looks like.
+    "style_pack.write": "write",
+    "style_pack.approve": "configure",
     "model.train": "configure",
     "mailbox.bind": "configure",
     # --- delegating ------------------------------------------------------
     "agent.create": "delegate",
+    "agent.update": "delegate",
     "agent.delete": "delegate",
     "agent.run": "delegate",
     "workflow.save": "delegate",

@@ -77,6 +77,7 @@ from api.routers import catalog as catalog_router
 from api.routers import sales as sales_router
 from api.routers import reports as reports_router
 from api.routers import triage as triage_router
+from api.routers import atb as atb_router
 from api.routers import i18n as i18n_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
@@ -599,6 +600,7 @@ _AUTHENTICATED_ROUTERS = [
     reports_router.router,
     triage_router.router,
     i18n_router.router,
+    atb_router.router,
 ]
 
 for _router in _AUTHENTICATED_ROUTERS:

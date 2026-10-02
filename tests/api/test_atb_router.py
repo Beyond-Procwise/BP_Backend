@@ -1,0 +1,162 @@
+"""The ATB import API: what it gates, what it refuses, and what it does not leak."""
+import contextlib
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from api.endpoint_gate import NotPermitted
+from api.routers import atb as ar
+from src.services.atb.pptx_import.import_pack import ImportRefused, ImportResult
+
+PACK = {'key': 'k', 'name': 'K.pptx', 'format': {'kind': 'deck', 'width_in': 13.333,
+                                                 'height_in': 7.5},
+        'writing': {'locale': 'en-US', 'locale_contested': True, 'locale_suggested': 'en-GB'},
+        'colours': {'ink': '#172033'}}
+PACK_ROW = {'pack_id': 'p-1', 'pack_key': 'k', 'version': 1, 'source_file': 'K.pptx',
+            'slide_count': 85, 'status': 'candidate', 'created_at': '2026-10-02T00:00:00Z',
+            'created_by': 'sub-1', 'approved_by': None, 'format': PACK['format'],
+            'tokens': PACK, 'evidence': {'values': {}}}
+LAYOUT_ROW = {'layout_id': 'l-1', 'pack_id': 'p-1', 'layout_key': 'imported_abc1234567',
+              'proposed_name': 'full-width table', 'name': None, 'status': 'candidate',
+              'slide_refs': [4, 5], 'regions': [], 'slots': {}, 'example_fill': {},
+              'example_source': {'file': 'K.pptx', 'slide': 4}, 'problems': []}
+
+
+class _P:
+    subject = 'sub-1'
+
+
+@pytest.fixture
+def client(monkeypatch):
+    gates = []
+    monkeypatch.setattr(ar, 'gate', lambda action, *a, **k: gates.append(action))
+    monkeypatch.setattr(ar, 'get_conn', lambda: contextlib.nullcontext('CONN'))
+    monkeypatch.setattr(ar.store, 'packs', lambda conn, **k: [PACK_ROW])
+    monkeypatch.setattr(ar.store, 'pack', lambda conn, pack_id: PACK_ROW if pack_id == 'p-1' else None)
+    monkeypatch.setattr(ar.store, 'layouts', lambda conn, **k: [LAYOUT_ROW])
+    monkeypatch.setattr(ar.store, 'rename_layout', lambda *a, **k: None)
+    monkeypatch.setattr(ar.store, 'set_layout_status', lambda *a, **k: None)
+    monkeypatch.setattr(ar.store, 'set_pack_status', lambda *a, **k: None)
+    monkeypatch.setattr(ar.store, 'define_rating_scale', lambda *a, **k: None)
+    app = FastAPI()
+    app.include_router(ar.router)
+    app.dependency_overrides[ar.require_user] = lambda: _P()
+    client = TestClient(app)
+    client.gates = gates
+    return client
+
+
+def _upload(client, name='pack.pptx', body=b'PK\x03\x04 not really'):
+    return client.post('/atb/import',
+                       files={'file': (name, body, 'application/vnd.openxmlformats-officedocument'
+                                                   '.presentationml.presentation')})
+
+
+def test_an_import_is_gated_as_a_write(client, monkeypatch):
+    monkeypatch.setattr(ar, 'import_pack', lambda *a, **k: ImportResult(
+        pack_key='k', version=1, pack=PACK, layouts=[], single_use=[], evidence={},
+        pack_id='p-1'))
+    assert _upload(client).status_code == 200
+    assert client.gates == ['style_pack.write']
+
+
+def test_an_import_refusal_is_a_400_naming_the_reason(client, monkeypatch):
+    def refuse(*a, **k):
+        raise ImportRefused('the file could not be opened as a presentation: bad zip')
+    monkeypatch.setattr(ar, 'import_pack', refuse)
+    response = _upload(client)
+    assert response.status_code == 400
+    assert 'could not be opened' in response.json()['detail']
+
+
+def test_only_a_pptx_is_read_for_its_style(client):
+    assert _upload(client, name='pack.pdf').status_code == 415
+
+
+def test_the_import_reports_the_single_use_structures_and_the_contested_locale(client, monkeypatch):
+    monkeypatch.setattr(ar, 'import_pack', lambda *a, **k: ImportResult(
+        pack_key='k', version=2, pack=PACK,
+        layouts=[{'id': 'imported_1', 'proposed_name': 'full-width table', 'slide_refs': [4, 5],
+                  'problems': []}],
+        single_use=[{'slides': [9], 'structure': '6-up cards'}], evidence={}, pack_id='p-1',
+        problems=[{'kind': 'unresolved', 'region': 'chart1', 'slides': [10], 'why': 'no renderer'}]))
+    body = _upload(client).json()
+    assert body['version'] == 2
+    assert body['single_use'] == [{'slides': [9], 'structure': '6-up cards'}]
+    assert body['locale_contested'] is True
+    assert body['locale_suggested'] == 'en-GB'
+    assert body['problems'][0]['kind'] == 'unresolved'
+
+
+def test_approving_a_pack_is_gated_as_configure_not_write(client):
+    assert client.post('/atb/packs/p-1/approve').status_code == 200
+    assert client.gates == ['style_pack.approve']
+
+
+def test_approving_a_layout_is_gated_as_configure(client):
+    assert client.post('/atb/layouts/l-1/approve').status_code == 200
+    assert client.gates == ['style_pack.approve']
+
+
+def test_rejecting_and_renaming_are_only_writes(client):
+    assert client.post('/atb/layouts/l-1/reject').status_code == 200
+    assert client.post('/atb/layouts/l-1', json={'name': 'Eight recommendations'}).status_code == 200
+    assert client.gates == ['style_pack.write', 'style_pack.write']
+
+
+def test_a_refusal_from_the_gate_is_a_403(client, monkeypatch):
+    def refuse(action, *a, **k):
+        raise NotPermitted('role Viewer may not perform configure')
+    monkeypatch.setattr(ar, 'gate', refuse)
+    assert client.post('/atb/packs/p-1/approve').status_code == 403
+
+
+def test_a_layout_cannot_be_renamed_to_nothing(client):
+    assert client.post('/atb/layouts/l-1', json={'name': '  '}).status_code == 400
+
+
+def test_a_column_cannot_be_promoted_to_a_scale_missing_a_label(client):
+    response = client.post('/atb/packs/p-1/rating-scales', json={
+        'name': 'hml', 'chips': {'High': {'bg': '#F9E1E1', 'ink': '#B42D2D'}},
+        'promote': {'layout_key': 'imported_abc1234567', 'column': 'risk',
+                    'labels': ['High', 'Low']}})
+    assert response.status_code == 400
+    assert 'Low' in response.json()['detail']
+
+
+def test_a_scale_whose_labels_are_all_defined_is_accepted(client):
+    response = client.post('/atb/packs/p-1/rating-scales', json={
+        'name': 'hml', 'chips': {'High': {'bg': '#eee', 'ink': '#222'},
+                                 'Low': {'bg': '#efe', 'ink': '#232'}},
+        'promote': {'layout_key': 'imported_abc1234567', 'column': 'risk',
+                    'labels': ['High', 'Low']}})
+    assert response.status_code == 200
+    assert response.json()['labels'] == ['High', 'Low']
+
+
+def test_an_unknown_pack_is_a_404(client):
+    assert client.get('/atb/packs/nope').status_code == 404
+    assert client.get('/atb/packs/nope/evidence').status_code == 404
+
+
+def test_no_response_names_a_route_or_a_table(client):
+    for path in ('/atb/packs', '/atb/packs/p-1', '/atb/packs/p-1/evidence', '/atb/layouts'):
+        body = client.get(path).text
+        assert '/atb/' not in body, path
+        assert 'bp_style_pack' not in body, path
+        assert 'bp_page_layout' not in body, path
+        assert '[withheld]' not in body, path
+
+
+def test_the_listing_carries_the_contested_locale_flag(client):
+    packs = client.get('/atb/packs').json()['packs']
+    assert packs[0]['locale_contested'] is True
+    assert 'tokens' not in packs[0], 'a listing is a listing'
+
+
+def test_one_pack_carries_its_tokens_and_its_layouts(client):
+    body = client.get('/atb/packs/p-1').json()
+    assert body['tokens']['colours']['ink'] == '#172033'
+    assert body['layouts'][0]['layout_key'] == 'imported_abc1234567'
+    assert body['layouts'][0]['example_source']['slide'] == 4
