@@ -71,7 +71,7 @@ def test_a_missing_column_is_read_as_unflagged_not_as_an_error():
 
 
 def test_a_flagged_type_with_no_phrases_is_a_violation():
-    """Review Focus 2: it could never match, muting the structure silently."""
+    """The plan's Review Focus item 2 (specs/2026-10-02-contract-structures-plan.md): it could never match, muting the structure silently."""
     rows = [_doc_row("doctype.a", requires_parent_evidence=True, parent_evidence_phrases=[])]
     violations = V.check_flagged_types_have_parent_evidence_phrases(rows)
     assert len(violations) == 1
@@ -118,3 +118,15 @@ def test_run_all_reports_a_flagged_type_with_no_phrases():
     got = V.run_all(SEED_VOCABULARY, rows)
     assert [x.check for x in got] == ["flagged_types_have_parent_evidence_phrases"]
     assert got[0].subject == "doctype.a"
+
+
+def test_phrase_order_is_preserved_by_the_loader():
+    """Append order is part of the data: the seed-vs-table drift test compares
+    ordered lists, so the loader must not sort or de-duplicate them."""
+    vocab = build_vocabulary(
+        [_concept_row("doctype.a")],
+        [_doc_row("doctype.a", requires_parent_evidence=True,
+                  parent_evidence_phrases=["b", "a"])],
+        source="test",
+    )
+    assert vocab.document_types["doctype.a"].parent_evidence_phrases == ("b", "a")

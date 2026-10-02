@@ -28,7 +28,8 @@ ALTER TABLE proc.bp_document_type
 
 COMMENT ON COLUMN proc.bp_document_type.requires_parent_evidence IS
     'When true, this structure only claims a document that names its parent or '
-    'states an order of precedence. Set for doctype.order_form only; the other '
+    'states an order of precedence. Intended for doctype.order_form, which the '
+    'order-form migration sets; no row sets it as of this migration. The other '
     'child structures (call-off, SOW, schedule) are conceptually the same but '
     'their current behaviour is measured and no evidence calls for changing it.';
 COMMENT ON COLUMN proc.bp_document_type.parent_evidence_phrases IS
