@@ -538,10 +538,11 @@ def test_a_sow_still_considers_only_master_agreements(fixture_contracts):
 
 
 # --------------------------------------------------------------------------
-# "Unparented" means the pointer does not RESOLVE, not that it is absent. On the
-# corpus 1,490 contracts have a NULL pointer, 0 have one that resolves and 1,561
-# have one that dangles; the filter used to be IS NULL and so excluded exactly
-# the dangling ones. Each case below is independently provable.
+# "Unparented" means the pointer does not RESOLVE, not that it is absent: a dangling
+# pointer is not a parent. (Parent-side counts from bp_contract_master, which supplies
+# candidate parents, not children: 1,490 NULL / 0 resolving / 1,561 dangling. Children
+# come from bp_contracts, which has 0 rows, so the impact today is zero.) Each case
+# below is independently provable.
 # --------------------------------------------------------------------------
 
 def _sow_with_pointer(fx, label, pointer):
@@ -632,16 +633,77 @@ def test_a_variation_with_a_dangling_parent_contract_id_and_a_resolvable_referen
 
 
 def test_a_variation_whose_only_pointer_dangles_is_considered_but_not_proposed(
-        fixture_contracts):
+        fixture_contracts, monkeypatch):
     """Considered, then honestly below the gate: with no resolvable reference and no
     parent type to lean on, supplier + term + title score 38.46 against 65. The
-    filter lets it reach the scorer; the scorer declines. Documents the limit."""
+    filter lets it reach the scorer; the scorer declines. The spy proves THIS child
+    was scored (the fixture SOW alone satisfies any global counter)."""
     cid = _variation_child(fixture_contracts, "doctype.variation", "VARONLY",
                            parent_agreement_ref=None,
                            parent_contract_id=f"GHOST-{fixture_contracts['tag']}")
     try:
-        result = CL.propose_parent_links()
+        seen = _capture_flags(monkeypatch, {cid})
+        CL.propose_parent_links()
+        assert cid in seen, "this variation was never handed to the scorer"
+        assert seen[cid] is False
         assert _open_proposals(cid) == []
-        assert result["considered"]["with_candidates"] >= 1
     finally:
         _delete_contracts(cid)
+
+
+def test_a_pointer_differing_only_in_case_and_spacing_resolves(fixture_contracts):
+    """Filter and scorer agree: 'msa 4417' IS 'MSA-4417', so the child is parented."""
+    ptr = fixture_contracts["msa"].lower().replace("-", " ")
+    cid = _sow_with_pointer(fixture_contracts, "CASE", ptr)
+    try:
+        CL.propose_parent_links()
+        assert _open_proposals(cid) == []
+    finally:
+        _delete_contracts(cid)
+
+
+# --------------------------------------------------------------------------
+# confirm() links only a parent that was actually proposed.
+# --------------------------------------------------------------------------
+
+def _parent_of(cid):
+    from src.services.db import get_conn
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT parent_contract_id FROM proc.bp_contracts WHERE contract_id = %s",
+                    (cid,))
+        return cur.fetchone()[0]
+
+
+def test_confirm_of_a_proposed_parent_links_it(fixture_contracts):
+    CL.propose_parent_links()
+    sf = _open_proposals(fixture_contracts["sow"])[0]["source_file"]
+    assert CL.confirm(fixture_contracts["sow"], fixture_contracts["msa"], sf) is True
+    assert _parent_of(fixture_contracts["sow"]) == fixture_contracts["msa"]
+
+
+def test_confirm_of_a_parent_never_proposed_links_nothing(fixture_contracts):
+    CL.propose_parent_links()
+    sf = _open_proposals(fixture_contracts["sow"])[0]["source_file"]
+    assert CL.confirm(fixture_contracts["sow"], "MSA-NEVER-PROPOSED", sf) is False
+    assert _parent_of(fixture_contracts["sow"]) is None
+    assert len(_open_proposals(fixture_contracts["sow"])) == 1, "proposal must stay open"
+
+
+def test_confirm_with_no_proposal_at_all_links_nothing(fixture_contracts):
+    assert CL.confirm(fixture_contracts["sow"], fixture_contracts["msa"],
+                      "contract:nothing-here") is False
+    assert _parent_of(fixture_contracts["sow"]) is None
+
+
+def test_confirm_of_a_dismissed_proposal_links_nothing(fixture_contracts):
+    from src.services.db import get_conn
+    sow = fixture_contracts["sow"]
+    CL.propose_parent_links()
+    sf = _open_proposals(sow)[0]["source_file"]
+    with get_conn() as conn:
+        conn.cursor().execute(
+            """UPDATE proc.bp_extraction_discrepancy SET status = 'ignored'
+                WHERE doc_pk_candidate = %s AND issue_type = %s""", (sow, ISSUE))
+    assert CL.confirm(sow, fixture_contracts["msa"], sf) is False
+    assert _parent_of(sow) is None
