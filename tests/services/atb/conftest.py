@@ -55,7 +55,9 @@ def filled_deck():
         prs = _new()
         for _ in range(slides):
             slide = _blank(prs)
-            for colour, y in ((ink, 1.5), (muted, 2.0)):
+            # ink twice, muted once: "most-used text colour" has to be decided by USE, not by a
+            # tiebreak. With equal counts the role test passes for the wrong reason.
+            for colour, y in ((ink, 1.5), (ink, 1.7), (muted, 2.0)):
                 box = slide.shapes.add_textbox(Inches(0.5), Inches(y), Inches(3), Inches(0.4))
                 run = box.text_frame.paragraphs[0].add_run()
                 run.text = 'x'

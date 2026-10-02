@@ -1,0 +1,135 @@
+"""Which colours a deck really uses, and what each one is for.
+
+Role follows USE, not the theme: the most-used text colour is the ink whatever the theme says. On
+the reference deck the theme is stock Office and would have given the wrong answer for every
+token.
+
+A colour under COLOUR_FLOOR uses is incidental and never becomes a token — on a deck of 85 slides
+a colour used five times is a one-off, and a token invented from it would then be applied to
+everything.
+"""
+from __future__ import annotations
+
+import colorsys
+
+from .evidence import Evidence
+from .read import Deck
+
+COLOUR_FLOOR = 10
+
+_THEME_INK_KEYS = ('dk1', 'dk2')
+_PANEL_LUMINANCE = 0.85
+_ACCENT_SATURATION = 0.3
+_ACCENT_LUMINANCE = (0.2, 0.7)
+
+
+def _rgb(colour: str) -> tuple[int, int, int]:
+    value = colour.lstrip('#')
+    return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+
+def _luminance(colour: str) -> float:
+    r, g, b = (c / 255 for c in _rgb(colour))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _saturation(colour: str) -> float:
+    r, g, b = (c / 255 for c in _rgb(colour))
+    return colorsys.rgb_to_hls(r, g, b)[2]
+
+
+def _hue(colour: str) -> float:
+    r, g, b = (c / 255 for c in _rgb(colour))
+    return colorsys.rgb_to_hls(r, g, b)[0] * 360
+
+
+def census(deck: Deck) -> dict[str, dict[str, int]]:
+    """Every colour that paints something, counted as fill, as text and as line."""
+    out: dict[str, dict[str, int]] = {}
+
+    def bump(colour: str | None, role: str) -> None:
+        if not colour:
+            return
+        out.setdefault(colour, {'fills': 0, 'runs': 0, 'lines': 0})[role] += 1
+
+    for slide in deck.slides:
+        for shape in slide:
+            bump(shape.fill, 'fills')
+            bump(shape.line, 'lines')
+            for run in shape.runs:
+                if run.text.strip():
+                    bump(run.colour, 'runs')
+    return out
+
+
+def colours(deck: Deck, ev: Evidence, floor: int = COLOUR_FLOOR) -> dict[str, str]:
+    counts = census(deck)
+    totals = {colour: sum(roles.values()) for colour, roles in counts.items()}
+    eligible = {c: roles for c, roles in counts.items() if totals[c] >= floor}
+    for colour in counts:
+        if totals[colour] < floor:
+            ev.incidental('colour', colour,
+                          f'used {totals[colour]} times, under the {floor}-use floor')
+
+    out: dict[str, str] = {}
+    taken: set[str] = set()
+
+    def take(name: str, candidates: list[str], why: str) -> None:
+        for colour in candidates:
+            if colour in taken:
+                continue
+            taken.add(colour)
+            out[name] = colour
+            ev.record(f'colours.{name}', colour, why=why, **counts[colour])
+            return
+
+    by_runs = sorted(eligible, key=lambda c: (-eligible[c]['runs'], c))
+    by_fills = sorted(eligible, key=lambda c: (-eligible[c]['fills'], c))
+    line_only = [c for c in by_fills
+                 if eligible[c]['lines'] and not eligible[c]['fills'] and not eligible[c]['runs']]
+    pale = [c for c in by_fills if eligible[c]['fills'] and _luminance(c) > _PANEL_LUMINANCE]
+    saturated = [c for c in by_fills
+                 if _saturation(c) > _ACCENT_SATURATION
+                 and _ACCENT_LUMINANCE[0] <= _luminance(c) <= _ACCENT_LUMINANCE[1]]
+
+    take('ink', [c for c in by_runs if eligible[c]['runs']], 'most-used text colour')
+    take('muted', [c for c in by_runs if eligible[c]['runs']], 'second most-used text colour')
+    take('rule', line_only, 'used only on lines')
+    take('panel', pale, 'palest frequently-filled colour')
+    for name, hues in (('panel_blue', (190, 260)), ('panel_teal', (150, 190)),
+                       ('panel_amber', (20, 60)), ('panel_violet', (260, 300))):
+        take(name, [c for c in pale if hues[0] <= _hue(c) <= hues[1]], f'pale fill, hue in {hues}')
+    take('accent', saturated, 'most-used saturated colour')
+    take('accent_2', saturated, 'second most-used saturated colour')
+    for name, hues in (('alert_ink', (0, 20)), ('caution', (20, 60)), ('positive', (90, 160))):
+        take(name, [c for c in saturated if hues[0] <= _hue(c) <= hues[1]],
+             f'saturated, hue in {hues}')
+
+    # A pack must carry an ink and a panel to validate. A deck whose text states no colour at all
+    # (Review Focus 2) falls back to the theme's dark colour, then to black — and the evidence
+    # says which, because a fallback presented as a measurement is a lie about the deck.
+    if 'ink' not in out:
+        for key in _THEME_INK_KEYS:
+            theme_ink = (deck.theme.get('colours') or {}).get(key)
+            if theme_ink:
+                out['ink'] = theme_ink
+                ev.record('colours.ink', theme_ink, fills=0, runs=0, lines=0,
+                          why=f'no run in the deck states a colour; theme {key}')
+                break
+    if 'ink' not in out:
+        out['ink'] = '#000000'
+        ev.record('colours.ink', '#000000', fills=0, runs=0, lines=0,
+                  why='no run states a colour and the theme names no dark colour; black assumed')
+    if 'muted' not in out:
+        out['muted'] = out['ink']
+        ev.record('colours.muted', out['ink'], fills=0, runs=0, lines=0,
+                  why='the deck uses one text colour; muted follows the ink')
+    if 'panel' not in out:
+        out['panel'] = '#FFFFFF'
+        ev.record('colours.panel', '#FFFFFF', fills=0, runs=0, lines=0,
+                  why='the deck fills nothing pale; white assumed')
+    if 'accent' not in out:
+        out['accent'] = out['ink']
+        ev.record('colours.accent', out['ink'], fills=0, runs=0, lines=0,
+                  why='the deck uses no saturated fill; the accent follows the ink')
+    return out
