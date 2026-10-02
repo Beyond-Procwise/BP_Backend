@@ -1,12 +1,17 @@
 """Assemble the measurements into a pack the existing validators accept."""
 from __future__ import annotations
 
+import hashlib
+
 from . import derived
 from . import grid as grid_module
 from . import palette, typescale
-from .contract import PackInvalid, validate_pack
+from .cluster import EMPTY_ROW, Cluster
+from .contract import PackInvalid, validate_layout, validate_pack
 from .evidence import Evidence
+from .example import example_fill
 from .read import Deck
+from .slots import regions_and_slots
 
 
 def build_pack(deck: Deck, ev: Evidence, key: str, name: str) -> dict:
@@ -46,3 +51,56 @@ def build_pack(deck: Deck, ev: Evidence, key: str, name: str) -> dict:
         # nothing downstream would say why.
         raise PackInvalid('; '.join(errors))
     return pack
+
+
+def proposed_name(cluster: Cluster) -> str:
+    """A geometric description, never a name. Design §9.2: naming is the human's."""
+    if cluster.signature == (EMPTY_ROW,):
+        return 'title only'
+    parts = []
+    for row in cluster.signature:
+        columns, kind = row[0], row[1]
+        repeat = ' repeating' if len(row) > 2 else ''
+        word = {'TABLE': 'table', 'CHART': 'chart'}.get(kind,
+                                                        'cards' if columns > 1 else 'panel')
+        parts.append(f'{columns}-up {word}{repeat}' if columns > 1
+                     else f'full-width {word}{repeat}')
+    return ' + '.join(parts)
+
+
+def layout_key(cluster: Cluster) -> str:
+    """Stable across runs, and lower_snake_case as the contract requires.
+
+    Derived from the signature rather than from a counter or a uuid, because importing the same
+    deck twice has to produce the same ids — that is an acceptance criterion, not a nicety.
+    """
+    digest = hashlib.sha256(repr(cluster.signature).encode()).hexdigest()[:10]
+    return f'imported_{digest}'
+
+
+def build_layout(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence, filename: str) -> dict:
+    regions, slots, problems = regions_and_slots(cluster, deck, pack, ev)
+    fill, source = example_fill(cluster, deck, slots)
+    name = proposed_name(cluster)
+    layout = {
+        'id': layout_key(cluster),
+        'version': 1,
+        # The contract requires a non-empty `name`. It starts as the proposed one so the layout is
+        # valid from the moment it is built; `proposed_name` is kept beside it so the review screen
+        # can show what the importer suggested against what the human called it.
+        'name': name,
+        'proposed_name': name,
+        'formats': [pack['format']['kind']],
+        'regions': regions,
+        'slots': slots,
+        'slide_refs': list(cluster.slides),
+        'example_fill': fill,
+        'example_source': {'file': filename, **source},
+        'problems': problems,
+        'writing_guidance': '',
+        'pagination': None,
+    }
+    errors = validate_layout(layout)
+    if errors:
+        raise PackInvalid(f'layout {layout["id"]}: ' + '; '.join(errors))
+    return layout
