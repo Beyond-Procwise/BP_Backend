@@ -139,6 +139,34 @@ def check_active_concepts_are_defined(vocabulary: Vocabulary) -> List[Violation]
     ]
 
 
+def check_flagged_types_have_parent_evidence_phrases(doc_type_rows) -> List[Violation]:
+    """A structure that must show its parent needs phrases to recognise one by.
+
+    requires_parent_evidence with an empty parent_evidence_phrases can never be
+    satisfied, so the structure matches nothing and does so silently — the worst
+    shape a reference-data error can take. Reported rather than defaulted,
+    because guessing a phrase set is how a classifier starts inventing parents.
+
+    Takes bp_document_type ROWS, not a Vocabulary: the other checks run over a
+    built Vocabulary, but this one must see a flagged row even if loading would
+    discard it, so it is not part of run_all.
+    """
+    out: List[Violation] = []
+    for row in doc_type_rows:
+        if not row.get("requires_parent_evidence"):
+            continue
+        if not (row.get("parent_evidence_phrases") or ()):
+            out.append(Violation(
+                check="flagged_types_have_parent_evidence_phrases",
+                subject=str(row.get("concept_code")),
+                detail=(
+                    "requires_parent_evidence is set but parent_evidence_phrases "
+                    "is empty, so this structure can never claim a document"
+                ),
+            ))
+    return out
+
+
 #: The four physical table families the extraction pipeline actually has.
 _PIPELINES = frozenset({"invoice", "purchase_order", "quote", "contract"})
 
@@ -173,4 +201,5 @@ __all__ = [
     "check_aliases_are_unambiguous", "check_every_reference_resolves",
     "check_concepts_exist_for_every_document_type",
     "check_active_concepts_are_defined", "check_pipeline_targets_exist",
+    "check_flagged_types_have_parent_evidence_phrases",
 ]

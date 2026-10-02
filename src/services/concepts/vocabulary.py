@@ -47,7 +47,8 @@ _CONCEPT_SQL = """
 _DOC_TYPE_SQL = """
     SELECT concept_code, role, default_parent_type, execution_mode,
            aliases, identifiers, structural_signals, pipeline_doc_type,
-           status, recorded_at
+           status, requires_parent_evidence, parent_evidence_phrases,
+           recorded_at
       FROM proc.bp_document_type
      WHERE status = 'active'
 """
@@ -152,6 +153,11 @@ def build_vocabulary(
             structural_signals=tuple(row.get("structural_signals") or ()),
             pipeline_doc_type=row.get("pipeline_doc_type"),
             status="active",
+            # .get with a default, not row["..."]: build_vocabulary is public and
+            # callers build rows by hand, so an older row shape must read as
+            # "unflagged" rather than raise.
+            requires_parent_evidence=bool(row.get("requires_parent_evidence") or False),
+            parent_evidence_phrases=tuple(row.get("parent_evidence_phrases") or ()),
         )
         # The concept's own name is always an alias of itself.
         for alias in (*aliases, code.split(".", 1)[-1]):
@@ -201,6 +207,8 @@ SEED_VOCABULARY = build_vocabulary(
             "structural_signals": list(d.structural_signals),
             "pipeline_doc_type": d.pipeline_doc_type,
             "status": d.status,
+            "requires_parent_evidence": d.requires_parent_evidence,
+            "parent_evidence_phrases": list(d.parent_evidence_phrases),
         }
         for d in DOCUMENT_TYPES.values()
     ],

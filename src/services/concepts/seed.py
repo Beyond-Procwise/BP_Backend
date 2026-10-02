@@ -39,6 +39,12 @@ class DocumentType:
     #: type is recognised but nothing can ingest it yet — an honest state.
     pipeline_doc_type: Optional[str]
     status: str = "active"
+    #: A structure whose purpose is to sit beneath a parent only claims a page
+    #: that names that parent. Data, so flagging another structure later is an
+    #: UPDATE rather than a code edit.
+    requires_parent_evidence: bool = False
+    #: Matchable phrases that count as naming a parent, folded like aliases.
+    parent_evidence_phrases: Tuple[str, ...] = ()
 
 
 _ROLES = (
