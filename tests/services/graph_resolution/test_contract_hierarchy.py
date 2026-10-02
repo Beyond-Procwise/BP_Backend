@@ -62,12 +62,23 @@ def test_the_profile_is_registered():
     assert "F" in r and "decision" in r and "signals" in r
 
 
-def test_the_profile_can_never_auto_link():
-    """The product's standing rule for an uncalibrated profile, and the reason
-    is measured: no labelled sample of true parent links exists.
+def test_the_profile_is_capped_at_the_auto_link_band():
+    """What UNCALIBRATED_PROFILES membership buys, stated precisely.
+
+    edge_writer.cypher_for refuses an edge whose band == "auto_link" (F >= 92)
+    for an uncalibrated profile. It does NOT refuse "auto_link_with_warning"
+    (F 80-92), which passes through. So this is a cap at the top band, not a
+    ban on every automatic link. Nothing in the current path writes graph edges
+    for this profile anyway: Task 10 writes review-queue rows.
     """
     from src.services.graph_resolution.edge_writer import UNCALIBRATED_PROFILES
     assert ch.PROFILE in UNCALIBRATED_PROFILES
+    # ... and what that membership actually refuses, verbatim from the guard.
+    import inspect
+    from src.services.graph_resolution import edge_writer
+    assert 'edge.band == "auto_link"' in inspect.getsource(edge_writer.cypher_for), (
+        "the guard no longer keys on the auto_link band; this profile's cap may have moved"
+    )
 
 
 def test_the_expected_parent_of_a_sow_is_a_master_agreement():

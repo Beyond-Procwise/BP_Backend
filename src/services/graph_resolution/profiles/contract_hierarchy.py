@@ -16,14 +16,27 @@ reference that matches exactly is the strongest signal available and is still
 only a signal. Scoring it heavily enough to auto-link would link 1,561 contracts
 to nothing.
 
-MEASURED HEADROOM (test fixtures, 2026-10-02): a full match (reference, kind,
-supplier, term and title all agreeing) scores F=96.95 and decides auto_link,
-which edge_writer then refuses because the profile is in UNCALIBRATED_PROFILES.
-An exact reference with every other signal MISSING scores F=30.82 and decides
-block_or_exception: far below the auto band (92) and below even review (65). So
-the reference alone does not put a candidate in front of a person; it needs
-corroboration. That margin is what test_an_exact_reference_alone_does_not_reach_
-the_auto_band protects.
+MEASURED HEADROOM (test fixtures, 2026-10-02):
+
+    F      decision             case
+    96.95  auto_link            everything present
+    69.32  review               ref + supplier + structure, no dates, no titles
+                                (the realistic floor: Task 10 narrows candidates
+                                by supplier and structure first)
+    75.59  review               no ref, dates and titles present
+    30.82  block_or_exception   supplier + structure only
+    30.82  block_or_exception   synthetic reference-only (cannot arise via Task 10)
+
+The margin between the realistic floor (69.32) and Task 10's MIN_SCORE of 65 is
+only 4.32 points. A reference with zero corroboration is deliberately not
+proposed: 0 of 1,561 references resolve. test_an_exact_reference_alone_does_not_
+reach_the_auto_band and ..._even_reach_review protect this.
+
+THE CAP. The profile is in edge_writer.UNCALIBRATED_PROFILES, so
+edge_writer.cypher_for refuses an edge at the auto_link band (F >= 92). It does
+NOT refuse auto_link_with_warning (F 80-92). Nothing in the current path writes
+graph edges for this profile: Task 10 writes review-queue rows and never sets
+parent_contract_id without a human confirming.
 
 Direction is CHILD -> PARENT: score_link(source_row=child, target_row=parent).
 """
