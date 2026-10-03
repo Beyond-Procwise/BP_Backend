@@ -180,3 +180,124 @@ def test_an_explicit_connector_still_works(field, template, connector):
 def test_a_hash_directly_before_the_reference_still_works():
     text = "STATEMENT OF WORK\n\nissued under Master Agreement #MSA-4417\n"
     assert _value(text, "parent_agreement_ref") == "MSA-4417"
+
+
+# ---------------------------------------------------------------------------
+# Found by Task 11's LIVE verification on a real PDF, 2026-10-03, not by any
+# fixture. An order form reading
+#
+#   "This Order Form is incorporated into and governed by Framework Agreement
+#    No. FA-2026-0042 dated 5 January 2026"
+#
+# produced contract_id = 'FA-2026-0042' and framework_ref = NULL. Two defects in
+# one sentence, and together they destroyed data:
+#
+#   * contract_id's anchors refuse "Parent", "Master", "Principal", "amends",
+#     "amendment to", "supplements" and "varies" -- every label naming a
+#     DIFFERENT contract -- but not "Framework". So the order form took its
+#     framework's identifier as its own.
+#   * contract_id is the upsert key for proc.bp_contracts (ON CONFLICT
+#     (contract_id) DO UPDATE SET <every other column>), so promoting the order
+#     form OVERWROTE the framework agreement's row: resolved_doc_type on
+#     FA-2026-0042 changed from doctype.framework_agreement to doctype.order_form
+#     and the framework disappeared from the table as a separate contract.
+#   * framework_ref missed the same reference because its anchor required a
+#     colon or hyphen after "Framework Agreement No", which no real contract
+#     writes, and its prose connector list did not include "incorporated into"
+#     -- a phrase THIS plan added to parent_evidence_phrases in §4. The rule that
+#     recognises the sentence and the extractor that reads it disagreed.
+# ---------------------------------------------------------------------------
+
+_LIVE_ORDER_FORM = (
+    "ORDER FORM\n\n"
+    "Order Form No. OF-2026-0117\n\n"
+    "This Order Form is incorporated into and governed by Framework Agreement "
+    "No. FA-2026-0042 dated 5 January 2026 between BrightWave Digital Ltd. and "
+    "NexaSpark Marketing Ltd.\n"
+)
+
+
+def test_an_order_form_does_not_take_its_frameworks_number_as_its_own():
+    """The one that cost a row: contract_id is the upsert key."""
+    assert _value(_LIVE_ORDER_FORM, "contract_id") != "FA-2026-0042", (
+        "the order form claimed its framework's identifier; promoting it would "
+        "overwrite proc.bp_contracts row FA-2026-0042")
+
+
+def test_the_framework_reference_in_the_live_sentence_is_read():
+    assert _value(_LIVE_ORDER_FORM, "framework_ref") == "FA-2026-0042"
+
+
+@pytest.mark.parametrize("sentence", [
+    "This Order Form is incorporated into Framework Agreement No. FA-2026-0042.",
+    "This Order Form is governed by Framework Agreement No. FA-2026-0042.",
+    "Framework Agreement No. FA-2026-0042 applies to this Order Form.",
+    "Framework Agreement Number FA-2026-0042 applies.",
+    "Framework Agreement No: FA-2026-0042 applies.",
+    "This order is called off under Framework Agreement FA-2026-0042.",
+])
+def test_the_framework_number_is_read_with_or_without_a_colon(sentence):
+    """A colon after "No" is a typesetting accident, not a fact about the
+    document. Requiring one is why the live file read NULL."""
+    assert _value(sentence, "framework_ref") == "FA-2026-0042", sentence
+
+
+@pytest.mark.parametrize("sentence", [
+    "This Framework Agreement sets out the terms for ad-hoc orders.",
+    "This Framework Agreement is between BrightWave Digital Ltd. and NexaSpark.",
+    "The Framework Agreement shall commence on 5 January 2026.",
+])
+def test_a_framework_agreement_describing_itself_is_not_a_reference(sentence):
+    """The guard on making the connector optional: prose that merely says
+    "Framework Agreement" must not hand the next capitalised word over as a
+    reference. A framework agreement's own page says this constantly."""
+    assert _value(sentence, "framework_ref") is None, sentence
+
+
+def test_a_framework_agreement_still_reads_its_own_number_as_contract_id():
+    """The guard that stopped a blanket fix. A framework agreement's own first
+    page writes its own identifier EXACTLY as an order form writes its pointer:
+    "Framework Agreement No. FA-2026-0042". A negative lookbehind on contract_id
+    was tried first and it blinded the framework to its own number, so the regex
+    layer is left reading both -- and the document's own structure settles which
+    is which, in dispatch, where the structure is known. See
+    test_a_document_is_not_its_own_parent in
+    tests/services/extraction/test_self_parent_reference.py.
+    """
+    page = ("FRAMEWORK AGREEMENT\n\nFramework Agreement No. FA-2026-0042\n\n"
+            "This Framework Agreement is entered into on 5 January 2026.\n")
+    assert _value(page, "contract_id") == "FA-2026-0042"
+    # Indistinguishable at this layer, and deliberately not "fixed" here:
+    assert _value(page, "framework_ref") == "FA-2026-0042"
+
+
+def test_an_order_form_reads_its_own_number_not_its_frameworks():
+    """What the live file could not do: print its own number and be believed."""
+    assert _value(_LIVE_ORDER_FORM, "contract_id") == "OF-2026-0117"
+    assert _value(_LIVE_ORDER_FORM, "framework_ref") == "FA-2026-0042"
+
+
+@pytest.mark.parametrize("sentence", [
+    "This Statement of Work is made under Master Agreement No. MSA-4417.",
+    "Master Agreement No. MSA-4417 governs this SOW.",
+    "Master Services Agreement Number MSA-4417 applies.",
+    "Master Agreement No: MSA-4417 applies.",
+])
+def test_the_master_agreement_number_is_read_with_or_without_a_colon(sentence):
+    """parent_agreement_ref carried the identical mandatory-colon flaw, and
+    "Master Agreement No. MSA-4417" is the commonest shape a SOW has."""
+    assert _value(sentence, "parent_agreement_ref") == "MSA-4417", sentence
+
+
+@pytest.mark.parametrize("sentence", [
+    "This Master Agreement sets out the terms between the parties.",
+    "This Master Services Agreement is dated 5 January 2026.",
+])
+def test_a_master_agreement_describing_itself_is_not_a_reference(sentence):
+    assert _value(sentence, "parent_agreement_ref") is None, sentence
+
+
+def test_a_sow_reads_its_masters_number_as_the_parent_reference():
+    page = ("STATEMENT OF WORK\n\nSOW No. SOW-2026-11\n\nThis Statement of Work "
+            "is made under Master Agreement No. MSA-4417.\n")
+    assert _value(page, "parent_agreement_ref") == "MSA-4417"

@@ -739,3 +739,226 @@ def test_confirm_claims_the_proposal_before_linking(fixture_contracts):
                 WHERE doc_pk_candidate = %s AND issue_type = %s""", (sow, ISSUE))
     assert CL.confirm(sow, fixture_contracts["msa"], sf) is False
     assert _parent_of(sow) is None
+
+
+# ---------------------------------------------------------------------------
+# Final review, Important 1: a re-read must REFRESH the proposal, not skip it.
+# ---------------------------------------------------------------------------
+
+def test_a_better_parent_refreshes_the_open_proposal(fixture_contracts):
+    """The queue must not keep naming the parent the FIRST read chose.
+
+    A contract document is re-read (routine in this product) and the second read
+    extracts a reference that points somewhere else. The open finding is what a
+    person reads and what confirm() validates against, so if it still names the
+    superseded parent, confirming it links the wrong contract.
+    """
+    from src.services.db import get_conn
+    sow, msa, tag = fixture_contracts["sow"], fixture_contracts["msa"], fixture_contracts["tag"]
+    msa2 = f"MSA2-{tag}"
+    try:
+        # First read: the SOW names msa, so msa is proposed.
+        CL.propose_parent_links()
+        first = _open_proposals(sow)
+        assert len(first) == 1 and first[0]["expected_value"] == msa, first
+
+        # Second read of the same document: it now names msa2 instead.
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO proc.bp_contracts
+                       (contract_id, contract_title, supplier_id, contract_start_date,
+                        contract_end_date, resolved_doc_type, resolved_role, type_agreement)
+                   VALUES (%s, 'Master Services Agreement Helix Migration Phase Two', %s,
+                           '2026-01-01', '2027-12-31',
+                           'doctype.master_agreement', 'role.master', 'refined')""",
+                (msa2, fixture_contracts["supplier"]),
+            )
+            cur.execute("UPDATE proc.bp_contracts SET parent_agreement_ref = %s "
+                        "WHERE contract_id = %s", (msa2, sow))
+
+        CL.propose_parent_links()
+        after = _open_proposals(sow)
+        assert len(after) == 1, f"the re-read stacked or lost the proposal: {after}"
+        assert after[0]["expected_value"] == msa2, (
+            "the open proposal still names the parent the first read chose; a person "
+            "confirming it would link the superseded contract")
+    finally:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE doc_pk_candidate = %s", (msa2,))
+            cur.execute("DELETE FROM proc.bp_contracts WHERE contract_id = %s", (msa2,))
+
+
+def test_a_refreshed_proposal_keeps_one_row_per_document(fixture_contracts):
+    """Refreshing must go through the open key, so a second pass cannot raise
+    UniqueViolation out of the middle of a run (get_conn is AUTOCOMMIT: the rows
+    written before the raise would already be committed)."""
+    sow = fixture_contracts["sow"]
+    CL.propose_parent_links()
+    CL.propose_parent_links()        # must not raise
+    assert len(_open_proposals(sow)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Final review, Important 3: one contract in both tables is ONE candidate.
+# ---------------------------------------------------------------------------
+
+def test_a_parent_in_both_tables_is_not_contested_with_itself():
+    """A registered contract whose PDF is later uploaded exists in BOTH
+    proc.bp_contract_master (the 3,051-row register) and proc.bp_contracts (the
+    uploaded document). It is one contract. Counted twice it ties with itself, so
+    the person reads "contested ... Other candidates: C02397" about a single
+    unambiguous parent, and computed_value lists the proposed parent as its own
+    alternative.
+
+    The register is a FOREIGN table (no inserts), so the duplicate is made the
+    way it happens in production: an existing corpus row, C02397 -- the only
+    contract its supplier S4702 has -- is uploaded as a document.
+    """
+    from src.services.db import get_conn
+    tag = uuid.uuid4().hex[:8].upper()
+    parent, supplier, child = "C02397", "S4702", f"SOW-DUP-{tag}"
+    with get_conn() as conn:
+        cur = conn.cursor()
+        before = _issue_ids(cur)
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO proc.bp_contracts
+                       (contract_id, contract_title, supplier_id, contract_start_date,
+                        contract_end_date, resolved_doc_type, resolved_role, type_agreement)
+                   VALUES (%s, 'Drive 24/365 Bandwidth', %s, '2021-02-05', '2024-02-05',
+                           'doctype.master_agreement', 'role.master', 'refined')""",
+                (parent, supplier),
+            )
+            cur.execute(
+                """INSERT INTO proc.bp_contracts
+                       (contract_id, contract_title, supplier_id, contract_start_date,
+                        contract_end_date, resolved_doc_type, resolved_role,
+                        type_agreement, parent_agreement_ref)
+                   VALUES (%s, 'Statement of Work Drive 24/365 Bandwidth', %s,
+                           '2022-01-01', '2023-01-01',
+                           'doctype.sow', 'role.master', 'refined', %s)""",
+                (child, supplier, parent),
+            )
+        CL.propose_parent_links()
+        rows = _open_proposals(child)
+        assert len(rows) == 1, rows
+        assert rows[0]["expected_value"] == parent, rows[0]
+        assert parent not in (rows[0]["computed_value"] or ""), (
+            f"the proposed parent is listed as its own alternative: "
+            f"computed_value={rows[0]['computed_value']!r}")
+        assert "contested" not in (rows[0]["notes"] or ""), (
+            f"one candidate, counted twice, was presented as a contested choice: "
+            f"{rows[0]['notes']!r}")
+    finally:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            added = _issue_ids(cur) - before
+            if added:
+                cur.execute("DELETE FROM proc.bp_extraction_discrepancy "
+                            "WHERE discrepancy_id = ANY(%s)", (sorted(added),))
+            cur.execute("DELETE FROM proc.bp_extraction_discrepancy "
+                        "WHERE doc_pk_candidate = ANY(%s)", ([parent, child],))
+            cur.execute("DELETE FROM proc.bp_contracts WHERE contract_id = ANY(%s)",
+                        ([parent, child],))
+
+
+# ---------------------------------------------------------------------------
+# Found by Task 11's LIVE upload, 2026-10-03. An order form that printed
+# "Framework Agreement No. FA-2026-0042", whose framework was sitting in
+# proc.bp_contracts under exactly that id, got NO proposal: candidate_parents
+# returns [] the moment supplier_id is empty, and on that document the supplier
+# extractor had read the words "Framework Agreement No" as the supplier name.
+#
+# So the strongest signal this layer has -- an exact reference that resolves to a
+# real contract -- was never looked at, because a different field was wrong. The
+# reference is evidence in its own right; the supplier is a way of NARROWING a
+# search, not a precondition for searching.
+# ---------------------------------------------------------------------------
+
+def test_a_named_contract_is_a_candidate_even_when_the_supplier_does_not_match():
+    from src.services.db import get_conn
+    tag = uuid.uuid4().hex[:8].upper()
+    fa, of = f"FA-{tag}", f"OF-{tag}"
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO proc.bp_contracts
+                       (contract_id, contract_title, supplier_id, contract_start_date,
+                        contract_end_date, resolved_doc_type, resolved_role, type_agreement)
+                   VALUES (%s, 'Framework Agreement Marketing Services', 'NexaSpark Marketing Ltd.',
+                           '2026-01-05', '2029-01-05',
+                           'doctype.framework_agreement', 'role.framework', 'refined')""",
+                (fa,),
+            )
+            child = {"contract_id": of, "resolved_doc_type": "doctype.order_form",
+                     "supplier_id": "Framework Agreement No",   # what the live run read
+                     "framework_ref": fa, "parent_agreement_ref": None,
+                     "contract_start_date": None, "contract_end_date": None,
+                     "contract_title": "Order Form SEO Retainer"}
+            got = CL.candidate_parents(cur, child)
+        assert [c["contract_id"] for c in got] == [fa], (
+            "the framework the document names by number was not even considered")
+    finally:
+        with get_conn() as conn:
+            conn.cursor().execute("DELETE FROM proc.bp_contracts WHERE contract_id = %s", (fa,))
+
+
+def test_a_named_contract_is_not_duplicated_when_the_supplier_matches_too():
+    """Reached by both paths, counted once."""
+    from src.services.db import get_conn
+    tag = uuid.uuid4().hex[:8].upper()
+    fa, of, sup = f"FA-{tag}", f"OF-{tag}", f"S-{tag}"
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO proc.bp_contracts
+                       (contract_id, contract_title, supplier_id, contract_start_date,
+                        contract_end_date, resolved_doc_type, resolved_role, type_agreement)
+                   VALUES (%s, 'Framework Agreement Marketing Services', %s,
+                           '2026-01-05', '2029-01-05',
+                           'doctype.framework_agreement', 'role.framework', 'refined')""",
+                (fa, sup),
+            )
+            child = {"contract_id": of, "resolved_doc_type": "doctype.order_form",
+                     "supplier_id": sup, "framework_ref": fa,
+                     "parent_agreement_ref": None, "contract_start_date": None,
+                     "contract_end_date": None, "contract_title": "Order Form"}
+            got = CL.candidate_parents(cur, child)
+        assert [c["contract_id"] for c in got] == [fa], got
+    finally:
+        with get_conn() as conn:
+            conn.cursor().execute("DELETE FROM proc.bp_contracts WHERE contract_id = %s", (fa,))
+
+
+def test_a_named_contract_of_the_wrong_structure_is_still_not_a_candidate():
+    """A reference is evidence, not an override: a SOW does not sit under an
+    order form, however explicitly it names one."""
+    from src.services.db import get_conn
+    tag = uuid.uuid4().hex[:8].upper()
+    wrong = f"OF-{tag}"
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO proc.bp_contracts
+                       (contract_id, contract_title, supplier_id, contract_start_date,
+                        contract_end_date, resolved_doc_type, resolved_role, type_agreement)
+                   VALUES (%s, 'Order Form', 'S-X', '2026-01-05', '2029-01-05',
+                           'doctype.order_form', 'role.master', 'agreed')""",
+                (wrong,),
+            )
+            child = {"contract_id": f"SOW-{tag}", "resolved_doc_type": "doctype.sow",
+                     "supplier_id": None, "parent_agreement_ref": wrong,
+                     "framework_ref": None, "contract_start_date": None,
+                     "contract_end_date": None, "contract_title": "SOW"}
+            got = CL.candidate_parents(cur, child)
+        assert got == [], got
+    finally:
+        with get_conn() as conn:
+            conn.cursor().execute("DELETE FROM proc.bp_contracts WHERE contract_id = %s", (wrong,))

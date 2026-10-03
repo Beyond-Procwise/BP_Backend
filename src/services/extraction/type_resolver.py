@@ -307,6 +307,21 @@ def _names_a_parent(dt: "DocumentType", lowered: str) -> bool:
     return False
 
 
+def _stood_down(concept_code: str, lowered: str, vocab) -> bool:
+    """Was this structure removed from the vocabulary for THIS page?
+
+    The same two conditions the selection loop applies, asked about one concept
+    after the fact. Deliberately a second reading of the same rule rather than a
+    flag threaded through: the loop drops the concept entirely, so by the time the
+    agreement is decided there is nothing left to carry a flag on, and a wrong
+    answer here can only ever mute a disagreement — it can never invent one.
+    """
+    dt = vocab.document_types.get(concept_code)
+    if dt is None or dt.status != "active":
+        return False
+    return bool(dt.requires_parent_evidence) and not _names_a_parent(dt, lowered)
+
+
 def _title_owners(raw: str, owners: Mapping[str, Tuple[str, ...]]) -> Tuple[str, ...]:
     """Every concept this segment NAMES, or () if it is not a title at all.
 
@@ -692,6 +707,22 @@ def resolve_document_type(
             # -- the suppression is structural, not a second branch that could
             # drift from the first.
             agreement = "refined"
+        elif _stood_down(declared_concept, lowered, vocab):
+            # The declared structure was never evaluated on this page, so nothing
+            # on the page can have contradicted it.
+            #
+            # Measured on a real file 2026-10-03: an order form reading "ORDER
+            # FORM / Order Form No. OF-2026-0118" and naming no framework stands
+            # down (correctly), the bare `order` alias in its heading then claims
+            # the page, and the result asserted the document was a PURCHASE ORDER
+            # -- a document_type_disagreement against the exact structure this
+            # rule exists to recognise, naming a type from another pipeline. Worse,
+            # routing.pipeline_for_category('order form') makes `doctype.order_form`
+            # a DECLARABLE concept, and a declaration that stands down can never
+            # be agreed with: every parentless order form would be flagged.
+            # `declared_only` is what the page actually supports, and it raises no
+            # review item (type_resolution_discrepancies fires on 'disagreed').
+            agreement = "declared_only"
         else:
             agreement = "disagreed"
         if status != "unresolved":

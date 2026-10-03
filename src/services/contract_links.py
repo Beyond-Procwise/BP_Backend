@@ -56,6 +56,43 @@ log = logging.getLogger(__name__)
 ISSUE_TYPE = "contract_parent_proposed"
 FIELD_NAME = "parent_contract_id"
 
+#: A re-read of the same document REFRESHES its open proposal rather than
+#: leaving the first read's answer in the queue. This is the pattern the table
+#: already has at promotion._DISCREPANCY_UPSERT and persistence.write_discrepancies,
+#: and it must stay identical to both: the conflict target and the partial clause
+#: are matched to ix_bp_extraction_discrepancy_open_key BY SHAPE, so a site that
+#: disagrees with the index is rejected outright by Postgres ("there is no unique
+#: or exclusion constraint matching the ON CONFLICT specification") rather than
+#: warning. The index is
+#:   UNIQUE (doc_type, coalesce(doc_pk_candidate,''), coalesce(source_file,''),
+#:           issue_type, coalesce(field_name,''))
+#:   WHERE coalesce(status,'open') <> 'resolved'
+#: so ANY non-resolved row occupies the slot -- 'dismiss' and 'ignored' included.
+#: `status` is deliberately NOT in the SET list: refreshing the evidence must not
+#: resurrect a proposal a person dismissed.
+#: Replaced a SELECT-then-INSERT, which (a) left a superseded parent in the queue
+#: for confirm() to validate against, (b) could never close the losing row when
+#: two documents share one contract_id, and (c) was a TOCTOU -- two passes both
+#: saw nothing and the second INSERT raised UniqueViolation out of the middle of a
+#: run, with the rows already written committed (get_conn is AUTOCOMMIT).
+_PROPOSAL_UPSERT = """
+    INSERT INTO proc.bp_extraction_discrepancy
+        (doc_type, source_file, doc_pk_candidate, field_name,
+         issue_type, severity, raw_value, expected_value,
+         computed_value, blocks_promotion, notes)
+    VALUES ('contract', %s, %s, %s, %s, 'info', NULL, %s, %s, false, %s)
+    ON CONFLICT (doc_type, coalesce(doc_pk_candidate, ''),
+                 coalesce(source_file, ''),
+                 issue_type, coalesce(field_name, ''))
+    WHERE coalesce(status, 'open') <> 'resolved'
+    DO UPDATE SET
+      expected_value = EXCLUDED.expected_value,
+      computed_value = EXCLUDED.computed_value,
+      severity = EXCLUDED.severity,
+      notes = EXCLUDED.notes,
+      blocks_promotion = EXCLUDED.blocks_promotion
+"""
+
 #: Below this the evidence is too thin to be worth a person's attention. The
 #: linking engine's own review band -- not a number invented here.
 MIN_SCORE = 65.0
@@ -147,15 +184,80 @@ def candidate_parents(cur, child: dict) -> list[dict]:
     Narrowed by supplier in SQL rather than in Python: without it this is 3,051
     score_link calls per child, and the deal-assignment service has already
     taught this product what an unnarrowed per-document query costs.
+
+    THIRD source, and it does not depend on the supplier: the contracts this
+    document NAMES. Measured on a real order form 2026-10-03 -- it printed
+    "Framework Agreement No. FA-2026-0042", its framework was sitting in
+    proc.bp_contracts under exactly that id, and it got no proposal at all,
+    because the supplier extractor had read the words "Framework Agreement No"
+    as the supplier name and the supplier gate returned [] before anything
+    looked. The supplier narrows a SEARCH; it is not a precondition for one, and
+    a reference that resolves to a real contract is the strongest signal this
+    layer has. An id lookup is bounded by definition, so nothing is paid for it.
+
+    A named contract still has to be a structure this child may sit under: a
+    reference is evidence, not an override, and a SOW does not sit under an
+    order form however explicitly it names one.
     """
     wanted = _wanted_parent_types(child)
     if not wanted:
         return []
     supplier = child.get("supplier_id")
-    if not supplier:
-        return []
 
     out: list[dict] = []
+    # One contract, one candidate. A registered contract whose PDF is later
+    # uploaded sits in BOTH tables under the same contract_id, and counted twice
+    # it ties with itself: best - runner_up = 0, so routing reads 'contested' and
+    # the proposed parent appears in its own alternatives list. The document row
+    # is kept over the register row -- it carries resolved_doc_type read from the
+    # page rather than mapped from free text. Keyed on the same normalisation
+    # references use, so 'c02397' and 'C02397' are one contract here too.
+    seen: set[str] = set()
+
+    # 1. The contracts this document names. No supplier needed.
+    own = _ch._norm_ref(child.get("contract_id"))
+    for ref in _claimed_references(child):
+        if _ch._norm_ref(ref) == own:
+            continue                     # itself; _drop_self_parent_reference's case
+        cur.execute(
+            """SELECT contract_id, contract_title, supplier_id, resolved_doc_type,
+                      contract_start_date, contract_end_date
+                 FROM proc.bp_contracts
+                WHERE upper(regexp_replace(contract_id, '[^A-Za-z0-9]', '', 'g'))
+                      = upper(regexp_replace(%s, '[^A-Za-z0-9]', '', 'g'))""",
+            (ref,),
+        )
+        rows = [dict(zip(
+            ("contract_id", "contract_title", "supplier_id", "resolved_doc_type",
+             "contract_start_date", "contract_end_date"), r)) for r in cur.fetchall()]
+        if not rows:
+            cur.execute(
+                """SELECT contract_id, contract_title, supplier_id, contract_type,
+                          contract_start_date, contract_end_date
+                     FROM proc.bp_contract_master
+                    WHERE upper(regexp_replace(contract_id, '[^A-Za-z0-9]', '', 'g'))
+                          = upper(regexp_replace(%s, '[^A-Za-z0-9]', '', 'g'))""",
+                (ref,),
+            )
+            rows = []
+            for r in cur.fetchall():
+                row = dict(zip(
+                    ("contract_id", "contract_title", "supplier_id", "contract_type",
+                     "contract_start_date", "contract_end_date"), r))
+                row["resolved_doc_type"] = structure_for_contract_type(row.pop("contract_type"))
+                rows.append(row)
+        for row in rows:
+            key = _ch._norm_ref(row["contract_id"])
+            if key in seen or key == own:
+                continue
+            if row["resolved_doc_type"] not in wanted:
+                continue                 # evidence, not an override
+            seen.add(key)
+            out.append(row)
+
+    # 2. Everything this supplier holds that the child could sit under.
+    if not supplier:
+        return out
     cur.execute(
         """SELECT contract_id, contract_title, supplier_id, resolved_doc_type,
                   contract_start_date, contract_end_date
@@ -165,9 +267,14 @@ def candidate_parents(cur, child: dict) -> list[dict]:
         (supplier, sorted(wanted), child.get("contract_id")),
     )
     for r in cur.fetchall():
-        out.append(dict(zip(
+        row = dict(zip(
             ("contract_id", "contract_title", "supplier_id", "resolved_doc_type",
-             "contract_start_date", "contract_end_date"), r)))
+             "contract_start_date", "contract_end_date"), r))
+        key = _ch._norm_ref(row["contract_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
 
     cur.execute(
         """SELECT contract_id, contract_title, supplier_id, contract_type,
@@ -183,7 +290,11 @@ def candidate_parents(cur, child: dict) -> list[dict]:
         # The corpus's free-text type, read as a structure. Not written back:
         # contract_type is source data.
         row["resolved_doc_type"] = structure_for_contract_type(row.pop("contract_type"))
+        key = _ch._norm_ref(row["contract_id"])
+        if key in seen:
+            continue
         if row["resolved_doc_type"] in wanted:
+            seen.add(key)
             out.append(row)
     return out
 
@@ -300,31 +411,6 @@ def propose_parent_links(limit: Optional[int] = None) -> dict:
 
             source_file = _source_file_for(cur, child["contract_id"])
 
-            # Idempotent: the same five key columns the unique index enforces, so
-            # the SELECT and the index agree. A scheduler tick must not stack.
-            # The five key columns AND the partial clause, copied from the index
-            # verbatim. The index is
-            #   UNIQUE (doc_type, coalesce(doc_pk_candidate,''),
-            #           coalesce(source_file,''), issue_type, coalesce(field_name,''))
-            #   WHERE coalesce(status,'open') <> 'resolved'
-            # so ANY non-resolved row occupies the slot -- 'dismiss' and 'ignored'
-            # included. Testing `status = 'open'` instead would miss a dismissed
-            # row and the INSERT below would then hit a unique violation.
-            # bp_testdb has only open/resolved today, but bp_sqldb carries
-            # dismissed and ignored rows, and that is a deployment target.
-            cur.execute(
-                """SELECT 1 FROM proc.bp_extraction_discrepancy
-                    WHERE doc_type = 'contract'
-                      AND coalesce(doc_pk_candidate,'') = %s
-                      AND coalesce(source_file,'') = %s
-                      AND issue_type = %s
-                      AND coalesce(field_name,'') = %s
-                      AND coalesce(status,'open') <> 'resolved' LIMIT 1""",
-                (child["contract_id"], source_file, ISSUE_TYPE, FIELD_NAME),
-            )
-            if cur.fetchone():
-                continue
-
             why = {d["id"]: d["status"] for d in best["signals"]}
             # The scored output reads MISSING for a dangling reference and for an
             # absent one alike. We still hold the raw field, so say which it was.
@@ -335,12 +421,7 @@ def propose_parent_links(limit: Optional[int] = None) -> dict:
                     f"It names {', '.join(claimed)}, which no contract matches, so "
                     f"that reference was ignored rather than counted against it. ")
             cur.execute(
-                """INSERT INTO proc.bp_extraction_discrepancy
-                       (doc_type, source_file, doc_pk_candidate, field_name,
-                        issue_type, severity, raw_value, expected_value,
-                        computed_value, blocks_promotion, notes)
-                   VALUES ('contract', %s, %s, %s, %s, 'info', NULL, %s, %s,
-                           false, %s)""",
+                _PROPOSAL_UPSERT,
                 (
                     source_file, child["contract_id"], FIELD_NAME, ISSUE_TYPE,
                     best_parent["contract_id"],
