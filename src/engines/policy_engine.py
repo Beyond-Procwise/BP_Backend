@@ -21,10 +21,34 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# How long a degraded engine waits before trying the store again. base_agent
+# builds ONE PolicyEngine during startup and never rebuilds it, so without a
+# retry a database blip during boot left that agent with zero policies for the
+# life of the process. With one, a read costs at most one connect attempt per
+# cooldown window rather than one per authorization decision.
+_RETRY_COOLDOWN_SECONDS = 30.0
+
+
+class PolicyStoreUnavailable(RuntimeError):
+    """``proc.bp_policy`` could not be read.
+
+    Raised rather than answering with an empty policy set. An unreadable store
+    and a store that holds no applicable policy produce the same empty result,
+    and every caller here reads that result as consent: ``policies_for_action``
+    returns ``[]`` and ``guardrail.authorize`` falls through to its
+    default-allow branch; ``get_policy`` returns ``None`` and
+    ``validate_and_apply`` answers "Validation successful (default weights)".
+    An outage must not be able to say yes.
+
+    Mirrors :class:`engines.rule_book.RuleBookUnavailable`, which already
+    refuses this trade and names this module as the counter-example.
+    """
 
 
 class PolicyEngine:
@@ -68,15 +92,17 @@ class PolicyEngine:
         else:
             self._connection_factory = None
 
-        self._policies: List[Dict[str, Any]] = self._load_policies(policy_rows)
+        # Availability is tracked separately from emptiness. `policy_rows=[]` is
+        # a legitimate "this store holds no policies" fixture; a query that
+        # failed is not, and the two must not produce the same answer.
+        self._store_available = True
+        self._store_error: Optional[BaseException] = None
+        self._last_attempt_at = 0.0
+        self.retry_cooldown_seconds = _RETRY_COOLDOWN_SECONDS
         self._slug_index: Dict[str, Dict[str, Any]] = {}
-        for policy in self._policies:
-            for alias in policy.get("aliases", set()):
-                if alias not in self._slug_index:
-                    self._slug_index[alias] = policy
 
-        self.supplier_policies = self._collect_supplier_policies()
-        self._normalise_weight_policy()
+        self._policies: List[Dict[str, Any]] = self._load_policies(policy_rows)
+        self._rebuild_indexes()
         logger.info("PolicyEngine loaded %d policies", len(self._policies))
 
     # ------------------------------------------------------------------
@@ -172,7 +198,9 @@ class PolicyEngine:
         ]
         with self._connect() as conn:
             if conn is None:
-                return []
+                raise PolicyStoreUnavailable(
+                    "no database connection available for proc.bp_policy"
+                )
             try:
                 with conn.cursor() as cursor:
                     cursor.execute(
@@ -199,9 +227,12 @@ class PolicyEngine:
                     rows = cursor.fetchall()
                     if cursor.description:
                         columns = [col[0] for col in cursor.description]
-            except Exception:
-                logger.exception("Failed to load policies from database")
-                return []
+            except PolicyStoreUnavailable:
+                raise
+            except Exception as exc:  # noqa: BLE001 - an unreadable store is an outage
+                raise PolicyStoreUnavailable(
+                    f"could not read proc.bp_policy: {exc}"
+                ) from exc
         return [dict(zip(columns, row)) for row in rows] if rows else []
 
     def _normalise_policy_row(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -269,7 +300,32 @@ class PolicyEngine:
     def _load_policies(
         self, override_rows: Optional[Iterable[Dict[str, Any]]]
     ) -> List[Dict[str, Any]]:
-        rows = list(override_rows) if override_rows is not None else self._fetch_policy_rows()
+        """Load policies, recording an unreadable store rather than raising.
+
+        Construction must survive a governance outage: ``base_agent`` builds a
+        PolicyEngine during API startup, and raising here would turn a database
+        blip into a boot failure -- a degraded boot being exactly when the
+        audit trail matters most. The outage is recorded on the instance
+        instead, and the read paths that make authorization decisions refuse.
+        """
+
+        if override_rows is not None:
+            rows: List[Dict[str, Any]] = list(override_rows)
+        else:
+            try:
+                rows = self._fetch_policy_rows()
+            except PolicyStoreUnavailable as exc:
+                self._store_available = False
+                self._store_error = exc
+                self._last_attempt_at = time.monotonic()
+                logger.error(
+                    "PolicyEngine could not read proc.bp_policy; every policy "
+                    "lookup will refuse until it can: %s",
+                    exc,
+                )
+                return []
+        self._store_available = True
+        self._store_error = None
         policies: List[Dict[str, Any]] = []
         for row in rows:
             policy = self._normalise_policy_row(row)
@@ -277,10 +333,63 @@ class PolicyEngine:
                 policies.append(policy)
         return policies
 
+    def _rebuild_indexes(self) -> None:
+        self._slug_index = {}
+        for policy in self._policies:
+            for alias in policy.get("aliases", set()):
+                if alias not in self._slug_index:
+                    self._slug_index[alias] = policy
+        self.supplier_policies = self._collect_supplier_policies()
+        self._normalise_weight_policy()
+
+    # ------------------------------------------------------------------
+    # Store health
+    # ------------------------------------------------------------------
+    @property
+    def policy_store_available(self) -> bool:
+        """False when the last load could not read ``proc.bp_policy``.
+
+        An empty policy list does NOT imply this is False -- a store can
+        legitimately hold no policies.
+        """
+
+        return self._store_available
+
+    @property
+    def policy_store_error(self) -> Optional[BaseException]:
+        """Why the store could not be read, or ``None``."""
+
+        return self._store_error
+
+    def _require_store(self) -> None:
+        """Refuse the read when the store could not be loaded.
+
+        Retries once per cooldown window first, so a blip during startup does
+        not permanently strand a long-lived engine on an empty policy set.
+        """
+
+        if self._store_available:
+            return
+        waited = time.monotonic() - self._last_attempt_at
+        if waited >= self.retry_cooldown_seconds:
+            logger.info("PolicyEngine retrying proc.bp_policy after an outage")
+            self._policies = self._load_policies(None)
+            self._rebuild_indexes()
+            if self._store_available:
+                logger.info(
+                    "PolicyEngine recovered: %d policies", len(self._policies)
+                )
+                return
+        raise PolicyStoreUnavailable(
+            f"proc.bp_policy could not be read: {self._store_error}"
+        )
+
     def _collect_supplier_policies(self) -> List[Dict[str, Any]]:
         collected: List[Dict[str, Any]] = []
         for slug in self.SUPPLIER_POLICY_SLUGS:
-            policy = self.get_policy(slug)
+            # _lookup_policy, not get_policy: this runs during load, when the
+            # store health check would either raise or recurse into a reload.
+            policy = self._lookup_policy(slug)
             if policy:
                 collected.append(policy)
         if collected:
@@ -293,7 +402,7 @@ class PolicyEngine:
 
     def _normalise_weight_policy(self) -> None:
         """Ensure default supplier ranking weights sum to 1."""
-        weight_policy = self.get_policy("weight_allocation_policy")
+        weight_policy = self._lookup_policy("weight_allocation_policy")
         if not weight_policy:
             return
         rules = weight_policy.get("details", {}).get("rules", {})
@@ -314,13 +423,7 @@ class PolicyEngine:
     def reload_policies(self) -> None:
         """Re-read policies from the database and rebuild internal caches."""
         self._policies = self._load_policies(None)
-        self._slug_index = {}
-        for policy in self._policies:
-            for alias in policy.get("aliases", set()):
-                if alias not in self._slug_index:
-                    self._slug_index[alias] = policy
-        self.supplier_policies = self._collect_supplier_policies()
-        self._normalise_weight_policy()
+        self._rebuild_indexes()
         logger.info("PolicyEngine reloaded %d policies", len(self._policies))
 
     def list_policies(self) -> List[Dict[str, Any]]:
@@ -330,6 +433,19 @@ class PolicyEngine:
         return iter(self._policies)
 
     def get_policy(self, slug: str) -> Optional[Dict[str, Any]]:
+        """The policy named ``slug``, or ``None`` when no policy defines it.
+
+        Raises :class:`PolicyStoreUnavailable` when the store could not be
+        read. ``None`` means "no such policy", which callers are entitled to
+        treat as "nothing restricts this"; an outage is not that.
+        """
+
+        self._require_store()
+        return self._lookup_policy(slug)
+
+    def _lookup_policy(self, slug: str) -> Optional[Dict[str, Any]]:
+        """``get_policy`` without the store health check, for use during load."""
+
         key = self._slugify(slug)
         if not key:
             return None
@@ -349,6 +465,7 @@ class PolicyEngine:
         exactly one place.
         """
 
+        self._require_store()
         wanted = str(action or "").strip()
         if not wanted:
             return []
@@ -370,9 +487,27 @@ class PolicyEngine:
         """Validate a workflow against policy rules."""
 
         if workflow_name == "supplier_ranking":
+            # Only this branch reads the policy store, so only this branch can
+            # be wrong about it. The fall-through below consults nothing, so
+            # gating it on store health would add denials without adding
+            # safety.
+            try:
+                self._require_store()
+            except PolicyStoreUnavailable as exc:
+                logger.error(
+                    "refusing supplier_ranking: the policy store is unreadable: %s",
+                    exc,
+                )
+                return {
+                    "allowed": False,
+                    "reason": (
+                        "Policy store unavailable; refusing to rank without "
+                        f"the governing weights ({exc})"
+                    ),
+                }
             criteria = input_data.get("criteria")
             if not criteria:
-                weight_policy = self.get_policy("weight_allocation_policy") or {}
+                weight_policy = self._lookup_policy("weight_allocation_policy") or {}
                 rules = weight_policy.get("details", {}).get("rules", {})
                 default_weights = (
                     rules.get("default_weights", {}) if isinstance(rules, dict) else {}
@@ -405,7 +540,21 @@ class PolicyEngine:
                 )
                 return False, reason, intent
 
-            weight_policy = self.get_policy("weight_allocation_policy")
+            try:
+                weight_policy = self.get_policy("weight_allocation_policy")
+            except PolicyStoreUnavailable as exc:
+                # Distinct from the branch below: "not defined yet" is a
+                # deliberate hole, "could not be read" is an outage, and
+                # letting the outage take the hole is the fail-open bug.
+                logger.error(
+                    "refusing rank_by_criteria: the policy store is unreadable: %s",
+                    exc,
+                )
+                reason = (
+                    "Policy validation failed: the policy store is unavailable "
+                    f"({exc})"
+                )
+                return False, reason, intent
             if not weight_policy:
                 # When the weight allocation policy is not yet defined in the
                 # database, allow the ranking workflow to proceed with the

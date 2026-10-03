@@ -345,16 +345,25 @@ def test_a_governance_database_that_cannot_be_read_is_not_reported_as_ungoverned
         def cursor(self):
             return _DeadCursor()
 
-    from engines.policy_engine import PolicyEngine
+    from engines.policy_engine import PolicyEngine, PolicyStoreUnavailable
     import src.services.governance_tools.envelope as E
 
     # Exactly what production holds after the governance query starts failing:
-    # engines that loaded nothing and told nobody. (A factory that fails to
-    # CONNECT does raise, and is already handled; this is the quieter one.)
+    # engines that loaded nothing. (A factory that fails to CONNECT does raise,
+    # and is already handled; this is the quieter one.)
     monkeypatch.setattr(GT, "_pol", PolicyEngine(connection_factory=_DeadConn))
     monkeypatch.setattr(GT, "_pe", _DeadPromptEngine())
 
     assert GT._pol.list_policies() == [], "premise: the engine loaded nothing"
+    # ...and it no longer loads nothing SILENTLY. The engine used to be unable
+    # to tell an unreadable store from a store with no policies, which is what
+    # let an outage read as "no policy applies". list_policies still reports an
+    # empty inventory rather than raising -- health endpoints and the agents'
+    # governing-policies lookup read it -- but the health flag distinguishes
+    # the two, and every lookup that decides authorization refuses.
+    assert GT._pol.policy_store_available is False
+    with pytest.raises(PolicyStoreUnavailable):
+        GT._pol.policies_for_action("email.send")
 
     with pytest.raises(E.GovernanceUnavailable):
         E.resolve_governance("supplier_ranking")
