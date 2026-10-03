@@ -306,4 +306,83 @@ def party_candidates(full_text: str) -> list[Candidate]:
 
 
 __all__ = ["Parties", "read_parties", "party_candidates", "CONFIDENCE",
-           "SUPPLIER_FIELD", "BUYER_FIELD"]
+           "SUPPLIER_FIELD", "BUYER_FIELD", "Correction", "decide_correction",
+           "BROKEN_SOURCE", "HUMAN_SOURCE"]
+
+
+# ---------------------------------------------------------------------------
+# Correcting rows that were written before the party clause was read.
+#
+# A backfill that cannot say WHY it changed a stored value is indistinguishable
+# from a second bug, so the decision is here, next to the reader, and tested --
+# not SQL inside a script.
+# ---------------------------------------------------------------------------
+
+#: The provenance source that produced the wrong values: the entity sweep. It is
+#: the only source a backfill may overrule, because it is the one proven to hand
+#: identical candidate lists to both party fields and to offer clause headings
+#: ("Services", "LIABILITY") as companies.
+BROKEN_SOURCE = "ner"
+
+#: A human's correction outranks everything, including this.
+HUMAN_SOURCE = "hitl"
+
+
+@dataclass(frozen=True)
+class Correction:
+    """What a stored row should hold, and why."""
+
+    supplier: Optional[str]
+    buyer: Optional[str]
+    changed: bool
+    reason: str
+
+
+def decide_correction(
+    *,
+    full_text: str,
+    stored_supplier: Optional[str],
+    stored_buyer: Optional[str],
+    provenance_source: Optional[str],
+) -> Correction:
+    """Should this row's party fields change, and to what?
+
+    Four rules, in order. Each one is a test in
+    tests/services/extraction/test_contract_parties.py.
+
+    1. A human-confirmed value is never touched.
+    2. A row with no stored text cannot be re-read, so it is left alone. Guessing
+       in that case is worse than skipping.
+    3. If the document states its parties, they are the answer.
+    4. If it does not, the stored value only goes when it came from the entity
+       sweep -- the one path proven broken. The context layer reads the whole
+       document and is grounding-checked, so a backfill has no standing to
+       overrule it, and an absent provenance is not evidence of the sweep.
+    """
+    if (provenance_source or "").lower() == HUMAN_SOURCE:
+        return Correction(stored_supplier, stored_buyer, False,
+                          "a human confirmed this value; nothing overrules that")
+    if not (full_text or "").strip():
+        return Correction(stored_supplier, stored_buyer, False,
+                          "no stored text to re-read; left as found")
+
+    parties = read_parties(full_text)
+    if parties.supplier or parties.buyer:
+        changed = (parties.supplier != stored_supplier) or (parties.buyer != stored_buyer)
+        return Correction(
+            parties.supplier, parties.buyer, changed,
+            "read from the document's own party clause"
+            + ("" if changed else " and already stored correctly"),
+        )
+
+    if (provenance_source or "").lower() == BROKEN_SOURCE and (stored_supplier or stored_buyer):
+        return Correction(
+            None, None, True,
+            "the document does not state its parties and the stored value came "
+            "from the entity sweep, which had no way to tell a party from a "
+            "clause heading; cleared rather than left as a fact",
+        )
+
+    return Correction(stored_supplier, stored_buyer, False,
+                      "the document does not state its parties and the stored "
+                      "value did not come from the sweep; left as found")

@@ -496,3 +496,56 @@ Before: **six supplier values out of six wrong**, and `supplier_id == buyer_org_
 After: **six out of six right** — four read deterministically from the clause, two grounded by
 the context layer on documents that state no roles — and the two fields can no longer hold the
 same value. 31 tests, every one of them red before its fix.
+
+
+## 11. The backfill, 2026-10-03
+
+Asked for after §10 landed: correct the contracts already stored.
+
+**There was nothing to correct.** `proc.bp_contract_raw` holds **6 rows on bp_testdb** — the six
+documents of this verification, all re-extracted after the fix — and **0 rows on bp_sqldb**. The
+product has never ingested a contract other than these six, so no historical row carries the
+wrong supplier. `proc.bp_contract_master`, the 3,051-row register, is a **view** whose
+`supplier_id` holds proper identifiers (`S3990`, `S4265`, …); it is derived source data, not
+extraction output, and nothing here touches it.
+
+The correction was still written, for two reasons: the next corpus of real contracts will need
+it, and running it is the cleanest proof that the six stored rows are right.
+
+`scripts/backfill_contract_parties.py` re-reads the party clause from
+`parser_snapshot->>'full_text'`, which every raw row already keeps — so it needs **no
+re-extraction, no GPU, no model and no watcher**. Its four rules live in
+`contract_parties.decide_correction`, each one a test:
+
+1. a human-confirmed value (provenance `hitl`) is never touched;
+2. a row with no stored text is left alone — guessing there is worse than skipping;
+3. if the document states its parties, they are the answer;
+4. if it does not, the stored value is cleared **only** when it came from the entity sweep. The
+   context layer reads the whole document and is grounding-checked, so a backfill has no
+   standing to overrule it, and an absent provenance is not evidence of the sweep.
+
+**Dry run over the six live rows:** `0 corrected, 0 cleared, 6 unchanged` — four verified
+against their own party clause, two left alone as silent documents whose value came from the
+context layer rather than the sweep.
+
+**Then it was proven to correct, on live rows rather than fixtures.** Two rows were deliberately
+put back into the pre-fix state and the script run with `--apply`:
+
+| Document | Before | After | Rule |
+|---|---|---|---|
+| `framework2.pdf` | supplier `BrightWave Digital Ltd.` (the buyer), provenance `ner` | supplier **`NexaSpark Marketing Ltd.`**, buyer `BrightWave Digital Ltd.` | 3 — read from the clause |
+| `order_form_with_framework.pdf` | supplier `Framework Agreement No`, provenance `ner` | **NULL** both fields | 4 — silent document, sweep value cleared |
+
+Both tiers moved together: `proc.bp_contracts.FA-2026-0077` now reads
+`NexaSpark Marketing Ltd.` with `last_modified_by = 'backfill_contract_parties'`, and the raw
+rows' provenance was rewritten to `parties` / `parties-cleared` with a `backfilled_at`
+timestamp, so no row keeps claiming the sweep's answer. Against `bp_sqldb`:
+`proc.bp_contract_raw is empty: nothing to correct.`
+
+**What the backfill does not do.** It corrects the two party fields and nothing else.
+`contract_signatory_name` reads **`Email Marketing`** on the real Marketing Agreement — the same
+default NER path, the PERSON type instead of ORG, and a single field so no duplication hid it.
+`jurisdiction` reads `United Kingdom` on five of six, which is correct. Those two fields were
+left exactly as found: the fix for the signatory is to read the signature block, which is its own
+piece of work, and barring it from the sweep would also throw away the jurisdiction values that
+are right.

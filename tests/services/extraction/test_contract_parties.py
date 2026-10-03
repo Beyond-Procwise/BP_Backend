@@ -264,3 +264,76 @@ def test_a_drafting_colon_after_a_party_word_yields_nothing():
                      "the Buyer: may terminate.\n")
     assert p.supplier is None, p
     assert p.buyer is None, p
+
+
+# ---------------------------------------------------------------------------
+# The backfill decision. A correction that cannot say WHY it changed a stored
+# value is indistinguishable from a second bug, so the rule is a tested function
+# rather than SQL in a script.
+# ---------------------------------------------------------------------------
+
+def _decide(**kw):
+    from src.services.extraction.engineered.contract_parties import decide_correction
+    return decide_correction(**kw)
+
+
+def test_the_clause_corrects_a_wrong_stored_supplier():
+    d = _decide(full_text=REAL_MARKETING_AGREEMENT, stored_supplier="BrightWave Digital Ltd.",
+                stored_buyer="BrightWave Digital Ltd.", provenance_source="ner")
+    assert d.supplier == "NexaSpark Marketing Ltd."
+    assert d.buyer == "BrightWave Digital Ltd."
+    assert d.changed is True
+    assert "party clause" in d.reason
+
+
+def test_a_value_the_clause_agrees_with_is_left_alone():
+    d = _decide(full_text=REAL_MARKETING_AGREEMENT, stored_supplier="NexaSpark Marketing Ltd.",
+                stored_buyer="BrightWave Digital Ltd.", provenance_source="parties")
+    assert d.changed is False, d
+
+
+def test_a_silent_document_whose_value_came_from_the_broken_sweep_is_cleared():
+    """The value came from the exact path proven to emit identical lists for both
+    party fields, and the document does not state its parties: there is no evidence
+    for it, so it goes. Provenance is what makes this decidable."""
+    d = _decide(full_text="ORDER FORM\nTotal GBP 12,500.\n",
+                stored_supplier="Framework Agreement No", stored_buyer="Framework Agreement No",
+                provenance_source="ner")
+    assert d.supplier is None and d.buyer is None
+    assert d.changed is True
+    assert "sweep" in d.reason
+
+
+def test_a_silent_document_whose_value_came_from_elsewhere_is_left_alone():
+    """The context layer reads the whole document and is grounding-checked. It is
+    not the broken path, so a backfill has no standing to overrule it."""
+    d = _decide(full_text="ORDER FORM\nTotal GBP 12,500.\n",
+                stored_supplier="Helio Print Services Ltd.", stored_buyer=None,
+                provenance_source="context_layer")
+    assert d.changed is False, d
+    assert d.supplier == "Helio Print Services Ltd."
+
+
+def test_a_human_confirmed_value_is_never_touched():
+    d = _decide(full_text=REAL_MARKETING_AGREEMENT, stored_supplier="Someone Else Ltd.",
+                stored_buyer=None, provenance_source="hitl")
+    assert d.changed is False, d
+    assert d.supplier == "Someone Else Ltd."
+    assert "human" in d.reason
+
+
+def test_an_unknown_provenance_on_a_silent_document_is_left_alone():
+    """Absent provenance is not evidence that the sweep produced the value."""
+    d = _decide(full_text="ORDER FORM\nTotal GBP 12,500.\n",
+                stored_supplier="Helio Print Services Ltd.", stored_buyer=None,
+                provenance_source=None)
+    assert d.changed is False, d
+
+
+def test_an_empty_document_text_changes_nothing():
+    """A raw row with no stored full_text cannot be re-read, and a backfill that
+    guesses in that case is worse than one that skips."""
+    d = _decide(full_text="", stored_supplier="BrightWave Digital Ltd.",
+                stored_buyer=None, provenance_source="ner")
+    assert d.changed is False, d
+    assert "no stored text" in d.reason
