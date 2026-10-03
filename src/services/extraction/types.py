@@ -13,6 +13,7 @@ CandidateSource = Literal[
     "regex",       # L1 PatternRegistry
     "table",       # L2 table_extractor
     "ner",         # L2 ner_validator (rarely emits; mostly demotes)
+    "parties",     # L2 contract_parties (a contract's party clause, read)
     "address",     # L2 address_parser
     "date",        # L2 date_normaliser
     "bbox",        # L2 bbox_proximity

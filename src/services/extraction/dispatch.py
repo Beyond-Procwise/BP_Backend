@@ -234,6 +234,41 @@ def _map_recovered_lines(doc_type: str, recovered: list[dict]) -> list[dict[str,
     return mapped
 
 
+def _contract_party_candidates(doc_type: str, full_text: str):
+    """``(candidates, fields the entity sweep may not fill)`` for a contract.
+
+    Measured 2026-10-03 on the first six contract documents this product ever
+    ingested: `supplier_id` held the BUYER's name on five and the fragment
+    "Framework Agreement No" on the sixth, and `buyer_org_id` held the SAME value
+    as `supplier_id` on all six. `SpacyNERExtractor` only has party-aware branches
+    for the INVOICE field names (`supplier_name`, `buyer_id`), so a contract's
+    `supplier_id` / `buyer_org_id` fell through to its default path, which emits
+    every entity of the right TYPE for any field — identical lists for both
+    fields, including `Services`, `LIABILITY` and `Arbitration`.
+
+    The two fields are barred from the sweep EVEN WHEN THE CLAUSE SAYS NOTHING.
+    That is the point: a contract states its parties in words, and if this
+    document does not, the honest answer is NULL — the context layer can still
+    ground one from the whole document, and `missing_required` flags it for a
+    person. "The first ORG in the document" was wrong five times out of six, and
+    the sweep cannot tell a party from a clause heading.
+
+    Only for `doc_type == "contract"`. An invoice's `supplier_name` and `buyer_id`
+    have working position-aware branches and are untouched.
+    """
+    if doc_type != "contract":
+        return [], set()
+    try:
+        from src.services.extraction.engineered.contract_parties import (
+            BUYER_FIELD, SUPPLIER_FIELD, party_candidates,
+        )
+        return party_candidates(full_text), {SUPPLIER_FIELD, BUYER_FIELD}
+    except Exception:
+        log.exception("contract party clause read failed; parties left to the "
+                      "context layer (the entity sweep stays barred)")
+        return [], {"supplier_id", "buyer_org_id"}
+
+
 #: A parent-reference column and the structure it points AT. A document whose own
 #: structure is that structure cannot be its own parent, so the value it read is
 #: its own identifier and the pointer is the mistake; for any other structure the
@@ -376,6 +411,12 @@ def dispatch_document(
     # L1
     candidates = run_pattern_extractor(parsed, doc_type)
 
+    # L2 — a contract's parties, read from its party clause. BEFORE the entity
+    # sweep, because the sweep is what got them wrong on all six of the first
+    # contracts this product ingested.
+    _party_cands, _party_barred = _contract_party_candidates(doc_type, parsed.full_text)
+    candidates.extend(_party_cands)
+
     # L2 — engineered fallbacks for NER-typed fields the L1 regex missed.
     # Only fires for fields with judge.ner_type_check != 'none'.
     l1_fields = {c.field for c in candidates}
@@ -383,7 +424,10 @@ def dispatch_document(
         ner_candidates = fill_ner_gaps(
             parsed=parsed,
             schema=registry.schema,
-            existing_fields=l1_fields,
+            # `existing_fields` is "do not fill these". A contract's party fields
+            # are in it whether or not the clause was found: see
+            # _contract_party_candidates for why a fallback here is not wanted.
+            existing_fields=l1_fields | _party_barred,
         )
         candidates.extend(ner_candidates)
     except Exception as exc:

@@ -315,20 +315,17 @@ contracts a document **names** are now candidates in their own right, deduplicat
 other two sources and still filtered by structure — a reference is evidence, not an override, so
 a SOW does not sit under an order form however explicitly it names one.
 
-**Finding 3 — NOT fixed, recorded: supplier extraction on contracts is wrong in two ways.**
+**Finding 3 — FIXED after this record was first written (see §10). Supplier extraction on
+contracts was wrong in two ways.**
 
 | Document | `supplier_id` stored | What the page says |
 |---|---|---|
 | `framework.pdf`, `framework2.pdf`, `order_form2.pdf` | `BrightWave Digital Ltd.` | that is the **Buyer**; the Supplier is `NexaSpark Marketing Ltd.` |
 | `order_form_with_framework.pdf` | `Framework Agreement No` | not a party at all — a fragment of a sentence |
 
-`buyer_org_id` took the same value as `supplier_id` on every document. The supplier/buyer swap
-is a known open item (the 2026-06-16 E2E audit); "Framework Agreement No" as a supplier name is
-new evidence of how it fails. `supplier_id` has **no patterns** in
-`extraction_schemas/contract.yaml` — only `canonical_labels` and the model path — and fixing
-that is a different field, a different layer and a different piece of work. It is out of scope
-here and it is why §7.3's `supplier: OK` is coincidental. **A contract's supplier cannot be
-trusted today.**
+`buyer_org_id` took the same value as `supplier_id` on every document, and the real Marketing
+Agreement's candidate list also contained `Services`, `LIABILITY`, `Arbitration`,
+`SEVERABILITY` and `Bank Transfer to`. §10 has the root cause and the fix.
 
 **Finding 4 — fixed (`d7c0ad0`): standing down was being reported as a contradiction.** An
 order form that names no parent stands down, and the bare `order` alias inside its own heading
@@ -376,11 +373,14 @@ document.
    its being live says nothing about the contract one. Until something calls the contract
    runner, a contract's parent is proposed only when a person runs it by hand.
 
-7. **A contract's supplier is not trustworthy** (§7.4, finding 3). Every document in this
-   verification stored the BUYER's name as `supplier_id`, and one stored a sentence fragment.
-   Anything that reasons from a contract's supplier — including this layer's own `supplier`
-   signal and the supplier-narrowed half of `candidate_parents` — is reasoning from a field
-   that is wrong on six documents out of six.
+7. **A contract's supplier is read from its party clause, or it is NULL** (§10). Fixed after
+   this record was first written. What is still unproven: the clause reader is measured on six
+   documents, five of which I wrote, and the two shapes it reads (a labelled block, a role
+   definition clause) are the two shapes those six use. A contract that states its parties some
+   other way falls to the context layer, which on the two silent documents here answered
+   correctly but is not deterministic. `buyer_org_id` is NULL on those two, and
+   `supplier_id`/`buyer_org_id` still hold NAMES rather than resolved ids — entity resolution
+   to `proc.bp_supplier` is a separate layer and was not touched.
 8. **The proposal half is demonstrated on documents I wrote.** §7.3's chain is live and real,
    but both of its documents are mine. No corpus document has ever produced a parent proposal,
    because `proc.bp_contract_master`'s 3,051 rows are almost entirely parent-type structures —
@@ -414,3 +414,85 @@ here: `no_candidate` conflates "we never looked" with "nothing scored high enoug
 `1` in §7.3 for the Marketing Agreement, which has no supplier and no reference — and the
 proposal's notes carry the score and the per-signal detail but not `score_link`'s decision
 **band**, which §8 of the design promises.
+
+
+---
+
+## 10. Supplier extraction, fixed 2026-10-03 (after this record was first written)
+
+§7.4's finding 3 was recorded as an explicit non-fix and then fixed on Nick's instruction. It
+is written up here because the root cause is not where anyone would look for it.
+
+**The cause was not the model.** `SpacyNERExtractor.produce_candidates` has party-aware
+branches for exactly two field NAMES: `supplier_name` (header position plus a buyer-context
+filter) and `buyer_id` (the BILL TO block). Both are shaped for an invoice or a purchase order.
+The contract schema names its party fields **`supplier_id`** and **`buyer_org_id`**, so neither
+branch matched and both fields fell through to the default path — which emits *every* entity of
+the required type for *any* field. Two fields both asking for an ORG therefore received
+**identical candidate lists**, in the same order, so whatever was chosen for one was chosen for
+the other. Measured on the real Marketing Agreement, the `buyer_org_id` list was:
+
+```
+Services · Services · Bank Transfer to · NexaSpark Ltd. Account · the 'Effective Date'
+· Services · LIABILITY · Arbitration · SEVERABILITY · BrightWave\nDigital Ltd. · Services
+· the "Effective Date · Services
+```
+
+and on `order_form2.pdf` both fields got the same three: `BrightWave Digital Ltd.` (the buyer,
+first), `NexaSpark Marketing Ltd.` (the actual supplier, second), `Framework Agreement No`.
+A contract's first ORG is whichever party its "between A and B" sentence names first, which is
+normally the buyer. That is the whole bug.
+
+**Why no test caught it:** `en_core_web_sm` is installed in `.venv` — what the server runs —
+and **not** in `venv`, what pytest runs. Under test, `fill_ner_gaps` logs
+`[E050] Can't find model` and returns `[]`, so that branch has never executed in CI or locally.
+19 of the suite's pre-existing failures are the same missing model (§6).
+
+**The fix is to read the clause, not to guess better.** A contract has no masthead and no BILL
+TO block; it has a party clause, and it says in words which party is which.
+`src/services/extraction/engineered/contract_parties.py` reads the two shapes these documents
+use — a labelled block (`Supplier:` / `Buyer:` / `Vendor:` / `Client:` …, which are the
+`canonical_labels` `extraction_schemas/contract.yaml` has always declared and **nothing had
+ever read**) and a role definition clause (`X (hereinafter referred to as the "Marketer")`,
+`X ("the Supplier")`), mapping the role word to a side through a vocabulary that deliberately
+excludes `Company` — it is the buyer in an employment contract and the supplier in a services
+one, and guessing which is the failure being fixed.
+
+Three things it will not do: it does not guess (silence yields NULL, for the context layer to
+ground or `missing_required` to flag); it never returns the same name for both sides (that is a
+read error, not two facts); and its two fields are **barred from the entity sweep even when the
+clause says nothing**, so the original bug cannot return on the next silent document.
+
+**One correction the live run forced.** The first version anchored labels to the start of a
+line. On a real document that matched nothing: the parser collapses a contract's whole party
+block onto **one line** —
+
+```
+Framework Agreement No. FA-2026-0077 Buyer: BrightWave Digital Ltd., 123 Innovation Park,
+London, UK Supplier: NexaSpark Marketing Ltd., 125 Innovation Park, London, UK Effective
+Date: 5 January 2026 End Date: 4 January 2029
+```
+
+— so the colon, not the line start, is the label's signature. That change then needed two
+guards, both of which are tested: prose about a party (`the Supplier may be asked to provide`)
+has no colon and is excluded by that alone; a drafting colon (`If the Supplier: (a) fails to
+deliver`) is excluded by the value having to look like a name. A third bug surfaced with them:
+`re.IGNORECASE` on the whole pattern made the value's `[A-Z0-9]` match lowercase, so
+`the Buyer: may terminate` read `may terminate` as a party — the flag is now scoped to the
+label alternation only.
+
+**Live result, all six documents re-uploaded through the real watcher:**
+
+| Document | `supplier_id` | `buyer_org_id` | Source |
+|---|---|---|---|
+| Marketing Agreement (**REAL**) | `NexaSpark Marketing Ltd.` | `BrightWave Digital Ltd.` | `parties` (role clause) |
+| `framework.pdf` | `NexaSpark Marketing Ltd.` | `BrightWave Digital Ltd.` | `parties` (role clause) |
+| `framework2.pdf` | `NexaSpark Marketing Ltd.` | `BrightWave Digital Ltd.` | `parties` (labels) |
+| `order_form2.pdf` | `NexaSpark Marketing Ltd.` | `BrightWave Digital Ltd.` | `parties` (labels) |
+| `order_form_with_framework.pdf` | `NexaSpark Marketing Ltd.` | NULL | context layer — the document names no parties |
+| `order_form_no_parent.pdf` | `Helio Print Services Ltd.` | NULL | context layer — "between A and B", no role words |
+
+Before: **six supplier values out of six wrong**, and `supplier_id == buyer_org_id` on all six.
+After: **six out of six right** — four read deterministically from the clause, two grounded by
+the context layer on documents that state no roles — and the two fields can no longer hold the
+same value. 31 tests, every one of them red before its fix.
