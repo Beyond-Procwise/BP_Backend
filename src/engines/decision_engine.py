@@ -1228,6 +1228,16 @@ class DecisionEngine:
     CLOSING_ACTIONS = {"apply_value", "confirm", "approve", "reject", "dismiss"}
     KNOWN_ACTIONS = CLOSING_ACTIONS | {"flag", "escalate", "hold", "assign", "investigate", "query"}
 
+    #: The closing actions that mean "yes, do the thing", as opposed to setting the
+    #: finding aside. Only these may carry out a side effect beyond closing the row.
+    ACCEPTING_ACTIONS = {"apply_value", "confirm", "approve"}
+
+    #: src/services/contract_links.py writes its parent proposals into this same
+    #: table on purpose -- it is the queue a buyer already works. Accepting one must
+    #: go through contract_links.confirm(), which is the ONLY thing allowed to set
+    #: proc.bp_contracts.parent_contract_id.
+    CONTRACT_PARENT_ISSUE_TYPE = "contract_parent_proposed"
+
     def execute(
         self,
         finding_id: str,
@@ -1287,6 +1297,21 @@ class DecisionEngine:
                     "will be recorded against your name."
                 ),
             }
+
+        # A contract-parent proposal is not an extracted value to close: accepting it
+        # has to WRITE the link. Routed by issue_type because this method is otherwise
+        # issue-type-agnostic -- it closed the proposal, wrote nothing to
+        # proc.bp_contracts.parent_contract_id, and left contract_links.confirm()
+        # permanently unable to link it (confirm claims the row on status='open'). The
+        # next pass then re-proposed the same parent, so the button read as working and
+        # never did. Setting the proposal ASIDE still takes the ordinary path: a
+        # dismissal links nothing, and contract_links reads a dismissed row as still
+        # occupying the slot, so it will not re-propose.
+        if row.get("issue_type") == self.CONTRACT_PARENT_ISSUE_TYPE and action in self.ACCEPTING_ACTIONS:
+            return self._accept_contract_parent(
+                row, action=action, user_id=user_id, recommendation=recommendation,
+                conflicts=conflicts, override_reason=override_reason,
+            )
 
         # Work out the new state of the finding. STATUS_FOR_ACTION is the authority on
         # what may be written; only the resolved VALUE is derived per action here.
@@ -1388,6 +1413,87 @@ class DecisionEngine:
             # What was actually written. For apply_value this is the number carried
             # across — the thing the button has always claimed to do and never did.
             "resolved_value": resolved,
+            "overridden": bool(conflicts),
+            "override_reason": override_reason if conflicts else None,
+            "actioned_by": user_id,
+            "decision_id": decision_id,
+            "recommendation": recommendation.to_dict(),
+        }
+
+    def _accept_contract_parent(
+        self,
+        row: Dict[str, Any],
+        *,
+        action: str,
+        user_id: Optional[str],
+        recommendation: "Decision",
+        conflicts: bool,
+        override_reason: Optional[str],
+    ) -> Dict[str, Any]:
+        """Accepting a parent proposal: link it, or report that nothing was linked.
+
+        contract_links.confirm() closes the proposal itself, in the SAME statement
+        that claims it, and only then writes the link. So there is no generic UPDATE
+        here: a second one would close the row a second time and, worse, could close
+        it in the case where confirm() refused to link.
+        """
+        child = row.get("doc_pk_candidate")
+        parent = row.get("expected_value")
+        if not child or not parent:
+            return {
+                "applied": False,
+                "error": (
+                    "this parent proposal names no contract to link "
+                    f"(document={child!r}, proposed parent={parent!r}); nothing was linked"
+                ),
+                "recommendation": recommendation.to_dict(),
+            }
+
+        # Imported here, and called through the module, so the one place that may
+        # write parent_contract_id stays substitutable in tests.
+        from src.services import contract_links
+
+        try:
+            linked = contract_links.confirm(
+                str(child), str(parent), row.get("source_file") or "",
+                reviewer=user_id,
+            )
+        except Exception:
+            logger.exception("could not confirm contract parent for finding %s",
+                             row.get("discrepancy_id"))
+            return {
+                "applied": False,
+                "error": "could not link the parent contract",
+                "recommendation": recommendation.to_dict(),
+            }
+
+        if not linked:
+            # confirm() returns False when the proposal was not open (someone else
+            # acted first, or it was dismissed) or when the row it names is gone.
+            return {
+                "applied": False,
+                "conflict": True,
+                "error": (
+                    "this proposal is no longer open, so nothing was linked — "
+                    "reload the finding to see who acted on it"
+                ),
+                "recommendation": recommendation.to_dict(),
+            }
+
+        decision_id = self._record_human_action(
+            recommendation,
+            human_action=action,
+            actor=user_id,
+            override_reason=override_reason if conflicts else None,
+        )
+        return {
+            "applied": True,
+            "action": action,
+            "finding_id": str(row.get("discrepancy_id")),
+            "new_status": "resolved",
+            "resolved_value": str(parent),
+            "parent_contract_id": str(parent),
+            "contract_id": str(child),
             "overridden": bool(conflicts),
             "override_reason": override_reason if conflicts else None,
             "actioned_by": user_id,
