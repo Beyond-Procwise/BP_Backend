@@ -1,4 +1,4 @@
-"""Correct a contract's supplier_id / buyer_org_id from its own party clause.
+"""Correct a contract's parties and signatory from its own words.
 
 WHY. Until 2026-10-03 a contract's party fields were answered by the entity sweep,
 which had party-aware logic only for the INVOICE field names (`supplier_name`,
@@ -29,6 +29,10 @@ Apply, naming the database explicitly because bp_sqldb is not in .env:
     ./venv/bin/python scripts/backfill_contract_parties.py --apply
     DB_NAME=bp_sqldb ./venv/bin/python scripts/backfill_contract_parties.py --apply
 
+It corrects THREE fields: `supplier_id`, `buyer_org_id` (from the party clause) and
+`contract_signatory_name`/`_role` (from the signature block — the same default NER
+path stored "Email Marketing" as the person who signed the real Marketing Agreement).
+
 Both tiers are updated together: `proc.bp_contract_raw` and, through the row's
 `contract_id`, `proc.bp_contracts`. A corrected field's provenance is rewritten to
 say the party clause produced it, with `backfilled_at`, so the row does not keep
@@ -50,12 +54,17 @@ from config.settings import Settings  # noqa: E402
 from src.services.extraction.engineered.contract_parties import (  # noqa: E402
     BUYER_FIELD, CONFIDENCE, SUPPLIER_FIELD, decide_correction,
 )
+from src.services.extraction.engineered.contract_signatories import (  # noqa: E402
+    NAME_FIELD, ROLE_FIELD, decide_signatory_correction,
+)
 
 _READ = """
     SELECT raw_id, source_file, contract_id, supplier_id, buyer_org_id,
            parser_snapshot->>'full_text'                                AS full_text,
            parser_snapshot->'_field_provenance'->'supplier_id'->>'source' AS sup_src,
-           parser_snapshot->'_field_provenance'->'buyer_org_id'->>'source' AS buy_src
+           parser_snapshot->'_field_provenance'->'buyer_org_id'->>'source' AS buy_src,
+           contract_signatory_name, contract_signatory_role,
+           parser_snapshot->'_field_provenance'->'contract_signatory_name'->>'source' AS sig_src
       FROM proc.bp_contract_raw
      ORDER BY raw_id
 """
@@ -102,7 +111,7 @@ def main() -> int:
         print("proc.bp_contract_raw is empty: nothing to correct.")
         return 0
 
-    corrected = cleared = unchanged = 0
+    corrected = cleared = unchanged = signatories = 0
     for r in rows:
         # The two fields share one decision, because the bug was that they shared
         # one answer. Provenance is read from supplier_id, falling back to buyer.
@@ -112,7 +121,44 @@ def main() -> int:
             stored_buyer=r["buyer_org_id"],
             provenance_source=r["sup_src"] or r["buy_src"],
         )
+        sg = decide_signatory_correction(
+            full_text=r["full_text"] or "",
+            stored_name=r["contract_signatory_name"],
+            stored_role=r["contract_signatory_role"],
+            provenance_source=r["sig_src"],
+        )
         name = (r["source_file"] or "").split("/")[-1] or f"raw_id={r['raw_id']}"
+        if sg.changed:
+            mark = "x" if sg.name is None else ">"
+            print(f"  {mark} {name:38s} signatory: {str(r['contract_signatory_name'])!r}"
+                  f" -> {str(sg.name)!r}")
+            print(f"    {'':38s} why: {sg.reason}")
+            signatories += 1
+            if args.apply:
+                patch = _provenance_patch({NAME_FIELD: sg.name})
+                cur.execute(
+                    """UPDATE proc.bp_contract_raw
+                          SET contract_signatory_name = %s,
+                              contract_signatory_role = %s,
+                              parser_snapshot = jsonb_set(
+                                  coalesce(parser_snapshot, '{}'::jsonb),
+                                  '{_field_provenance}',
+                                  coalesce(parser_snapshot->'_field_provenance', '{}'::jsonb)
+                                      || %s::jsonb,
+                                  true)
+                        WHERE raw_id = %s""",
+                    (sg.name, sg.role, json.dumps(patch), r["raw_id"]),
+                )
+                if r["contract_id"]:
+                    cur.execute(
+                        """UPDATE proc.bp_contracts
+                              SET contract_signatory_name = %s,
+                                  contract_signatory_role = %s,
+                                  last_modified_by = 'backfill_contract_parties',
+                                  last_modified_date = NOW()
+                            WHERE contract_id = %s""",
+                        (sg.name, sg.role, r["contract_id"]),
+                    )
         if not d.changed:
             unchanged += 1
             print(f"  = {name:38s} supplier={str(r['supplier_id']):26s} -- {d.reason}")
@@ -156,7 +202,8 @@ def main() -> int:
                 (d.supplier, d.buyer, r["contract_id"]),
             )
 
-    print(f"\n{len(rows)} row(s): {corrected} corrected, {cleared} cleared, {unchanged} unchanged")
+    print(f"\n{len(rows)} row(s): {corrected} party corrected, {cleared} party cleared, "
+          f"{unchanged} party unchanged, {signatories} signatory changed")
     if args.apply:
         conn.commit()
         print("committed.")

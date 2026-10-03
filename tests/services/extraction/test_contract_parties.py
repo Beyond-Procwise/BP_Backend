@@ -193,7 +193,7 @@ def test_a_contracts_party_fields_are_barred_from_the_entity_sweep():
     from src.services.extraction.dispatch import _contract_party_candidates
     cands, barred = _contract_party_candidates("contract", REAL_MARKETING_AGREEMENT)
     assert {c.field for c in cands} == {"supplier_id", "buyer_org_id"}
-    assert barred == {"supplier_id", "buyer_org_id"}
+    assert {"supplier_id", "buyer_org_id"} <= barred
 
 
 def test_the_bar_holds_even_when_the_clause_says_nothing():
@@ -203,7 +203,7 @@ def test_the_bar_holds_even_when_the_clause_says_nothing():
     from src.services.extraction.dispatch import _contract_party_candidates
     cands, barred = _contract_party_candidates("contract", "AGREEMENT\nGoverned by English law.\n")
     assert cands == []
-    assert barred == {"supplier_id", "buyer_org_id"}
+    assert {"supplier_id", "buyer_org_id"} <= barred
 
 
 def test_an_invoice_is_untouched():

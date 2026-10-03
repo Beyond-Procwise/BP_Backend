@@ -542,10 +542,67 @@ rows' provenance was rewritten to `parties` / `parties-cleared` with a `backfill
 timestamp, so no row keeps claiming the sweep's answer. Against `bp_sqldb`:
 `proc.bp_contract_raw is empty: nothing to correct.`
 
-**What the backfill does not do.** It corrects the two party fields and nothing else.
-`contract_signatory_name` reads **`Email Marketing`** on the real Marketing Agreement — the same
-default NER path, the PERSON type instead of ORG, and a single field so no duplication hid it.
-`jurisdiction` reads `United Kingdom` on five of six, which is correct. Those two fields were
-left exactly as found: the fix for the signatory is to read the signature block, which is its own
-piece of work, and barring it from the sweep would also throw away the jurisdiction values that
-are right.
+**What the backfill left for §12.** `contract_signatory_name` read **`Email Marketing`** on the
+real Marketing Agreement — the same default NER path, PERSON instead of ORG, and a single field
+so no duplication hid it. It was fixed next, and the backfill now covers it too.
+`jurisdiction` reads `United Kingdom` on five of six, which is correct, and is deliberately
+still answered by that same path: barring it wholesale would throw away values that are right.
+
+
+---
+
+## 12. The signatory, fixed 2026-10-03
+
+The last field answered by the broken default path. `contract_signatory_name` held
+**`Email Marketing`** — a line from the Marketing Agreement's services list that spaCy tagged as
+a PERSON. One field, so nothing as obvious as `supplier_id == buyer_org_id` gave it away.
+
+**The document says it plainly**, and this is the whole fix:
+
+```
+SIGNATURE AND DATE
+... This agreement is demonstrated by their signatures below:
+MARKETER
+Name: John Smith      Signature: ____________  Date: June 12, 2025
+CLIENT
+Name: Sarah Johnson   Signature: ____________  Date: June 12, 2025
+```
+
+**A ruling was needed, because a contract has two signatories and `proc.bp_contracts` has one
+field.** `contract_signatory_name` holds the **supplier's** signatory: this is a procurement
+system, and the question a single slot has to answer is "who bound the counterparty". The
+buyer's signatory is *read* — it is what attributes the other one — but **not stored**, because
+the schema has nowhere to put it and adding a column is a larger change than this was asked to
+be. `read_signatory().buyer_name` exposes it for whoever adds that column. Cost if this ruling
+is wrong: one rename and a migration, and the buyer's name is already parsed.
+
+Where a block names only one signatory and does not say which party they signed for, that one is
+taken. Where it names several and none can be attributed, **nothing** is stored.
+
+**Three refusals, each a test, each a value the sweep would have taken:** a signature *rule* is
+not a name (docling renders the line as escaped underscores); a date is not a name
+(`Name: June 12, 2025` is what an unsigned block leaves); a company is not a signatory
+(`For and on behalf of NexaSpark Marketing Ltd.`). The role vocabulary is **shared with the
+party reader** through `contract_parties.side_for_role`, because a signature block labels its
+halves with exactly the words the party clause uses — so the two readers cannot drift apart
+about what "Marketer" means.
+
+`contract_signatory_name` joins the fields barred from the entity sweep. `jurisdiction` does
+**not**: it comes from the same path and it is correct on five of six documents, so barring the
+path wholesale would lose good values. That asymmetry is pinned by two tests.
+
+**Proven three ways on the real document:**
+
+| | `supplier_id` | `buyer_org_id` | `contract_signatory_name` |
+|---|---|---|---|
+| before any of this work | `BrightWave Digital Ltd.` (the buyer) | `BrightWave Digital Ltd.` | `Email Marketing` |
+| the reader, over the stored text | `NexaSpark Marketing Ltd.` | `BrightWave Digital Ltd.` | `John Smith` (+ `Sarah Johnson` as the buyer's) |
+| the backfill, applied to the live row | — | — | `Email Marketing` → **`John Smith`**, provenance `parties` |
+| a fresh upload through the live watcher | `NexaSpark Marketing Ltd.` | `BrightWave Digital Ltd.` | **`John Smith`**, provenance `parties` |
+
+The five synthetic documents have no signature block, and all five read NULL — which is the
+right answer, not a gap.
+
+`scripts/backfill_contract_parties.py` now corrects three fields rather than two, under the same
+four rules, and its dry run over the six live rows reads
+`0 party corrected, 0 party cleared, 6 party unchanged, 1 signatory changed`.

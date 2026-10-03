@@ -133,6 +133,21 @@ class Parties:
     buyer_evidence: Optional[str] = None
 
 
+def side_for_role(role: str | None) -> Optional[str]:
+    """``'supplier'`` / ``'buyer'`` / ``None`` for a party-role word.
+
+    Shared with contract_signatories: a signature block labels its sections with
+    exactly the words the party clause uses ("MARKETER", "CLIENT"), so one
+    vocabulary serves both and they cannot drift apart.
+    """
+    word = _squeeze(role).lower().strip(" .:")
+    if word in _SUPPLIER_ROLES:
+        return "supplier"
+    if word in _BUYER_ROLES:
+        return "buyer"
+    return None
+
+
 def _squeeze(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
@@ -232,8 +247,7 @@ def _from_role_clauses(text: str) -> dict[str, tuple[str, str]]:
     found: dict[str, tuple[str, str]] = {}
     for m in _ROLE_CLAUSE.finditer(text):
         role = _squeeze(m.group(1)).lower().strip(" .")
-        side = ("supplier" if role in _SUPPLIER_ROLES
-                else "buyer" if role in _BUYER_ROLES else None)
+        side = side_for_role(role)
         if side is None or side in found:
             continue
         # Look left for the company name. The window is collapsed first, because a
@@ -306,6 +320,7 @@ def party_candidates(full_text: str) -> list[Candidate]:
 
 
 __all__ = ["Parties", "read_parties", "party_candidates", "CONFIDENCE",
+           "side_for_role",
            "SUPPLIER_FIELD", "BUYER_FIELD", "Correction", "decide_correction",
            "BROKEN_SOURCE", "HUMAN_SOURCE"]
 
