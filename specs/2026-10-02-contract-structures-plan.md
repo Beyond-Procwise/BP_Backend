@@ -2610,13 +2610,29 @@ def registry():
     return get_registry("contract")
 
 
-def _value(registry, text, field):
-    """The value the L1 pattern layer reads for one field, or None."""
-    results = run_pattern_extractor(text, registry)
-    for r in results:
-        name = getattr(r, "field", None) or (r.get("field") if isinstance(r, dict) else None)
-        if name == field:
-            return getattr(r, "value", None) or (r.get("value") if isinstance(r, dict) else None)
+class _Parsed:
+    """The only thing run_pattern_extractor needs off a parsed document.
+
+    Its signature is run_pattern_extractor(parsed, doc_type) and it reads
+    `parsed.full_text` (pattern_extractor.py:101). It does NOT take a registry
+    -- it loads one for the doc_type itself.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.full_text = text
+
+
+def _value(text, field):
+    """The value the L1 pattern layer reads for one field, or None.
+
+    run_pattern_extractor returns list[Candidate] (src/services/extraction/
+    types.py:34) with .field, .value, .span, .source, .pattern_name and
+    .confidence. Higher-prior patterns are tried first per field, so the first
+    candidate for a field is the highest-prior match.
+    """
+    for c in run_pattern_extractor(_Parsed(text), "contract"):
+        if c.field == field:
+            return c.value
     return None
 
 
@@ -2634,17 +2650,17 @@ def test_both_fields_exist_and_are_optional(registry):
 
 def test_a_framework_reference_is_read(registry):
     text = "ORDER FORM\n\nThis Order Form is made under Framework Agreement No: FW-2024-0012.\n"
-    assert _value(registry, text, "framework_ref") == "FW-2024-0012"
+    assert _value(text, "framework_ref") == "FW-2024-0012"
 
 
 def test_the_made_under_phrasing_is_read(registry):
     text = "CALL-OFF CONTRACT\n\nmade under Framework Agreement RM6187.\n"
-    assert _value(registry, text, "framework_ref") == "RM6187"
+    assert _value(text, "framework_ref") == "RM6187"
 
 
 def test_a_parent_agreement_reference_is_read(registry):
     text = "STATEMENT OF WORK\n\nThis SOW is issued under Master Agreement MSA-4417.\n"
-    assert _value(registry, text, "parent_agreement_ref") == "MSA-4417"
+    assert _value(text, "parent_agreement_ref") == "MSA-4417"
 
 
 def test_a_placeholder_is_refused_not_stored(registry):
@@ -2654,7 +2670,7 @@ def test_a_placeholder_is_refused_not_stored(registry):
     """
     for placeholder in ("N/A", "NA", "TBC", "TBD", "NONE"):
         text = f"ORDER FORM\n\nFramework Agreement No: {placeholder}\n"
-        assert _value(registry, text, "framework_ref") is None, placeholder
+        assert _value(text, "framework_ref") is None, placeholder
 
 
 def test_a_sow_naming_its_msa_does_not_populate_parent_contract_id(registry):
@@ -2664,20 +2680,20 @@ def test_a_sow_naming_its_msa_does_not_populate_parent_contract_id(registry):
     under" filled it too, the maths could not tell a child from an amendment.
     """
     text = "STATEMENT OF WORK\n\nThis SOW is issued under Master Agreement MSA-4417.\n"
-    assert _value(registry, text, "parent_agreement_ref") == "MSA-4417"
-    assert _value(registry, text, "parent_contract_id") is None
+    assert _value(text, "parent_agreement_ref") == "MSA-4417"
+    assert _value(text, "parent_contract_id") is None
 
 
 def test_an_amendment_still_populates_parent_contract_id(registry):
     """The existing behaviour must not move."""
     text = "VARIATION\n\nThis deed amends Contract MSA-4417.\n"
-    assert _value(registry, text, "parent_contract_id") == "MSA-4417"
+    assert _value(text, "parent_contract_id") == "MSA-4417"
 
 
 def test_a_contract_naming_no_parent_reads_neither_field(registry):
     text = "MASTER AGREEMENT\n\nbetween Acme Ltd and Beta Ltd, numbered clauses.\n"
-    assert _value(registry, text, "framework_ref") is None
-    assert _value(registry, text, "parent_agreement_ref") is None
+    assert _value(text, "framework_ref") is None
+    assert _value(text, "parent_agreement_ref") is None
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
@@ -2689,7 +2705,7 @@ CUDA_VISIBLE_DEVICES="" ./venv/bin/python -m pytest \
 
 Expected: `test_both_fields_exist_and_are_optional` FAILS on the missing names; the three value tests FAIL with `None`. `test_an_amendment_still_populates_parent_contract_id` and `test_a_contract_naming_no_parent_reads_neither_field` may already pass.
 
-If `run_pattern_extractor`'s result shape does not match `_value`'s two accessors, read `src/services/extraction/pattern_extractor.py` and adjust `_value` only — never the assertions.
+The helper above matches the real signature, verified in the live code before this task was dispatched: `run_pattern_extractor(parsed, doc_type) -> list[Candidate]`. An earlier draft of this plan passed `(text, registry)`, which would have failed at the first call.
 
 - [ ] **Step 4: Add both fields to the schema**
 
@@ -2828,7 +2844,8 @@ git diff --cached --name-status | wc -l
   - `contract_hierarchy.PROFILE = "contract_hierarchy"`, `VERSION`, `SIGNALS`
   - `expected_parent_type(child_structure: str, *, vocabulary=None) -> str | None`
   - `observations_for(src: dict, tgt: dict) -> dict[str, frozenset]`
-  - the profile registered under `linking_engine.PROFILES["contract_hierarchy"]`, scored through `linking_engine.score_link(child_row, parent_row, "contract_hierarchy")`
+  - `score(src: dict, tgt: dict) -> dict` — the entry point, mirroring `contract_succession.score`
+  - the profile registered under `linking_engine.PROFILES["contract_hierarchy"]`, scored through `contract_hierarchy.score(child_row, parent_row)`, which wraps `linking_engine.score_link` with cluster overrides
 
 **Model this file on `src/services/graph_resolution/profiles/contract_succession.py`.** Same shape: private `_cmp_*` functions returning `(score, status)`, `register_signal` with a `csh_` prefix, a `SIGNALS` list carrying `reads`, `register_profile`, then `observations_for`. Do not invent a new structure.
 
@@ -2897,7 +2914,10 @@ def _msa(**over):
 
 
 def test_the_profile_is_registered():
+    """score_link must know the profile by name, independently of ch.score."""
     assert ch.PROFILE in le.PROFILES
+    r = le.score_link(_sow(), _msa(), ch.PROFILE)
+    assert "F" in r and "decision" in r and "signals" in r
 
 
 def test_the_profile_can_never_auto_link():
@@ -2921,8 +2941,8 @@ def test_a_structure_with_no_declared_parent_expects_none():
 
 
 def test_a_full_match_scores_in_a_band_a_person_sees():
-    r = le.score_link(_sow(), _msa(), ch.PROFILE)
-    assert r["band"] in ("review", "auto_link_with_warning", "auto_link"), r
+    r = ch.score(_sow(), _msa())
+    assert r["decision"] in ("review", "auto_link_with_warning", "auto_link"), r
     assert r["F"] > 0
 
 
@@ -2936,35 +2956,32 @@ def test_an_exact_reference_alone_does_not_reach_the_auto_band():
                       contract_start_date=None, contract_end_date=None)
     bare_parent = _msa(supplier_id=None, contract_title=None,
                        contract_start_date=None, contract_end_date=None)
-    r = le.score_link(bare_child, bare_parent, ch.PROFILE)
-    assert r["band"] != "auto_link", r
+    r = ch.score(bare_child, bare_parent)
+    assert r["decision"] != "auto_link", r
     assert r["F"] < 92, r
 
 
 def test_the_wrong_structure_of_parent_conflicts():
     """A SOW's parent is a master agreement, not an invoice."""
-    r = le.score_link(_sow(), _msa(resolved_doc_type="doctype.invoice"), ch.PROFILE)
+    r = ch.score(_sow(), _msa(resolved_doc_type="doctype.invoice"))
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["expected_structure"] == "CONFLICT", detail
 
 
 def test_a_different_supplier_conflicts():
-    r = le.score_link(_sow(), _msa(supplier_id="S-999"), ch.PROFILE)
+    r = ch.score(_sow(), _msa(supplier_id="S-999"))
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["supplier"] == "CONFLICT", detail
 
 
 def test_a_child_outside_the_parents_term_conflicts():
-    r = le.score_link(
-        _sow(contract_start_date="2029-01-01", contract_end_date="2029-06-30"),
-        _msa(), ch.PROFILE,
-    )
+    r = ch.score(_sow(contract_start_date="2029-01-01", contract_end_date="2029-06-30"), _msa())
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["term_containment"] == "CONFLICT", detail
 
 
 def test_a_child_inside_the_parents_term_is_ok():
-    r = le.score_link(_sow(), _msa(), ch.PROFILE)
+    r = ch.score(_sow(), _msa())
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["term_containment"] == "OK", detail
 
@@ -2975,15 +2992,14 @@ def test_a_missing_field_is_missing_not_a_conflict():
     Treating absence as contradiction would make every sparsely-filled contract
     look like a wrong parent, which is how a review queue fills with noise.
     """
-    r = le.score_link(_sow(contract_start_date=None, contract_end_date=None),
-                      _msa(), ch.PROFILE)
+    r = ch.score(_sow(contract_start_date=None, contract_end_date=None), _msa())
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["term_containment"] == "MISSING", detail
 
 
 def test_the_reference_is_compared_after_normalisation():
     """'msa 4417' and 'MSA-4417' are the same reference printed differently."""
-    r = le.score_link(_sow(parent_agreement_ref=" msa 4417 "), _msa(), ch.PROFILE)
+    r = ch.score(_sow(parent_agreement_ref=" msa 4417 "), _msa())
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["declared_reference"] == "OK", detail
 
@@ -2992,13 +3008,13 @@ def test_any_of_the_three_reference_fields_can_carry_the_pointer():
     for field in ("parent_agreement_ref", "framework_ref", "parent_contract_id"):
         child = _sow(parent_agreement_ref=None, framework_ref=None,
                      parent_contract_id=None, **{field: "MSA-4417"})
-        r = le.score_link(child, _msa(), ch.PROFILE)
+        r = ch.score(child, _msa())
         detail = {d["id"]: d["status"] for d in r["signals"]}
         assert detail["declared_reference"] == "OK", (field, detail)
 
 
 def test_a_reference_naming_a_different_contract_conflicts():
-    r = le.score_link(_sow(parent_agreement_ref="MSA-9999"), _msa(), ch.PROFILE)
+    r = ch.score(_sow(parent_agreement_ref="MSA-9999"), _msa())
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["declared_reference"] == "CONFLICT", detail
 
@@ -3010,10 +3026,9 @@ def test_a_shared_generic_word_is_not_title_evidence():
     the documents, and two unrelated contracts from one supplier would look like
     a parent and child.
     """
-    r = le.score_link(
+    r = ch.score(
         _sow(contract_title="Services Agreement"),
         _msa(contract_title="Services Agreement"),
-        ch.PROFILE,
     )
     detail = {d["id"]: d["status"] for d in r["signals"]}
     assert detail["title_overlap"] != "OK", detail
@@ -3255,17 +3270,31 @@ def observations_for(src: dict, tgt: dict) -> dict[str, frozenset]:
                 obs.add((tid, field))
         out[spec["id"]] = frozenset(obs)
     return out
+
+
+def score(src: dict, tgt: dict) -> dict:
+    """Score child -> parent, with correlated signals merged into one cluster.
+
+    This is the entry point callers use, NOT score_link directly. It mirrors
+    contract_succession.score exactly: remap_clusters does union-find over
+    "shares at least one observation", so two signals reading the same field
+    cannot each contribute full weight for what is really one piece of
+    evidence. Today every signal here reads a distinct field, so the remap is a
+    no-op -- which is precisely why it must be wired now rather than when
+    someone adds a sixth signal that overlaps an existing one.
+    """
+    overrides = remap_clusters(SIGNALS, observations_for(src, tgt))
+    return _le.score_link(src, tgt, PROFILE, cluster_overrides=overrides)
 ```
 
 - [ ] **Step 4: Add it to the never-auto-link set**
 
-In `src/services/graph_resolution/edge_writer.py`:
+In `src/services/graph_resolution/edge_writer.py`. **The four existing members are reproduced in full below — verified against the live file.** An earlier draft of this plan abbreviated the set with a "keep every existing member" comment, which, copied literally, would have dropped `item_equivalence` and let that profile start auto-linking:
 
 ```python
 UNCALIBRATED_PROFILES = frozenset({
     "contract_coverage", "contract_succession", "contract_hierarchy",
-    "supplier_identity",
-    # ... keep every existing member exactly as it is
+    "supplier_identity", "item_equivalence",
 })
 ```
 
@@ -3276,7 +3305,7 @@ CUDA_VISIBLE_DEVICES="" ./venv/bin/python -m pytest \
     tests/services/graph_resolution/test_contract_hierarchy.py -v
 ```
 
-Expected: 17 passed.
+Expected: 18 passed.
 
 **If `test_an_exact_reference_alone_does_not_reach_the_auto_band` fails**, the weights are wrong and the fix is the weights, never the assertion. Record the measured `F` for a reference-only match in the module docstring so the next reader knows the headroom.
 
@@ -3346,6 +3375,7 @@ A scored profile that nothing calls is the exact failure this layer must not rep
 
 **The idempotency key is the open-row key, and it includes `source_file`.** `(doc_type, doc_pk_candidate, coalesce(source_file,''), issue_type, field_name)` is enforced by the partial unique index `ix_bp_extraction_discrepancy_open_key`. Three consequences the implementer must hold:
 - `source_file` must go through `persistence.normalise_source_file()` on write, and the idempotency `SELECT` must normalise the same way. A key written one spelling and read another re-proposes on every tick.
+- **The partial clause is `coalesce(status,'open') <> 'resolved'`, not `status = 'open'`** — verified against the live index. Any non-resolved row occupies the slot, `dismiss` and `ignored` included, so the idempotency `SELECT` must use the same clause or a dismissed row is missed and the `INSERT` hits a unique violation.
 - `doc_pk_candidate` is a `contract_id` read **out of** a document, so two documents can carry the same one. `source_file` is what separates them — that collision is what cost 65 days of findings on `bp_sqldb`.
 - **One open proposal per document.** Two candidate parents for the same child would produce the same five key columns and the second write would be rejected by the index. So the best candidate goes in `expected_value` and the runners-up in `computed_value`, with `routing` saying whether the evidence actually separated them.
 
@@ -3784,7 +3814,7 @@ def propose_parent_links(limit: Optional[int] = None) -> dict:
             considered["with_candidates"] += 1
 
             scored = sorted(
-                ((_le.score_link(child, parent, _ch.PROFILE), parent)
+                ((_ch.score(child, parent), parent)
                  for parent in candidates),
                 key=lambda pair: -pair[0]["F"],
             )
@@ -3802,11 +3832,24 @@ def propose_parent_links(limit: Optional[int] = None) -> dict:
 
             # Idempotent: the same five key columns the unique index enforces, so
             # the SELECT and the index agree. A scheduler tick must not stack.
+            # The five key columns AND the partial clause, copied from the index
+            # verbatim. The index is
+            #   UNIQUE (doc_type, coalesce(doc_pk_candidate,''),
+            #           coalesce(source_file,''), issue_type, coalesce(field_name,''))
+            #   WHERE coalesce(status,'open') <> 'resolved'
+            # so ANY non-resolved row occupies the slot -- 'dismiss' and 'ignored'
+            # included. Testing `status = 'open'` instead would miss a dismissed
+            # row and the INSERT below would then hit a unique violation.
+            # bp_testdb has only open/resolved today, but bp_sqldb carries
+            # dismissed and ignored rows, and that is a deployment target.
             cur.execute(
                 """SELECT 1 FROM proc.bp_extraction_discrepancy
-                    WHERE doc_type = 'contract' AND doc_pk_candidate = %s
-                      AND coalesce(source_file,'') = %s AND issue_type = %s
-                      AND field_name = %s AND status = 'open' LIMIT 1""",
+                    WHERE doc_type = 'contract'
+                      AND coalesce(doc_pk_candidate,'') = %s
+                      AND coalesce(source_file,'') = %s
+                      AND issue_type = %s
+                      AND coalesce(field_name,'') = %s
+                      AND coalesce(status,'open') <> 'resolved' LIMIT 1""",
                 (child["contract_id"], source_file, ISSUE_TYPE, FIELD_NAME),
             )
             if cur.fetchone():
@@ -3865,6 +3908,10 @@ def confirm(contract_id: str, parent_contract_id: str, source_file: str,
         )
         if cur.rowcount == 0:
             return False
+        # `status = 'open'` here is deliberate and NOT the index's clause. A
+        # proposal a human has dismissed must not be silently resurrected and
+        # resolved by a confirm; and bp_lifecycle_guard blocks ignored -> resolved
+        # outright, so attempting it would raise rather than no-op.
         cur.execute(
             """UPDATE proc.bp_extraction_discrepancy
                   SET status = 'resolved', resolved_by = %s, resolved_at = now()

@@ -303,13 +303,28 @@ rows whose `resolved_doc_type` matches the child structure's `default_parent_typ
 discovery already adjudicated it (§6.2): the only identifier available at scale resolves 0 times out of
 1,561. An exact match after normalisation is the strongest *signal*; it is not a decision.
 
-**Output:** a parent-link proposal, through `link_proposals.py`, into the queue a buyer already works —
+**Output:** a parent-link proposal, into the queue a buyer already works —
 carrying the score, the band, and the per-signal detail so a person sees why. `contract_hierarchy` joins
 `edge_writer.UNCALIBRATED_PROFILES`, so it cannot auto-link at any score until a labelled sample exists —
 the product's own standing rule, which applies here.
 
-**It gets a runner**, and the runner is called. The failure mode this layer must not repeat is
-`contract_succession`: a scored, unit-tested profile that nothing ever runs.
+**It gets a runner.** The failure mode this layer must not repeat is `contract_succession`: a scored,
+unit-tested profile that nothing ever runs.
+
+**CORRECTED 2026-10-03 (Ruling 57c), because the original sentence read "and the runner is called" and that
+is not true.** `src/services/contract_links.propose_parent_links()` exists, is proven end to end, and is
+called by its tests and by Task 11's live verification. Nothing in `src/` or `scripts/` imports it: no
+scheduler, watcher or endpoint. Wiring one was ruled OUT of this plan deliberately — a tick that writes to a
+buyer's queue needs a cadence, a scope and an owner, and none of the three was settled. So §1's success
+criterion 4 is reachable today only when a person runs the proposer; until something schedules it, a
+contract's parent is proposed on demand and not otherwise. Do not read §8 as describing a live loop.
+(The identically-named `link_proposals.propose_parent_links`, which IS wired at
+`src/api/routers/promotion.py:149`, is the purchase-order one. Different function, different table.)
+
+**What a person does with a proposal, added 2026-10-03.** Accepting one in the Action Centre routes through
+`DecisionEngine.execute` → `contract_links.confirm()`, which is the only code allowed to write
+`parent_contract_id`. Before that routing existed, the generic finding-action path closed the proposal and
+linked nothing, and the next pass re-proposed the same parent.
 
 ---
 
@@ -333,7 +348,7 @@ go green. A test whose red state was never observed is not evidence.
 | 9 | `framework_ref` extracts from a real framework reference and rejects `N/A` | remove the rejection branch from the value regex → `N/A` is stored as a reference |
 | 10 | `contract_hierarchy` proposes and never links | remove it from `UNCALIBRATED_PROFILES` → a high score auto-links |
 | 11 | An exact reference match alone does not reach the auto band | give `declared_reference` a weight that dominates → a single match auto-links |
-| 12 | The runner is actually called | remove the call from the entry point → the test sees zero proposals for a corpus that should produce them |
+| 12 | The runner exists and runs the whole pass (a scorer with no runner is `contract_succession` again). NOT "an entry point calls it" — nothing does; see §8's correction | empty the runner's body → the test sees zero proposals for a corpus that should produce them |
 | 13 | Seed and table do not drift | the existing full-column drift test, extended to the new column and the two new rows |
 
 Live verification, per `feedback_demonstrate_on_local_server_live_data`: upload a real contract document to
@@ -364,6 +379,19 @@ reference, and the resulting proposal. Tests alone do not close this.
 1. **Zero real order forms, frameworks, call-offs or SOWs exist in the corpus.** §4's rule is measured on its
    negative side (13/13 quote workbooks correctly unaffected) and constructed on its positive side. Ten to
    twenty real contract documents would change what can be proven here — open item 1 of the rulings, still open.
+
+1a. **THE CORPUS HAS PARENTS AND ALMOST NO CHILDREN — measured 2026-10-02, and it bounds what §8 can
+   deliver today.** Of the 3,051 rows in `proc.bp_contract_master`, only **7** have a structure that could
+   ever be a child (4 `Invoice`, 2 `Amendment`, 1 `Purchase Order`), and **none of those 7 carries a parent
+   pointer**. The other 3,044 are consulting agreements, NDAs, SLAs, master agreements and service
+   agreements — all parent-type structures. The 1,561 dangling `parent_contract_id` values sit entirely on
+   those parent-type rows, so no filter change can surface them as children.
+
+   §5's claim stands: those rows become **candidate parents** on day one. But the maths has parents and
+   essentially nothing to parent. Children are read from `proc.bp_contracts`, which holds **0** rows, and
+   `proc.process_monitor` records **zero** contract-category uploads ever. So the proposal half of §8 is
+   exercised by fixtures and by whatever Task 11 uploads, and by nothing else. This is a property of the
+   data, not a limitation of the code.
 2. **`sales_order` is seeded on a reasoned mapping, not an observed document.** Nothing in the corpus contains
    the words.
 3. **The parent-evidence phrase set is small by design.** It will miss a real order form that names its
