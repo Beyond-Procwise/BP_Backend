@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from src.services.atb.pptx_import import store
-from src.services.atb.pptx_import.contract import validate_layout
+from src.services.atb.pptx_import.contract import validate_layout, validate_pack
 from src.services.atb.pptx_import.emit import layout_key
 from src.services.atb.pptx_import.import_pack import import_pack
 
@@ -19,6 +19,24 @@ UI = os.environ.get('BEYOND_PROCWISE_UI', os.path.expanduser('~/PycharmProjects/
 REFERENCE = os.environ.get(
     'ATB_REFERENCE_PACK',
     os.path.expanduser('~/Downloads/Infrastructure-Procurement-Strategy-Pack.pptx'))
+
+def _pack_with_fonts(fonts: dict) -> dict:
+    """A pack that is valid in every other respect, so only the fonts are under test."""
+    return {
+        'kind': 'atb_style', 'schema_version': 1, 'key': 'k', 'name': 'K',
+        'format': {'kind': 'deck', 'width_in': 13.333, 'height_in': 7.5},
+        'colours': {'ink': '#172033', 'muted': '#56627A', 'accent': '#12897F',
+                    'panel': '#F4F7FA'},
+        'type_scale_pt': {'title': 30, 'subtitle': 14, 'body': 11.5, 'table': 10, 'footer': 9},
+        'fonts': fonts,
+        'grid': {'cols': 12, 'margin_in': 0.5, 'gutter_in': 0.3, 'title_top_in': 0.35,
+                 'body_top_in': 1.45},
+        'series_palette': ['#12897F', '#0C6C9C'], 'rating_scales': {},
+        'writing': {'locale': 'en-GB', 'locale_contested': False, 'locale_suggested': 'en-GB',
+                    'title_max_words': 12, 'title_style': 'assertion',
+                    'subtitle_style': 'basis'},
+    }
+
 
 SLIDE = [(0.5, 0.35, 12.33, 0.6, 'A reused title', 30, '#172033'),
          (0.5, 1.0, 12.33, 0.4, 'the basis', 14, '#56627A'),
@@ -97,6 +115,56 @@ console.log(JSON.stringify(out));
     assert validate_layout(layout) == []
     assert any('exactly one' in err for err in validate_layout(both))
     assert any('box_in needs numeric' in err for err in validate_layout(short))
+
+
+# ------------------------------------------- a font family cannot carry a CSS declaration
+@pytest.mark.skipif(not os.path.exists(os.path.join(UI, 'src/modules/SpendIQ/atb/validateStyle.js'))
+                    or not shutil.which('node'),
+                    reason='needs node and the UI checkout')
+def test_both_validators_refuse_a_font_family_that_carries_css(tmp_path):
+    """`fonts.*.family` is emitted into a CSS custom property inside a `style` attribute, and a
+    pack is read out of a file somebody uploaded. Requiring only "a non-empty string" let a
+    family close the value and append a declaration of its own — an outbound request to a host
+    the uploader chose, fired by a reviewer merely looking at a candidate paper.
+
+    Runs the REAL JavaScript validator and the vendored Python one over the same strings."""
+    evil = 'A"; background-image:url(https://evil.example/x.png); --z:"'
+    cases = {
+        'evil_family': _pack_with_fonts({'heading': {'family': evil, 'fallback': 'sans-serif'},
+                                         'body': {'family': 'Calibri', 'fallback': 'sans-serif'}}),
+        'evil_fallback': _pack_with_fonts(
+            {'heading': {'family': 'Cambria', 'fallback': 'serif; background:url(http://e/x)'},
+             'body': {'family': 'Calibri', 'fallback': 'sans-serif'}}),
+        'real': _pack_with_fonts(
+            {'heading': {'family': 'Aptos Display', 'fallback': "Georgia, 'Times New Roman', serif"},
+             'body': {'family': '微软雅黑',
+                      'fallback': "'Segoe UI', system-ui, -apple-system, Arial, sans-serif"}}),
+    }
+    payload = tmp_path / 'packs.json'
+    payload.write_text(json.dumps(cases))
+    script = """
+import {validateStyle} from './src/modules/SpendIQ/atb/validateStyle.js';
+import {readFileSync} from 'node:fs';
+const packs = JSON.parse(readFileSync(process.env.ATB_PAYLOAD, 'utf8'));
+const out = {};
+for (const [name, pack] of Object.entries(packs)) out[name] = validateStyle(pack).errors;
+console.log(JSON.stringify(out));
+"""
+    done = subprocess.run(['node', '--input-type=module', '-e', script], cwd=UI,
+                          capture_output=True, text=True, timeout=120,
+                          env={**os.environ, 'ATB_PAYLOAD': str(payload)})
+    assert done.returncode == 0, done.stderr[-400:]
+    seen = json.loads(done.stdout.strip().splitlines()[-1])
+
+    assert any('family' in err for err in seen['evil_family']), seen['evil_family']
+    assert any('fallback' in err for err in seen['evil_fallback']), seen['evil_fallback']
+    # A real deck's own families and stacks, including a non-ASCII family, still pass.
+    assert seen['real'] == []
+
+    # And Python says the same three things about the same three packs.
+    assert any('family' in err for err in validate_pack(cases['evil_family']))
+    assert any('fallback' in err for err in validate_pack(cases['evil_fallback']))
+    assert validate_pack(cases['real']) == []
 
 
 # ------------------------------------------------------------------------------------------- C5

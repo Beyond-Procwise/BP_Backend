@@ -5,10 +5,11 @@ validateLayout.js. Both headers say "BP_Backend vendors the same rules", which i
 `test_does_not_drift_from_the_javascript_contract` reads the constants back out of the JavaScript
 and fails if the two disagree; it skips when the UI checkout is absent, naming the variable to set.
 
-One addition beyond the JS (design §7): a region may state `grid` (a 12-column span) OR `box_in`
-(measured inches), exactly one. Imported regions use `box_in`, because the reference deck is not
-strictly on a twelve-column grid. The JS validator does not know about `box_in` yet — that is the
-UI half of step 1 — so it accepts such a region and simply finds no grid to check.
+Design §7: a region may state `grid` (a 12-column span) OR `box_in` (measured inches), exactly
+one. Imported regions use `box_in`, because the reference deck is not strictly on a twelve-column
+grid. The JS validator enforces the same rule as of UI commit b94feb6, and
+tests/services/atb/test_review_fixes.py runs the real one over the same three documents to keep
+the two from drifting.
 """
 from __future__ import annotations
 
@@ -29,6 +30,32 @@ SLOT_TYPES = (
 )
 FILL_MODES = ('agent', 'bind', 'auto', 'static')
 PROSE_TYPES = ('text', 'rich_text', 'callout')
+
+# A font name, and nothing else. The family is emitted into a CSS custom property inside a
+# `style` attribute, and a pack is read out of a file somebody uploaded — so "a non-empty
+# string" let a family carry a whole extra declaration:
+#
+#   A"; background-image:url(https://evil.example/x.png); --z:"
+#
+# HTML escaping is no defence: the parser turns &quot; back into a real quote before CSS reads
+# the attribute. Forbidden rather than allow-listed by alphabet, because real font names are
+# not ASCII — MS PGothic and 微软雅黑 must keep working. The JavaScript twin is
+# beyond_procwise_ui/src/modules/SpendIQ/atb/validateStyle.js (isFamilyName/isFamilyStack);
+# test_review_fixes.py runs the real one over the same strings.
+_CSS_PUNCTUATION = re.compile(r"""["'`;:{}()\\<>/\n\r]""")
+
+
+def _is_family_name(value: object) -> bool:
+    return (isinstance(value, str) and 0 < len(value) <= 64
+            and not _CSS_PUNCTUATION.search(value))
+
+
+def _is_family_stack(value: object) -> bool:
+    """A stack — `Georgia, 'Times New Roman', serif` — so commas and quoted parts are fine."""
+    if not isinstance(value, str) or not 0 < len(value) <= 200:
+        return False
+    return all(_is_family_name(part.strip().strip("'")) for part in value.split(','))
+
 
 _COLOUR_RE = re.compile(
     r'^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|rgba?\([^)]*\)'
@@ -95,9 +122,15 @@ def validate_pack(pack: dict) -> list[str]:
         for role, font in fonts.items():
             if not isinstance(font, dict) or not font.get('family'):
                 errors.append(f'fonts.{role}.family must be a non-empty string')
+            elif not _is_family_name(font['family']):
+                errors.append(f'fonts.{role}.family may only hold a font name — '
+                              f'"{font["family"]}" carries CSS punctuation')
             elif not font.get('fallback'):
                 errors.append(f'fonts.{role}.fallback is required — the named family may not '
                               'be installed')
+            elif not _is_family_stack(font['fallback']):
+                errors.append(f'fonts.{role}.fallback may only hold font names — '
+                              f'"{font["fallback"]}" carries CSS punctuation')
 
     series = pack.get('series_palette')
     if not isinstance(series, list) or not series:

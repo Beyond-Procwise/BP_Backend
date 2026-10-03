@@ -174,8 +174,21 @@ def post_approve_layout(layout_id: str, principal=Depends(require_user)):
 
 @router.post("/layouts/{layout_id}/reject")
 def post_reject_layout(layout_id: str, principal=Depends(require_user)):
-    gate("style_pack.write", principal, agent=_AGENT, context={"layout_id": layout_id})
+    """Rejecting a CANDIDATE is triage; rejecting something APPROVED withdraws an approval.
+
+    They are not the same authority. Discarding a layout the importer proposed is ordinary
+    `write` work — whoever imported a deck should be able to throw away the arrangements that
+    were never templates. But a layout that is already approved is in every report built on it,
+    and taking it back out changes what those reports look like — which is precisely why
+    approving is `configure`. Left as a blanket `write`, any Buyer could withdraw an Admin's
+    approval; the asymmetry was real and is closed here rather than by making triage
+    Admin-only.
+    """
     with get_conn() as conn:
+        current = store.layout_status(conn, layout_id)
+        action = "style_pack.approve" if current == "approved" else "style_pack.write"
+        gate(action, principal, agent=_AGENT,
+             context={"layout_id": layout_id, "was": current or "unknown"})
         if not store.set_layout_status(conn, layout_id, "rejected", _subject(principal)):
             raise HTTPException(status_code=404,
                                 detail="no such layout, or its pack is still importing")

@@ -108,6 +108,18 @@ def layouts(conn, *, pack_id: str | None = None, status: str | None = None) -> l
     return _rows(cursor, _LAYOUT_COLUMNS)
 
 
+def layout_status(conn, layout_id: str) -> str | None:
+    """The layout's current status, or None if there is no such layout.
+
+    Read before REJECTING one: rejecting a candidate is triage, and rejecting something a
+    human already approved withdraws that approval — two different authorities (atb router).
+    """
+    cursor = conn.cursor()
+    cursor.execute('SELECT status FROM proc.bp_page_layout WHERE layout_id = %s', (layout_id,))
+    found = cursor.fetchone()
+    return str(found[0]) if found else None
+
+
 def rename_layout(conn, layout_id: str, name: str, user: str) -> int:
     """-> rows changed, so a rename of something that does not exist is not a 200."""
     cursor = conn.cursor()

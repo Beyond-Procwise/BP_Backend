@@ -35,6 +35,9 @@ def client(monkeypatch):
     monkeypatch.setattr(ar.store, 'packs', lambda conn, **k: [PACK_ROW])
     monkeypatch.setattr(ar.store, 'pack', lambda conn, pack_id: PACK_ROW if pack_id == 'p-1' else None)
     monkeypatch.setattr(ar.store, 'layouts', lambda conn, **k: [LAYOUT_ROW])
+    # A candidate by default: rejecting one is triage. The approved case is set per test.
+    monkeypatch.setattr(ar.store, 'layout_status',
+                        lambda conn, layout_id: LAYOUT_ROW['status'] if layout_id == 'l-1' else None)
     monkeypatch.setattr(ar.store, 'rename_layout', lambda *a, **k: 1)
     monkeypatch.setattr(ar.store, 'set_layout_status', lambda *a, **k: 1)
     monkeypatch.setattr(ar.store, 'set_pack_status', lambda *a, **k: 1)
@@ -99,10 +102,21 @@ def test_approving_a_layout_is_gated_as_configure(client):
     assert client.gates == ['style_pack.approve']
 
 
-def test_rejecting_and_renaming_are_only_writes(client):
+def test_rejecting_a_candidate_and_renaming_are_only_writes(client):
+    """Triage. Whoever imported a deck should be able to discard the arrangements that were
+    never templates, without an Admin."""
     assert client.post('/atb/layouts/l-1/reject').status_code == 200
     assert client.post('/atb/layouts/l-1', json={'name': 'Eight recommendations'}).status_code == 200
     assert client.gates == ['style_pack.write', 'style_pack.write']
+
+
+def test_rejecting_an_APPROVED_layout_takes_the_authority_that_approved_it(client, monkeypatch):
+    """Withdrawing an approval changes what every report built on that layout looks like, which
+    is the whole reason approving is `configure`. As a blanket `write` — a reversible class with
+    no policy row — any Buyer could undo an Admin's decision."""
+    monkeypatch.setattr(ar.store, 'layout_status', lambda conn, layout_id: 'approved')
+    assert client.post('/atb/layouts/l-1/reject').status_code == 200
+    assert client.gates == ['style_pack.approve']
 
 
 def test_a_refusal_from_the_gate_is_a_403(client, monkeypatch):
