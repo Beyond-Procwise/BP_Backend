@@ -19,8 +19,6 @@ fields:
       - "Ref No"
       - "Document Number"
       - "Agreement Reference"
-      - "Order Form No"
-      - "Order Form Number"
     patterns:
       # The stacked lookbehinds refuse every label that names a DIFFERENT
       # contract: "Parent Contract Number:", "Master Agreement No:",
@@ -41,17 +39,6 @@ fields:
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.92
-      # An order form's own number. Added 2026-10-03 after a real order form
-      # promoted under its FRAMEWORK's identifier: the page's only
-      # "Agreement No" belonged to the framework, so anchored_agreement_no
-      # claimed it. Priced above that pattern so the document's own number wins
-      # when the page prints one. The type-aware guard in dispatch
-      # (_drop_self_parent_reference) is what covers the pages that print none.
-      - name: anchored_order_form_no
-        anchor: '(?i)\border\s+form\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)\s*[:\-\.]?\s*'
-        value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
-        max_span_after_anchor_chars: 60
-        prior_confidence: 0.90
       - name: anchored_agreement_no
         anchor: '(?i)(?<!parent )(?<!master )(?<!principal )(?<!amends )(?<!amendment to )(?<!supplements )(?<!varies )\bagreement\s*(?:number|no\.?|reference|ref\.?|#)\s*[:\-\.]\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
@@ -410,25 +397,15 @@ fields:
       - "Framework Reference"
       - "Framework No"
     patterns:
-      # Either the number label (then the colon is optional -- "Framework
-      # Agreement No. FA-2026-0042" is how contracts are actually typeset, and
-      # demanding a colon is why a real order form read NULL on 2026-10-03), or a
-      # colon with no label. Prose carrying NEITHER -- "This Framework Agreement
-      # sets out", "The Framework Agreement shall commence" -- matches no branch,
-      # which is what keeps a framework's own page from citing itself.
       - name: anchored_framework_ref
-        anchor: '(?i)\bframework\s+(?:agreement|contract)\s*(?:(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)\s*[:\-]?|[:\-])\s*'
+        anchor: '(?i)\bframework\s+(?:agreement|contract)\s*(?:number|no\.?|reference|ref\.?|#)?\s*[:\-]\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.90
       # "made under Framework Agreement RM6187" is prose and carries no colon,
       # so the connector stays optional and the value regex does the rejecting.
-      # "incorporated into", "incorporated by reference" and "governed by" are
-      # three of the phrases §4 of the design counts as parent evidence, so the
-      # rule that recognises the sentence and the extractor that reads the
-      # reference out of it now agree on the same wording.
       - name: made_under_framework
-        anchor: '(?i)\b(?:(?:made|issued|called\s+off|placed)\s+under|incorporated\s+(?:into|by\s+reference\s+into)|governed\s+by|subject\s+to)\s+(?:the\s+)?framework\s+(?:agreement|contract)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
+        anchor: '(?i)\b(?:made|issued|called\s+off|placed)\s+under\s+(?:the\s+)?framework\s+(?:agreement|contract)\s*(?:(?:number|no)(?![A-Za-z0-9])\.?|#)?\s*[:\-]?\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.84
@@ -453,10 +430,8 @@ fields:
       - "Under Agreement"
       - "Pursuant To"
     patterns:
-      # Same two branches as framework_ref, for the same reason: "Master
-      # Agreement No. MSA-4417" is the commonest shape a SOW has.
       - name: anchored_parent_agreement
-        anchor: '(?i)\bmaster\s+(?:services?\s+)?agreement\s*(?:(?:(?:number|no)(?![A-Za-z0-9])\.?|reference|ref\.?|#)\s*[:\-]?|[:\-])\s*'
+        anchor: '(?i)\bmaster\s+(?:services?\s+)?agreement\s*(?:number|no\.?|reference|ref\.?|#)?\s*[:\-]\s*'
         value: '\A(?!(?:N\/A|NA|TBC|TBD|NONE|SEE)\b)([A-Z][A-Z0-9\-\/\.]{1,29}[A-Z0-9]|\d{4,12}(?:[A-Z0-9\-\/\.]{0,19}[A-Z0-9])?)'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.90

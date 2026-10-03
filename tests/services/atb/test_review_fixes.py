@@ -11,6 +11,7 @@ import uuid
 import pytest
 
 from src.services.atb.pptx_import import store
+from src.services.atb.pptx_import.contract import validate_layout
 from src.services.atb.pptx_import.emit import layout_key
 from src.services.atb.pptx_import.import_pack import import_pack
 
@@ -52,6 +53,50 @@ console.log(JSON.stringify(errors));
                           env={**os.environ, 'ATB_PAYLOAD': str(payload)})
     assert done.returncode == 0, done.stderr[-400:]
     assert json.loads(done.stdout.strip().splitlines()[-1]) == []
+
+
+# ------------------------------------------------- the box_in rule, on both sides of the fence
+@pytest.mark.skipif(not os.path.exists(os.path.join(UI, 'src/modules/SpendIQ/atb/validateLayout.js'))
+                    or not shutil.which('node'),
+                    reason='needs node and the UI checkout')
+def test_the_javascript_validator_enforces_the_box_in_rule_python_enforces(tmp_path):
+    """contract.py's docstring said the JS validator "does not know about box_in yet". It does
+    now, and this is what keeps the two from drifting: a region stating both is refused on both
+    sides, and box_in alone is accepted on both. Without the JS half, every imported region
+    positioned at the page origin in the browser and no validator said a word."""
+    layout = {'id': 'x', 'version': 1, 'name': 'X', 'formats': ['deck'],
+              'regions': [{'id': 'body', 'component': 'paragraph',
+                           'box_in': {'x': 0.5, 'y': 1.4, 'w': 6, 'h': 2}}],
+              'slots': {'body': {'type': 'text', 'fill': 'agent', 'max_chars': 100}}}
+    both = json.loads(json.dumps(layout))
+    both['regions'][0]['grid'] = {'col': 1, 'w': 6, 'row': 'body'}
+    short = json.loads(json.dumps(layout))
+    del short['regions'][0]['box_in']['h']
+
+    payload = tmp_path / 'layouts.json'
+    payload.write_text(json.dumps({'good': layout, 'both': both, 'short': short}))
+    script = """
+import {validateLayout} from './src/modules/SpendIQ/atb/validateLayout.js';
+import {readFileSync} from 'node:fs';
+const docs = JSON.parse(readFileSync(process.env.ATB_PAYLOAD, 'utf8'));
+const out = {};
+for (const [name, doc] of Object.entries(docs)) out[name] = validateLayout(doc).errors;
+console.log(JSON.stringify(out));
+"""
+    done = subprocess.run(['node', '--input-type=module', '-e', script], cwd=UI,
+                          capture_output=True, text=True, timeout=120,
+                          env={**os.environ, 'ATB_PAYLOAD': str(payload)})
+    assert done.returncode == 0, done.stderr[-400:]
+    seen = json.loads(done.stdout.strip().splitlines()[-1])
+
+    assert seen['good'] == []
+    assert any('exactly one' in err for err in seen['both'])
+    assert any('box_in needs numeric' in err for err in seen['short'])
+
+    # and Python says the same three things about the same three documents
+    assert validate_layout(layout) == []
+    assert any('exactly one' in err for err in validate_layout(both))
+    assert any('box_in needs numeric' in err for err in validate_layout(short))
 
 
 # ------------------------------------------------------------------------------------------- C5

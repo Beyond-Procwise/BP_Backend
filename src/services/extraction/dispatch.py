@@ -234,72 +234,6 @@ def _map_recovered_lines(doc_type: str, recovered: list[dict]) -> list[dict[str,
     return mapped
 
 
-#: A parent-reference column and the structure it points AT. A document whose own
-#: structure is that structure cannot be its own parent, so the value it read is
-#: its own identifier and the pointer is the mistake; for any other structure the
-#: pointer is right and a contract_id equal to it is the mistake.
-_PARENT_REFERENCE_POINTS_AT = {
-    "framework_ref": "doctype.framework_agreement",
-    "parent_agreement_ref": "doctype.master_agreement",
-}
-
-
-def _drop_self_parent_reference(columns: dict, resolved_doc_type: str | None) -> list[str]:
-    """Resolve a reference the page gave to two fields at once. In place.
-
-    Returns the names of the columns it cleared, so the caller can say WHY a
-    required value is missing instead of reporting the generic "could not ground
-    a value": the value was found, it just belongs to another contract.
-
-    Measured on a real order form, 2026-10-03. The page said "incorporated into
-    and governed by Framework Agreement No. FA-2026-0042" and nothing else that
-    looked like an identifier, so contract_id AND framework_ref both read
-    FA-2026-0042. contract_id is the upsert key for proc.bp_contracts, so
-    promoting that row OVERWROTE the framework agreement's own row: one
-    contract_id, two documents, and the framework silently stopped existing as a
-    separate contract.
-
-    The pattern layer cannot tell these apart -- a framework agreement's own first
-    page writes its identifier in the same words an order form writes its pointer,
-    and a negative lookbehind on contract_id blinded the framework to its own
-    number (tests/services/extraction/test_contract_parent_reference_fields.py
-    pins that). What separates them is the document's own structure, which is
-    known here and nowhere earlier.
-
-    A NULL structure changes nothing: the resolver having raised is not evidence
-    that the document is not a framework, and acting on it would delete a real
-    contract_id.
-    """
-    cleared: list[str] = []
-    if not resolved_doc_type:
-        return cleared
-    from src.services.graph_resolution.profiles import contract_hierarchy as _ch
-
-    own_id = _ch._norm_ref(columns.get("contract_id"))
-    if not own_id:
-        return cleared
-    for field, points_at in _PARENT_REFERENCE_POINTS_AT.items():
-        ref = columns.get(field)
-        if not ref or _ch._norm_ref(ref) != own_id:
-            continue
-        if resolved_doc_type == points_at:
-            # Its own number. A framework does not sit under a framework.
-            columns[field] = None
-            cleared.append(field)
-            log.info("dispatch: %s is this document's own identifier, not a "
-                     "pointer (%s) -- reference dropped", ref, resolved_doc_type)
-        else:
-            # Its parent's number, and contract_id is the upsert key.
-            columns["contract_id"] = None
-            cleared.append("contract_id")
-            log.warning(
-                "dispatch: %s belongs to this document's parent (named in %s), "
-                "not to the document (%s) -- contract_id left unset rather than "
-                "overwriting the parent's row", ref, field, resolved_doc_type)
-            return cleared
-    return cleared
-
-
 def normalize_doc_pk(doc_type: str, value):
     """Canonicalize a document primary key to its persisted form.
 
@@ -654,32 +588,6 @@ def dispatch_document(
                 severity="critical",
                 blocks_promotion=True,
                 notes="context_layer (AgentNick) could not ground a value in the document",
-            ))
-
-    # A document is not its own parent. Deliberately AFTER the loop above: this
-    # clears a value, and the finding it raises has to say that the identifier
-    # belongs to another contract, which is a different fact from "nothing was
-    # found". Measured on a real order form 2026-10-03, where the page's only
-    # identifier was its framework's and promoting the row overwrote the
-    # framework agreement's own row in proc.bp_contracts.
-    if doc_type == "contract":
-        _ref_claim = columns.get("framework_ref") or columns.get("parent_agreement_ref")
-        for _field in _drop_self_parent_reference(
-            columns, type_resolution.evidence_concept if type_resolution else None,
-        ):
-            if _field != "contract_id":
-                continue
-            discrepancies.append(Discrepancy(
-                field_name="contract_id",
-                issue_type="missing_required",
-                severity="critical",
-                blocks_promotion=True,
-                notes=(
-                    f"the only identifier on the page is {_ref_claim}, which the "
-                    f"document names as its parent; a document is not its own "
-                    f"parent, so contract_id is unset rather than overwriting "
-                    f"the parent contract's row"
-                ),
             ))
 
     # Which currency is this money in?
