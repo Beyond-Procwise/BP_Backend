@@ -20,7 +20,10 @@ PACK_ROW = {'pack_id': 'p-1', 'pack_key': 'k', 'version': 1, 'source_file': 'K.p
 LAYOUT_ROW = {'layout_id': 'l-1', 'pack_id': 'p-1', 'layout_key': 'imported_abc1234567',
               'proposed_name': 'full-width table', 'name': None, 'status': 'candidate',
               'slide_refs': [4, 5], 'regions': [], 'slots': {}, 'example_fill': {},
-              'example_source': {'file': 'K.pptx', 'slide': 4}, 'problems': []}
+              'example_source': {'file': 'K.pptx', 'slide': 4}, 'problems': [],
+              # Deliberately absurd: the summary must PASS THROUGH what the store returned,
+              # not hard-code 'template'.
+              'kind': 'candidate-fixture-kind'}
 
 
 class _P:
@@ -210,3 +213,40 @@ def test_approving_something_that_does_not_exist_is_a_404(client, monkeypatch):
     assert client.post('/atb/layouts/nope/approve').status_code == 404
     assert client.post('/atb/layouts/nope/reject').status_code == 404
     assert client.post('/atb/layouts/nope', json={'name': 'x'}).status_code == 404
+
+
+# ----------------------------------------------------- composed pages (§6a, step 3)
+def test_a_layout_summary_says_which_kind_it_is(client):
+    body = client.get('/atb/layouts').json()
+    assert body['layouts'][0]['kind'] == 'candidate-fixture-kind'
+
+
+def test_the_kind_filter_reaches_the_store(client, monkeypatch):
+    """The Layout picker must be able to ask for templates and get nothing else."""
+    asked = {}
+    monkeypatch.setattr(ar.store, 'layouts',
+                        lambda conn, **k: asked.update(k) or [LAYOUT_ROW])
+    client.get('/atb/layouts?kind=page&status=approved')
+    assert asked == {'pack_id': None, 'status': 'approved', 'kind': 'page'}
+
+
+def test_an_unknown_kind_is_refused_rather_than_ignored(client):
+    """Silently returning everything for kind=quadrant would fill a picker with the wrong thing."""
+    assert client.get('/atb/layouts?kind=quadrant').status_code == 422
+
+
+def test_the_import_response_counts_pages_beside_layouts(client, monkeypatch):
+    import src.services.atb.pptx_import.import_pack as ip
+    result = ip.ImportResult(
+        pack_key='k', version=1, pack=PACK,
+        layouts=[{'id': 'imported_t', 'proposed_name': '3-up cards', 'slide_refs': [4, 9],
+                  'problems': []}],
+        single_use=[{'slides': [11], 'structure': '3-up chart'}], evidence={},
+        pages=[{'id': 'imported_p', 'name': 'Market intelligence', 'proposed_name': '3-up chart',
+                'slide_refs': [11], 'problems': []}],
+        pack_id='p-1')
+    monkeypatch.setattr(ar, 'import_pack', lambda *a, **k: result)
+    body = _upload(client).json()
+    assert len(body['layouts']) == 1
+    assert body['pages'] == [{'layout_key': 'imported_p', 'name': 'Market intelligence',
+                              'slides': [11], 'problems': 0}]

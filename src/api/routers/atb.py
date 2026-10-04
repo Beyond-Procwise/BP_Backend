@@ -10,7 +10,7 @@ replaces such fields with "[withheld]", which has silently emptied payloads here
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -69,6 +69,9 @@ def _layout_summary(row: dict) -> dict:
         "layout_key": row["layout_key"],
         "proposed_name": row["proposed_name"],
         "name": row.get("name"),
+        # 'template' (a reusable shape, offered in the Layout picker) or 'page' (one arranged
+        # slide, offered as a starting page). Passed through, never inferred here.
+        "kind": row.get("kind") or "template",
         "status": row["status"],
         "slide_refs": list(row.get("slide_refs") or []),
         "regions": row.get("regions") or [],
@@ -104,6 +107,11 @@ async def post_import(file: UploadFile = File(...), principal=Depends(require_us
         "layouts": [{"layout_key": l["id"], "proposed_name": l["proposed_name"],
                      "slides": l["slide_refs"], "problems": len(l["problems"])}
                     for l in result.layouts],
+        # The arranged pages, which §6a deferred until step 2 could place their boxes. Named
+        # rather than described, so this list reads as a table of contents.
+        "pages": [{"layout_key": p["id"], "name": p["name"],
+                   "slides": p["slide_refs"], "problems": len(p["problems"])}
+                  for p in result.pages],
         "single_use": result.single_use,
         "problems": result.problems,
         "diff": result.diff,
@@ -144,10 +152,13 @@ def get_evidence(pack_id: str, principal=Depends(require_user)):
 
 @router.get("/layouts")
 def get_layouts(status: Optional[str] = None, pack_id: Optional[str] = None,
+                kind: Optional[Literal["template", "page"]] = None,
                 principal=Depends(require_user)):
+    """`kind` is typed rather than validated by hand: an unknown value is a 422, and silently
+    returning everything for kind=quadrant would fill a picker with the wrong thing."""
     gate("style_pack.read", principal, agent=_AGENT)
     with get_conn() as conn:
-        found: List[dict] = store.layouts(conn, pack_id=pack_id, status=status)
+        found: List[dict] = store.layouts(conn, pack_id=pack_id, status=status, kind=kind)
         return {"layouts": [_layout_summary(row) for row in found]}
 
 
