@@ -722,10 +722,7 @@ document that database has ever held (`bp_contract_raw` went 0 → 1).
 **It did not promote, and that is the right answer.** Two blocking `missing_required` findings:
 `contract_id` and `contract_start_date`. The document carries no contract or agreement number at
 all, so `contract_id` is genuinely absent — and the row is held for a person rather than promoted
-with a guess. `contract_start_date` is a **real extraction gap**, recorded here rather than
-fixed: the document says *"entered into on June 12, 2025 (‘the Effective Date’)"*, which is a
-date stated in prose with no label, and the context layer did not ground it. That is a date
-problem, not a party problem, and it is out of scope for this work.
+with a guess. `contract_start_date` was a **real extraction gap**. It was fixed the same day; see §15.
 
 ### A bug this upload found, fixed 2026-10-04
 
@@ -773,3 +770,79 @@ required header fields AND a two-party signature block. Uploaded through the liv
 All four party/signatory columns reached the `_trgt` tier through promotion, including both new
 ones and both job titles. That is the last unproven link in the path from the page to
 `proc.bp_contracts`.
+
+
+---
+
+## 15. The term, fixed 2026-10-04
+
+The second blocking finding on §14's upload. `contract_start_date` was NULL on a document that
+states its start date three times:
+
+```
+... is entered into on June 12, 2025 ( ' the Effective Date') by and between ...
+... (referred to as the "Effective Date"). It will end on December 12, 2025
+Name: John Smith  Signature: ______  Date: June 12, 2025
+```
+
+**The same structural hole as `supplier_id`, in a third place.** `contract_start_date` and
+`contract_end_date` declare **sixteen `canonical_labels` between them and have no `patterns` at
+all**, so nothing deterministic ever read a contract's dates: the only path was the context
+layer, which returned nothing. The field carried no provenance entry, which is the tell — no
+candidate was ever produced, as against one produced and rejected.
+
+**It was not a date-parsing problem**, and establishing that first mattered: the runtime binder
+reads every one of these shapes (`parse_date("June 12, 2025") → 2025-06-12`). The four
+`TestIsoDate` failures in §6's list are the two-venv trap — `venv`, which pytest uses, has no
+`dateparser` — not a defect in the date code.
+
+`engineered/contract_dates.py` reads a labelled field first (`Effective Date: 5 January 2026`),
+then prose (`entered into on …`, `It will end on …`). In both cases the date must be the **first
+thing** after the label or connector, inside a 40-character window. That anchoring is what stops
+`shall be effective on the date of signing this Agreement` from reaching forward to a later date,
+and what stops `Effective Date: 5 January 2026 End Date: 4 January 2029` — one line, as the
+parser renders it — from reading the end date as the start.
+
+**Five refusals, each a test:** a label with no date after it (the real document names "Effective
+Date" twice and states no date in either place); a bare `Date:` label, which in a signature block
+sits beside every field and means the day somebody signed — reading that as the term start is how
+a renewal gets the wrong anniversary; a date in prose with no term wording ("The Parties met on 3
+February"); a value that is not a calendar date ("31 February", "the first Tuesday after
+Michaelmas"); and a term whose start falls after its end, where **both** are dropped, because
+that is a misread rather than two facts.
+
+### The two-venv trap caught me, in my own tests
+
+The first version converted dates by calling the pipeline's `parse_date` — `dateparser`
+underneath, installed in `.venv` and **not** in `venv`. So the reader produced nothing at all
+under pytest while working in production: the exact failure mode that hid the supplier bug for
+months, this time in code written to fix it. A module that accepts only four date shapes can
+convert those four itself, so it now does, and behaves identically in both environments. One test
+asserts the home-grown conversion agrees with `dateparser` wherever `dateparser` exists, and
+**skips** where it does not — and that skip is the point: it is why the other conversion tests do
+not go through it.
+
+The numeric form is read **day-first** (`12/06/2025 → 2025-06-12`). That is a choice, not a
+guess: it matches what `dateparser` already answers for this corpus (GBP, "the laws of England
+and Wales"), so the pipeline cannot change its mind about a date depending on which reader saw
+it. Nine shapes are pinned by tests, and a month is matched as a **whole word** — prefix matching
+read "Februbry 5, 2026" as February and would have read "Octopus 5, 2026" as October.
+
+**Live on bp_sqldb**, the real contract re-run through the watcher:
+
+| | before | after |
+|---|---|---|
+| `contract_start_date` | NULL | **2025-06-12**, provenance `date` |
+| `contract_end_date` | NULL | **2025-12-12**, provenance `date` |
+| blocking findings | 2 (`contract_id`, `contract_start_date`) | **1** (`contract_id`) |
+
+The one remaining blocker is correct and will not be "fixed": the document carries no contract or
+agreement number anywhere, so `contract_id` is genuinely absent and the row is held for a person
+rather than promoted under a number nobody wrote.
+
+The backfill covers the term too, under three rules rather than the parties' four — the sweep
+never produced a contract date, so there is no wrong value of its to clear, only an absent one to
+fill, and where this reader finds nothing a stored date **stays** (the context layer may have
+grounded a shape these four do not cover). Applied on bp_sqldb: `1 term changed`. Its provenance
+writer now takes the reader's name, so a backfilled date records `source: date` and not
+`source: parties` — a backfill that mislabels which reader answered is an audit trail that lies.

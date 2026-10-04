@@ -54,6 +54,9 @@ from config.settings import Settings  # noqa: E402
 from src.services.extraction.engineered.contract_parties import (  # noqa: E402
     BUYER_FIELD, CONFIDENCE, SUPPLIER_FIELD, decide_correction,
 )
+from src.services.extraction.engineered.contract_dates import (  # noqa: E402
+    END_FIELD, START_FIELD, decide_date_correction,
+)
 from src.services.extraction.engineered.contract_signatories import (  # noqa: E402
     BUYER_NAME_FIELD, NAME_FIELD, ROLE_FIELD, decide_signatory_correction,
 )
@@ -65,7 +68,9 @@ _READ = """
            parser_snapshot->'_field_provenance'->'buyer_org_id'->>'source' AS buy_src,
            contract_signatory_name, contract_signatory_role,
            buyer_signatory_name, buyer_signatory_role,
-           parser_snapshot->'_field_provenance'->'contract_signatory_name'->>'source' AS sig_src
+           contract_start_date, contract_end_date,
+           parser_snapshot->'_field_provenance'->'contract_signatory_name'->>'source' AS sig_src,
+           parser_snapshot->'_field_provenance'->'contract_start_date'->>'source' AS date_src
       FROM proc.bp_contract_raw
      ORDER BY raw_id
 """
@@ -77,17 +82,25 @@ def _conn(db: str | None):
                             password=s.db_password, port=s.db_port)
 
 
-def _provenance_patch(changed_fields: dict[str, str | None]) -> dict:
+def _provenance_patch(changed_fields: dict[str, str | None], *,
+                      source: str = "parties",
+                      pattern: str = "contract_party_clause") -> dict:
+    """What the row should say about who produced each value.
+
+    `source` and `pattern` are arguments because a date is not read by the party
+    clause: a fresh extraction records source='date' for the term and
+    source='parties' for the parties, and a backfill that wrote 'parties' over a
+    date would make the audit trail lie about which reader answered.
+    """
     now = datetime.now(timezone.utc).isoformat()
     patch = {}
     for field, value in changed_fields.items():
         if value is None:
-            patch[field] = {"source": "parties-cleared", "confidence": None,
+            patch[field] = {"source": f"{source}-cleared", "confidence": None,
                             "pattern_name": None, "backfilled_at": now}
         else:
-            patch[field] = {"source": "parties", "confidence": CONFIDENCE,
-                            "pattern_name": "contract_party_clause",
-                            "backfilled_at": now}
+            patch[field] = {"source": source, "confidence": CONFIDENCE,
+                            "pattern_name": pattern, "backfilled_at": now}
     return patch
 
 
@@ -112,7 +125,7 @@ def main() -> int:
         print("proc.bp_contract_raw is empty: nothing to correct.")
         return 0
 
-    corrected = cleared = unchanged = signatories = 0
+    corrected = cleared = unchanged = signatories = terms = 0
     for r in rows:
         # The two fields share one decision, because the bug was that they shared
         # one answer. Provenance is read from supplier_id, falling back to buyer.
@@ -130,7 +143,43 @@ def main() -> int:
             stored_buyer_name=r["buyer_signatory_name"],
             stored_buyer_role=r["buyer_signatory_role"],
         )
+        dt = decide_date_correction(
+            full_text=r["full_text"] or "",
+            stored_start=str(r["contract_start_date"]) if r["contract_start_date"] else None,
+            stored_end=str(r["contract_end_date"]) if r["contract_end_date"] else None,
+            provenance_source=r["date_src"],
+        )
         name = (r["source_file"] or "").split("/")[-1] or f"raw_id={r['raw_id']}"
+        if dt.changed:
+            print(f"  > {name:38s} term: {r['contract_start_date']} .. "
+                  f"{r['contract_end_date']}  ->  {dt.start} .. {dt.end}")
+            print(f"    {'':38s} why: {dt.reason}")
+            terms += 1
+            if args.apply:
+                patch = _provenance_patch({START_FIELD: dt.start, END_FIELD: dt.end},
+                                          source="date",
+                                          pattern="contract_term_clause")
+                cur.execute(
+                    """UPDATE proc.bp_contract_raw
+                          SET contract_start_date = %s, contract_end_date = %s,
+                              parser_snapshot = jsonb_set(
+                                  coalesce(parser_snapshot, '{}'::jsonb),
+                                  '{_field_provenance}',
+                                  coalesce(parser_snapshot->'_field_provenance', '{}'::jsonb)
+                                      || %s::jsonb,
+                                  true)
+                        WHERE raw_id = %s""",
+                    (dt.start, dt.end, json.dumps(patch), r["raw_id"]),
+                )
+                if r["contract_id"]:
+                    cur.execute(
+                        """UPDATE proc.bp_contracts
+                              SET contract_start_date = %s, contract_end_date = %s,
+                                  last_modified_by = 'backfill_contract_parties',
+                                  last_modified_date = NOW()
+                            WHERE contract_id = %s""",
+                        (dt.start, dt.end, r["contract_id"]),
+                    )
         if sg.changed:
             mark = "x" if sg.name is None else ">"
             print(f"  {mark} {name:38s} signatory: {str(r['contract_signatory_name'])!r}"
@@ -140,7 +189,8 @@ def main() -> int:
             signatories += 1
             if args.apply:
                 patch = _provenance_patch({NAME_FIELD: sg.name,
-                                           BUYER_NAME_FIELD: sg.buyer_name})
+                                           BUYER_NAME_FIELD: sg.buyer_name},
+                                          pattern="contract_signature_block")
                 cur.execute(
                     """UPDATE proc.bp_contract_raw
                           SET contract_signatory_name = %s,
@@ -214,7 +264,8 @@ def main() -> int:
             )
 
     print(f"\n{len(rows)} row(s): {corrected} party corrected, {cleared} party cleared, "
-          f"{unchanged} party unchanged, {signatories} signatory changed")
+          f"{unchanged} party unchanged, {signatories} signatory changed, "
+          f"{terms} term changed")
     if args.apply:
         conn.commit()
         print("committed.")

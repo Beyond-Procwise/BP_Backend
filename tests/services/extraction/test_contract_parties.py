@@ -192,7 +192,10 @@ def test_nothing_is_emitted_for_a_silent_document():
 def test_a_contracts_party_fields_are_barred_from_the_entity_sweep():
     from src.services.extraction.dispatch import _contract_party_candidates
     cands, barred = _contract_party_candidates("contract", REAL_MARKETING_AGREEMENT)
-    assert {c.field for c in cands} == {"supplier_id", "buyer_org_id"}
+    # The deterministic readers share this entry point, so the set grows as each
+    # one lands (signatories 2026-10-03, the term 2026-10-04). What this test owns
+    # is the two PARTY fields; the others have their own files.
+    assert {"supplier_id", "buyer_org_id"} <= {c.field for c in cands}
     assert {"supplier_id", "buyer_org_id"} <= barred
 
 
