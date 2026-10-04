@@ -130,3 +130,20 @@ def test_the_listing_says_which_reports_have_pages(client):
 def test_a_report_drawn_before_pages_existed_has_none(client):
     public = rr._view({'job_id': 'j-old', 'status': 'released', 'run_id': 'r-9'})
     assert public['has_snapshot'] is False
+
+
+def test_an_edit_retires_the_pages_it_did_not_redraw():
+    """The light editor rewrites the deck and the page. It cannot rewrite the builder pages.
+
+    store_snapshot runs once, at release. save_version updates deck, page, title and
+    current_version -- so after an edit the snapshot is the PRE-EDIT composition while
+    has_snapshot still says true, and "Open as pages" hands back a report that disagrees with
+    the deck beside it. The deck and the page are bound to a signed hash; the snapshot is not,
+    so nothing else would ever notice. Retiring it is honest: the button disappears.
+    """
+    import inspect
+    from src.services.rga import job_store
+    src = inspect.getsource(job_store.save_version)
+    update = src[src.index('UPDATE proc.bp_report_job'):]
+    assert 'snapshot = NULL' in update, (
+        'save_version must retire the snapshot it cannot redraw')

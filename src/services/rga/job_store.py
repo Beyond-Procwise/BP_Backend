@@ -364,9 +364,17 @@ def save_version(job_id: str, *, base_version: int, title: str, ast: Dict[str, A
                 "VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)",
                 (job_id, version, title, json.dumps(ast), deck, page, deck_sha, page_sha,
                  by, summary))
+            # The builder pages are RETIRED by an edit, not carried through it. This editor
+            # rewrites the deck and the page; it cannot redraw the snapshot, which was composed
+            # once at release against a style pack's layouts. Left in place it would be the
+            # pre-edit report, offered as "Open as pages" beside a deck that says something
+            # else -- and unlike the deck and the page it is bound to no signed hash, so
+            # nothing downstream would ever catch the divergence. Nulling it turns has_snapshot
+            # false and the button disappears, which is the honest answer until a redraw exists.
             cur.execute(
                 "UPDATE proc.bp_report_job SET deck = %s, page = %s, title = %s, "
-                "  current_version = %s, last_edited_by = %s WHERE job_id = %s",
+                "  current_version = %s, last_edited_by = %s, snapshot = NULL "
+                "WHERE job_id = %s",
                 (deck, page, title, version, by, job_id))
             if before_commit is not None:
                 before_commit(version)
