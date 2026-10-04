@@ -681,3 +681,95 @@ has that same gap, and this is what closes it without re-extracting anything.
 **What is still true after this.** A block naming one signatory with no party label fills the
 supplier's field and leaves the buyer's NULL — nothing says whose it is, and a column does not
 change that. A block naming several with none attributable fills neither.
+
+
+---
+
+## 14. The real contract on bp_sqldb, 2026-10-04
+
+Everything before this was verified on `bp_testdb`. Asked for: do it on `bp_sqldb`, the
+production-lineage database, with the real document.
+
+**The live server was NOT repointed.** It is pointed at `bp_testdb` by `.env` and is shared with
+other sessions and the UI. Instead the same `ProcessMonitorWatcher` the server runs was driven
+directly — `_claim_record` (the `Completed → Extracting` claim and the content-hash dedup) then
+`_process_record` (which calls `dispatch_document`) — in a process whose `DB_NAME` is `bp_sqldb`,
+so every read and write landed there. What this skips versus the server is the LISTEN/NOTIFY
+trigger and the poll loop; the extraction path itself is the same function the watcher calls.
+
+**Checked before running:** `proc.process_monitor` on `bp_sqldb` had **0** rows in `Completed`
+or `Running`, so a watcher instance could not claim anything else by accident. The script
+refuses to run if that count is non-zero, or if `DB_NAME` is not `bp_sqldb`.
+
+**Result** (`proc.process_monitor` id 1651, `category='contract'`, claimed to `Extracting`, ended
+`Extracted` / `doc_action='needs_review'`):
+
+| column | value | source |
+|---|---|---|
+| `resolved_doc_type` | `doctype.contract_unspecified` | the page |
+| `resolved_role` / `type_agreement` | `role.master` / `agreed` | |
+| `supplier_id` | **`NexaSpark Marketing Ltd.`** | `parties` |
+| `buyer_org_id` | **`BrightWave Digital Ltd.`** | `parties` |
+| `contract_signatory_name` | **`John Smith`** | signature block, supplier side |
+| `buyer_signatory_name` | **`Sarah Johnson`** | signature block, buyer side |
+| `framework_ref` / `parent_agreement_ref` | NULL | the document names none |
+| `promotion_status` | `discrepancy` | |
+
+So the whole of this work holds on `bp_sqldb`: the vocabulary, the structure columns, the party
+clause, both signatories and the new `buyer_signatory_name` column. It is the first contract
+document that database has ever held (`bp_contract_raw` went 0 → 1).
+
+**It did not promote, and that is the right answer.** Two blocking `missing_required` findings:
+`contract_id` and `contract_start_date`. The document carries no contract or agreement number at
+all, so `contract_id` is genuinely absent — and the row is held for a person rather than promoted
+with a guess. `contract_start_date` is a **real extraction gap**, recorded here rather than
+fixed: the document says *"entered into on June 12, 2025 (‘the Effective Date’)"*, which is a
+date stated in prose with no label, and the context layer did not ground it. That is a date
+problem, not a party problem, and it is out of scope for this work.
+
+### A bug this upload found, fixed 2026-10-04
+
+Writing a contract that would actually **promote** (the real one cannot — no contract number)
+produced a signature block the parser rendered on **one line**:
+
+```
+SUPPLIER Name: Priya Raman Title: Managing Director Date: 1 March 2026 CLIENT Name: Tom Okafor Title: Head of Procurement Date: 1 March 2026
+```
+
+The reader returned the supplier's signatory and **NULL for the buyer**, on a document naming
+both. Two causes, both of which only the real parser output exposes:
+
+* the name label's value was captured as `[^\n]*`, greedy to end of line, so `finditer` consumed
+  the second `Name:` inside the first match and never saw it. Each signatory's span is now
+  bounded by the **next** label instead;
+* `_party_label_before` scanned backwards for capitalised runs, and `SUPPLIER Name` matched as
+  one phrase — which is in no role vocabulary, so *neither* side was attributed. It now scans for
+  the role **words** themselves, built from `contract_parties.ROLE_WORDS`.
+
+A third fault fell out of the first fix: the job title was searched for across the whole line, so
+the supplier's `Title: Managing Director` was read as the buyer's title. The role search is now
+bounded by the same span.
+
+The real Marketing Agreement only ever worked because its parser output happens to keep a blank
+line after each party label. Three tests pin the one-line shape, and the fix is what makes
+`buyer_signatory_role` reachable at all.
+
+### The new column survives promotion — proven, not assumed
+
+Until this upload, `buyer_signatory_name` had only ever been written to `proc.bp_contracts` by
+the **backfill**. Promotion derives its column list from `information_schema.columns` at run
+time, so it *should* carry a new column without being told — but "should" is not evidence, and
+nothing had promoted with a signature block: the real contract cannot promote (no contract
+number) and the five synthetic documents have no signatures.
+
+`promoting_signed.pdf` was written to close exactly that gap — a contract with the three
+required header fields AND a two-party signature block. Uploaded through the live watcher on
+`bp_testdb`, it promoted, and `proc.bp_contracts` reads:
+
+| `contract_id` | `supplier_id` | `buyer_org_id` | supplier signed | title | buyer signed | title |
+|---|---|---|---|---|---|---|
+| `SA-2026-0310` | NexaSpark Marketing Ltd. | BrightWave Digital Ltd. | **Priya Raman** | Managing Director | **Tom Okafor** | Head of Procurement |
+
+All four party/signatory columns reached the `_trgt` tier through promotion, including both new
+ones and both job titles. That is the last unproven link in the path from the page to
+`proc.bp_contracts`.

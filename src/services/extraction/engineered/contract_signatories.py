@@ -39,7 +39,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..types import Candidate, Span
-from .contract_parties import CONFIDENCE, _squeeze, _tidy, side_for_role
+from .contract_parties import (
+    CONFIDENCE, ROLE_WORDS, _squeeze, _tidy, side_for_role,
+)
 
 NAME_FIELD = "contract_signatory_name"       # the SUPPLIER's; see the migration
 ROLE_FIELD = "contract_signatory_role"
@@ -54,10 +56,16 @@ _SECTION = re.compile(
 )
 
 #: `Name: John Smith`, and the labels extraction_schemas/contract.yaml declares.
+#: The LABEL only -- no value group. A greedy `[^\\n]*` value swallowed the
+#: rest of the line, so when the parser puts a whole signature block on one
+#: line ("SUPPLIER Name: Priya Raman ... CLIENT Name: Tom Okafor ...")
+#: finditer never saw the second signatory and the buyer's column stayed
+#: empty on a document that names both. Each signatory's span is bounded by
+#: the NEXT label instead, in read_signatory.
 _NAME_LABEL = re.compile(
     r"(?:^|[\s\n])(?i:authorised\s+signatory|authorized\s+signatory|signed\s+by|"
     r"authorised\s+by|authorized\s+by|signatory|print\s+name|name)"
-    r"\s*[:–]\s*(?P<value>[^\n]*)"
+    r"\s*[:\u2013]\s*"
 )
 
 #: `Title: Managing Director` and its synonyms, for the job title.
@@ -129,17 +137,32 @@ def _cut(raw: str) -> str:
     return raw[:m.start()] if m else raw
 
 
+#: The role words as whole words, longest first. Built from contract_parties'
+#: vocabulary so the two readers cannot disagree about what "Marketer" means.
+_ROLE_WORD_RE = re.compile(
+    r"(?i)\b(?:" + "|".join(re.escape(w) for w in ROLE_WORDS) + r")\b"
+)
+
+
 def _party_label_before(text: str, pos: int) -> Optional[str]:
     """The party whose sub-block this position sits in, if it is labelled.
 
     Looks back over the preceding 200 characters for the LAST party-role word --
     "MARKETER", "CLIENT", "SUPPLIER" -- which is how a signature block separates
-    its two halves. The vocabulary is contract_parties', so the two readers cannot
-    disagree about what "Marketer" means.
+    its two halves.
+
+    Scans for the role WORDS rather than for capitalised runs. The first version
+    did the latter and worked only because the real Marketing Agreement keeps a
+    blank line after each label: when the parser drops those (measured 2026-10-04
+    on a generated contract), the block arrives as
+    "SUPPLIER Name: Priya Raman ... CLIENT Name: Tom Okafor ...", a greedy run
+    matches the phrase "SUPPLIER Name", that is in no vocabulary, and NEITHER
+    side gets attributed -- so the buyer's column stayed empty on a document that
+    names both signatories plainly.
     """
     window = text[max(0, pos - 200):pos]
     best: Optional[str] = None
-    for m in re.finditer(r"[A-Za-z][A-Za-z ]{2,24}", window):
+    for m in _ROLE_WORD_RE.finditer(window):
         side = side_for_role(m.group(0))
         if side:
             best = side
@@ -156,13 +179,20 @@ def read_signatory(full_text: str) -> Signatory:
     region_start = sec.start()
     region = full_text[region_start:]
 
-    found: list[tuple[Optional[str], str, str, int]] = []   # (party, name, evidence, pos)
-    for m in _NAME_LABEL.finditer(region):
-        value = _tidy(_cut(m.group("value")))
+    # Every name label, then each one's span: from its own end to the start of the
+    # next label (or 300 characters, whichever is sooner). That bound is what makes
+    # a one-line block readable, and it is also what stops one signatory's "Title:"
+    # being read as the other's.
+    labels = list(_NAME_LABEL.finditer(region))
+    found: list[tuple[Optional[str], str, str, int, int]] = []
+    for i, m in enumerate(labels):
+        stop = labels[i + 1].start() if i + 1 < len(labels) else len(region)
+        span = region[m.end():min(stop, m.end() + 300)]
+        value = _tidy(_cut(span.split("\n")[0]))
         if not _is_person(value):
             continue
         party = _party_label_before(region, m.start())
-        found.append((party, value, _squeeze(m.group(0)), m.start()))
+        found.append((party, value, _squeeze(m.group(0) + value), m.end(), stop))
 
     if not found:
         return Signatory()
@@ -173,11 +203,12 @@ def read_signatory(full_text: str) -> Signatory:
     if supplier is None and buyer is None and len(found) == 1:
         # One signatory, unattributed: that is who signed, and nothing says it is
         # the buyer's, so the buyer's field stays empty rather than guessing.
-        _party, name, ev, pos = found[0]
-        return Signatory(name=name, role=_role_near(region, pos), party=None, evidence=ev)
+        _party, name, ev, start, stop = found[0]
+        return Signatory(name=name, role=_role_in(region, start, stop), party=None,
+                         evidence=ev)
 
     buyer_name = buyer[1] if buyer else None
-    buyer_role = _role_near(region, buyer[3]) if buyer else None
+    buyer_role = _role_in(region, buyer[3], buyer[4]) if buyer else None
 
     if supplier is None:
         # Only the other side signed this copy, or nothing could be attributed.
@@ -185,19 +216,20 @@ def read_signatory(full_text: str) -> Signatory:
         return Signatory(buyer_name=buyer_name, buyer_role=buyer_role,
                          evidence=buyer[2] if buyer else None)
 
-    return Signatory(name=supplier[1], role=_role_near(region, supplier[3]),
+    return Signatory(name=supplier[1], role=_role_in(region, supplier[3], supplier[4]),
                      party="supplier", buyer_name=buyer_name,
                      buyer_role=buyer_role, evidence=supplier[2])
 
 
-def _role_near(region: str, pos: int) -> Optional[str]:
-    """A job title on the same signatory's line, if the block carries one."""
-    # pos is the START of the name match, which includes the newline before it, so
-    # find("\n", pos) would return pos itself and the line would come out empty.
-    line_start = region.rfind("\n", 0, pos) + 1
-    line_end = region.find("\n", pos + 1)
-    line = region[line_start:line_end if line_end > 0 else min(len(region), pos + 300)]
-    m = _ROLE_LABEL.search(line)
+def _role_in(region: str, start: int, stop: int) -> Optional[str]:
+    """A job title inside THIS signatory's span, if the block carries one.
+
+    Bounded by the next name label on purpose: searching the whole line read the
+    supplier's "Title: Managing Director" as the buyer's title when the parser put
+    both signatories on one line.
+    """
+    span = region[start:min(stop, start + 300)]
+    m = _ROLE_LABEL.search(span)
     if not m:
         return None
     value = _tidy(_cut(m.group("value")))

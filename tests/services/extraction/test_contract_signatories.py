@@ -316,3 +316,34 @@ def test_clearing_a_sweep_value_clears_the_buyer_side_too():
                 provenance_source="ner", stored_buyer_name="Services",
                 stored_buyer_role=None)
     assert d.name is None and d.buyer_name is None and d.changed is True
+
+
+# ---------------------------------------------------------------------------
+# The shape the parser produces when a signature block has no blank lines: the
+# WHOLE block on one line. Found 2026-10-04 on a generated contract whose
+# sections docling did not separate -- the real Marketing Agreement happened to
+# keep its blank lines, which is the only reason the first version worked.
+# ---------------------------------------------------------------------------
+
+ONE_LINE_BLOCK = (
+    "## 5. SIGNATURES\n\n"
+    "SUPPLIER Name: Priya Raman Title: Managing Director Date: 1 March 2026 "
+    "CLIENT Name: Tom Okafor Title: Head of Procurement Date: 1 March 2026\n"
+)
+
+
+def test_a_one_line_signature_block_attributes_both_sides():
+    s = read_signatory(ONE_LINE_BLOCK)
+    assert s.name == "Priya Raman", s
+    assert s.role == "Managing Director", s
+    assert s.buyer_name == "Tom Okafor", s
+    assert s.buyer_role == "Head of Procurement", s
+
+
+def test_the_party_label_is_found_even_when_a_word_sits_against_it():
+    """'SUPPLIER Name:' with no line break between them. A greedy scan for
+    capitalised runs read that as the phrase 'SUPPLIER Name', which is in no role
+    vocabulary, so neither side was attributed."""
+    s = read_signatory("SIGNATURES\nCLIENT Name: Tom Okafor Date: 1 March 2026\n")
+    assert s.buyer_name == "Tom Okafor", s
+    assert s.name is None, s

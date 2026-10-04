@@ -133,6 +133,15 @@ class Parties:
     buyer_evidence: Optional[str] = None
 
 
+#: Every party-role word, longest first so "service provider" is not read as
+#: "provider". Exposed because a signature block runs its label straight into the
+#: next word ("SUPPLIER Name: ...") when the parser drops the line breaks, so the
+#: only reliable way to find the label is to look for these words themselves.
+ROLE_WORDS: tuple[str, ...] = tuple(
+    sorted(_SUPPLIER_ROLES | _BUYER_ROLES, key=len, reverse=True)
+)
+
+
 def side_for_role(role: str | None) -> Optional[str]:
     """``'supplier'`` / ``'buyer'`` / ``None`` for a party-role word.
 
@@ -320,7 +329,7 @@ def party_candidates(full_text: str) -> list[Candidate]:
 
 
 __all__ = ["Parties", "read_parties", "party_candidates", "CONFIDENCE",
-           "side_for_role",
+           "side_for_role", "ROLE_WORDS",
            "SUPPLIER_FIELD", "BUYER_FIELD", "Correction", "decide_correction",
            "BROKEN_SOURCE", "HUMAN_SOURCE"]
 
