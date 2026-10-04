@@ -205,7 +205,11 @@ def test_the_bar_holds_even_when_the_clause_says_nothing():
     first ORG in the document', which was wrong five times out of six."""
     from src.services.extraction.dispatch import _contract_party_candidates
     cands, barred = _contract_party_candidates("contract", "AGREEMENT\nGoverned by English law.\n")
-    assert cands == []
+    # No PARTY candidate: that is what this test owns. The text is not silent to
+    # every reader -- it states a governing law, and contract_header.py answers it
+    # from the same entry point -- so asserting "no candidates at all" would make
+    # this test fail every time a new reader lands, which is what it did.
+    assert {c.field for c in cands} & {"supplier_id", "buyer_org_id"} == set(), cands
     assert {"supplier_id", "buyer_org_id"} <= barred
 
 
