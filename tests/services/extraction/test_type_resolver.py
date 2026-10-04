@@ -1182,3 +1182,98 @@ def test_order_form_is_not_a_call_off_alias_and_quote_workbooks_stay_agreed():
         declared_concept=None, full_text="Call-Off Contract\nFramework Ref: RM6100\n",
         vocabulary=SEED_VOCABULARY)
     assert call_off.evidence_concept == "doctype.call_off_contract", call_off
+
+
+#: The HORIZONTAL sibling of the adjudicated residual above. Same cause family --
+#: a reference beside a title -- on one line instead of two, and with a milder
+#: consequence. Pinned as positive assertions, not bugs: see the test below.
+def test_a_title_followed_by_an_alphanumeric_reference_reads_as_unknown_ACCEPTED():
+    """ACCEPTED RESIDUAL, ruled and pinned 2026-10-04 — do not "fix" this by
+    widening _REF_TOKEN without reading the whole docstring.
+
+    What it asserts: 'INVOICE INV-2026-0001' as a single title line returns
+    status 'unknown' with no evidence concept. 'INVOICE 90412' on the same line
+    returns doctype.invoice, because _REF_TOKEN strips a trailing PURE-NUMBER
+    token and the segment then normalises to the bare alias. An alphanumeric
+    reference is not stripped, the segment does not equal an alias, and
+    _title_owners therefore names nobody.
+
+    Why the behaviour looks erratic, which is the thing worth recording:
+    a page in this shape survives ONLY when the reference abbreviation is itself
+    an alias of the same type, which supplies a second corroborating mention --
+    'PURCHASE ORDER PO-2026-0145' resolves because 'po' is an alias of
+    doctype.order, and 'STATEMENT OF WORK SOW-014' because 'sow' is one. Where
+    no such coincidence exists the page returns unknown: 'FRAMEWORK AGREEMENT
+    FA1234', 'ORDER FORM OF-2024-3'. The outcome depends on whether the
+    supplier's reference prefix happens to collide with an alias, which is not a
+    property anyone designed.
+
+    Why it is accepted rather than fixed:
+
+      * It cannot reach routing. The pipeline comes from the declared category
+        via src/services/concepts/routing.py; this module only reports. With a
+        declared concept the status is 'matched' and the agreement is
+        'declared_only' -- no finding is raised and nothing is misrouted.
+      * It is SAFER than the vertical form adjudicated above, which returns a
+        confidently WRONG answer (doctype.order, 'disagreed'). This one returns
+        no answer, which a reader cannot mistake for a verdict.
+      * Measured incidence zero: no .docx in the local SpendIQDocs sample carries
+        a title in this shape, matching the zero measured across 63 documents for
+        the vertical form.
+      * The fix is the wrong trade. _REF_TOKEN is deliberately narrow ('No' is
+        excluded so 'Order No' and 'Contract No' stay labels), and its one
+        permissive branch already produces an accepted FALSE POSITIVE -- the
+        roman-numeral branch makes 'QUOTE MIX' a quote. Widening it to swallow
+        alphanumeric references buys resolved types for some pages by handing
+        wrong ones to others, and resolved_doc_type feeds contract parent-linking
+        (contract_links.py filters WHERE resolved_doc_type IS NOT NULL), where a
+        false positive proposes a wrong parent and an unknown proposes nothing.
+
+    Consequence of it being wrong: the row's resolved_doc_type and resolved_role
+    stay NULL and type_agreement reads 'declared_only', so a contract in this
+    shape drops out of parent-link proposals. A lost corroboration, not a
+    misclassification.
+
+    A future round that widens _REF_TOKEN MUST carry this test and
+    test_a_title_directly_above_a_bare_reference_loses_its_title_ACCEPTED
+    together, and must say what it does to 'QUOTE MIX'.
+    """
+    unknown = resolve_document_type(
+        declared_concept=None, full_text="INVOICE INV-2026-0001\n", vocabulary=V)
+    assert (unknown.status, unknown.evidence_concept) == ("unknown", None)
+
+    # One character class decides it: a pure-number reference is stripped.
+    numbered = resolve_document_type(
+        declared_concept=None, full_text="INVOICE 90412\n", vocabulary=V)
+    assert (numbered.status, numbered.evidence_concept) == (
+        "matched", "doctype.invoice")
+
+    # Declared, it is a reporting gap and nothing more.
+    declared = resolve_document_type(
+        declared_concept="doctype.invoice", full_text="INVOICE INV-2026-0001\n",
+        vocabulary=V)
+    assert (declared.status, declared.evidence_concept, declared.agreement) == (
+        "matched", None, "declared_only")
+
+
+def test_the_reference_prefix_decides_it_by_coincidence_ACCEPTED():
+    """ACCEPTED RESIDUAL, the half that explains the other.
+
+    A page in the shape above resolves when the reference abbreviation happens to
+    be an alias of the same type, and not otherwise. Pinned so that the
+    inconsistency is a recorded property rather than a surprise, and so that a
+    future change which makes these four agree has to say which way it went.
+    """
+    survives = {
+        "PURCHASE ORDER PO-2026-0145": "doctype.order",     # 'po' is an alias
+        "STATEMENT OF WORK SOW-014": "doctype.sow",         # 'sow' is an alias
+    }
+    for page, expected in survives.items():
+        r = resolve_document_type(
+            declared_concept=None, full_text=page + "\n", vocabulary=V)
+        assert r.evidence_concept == expected, (page, r)
+
+    for page in ("FRAMEWORK AGREEMENT FA1234", "ORDER FORM OF-2024-3"):
+        r = resolve_document_type(
+            declared_concept=None, full_text=page + "\n", vocabulary=V)
+        assert (r.status, r.evidence_concept) == ("unknown", None), (page, r)
