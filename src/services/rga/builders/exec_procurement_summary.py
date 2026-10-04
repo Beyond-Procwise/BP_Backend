@@ -222,14 +222,14 @@ def build(fb: FactBuilder) -> None:
 
     # ---- control coverage -------------------------------------------------
     if matchable:
-        fb.add(label="Three-way match rate",
+        fb.add(label="Quote-PO-invoice reconciliation rate",
                value=(Decimal(matched) / Decimal(matchable) * 100),
-               derivation="exec_summary.three_way_match_rate",
+               derivation="exec_summary.value_reconciliation_rate",
                confidence=Confidence.CORROBORATED, format_hint=FormatHint.PCT)
     else:
-        fb.unmeasured(label="Three-way match rate",
-                      derivation="exec_summary.three_way_match_rate",
-                      reason="no deal in the period carries a match result")
+        fb.unmeasured(label="Quote-PO-invoice reconciliation rate",
+                      derivation="exec_summary.value_reconciliation_rate",
+                      reason="no deal in the period carries a reconciliation result")
 
     if cycle_n and avg_cycle is not None:
         fb.add(label="Average quote-to-PO cycle", value=Decimal(avg_cycle),

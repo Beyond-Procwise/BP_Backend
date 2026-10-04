@@ -79,7 +79,7 @@ FIXED_LABELS = [
     "Total value", "Total budget", "Identified benefit (GBP)", "Strategy", "Board forum",
     "Documents on file", "Quotes on file", "Purchase orders on file", "Invoices on file",
     "Suppliers who bid", "Spread from the lowest to the highest bid",
-    "Recoverable by taking the lowest bid", "Three-way match rate for this deal",
+    "Recoverable by taking the lowest bid", "Quote, PO and invoice reconciled",
     "Quote-to-PO cycle", "Open checks", "Critical checks", "Warning checks",
     "Opportunities raised on this deal", "Approvers required for this deal",
     "Decisions the Board is asked to take", "Approval decisions recorded",
@@ -106,7 +106,7 @@ def build(fb: FactBuilder) -> None:
     rows = _fetch(_DEAL, (deal_id,))
     deal = rows[0] if rows else None
     (name, supplier_id, _supplier_name, n_q, n_po, n_inv, q_tot, po_tot, inv_tot, ccy,
-     three_way, cycle) = deal if deal else (None,) * 12
+     reconciled, cycle) = deal if deal else (None,) * 12
     missing = "this deal is not on the record, so there is nothing measured to state"
 
     # ---- the four tiles ---------------------------------------------------------------
@@ -176,13 +176,13 @@ def build(fb: FactBuilder) -> None:
         fb.unmeasured(label=_money_label("Recoverable by taking the lowest bid", bid_ccy or ccy),
                       derivation="board_paper.recoverable", reason=why)
 
-    if three_way is None:
-        fb.unmeasured(label="Three-way match rate for this deal",
-                      derivation="board_paper.three_way_match",
-                      reason="the three-way match has not been run against this deal")
+    if reconciled is None:
+        fb.unmeasured(label="Quote, PO and invoice reconciled",
+                      derivation="board_paper.value_reconciled",
+                      reason="no reconciliation result has been recorded for this deal")
     else:
-        fb.add(label="Three-way match rate for this deal", value=Decimal(100 if three_way else 0),
-               derivation="board_paper.three_way_match", confidence=Confidence.CORROBORATED,
+        fb.add(label="Quote, PO and invoice reconciled", value=Decimal(100 if reconciled else 0),
+               derivation="board_paper.value_reconciled", confidence=Confidence.CORROBORATED,
                format_hint=FormatHint.PCT)
     if cycle is None:
         fb.unmeasured(label="Quote-to-PO cycle", derivation="board_paper.cycle_days",
@@ -295,14 +295,14 @@ def deal_note(facts) -> str:
     if crit is not None and crit.value:
         rec.append(f"Resolve the {ref(crit)} critical checks open against this deal before "
                    "anything else.")
-    tw = _find(facts, "board_paper.three_way_match")
+    tw = _find(facts, "board_paper.value_reconciled")
     if tw is not None and tw.value is not None and tw.value == 0:
-        rec.append("Reconcile the quote, purchase order and invoice: they do not three-way "
-                   "match.")
+        rec.append("Reconcile the quote, purchase order and invoice: their values do "
+                   "not agree.")
     elif tw is not None and tw.value is not None:
-        state.append("The quote, purchase order and invoice three-way match.")
+        state.append("The quote, purchase order and invoice values reconcile.")
     else:
-        state.append("The three-way match has not been run against this deal.")
+        state.append("No reconciliation result has been recorded for this deal.")
     rcv = _find(facts, "board_paper.recoverable")
     if rcv is not None and rcv.value:
         rec.append(f"Taking the lowest bid would recover {ref(rcv)}.")

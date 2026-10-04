@@ -6,7 +6,7 @@ flagged critical "does not exist in the system" while both POs sat in
 Discrepancy_Review two rows away. The flag was true of the promoted tiers
 and wrong in spirit.
 """
-from src.services.extraction import three_way_match as twm
+from src.services.extraction import two_way_match as twm
 
 
 def _run(monkeypatch, *, po_promoted, po_in_raw):

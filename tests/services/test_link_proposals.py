@@ -651,7 +651,7 @@ def test_a_common_unit_is_preferred_to_a_matching_currency():
 
 
 def test_a_hair_over_the_order_is_not_called_over_claiming():
-    """The band is the one three_way_match allows before it raises over-billing.
+    """The band is the one two_way_match allows before it raises over-billing.
     Without it, a rounding difference between an order and its invoice would be
     reported to a person as a document claiming more than was authorised."""
     proposals = lp.propose_links(

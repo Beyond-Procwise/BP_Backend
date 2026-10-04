@@ -6,7 +6,7 @@ pass a check against that line's full authorised total, and two invoices each
 citing the same PO at 60% of its value each pass the header check. Neither is
 individually over-billing. Only the sum says so.
 """
-from src.services.extraction import three_way_match as twm
+from src.services.extraction import two_way_match as twm
 
 
 def _po(total="1000", currency="GBP", lines=None):

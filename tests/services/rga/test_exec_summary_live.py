@@ -67,7 +67,7 @@ def live_ast():
         ]),
         Section(id="coverage", title="Control coverage", blocks=[
             TableBlock(columns=["Measure", "Value"],
-                       rows=[["Three-way match rate", "F0004"],
+                       rows=[["Quote-PO-invoice reconciliation rate", "F0004"],
                              ["Average quote-to-PO cycle", "F0005"]]),
         ]),
         Section(id="opportunities", title="Opportunities", blocks=[

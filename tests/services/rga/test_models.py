@@ -96,7 +96,7 @@ class TestNarrativeCannotCarryAFigure:
 
     def test_a_table_cell_may_carry_a_fact_id_or_a_label(self):
         table = TableBlock(columns=["Measure", "Value"],
-                           rows=[["Three-way match rate", "F0003"]])
+                           rows=[["Quote-PO-invoice reconciliation rate", "F0003"]])
         assert table.rows[0][1] == "F0003"
 
     def test_a_table_with_no_columns_is_refused(self):

@@ -62,7 +62,7 @@ def facts() -> list[FactEntry]:
                   FormatHint.MONEY, Confidence.CORROBORATED, currency="GBP"),
         make_fact(2, "Deals in period", Decimal(376), FormatHint.INT,
                   Confidence.ASSERTED, unit="deals"),
-        make_fact(3, "Three-way match rate", Decimal("29.52"), FormatHint.PCT,
+        make_fact(3, "Quote-PO-invoice reconciliation rate", Decimal("29.52"), FormatHint.PCT,
                   Confidence.CORROBORATED),
         make_fact(4, "Realised savings (GBP)", None, FormatHint.TEXT,
                   Confidence.UNASSESSED),
@@ -110,7 +110,7 @@ def ast() -> ReportAST:
         ]),
         Section(id="coverage", title="Control coverage", blocks=[
             TableBlock(columns=["Measure", "Value"],
-                       rows=[["Three-way match rate", "F0003"],
+                       rows=[["Quote-PO-invoice reconciliation rate", "F0003"],
                              ["Realised savings", "F0004"]]),
             ChartBlock(chart_type="bar", series=[
                 ChartSeries(label="Spend", fact_refs=["F0001"]),

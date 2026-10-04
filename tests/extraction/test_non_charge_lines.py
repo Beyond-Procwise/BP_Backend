@@ -7,8 +7,8 @@ Test Data_300726 session) and, worse, a CRITICAL line_not_on_po claiming
 'Commercial terms' is *charged* on the document. A row with no money is not
 a charge, and a row that is document furniture is not a line.
 """
-from src.services.extraction import three_way_match as twm
-from src.services.extraction.three_way_match import is_non_charge_line
+from src.services.extraction import two_way_match as twm
+from src.services.extraction.two_way_match import is_non_charge_line
 
 
 def test_terms_and_footer_rows_are_non_charge():

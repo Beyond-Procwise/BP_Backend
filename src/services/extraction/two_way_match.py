@@ -1,4 +1,15 @@
-"""Compare a document against the purchase order it references.
+"""Match an invoice against the purchase order it cites -- a TWO-way match.
+
+Named for what it does, because the old name claimed a control this product does
+not have. A three-way match is PO + GOODS RECEIPT + invoice: it proves that what
+was ordered, what actually arrived, and what was billed all agree. This module
+compares two of those three.
+
+The delivery leg does not exist anywhere in the product -- there is no goods
+receipt document type, no receipt table in `proc`, and nothing that books one. So
+an invoice for goods that were never delivered passes every check below, and no
+amount of work in this file can change that. Building the third way means
+building receipt capture first; until then this is a two-way match and says so.
 
 The pipeline already knew how to do this and threw the answer away. `linking_engine`
 scores an invoice against its PO across po_ref / supplier / amount / line_set signals, and
@@ -206,8 +217,15 @@ def _assign_lines(line_items: list[dict], po_lines: list[dict],
     assigned: dict[int, dict] = {}
     if edges:
         result = resolve(ResolutionRequest(
-            request_id=f"three_way_match:{po_id}",
+            request_id=f"two_way_match:{po_id}",
             edges=tuple(edges), capacities=(), rules=(_LINE_RULE,),
+            # NOT renamed with the module, deliberately. This string is hashed
+            # into the resolution reproducibility fingerprint
+            # (resolution/fingerprint.py: "a stored result can be checked
+            # against a re-run"), so changing it would make every result stored
+            # under the old name fail to verify, for a cosmetic reason. It is a
+            # version identifier, not a description. Change it only as a
+            # deliberate version bump, accepting that re-runs then differ.
             profile_registry_version="three_way_match/line_v1",
         ))
         for link in result.links:

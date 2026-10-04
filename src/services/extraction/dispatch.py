@@ -263,7 +263,7 @@ def _contract_party_candidates(doc_type: str, full_text: str):
             BUYER_FIELD, SUPPLIER_FIELD, party_candidates,
         )
         from src.services.extraction.engineered.contract_signatories import (
-            BUYER_NAME_FIELD, BUYER_ROLE_FIELD, NAME_FIELD, signatory_candidates,
+            NAME_FIELD, signatory_candidates,
         )
         # contract_signatory_name is barred for the same reason and by the same
         # evidence: the PERSON default path stored "Email Marketing" (a line from
@@ -272,13 +272,11 @@ def _contract_party_candidates(doc_type: str, full_text: str):
         # it is correct ("United Kingdom" on five of six live documents), so
         # barring the path wholesale would throw good values away.
         return (party_candidates(full_text) + signatory_candidates(full_text),
-                {SUPPLIER_FIELD, BUYER_FIELD, NAME_FIELD,
-                 BUYER_NAME_FIELD, BUYER_ROLE_FIELD})
+                {SUPPLIER_FIELD, BUYER_FIELD, NAME_FIELD})
     except Exception:
         log.exception("contract party/signature read failed; left to the context "
                       "layer (the entity sweep stays barred)")
-        return [], {"supplier_id", "buyer_org_id", "contract_signatory_name",
-                    "buyer_signatory_name", "buyer_signatory_role"}
+        return [], {"supplier_id", "buyer_org_id", "contract_signatory_name"}
 
 
 #: A parent-reference column and the structure it points AT. A document whose own

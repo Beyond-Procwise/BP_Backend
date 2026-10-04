@@ -12,7 +12,7 @@ from typing import Any, Mapping, Optional, Sequence
 from src.services.extraction.promotion import (
     _compute_confidence_score as _completeness,
 )
-from src.services.extraction.three_way_match import _agrees
+from src.services.extraction.two_way_match import _agrees
 from src.services.facts.arithmetic import check_line_arithmetic
 
 from ..contract import (

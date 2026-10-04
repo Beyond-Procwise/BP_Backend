@@ -259,7 +259,7 @@ for d in (0, 30, 45, 90, 120, None):
 
 # --------------------------------------------------------------- extraction
 from src.services.facts.arithmetic import check_line_arithmetic  # noqa: E402
-from src.services.extraction.three_way_match import _agrees  # noqa: E402
+from src.services.extraction.two_way_match import _agrees  # noqa: E402
 
 snap("agrees.exact", _agrees, 100.00, 100.00)
 snap("agrees.penny", _agrees, 100.00, 100.005)

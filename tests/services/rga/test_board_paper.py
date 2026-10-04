@@ -72,7 +72,7 @@ def test_the_evidence_behind_the_deal(monkeypatch):
     f = _by(_build(monkeypatch))
     assert (f["Documents on file"].value, f["Quotes on file"].value,
             f["Purchase orders on file"].value, f["Invoices on file"].value) == (5, 3, 1, 1)
-    assert f["Three-way match rate for this deal"].value == 0
+    assert f["Quote, PO and invoice reconciled"].value == 0
     assert f["Quote-to-PO cycle"].value == 12
     assert (f["Open checks"].value, f["Critical checks"].value, f["Warning checks"].value) == (4, 3, 1)
     assert f["Opportunities raised on this deal"].value == 2
@@ -201,7 +201,7 @@ def test_the_composer_is_given_this_deal_s_recommendations_and_only_those(monkey
     fb = _build(monkeypatch)
     note = bp.deal_note(fb.facts)
     assert "Resolve the {{F0016}} critical checks open against this deal before anything else." in note
-    assert "Reconcile the quote, purchase order and invoice: they do not three-way match." in note
+    assert "Reconcile the quote, purchase order and invoice: their values do not agree." in note
     assert "Taking the lowest bid would recover {{F0012}}." in note
     assert "{{F0010}} suppliers bid, so there is a competing benchmark." in note
     one = bp.deal_note(_build(monkeypatch, bids=BIDS[:1], checks=[],

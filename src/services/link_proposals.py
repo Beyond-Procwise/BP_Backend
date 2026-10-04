@@ -27,7 +27,7 @@ and the reason this looked like its first real user. Measured against documents
 whose true parent is known, that withheld 108 of 253 true parents: an invoice
 that alone bills more than its order, or a set that together outruns it, lost its
 candidate and got no proposal at all. That is the wrong trade, and this codebase
-has already ruled on it — ``three_way_match`` raises over-billing as a finding and
+has already ruled on it — ``two_way_match`` raises over-billing as a finding and
 never holds the document, because a buyer needs to SEE the over-billing.
 Suppressing the link is worse than suppressing the promotion: an unlinked invoice
 is not over-billing anything, it is invisible.
@@ -123,7 +123,7 @@ _PROFILE_ID = "unreferenced_doc_po"
 _RULE = CardinalityRule(_PROFILE_ID, "N:1", None, 1)
 
 # The band inside which a claim counts as fitting the order. It is the one
-# three_way_match already allows a purchase order to be over-billed by, so this
+# two_way_match already allows a purchase order to be over-billed by, so this
 # module never calls a document over-claiming that the match itself would accept.
 _CAPACITY_TOL_PCT = 0.005
 _CAPACITY_TOL_MIN = 0.01
