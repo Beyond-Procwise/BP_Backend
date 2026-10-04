@@ -64,6 +64,52 @@ def _resolution(table: str) -> tuple[int, int]:
         return cur.fetchone()
 
 
+@pytest.mark.skipif(not _LIVE, reason="needs PROCWISE_TEST_LIVE_DB=1")
+def test_a_crosswalked_contract_is_named_by_its_supplier():
+    """The route that DOES resolve, and the reason the ruling above needed
+    revisiting rather than merely pinning.
+
+    The comment said a contract's supplier "reconciles to neither supplier
+    register". That is true of the direct join and false of the indirect one:
+    proc.bp_supplier_id_crosswalk maps uicanvas_supplier_id -> bp_supplier_id,
+    and 19 contracts carry an 'SI######' id it knows. The chain is exact --
+    SI000754 -> SUP-BlackwoodSupplies -> 'Blackwood Supplies' -- and the
+    crosswalk is 1:1 on its key (5,000 distinct of 5,000 rows), so joining
+    through it names contracts without duplicating any.
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(bss._EXPIRING_SQL, (bss.EXPIRY_WINDOW_DAYS,))
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    assert rows, "no contract expires in the window; this proves nothing today"
+    named = [r for r in rows if r.get("supplier_name")]
+    assert named, (
+        "no expiring contract is named by its supplier. The crosswalk reaches "
+        "at least one -- join proc.bp_supplier_id_crosswalk on "
+        "uicanvas_supplier_id = c.supplier_id in _EXPIRING_SQL"
+    )
+    # One contract must never become two: the crosswalk is 1:1 on its key.
+    assert len({r["contract_id"] for r in rows}) == len(rows)
+
+
+@pytest.mark.skipif(not _LIVE, reason="needs PROCWISE_TEST_LIVE_DB=1")
+def test_the_crosswalk_resolves_every_contract_it_claims():
+    """Nineteen, exactly -- and all nineteen yield a real name, not a NULL."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT count(*), count(s.supplier_name)
+              FROM proc.bp_contract_master m
+              JOIN proc.bp_supplier_id_crosswalk x
+                ON x.uicanvas_supplier_id = m.supplier_id
+              LEFT JOIN proc.bp_supplier s ON s.supplier_id = x.bp_supplier_id""")
+        reached, named = cur.fetchone()
+    assert reached > 0
+    assert named == reached, (
+        f"{reached - named} crosswalked contracts resolve to no supplier name"
+    )
+
+
 def test_the_expiring_query_still_carries_the_supplier_join():
     """The ruling, asserted. Runs without a database so it holds even in a suite
     run that skips every live test.
@@ -126,7 +172,9 @@ def test_the_brief_names_every_expiring_contract_despite_the_empty_join():
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
     assert rows, "no contract expires in the window; this proves nothing today"
-    assert all(r["supplier_name"] is None for r in rows), "see the tripwire"
+    # Most are unnamed -- the S#### bulk reconciles to nothing -- but not all:
+    # the crosswalk names the few it reaches. Both states must render.
+    assert any(r["supplier_name"] is None for r in rows), "see the tripwire"
 
     signal = bss.expiring_signal(rows, date.today(), bss.EXPIRY_WINDOW_DAYS, None)
     assert signal is not None

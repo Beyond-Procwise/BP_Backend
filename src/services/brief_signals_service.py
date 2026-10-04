@@ -335,18 +335,39 @@ _SPEND_SQL = """
 # An auto-renewing contract is not decided either — a silent roll-on is the
 # exposure this reading is about, so auto_renew_flag is reported, not filtered.
 #
-# The supplier join currently matches NOTHING, and is kept rather than dropped.
-# bp_contract_master carries 2,545 distinct supplier_ids in an 'S1045' format
-# that reconciles to neither supplier register (bp_supplier is keyed
-# 'SUP-<Name>', bp_supplier_master 'SI000001'), so a contract cannot be named by
-# its supplier today. The reading falls back to the contract's own title and
-# invents nobody; the join starts paying the moment those ids are crosswalked.
+# A contract is named by its supplier along TWO routes, because its supplier_id
+# is not one namespace but several.
+#
+# The DIRECT join still matches nothing, and is still kept rather than dropped:
+# 2,981 rows carry an 'S9251' format that no table in the schema resolves, and
+# it starts paying the moment those ids are crosswalked. (Measured 2026-10-04:
+# 0 of 3,008 resolve directly, while the same join against bp_invoice_trgt,
+# bp_purchase_order_trgt and bp_quote_trgt resolves 100% -- the mechanism is
+# sound and this column is the outlier.)
+#
+# The INDIRECT route does resolve, and the original note was wrong to say a
+# contract "reconciles to neither register": proc.bp_supplier_id_crosswalk maps
+# uicanvas_supplier_id -> bp_supplier_id, and the 19 contracts holding an
+# 'SI######' id go through it exactly -- SI000754 -> SUP-BlackwoodSupplies ->
+# 'Blackwood Supplies'. The crosswalk is 1:1 on that key (5,000 distinct of
+# 5,000) and every bp_supplier_id in it resolves, so this names contracts
+# without duplicating one.
+#
+# COALESCE and not a second column: the caller wants a supplier or nothing, and
+# a row that resolves both ways would resolve to the same supplier anyway.
+# Neither route invents a name -- a contract that resolves along neither keeps
+# NULL and the reading falls back to the contract's own title (_contract_name).
+# tests/services/test_brief_signals_contract_supplier.py holds the measurements
+# and a tripwire on the direct route's zero.
 _EXPIRING_SQL = """
     SELECT c.contract_id, c.contract_title, c.contract_end_date,
            c.total_contract_value, c.currency, c.auto_renew_flag,
-           s.supplier_name
+           COALESCE(s.supplier_name, sx.supplier_name) AS supplier_name
       FROM proc.bp_contract_master c
       LEFT JOIN proc.bp_supplier s ON s.supplier_id = c.supplier_id
+      LEFT JOIN proc.bp_supplier_id_crosswalk x
+             ON x.uicanvas_supplier_id = c.supplier_id
+      LEFT JOIN proc.bp_supplier sx ON sx.supplier_id = x.bp_supplier_id
      WHERE c.contract_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + %s
        AND COALESCE(c.contract_lifecycle_status, '') ILIKE 'active'
        AND NOT EXISTS (
