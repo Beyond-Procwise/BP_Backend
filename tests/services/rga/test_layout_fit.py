@@ -155,17 +155,17 @@ def test_prose_goes_on_a_layout_with_a_text_slot():
 
 
 def test_metrics_become_the_items_of_a_list_with_the_figure_as_the_heading():
-    s = _section('s2', 'The numbers', [MetricBlock(fact_ref='spend.total'),
-                                       MetricBlock(fact_ref='spend.addressable')])
+    s = _section('s2', 'The numbers', [MetricBlock(fact_ref='F0001'),
+                                       MetricBlock(fact_ref='F0002')])
     f = fit(s, ALL)
     assert f.layout_key == 't_cards'
-    assert f.lists['cards1'] == [('{{f:spend.total}}', 'spend.total'),
-                                 ('{{f:spend.addressable}}', 'spend.addressable')]
+    assert f.lists['cards1'] == [('{{f:F0001}}', 'F0001'),
+                                 ('{{f:F0002}}', 'F0002')]
 
 
 def test_a_chart_is_recorded_for_its_region_to_host_and_never_written_as_prose():
     chart = ChartBlock(chart_type='bar',
-                       series=[ChartSeries(label='Spend', fact_refs=['spend.total'])])
+                       series=[ChartSeries(label='Spend', fact_refs=['F0001'])])
     s = _section('s3', 'Spend by category', [chart, NarrativeBlock(text='It is concentrated.')])
     f = fit(s, ALL)
     assert f.layout_key == 't_chart'
@@ -175,12 +175,12 @@ def test_a_chart_is_recorded_for_its_region_to_host_and_never_written_as_prose()
 
 def test_a_table_goes_on_the_table_layout_with_its_columns_in_order():
     s = _section('s4', 'By area', [TableBlock(columns=['Area', 'Value'],
-                                              rows=[['Network', 'spend.network']])])
+                                              rows=[['Network', 'F0003']])])
     f = fit(s, ALL)
     assert f.layout_key == 't_table'
     cols, rows = f.tables['rows1']
     assert cols == ['Area', 'Value']
-    assert rows == [['Network', '{{f:spend.network}}']]
+    assert rows == [['Network', '{{f:F0003}}']]
 
 
 def test_a_section_that_fits_no_layout_names_itself():
@@ -196,7 +196,7 @@ def test_a_section_that_fits_no_layout_names_itself():
 def test_more_blocks_than_slots_is_a_refusal_not_a_truncation():
     """Review focus 4. Nine metrics into a list that takes at most four."""
     s = _section('s6', 'Nine numbers',
-                 [MetricBlock(fact_ref=f'm.{i}') for i in range(9)])
+                 [MetricBlock(fact_ref=f'F{i:04d}') for i in range(9)])
     with pytest.raises(NoFit) as caught:
         fit(s, ALL)
     assert caught.value.section_id == 's6'
@@ -244,7 +244,7 @@ def test_metrics_and_findings_need_their_own_list_slots():
     """One list slot cannot hold both: they are resolved differently, and interleaving a raw
     finding id with a figure is how an id reaches a board paper."""
     s = _section('s12', 'Both',
-                 [MetricBlock(fact_ref='spend.total'), MetricBlock(fact_ref='spend.other'),
+                 [MetricBlock(fact_ref='F0001'), MetricBlock(fact_ref='F0004'),
                   FindingListBlock(finding_refs=['pk-1-PC001', 'pk-1-PC002'])])
     with pytest.raises(NoFit) as caught:
         fit(s, ALL)                 # every layout here has at most ONE list slot
@@ -256,9 +256,9 @@ def test_two_list_slots_take_the_metrics_and_the_findings_separately():
                         slots=(_text('title', max_words=19), _list('cards1'), _list('cards2')),
                         region_ids=('title', 'cards1', 'cards2'))
     s = _section('s13', 'Both',
-                 [MetricBlock(fact_ref='spend.total'), MetricBlock(fact_ref='spend.other'),
+                 [MetricBlock(fact_ref='F0001'), MetricBlock(fact_ref='F0004'),
                   FindingListBlock(finding_refs=['pk-1-PC001', 'pk-1-PC002'])])
     f = fit(s, (both,))
-    assert f.lists['cards1'] == [('{{f:spend.total}}', 'spend.total'),
-                                 ('{{f:spend.other}}', 'spend.other')]
+    assert f.lists['cards1'] == [('{{f:F0001}}', 'F0001'),
+                                 ('{{f:F0004}}', 'F0004')]
     assert f.findings['cards2'] == ['pk-1-PC001', 'pk-1-PC002']

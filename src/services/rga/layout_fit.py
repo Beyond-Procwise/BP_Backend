@@ -111,8 +111,8 @@ def catalogue(conn, pack_key: str) -> Catalogue:
 # ---------------------------------------------------------------------------
 # The fit: which layout draws a section, or why none can.
 # ---------------------------------------------------------------------------
-from src.services.rga.models import (ChartBlock, FindingListBlock, MetricBlock,  # noqa: E402
-                                     NarrativeBlock, Section, TableBlock)
+from src.services.rga.models import (FACT_ID, ChartBlock, FindingListBlock,  # noqa: E402
+                                     MetricBlock, NarrativeBlock, Section, TableBlock)
 
 #: A slot name that must exist on any layout a section can be drawn on. A page without a masthead
 #: is not a page of a board paper, and every layout the importer measures carries one.
@@ -151,9 +151,10 @@ def _cell(value: str) -> str:
     text = str(value or '')
     if text.startswith('{{f:'):
         return text
-    # A cell is a fact id or a literal label (TableBlock's own docstring). An id is what carries a
-    # dot and no space; anything else is a label and travels as written.
-    if '.' in text and ' ' not in text and not text.replace('.', '').isdigit():
+    # A cell is a FACT ID or a literal label (TableBlock's own docstring), and an id has one shape
+    # in this product: models.FACT_ID, ^F\d{4}$. Guessing by punctuation would turn a label like
+    # "Q1.Network" into a token and leave every real id as a literal.
+    if FACT_ID.match(text):
         return _token(text)
     return text
 
