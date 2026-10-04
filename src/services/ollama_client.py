@@ -83,10 +83,29 @@ _LAYOUT_REJECTED_UNTIL = 0.0
 _layout_lock = threading.Lock()
 
 
+# The server's own words for "I cannot place this model the way you asked". There are TWO, and
+# recognising only the first cost us the fallback on this host: with AgentNick resident in VRAM
+# and OLLAMA_NUM_GPU=1, a 15GiB machine was told
+#     model requires more system memory (18.4 GiB) than is available (4.6 GiB)
+# which is the same situation as a layout rejection — num_gpu=1 leaves almost every layer in RAM
+# — reported differently. Unrecognised, the retry that drops num_gpu and lets the model's own
+# Modelfile decide (AgentNick pins num_gpu 25) never ran, and the caller got an error where it
+# could have had an answer.
+_LAYOUT_REFUSALS = (
+    "memory layout cannot be allocated",
+    "requires more system memory",
+    "requires more memory than is available",
+)
+
+
 def is_layout_rejection(text: Any) -> bool:
-    """True for the server's own words when it cannot place the layers."""
+    """True for the server's own words when it cannot place the model as asked.
+
+    Narrow on purpose. A generic "CUDA error: out of memory" mid-generation is NOT this: that is
+    a failure while running, and dropping num_gpu would not change it.
+    """
     body = str(text or "").lower()
-    return "memory layout cannot be allocated" in body
+    return any(phrase in body for phrase in _LAYOUT_REFUSALS)
 
 
 def note_layout_rejection(detail: Any = "", now: Optional[float] = None) -> None:

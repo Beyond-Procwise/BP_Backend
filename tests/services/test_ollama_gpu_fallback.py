@@ -74,6 +74,30 @@ class TestRecognisingTheRefusal:
         assert ollama_client.is_layout_rejection('{"error":"model not found"}') is False
         assert ollama_client.is_layout_rejection("") is False
 
+    def test_the_servers_OTHER_words_for_the_same_refusal_are_recognised(self):
+        """Ollama has two ways of saying "I cannot place this model as you asked".
+
+        Measured on this host on 2026-10-04, with AgentNick already resident in 18.9GiB of VRAM
+        and OLLAMA_NUM_GPU=1 in .env: the server answered
+
+            model requires more system memory (18.4 GiB) than is available (4.6 GiB)
+
+        num_gpu=1 puts one layer on the card and the rest in RAM, which a 15GiB host cannot
+        hold — the same situation as a layout rejection, reported in different words. Because
+        this sentence was not recognised, the retry that drops num_gpu and lets the model's own
+        Modelfile decide (it pins num_gpu 25) never happened, and the caller got an error where
+        it could have had an answer.
+        """
+        assert ollama_client.is_layout_rejection(
+            'model requires more system memory (18.4 GiB) than is available (4.6 GiB)') is True
+        assert ollama_client.is_layout_rejection(
+            '{"error":"model requires more memory than is available"}') is True
+
+    def test_running_out_of_memory_for_another_reason_is_still_not_it(self):
+        # "out of memory" alone is not this refusal: it must be the server saying the MODEL
+        # does not fit as asked, not a generic allocation failure mid-generation.
+        assert ollama_client.is_layout_rejection('CUDA error: out of memory') is False
+
 
 class TestTheCallThatWasRefused:
     def _transport(self, responses, seen):
