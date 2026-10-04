@@ -47,7 +47,8 @@ _AGENT = "ReportsRouter"
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _PUBLIC = ("job_id", "report_type", "scope", "as_of", "status", "requested_by",
            "requested_at", "started_at", "finished_at", "run_id", "stage_reached",
-           "blocking", "error", "dismissed_at", "dismissed_by", "dismiss_reason", "has_page")
+           "blocking", "error", "dismissed_at", "dismissed_by", "dismiss_reason", "has_page",
+           "has_snapshot")
 
 
 #: Report types asked for by deal rather than by period (the board paper, 2026-09-25).
@@ -131,6 +132,11 @@ def _view(job: Dict[str, Any], s: Optional[Dict[str, Any]] = None) -> Dict[str, 
     out["has_page"] = bool(job.get("has_page"))
     out["page_ready"] = out["deck_ready"] and out["has_page"]
     out["page_review_available"] = out["review_available"] and out["has_page"]
+    # The builder PAGES, the third drawing. A flag and never the drawing itself, for the reason
+    # the store computes it rather than selecting the column: a status poll must not haul it.
+    # Reading them goes through exactly the deck's rules (_releasable), so the caller offers
+    # them inside the same released/review branches it already offers the deck in.
+    out["has_snapshot"] = bool(job.get("has_snapshot"))
     # The light editor: a released report made with its Fact Pack stored can be edited;
     # each saved edit is a new version, and its last editor cannot sign that version off.
     out["editable"] = released and bool(job.get("editable"))

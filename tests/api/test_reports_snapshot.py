@@ -114,3 +114,19 @@ def test_generate_without_a_pack_key_is_unchanged(client, monkeypatch):
                                  'period_start': '2026-04-01', 'period_end': '2026-09-30'})
     assert response.status_code == 202
     assert filed.get('pack_key') is None
+
+
+def test_the_listing_says_which_reports_have_pages(client):
+    """The UI offers "Open as pages" on this flag alone, so the status read must carry it.
+
+    Beside has_page, and for the same reason the store computes it rather than selecting the
+    column: a status poll must never haul the drawing itself.
+    """
+    public = rr._view(dict(_JOBS['j-ok']))
+    assert public['has_snapshot'] is True
+    assert 'snapshot' not in public          # the flag, never the drawing
+
+
+def test_a_report_drawn_before_pages_existed_has_none(client):
+    public = rr._view({'job_id': 'j-old', 'status': 'released', 'run_id': 'r-9'})
+    assert public['has_snapshot'] is False
