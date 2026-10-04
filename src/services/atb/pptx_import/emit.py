@@ -85,18 +85,43 @@ def layout_key(cluster: Cluster, pack_key: str = '') -> str:
     return f'imported_{digest}'
 
 
-def build_layout(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence, filename: str) -> dict:
+_PAGE_NAME_MAX = 80
+
+
+def page_name(fill: dict, slides: list[int]) -> str:
+    """What to call one arranged page.
+
+    `proposed_name` describes where the boxes sit — "6-up cards + 3-up table" — which the step 1
+    design called a true description of the geometry and a useless description of the page. The
+    slide says what it is in its own title band, so that is the name; 25 of the reference deck's
+    26 single-use slides carry one. The structure is kept as `proposed_name` either way, so the
+    review screen can still show what the importer measured.
+    """
+    title = (((fill or {}).get('slots') or {}).get('title') or {}).get('text') or ''
+    title = ' '.join(str(title).split())
+    if title:
+        return title if len(title) <= _PAGE_NAME_MAX else title[:_PAGE_NAME_MAX - 1].rstrip() + '…'
+    # A slide with no title band text still needs calling something a human can point at.
+    return 'Slide %d' % (slides[0] if slides else 0)
+
+
+def build_layout(cluster: Cluster, deck: Deck, pack: dict, ev: Evidence, filename: str,
+                 kind: str = 'template') -> dict:
     regions, slots, problems = regions_and_slots(cluster, deck, pack, ev)
     fill, source = example_fill(cluster, deck, slots)
-    name = proposed_name(cluster)
+    structure = proposed_name(cluster)
+    # A template is named by its reusable shape; a page by what its slide says. See page_name.
+    name = structure if kind == 'template' else page_name(fill, list(cluster.slides))
     layout = {
         'id': layout_key(cluster, pack.get('key', '')),
         'version': 1,
-        # The contract requires a non-empty `name`. It starts as the proposed one so the layout is
-        # valid from the moment it is built; `proposed_name` is kept beside it so the review screen
-        # can show what the importer suggested against what the human called it.
+        # The contract requires a non-empty `name`. For a template it starts as the proposed one so
+        # the layout is valid from the moment it is built; `proposed_name` is kept beside it either
+        # way so the review screen can show what the importer suggested against what a human called
+        # it — and for a page, what it MEASURED against what the slide says.
         'name': name,
-        'proposed_name': name,
+        'proposed_name': structure,
+        'kind': kind,
         'formats': [pack['format']['kind']],
         'regions': regions,
         'slots': slots,
