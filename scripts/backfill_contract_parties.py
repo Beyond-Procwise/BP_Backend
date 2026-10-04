@@ -55,7 +55,7 @@ from src.services.extraction.engineered.contract_parties import (  # noqa: E402
     BUYER_FIELD, CONFIDENCE, SUPPLIER_FIELD, decide_correction,
 )
 from src.services.extraction.engineered.contract_signatories import (  # noqa: E402
-    NAME_FIELD, ROLE_FIELD, decide_signatory_correction,
+    BUYER_NAME_FIELD, NAME_FIELD, ROLE_FIELD, decide_signatory_correction,
 )
 
 _READ = """
@@ -64,6 +64,7 @@ _READ = """
            parser_snapshot->'_field_provenance'->'supplier_id'->>'source' AS sup_src,
            parser_snapshot->'_field_provenance'->'buyer_org_id'->>'source' AS buy_src,
            contract_signatory_name, contract_signatory_role,
+           buyer_signatory_name, buyer_signatory_role,
            parser_snapshot->'_field_provenance'->'contract_signatory_name'->>'source' AS sig_src
       FROM proc.bp_contract_raw
      ORDER BY raw_id
@@ -126,20 +127,26 @@ def main() -> int:
             stored_name=r["contract_signatory_name"],
             stored_role=r["contract_signatory_role"],
             provenance_source=r["sig_src"],
+            stored_buyer_name=r["buyer_signatory_name"],
+            stored_buyer_role=r["buyer_signatory_role"],
         )
         name = (r["source_file"] or "").split("/")[-1] or f"raw_id={r['raw_id']}"
         if sg.changed:
             mark = "x" if sg.name is None else ">"
             print(f"  {mark} {name:38s} signatory: {str(r['contract_signatory_name'])!r}"
-                  f" -> {str(sg.name)!r}")
+                  f" -> {str(sg.name)!r}   buyer's: "
+                  f"{str(r['buyer_signatory_name'])!r} -> {str(sg.buyer_name)!r}")
             print(f"    {'':38s} why: {sg.reason}")
             signatories += 1
             if args.apply:
-                patch = _provenance_patch({NAME_FIELD: sg.name})
+                patch = _provenance_patch({NAME_FIELD: sg.name,
+                                           BUYER_NAME_FIELD: sg.buyer_name})
                 cur.execute(
                     """UPDATE proc.bp_contract_raw
                           SET contract_signatory_name = %s,
                               contract_signatory_role = %s,
+                              buyer_signatory_name = %s,
+                              buyer_signatory_role = %s,
                               parser_snapshot = jsonb_set(
                                   coalesce(parser_snapshot, '{}'::jsonb),
                                   '{_field_provenance}',
@@ -147,17 +154,21 @@ def main() -> int:
                                       || %s::jsonb,
                                   true)
                         WHERE raw_id = %s""",
-                    (sg.name, sg.role, json.dumps(patch), r["raw_id"]),
+                    (sg.name, sg.role, sg.buyer_name, sg.buyer_role,
+                     json.dumps(patch), r["raw_id"]),
                 )
                 if r["contract_id"]:
                     cur.execute(
                         """UPDATE proc.bp_contracts
                               SET contract_signatory_name = %s,
                                   contract_signatory_role = %s,
+                                  buyer_signatory_name = %s,
+                                  buyer_signatory_role = %s,
                                   last_modified_by = 'backfill_contract_parties',
                                   last_modified_date = NOW()
                             WHERE contract_id = %s""",
-                        (sg.name, sg.role, r["contract_id"]),
+                        (sg.name, sg.role, sg.buyer_name, sg.buyer_role,
+                         r["contract_id"]),
                     )
         if not d.changed:
             unchanged += 1

@@ -331,6 +331,48 @@ fields:
       ner_type_check: "none"
     invariants: []
 
+  # The BUYER's signatory. A contract has two, one per party; the pair above holds
+  # the SUPPLIER's (see deploy/sql/2026-10-04_contract_buyer_signatory.sql for why
+  # that pair is not renamed). Both of these are filled by
+  # engineered/contract_signatories.py reading the signature block.
+  #
+  # ner_type_check is "none" ON PURPOSE. A PERSON-typed field with no party-aware
+  # branch in SpacyNERExtractor falls through to its default path, which emits
+  # every entity of the right type for any field -- that is exactly what stored
+  # "Email Marketing" as the person who signed the real Marketing Agreement.
+  # These columns are read from the block or they stay NULL.
+  - name: buyer_signatory_name
+    type: string
+    required: false
+    db_column: buyer_signatory_name
+    canonical_labels:
+      - "Buyer Signatory"
+      - "Client Signatory"
+      - "Signed For Buyer"
+      - "Signed For Client"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
+  - name: buyer_signatory_role
+    type: string
+    required: false
+    db_column: buyer_signatory_role
+    canonical_labels:
+      - "Buyer Title"
+      - "Client Title"
+    extractors:
+      - qwen_vlm
+    judge:
+      tiebreaker: true
+      grounded_last_resort: false
+      ner_type_check: "none"
+    invariants: []
+
   - name: auto_renew_flag
     type: string
     required: false

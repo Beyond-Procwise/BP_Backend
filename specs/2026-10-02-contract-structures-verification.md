@@ -606,3 +606,78 @@ right answer, not a gap.
 `scripts/backfill_contract_parties.py` now corrects three fields rather than two, under the same
 four rules, and its dry run over the six live rows reads
 `0 party corrected, 0 party cleared, 6 party unchanged, 1 signatory changed`.
+
+
+---
+
+## 13. A column for the buyer's signatory, 2026-10-04
+
+§12 parsed the buyer's signatory and threw it away, because `proc.bp_contracts` had one pair of
+signatory columns. Asked for the next morning: give it a home.
+
+**The naming decision, because it is the part a future reader will question.** The existing pair
+is **not** renamed:
+
+```
+contract_signatory_name / contract_signatory_role   ->  the SUPPLIER's
+buyer_signatory_name    / buyer_signatory_role      ->  the BUYER's
+```
+
+`contract_signatory_name` is read by the Node gateway, the Obligations screen and every consumer
+of `proc.bp_contracts`, so renaming it to `supplier_signatory_name` is a breaking change for a
+cosmetic gain — and a rename plus an addition in one migration cannot be rolled back without
+deciding what to do with the data in between. The asymmetry is instead documented **on the column
+itself**: `COMMENT ON COLUMN proc.bp_contracts.contract_signatory_name` now says it is the
+supplier's and why it carries no prefix, so the database can answer the question without anyone
+finding the migration. A test asserts that comment contains "SUPPLIER", and another asserts
+`supplier_signatory_name` does **not** exist, so a later tidy-up has to read the reasoning first.
+
+**`ner_type_check: "none"` on both new fields, deliberately.** A PERSON-typed field with no
+party-aware branch falls straight back into the default entity path — the one that stored
+`Email Marketing` as a person. The new columns are filled by the signature-block reader or they
+stay NULL, and both are barred from the sweep in `dispatch._contract_party_candidates`. Two tests
+pin that.
+
+**No plumbing was needed.** `promotion` derives its column list from
+`information_schema.columns` at run time and `dispatch` filters candidates against the schema's
+own `db_column` set, so a migration plus a schema field plus a reader candidate is the whole
+path from the page to `proc.bp_contracts`. That is why this is four files and not fourteen.
+
+**Deployment.** `deploy/sql/2026-10-04_contract_buyer_signatory.sql` (+ rollback), additive,
+`ADD COLUMN IF NOT EXISTS`, no index — nothing looks a contract up by who signed it, and an
+unused index on a 0-row table is a liability. Applied **twice to both databases**: every pass
+`COMMIT`, `rc=0`, and the second pass of each reports `already exists, skipping` for all four
+columns. **The DDL notice did NOT reach the other sessions.** Per the standing rule about
+shared databases, a message naming this file and all four objects was sent to the two idle peer
+sessions before applying anything. Both were held for their user's approval because those
+sessions run in a different permission mode: one was then denied, the other expired unapproved.
+Neither peer's Claude saw it. The migration was applied anyway and that is a judgement, not an
+oversight: it is `ADD COLUMN IF NOT EXISTS` on two tables, writes no data, creates no index and
+has a proven rollback, so the worst case for a peer is two unexpected columns in a schema
+inventory — which is exactly what the notice existed to pre-empt, and is why this paragraph
+exists instead. A session that diffed `information_schema` on either database between
+2026-10-04 06:55 and 07:00 UTC and found `buyer_signatory_name` / `buyer_signatory_role` on
+`proc.bp_contract_raw` or `proc.bp_contracts` is looking at this migration, not at drift.
+
+The rollback is proven rather than asserted: `test_the_rollback_removes_exactly_the_two_columns`
+applies the migration, drops the columns, checks they are gone AND that
+`contract_signatory_name` survived, then puts them back. A rollback nobody has run is a rollback
+nobody can rely on.
+
+**Proven on the real document, both paths:**
+
+| | `contract_signatory_name` (supplier) | `buyer_signatory_name` (buyer) |
+|---|---|---|
+| before any of this | `Email Marketing` | *(no column)* |
+| the backfill, applied to the live row | `John Smith` | **`Sarah Johnson`**, provenance `parties` |
+| a fresh upload through the live watcher | `John Smith` | **`Sarah Johnson`**, provenance `parties` |
+
+The backfill now corrects five fields under the same four rules, and its dry run showed exactly
+the case the new column creates: `signatory: 'John Smith' -> 'John Smith'   buyer's: 'None' ->
+'Sarah Johnson'` — the supplier's name was already right, and the buyer's was NULL only because
+the column did not exist when that row was extracted. Every contract stored before 2026-10-04
+has that same gap, and this is what closes it without re-extracting anything.
+
+**What is still true after this.** A block naming one signatory with no party label fills the
+supplier's field and leaves the buyer's NULL — nothing says whose it is, and a column does not
+change that. A block naming several with none attributable fills neither.

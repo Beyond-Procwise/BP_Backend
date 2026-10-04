@@ -146,9 +146,11 @@ def test_the_buyers_signatory_alone_is_not_stored_as_the_suppliers():
 
 
 def test_the_candidate_carries_the_schemas_field_names():
-    cands = signatory_candidates(REAL_SIGNATURE_BLOCK)
-    by_field = {c.field: c.value for c in cands}
-    assert by_field == {"contract_signatory_name": "John Smith"}, by_field
+    """The supplier's signatory lands on contract_signatory_name -- the CONTRACT
+    schema's field. (The buyer's now lands on buyer_signatory_name; that is
+    test_both_signatories_are_emitted_as_candidates.)"""
+    by_field = {c.field: c.value for c in signatory_candidates(REAL_SIGNATURE_BLOCK)}
+    assert by_field["contract_signatory_name"] == "John Smith", by_field
 
 
 def test_the_candidate_outranks_the_entity_sweep():
@@ -197,8 +199,11 @@ def test_the_block_corrects_the_value_the_sweep_stored():
 
 
 def test_a_name_the_block_agrees_with_is_left_alone():
+    """Both sides must agree for the row to be left alone: since 2026-10-04 an
+    empty buyer_signatory_name IS a difference when the block names one."""
     d = _decide(full_text=REAL_SIGNATURE_BLOCK, stored_name="John Smith",
-                stored_role=None, provenance_source="parties")
+                stored_role=None, provenance_source="parties",
+                stored_buyer_name="Sarah Johnson", stored_buyer_role=None)
     assert d.changed is False, d
 
 
@@ -221,3 +226,93 @@ def test_a_human_confirmed_signatory_is_never_touched():
                 stored_role=None, provenance_source="hitl")
     assert d.changed is False
     assert "human" in d.reason
+
+
+# ---------------------------------------------------------------------------
+# The buyer's signatory now has columns of its own
+# (deploy/sql/2026-10-04_contract_buyer_signatory.sql), so it is emitted rather
+# than parsed and discarded.
+# ---------------------------------------------------------------------------
+
+def test_both_signatories_are_emitted_as_candidates():
+    cands = signatory_candidates(REAL_SIGNATURE_BLOCK)
+    by_field = {c.field: c.value for c in cands}
+    assert by_field == {"contract_signatory_name": "John Smith",
+                        "buyer_signatory_name": "Sarah Johnson"}, by_field
+
+
+def test_the_buyers_role_is_emitted_when_the_block_carries_one():
+    text = ("SIGNATURES\nSUPPLIER\nName: Priya Raman Title: Managing Director\n"
+            "CLIENT\nName: Sarah Johnson Title: Head of Procurement\n")
+    by_field = {c.field: c.value for c in signatory_candidates(text)}
+    assert by_field == {
+        "contract_signatory_name": "Priya Raman",
+        "contract_signatory_role": "Managing Director",
+        "buyer_signatory_name": "Sarah Johnson",
+        "buyer_signatory_role": "Head of Procurement",
+    }, by_field
+
+
+def test_the_buyers_signatory_alone_is_emitted_on_its_own_field():
+    """Only the CLIENT side signed this copy. That is now storable, where before
+    it was read and thrown away -- and it must NOT land in the supplier's field."""
+    cands = signatory_candidates("SIGNATURES\nCLIENT\nName: Sarah Johnson Date: 1 June 2025\n")
+    by_field = {c.field: c.value for c in cands}
+    assert by_field == {"buyer_signatory_name": "Sarah Johnson"}, by_field
+
+
+def test_an_unattributed_single_signatory_does_not_become_the_buyers():
+    """One name with no party label is the signatory; nothing says it is the
+    buyer's, so the buyer field stays empty."""
+    by_field = {c.field: c.value for c in
+                signatory_candidates("SIGNATURES\nName: John Smith Date: 1 June 2025\n")}
+    assert by_field == {"contract_signatory_name": "John Smith"}, by_field
+
+
+def test_the_buyer_signatory_fields_are_barred_from_the_entity_sweep():
+    from src.services.extraction.dispatch import _contract_party_candidates
+    _c, barred = _contract_party_candidates("contract", REAL_SIGNATURE_BLOCK)
+    assert "buyer_signatory_name" in barred
+
+
+def test_the_buyer_fields_exist_in_the_contract_schema():
+    """A candidate for a field the schema does not declare is dropped silently by
+    dispatch's valid_cols filter, so this is the wiring that makes it reachable."""
+    from src.services.extraction.pattern_registry import get_registry
+    cols = {f.db_column for f in get_registry("contract").schema.fields if f.db_column}
+    assert {"buyer_signatory_name", "buyer_signatory_role"} <= cols
+
+
+def test_the_buyer_fields_are_not_ner_typed():
+    """The sweep is what stored 'Email Marketing' as a person. A PERSON-typed
+    field with no party-aware branch falls straight back into it."""
+    from src.services.extraction.pattern_registry import get_registry
+    for f in get_registry("contract").schema.fields:
+        if f.name.startswith("buyer_signatory"):
+            assert f.judge.ner_type_check in (None, "none"), f.name
+
+
+def test_the_correction_carries_the_buyers_signatory_too():
+    """The backfill has to fill the new column on rows extracted before it
+    existed, or every contract already stored keeps an empty buyer_signatory_name
+    that the document could have answered."""
+    d = _decide(full_text=REAL_SIGNATURE_BLOCK, stored_name="John Smith",
+                stored_role=None, provenance_source="parties",
+                stored_buyer_name=None, stored_buyer_role=None)
+    assert d.buyer_name == "Sarah Johnson", d
+    assert d.changed is True, "the buyer's column is empty and the block names it"
+
+
+def test_a_row_already_holding_both_signatories_is_left_alone():
+    d = _decide(full_text=REAL_SIGNATURE_BLOCK, stored_name="John Smith",
+                stored_role=None, provenance_source="parties",
+                stored_buyer_name="Sarah Johnson", stored_buyer_role=None)
+    assert d.changed is False, d
+
+
+def test_clearing_a_sweep_value_clears_the_buyer_side_too():
+    d = _decide(full_text="FRAMEWORK AGREEMENT\nGoverned by English law.\n",
+                stored_name="Email Marketing", stored_role=None,
+                provenance_source="ner", stored_buyer_name="Services",
+                stored_buyer_role=None)
+    assert d.name is None and d.buyer_name is None and d.changed is True

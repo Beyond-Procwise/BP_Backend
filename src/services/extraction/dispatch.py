@@ -263,7 +263,7 @@ def _contract_party_candidates(doc_type: str, full_text: str):
             BUYER_FIELD, SUPPLIER_FIELD, party_candidates,
         )
         from src.services.extraction.engineered.contract_signatories import (
-            NAME_FIELD, signatory_candidates,
+            BUYER_NAME_FIELD, BUYER_ROLE_FIELD, NAME_FIELD, signatory_candidates,
         )
         # contract_signatory_name is barred for the same reason and by the same
         # evidence: the PERSON default path stored "Email Marketing" (a line from
@@ -272,11 +272,13 @@ def _contract_party_candidates(doc_type: str, full_text: str):
         # it is correct ("United Kingdom" on five of six live documents), so
         # barring the path wholesale would throw good values away.
         return (party_candidates(full_text) + signatory_candidates(full_text),
-                {SUPPLIER_FIELD, BUYER_FIELD, NAME_FIELD})
+                {SUPPLIER_FIELD, BUYER_FIELD, NAME_FIELD,
+                 BUYER_NAME_FIELD, BUYER_ROLE_FIELD})
     except Exception:
         log.exception("contract party/signature read failed; left to the context "
                       "layer (the entity sweep stays barred)")
-        return [], {"supplier_id", "buyer_org_id", "contract_signatory_name"}
+        return [], {"supplier_id", "buyer_org_id", "contract_signatory_name",
+                    "buyer_signatory_name", "buyer_signatory_role"}
 
 
 #: A parent-reference column and the structure it points AT. A document whose own
@@ -802,7 +804,7 @@ def dispatch_document(
                 "quantity", "unit_price", "line_amount", "line_total",
                 "total_amount", "total_amount_incl_tax",
             }
-            from src.services.extraction.three_way_match import is_non_charge_line
+            from src.services.extraction.two_way_match import is_non_charge_line
             for li_idx, li in enumerate(line_items):
                 if not any(li.get(k) not in (None, "", 0) for k in numeric_keys):
                     # Terms/footer furniture legitimately has no numbers —
@@ -907,7 +909,7 @@ def dispatch_document(
     # above the one agreed, a PO number that does not exist. That comparison was being
     # computed in linking_engine, reduced to a confidence score, and discarded.
     try:
-        from src.services.extraction.three_way_match import check_against_po
+        from src.services.extraction.two_way_match import check_against_po
 
         po_findings = check_against_po(doc_type, columns, line_items)
         if po_findings:

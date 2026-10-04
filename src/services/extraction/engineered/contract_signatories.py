@@ -41,8 +41,10 @@ from typing import Optional
 from ..types import Candidate, Span
 from .contract_parties import CONFIDENCE, _squeeze, _tidy, side_for_role
 
-NAME_FIELD = "contract_signatory_name"
+NAME_FIELD = "contract_signatory_name"       # the SUPPLIER's; see the migration
 ROLE_FIELD = "contract_signatory_role"
+BUYER_NAME_FIELD = "buyer_signatory_name"
+BUYER_ROLE_FIELD = "buyer_signatory_role"
 
 #: Where the signatures start. A contract's signature block is always announced.
 _SECTION = re.compile(
@@ -90,12 +92,21 @@ _MONTHS = ("january", "february", "march", "april", "may", "june", "july",
 
 @dataclass(frozen=True)
 class Signatory:
-    """The supplier's signatory. `buyer_name` is read but not stored anywhere."""
+    """Both signatories a contract carries.
+
+    `name` / `role` are the SUPPLIER's -- the pair that lands in
+    contract_signatory_name / _role, named without a supplier_ prefix for the
+    historical reason set out in
+    deploy/sql/2026-10-04_contract_buyer_signatory.sql. `buyer_name` / `buyer_role`
+    land in buyer_signatory_name / _role, which that migration added: before it,
+    the buyer's signatory was parsed and then discarded for want of a column.
+    """
 
     name: Optional[str] = None
     role: Optional[str] = None
     party: Optional[str] = None
     buyer_name: Optional[str] = None
+    buyer_role: Optional[str] = None
     evidence: Optional[str] = None
 
 
@@ -160,18 +171,23 @@ def read_signatory(full_text: str) -> Signatory:
     buyer = next((f for f in found if f[0] == "buyer"), None)
 
     if supplier is None and buyer is None and len(found) == 1:
-        # One signatory, unattributed: that is who signed.
-        party, name, ev, pos = found[0]
+        # One signatory, unattributed: that is who signed, and nothing says it is
+        # the buyer's, so the buyer's field stays empty rather than guessing.
+        _party, name, ev, pos = found[0]
         return Signatory(name=name, role=_role_near(region, pos), party=None, evidence=ev)
+
+    buyer_name = buyer[1] if buyer else None
+    buyer_role = _role_near(region, buyer[3]) if buyer else None
 
     if supplier is None:
         # Only the other side signed this copy, or nothing could be attributed.
-        return Signatory(buyer_name=buyer[1] if buyer else None,
+        # Storable now (buyer_signatory_name), and still NOT the supplier's.
+        return Signatory(buyer_name=buyer_name, buyer_role=buyer_role,
                          evidence=buyer[2] if buyer else None)
 
     return Signatory(name=supplier[1], role=_role_near(region, supplier[3]),
-                     party="supplier", buyer_name=buyer[1] if buyer else None,
-                     evidence=supplier[2])
+                     party="supplier", buyer_name=buyer_name,
+                     buyer_role=buyer_role, evidence=supplier[2])
 
 
 def _role_near(region: str, pos: int) -> Optional[str]:
@@ -201,7 +217,9 @@ def signatory_candidates(full_text: str) -> list[Candidate]:
     """`contract_signatory_name` / `contract_signatory_role` from the block."""
     s = read_signatory(full_text)
     out: list[Candidate] = []
-    for field, value in ((NAME_FIELD, s.name), (ROLE_FIELD, s.role)):
+    for field, value in ((NAME_FIELD, s.name), (ROLE_FIELD, s.role),
+                         (BUYER_NAME_FIELD, s.buyer_name),
+                         (BUYER_ROLE_FIELD, s.buyer_role)):
         if not value:
             continue
         out.append(Candidate(
@@ -216,7 +234,7 @@ def signatory_candidates(full_text: str) -> list[Candidate]:
 
 
 __all__ = ["Signatory", "read_signatory", "signatory_candidates",
-           "NAME_FIELD", "ROLE_FIELD"]
+           "NAME_FIELD", "ROLE_FIELD", "BUYER_NAME_FIELD", "BUYER_ROLE_FIELD"]
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +248,8 @@ class SignatoryCorrection:
     role: Optional[str]
     changed: bool
     reason: str
+    buyer_name: Optional[str] = None
+    buyer_role: Optional[str] = None
 
 
 def decide_signatory_correction(
@@ -238,6 +258,8 @@ def decide_signatory_correction(
     stored_name: Optional[str],
     stored_role: Optional[str],
     provenance_source: Optional[str],
+    stored_buyer_name: Optional[str] = None,
+    stored_buyer_role: Optional[str] = None,
 ) -> SignatoryCorrection:
     """Should this row's signatory change, and to what?
 
@@ -251,31 +273,43 @@ def decide_signatory_correction(
 
     if (provenance_source or "").lower() == HUMAN_SOURCE:
         return SignatoryCorrection(stored_name, stored_role, False,
-                                   "a human confirmed this value; nothing overrules that")
+                                   "a human confirmed this value; nothing overrules that",
+                                   stored_buyer_name, stored_buyer_role)
     if not (full_text or "").strip():
         return SignatoryCorrection(stored_name, stored_role, False,
-                                   "no stored text to re-read; left as found")
+                                   "no stored text to re-read; left as found",
+                                   stored_buyer_name, stored_buyer_role)
 
     s = read_signatory(full_text)
-    if s.name:
-        changed = (s.name != stored_name) or (s.role != stored_role)
+    if s.name or s.buyer_name:
+        # Both sides are decided together, because the block names them together
+        # and because buyer_signatory_name was added on 2026-10-04: every row
+        # extracted before that holds NULL there however clearly the document
+        # states it.
+        changed = ((s.name != stored_name) or (s.role != stored_role)
+                   or (s.buyer_name != stored_buyer_name)
+                   or (s.buyer_role != stored_buyer_role))
         return SignatoryCorrection(
             s.name, s.role, changed,
             "read from the document's own signature block"
             + ("" if changed else " and already stored correctly"),
+            s.buyer_name, s.buyer_role,
         )
 
-    if (provenance_source or "").lower() == BROKEN_SOURCE and (stored_name or stored_role):
+    if ((provenance_source or "").lower() == BROKEN_SOURCE
+            and (stored_name or stored_role or stored_buyer_name or stored_buyer_role)):
         return SignatoryCorrection(
             None, None, True,
-            "the document has no signature block naming the supplier's signatory "
-            "and the stored value came from the entity sweep, which offered a line "
-            "from the services list as a person; cleared rather than left as a fact",
+            "the document has no signature block naming either signatory and the "
+            "stored value came from the entity sweep, which offered a line from "
+            "the services list as a person; cleared rather than left as a fact",
+            None, None,
         )
 
     return SignatoryCorrection(stored_name, stored_role, False,
                                "no signature block and the stored value did not "
-                               "come from the sweep; left as found")
+                               "come from the sweep; left as found",
+                               stored_buyer_name, stored_buyer_role)
 
 
 __all__ += ["SignatoryCorrection", "decide_signatory_correction"]
