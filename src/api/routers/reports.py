@@ -64,6 +64,10 @@ class GenerateBody(BaseModel):
     # SpendIQ (the source carries none; the approval route is derived from it).
     deal_id: Optional[str] = Field(default=None, max_length=100)
     category: Optional[str] = Field(default=None, max_length=100)
+    # Which approved style pack the report is laid out on, for the builder pages. Absent means the
+    # deck and the printable page only, exactly as before. NOT part of scope(): the scope is hashed
+    # into the Fact Pack id and the dedup key, and a style changes none of a report's facts.
+    pack_key: Optional[str] = Field(default=None, max_length=200)
 
     @field_validator("currency")
     @classmethod
@@ -174,7 +178,7 @@ def generate(body: GenerateBody, principal=Depends(require_user)):
 
     job, created = job_store.create(
         body.report_type, scope=scope, as_of=dt.date.today().isoformat(),
-        requested_by=subject, entitlement=entitlement)
+        requested_by=subject, entitlement=entitlement, pack_key=body.pack_key)
     if created:
         job_runner.submit(job["job_id"])
     return {"job_id": job["job_id"], "status": job["status"],
@@ -350,8 +354,14 @@ def get_job(job_id: str):
 from src.services.rga.render.html import PAGE_CSP as _PAGE_CSP  # one policy, header and page
 
 
-def _serve(job_id: str, principal: Any, fmt: str) -> Response:
-    """The deck or the page -- one set of rules for both, so the two cannot drift apart."""
+def _releasable(job_id: str, principal: Any, fmt: str):
+    """-> (job, signoff state) for a job whose drawing a caller may read, else raises.
+
+    THE SAME RULES FOR EVERY DRAWING. The deck, the printable page and the builder pages are three
+    renderings of one report, so a caller who may not open one may not open another: serving the
+    builder pages under looser rules would make them a way around the sign-off hold — the same
+    report, read as pages.
+    """
     job = _job_or_404(job_id)
     s = signoff.state(job)
     # Held until signed off. Before then only someone the policy lets sign it off may open
@@ -373,6 +383,12 @@ def _serve(job_id: str, principal: Any, fmt: str) -> Response:
         raise HTTPException(status_code=409,
                             detail=f"report job {job_id} is {job['status']}; only a "
                                    "released report has a deck")
+    return job, s
+
+
+def _serve(job_id: str, principal: Any, fmt: str) -> Response:
+    """The deck or the page -- one set of rules for both, so the two cannot drift apart."""
+    job, s = _releasable(job_id, principal, fmt)
     if fmt == "deck":
         found = job_store.deck(job_id)
         signed_hash = s.get("deck_sha256")
@@ -416,6 +432,26 @@ def get_deck(job_id: str, principal=Depends(require_user)):
 def get_page(job_id: str, principal=Depends(require_user)):
     """The printable A4 page, inline, for a browser tab to show and print."""
     return _serve(job_id, principal, "page")
+
+
+@router.get("/jobs/{job_id}/snapshot")
+def get_snapshot(job_id: str, principal=Depends(require_user)) -> Dict[str, Any]:
+    """The report as the builder opens it: pages laid out on an approved style pack.
+
+    The third drawing, under the same rules as the other two — held until sign-off, withheld from
+    everyone once refused, gated as report.read, and 409 for a job that is not released.
+
+    Returns the snapshot itself rather than a link to it: the output-safety layer replaces any field
+    that names an internal route with "[withheld]", and this payload is ids by design.
+    """
+    _releasable(job_id, principal, "snapshot")
+    snap = job_store.snapshot(job_id)
+    if snap is None:
+        raise HTTPException(status_code=404,
+                            detail=f"report job {job_id} has no builder pages -- it was made "
+                                   "before pages existed, asked for no style pack, or its pages "
+                                   "did not pass the report's own checks")
+    return snap
 
 
 # -- the light editor (ruled 2026-09-24): words and layout, never a number -----------------

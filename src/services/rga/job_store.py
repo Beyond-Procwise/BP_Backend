@@ -51,9 +51,12 @@ _COLUMNS = ("job_id", "report_type", "scope", "as_of", "status", "owner",
             "requested_by", "requested_at", "started_at", "finished_at", "run_id",
             "stage_reached", "blocking", "error", "entitlement",
             "dismissed_at", "dismissed_by", "dismiss_reason", "has_page",
-            "title", "current_version", "last_edited_by", "editable")
+            "title", "current_version", "last_edited_by", "editable",
+            "pack_key", "has_snapshot")
 # Computed columns, by name: whether a printable page is stored, without hauling it.
 _COMPUTED = {"has_page": "({p}page IS NOT NULL)",
+             # Beside has_page, and for the same reason: a status poll must never haul a drawing.
+             "has_snapshot": "({p}snapshot IS NOT NULL)",
              # Editable = released with its Fact Pack stored (2026-09-24 onwards).
              "editable": "({p}fact_pack IS NOT NULL)"}
 
@@ -127,7 +130,8 @@ def beat() -> None:
 
 def create(report_type: str, *, scope: Dict[str, Any], as_of: str,
            requested_by: Optional[str],
-           entitlement: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], bool]:
+           entitlement: Optional[Dict[str, Any]] = None,
+           pack_key: Optional[str] = None) -> Tuple[Dict[str, Any], bool]:
     """File a job, or return the active one for the same request.
 
     Returns ``(job, created)``. ``created`` is False when an identical request
@@ -143,13 +147,17 @@ def create(report_type: str, *, scope: Dict[str, Any], as_of: str,
             cur.execute(
                 "INSERT INTO proc.bp_report_job "
                 "  (job_id, report_type, scope, as_of, dedup_key, owner, requested_by, "
-                "   run_id, entitlement) "
-                "VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb) "
+                "   run_id, entitlement, pack_key) "
+                "VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s) "
                 "ON CONFLICT (dedup_key) WHERE status IN ('queued', 'running') DO NOTHING "
                 "RETURNING job_id",
                 (f"rpt-{uuid.uuid4().hex[:12]}", report_type, json.dumps(scope), as_of,
                  key, OWNER, requested_by, pack_id_for(report_type, scope, as_of),
-                 json.dumps(entitlement) if entitlement is not None else None))
+                 json.dumps(entitlement) if entitlement is not None else None,
+                 # NOT part of `key` or of `scope`: the dedup key and the Fact Pack id are both
+                 # derived from the scope, and the style a report is drawn in changes none of its
+                 # facts. Asking for the same report in a different pack is the same report.
+                 pack_key))
             inserted = cur.fetchone()
             if inserted:
                 cur.execute(f"{_SELECT} WHERE job_id = %s", (inserted[0],))
@@ -399,3 +407,28 @@ def deck(job_id: str) -> Optional[Tuple[bytes, str, str]]:
     if row is None or row[0] is None:
         return None
     return bytes(row[0]), row[1], row[2]
+
+
+def store_snapshot(job_id: str, snapshot: Optional[Dict[str, Any]]) -> None:
+    """Keep the builder drawing of a RELEASED job.
+
+    Guarded on the status IN THE WHERE CLAUSE, like every other write here: a drawing stored against
+    a job that is not released would be readable the moment somebody fixed the status by hand.
+    """
+    if not snapshot:
+        return
+    with get_conn() as conn:
+        conn.cursor().execute(
+            "UPDATE proc.bp_report_job SET snapshot = %s::jsonb "
+            "WHERE job_id = %s AND status = 'released'",
+            (json.dumps(snapshot, default=str), job_id))
+
+
+def snapshot(job_id: str) -> Optional[Dict[str, Any]]:
+    """The builder pages of a released job, or None. Released only — the same rule as the deck."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT snapshot FROM proc.bp_report_job "
+                    "WHERE job_id = %s AND status = 'released'", (job_id,))
+        found = cur.fetchone()
+        return found[0] if found and found[0] else None

@@ -159,3 +159,43 @@ def test_a_blocked_report_carries_no_snapshot():
                               emit_audit=False, pack_key='deck-x')
     assert run.released is False
     assert run.snapshot is None
+
+
+def test_losing_the_builder_pages_does_not_fail_a_released_report():
+    """Found while wiring the runner: an unguarded store_snapshot turned a RELEASED report into a
+    failed one and emitted report.run_failed after report.released. The deck and the page are
+    stored; the third drawing is the least of the three, and its loss is not the run's failure.
+
+    run_job takes its store and its generate function, so this needs no patching of module state.
+    """
+    from src.services.rga import job_runner
+
+    seen = []
+
+    class _Store:
+        def claim(self, job_id):
+            return True
+
+        def get(self, job_id):
+            return {'job_id': job_id, 'report_type': _TYPE, 'scope': {}, 'as_of': '2026-09-30',
+                    'requested_by': 'sub-1', 'entitlement': None, 'pack_key': 'deck-x'}
+
+        def finish_released(self, job_id, **kw):
+            seen.append('released')
+
+        def store_snapshot(self, job_id, snapshot):
+            raise RuntimeError('the column is not there')
+
+        def finish_failed(self, job_id, error=None, **kw):
+            seen.append('failed')
+
+        def ask_signoff(self, *a, **k):
+            seen.append('signoff asked')
+
+    run = _run(pack_key='deck-x')
+    assert run.snapshot is not None          # there WAS a drawing to lose
+
+    job_runner.run_job('j-1', store=_Store(), generate=lambda *a, **k: run)
+
+    assert 'released' in seen
+    assert 'failed' not in seen

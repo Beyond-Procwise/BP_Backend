@@ -78,7 +78,8 @@ def run_job(job_id: str, *, store: Any = _store,
         # who asked; SCOPE also records the entitlement the job was filed under.
         with audit.run_context(job_id=job_id, requested_by=job.get("requested_by"),
                                entitlement=job.get("entitlement")):
-            run = generate(job["report_type"], scope=job["scope"], as_of=job["as_of"])
+            run = generate(job["report_type"], scope=job["scope"], as_of=job["as_of"],
+                           pack_key=job.get("pack_key"))
         if run.released and run.artefact is not None:
             store.finish_released(
                 job_id, run_id=run.run_id, stage_reached=run.stage_reached,
@@ -91,6 +92,19 @@ def run_job(job_id: str, *, store: Any = _store,
                            if run.pack is not None else None),
                 ast=run.ast.model_dump(mode="json") if run.ast is not None else None,
                 title=title_for(run.report_type_id))
+            # The third drawing, after the release: store_snapshot's own WHERE clause requires the
+            # status to be 'released', so it has to be written once the row says so.
+            #
+            # Its failure is NOT the run's. The report is released, its deck and its page are
+            # stored, and losing the builder pages must not turn a released report into a failed
+            # one — which is exactly what an unguarded call did: a store that could not take them
+            # marked the whole run failed and emitted report.run_failed after report.released.
+            if run.snapshot:
+                try:
+                    store.store_snapshot(job_id, run.snapshot)
+                except Exception:
+                    logger.exception("rga: %s released, but its builder pages could not be stored",
+                                     job_id)
             # Released is not yet allowed to leave: the policy decides whether a person
             # must sign it off first, and the trail records that one was asked for.
             if signoff.required(run.report_type_id):
