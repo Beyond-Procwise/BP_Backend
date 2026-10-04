@@ -5,8 +5,9 @@ slide and covering 59 of them, and 26 used once. An earlier draft of the design 
 mid-teens"; it was wrong, and generalising the repeat rule from a single row to a repeating
 SEQUENCE of rows (tested) changes the count not at all.
 
-Design §6a: the 8 are emitted as layouts and the 26 are listed for step 2, because a quadrant is
-a page someone arranged, not a template.
+Design §6a: the 8 reused groups become TEMPLATES and the 26 single-use ones become PAGES,
+because a quadrant is a page someone arranged, not a template. `reused` is the only thing that
+decides which, and import_pack turns it into the stored `kind`.
 """
 from __future__ import annotations
 

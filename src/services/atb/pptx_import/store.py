@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .emit import page_name
+
 _PACK_COLUMNS = ('pack_id', 'pack_key', 'version', 'source_file', 'source_sha256', 'slide_count',
                  'format', 'tokens', 'evidence', 'status', 'notes', 'created_at', 'created_by',
                  'approved_at', 'approved_by')
@@ -243,13 +245,24 @@ def inherited(conn, pack_key: str) -> dict:
     locale = (tokens.get('writing') or {}).get('locale') \
         if locale_record.get('defined_by') == 'user' else None
 
-    cursor.execute('SELECT layout_key, name, status FROM proc.bp_page_layout WHERE pack_id = %s',
-                   (pack_id,))
+    cursor.execute('SELECT layout_key, name, status, kind, example_fill, slide_refs '
+                   'FROM proc.bp_page_layout WHERE pack_id = %s', (pack_id,))
     names: dict[str, str] = {}
     rejected: list[str] = []
-    for layout_key, name, status in cursor.fetchall():
+    for layout_key, name, status, kind, example_fill, slide_refs in cursor.fetchall():
         if status == 'rejected':
             rejected.append(layout_key)
-        elif name:
-            names[layout_key] = name
+            continue
+        if not name:
+            continue
+        # A PAGE's default name is its SLIDE'S TITLE, and a layout_key is a hash of the geometry —
+        # so a deck that fixes a typo in a title re-imports to the same key, and inheriting the
+        # name handed the typo back forever while the page rendered the corrected words. Nothing
+        # records who set a name, so the default is RECOMPUTED and a name equal to it is treated
+        # as the importer's, not the human's. A template is unaffected: its default is the
+        # structure, which is part of the key, so inheriting it cannot contradict the new measure.
+        if ((kind or 'template') == 'page'
+                and name == page_name(example_fill or {}, list(slide_refs or []))):
+            continue
+        names[layout_key] = name
     return {'names': names, 'rating_scales': scales, 'locale': locale, 'rejected': rejected}

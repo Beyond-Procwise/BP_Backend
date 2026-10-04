@@ -1,10 +1,12 @@
-"""One call: bytes in, a stored candidate pack and its layouts out.
+"""One call: bytes in, a stored candidate pack, its layouts and its pages out.
 
-Design §6a: only clusters used by more than one slide become layouts. The single-use structures
-are LISTED with their slide numbers — a quadrant is a page someone arranged, not a template, and
-emitting 26 single-use layouts would fill the picker with near-identical skeletons, which is the
-complaint this whole build answers. Step 2 imports them as composed pages, and this list is its
-worklist.
+Design §6a: a cluster used by more than one slide is a TEMPLATE; a cluster used once is a PAGE
+someone arranged. Both are now built and stored, and `kind` is what says which — emitting the 26
+single-use structures as templates would fill the Layout picker with near-identical skeletons,
+which is the complaint this whole build answers, so they go to a registry of their own instead.
+
+`single_use` is still returned, unchanged, for anything that read it when the 26 were merely
+listed.
 """
 from __future__ import annotations
 
