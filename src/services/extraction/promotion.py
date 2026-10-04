@@ -986,6 +986,11 @@ def promote(raw_id: int, doc_type: str, *,
             except Exception:
                 log.exception("promote: provenance write failed (non-fatal)")
 
+            # A promoted contract asks which contract it sits under. Scoped to
+            # this document, governed, and wrapped so it can never fail the
+            # promotion — see propose_contract_parent.
+            propose_contract_parent(doc_type, raw_data.get("doc_pk_candidate"))
+
             # AgentNick audit trail — one structured INFO line per row, so
             # the operator can grep journalctl for the agent's activity.
             log.info(
@@ -1011,6 +1016,69 @@ def promote(raw_id: int, doc_type: str, *,
             log.exception("promotion failed for raw_id=%s doc_type=%s: %s",
                           raw_id, doc_type, exc)
             return {"ok": False, "reason": str(exc)}
+
+
+# --------------------------------------------------------------------------
+# A promoted contract asks which contract it sits under.
+#
+# This is the seam the contract-structures work deliberately left empty: the
+# proposer was built, tested and live-verified, and NOTHING CALLED IT, so a
+# contract's parent was proposed only when a person ran a function by hand
+# (specs/2026-10-02-contract-structures-design.md §8, corrected 2026-10-03).
+# The cadence question that blocked it -- whether proposals may appear in a
+# buyer's queue unprompted -- was settled on 2026-10-04: yes, on promotion,
+# scoped to the document that just promoted.
+#
+# It lives HERE, in promote(), for the same reason field provenance does:
+# promote() is the one funnel all three promotion paths go through (dispatch's
+# inline call, the HITL NOTIFY listener, the promote_pending sweep), so the
+# proposal happens once per promoted contract however it arrived, rather than
+# at each caller where the next caller would forget.
+# --------------------------------------------------------------------------
+
+def _proposals_enabled() -> bool:
+    """Whether a promotion may write a parent proposal into a person's queue.
+
+    Governed by AutonomousOperationPolicy, like the duplicate-invoice detector
+    beside it: a control that decides what appears in front of a buyer with no
+    one asking belongs in policy, not in an environment variable nobody audits.
+    """
+    from src.services.governed_limits import limit as _governed_limit
+    return bool(_governed_limit("autonomous_operation",
+                                "contract_parent_proposals_enabled",
+                                env="CONTRACT_PARENT_PROPOSALS_ENABLED",
+                                cast=bool))
+
+
+def propose_contract_parent(doc_type: str, doc_pk: Optional[str]) -> None:
+    """Ask for this contract's parent, now that it is promoted. Never link it.
+
+    Best-effort by construction, exactly like the provenance write above it: the
+    _stg row is already committed when this runs, and a proposal is evidence
+    ABOUT the document rather than part of it. A proposer that throws must not
+    undo a promotion that succeeded.
+
+    Fails CLOSED on an unreadable policy -- it writes rows a person works
+    through, and "the policy could not be read" must not read as "so go ahead".
+    """
+    if doc_type != "contract" or not doc_pk:
+        return
+    try:
+        if not _proposals_enabled():
+            log.debug("contract parent proposals disabled by policy; %s not scored",
+                      doc_pk)
+            return
+    except Exception as exc:
+        log.warning("contract parent proposals: policy unreadable (%s); proposing "
+                    "nothing for %s", exc, doc_pk)
+        return
+    try:
+        from src.services import contract_links
+        result = contract_links.propose_parent_links(contract_id=str(doc_pk))
+        log.info("contract parent proposal for %s: %s", doc_pk,
+                 {k: v for k, v in result.items() if k != "details"})
+    except Exception:
+        log.exception("contract parent proposal failed for %s (non-fatal)", doc_pk)
 
 
 def _detect_doc_type(raw_id: int) -> Optional[str]:

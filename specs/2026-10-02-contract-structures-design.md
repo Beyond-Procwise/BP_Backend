@@ -312,14 +312,41 @@ the product's own standing rule, which applies here.
 unit-tested profile that nothing ever runs.
 
 **CORRECTED 2026-10-03 (Ruling 57c), because the original sentence read "and the runner is called" and that
-is not true.** `src/services/contract_links.propose_parent_links()` exists, is proven end to end, and is
-called by its tests and by Task 11's live verification. Nothing in `src/` or `scripts/` imports it: no
-scheduler, watcher or endpoint. Wiring one was ruled OUT of this plan deliberately — a tick that writes to a
-buyer's queue needs a cadence, a scope and an owner, and none of the three was settled. So §1's success
-criterion 4 is reachable today only when a person runs the proposer; until something schedules it, a
-contract's parent is proposed on demand and not otherwise. Do not read §8 as describing a live loop.
-(The identically-named `link_proposals.propose_parent_links`, which IS wired at
-`src/api/routers/promotion.py:149`, is the purchase-order one. Different function, different table.)
+was not true then. WIRED 2026-10-04 — it is true now.** For two days
+`src/services/contract_links.propose_parent_links()` was proven end to end and called by nothing in `src/`
+or `scripts/`: no scheduler, watcher or endpoint. That was deliberate, not an oversight — a tick that writes
+to a buyer's queue needs a cadence, a scope and an owner, and none of the three was settled. Nick settled it
+on 2026-10-04: **on promotion, scoped to the document that just promoted, with a slow corpus-wide
+backstop.** So:
+
+- **`extraction.promotion.promote()` calls `propose_contract_parent(doc_type, doc_pk)`** on every promoted
+  contract. It sits in `promote()` for the same reason field provenance does: that function is the one
+  funnel all three promotion paths go through (dispatch's inline call, the HITL NOTIFY listener,
+  `promote_pending`), so the proposal happens once per promoted contract however it arrived. It is
+  best-effort and cannot fail a promotion — the `_stg` row is already committed when it runs.
+- **The pass is SCOPED** (`propose_parent_links(contract_id=…)`), narrowing the children to that one
+  document while the candidate parents stay the whole corpus. Unscoped, every upload would re-score the
+  parentless corpus and refresh other documents' proposals under a person who was reading them. A
+  `contract_id` naming nothing returns `considered.children == 0` rather than falling back to a corpus pass.
+- **`backend_scheduler`'s `contract-parent-links` job** runs the unscoped pass daily, 30 minutes after
+  startup, as the backstop for documents promoted while the flag was off, re-read since, or that arrived
+  before any of this existed. Hours-scale on purpose: it writes into a queue a person works.
+- **Both are governed** by `autonomous_operation.contract_parent_proposals_enabled` (interval:
+  `contract_parent_proposal_sweep_hours`), applied to both databases by
+  `deploy/sql/2026-10-04_contract_parent_proposals.sql`. One flag covers both paths — a flag that silenced
+  the hook and left the sweep writing would be worse than no flag. The promotion hook fails **CLOSED** on an
+  unreadable policy: this writes rows a person works through, so "the policy could not be read" must not
+  read as "go ahead", unlike the governance read paths.
+- **A contract held for a person is not proposed.** A document that ends `discrepancy` never reaches
+  `promote()`, so nothing is proposed for it until the person resolves it and the HITL listener promotes it.
+  That is the intended order: a contract whose own identity is unresolved should not be offered a parent.
+
+Proven on live data (bp_testdb, 2026-10-04): the open proposal for `OF-2026-0211` was deleted, `promote()`
+was called on its raw row, and the proposal came back — `FA-2026-0077`, F=85.8, `considered.children == 1`
+(so the scope held), `parent_contract_id` still NULL. Guards for all three links were broken on purpose and
+each went red; `tests/services/test_contract_link_wiring.py` holds them.
+(The identically-named `link_proposals.propose_parent_links`, which is wired at
+`src/api/routers/promotion.py:149`, is still the purchase-order one. Different function, different table.)
 
 **What a person does with a proposal, added 2026-10-03.** Accepting one in the Action Centre routes through
 `DecisionEngine.execute` → `contract_links.confirm()`, which is the only code allowed to write

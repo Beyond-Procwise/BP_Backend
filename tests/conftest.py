@@ -48,7 +48,9 @@ GOVERNED_LIMIT_SEED = {
     "autonomous_operation": {
         "opportunity_mining_min_impact": 100, "capture_retention_days": 30,
         "duplicate_invoice_detector_enabled": False,
-        "supplier_research_enabled": True},
+        "supplier_research_enabled": True,
+        "contract_parent_proposals_enabled": True,
+        "contract_parent_proposal_sweep_hours": 24},
     "reseller_catalog": {"fuzzy_propose_min": 88, "calibration_min_closed": 30},
     "triage_tolerances": {
         "unit_price_over_pct": 1.0, "unit_price_over_abs": 5.0,

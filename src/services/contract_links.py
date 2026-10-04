@@ -4,16 +4,23 @@ The failure this module exists not to repeat: contract_succession.py has a full
 scoring function and unit tests, and pass_runner.run_all() has never called it.
 A profile nothing calls is indistinguishable from a profile that found nothing.
 
-NOTHING RUNS THIS MODULE. READ THIS BEFORE ASSUMING OTHERWISE.
-    * No scheduler, API route or watcher invokes propose_parent_links(). It is
-      called explicitly: by tests and by the deployment verification. A passing
-      test_the_runner_is_actually_called proves the function works when called,
-      NOT that anything calls it.
-    * Calling it automatically (a scheduler job or an API route) is an OPEN
-      DECISION, not an oversight: it would add rows to a queue a person works, and
-      whether buyers want proposals appearing unprompted has not been asked.
-    * confirm() is likewise uncalled. It expects a UI or API caller.
-deal_link_proposals.propose has the same shape (a writer with no caller).
+WHAT RUNS THIS MODULE, as of 2026-10-04 (it ran NOTHING for two days, and the
+docstring said so; Nick settled the cadence question that kept it unwired).
+    * extraction.promotion.promote() -- the single funnel every promotion path
+      goes through -- calls propose_contract_parent() on a promoted contract,
+      SCOPED to that one document (contract_id=). So a contract gets its parent
+      proposed within seconds of being promoted, which is the whole point: the
+      maths starts making the connections without anyone asking it to.
+    * backend_scheduler's `contract-parent-links` job runs the UNSCOPED pass as a
+      backstop, for documents promoted while the flag was off, re-read since, or
+      arrived by a path that did not promote.
+    * Both are governed: autonomous_operation.contract_parent_proposals_enabled.
+      An unreadable policy proposes NOTHING -- this writes to a queue a person
+      works, so it fails closed, unlike a read path.
+    * confirm() is called by DecisionEngine.execute when a person accepts the
+      proposal in the Action Centre. It is the only code allowed to write
+      parent_contract_id.
+deal_link_proposals.propose still has the old shape (a writer with no caller).
 
 WHY A PROPOSAL AND NOT A LINK. proc.bp_contract_master.parent_contract_id is
 populated on 1,561 bp_contract_master rows (the table that supplies
@@ -353,12 +360,27 @@ def _source_file_for(cur, contract_id: str) -> str:
     return normalise_source_file(row[0]) if row and row[0] else f"contract:{contract_id}"
 
 
-def propose_parent_links(limit: Optional[int] = None) -> dict:
+def propose_parent_links(limit: Optional[int] = None,
+                         contract_id: Optional[str] = None) -> dict:
     """Score every parentless contract document and propose its best parent.
 
     The ``considered`` counts are not decoration. 'proposed: 0' reads as "every
     contract has a parent" when the truth may be "no contract resembled a parent
     its supplier holds", and those are different problems with different fixes.
+
+    ``contract_id`` narrows the pass to ONE child, which is how the promotion
+    hook calls it: a contract was just promoted, so score that document and
+    leave every other contract alone. It narrows the CHILDREN only -- the
+    candidate parents are still the whole corpus, because a child's parent is
+    almost never the document beside it. Without this the hook would re-score
+    the entire parentless corpus on every single upload, which is both wasteful
+    and (worse) would refresh other documents' proposals under a person who was
+    reading them.
+
+    A `contract_id` that names nothing returns the honest empty answer --
+    considered.children == 0 -- rather than falling back to the full pass. A
+    scoped run that silently became a corpus run is the kind of fallback that
+    makes a flag useless.
     """
     proposed = contested = no_candidate = 0
     considered = {"children": 0, "with_structure": 0, "with_candidates": 0}
@@ -370,7 +392,10 @@ def propose_parent_links(limit: Optional[int] = None) -> dict:
     with get_conn() as conn:
         cur = conn.cursor()
         known_ids = _known_contract_ids(cur)
-        cur.execute(_CHILD_SQL)
+        if contract_id:
+            cur.execute(_CHILD_SQL + " AND c.contract_id = %s", (contract_id,))
+        else:
+            cur.execute(_CHILD_SQL)
         cols = [d[0] for d in cur.description]
         children = [d for d in (dict(zip(cols, r)) for r in cur.fetchall())
                     if _is_unparented(d, known_ids)]
@@ -452,7 +477,8 @@ def propose_parent_links(limit: Optional[int] = None) -> dict:
     result = {"proposed": proposed, "contested": contested,
               "no_candidate": no_candidate, "considered": considered,
               "details": details}
-    log.info("contract parent proposals: %s",
+    log.info("contract parent proposals%s: %s",
+             f" for {contract_id}" if contract_id else "",
              {k: v for k, v in result.items() if k != "details"})
     return result
 

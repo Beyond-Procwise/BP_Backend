@@ -205,8 +205,9 @@ def test_every_governed_limit_is_present_in_the_live_policy_set():
     conn.close()
 
     assert len(live) == 9, f"expected nine limit rows, found {sorted(live)}"
-    assert sum(len(r) for r in live.values()) == 57, (
-        f"expected 57 governed values, found "
+    # 57 + the two contract parent-proposal limits (2026-10-04).
+    assert sum(len(r) for r in live.values()) == 59, (
+        f"expected 59 governed values, found "
         f"{ {k: len(v) for k, v in live.items()} }")
     for slug, rules in live.items():
         assert rules, f"{slug} states no limits at all"

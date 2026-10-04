@@ -364,14 +364,12 @@ document.
    whitespace on the phrase side only, so an "order of" / "precedence" split across a line
    misses. It fails safe (the
    structure stands down and nothing is mislabelled) but a real order form can be missed.
-6. **Nothing in the product calls `src/services/contract_links.propose_parent_links()`.**
-   `grep -rn contract_links src/ scripts/` returns the module itself and nothing else: no
-   scheduler, watcher or endpoint imports it. §7.3's chain comes from an explicit call made by
-   this verification. Note the trap for a future reader — the
-   purchase-order sibling `link_proposals.propose_parent_links` IS wired, at
-   `src/api/routers/promotion.py:149`; that is a different function on a different table and
-   its being live says nothing about the contract one. Until something calls the contract
-   runner, a contract's parent is proposed only when a person runs it by hand.
+6. ~~**Nothing in the product calls `src/services/contract_links.propose_parent_links()`.**~~
+   **CLOSED 2026-10-04 — see §18.** `extraction.promotion.promote()` now calls it, scoped to
+   the contract that just promoted, and a daily `contract-parent-links` sweep backs it up. The
+   trap for a future reader stands: the purchase-order sibling
+   `link_proposals.propose_parent_links` is wired at `src/api/routers/promotion.py:149`; that
+   is a different function on a different table and says nothing about the contract one.
 
 7. **A contract's supplier is read from its party clause, or it is NULL** (§10). Fixed after
    this record was first written. What is still unproven: the clause reader is measured on six
@@ -1009,3 +1007,81 @@ Thirteen fields across five readers. What remains pattern-less and unread is
 `spend_category`, `auto_renew_flag`, `renewal_term` and `contract_type` — and those are NULL
 **honestly**: none of these seven documents states them. `jurisdiction` stays with the entity
 sweep, which answers it correctly.
+
+
+## 18. The proposer is wired, 2026-10-04
+
+Unproven item 6 above was the one that mattered: every claim in §7.3 was true and nothing in
+the product ever triggered it. A contract's parent was proposed when a person ran a Python
+function, and not otherwise.
+
+**What Nick settled.** The question that kept it unwired was never technical — may proposals
+appear in a buyer's queue with nobody asking? Answer, 2026-10-04: **yes, on promotion, scoped to
+the document that just promoted, with a slow corpus-wide backstop.**
+
+**What was built.**
+
+| piece | where |
+|---|---|
+| the hook | `extraction/promotion.py::propose_contract_parent`, called from `promote()` |
+| the scope | `contract_links.propose_parent_links(contract_id=…)` |
+| the backstop | `backend_scheduler`'s `contract-parent-links` job, daily, 30 min after startup |
+| the flag | `autonomous_operation.contract_parent_proposals_enabled` (+ `…_sweep_hours`) |
+| the migration | `deploy/sql/2026-10-04_contract_parent_proposals.sql`, applied to BOTH databases |
+| the guards | `tests/services/test_contract_link_wiring.py`, 15 tests |
+
+**Why `promote()` and not `dispatch`.** `promote()` is the single funnel all three promotion
+paths go through — dispatch's inline call, the HITL NOTIFY listener via
+`apply_hitl_fixes_and_promote`, and the `promote_pending` catch-up sweep. Field provenance lives
+there for exactly this reason. Hooked into `dispatch` instead, a contract promoted by the HITL
+listener after a person resolved its discrepancy would never be proposed a parent.
+
+**Live proof, bp_testdb, through the real funnel.** The open proposal for `OF-2026-0211` (written
+by hand on 2026-10-03) was deleted, leaving the slot genuinely empty, and `promote(474,
+"contract")` was called with nothing touching `contract_links`:
+
+```
+AFTER delete : []
+INFO src.services.contract_links: contract parent proposals for OF-2026-0211:
+     {'proposed': 1, 'contested': 0, 'no_candidate': 0,
+      'considered': {'children': 1, 'with_structure': 1, 'with_candidates': 1}}
+AFTER promote: [(15140, 'FA-2026-0077', 'open', 'this order_form appears to sit under contract
+     FA-2026-0077 (score 85.8, suggested). reference: OK; structure: OK; supplier: OK;
+     term: OK; title: MISSING. ...')]
+parent_contract_id is still: None
+```
+
+`considered.children == 1` is the scope holding: the corpus has five contract documents and the
+pass looked at one. `parent_contract_id` still NULL is the rule holding: a proposal links nothing.
+
+**The job schedules off the real policy row**, not a stub — a bare `BackendScheduler` instance
+(no threads, so nothing claims the `process_monitor` backlog) registered `contract-parent-links`
+with `interval: 1 day, 0:00:00`, first run 30 minutes out, reading `enabled = True` and
+`sweep_hours = 24.0` from `AutonomousOperationPolicy` on bp_testdb.
+
+### The guard that passed on the broken state
+
+Every new guard was broken on purpose. One of them **stayed green**, and it is worth recording
+why: the first version of "something in the product calls the proposer" grepped all of `src/`
+for the name `propose_parent_links`. With the call deleted from `promote()` the words still sat
+inside the now-orphaned hook body, so the guard passed on precisely the unwired state it existed
+to catch — the same shape of mistake as a profile with no runner.
+
+It was replaced by three link-by-link AST assertions — `promote()` calls the hook, the hook calls
+the proposer, the sweep's runner calls the proposer — plus the startup registration. With both
+callers broken, ten of the fifteen tests go red. A corpus-wide name scan cannot tell a caller
+from a mention.
+
+### What is still unproven after this
+
+1. **bp_sqldb has no contract document to promote** (`proc.bp_contracts` holds 0 rows there), so
+   the hook is proven on bp_testdb only. The policy row and every migration ARE on bp_sqldb, so
+   the first contract promoted there will be scored.
+2. **The running server does not have this code yet.** `procwise.service` must restart before the
+   hook or the sweep runs in production, and the restart was deliberately left to Nick: that
+   process serves bp_testdb to the UI and to other sessions.
+3. **Still no corpus document has ever produced a proposal.** Unproven items 1 and 8 are
+   untouched by this: the children are the five verification documents, and the wiring cannot
+   manufacture real order forms.
+4. **The sweep has never run on a tick.** Its runner is unit-tested and the same function ran by
+   hand; what has not been observed is the scheduler firing it 30 minutes after a start.

@@ -427,8 +427,71 @@ class BackendScheduler:
         self._register_style_feedback_job()
         self._register_triage_job()
         self._register_playbook_sweep_job()
+        self._register_contract_link_job()
 
     TRIAGE_JOB_NAME = "discrepancy-triage"
+
+    CONTRACT_LINK_JOB_NAME = "contract-parent-links"
+
+    def _register_contract_link_job(self) -> None:
+        """Propose a parent for any contract document that still has none.
+
+        The BACKSTOP, not the main path. A contract is scored the moment it
+        promotes (extraction.promotion.propose_contract_parent); this pass exists
+        for the documents that promotion never saw — promoted while the policy
+        said no, re-read since, or arrived before any of this was wired.
+
+        Deliberately slow. The pass is corpus-wide and writes into a queue a
+        person works, so it runs on an hours-scale interval, not the minutes
+        scale the extraction jobs use. Interval via
+        autonomous_operation.contract_parent_proposal_sweep_hours
+        (CONTRACT_PARENT_PROPOSAL_SWEEP_HOURS overrides, deprecated).
+
+        Governed by the same flag as the promotion hook, so turning proposals
+        off turns BOTH off — a flag that silenced the hook and left a nightly
+        sweep writing would be worse than no flag.
+        """
+        if self.CONTRACT_LINK_JOB_NAME in self._jobs:
+            return
+        try:
+            enabled = _governed_limit("autonomous_operation",
+                                      "contract_parent_proposals_enabled",
+                                      env="CONTRACT_PARENT_PROPOSALS_ENABLED",
+                                      cast=bool)
+        except Exception as exc:
+            logger.warning("contract parent-link sweep not scheduled: policy "
+                           "unreadable (%s)", exc)
+            return
+        if not enabled:
+            logger.info("contract parent-link sweep disabled by policy")
+            return
+        try:
+            hours = _governed_limit("autonomous_operation",
+                                    "contract_parent_proposal_sweep_hours",
+                                    env="CONTRACT_PARENT_PROPOSAL_SWEEP_HOURS",
+                                    cast=float)
+        except Exception as exc:
+            logger.warning("contract parent-link sweep interval unreadable (%s); "
+                           "not scheduled", exc)
+            return
+        self.register_job(
+            self.CONTRACT_LINK_JOB_NAME,
+            self._run_contract_link_job,
+            interval=timedelta(hours=max(1.0, float(hours or 24.0))),
+            # Not at startup: a server restart must not be a reason for new rows
+            # to appear in somebody's queue a minute later.
+            initial_delay=timedelta(minutes=30),
+        )
+
+    def _run_contract_link_job(self) -> None:
+        try:
+            from src.services import contract_links
+
+            result = contract_links.propose_parent_links()
+            logger.info("contract parent-link sweep: %s",
+                        {k: v for k, v in result.items() if k != "details"})
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("contract parent-link sweep failed")
 
     def _register_triage_job(self) -> None:
         """Re-triage deals whose documents (or tolerances) changed since their last
