@@ -846,3 +846,90 @@ fill, and where this reader finds nothing a stored date **stays** (the context l
 grounded a shape these four do not cover). Applied on bp_sqldb: `1 term changed`. Its provenance
 writer now takes the reader's name, so a backfilled date records `source: date` and not
 `source: parties` — a backfill that mislabels which reader answered is an audit trail that lies.
+
+
+---
+
+## 16. The audit for a fourth group, and the value fix, 2026-10-04
+
+Three readers in, the question was whether the pattern-less hole had any more field groups in it.
+
+**It had one, and it was the money.** Of contract.yaml's 31 fields, **18 are pattern-less**
+(labels declared, no `patterns`). Eight are now covered by the three readers. Of the remaining
+ten, **nine were NULL on all 7 live contract rows** — only `jurisdiction` was answered, by the
+GPE sweep, and correctly. Five of the nine are stated in the documents:
+
+| field | what the documents say | filled before |
+|---|---|---|
+| `total_contract_value` | "GBP 750,000", "£25,000", "GBP 60,000" — **all 7** state one | 0 of 7 |
+| `currency` | the same sentences (GBP / £) | 0 of 7 |
+| `payment_terms` | "Payment shall be made within 30 days of receipt of a valid invoice" — 6 of 7 | 0 of 7 |
+| `governing_law` | "the laws of England and Wales" — 5 of 7 | 0 of 7 |
+| `contract_title` | every document has one | 0 of 7 |
+
+The other four — `spend_category`, `auto_renew_flag`, `renewal_term`, `contract_type` — are NULL
+**honestly**: these documents do not state them.
+
+**A measurement that misled, corrected before it was acted on.** The obvious next question is
+whether invoice / PO / quote have the same hole, and the obvious query says they do: ~20
+pattern-less fields at 0% fill across 38,570 rows. That is **wrong**. Of 38,577 raw rows across
+the four tables only **122** came through the renovation pipeline (7 contract, 8 PO, 42 invoice,
+65 quote); the other 38,455 predate it and carry **no `parser_snapshot`, so no stored text at
+all**. Fill rates over a whole table are dominated by legacy rows and say nothing about today's
+pipeline. On the rows that do carry text, where a PO actually stated payment terms (2 documents)
+it was read **both times**. `count(parser_snapshot)`, not `count(*)`, is the denominator for any
+claim about this pipeline's accuracy.
+
+### `total_contract_value` + `currency`
+
+Fixed first because it is money: a contract whose value is NULL contributes nothing to any spend
+or savings figure.
+
+`engineered/contract_value.py` reads a labelled total (`Total Contract Value:`, `Not to Exceed:`
+— the `canonical_labels` the schema already declared) or prose in which the word **"total"**
+appears. That word is the whole discriminator, because the trap in this field is the *second*
+number:
+
+```
+The total charges for this Order Form are GBP 48,000, invoiced monthly in arrears at GBP 4,000 per month.
+The total cost of the Services will be £25,000.   ... £10,000 at signing, and £15,000 at completion.
+   ... if an expense is over £500.
+```
+
+A total, a monthly rate, two instalments and a spending threshold. Taking the wrong one is worse
+than taking none: it is a plausible figure that silently misreports the contract. So the value is
+the **first** money token after a phrase that says "total", and the search stops at the end of
+that sentence — `"The total value is stated in Schedule 1. The deposit is GBP 5,000."` yields
+nothing.
+
+**A currency marker is required.** "The total charges are 48,000" yields nothing: a bare number
+after "total" could be a headcount, and this product has already been burned by a money figure
+whose currency nobody stated. Amount and currency come from the same token and are emitted
+together or not at all — an amount without its currency is the shape of a figure that later gets
+read in the wrong one. Both parsers were checked for the two-venv trap before being relied on,
+and a test keeps that true.
+
+Two labelled totals that **disagree** yield neither; the same total stated twice is one fact.
+
+Live, all 7 documents: `12,500 / 750,000 / 48,000 / 750,000 / 60,000 / 25,000 / 60,000`, all GBP
+— including both traps read correctly (48,000 not the 4,000 rate; 25,000 not the instalments or
+the £500 threshold). On bp_sqldb the real contract now carries `25000.00 GBP`, and the promoted
+`SA-2026-0310` carries `60000.00 GBP` in `proc.bp_contracts`.
+
+### A false positive the backfill's own output exposed
+
+`order_form_with_framework.pdf` was given a start date of **2026-01-05** — the date of the
+framework it cites ("Framework Agreement No. FA-2026-0042 **dated 5 January 2026**"), not its own
+("shall commence on 1 February 2026"). Two faults in the date reader, both fixed:
+
+* a bare `dated` was treated as being about this document, when it attached to **another
+  agreement's name**. A cited agreement immediately in front of the connector now refuses the
+  match — the date is that document's, not this one's;
+* the first prose match won, and the weak connector happened to come first in the text.
+  Connectors are now tiered: wording that can only be about this document's own term
+  (`shall commence on`, `effective from`, `with effect from`) is tried before `dated` / `made on`
+  / `entered into on`.
+
+A start date belonging to a different contract is worse than none — it is plausible, and it dated
+that order form a month early. The row was corrected by re-running the backfill, which is what
+rule 3 is for: the document's own words outrank whatever an earlier read stored.

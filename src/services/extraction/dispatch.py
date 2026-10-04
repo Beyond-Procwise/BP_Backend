@@ -271,6 +271,11 @@ def _contract_party_candidates(doc_type: str, full_text: str):
         # Marketing Agreement states its start date three times and promoted
         # nowhere because the field was NULL and blocking.
         from src.services.extraction.engineered.contract_dates import date_candidates
+        # The total value and its currency, pattern-less and NULL on all 7 live
+        # rows while every one of those documents states a figure. The one that
+        # costs money: a contract whose value is NULL contributes nothing to any
+        # spend or savings number.
+        from src.services.extraction.engineered.contract_value import value_candidates
         # contract_signatory_name is barred for the same reason and by the same
         # evidence: the PERSON default path stored "Email Marketing" (a line from
         # the services list) as the person who signed the real Marketing
@@ -278,7 +283,7 @@ def _contract_party_candidates(doc_type: str, full_text: str):
         # it is correct ("United Kingdom" on five of six live documents), so
         # barring the path wholesale would throw good values away.
         return (party_candidates(full_text) + signatory_candidates(full_text)
-                + date_candidates(full_text),
+                + date_candidates(full_text) + value_candidates(full_text),
                 {SUPPLIER_FIELD, BUYER_FIELD, NAME_FIELD,
                  BUYER_NAME_FIELD, BUYER_ROLE_FIELD})
     except Exception:

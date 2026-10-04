@@ -80,13 +80,31 @@ _END_LABEL = re.compile(
 )
 
 #: Prose that introduces the start of a term, immediately followed by the date.
-_START_PROSE = re.compile(
+#: STRONG: wording that can only be about this document's own term.
+_START_PROSE_STRONG = re.compile(
     r"(?i)(?:"
-    r"\b(?:entered\s+into|made|executed|signed|dated)\s+(?:on|as\s+of)?\s*"
-    r"|\b(?:shall\s+)?commenc(?:e|es|ing)\s+on\s+"
+    r"\b(?:shall\s+|will\s+)?commenc(?:e|es|ing)\s+(?:on|from)\s+"
     r"|\beffective\s+(?:on|from|as\s+of)\s+"
     r"|\bwith\s+effect\s+from\s+"
+    r"|\b(?:shall\s+)?begin(?:s|ning)?\s+on\s+"
     r")"
+)
+
+#: WEAK: "dated 5 January 2026" is about whatever was named just before it, which
+#: may be ANOTHER agreement -- "governed by Framework Agreement No. FA-2026-0042
+#: dated 5 January 2026" gave an order form its framework's start date, a month
+#: early and entirely plausible. Tried only when nothing strong is stated, and
+#: refused when a cited agreement sits in front of it (_CITED_AGREEMENT).
+_START_PROSE_WEAK = re.compile(
+    r"(?i)\b(?:entered\s+into|made|executed|signed|dated)\s+(?:on|as\s+of)?\s*"
+)
+
+#: Another document's name, immediately before a date. The date is that
+#: document's, not this one's.
+_CITED_AGREEMENT = re.compile(
+    r"(?i)(?:framework|master|parent|principal|head|umbrella)\s+"
+    r"(?:services?\s+)?(?:agreement|contract)"
+    r"(?:\s*(?:number|no|ref|reference)\.?\s*:?\s*[A-Z0-9][A-Z0-9\-/\.]*)?\s*$"
 )
 _END_PROSE = re.compile(
     r"(?i)(?:"
@@ -202,10 +220,31 @@ def _first_date_after(text: str, pos: int, window: int = 40) -> Optional[tuple[s
     return (iso, literal) if iso else None
 
 
-def _from(text: str, label: re.Pattern, prose: re.Pattern) -> tuple[Optional[str], Optional[str]]:
-    """A labelled date if the document has one, else a prose one."""
-    for pattern in (label, prose):
+def _cites_another_agreement(text: str, pos: int) -> bool:
+    """Does another agreement's name sit immediately before `pos`?
+
+    Checked on the 90 characters in front of the connector, whitespace collapsed,
+    so "...governed by Framework Agreement No. FA-2026-0042 dated" is recognised
+    however the parser wrapped it.
+    """
+    return bool(_CITED_AGREEMENT.search(_squeeze(text[max(0, pos - 90):pos])))
+
+
+def _from(text: str, label: re.Pattern, *prose: re.Pattern) -> tuple[Optional[str], Optional[str]]:
+    """A labelled date if the document has one, else prose, strongest tier first.
+
+    The tiers matter: an order form that cites its framework's date BEFORE stating
+    its own term was given the framework's date, because the first prose match won
+    and the weak connector came first in the text.
+    """
+    for m in label.finditer(text):
+        got = _first_date_after(text, m.end())
+        if got:
+            return got
+    for pattern in prose:
         for m in pattern.finditer(text):
+            if pattern is _START_PROSE_WEAK and _cites_another_agreement(text, m.start()):
+                continue          # that date belongs to the agreement named here
             got = _first_date_after(text, m.end())
             if got:
                 return got
@@ -217,7 +256,8 @@ def read_dates(full_text: str) -> ContractDates:
     if not full_text:
         return ContractDates()
 
-    start, start_text = _from(full_text, _START_LABEL, _START_PROSE)
+    start, start_text = _from(full_text, _START_LABEL,
+                              _START_PROSE_STRONG, _START_PROSE_WEAK)
     end, end_text = _from(full_text, _END_LABEL, _END_PROSE)
 
     # A term that ends before it begins has been misread. Two wrong dates are

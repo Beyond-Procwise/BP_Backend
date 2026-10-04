@@ -274,3 +274,52 @@ def test_a_date_the_reader_cannot_find_is_not_cleared():
 def test_a_row_with_no_stored_text_is_left_alone():
     d = _decide(full_text="", stored_start=None, stored_end=None, provenance_source=None)
     assert d.changed is False, d
+
+
+# ---------------------------------------------------------------------------
+# Found by the backfill's own output 2026-10-04: order_form_with_framework.pdf
+# was given 2026-01-05, which is the date of the FRAMEWORK it cites --
+# "Framework Agreement No. FA-2026-0042 dated 5 January 2026" -- while its own
+# term says "shall commence on 1 February 2026". Two faults:
+#   * a bare "dated" was treated as being about THIS document, when it attached
+#     to another agreement's name;
+#   * the first prose match won, and the weak connector happened to come first.
+# ---------------------------------------------------------------------------
+
+ORDER_FORM_CITING_A_FRAMEWORK = (
+    "ORDER FORM\n\nOrder Form No. OF-2026-0117\n\n"
+    "This Order Form is incorporated into and governed by Framework Agreement No. "
+    "FA-2026-0042 dated 5 January 2026.\n\n"
+    "4. TERM\n\nThis Order Form shall commence on 1 February 2026 and shall end on "
+    "31 January 2027.\n"
+)
+
+
+def test_a_documents_own_term_beats_a_cited_agreements_date():
+    d = read_dates(ORDER_FORM_CITING_A_FRAMEWORK)
+    assert d.start == "2026-02-01", d
+    assert d.end == "2027-01-31", d
+
+
+def test_another_agreements_date_is_not_this_documents_start():
+    """With no term of its own, the answer is NOTHING -- not the framework's date.
+    A start date that belongs to a different contract is worse than none: it is
+    plausible, and it dates this document a month early."""
+    text = ("ORDER FORM\n\nThis Order Form is incorporated into and governed by "
+            "Framework Agreement No. FA-2026-0042 dated 5 January 2026.\n")
+    assert read_dates(text).start is None, read_dates(text)
+
+
+@pytest.mark.parametrize("cited", [
+    "Framework Agreement No. FA-1 dated 5 January 2026",
+    "Master Agreement No. MSA-4417 dated 5 January 2026",
+    "Parent Agreement No. P-9 dated 5 January 2026",
+    "the Framework Agreement dated 5 January 2026",
+])
+def test_a_date_hanging_off_another_agreements_name_is_refused(cited):
+    assert read_dates(f"ORDER FORM\nThis Order Form is made under {cited}.\n").start is None
+
+
+def test_a_documents_own_dated_wording_still_works():
+    """The guard must not refuse an ordinary 'This Agreement is dated X'."""
+    assert read_dates("This Agreement is dated 5 January 2026.\n").start == "2026-01-05"
