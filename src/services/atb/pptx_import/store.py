@@ -23,7 +23,7 @@ _PACK_COLUMNS = ('pack_id', 'pack_key', 'version', 'source_file', 'source_sha256
                  'approved_at', 'approved_by')
 _LAYOUT_COLUMNS = ('layout_id', 'pack_id', 'layout_key', 'proposed_name', 'name', 'slide_refs',
                    'regions', 'slots', 'example_fill', 'example_source', 'problems', 'status',
-                   'created_at', 'approved_at', 'approved_by')
+                   'kind', 'created_at', 'approved_at', 'approved_by')
 
 
 def _rows(cursor, columns: tuple[str, ...]) -> list[dict]:
@@ -58,14 +58,17 @@ def insert_layout(conn, *, pack_id: str, layout: dict) -> str:
     cursor = conn.cursor()
     cursor.execute(
         'INSERT INTO proc.bp_page_layout (pack_id, layout_key, proposed_name, name, slide_refs, '
-        '    regions, slots, example_fill, example_source, problems) '
-        'VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb) '
+        '    regions, slots, example_fill, example_source, problems, kind) '
+        'VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s) '
         'RETURNING layout_id',
         (pack_id, layout['id'], layout.get('proposed_name') or layout.get('name') or '',
          layout.get('name'), list(layout.get('slide_refs') or []),
          _js(layout.get('regions', [])), _js(layout.get('slots', {})),
          _js(layout.get('example_fill', {})), _js(layout.get('example_source', {})),
-         _js(layout.get('problems', []))))
+         _js(layout.get('problems', [])),
+         # A layout that does not say what it is, is a template — the same default the column
+         # carries, so a caller written before composed pages existed still means what it meant.
+         layout.get('kind') or 'template'))
     return str(cursor.fetchone()[0])
 
 
@@ -91,7 +94,8 @@ def pack(conn, pack_id: str) -> dict | None:
     return found[0] if found else None
 
 
-def layouts(conn, *, pack_id: str | None = None, status: str | None = None) -> list[dict]:
+def layouts(conn, *, pack_id: str | None = None, status: str | None = None,
+            kind: str | None = None) -> list[dict]:
     cursor = conn.cursor()
     clauses = ["p.status <> 'importing'"]
     params: list[Any] = []
@@ -101,6 +105,11 @@ def layouts(conn, *, pack_id: str | None = None, status: str | None = None) -> l
     if status:
         clauses.append('l.status = %s')
         params.append(status)
+    if kind:
+        # The Layout picker asks for templates and the page picker asks for pages; neither
+        # should ever be handed the other, which is what the kind column is for.
+        clauses.append('l.kind = %s')
+        params.append(kind)
     columns = ', '.join(f'l.{c}' for c in _LAYOUT_COLUMNS)
     cursor.execute(f'SELECT {columns} FROM proc.bp_page_layout l '
                    'JOIN proc.bp_style_pack p ON p.pack_id = l.pack_id '
