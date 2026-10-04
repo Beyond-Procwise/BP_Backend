@@ -57,6 +57,9 @@ from src.services.extraction.engineered.contract_parties import (  # noqa: E402
 from src.services.extraction.engineered.contract_dates import (  # noqa: E402
     END_FIELD, START_FIELD, decide_date_correction,
 )
+from src.services.extraction.engineered.contract_header import (  # noqa: E402
+    LAW_FIELD, PAYMENT_FIELD, TITLE_FIELD, decide_header_correction,
+)
 from src.services.extraction.engineered.contract_value import (  # noqa: E402
     CURRENCY_FIELD, VALUE_FIELD, decide_value_correction,
 )
@@ -73,6 +76,8 @@ _READ = """
            buyer_signatory_name, buyer_signatory_role,
            contract_start_date, contract_end_date,
            total_contract_value, currency,
+           contract_title, governing_law, payment_terms,
+           parser_snapshot->'_field_provenance'->'contract_title'->>'source' AS hdr_src,
            parser_snapshot->'_field_provenance'->'total_contract_value'->>'source' AS value_src,
            parser_snapshot->'_field_provenance'->'contract_signatory_name'->>'source' AS sig_src,
            parser_snapshot->'_field_provenance'->'contract_start_date'->>'source' AS date_src
@@ -130,7 +135,7 @@ def main() -> int:
         print("proc.bp_contract_raw is empty: nothing to correct.")
         return 0
 
-    corrected = cleared = unchanged = signatories = terms = values = 0
+    corrected = cleared = unchanged = signatories = terms = values = headers = 0
     for r in rows:
         # The two fields share one decision, because the bug was that they shared
         # one answer. Provenance is read from supplier_id, falling back to buyer.
@@ -160,7 +165,45 @@ def main() -> int:
             stored_currency=r["currency"],
             provenance_source=r["value_src"],
         )
+        hd = decide_header_correction(
+            full_text=r["full_text"] or "",
+            stored_title=r["contract_title"],
+            stored_law=r["governing_law"],
+            stored_payment=r["payment_terms"],
+            provenance_source=r["hdr_src"],
+        )
         name = (r["source_file"] or "").split("/")[-1] or f"raw_id={r['raw_id']}"
+        if hd.changed:
+            print(f"  > {name:38s} header: title={hd.title!r} law={hd.governing_law!r} "
+                  f"pay={hd.payment_terms!r}")
+            print(f"    {'':38s} why: {hd.reason}")
+            headers += 1
+            if args.apply:
+                patch = _provenance_patch({TITLE_FIELD: hd.title, LAW_FIELD: hd.governing_law,
+                                           PAYMENT_FIELD: hd.payment_terms},
+                                          source="regex", pattern="contract_header_clause")
+                cur.execute(
+                    """UPDATE proc.bp_contract_raw
+                          SET contract_title = %s, governing_law = %s, payment_terms = %s,
+                              parser_snapshot = jsonb_set(
+                                  coalesce(parser_snapshot, '{}'::jsonb),
+                                  '{_field_provenance}',
+                                  coalesce(parser_snapshot->'_field_provenance', '{}'::jsonb)
+                                      || %s::jsonb,
+                                  true)
+                        WHERE raw_id = %s""",
+                    (hd.title, hd.governing_law, hd.payment_terms,
+                     json.dumps(patch), r["raw_id"]),
+                )
+                if r["contract_id"]:
+                    cur.execute(
+                        """UPDATE proc.bp_contracts
+                              SET contract_title = %s, governing_law = %s, payment_terms = %s,
+                                  last_modified_by = 'backfill_contract_parties',
+                                  last_modified_date = NOW()
+                            WHERE contract_id = %s""",
+                        (hd.title, hd.governing_law, hd.payment_terms, r["contract_id"]),
+                    )
         if vl.changed:
             print(f"  > {name:38s} value: {r['total_contract_value']} {r['currency']}"
                   f"  ->  {vl.value} {vl.currency}")
@@ -305,7 +348,8 @@ def main() -> int:
 
     print(f"\n{len(rows)} row(s): {corrected} party corrected, {cleared} party cleared, "
           f"{unchanged} party unchanged, {signatories} signatory changed, "
-          f"{terms} term changed, {values} value changed")
+          f"{terms} term changed, {values} value changed, "
+          f"{headers} header changed")
     if args.apply:
         conn.commit()
         print("committed.")

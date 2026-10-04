@@ -933,3 +933,79 @@ framework it cites ("Framework Agreement No. FA-2026-0042 **dated 5 January 2026
 A start date belonging to a different contract is worse than none — it is plausible, and it dated
 that order form a month early. The row was corrected by re-running the backfill, which is what
 rule 3 is for: the document's own words outrank whatever an earlier read stored.
+
+
+---
+
+## 17. Title, governing law and payment terms, fixed 2026-10-04
+
+The last three of the pattern-less group. Each one stated in the documents, each one NULL in all
+7 rows. One reader, `engineered/contract_header.py`, and **three traps that were all live in
+those seven files** — which is the argument for reading the corpus before writing the patterns
+rather than after.
+
+**Trap 1: "governed by" is not a choice of law.** Two of the seven say *"incorporated into and
+governed by Framework Agreement No. FA-2026-0042"*. That is an incorporation clause — the same
+cited-agreement trap that gave an order form its framework's start date, now in a third field. So
+`the laws of …` (or `<Adjective> law`) is mandatory, and `governed by` alone never answers this
+field. Both of those documents correctly read **NULL**: they state no governing law at all.
+
+**Trap 2: a cadence and a cure period are not payment terms.** The real Marketing Agreement says
+*"will provide an invoice to the Client every 30 days"* (how often it invoices) and *"without
+amending it within a period of 10 business days"* (a cure period). Neither is when payment falls
+due, and both contain "30 days"-shaped text. A day count only counts when it hangs off payment
+wording, so that document reads **NULL** for payment terms while the other six read `30 days`.
+
+**Trap 3: the parser dropped the real document's title.** Its parsed text begins `## PARTIES` —
+a section heading, not a name. So a heading must name a contract-family thing to be a title, and
+the document's own opening sentence (*"This Marketing Agreement (hereinafter …)"*) is the second
+source. It is the only one that works for that file, and it yields **Marketing Agreement**.
+
+**And a fourth, found on a live document after the first version was written:**
+`promoting_signed.pdf` took its title from its SIGNATURE BLOCK — `Title: Managing Director Date:
+1 March 2026 CLIENT Name: Tom Okafor …` — because `contract.yaml` lists a bare **"Title"** among
+`contract_title`'s labels, and in a signature block that is the job title. The bare label is now
+dropped (the unambiguous ones — `Contract Title`, `Agreement Name`, `Subject` — are kept), and a
+labelled value is bounded by the next field on the line like every other reader's. The document's
+own heading already answers what the bare label was for.
+
+**Conventions taken from the data, not invented.** The title is stored in Title Case because ALL
+CAPS in a heading is typography and `proc.bp_contract_master` holds Title Case. Payment terms are
+stored as the document's phrasing lightly normalised, which is what is already there:
+`proc.bp_purchase_order_raw` holds *"Annual in advance, 30 days"* and `proc.bp_invoice_stg` holds
+*"30 days — due 30 Jul 2025"*, so `30 days` is the comparable core of both. A **labelled** value
+is kept verbatim (`Net 30`), because there the document is filling in a field rather than writing
+a sentence.
+
+**All 7 live documents:**
+
+| document | title | governing law | payment terms |
+|---|---|---|---|
+| Marketing Agreement (**REAL**) | Marketing Agreement | England and Wales | — (states a cadence only) |
+| framework.pdf | Framework Agreement | England and Wales | 30 days |
+| framework2.pdf | Framework Agreement | England and Wales | 30 days |
+| order_form_with_framework.pdf | Order Form | — (cites an agreement, not a law) | 30 days |
+| order_form2.pdf | Order Form | — (same) | 30 days |
+| order_form_no_parent.pdf | Order Form | England and Wales | 30 days |
+| promoting_signed.pdf | Service Agreement | England and Wales | 30 days |
+
+Every dash is a document that does not state the field, not a field that was missed.
+
+**Both tiers, both databases.** `proc.bp_contracts.SA-2026-0310` now reads
+`Service Agreement / England and Wales / 30 days / 60000.00 GBP`, and bp_sqldb's real contract
+reads `Marketing Agreement / England and Wales / — / 25000.00 GBP`.
+
+### Where the pattern-less audit now stands
+
+| group | fields | read by |
+|---|---|---|
+| parties | `supplier_id`, `buyer_org_id` | `contract_parties.py` |
+| signatories | `contract_signatory_*`, `buyer_signatory_*` | `contract_signatories.py` |
+| term | `contract_start_date`, `contract_end_date` | `contract_dates.py` |
+| value | `total_contract_value`, `currency` | `contract_value.py` |
+| header | `contract_title`, `governing_law`, `payment_terms` | `contract_header.py` |
+
+Thirteen fields across five readers. What remains pattern-less and unread is
+`spend_category`, `auto_renew_flag`, `renewal_term` and `contract_type` — and those are NULL
+**honestly**: none of these seven documents states them. `jurisdiction` stays with the entity
+sweep, which answers it correctly.
