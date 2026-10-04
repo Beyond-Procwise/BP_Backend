@@ -73,3 +73,70 @@ def test_no_two_test_files_import_under_the_same_module_name():
         "test files collide on module name, so pytest cannot collect them "
         "together:\n" + "\n".join(lines)
     )
+
+
+def _first_party_module_targets(path: pathlib.Path):
+    """Every `src.…` module a test file imports, as a dotted name.
+
+    Deliberately a TEXT scan and a FILESYSTEM check, not an import: importing
+    would also fail on optional third-party packages that are legitimately
+    absent here (paddle, dateparser), and those are not this test's business.
+    Only first-party `src.` paths are checked, because only those can be deleted
+    by someone working in this repo.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+    except SyntaxError:
+        return
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module.split(".")[0] == "src":
+                yield node.module
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "src":
+                    yield alias.name
+
+
+def test_no_test_imports_a_first_party_module_that_was_deleted():
+    """A test importing a module nobody deleted the test for can never pass.
+
+    It dies in one of two ways, and the quieter one is worse. A module-level
+    import is a COLLECTION ERROR: pytest reports one line, carries on, and the
+    whole file's coverage disappears while the suite still looks healthy. A
+    function-level import is an ordinary failing test, which at least shows up
+    in the count.
+
+    Both shapes were present and both had been for five months: five files under
+    tests/extraction_v2 and one assertion in tests/structural_extractor, all
+    naming modules removed in 114e5ca (2026-05-09, "remove legacy extraction
+    stack, hard-wire dispatch to v3").
+
+    Checks the filesystem rather than importing, so a missing optional
+    dependency cannot make this red.
+    """
+    repo_root = TESTS_ROOT.parent
+    missing: dict[str, list[str]] = {}
+    for path in TESTS_ROOT.rglob("test_*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        for dotted in _first_party_module_targets(path):
+            rel = pathlib.Path(*dotted.split("."))
+            if (repo_root / rel).with_suffix(".py").is_file():
+                continue
+            if (repo_root / rel / "__init__.py").is_file():
+                continue
+            missing.setdefault(str(path.relative_to(repo_root)), []).append(dotted)
+
+    assert not missing, (
+        "these test files import first-party modules that no longer exist, so "
+        "pytest cannot collect them and their coverage is silently gone:\n"
+        + "\n".join(
+            f"  {f}\n      {', '.join(sorted(set(mods)))}"
+            for f, mods in sorted(missing.items())
+        )
+        + "\n  fix: delete the test if its subject was deleted, or re-point it "
+        "at the module that replaced it."
+    )
