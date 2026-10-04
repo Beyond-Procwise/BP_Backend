@@ -32,11 +32,14 @@ job's audit context and is recorded on report.scope_resolved.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from src.services.db import get_conn
 from src.services.rga import audit, postcheck, signoff
+from src.services.rga.layout_fit import NoFit, NoPack, catalogue
 from src.services.rga.compose import CompositionError, compose_report
 from src.services.rga.factpack import build_fact_pack
 from src.services.rga.models import FactPack, Finding, FindingCode, ReportAST, Severity
@@ -76,6 +79,10 @@ class ReportRun:
     # The printable page: the same AST drawn as A4 HTML (2026-09-24). Released only if it
     # passes the same post-check as the deck.
     page: Optional[RenderedArtefact] = None
+    # The builder drawing: the same AST as pages in an approved style pack (2026-10-04). Present
+    # only when a pack was named, only when it passed the same post-check as the other two, and
+    # only on a released run.
+    snapshot: Optional[Dict[str, Any]] = None
     result: Optional[postcheck.PostCheckResult] = None
     released: bool = False
     stage_reached: str = "SCOPE"
@@ -103,6 +110,8 @@ def generate_report(
     title: Optional[str] = None,
     emit_audit: bool = True,
     writer: Any = None,
+    pack_key: Optional[str] = None,
+    snapshot_renderer: Any = None,
 ) -> ReportRun:
     """Run one report end to end. Never raises for a report that merely failed.
 
@@ -212,6 +221,42 @@ def generate_report(
                        "bytes": len(art.content)})
     artefact, page = drawn["deck"], drawn["page"]
 
+    # -- the THIRD drawing: the same AST as pages in the report builder ----
+    #
+    # Only when a pack is named: without one nothing changes for any existing caller, which is what
+    # makes this safe to add to a pipeline three report types already run through.
+    #
+    # Drawn here rather than inside the loop above because a fault in THIS drawing must not block
+    # the deck. The deck and the page answer to each other — both are handed round — but a report
+    # whose builder pages could not be laid out still has a valid deck, and refusing to release it
+    # would punish the report for the new drawing's fault.
+    snap_art: Optional[RenderedArtefact] = None
+    if pack_key:
+        if snapshot_renderer is None:
+            from src.services.rga.render import snapshot as snapshot_renderer
+        try:
+            with get_conn() as conn:
+                cat = catalogue(conn, pack_key)
+            snap_art = snapshot_renderer.render(ast, pack, brief, title=title, catalogue=cat)
+        except (NoFit, NoPack) as exc:
+            # A finding, not an exception: generate_report never raises for a report that merely
+            # failed, and "which section had nowhere to go" is exactly what the requester needs.
+            findings.append(Finding(
+                finding_id=f"{run_id}-SNAP01", code=FindingCode.RENDER_FAILED,
+                severity=Severity.MEDIUM,
+                detail=f"the report has no builder pages: it could not be laid out on style pack "
+                       f"{pack_key} — {exc}",
+                blocks_release=False))
+            logger.info("rga: %s could not draw a builder snapshot: %s", run_id, exc)
+        except Exception as exc:  # pragma: no cover - a drawing library fault
+            findings.append(Finding(
+                finding_id=f"{run_id}-SNAP02", code=FindingCode.RENDER_FAILED,
+                severity=Severity.MEDIUM,
+                detail=f"the renderer could not draw this report's builder pages: "
+                       f"{type(exc).__name__}: {exc}",
+                blocks_release=False))
+            logger.exception("rga: %s snapshot render failed", run_id)
+
     # -- POST_CHECK --------------------------------------------------------
     # Both files, the same checks. Either failing blocks the report: the page is what
     # gets printed and handed round, so it answers to the same rules as the deck.
@@ -221,6 +266,22 @@ def generate_report(
                                 writer=writer)
     findings.extend(result.findings)
     findings.extend(_page_only(result.findings, page_result.findings))
+
+    # The builder drawing answers to the same checks. It does not block the report — see above —
+    # but it is WITHHELD when it fails them: the pages a person would then edit are the last place
+    # an untraced figure should survive.
+    if snap_art is not None:
+        snap_result = postcheck.run(snap_art, pack, ast, brief, emit_audit=emit_audit,
+                                    writer=writer)
+        findings.extend(_page_only(result.findings, snap_result.findings))
+        if not snap_result.passed:
+            findings.append(Finding(
+                finding_id=f"{run_id}-SNAP03", code=FindingCode.RENDER_FAILED,
+                severity=Severity.MEDIUM,
+                detail="the report has no builder pages: the drawing did not pass the same "
+                       "checks the deck and the printable page passed",
+                blocks_release=False))
+            snap_art = None
 
     if not (result.passed and page_result.passed):
         logger.info("rga: %s blocked by %d finding(s)", run_id,
@@ -251,4 +312,6 @@ def generate_report(
 
     return ReportRun(run_id=run_id, report_type_id=report_type_id, pack=pack,
                      brief=brief, ast=ast, artefact=artefact, page=page, result=result,
+                     snapshot=(json.loads(snap_art.content.decode("utf-8"))
+                               if snap_art is not None else None),
                      released=True, stage_reached="RELEASE", findings=findings)
