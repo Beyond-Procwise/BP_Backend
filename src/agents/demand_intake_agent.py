@@ -92,7 +92,32 @@ _CLAIM_CUES: Dict[str, tuple] = {
                     "lifetime cost", "life-cycle cost", "lifecycle cost"),
     "finance.type": ("hard saving", "cash saving", "cashable", "cost avoidance",
                      "non-financial", "non financial", "hard / cash", "soft saving"),
+    # The other five from the same reply. Prompt v2 stopped them, which means they were held
+    # back by wording alone and one prompt edit from returning:
+    #   finance.phasing = 'Year 1: £80k, Year 2: £80k, Year 3: £80k'
+    #   benefit.target  = '£80k/year SD-WAN cost'   (no 80k appears anywhere in that request)
+    #   benefit.owner   = 'IT Operations'
+    #   pillar          = 'Cost Efficiency'
+    #   alignment       = 'Digital Transformation'
+    #
+    # "£95k a year" and "over three years" say how much and for how long; they are NOT a
+    # phasing profile, so no cue here is built out of "year" on its own.
+    "finance.phasing": ("phased", "phasing", "year 1", "year one", "first year",
+                        "second year", "split over", "split across", "spread over",
+                        "spread across", "instalments", "installments"),
+    "benefit.target": ("target", "targets", "targeted", "aim", "aims", "aiming", "goal",
+                       "goals", "down to", "get to", "reduce to"),
+    # NOT bare "owner": this conversation talks about the COST CENTRE owner constantly — it has
+    # an ask_owner turn — and that is a different person from whoever owns the benefit.
+    "benefit.owner": ("benefit owner", "owned by", "owner is", "will own", "accountable",
+                      "responsible for", "sponsor", "sponsored by", "sponsors"),
+    "pillar": ("pillar", "pillars", "strategic priority", "strategic priorities"),
+    "alignment": ("align", "aligns", "aligned", "alignment", "okr", "okrs", "strategy",
+                  "strategic", "objective", "objectives", "initiative", "initiatives"),
 }
+# DELIBERATELY ABSENT: benefit.baseline. "Today the MPLS circuits cost us £95k a year" is a
+# baseline the requester really did state, and putting it in this table would turn a rule against
+# fabrication into a rule that destroys evidence.
 # Word boundaries matter: a bare "tco" would otherwise match inside "bitcoin".
 _CLAIM_PATTERNS = {
     path: re.compile(r"\b(?:" + "|".join(re.escape(c) for c in cues) + r")\b", re.I)

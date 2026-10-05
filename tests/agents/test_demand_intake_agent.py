@@ -426,3 +426,112 @@ def test_tco_is_not_matched_inside_an_unrelated_word():
     with _replies({'fields': {'finance.tco': {'value': '240000', 'confidence': 'high'}}}):
         out = _agent().extract(ctx)
     assert 'finance.tco' not in out['fields']
+
+
+# ---------------------------------------------------------------------------
+# THE OTHER FIVE, from the same live run (2026-10-05).
+#
+# The v1 reply invented these five as well, on the same request that states none of them:
+#
+#   finance.phasing = 'Year 1: £80k, Year 2: £80k, Year 3: £80k'
+#   benefit.target  = '£80k/year SD-WAN cost'      (there is no 80k anywhere in the request)
+#   benefit.owner   = 'IT Operations'
+#   pillar          = 'Cost Efficiency'
+#   alignment       = 'Digital Transformation'
+#
+# Prompt v2 stopped them, which means they were suppressed by wording alone — one prompt edit
+# away from coming back. Same rule as the first three: the field travels when the request says
+# something about it.
+#
+# benefit.baseline is DELIBERATELY NOT in the table. "Today the MPLS circuits cost us £95k a
+# year" is a baseline the requester really did state, and a guard that deleted it would be the
+# fabrication rule used to destroy evidence.
+# ---------------------------------------------------------------------------
+
+_FIVE = {
+    'finance.phasing': 'Year 1: £80k, Year 2: £80k, Year 3: £80k',
+    'benefit.target': '£80k/year SD-WAN cost',
+    'benefit.owner': 'IT Operations',
+    'pillar': 'Cost Efficiency',
+    'alignment': 'Digital Transformation',
+}
+
+
+def test_none_of_the_five_travel_on_a_request_that_states_none_of_them():
+    ctx = dict(_CONTEXT, text=_SDWAN)
+    reply = {'fields': {k: {'value': v, 'confidence': 'high'} for k, v in _FIVE.items()}}
+    with _replies(reply):
+        out = _agent().extract(ctx)
+    assert out['fields'] == {}, f'still through: {sorted(out["fields"])}'
+
+
+def test_a_baseline_the_requester_did_state_is_still_kept():
+    # THE LINE THIS GUARD MUST NOT CROSS. The request says what things cost today, so the
+    # baseline is evidence, not invention — and benefit.baseline is not in the table at all.
+    ctx = dict(_CONTEXT, text=_SDWAN)
+    with _replies({'fields': {'benefit.baseline': {'value': '95000', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['benefit.baseline']['value'] == '95000'
+
+
+def test_stated_phasing_is_kept():
+    ctx = dict(_CONTEXT, text='Spend is phased £100k in year 1 then £70k a year after.')
+    with _replies({'fields': {'finance.phasing': {'value': '100000, 70000, 70000',
+                                                  'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'finance.phasing' in out['fields']
+
+
+def test_a_stated_target_is_kept():
+    ctx = dict(_CONTEXT, text='We are aiming to get the run rate down to £75k a year.')
+    with _replies({'fields': {'benefit.target': {'value': '75000', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['benefit.target']['value'] == '75000'
+
+
+def test_a_stated_benefit_owner_is_kept():
+    ctx = dict(_CONTEXT, text='The benefit owner is the Head of Network Services.')
+    with _replies({'fields': {'benefit.owner': {'value': 'Head of Network Services',
+                                                'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'benefit.owner' in out['fields']
+
+
+def test_a_stated_pillar_is_kept():
+    ctx = dict(_CONTEXT, text='This sits under our cost efficiency pillar.')
+    with _replies({'fields': {'pillar': {'value': 'Cost Efficiency', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['pillar']['value'] == 'Cost Efficiency'
+
+
+def test_a_stated_alignment_is_kept():
+    ctx = dict(_CONTEXT, text='It aligns to the FY26 IT cost-optimisation OKR.')
+    with _replies({'fields': {'alignment': {'value': 'FY26 IT cost-optimisation',
+                                            'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'alignment' in out['fields']
+
+
+def test_a_cost_stated_per_year_is_not_a_phasing_cue():
+    # "£95k a year" and "over three years" are how much and for how long, NOT a phasing profile.
+    ctx = dict(_CONTEXT, text='It costs £95k a year today, over three years.')
+    with _replies({'fields': {'finance.phasing': {'value': '95000 x 3', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'finance.phasing' not in out['fields']
+
+
+def test_a_cost_centre_owner_is_not_a_benefit_owner_cue():
+    # The intake flow talks about cost-centre owners constantly; that is not a benefit owner.
+    ctx = dict(_CONTEXT, text='Cost centre CC-4120, please ask the cost centre owner.')
+    with _replies({'fields': {'benefit.owner': {'value': 'IT Operations', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'benefit.owner' not in out['fields']
+
+
+def test_each_of_the_five_is_asked_for_on_its_own_terms():
+    # The asked-field escape is per field, as it is for the first three.
+    for path in _FIVE:
+        ctx = dict(_CONTEXT, asked_field=path, text='Whatever the form asked for.')
+        with _replies({'fields': {path: {'value': 'an answer', 'confidence': 'high'}}}):
+            out = _agent().extract(ctx)
+        assert path in out['fields'], f'{path} was asked for and the answer was dropped'
