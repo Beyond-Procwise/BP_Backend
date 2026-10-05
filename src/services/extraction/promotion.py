@@ -28,6 +28,7 @@ _RAW_TO_STG = {
     "purchase_order": ("proc.bp_purchase_order_raw", "proc.bp_purchase_order_stg"),
     "quote": ("proc.bp_quote_raw", "proc.bp_quote_stg"),
     "contract": ("proc.bp_contract_raw", "proc.bp_contracts"),
+    "goods_receipt": ("proc.bp_goods_receipt_raw", "proc.bp_goods_receipt_stg"),
 }
 
 # Line-item table promotion pairs (raw → stg). A contract's lines (its rate card)
@@ -37,6 +38,8 @@ _LINE_RAW_TO_STG = {
     "purchase_order": ("proc.bp_po_line_items_raw", "proc.bp_po_line_items_stg"),
     "quote": ("proc.bp_quote_line_items_raw", "proc.bp_quote_line_items_stg"),
     "contract": ("proc.bp_contract_line_items_raw", "proc.bp_contract_line_items"),
+    "goods_receipt": ("proc.bp_goods_receipt_line_items_raw",
+                      "proc.bp_goods_receipt_line_items_stg"),
 }
 
 # Line-item PK column name in _stg per doc_type (TEXT NOT NULL — promote
@@ -46,6 +49,7 @@ _LINE_STG_PK = {
     "purchase_order": "po_line_id",
     "quote": "quote_line_id",
     "contract": "contract_line_id",
+    "goods_receipt": "goods_receipt_line_id",
 }
 # Line-no column name on _stg (matches the index column on _raw).
 _LINE_STG_INDEX = {
@@ -53,6 +57,7 @@ _LINE_STG_INDEX = {
     "purchase_order": "line_number",
     "quote": "line_number",
     "contract": "line_number",
+    "goods_receipt": "line_no",
 }
 
 # The column that uniquely identifies a document in _stg (used by ON CONFLICT).
@@ -63,6 +68,7 @@ _STG_PK = {
     "purchase_order": "po_id",
     "quote": "quote_id",
     "contract": "contract_id",
+    "goods_receipt": "grn_id",
 }
 
 # Control columns on _raw that must NOT be copied to _stg

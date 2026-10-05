@@ -1,0 +1,304 @@
+# The goods receipt: what was physically delivered and accepted.
+#
+# The file name MUST equal pipeline_doc_type -- loader.load_doc_schema() reads
+# SCHEMAS_DIR/{doc_type}.yaml, and SCHEMAS_DIR is the repo-root
+# extraction_schemas/ directory.
+#
+# THERE IS NO price, amount, total, value, cost, currency OR tax FIELD HERE,
+# deliberately, and there is no column for one either (see
+# deploy/sql/2026-10-04_goods_receipt_tables.sql). A delivery note very often
+# restates the order's prices for the driver's paperwork; the extractor will
+# find them. A field here is what would let one through, because
+# persistence.build_header_record only commits a field that has a db_column and
+# persistence.build_line_items drops a line field the schema does not know.
+# A price on the document that PROVES DELIVERY would be read downstream as
+# corroboration of a value it never witnessed.
+# tests/extraction/test_goods_receipt_extraction.py asserts the absence.
+doc_type: goods_receipt
+db_table: proc.bp_goods_receipt_stg
+db_lines_table: proc.bp_goods_receipt_line_items_stg
+
+fields:
+  - name: grn_id
+    type: string
+    required: true
+    db_column: grn_id
+    canonical_labels:
+      - "GRN"
+      - "GRN No"
+      - "GRN Number"
+      - "Goods Receipt No"
+      - "Goods Received Note"
+      - "Delivery Note No"
+      - "Delivery Note Number"
+      - "Despatch Note No"
+      - "Advice Note No"
+    confidence_threshold: 0.70
+    patterns:
+      - name: anchored_grn_no
+        anchor: '(?i)\b(?:grn|goods\s+receipt|goods\s+received\s+note)\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        value: '([A-Z]{0,4}[0-9][A-Z0-9\-\/\.]{2,19})'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.88
+      - name: anchored_delivery_note_no
+        anchor: '(?i)\b(?:delivery|despatch|dispatch|advice)\s+note\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        value: '([A-Z]{0,4}[0-9][A-Z0-9\-\/\.]{2,19})'
+        max_span_after_anchor_chars: 60
+        prior_confidence: 0.86
+      - name: grn_prefixed_id
+        anchor: '(?<![A-Z])(?:GRN|DN)[\-\:#]'
+        value: '([A-Z]{0,4}[0-9]{3,12})'
+        max_span_after_anchor_chars: 20
+        prior_confidence: 0.74
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: po_id
+    type: string
+    required: false
+    db_column: po_id
+    canonical_labels:
+      - "PO Number"
+      - "PO No"
+      - "Purchase Order"
+      - "Purchase Order No"
+      - "Order Reference"
+      - "Your Order No"
+    confidence_threshold: 0.70
+    patterns:
+      - name: anchored_po_no
+        anchor: '(?i)\b(?:purchase\s+order|p\.?\s*o\.?|your\s+order|order)\s*(?:number|no\.?|#|ref(?:erence)?)?\s*[:\-]?\s*'
+        value: '((?:PO)?[0-9][A-Z0-9\-\/\.]{3,19})'
+        max_span_after_anchor_chars: 80
+        prior_confidence: 0.86
+      - name: against_po
+        anchor: '(?i)\b(?:against|ref(?:erence)?|for)\s+(?:PO|purchase\s+order)\s*'
+        value: '((?:PO)?[0-9][A-Z0-9\-\/\.]{3,19})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.84
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: supplier_name
+    type: string
+    required: false
+    db_column: supplier_name
+    canonical_labels:
+      - "Supplier"
+      - "Supplier Name"
+      - "Vendor"
+      - "Delivered By"
+      - "From"
+      - "Consignor"
+    confidence_threshold: 0.70
+    patterns: []
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "ORG"
+    invariants: []
+
+  - name: receipt_date
+    type: iso_date
+    required: false
+    db_column: receipt_date
+    canonical_labels:
+      - "Receipt Date"
+      - "Date Received"
+      - "Delivery Date"
+      - "Date of Delivery"
+      - "Despatch Date"
+      - "Date"
+    confidence_threshold: 0.70
+    patterns: []
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: delivery_note_ref
+    type: string
+    required: false
+    db_column: delivery_note_ref
+    canonical_labels:
+      - "Delivery Note Ref"
+      - "Despatch Reference"
+      - "Our Reference"
+    confidence_threshold: 0.70
+    patterns: []
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: carrier_ref
+    type: string
+    required: false
+    db_column: carrier_ref
+    canonical_labels:
+      - "Carrier"
+      - "Carrier Reference"
+      - "Consignment No"
+      - "Consignment Number"
+      - "Vehicle Reg"
+      - "Waybill"
+      - "Tracking Number"
+    confidence_threshold: 0.70
+    patterns:
+      - name: anchored_consignment
+        anchor: '(?i)\b(?:consignment|waybill|tracking)\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
+        value: '([A-Z0-9][A-Z0-9\-\/\.]{3,24})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.76
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "none"
+    invariants: []
+
+  - name: received_by
+    type: string
+    required: false
+    db_column: received_by
+    canonical_labels:
+      - "Received By"
+      - "Signed For By"
+      - "Goods Received By"
+      - "Accepted By"
+      - "Print Name"
+    confidence_threshold: 0.70
+    patterns:
+      - name: anchored_received_by
+        anchor: '(?i)\b(?:received|signed\s+for|accepted)\s+by\s*[:\-]?\s*'
+        value: "([A-Z][A-Za-z'\\-\\.]{1,20}(?:\\s+[A-Z][A-Za-z'\\-\\.]{1,20}){0,3})"
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.78
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "PERSON"
+    invariants: []
+
+  - name: ship_to_country
+    type: string
+    required: false
+    db_column: ship_to_country
+    canonical_labels:
+      - "Ship To Country"
+      - "Delivery Country"
+      - "Country"
+    confidence_threshold: 0.70
+    patterns: []
+    judge:
+      tiebreaker: true
+      grounded_last_resort: true
+      ner_type_check: "GPE"
+    invariants: []
+
+line_items:
+  primary_extractor: qwen_vlm
+  fields:
+    - name: description
+      type: string
+      required: false
+      db_column: item_description
+      canonical_labels:
+        - "Description"
+        - "Item Description"
+        - "Item"
+        - "Product"
+        - "Goods"
+      extractors:
+        - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: quantity_received
+      type: decimal
+      required: true
+      db_column: quantity_received
+      canonical_labels:
+        - "Qty Received"
+        - "Quantity Received"
+        - "Received"
+        - "Qty Delivered"
+        - "Quantity Delivered"
+        - "Qty"
+        - "Quantity"
+      extractors:
+        - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    # Kept SEPARATE from quantity_received on purpose. Review Focus #5: goods
+    # delivered and refused are not goods received, and summing the two would
+    # make a rejected delivery read as accepted.
+    - name: quantity_rejected
+      type: decimal
+      required: false
+      db_column: quantity_rejected
+      canonical_labels:
+        - "Qty Rejected"
+        - "Quantity Rejected"
+        - "Rejected"
+        - "Damaged"
+        - "Short"
+        - "Shortage"
+      extractors:
+        - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: unit_of_measure
+      type: string
+      required: false
+      db_column: unit_of_measure
+      canonical_labels:
+        - "UoM"
+        - "Unit"
+        - "Unit of Measure"
+        - "Pack"
+      extractors:
+        - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+
+    - name: po_line_ref
+      type: string
+      required: false
+      db_column: po_line_ref
+      canonical_labels:
+        - "PO Line"
+        - "Order Line"
+        - "Line Ref"
+        - "Item No"
+      extractors:
+        - qwen_vlm
+      judge:
+        tiebreaker: true
+        grounded_last_resort: true
+        ner_type_check: "none"
+      invariants: []
+  invariants: []
+
+document_invariants: []

@@ -33,12 +33,14 @@ _RAW_TABLES = {
     "purchase_order": "proc.bp_purchase_order_raw",
     "quote": "proc.bp_quote_raw",
     "contract": "proc.bp_contract_raw",
+    "goods_receipt": "proc.bp_goods_receipt_raw",
 }
 _LINE_RAW_TABLES = {
     "invoice": "proc.bp_invoice_line_items_raw",
     "purchase_order": "proc.bp_po_line_items_raw",
     "quote": "proc.bp_quote_line_items_raw",
     "contract": "proc.bp_contract_line_items_raw",
+    "goods_receipt": "proc.bp_goods_receipt_line_items_raw",
 }
 # The line-index column on each line_items_raw table (differs across doc types).
 _LINE_RAW_INDEX_COL = {
@@ -46,12 +48,16 @@ _LINE_RAW_INDEX_COL = {
     "purchase_order": "line_number",
     "quote": "line_number",
     "contract": "line_number",
+    "goods_receipt": "line_no",
 }
 _DOC_PK_FIELD = {
     "invoice": "invoice_id",
     "purchase_order": "po_id",
     "quote": "quote_id",
     "contract": "contract_id",
+    # A goods receipt is identified by its own note number, not by the PO it
+    # cites: two deliveries against one order are two receipts.
+    "goods_receipt": "grn_id",
 }
 
 
