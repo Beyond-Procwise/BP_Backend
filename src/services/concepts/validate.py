@@ -167,8 +167,12 @@ def check_flagged_types_have_parent_evidence_phrases(doc_type_rows) -> List[Viol
     return out
 
 
-#: The four physical table families the extraction pipeline actually has.
-_PIPELINES = frozenset({"invoice", "purchase_order", "quote", "contract"})
+#: The physical table families the extraction pipeline actually has.
+#: goods_receipt joined 2026-10-04; its six tables land in
+#: deploy/sql/2026-10-04_goods_receipt_tables.sql, which MUST be applied first --
+#: this frozenset is the only thing standing between a vocabulary row and a
+#: SQL error mid-extraction.
+_PIPELINES = frozenset({"invoice", "purchase_order", "quote", "contract", "goods_receipt"})
 
 
 def check_pipeline_targets_exist(vocabulary: Vocabulary) -> List[Violation]:

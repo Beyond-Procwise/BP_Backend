@@ -180,14 +180,41 @@ def test_seeded_aliases_are_recorded_in_the_table(doc_type_rows):
 
 
 def test_pipeline_doc_type_is_one_the_pipeline_actually_has(doc_type_rows):
-    """Four physical table families exist. A fifth value here would route a
-    document at a table that is not there."""
-    allowed = {"invoice", "purchase_order", "quote", "contract", None}
-    bad = {
+    """A pipeline_doc_type value whose tables are absent would route a document
+    at a table that is not there, and the failure surfaces as a SQL error
+    mid-extraction.
+
+    This used to carry a hard-coded list of four, which meant it restated
+    `_PIPELINES` rather than checking anything about the database. It now asks
+    the two questions the docstring always claimed: does the CODE know this
+    pipeline, and does its _raw table EXIST? The second is the one that bites --
+    goods_receipt was added on 2026-10-04 and its six tables had to land first
+    (deploy/sql/2026-10-04_goods_receipt_tables.sql).
+    """
+    from src.services.concepts.validate import _PIPELINES
+
+    values = {r["pipeline_doc_type"] for r in doc_type_rows} - {None}
+    unknown = {
         r["concept_code"]: r["pipeline_doc_type"] for r in doc_type_rows
-        if r["pipeline_doc_type"] not in allowed
+        if r["pipeline_doc_type"] is not None
+        and r["pipeline_doc_type"] not in _PIPELINES
     }
-    assert not bad, f"pipeline_doc_type values with no physical pipeline: {bad}"
+    assert not unknown, f"pipeline_doc_type values the code does not know: {unknown}"
+
+    from src.services.db import get_conn
+
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'proc' AND table_name = ANY(%s)""",
+            ([f"bp_{v}_raw" for v in sorted(values)],),
+        )
+        present = {r[0] for r in cur.fetchall()}
+    missing = sorted(v for v in values if f"bp_{v}_raw" not in present)
+    assert not missing, (
+        f"pipeline_doc_type values with no proc.bp_<name>_raw table: {missing}"
+    )
 
 
 def test_no_alias_is_claimed_by_two_concepts(doc_type_rows):

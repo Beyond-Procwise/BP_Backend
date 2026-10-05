@@ -27,8 +27,11 @@ the one it catches:
 1. :func:`test_no_alias_changes_what_it_classifies_as` -- the broad record. Red
    when any vocabulary edit changes what an existing alias resolves to.
 2. :func:`test_every_proposed_alias_is_unowned` -- **the one that guards Task 3.**
-   Red the moment a proposed alias is already owned, which is the only route by
-   which adding a goods receipt can break classification.
+   Red the moment a proposed alias is owned by ANY type other than
+   ``doctype.goods_receipt``, which is the only route by which adding a goods
+   receipt can break classification. Since Task 3 landed (2026-10-05) the
+   eleven are owned by the goods receipt itself, and that is the one owner the
+   assertion permits -- a second owner is still red.
 3. the co-occurrence pages -- red if the resolver ever starts matching body text,
    at which point a receipt word inside an invoice *could* steal it and guard 2
    would not see it.
@@ -125,15 +128,25 @@ def test_the_baseline_file_exists():
 
 
 def test_no_alias_changes_what_it_classifies_as():
-    """Guard 1, broad. Red when a vocabulary edit moves an existing alias."""
+    """Guard 1, broad. Red when a vocabulary edit MOVES or REMOVES a recorded page.
+
+    An ADDITION is not a move. Criterion 5 is *no document that classifies
+    correctly today classifies differently afterwards*, and a page for an alias
+    that did not exist when the baseline was taken classified as nothing today --
+    it cannot have moved. Comparing the union of the two key sets made every new
+    alias look like a move, which would have left exactly one way to go green:
+    regenerate the baseline, i.e. erase the record this file exists to keep.
+    So the comparison is over the RECORDED keys, and a recorded key that
+    vanishes is still red.
+    """
     recorded = json.loads(BASELINE.read_text())
     current = current_answers()
     moved = {
-        k: (recorded.get(k), current.get(k))
-        for k in set(recorded) | set(current)
-        if recorded.get(k) != current.get(k)
+        k: (was, current.get(k, "<<GONE>>"))
+        for k, was in recorded.items()
+        if k not in current or current[k] != was
     }
-    assert not moved, "these pages changed type:\n" + "\n".join(
+    assert not moved, "these recorded pages changed type:\n" + "\n".join(
         f"  {k}: {was!r} -> {now!r}" for k, (was, now) in sorted(moved.items())
     )
 
@@ -147,10 +160,11 @@ def test_every_proposed_alias_is_unowned(alias):
     elsewhere. Red here means Task 3 must drop or narrow that alias, not that the
     baseline needs regenerating.
     """
-    owners = ensure_vocabulary().alias_index.get(alias, ())
-    assert owners == (), (
-        f"{alias!r} is already owned by {owners}; giving it to a goods receipt "
-        f"would make the page ambiguous"
+    owners = tuple(ensure_vocabulary().alias_index.get(alias, ()))
+    others = tuple(o for o in owners if o != "doctype.goods_receipt")
+    assert others == (), (
+        f"{alias!r} is owned by {others}; a goods receipt sharing it would make "
+        f"the page ambiguous, and type_resolver can only answer UNRESOLVED"
     )
 
 

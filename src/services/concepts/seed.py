@@ -107,6 +107,7 @@ _DOCUMENT_TYPE_CONCEPTS = (
      "Instructs a supplier to deliver a stated quantity at a stated price.",
      ("doctype.call_off_contract", "doctype.sales_order")),
     ("doctype.invoice", "Demands payment for goods or services supplied.", ()),
+    ("doctype.goods_receipt", "Records what was physically delivered and accepted.", ()),
     ("doctype.quote", "Offers a price before any order exists.", ()),
     ("doctype.variation",
      "Changes the terms of an existing contract.",
@@ -229,6 +230,21 @@ DOCUMENT_TYPES: Mapping[str, DocumentType] = {
              {"field": "po_id", "pattern": None, "parent_type": "doctype.order"}),
             ("amount due and payment terms", "bill-to address"),
             "invoice",
+        ),
+        DocumentType(
+            # Alias order is part of the data: the migration lists them
+            # identically, and test_document_type_rows_equal_the_seed_column_for_column
+            # compares aliases as an ORDERED list.
+            "doctype.goods_receipt", "role.transaction", "doctype.order",
+            "exec.unilateral",
+            ("goods receipt", "goods received note", "grn", "delivery note",
+             "despatch note", "dispatch note", "advice note", "packing list",
+             "packing slip", "proof of delivery", "pod"),
+            ({"field": "grn_id", "pattern": None, "parent_type": None},
+             {"field": "po_id", "pattern": None, "parent_type": "doctype.order"}),
+            ("quantities with no prices", "signed for on receipt",
+             "a carrier, vehicle or consignment reference"),
+            "goods_receipt",
         ),
         DocumentType(
             "doctype.quote", "role.supporting", None, "exec.unilateral",
