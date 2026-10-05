@@ -18,6 +18,16 @@ could tell the model to do something else. If the governed row is missing this a
 because falling back to a caller's instruction is worse than not extracting at all — and the
 conversation degrades gracefully, asking its next question either way.
 
+**An example the instruction quoted is not a value the requester gave.** Measured live on
+2026-10-05 against a resident AgentNick, one request came back with thirty fields — every one of
+them claiming "high" confidence — and `criteria` was `['99.95% SLA', '≤1 weekly outage',
+'≥15% unit-rate reduction']`. Two of the three are copied verbatim out of the governed template,
+which offers them as what a measurable outcome looks like; the requester wrote neither. The same
+template offers "IT-3300" as what a cost centre looks like, and a cost centre nobody named is
+what a demand gets routed for approval by. So a value the INSTRUCTION supplied is dropped — but
+only when the requester's own text does not contain it, which is why a genuine reading can never
+be caught by this (see `_leaked`).
+
 **Nothing leaves in a shape the caller has to defend itself against.** A model answers
 `{"title": "x"}` as readily as `{"title": {"value": "x"}}`, invents confidence words, and
 occasionally answers in prose. All of that is normalised here, so what comes back is always
@@ -30,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, Iterable, Optional
 
 from agents.base_agent import BaseAgent
@@ -47,6 +58,9 @@ _PLACEHOLDERS = ("categories", "fields", "known", "asked_field", "text", "today"
 # is nonsense cannot be mistaken for one that merely failed validation.
 _FORBIDDEN_PATHS = frozenset({"__proto__", "constructor", "prototype"})
 _MAX_PATHS = 60
+# The quoted literals in the instruction's own prose — "IT-3300", "99.95% SLA". Both quote styles,
+# because the governed template is edited by hand and uses whichever the editor's keyboard gave.
+_QUOTED = re.compile(r'"([^"\n]{2,60})"|“([^”\n]{2,60})”')
 
 
 class DemandIntakeUnavailable(RuntimeError):
@@ -77,11 +91,18 @@ class DemandIntakeAgent(BaseAgent):
             logger.debug("demand intake extraction: model call failed", exc_info=True)
             return {"fields": {}, "governed": True, "failed": True}
         parsed, answered = self._parse(raw)
+        # The guard below needs BOTH sides: what the instruction quoted, and what the requester
+        # actually wrote. It reads the live template rather than a copy, so an admin who edits
+        # the governed row changes the example set in the same edit.
+        leaked = self._instruction_examples(str(template))
+        said = self._said(context or {})
+        offered = self._offered(context or {})
         # `failed` says the model did not answer — NOT that it found nothing. call_ollama does
         # not raise when Ollama refuses; it returns {"response": "", "error": …}, so without this
         # distinction a model that never ran looked exactly like a request with nothing in it,
         # and the screen would tell the requester their words held no values.
-        return {"fields": self._fields(parsed), "governed": True, "failed": not answered}
+        return {"fields": self._fields(parsed, leaked, said, offered),
+                "governed": True, "failed": not answered}
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -133,8 +154,66 @@ class DemandIntakeAgent(BaseAgent):
             return {}, False
         return (parsed, True) if isinstance(parsed, dict) else ({}, False)
 
+    @staticmethod
+    def _norm(value: Any) -> str:
+        """One spelling for comparing a value against a text: case-folded, whitespace collapsed,
+        and stripped of the punctuation a model puts round a value it is quoting."""
+        return " ".join(str(value).split()).strip(" .,;:()[]\"\u2018\u2019\u201c\u201d").casefold()
+
     @classmethod
-    def _fields(cls, parsed: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    def _instruction_examples(cls, template: str) -> frozenset:
+        """The literals the INSTRUCTION itself quotes, as its own illustrations.
+
+        The placeholders are blanked FIRST, which is the whole reason this reads the template and
+        not the rendered prompt: `{text}` is the requester's words and `{fields}` is this tenant's
+        configuration, and a literal quoted in either of those is not something the instruction
+        made up. What is left is the governed prose, and the strings it quotes there are examples.
+        """
+        skeleton = template
+        for name in _PLACEHOLDERS:
+            skeleton = skeleton.replace("{" + name + "}", " ")
+        out = set()
+        for match in _QUOTED.finditer(skeleton):
+            literal = cls._norm(match.group(1) or match.group(2) or "")
+            if literal:
+                out.add(literal)
+        return frozenset(out)
+
+    @classmethod
+    def _said(cls, context: Dict[str, Any]) -> str:
+        """The requester's own words, normalised the same way, for the absence half of the test."""
+        return cls._norm(context.get("text") or "")
+
+    @classmethod
+    def _offered(cls, context: Dict[str, Any]) -> str:
+        """What this tenant's configuration offers: the field list and the category names.
+
+        A value the configuration offers belongs to the tenant, not to the instruction. Without
+        this the harvested example set — which really does contain "high", "medium" and "low",
+        because the template names the confidence words and quotes them — would refuse 'High' on
+        a tenant's own High | Medium | Low field whenever the requester said "urgent" instead.
+        """
+        return cls._norm(" | ".join([cls._one(context.get("fields")),
+                                     cls._one(context.get("categories"))]))
+
+    @classmethod
+    def _leaked(cls, value: Any, leaked: frozenset, said: str, offered: str = "") -> bool:
+        """Is this value the instruction's example rather than the requester's evidence?
+
+        THREE conditions, and the last two are what make the guard safe. A value is refused only
+        when the instruction quoted it, the request does not contain it, and this tenant's
+        configuration does not offer it. So a requester who really did ask for a 99.95% SLA keeps
+        it; an option the configuration lists is never refused; and a value the model merely
+        normalised — a date read out of "March", money stripped of its separators — is not an
+        example the instruction quoted at all, so this never sees it.
+        """
+        norm = cls._norm(value)
+        return (bool(norm) and norm in leaked
+                and norm not in said and norm not in offered)
+
+    @classmethod
+    def _fields(cls, parsed: Dict[str, Any], leaked: frozenset = frozenset(),
+                said: str = "", offered: str = "") -> Dict[str, Dict[str, Any]]:
         """The fields the model found, in one shape.
 
         `{"fields": {...}}` is what the prompt asks for; a reply that IS the fields is accepted
@@ -149,6 +228,19 @@ class DemandIntakeAgent(BaseAgent):
             if not key or key in _FORBIDDEN_PATHS:
                 continue
             value, confidence = cls._value_of(entry)
+            if isinstance(value, (list, tuple)):
+                # Each element on its own: the live reply mixed two of the template's examples in
+                # with one real reading, and the real one must survive.
+                kept = [v for v in value if not cls._leaked(v, leaked, said, offered)]
+                if len(kept) != len(value):
+                    logger.debug("demand intake extraction: dropped %d quoted example(s) from %s",
+                                 len(value) - len(kept), key)
+                value = kept
+            elif cls._leaked(value, leaked, said, offered):
+                logger.debug("demand intake extraction: %s came back as the instruction's own "
+                             "example and is not in the request", key)
+                continue
+            # A field left with nothing but examples falls out here rather than travelling empty.
             if not cls._has_value(value):
                 continue
             out[key] = {"value": value, "confidence": confidence}

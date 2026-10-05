@@ -13,7 +13,8 @@ the conversation carries on asking its next question — the browser reads the t
 marks every value it finds as read from the description rather than as the model's.
 
 Nothing here persists. The record is written by the demand endpoints in the gateway, over
-proc.bp_demand_tprm; there must not be a second demand store.
+proc.bp_demand — NOT proc.bp_demand_tprm, which does not exist in either database (checked in
+bp_testdb and bp_sqldb on 2026-10-04). There must not be a second demand store.
 """
 from __future__ import annotations
 

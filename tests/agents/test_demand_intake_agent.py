@@ -173,3 +173,114 @@ def test_a_reply_that_is_not_json_is_a_failure_too():
     # The model answered, but not with the one thing it was asked for.
     with _replies('I think the answer is probably March'):
         assert _agent().extract(_CONTEXT)['failed'] is True
+
+
+# ---------------------------------------------------------------------------
+# THE INSTRUCTION'S OWN EXAMPLES ARE NOT THE REQUESTER'S VALUES.
+#
+# Measured live on 2026-10-05 against a resident AgentNick:unified. One request — "SD-WAN for 42
+# UK branch sites, live by 31 March 2027, budget about £240,000 over three years on cost centre
+# CC-4120, today the MPLS circuits cost £95k a year and drop out weekly" — came back with THIRTY
+# fields, every one of them claiming "high" confidence, and `criteria` was
+#
+#     ['99.95% SLA', '≤1 weekly outage', '≥15% unit-rate reduction']
+#
+# Two of those three are copied verbatim out of the governed template, which says `criteria is a
+# list of measurable outcomes ("99.95% SLA", "≥15% unit-rate reduction")`. The requester never
+# wrote either. The template also offers "IT-3300" as what a cost centre looks like, so the same
+# failure can put a cost centre nobody named on a demand that gets routed for approval by it.
+#
+# A value the INSTRUCTION supplied is not evidence from the request, so it is dropped here. The
+# test is narrow on purpose: it drops only a value the instruction itself quotes AND the requester
+# never wrote, which is why a genuine extraction can never be caught by it.
+# ---------------------------------------------------------------------------
+
+_LEAKY = ('Fields: {fields}\nText: {text}\nToday: {today}\nCurrency: {currency}\n'
+          'Known: {known}\nAsked: {asked_field}\nCategories: {categories}\n'
+          '- Money as a number. A cost centre is a code like "IT-3300"; copy it exactly.\n'
+          '- criteria is a list of measurable outcomes ("99.95% SLA", '
+          '"≥15% unit-rate reduction").\n')
+
+
+def test_an_example_the_instruction_quoted_is_not_a_value_the_requester_gave():
+    # The live failure, exactly: the model hands back the template's own cost-centre example.
+    reply = {'fields': {'finance.cc': {'value': 'IT-3300', 'confidence': 'high'}}}
+    with _replies(reply):
+        out = _agent(template=_LEAKY).extract(_CONTEXT)
+    assert 'finance.cc' not in out['fields'], (
+        'IT-3300 is the instruction’s own example and is nowhere in the request')
+
+
+def test_the_leaked_examples_are_dropped_out_of_a_list_and_the_rest_is_kept():
+    reply = {'fields': {'criteria': {
+        'value': ['99.95% SLA', 'fewer than one outage a week', '≥15% unit-rate reduction'],
+        'confidence': 'high'}}}
+    with _replies(reply):
+        out = _agent(template=_LEAKY).extract(_CONTEXT)
+    assert out['fields']['criteria']['value'] == ['fewer than one outage a week']
+
+
+def test_a_field_left_with_nothing_but_leaked_examples_does_not_travel_at_all():
+    reply = {'fields': {'criteria': {'value': ['99.95% SLA'], 'confidence': 'high'}}}
+    with _replies(reply):
+        out = _agent(template=_LEAKY).extract(_CONTEXT)
+    assert 'criteria' not in out['fields']
+
+
+def test_the_requesters_own_words_are_kept_even_when_the_instruction_quotes_them_too():
+    # THE SAFETY PROPERTY. The guard needs BOTH conditions: quoted by the instruction AND absent
+    # from the request. A requester who really did ask for a 99.95% SLA on cost centre IT-3300
+    # must get both, or the guard would be deleting evidence.
+    ctx = dict(_CONTEXT, text='We need a 99.95% SLA, and it is cost centre IT-3300.')
+    reply = {'fields': {'finance.cc': {'value': 'IT-3300', 'confidence': 'high'},
+                        'criteria': {'value': ['99.95% SLA'], 'confidence': 'high'}}}
+    with _replies(reply):
+        out = _agent(template=_LEAKY).extract(ctx)
+    assert out['fields']['finance.cc']['value'] == 'IT-3300'
+    assert out['fields']['criteria']['value'] == ['99.95% SLA']
+
+
+def test_a_value_the_request_states_in_other_words_is_not_touched_by_the_guard():
+    # Normalisation is not leakage. A date converted from "March" and money stripped of its
+    # separators are both absent from the text in that exact form, and neither is an example the
+    # instruction quoted, so neither is the guard's business.
+    reply = {'fields': {'intake.go_live': {'value': '2027-03-31', 'confidence': 'high'},
+                        'value': {'value': 240000, 'confidence': 'high'}}}
+    with _replies(reply):
+        out = _agent(template=_LEAKY).extract(_CONTEXT)
+    assert out['fields']['intake.go_live']['value'] == '2027-03-31'
+    assert out['fields']['value']['value'] == 240000
+
+
+def test_a_literal_quoted_by_the_tenants_own_configuration_is_not_an_instruction_example():
+    # WHY THE GUARD READS THE TEMPLATE AND NOT THE RENDERED PROMPT. The rendered prompt carries
+    # the tenant's field list and categories inside it, and a quoted literal there — an option
+    # spelt `Capex ("one-off")` — belongs to the configuration, not to the instruction. Reading
+    # the rendered prompt would collect it as an example and then refuse the very value the
+    # configuration offers. Blanking the placeholders first is what keeps the two apart.
+    ctx = dict(_CONTEXT,
+               fields='finance.struct: Capex ("one-off") | Opex',
+               # NOT containing the option's own spelling: the model is mapping "a single
+               # purchase" onto the configured option, which is the normal case and the one
+               # where only the template/rendered distinction can save the value.
+               text='It is a single purchase this year, not a subscription.')
+    reply = {'fields': {'finance.struct': {'value': 'one-off', 'confidence': 'high'}}}
+    with _replies(reply):
+        out = _agent(template=_LEAKY).extract(ctx)
+    assert out['fields']['finance.struct']['value'] == 'one-off'
+
+
+def test_an_option_the_configuration_offers_is_never_an_instruction_example():
+    # The example set harvested from the real v1 template included 'high', 'medium' and 'low',
+    # because the template names them as the confidence words and quotes them. A tenant whose
+    # configuration has a High | Medium | Low field would then lose a correct answer: the
+    # requester says "it is urgent", the model answers 'High', and the word "high" is nowhere in
+    # the request. So a value the CONFIGURATION offers is evidence about this tenant, not an
+    # example the instruction invented, and the guard leaves it alone.
+    ctx = dict(_CONTEXT,
+               fields='intake.priority: High | Medium | Low\ntitle: text',
+               text='This is urgent, we are losing orders.')
+    reply = {'fields': {'intake.priority': {'value': 'High', 'confidence': 'high'}}}
+    with _replies(reply):
+        out = _agent(template=_LEAKY + '- confidence "high", "medium" or "low".\n').extract(ctx)
+    assert out['fields']['intake.priority']['value'] == 'High'
