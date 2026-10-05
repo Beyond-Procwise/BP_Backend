@@ -2457,7 +2457,14 @@ class RAGPipeline:
         # the daemon default (5m), so the first ask after any lull pays a ~6.5s
         # reload of a 20GB model. Same class of mistake as num_gpu_layers: accepted,
         # ignored, silently slow.
+        # ollama_options() no longer carries keep_alive, because inside `options` Ollama
+        # ignores it outright. The pop stays for a caller that passed one explicitly; the
+        # fallback is the shared pin, so this path and BaseAgent.call_ollama keep the model
+        # resident for the same length of time instead of one of them letting it expire.
         keep_alive = base_options.pop("keep_alive", None)
+        if keep_alive is None:
+            from src.services.ollama_client import KEEP_ALIVE as _SHARED_KEEP_ALIVE
+            keep_alive = _SHARED_KEEP_ALIVE
         chat_kwargs = {
             "model": model,
             "messages": messages,

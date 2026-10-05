@@ -31,6 +31,11 @@ from utils.email_tracking import generate_unique_email_id
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources
 
+from src.services.ollama_client import (
+    KEEP_ALIVE as _OLLAMA_KEEP_ALIVE,
+    load_options as _ollama_load_options,
+)
+
 logger = logging.getLogger(__name__)
 
 configure_gpu()
@@ -2330,11 +2335,16 @@ class EmailDraftingAgent(BaseAgent):
                     {"role": "system", "content": self._sys_negotiation_playbook()},
                     {"role": "user", "content": user_prompt},
                 ],
+                # The load-affecting options come from ollama_client, not from here. A
+                # num_ctx of its own asked Ollama for a runner no other caller was using
+                # and reloaded the whole 18GB model; the sampling values below are this
+                # path's own and are unchanged.
                 options={
+                    **_ollama_load_options(),
                     "temperature": 0.7,
                     "top_p": 0.9,
-                    "num_ctx": 8192,
                 },
+                keep_alive=_OLLAMA_KEEP_ALIVE,
             )
             email_text = self._extract_ollama_message(response)
         except Exception:

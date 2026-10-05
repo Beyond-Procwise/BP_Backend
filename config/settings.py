@@ -440,11 +440,20 @@ class Settings(BaseSettings):
     ollama_quantized_model: Optional[str] = Field(
         default=None, env="OLLAMA_QUANTIZED_MODEL"
     )
+    # Superseded too: `gpu_layers` is not an option Ollama reads at all. See above.
     ollama_gpu_layers: Optional[int] = Field(
         default=None, env="OLLAMA_GPU_LAYERS"
     )
+    # SUPERSEDED 2026-10-05, and left here only so an existing .env still parses.
+    # Nothing reads these three any more. The options Ollama keys a loaded runner on
+    # (num_gpu, num_ctx, num_batch, num_thread) are owned by services/ollama_client's
+    # load_options(), because assembling them in more than one place is what made the same
+    # 18GB model load four times in five minutes. OLLAMA_NUM_BATCH and
+    # OLLAMA_CONTEXT_WINDOW still take effect — ollama_client reads the environment
+    # directly — but the live default for the context window is 12288 there, NOT the 8192
+    # that used to be here, so do not read these numbers as the truth.
     ollama_num_batch: Optional[int] = Field(default=256, env="OLLAMA_NUM_BATCH")
-    ollama_context_window: int = Field(default=8192, env="OLLAMA_CONTEXT_WINDOW")
+    ollama_context_window: int = Field(default=12288, env="OLLAMA_CONTEXT_WINDOW")
     ollama_tokenizer: Optional[str] = Field(
         default="llama3", env="OLLAMA_TOKENIZER"
     )

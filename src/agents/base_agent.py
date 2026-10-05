@@ -1168,22 +1168,21 @@ class BaseAgent:
             return bool(name and "gpt-oss" in name)
         if _is_gpt_oss(model) or _is_gpt_oss(base_model) or _is_gpt_oss(quantized):
             options.setdefault("reasoning_effort", "medium")
-        optimized_defaults = {}
-        gpu_layers = getattr(self.settings, "ollama_gpu_layers", None)
-        if gpu_layers is not None:
-            optimized_defaults["gpu_layers"] = int(gpu_layers)
-        num_batch = getattr(self.settings, "ollama_num_batch", None)
-        if num_batch is not None:
-            optimized_defaults["num_batch"] = int(num_batch)
-        context_window = getattr(self.settings, "ollama_context_window", None)
-        if context_window:
-            optimized_defaults["num_ctx"] = int(context_window)
-        optimized_defaults.setdefault("num_thread", max(1, os.cpu_count() or 1))
-        optimized_defaults.setdefault(
-            "num_gpu", max(1, int(os.getenv("OLLAMA_NUM_GPU", "1")))
-        )
-        for key, value in optimized_defaults.items():
-            options.setdefault(key, value)
+        # The load-affecting options are NOT assembled here any more. They used to be:
+        # num_ctx from settings (8192), num_batch, num_thread, and a num_gpu defaulted
+        # from OLLAMA_NUM_GPU (1!) — a set nobody else in the process sent. Ollama keys a
+        # loaded runner on exactly these, so this method and the preload and model_selector
+        # each asked for a different runner of the same 18GB model and evicted one another:
+        # four loads in five minutes, and a 159s demand-intake turn that was 153s of
+        # loading. ollama_options() is now the one source, and it reads
+        # ollama_client.load_options(). Anything a caller passes in `options` still wins,
+        # so a deliberate per-call override is still possible — but it will cost a load.
+        #
+        # `keep_alive` is a TOP-LEVEL request field. Inside `options` Ollama logs
+        # `invalid option provided option=keep_alive` and ignores it, so the model expired
+        # on the daemon's 5m default and the next caller after any lull paid a cold load.
+        # model_selector already knew this; this path did not.
+        base_kwargs.setdefault("keep_alive", _ollama_client.KEEP_ALIVE)
 
         tokenizer = getattr(self.settings, "ollama_tokenizer", None)
         if tokenizer:
@@ -1864,10 +1863,24 @@ class AgentNick:
         that has just refused the whole model moves every caller at once —
         including this one. Two callers disagreeing about num_gpu means two
         copies of a 20GB model loaded at the same time.
+
+        Every load-affecting option now comes from ollama_client.load_options() rather
+        than being assembled here and in call_ollama. Measured 2026-10-05: this method
+        supplied num_gpu only, call_ollama added num_ctx/num_batch/num_thread, and the
+        preload sent neither — three callers, three runners, four loads of an 18GB model
+        in five minutes. See load_options() for the full account.
+
+        keep_alive is NOT returned. It is a top-level request field; inside ``options``
+        Ollama logs `invalid option provided option=keep_alive` and ignores it, so the
+        model expired on the daemon's 5m default and the next caller paid a cold load.
+        Callers pass ollama_client.KEEP_ALIVE alongside the request instead.
         """
         if self.device == "cuda":
-            return {**_ollama_client.gpu_options(), "keep_alive": "10m"}
-        return {"keep_alive": "10m"}
+            return dict(_ollama_client.load_options())
+        # No card: the GPU options are meaningless, but the rest of the set still decides
+        # what the model can see, so it must not silently differ from the CUDA path. The
+        # keys are not named here on purpose — ollama_client owns them.
+        return dict(_ollama_client.load_options(include_gpu=False))
 
     def _build_agent_model_registry(self) -> Dict[str, str]:
         """Compile the agent → model preference map with overrides applied."""

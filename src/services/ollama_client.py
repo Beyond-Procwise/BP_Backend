@@ -142,6 +142,65 @@ def gpu_options(now: Optional[float] = None) -> Dict[str, Any]:
     return {"num_gpu": ALL_GPU_LAYERS}
 
 
+# ---------------------------------------------------------------------------
+# EVERY option Ollama keys a loaded runner on, in ONE place.
+#
+# num_gpu was unified here on 2026-09-11 for exactly this reason, and the comment above
+# states the rule: "One value, used by every call site AND by the preload, means one
+# instance." num_ctx, num_batch and num_thread are keyed the same way and were NOT
+# unified, which is what a demand-intake turn's 159 seconds turned out to be.
+#
+# Measured 2026-10-05. Three callers in one process wanted three different runners of the
+# same 18GB model:
+#
+#   preload_model()              {num_gpu: 999}                      -> Ollama auto-sized,
+#                                                                       ctx 12288
+#   BaseAgent.call_ollama        + num_ctx 8192, num_batch, num_thread -> ctx 8192
+#   model_selector (/api/chat)   ollama_options() + sampling           -> back to ctx 12288
+#
+# So each caller evicted the one before it. Ollama logged FOUR loads of the model in one
+# five-minute window; one /api/chat took 7m44s, one /api/generate 4m43s, and the 159s
+# turn was 153s of "llama runner started" with about six seconds of generation in it.
+#
+# num_ctx is 12288 because that is what the auto-sized runner was already giving the
+# RAG and chat paths. Unifying DOWN to 8192 would have shrunk their context and started
+# truncating retrieved context, which is an accuracy regression; 12288 is strictly more
+# permissive than either path had, so nothing that fits today begins to truncate.
+# Measured on this card at 12288: 49/49 layers offloaded, 18.9 GiB total, fully on GPU.
+#
+# keep_alive is NOT here. It is a top-level request field, and inside `options` Ollama
+# logs `invalid option provided option=keep_alive` and ignores it — which silently reset
+# the preload's "pin forever" to the daemon's 5m default.
+# ---------------------------------------------------------------------------
+CONTEXT_WINDOW = int(os.getenv("OLLAMA_CONTEXT_WINDOW", "12288"))
+NUM_BATCH = int(os.getenv("OLLAMA_NUM_BATCH", "256"))
+NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", str(max(1, os.cpu_count() or 1))))
+
+
+def load_options(now: Optional[float] = None, include_gpu: bool = True) -> Dict[str, Any]:
+    """Every load-affecting option, for every caller including the preload.
+
+    A caller that sends a subset, or a different value, asks Ollama for a runner nobody
+    else is using — and gets a fresh multi-minute load of the whole model while the
+    previous runner is evicted. There is no such thing as a harmless difference here.
+
+    num_gpu comes from gpu_options(), so a card that has just refused the full layout
+    moves every caller at once and the rest of the set still matches.
+    """
+    options: Dict[str, Any] = {
+        "num_ctx": CONTEXT_WINDOW,
+        "num_batch": NUM_BATCH,
+        "num_thread": NUM_THREAD,
+    }
+    if include_gpu:
+        options.update(gpu_options(now))
+    # include_gpu=False is the no-card path: asking for GPU layers there is meaningless, but
+    # num_ctx still decides what the model can see, so it must not quietly differ. The caller
+    # does not name the keys itself — that is what keeps them owned by this module, and what
+    # test_no_module_outside_ollama_client_sets_a_load_affecting_option enforces.
+    return options
+
+
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 10  # seconds
 RETRY_MAX_DELAY = 30  # seconds
@@ -516,10 +575,12 @@ def preload_model(model: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT) -
             "model": model,
             "prompt": "",
             "keep_alive": KEEP_ALIVE,
-            # The layer count MUST match what callers ask for, or this pins an
-            # instance nothing else can use and the first real request stalls
-            # loading another.
-            "options": gpu_options(),
+            # EVERY load-affecting option must match what callers ask for, not just the
+            # layer count, or this pins an instance nothing else can use and the first
+            # real request stalls loading another. That is precisely what happened: this
+            # sent num_gpu alone, Ollama auto-sized the context to 12288, and callers
+            # asking for num_ctx 8192 reloaded the whole model. One set, from one place.
+            "options": load_options(),
         }
 
     try:
