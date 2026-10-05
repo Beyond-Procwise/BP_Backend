@@ -74,6 +74,12 @@ def insert_layout(conn, *, pack_id: str, layout: dict) -> str:
     return str(cursor.fetchone()[0])
 
 
+def set_pack_notes(conn, pack_id: str, notes: str) -> None:
+    """One sentence on where a pack came from. `notes` is an existing column; nothing else moves."""
+    cur = conn.cursor()
+    cur.execute("UPDATE proc.bp_style_pack SET notes = %s WHERE pack_id = %s", (notes, pack_id))
+
+
 def mark_candidate(conn, pack_id: str) -> None:
     conn.cursor().execute(
         "UPDATE proc.bp_style_pack SET status = 'candidate' "

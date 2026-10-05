@@ -23,6 +23,7 @@ from src.services.db import get_conn
 
 from api.auth import require_user
 from api.endpoint_gate import require as gate
+from api.routers.reports import readable_deck
 
 router = APIRouter(prefix="/atb", tags=["ATB"])
 _AGENT = "AtbRouter"
@@ -56,6 +57,9 @@ def _pack_summary(row: dict) -> dict:
         "status": row["status"],
         "created_at": row["created_at"],
         "created_by": row["created_by"],
+        # Where a pack came from, in one sentence, when it was learned from something other than an
+        # uploaded deck (a generated report). None for an upload.
+        "notes": row.get("notes"),
         "approved_by": row.get("approved_by"),
         "format": row.get("format") or {},
         "locale_contested": bool((tokens.get("writing") or {}).get("locale_contested")),
@@ -82,24 +86,9 @@ def _layout_summary(row: dict) -> dict:
     }
 
 
-@router.post("/import")
-async def post_import(file: UploadFile = File(...), principal=Depends(require_user)):
-    gate("style_pack.write", principal, agent=_AGENT,
-         context={"filename": file.filename or ""})
-    name = file.filename or ""
-    if not name.lower().endswith(_PPTX_SUFFIX):
-        raise HTTPException(status_code=415,
-                            detail="only a .pptx can be read for its style")
-    data = await file.read()
-    if len(data) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413,
-                            detail=f"the file is larger than {_MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
-    try:
-        with get_conn() as conn:
-            result = await run_in_threadpool(import_pack, data, name, _subject(principal), conn)
-    except ImportRefused as exc:
-        # The importer's own reason, passed on rather than paraphrased. Nothing was stored.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def _import_response(result) -> dict:
+    """What an import answers with. Shared by the upload route and the from-report route, so a pack
+    looks the same to the review screen whichever way it was made."""
     return {
         "pack_id": result.pack_id,
         "pack_key": result.pack_key,
@@ -118,6 +107,52 @@ async def post_import(file: UploadFile = File(...), principal=Depends(require_us
         "locale_contested": bool(result.pack["writing"]["locale_contested"]),
         "locale_suggested": result.pack["writing"]["locale_suggested"],
     }
+
+
+@router.post("/import")
+async def post_import(file: UploadFile = File(...), principal=Depends(require_user)):
+    gate("style_pack.write", principal, agent=_AGENT,
+         context={"filename": file.filename or ""})
+    name = file.filename or ""
+    if not name.lower().endswith(_PPTX_SUFFIX):
+        raise HTTPException(status_code=415,
+                            detail="only a .pptx can be read for its style")
+    data = await file.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail=f"the file is larger than {_MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
+    try:
+        with get_conn() as conn:
+            result = await run_in_threadpool(import_pack, data, name, _subject(principal), conn)
+    except ImportRefused as exc:
+        # The importer's own reason, passed on rather than paraphrased. Nothing was stored.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _import_response(result)
+
+
+_FROM_REPORT_NOTE = ("Learned from the generated report {job_id} ({report_type}). This pack measures "
+                     "how that report looked, which is not necessarily how its source style pack "
+                     "was defined.")
+
+
+@router.post("/import/from-report/{job_id}")
+async def post_import_from_report(job_id: str, principal=Depends(require_user)):
+    gate("style_pack.write", principal, agent=_AGENT,
+         context={"job_id": job_id, "source": "report"})
+    # Reading the deck asks the REPORT'S rules (sign-off hold, refusal, report.read, released-only,
+    # the signed hash) -- the same function the download calls, so the two cannot drift apart.
+    job, content, _media_type, _filename = await run_in_threadpool(readable_deck, job_id, principal)
+    try:
+        with get_conn() as conn:
+            result = await run_in_threadpool(
+                import_pack, content, f"from-report-{job_id}.pptx", _subject(principal), conn)
+            await run_in_threadpool(
+                store.set_pack_notes, conn, result.pack_id,
+                _FROM_REPORT_NOTE.format(job_id=job_id,
+                                         report_type=job.get("report_type") or "report"))
+    except ImportRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _import_response(result)
 
 
 @router.get("/packs")
