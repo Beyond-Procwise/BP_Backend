@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import functools
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -279,15 +280,43 @@ def _identifier_violations(text: str) -> List[Violation]:
 
     # Config keys we actually ship that the pattern above misses because they only have one
     # underscore (DB_HOST, S3_BUCKET_NAME). Read from the real `.env`, so this stays true.
-    for key in _env_var_keys():
-        if re.search(rf"\b{re.escape(key)}\b", text):
-            out.append(Violation("env_var", key))
+    for key in _named_in(text, _env_var_keys()):
+        out.append(Violation("env_var", key))
 
-    lowered = text.lower()
-    for name in _tables():
-        if re.search(rf"\b{re.escape(name)}\b", lowered):
-            out.append(Violation("db_table", name))
+    for name in _named_in(text.lower(), _tables()):
+        out.append(Violation("db_table", name))
     return out
+
+
+_WORD_RUN = re.compile(r"\w+")
+
+
+@functools.lru_cache(maxsize=8)
+def _partition_names(names: frozenset) -> tuple[frozenset, tuple[str, ...]]:
+    """Split a vocabulary into names made only of word characters, and the rest."""
+    simple = frozenset(n for n in names if _WORD_RUN.fullmatch(n))
+    return simple, tuple(sorted(names - simple))
+
+
+def _named_in(text: str, names: Set[str]) -> List[str]:
+    """Which of ``names`` occur in ``text`` as whole words — exactly ``\\bname\\b``.
+
+    This used to build and run one regex per name per string (about 260 of them: the table
+    and config vocabularies), which cost ~1.7 ms a string and made a 1,000-row JSON answer
+    take ten seconds to leave the server. For a name made only of word characters,
+    ``\\bname\\b`` matches exactly when some maximal run of word characters in the text IS
+    that name, so one pass that splits the text into its runs and a set intersection give the
+    same answer. A name with any other character in it (none today) keeps the original
+    per-name regex, so nothing about what is caught has changed.
+    """
+    if not names:
+        return []
+    simple, odd = _partition_names(frozenset(names))
+    found = sorted(simple.intersection(_WORD_RUN.findall(text)))
+    for name in odd:
+        if re.search(rf"\b{re.escape(name)}\b", text):
+            found.append(name)
+    return found
 
 
 def inspect(text: str, *, prose: bool = True) -> List[Violation]:
