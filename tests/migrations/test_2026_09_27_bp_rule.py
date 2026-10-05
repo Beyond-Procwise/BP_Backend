@@ -32,9 +32,9 @@ EXPECTED_RULES = {
     "supplier_performance_check": ("Supplier Performance Deviation", {}),
     "esg_opportunity_check": ("ESG Opportunity", {}),
     "invoice_po_variance_check": ("Invoice Overbilling", {"variance_threshold_pct": 10.0}),
-    # Added by deploy/sql/2026-10-05_contract_expiry_bucket_rule.sql
+    # Added by 2026-10-05_contract_expiry_bucket_rule.sql; edges set by ..._match_graph_spans.sql
     "contract_expiry_bucket_check": ("Contract Expiry Buckets", {
-        "bucket_months": [3, 6, 9, 12, 18],
+        "bucket_months": [1, 6, 12, 24],
         "alert_expired": True,
         "flag_missing_end_date": True,
         "lifecycle_status": "active",
