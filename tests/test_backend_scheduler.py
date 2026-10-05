@@ -404,3 +404,50 @@ def test_graph_resolution_can_be_switched_off(monkeypatch):
     scheduler = object.__new__(backend_scheduler.BackendScheduler)
 
     assert scheduler._chain_graph_resolution(_CHANGED) is None
+
+
+# --- contract expiry alerts ------------------------------------------------
+
+def test_the_contract_expiry_job_is_registered_hourly_in_its_own_lane(monkeypatch):
+    monkeypatch.delenv("CONTRACT_EXPIRY_ENABLED", raising=False)
+    monkeypatch.delenv("CONTRACT_EXPIRY_INTERVAL_MINUTES", raising=False)
+    scheduler = _job_scheduler(monkeypatch)
+    scheduler._register_contract_expiry_job()
+
+    job = scheduler._jobs[scheduler.CONTRACT_EXPIRY_JOB_NAME]
+    scheduler.register_job("anything", lambda: None, interval=timedelta(minutes=15))
+    assert job.interval == timedelta(minutes=60)
+    assert job.lane == scheduler.CONTRACT_EXPIRY_LANE != scheduler._jobs["anything"].lane
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None
+
+
+def test_the_contract_expiry_job_can_be_switched_off_and_retimed(monkeypatch):
+    monkeypatch.setenv("CONTRACT_EXPIRY_ENABLED", "0")
+    scheduler = _job_scheduler(monkeypatch)
+    scheduler._register_contract_expiry_job()
+    assert scheduler.CONTRACT_EXPIRY_JOB_NAME not in scheduler._jobs
+
+    monkeypatch.setenv("CONTRACT_EXPIRY_ENABLED", "1")
+    monkeypatch.setenv("CONTRACT_EXPIRY_INTERVAL_MINUTES", "15")
+    scheduler._register_contract_expiry_job()
+    assert scheduler._jobs[scheduler.CONTRACT_EXPIRY_JOB_NAME].interval == timedelta(minutes=15)
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None
+
+
+def test_the_contract_expiry_job_calls_the_detector_and_survives_its_failure(monkeypatch):
+    from src.services.contract_expiry import detector
+    scheduler = _job_scheduler(monkeypatch)
+    calls = []
+    monkeypatch.setattr(detector, "run", lambda: calls.append(1) or
+                        {"counts": {"new": 1, "reopened": 0, "suppressed": 0, "cleared": 0}})
+    scheduler._run_contract_expiry()
+    assert calls == [1]
+
+    def boom():
+        raise RuntimeError("rule missing")
+    monkeypatch.setattr(detector, "run", boom)
+    scheduler._run_contract_expiry()          # must not raise: the loop keeps running
+    scheduler.stop()
+    backend_scheduler.BackendScheduler._instance = None

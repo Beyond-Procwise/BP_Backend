@@ -428,8 +428,55 @@ class BackendScheduler:
         self._register_triage_job()
         self._register_playbook_sweep_job()
         self._register_contract_link_job()
+        self._register_contract_expiry_job()
 
     TRIAGE_JOB_NAME = "discrepancy-triage"
+
+    CONTRACT_EXPIRY_JOB_NAME = "contract-expiry-alerts"
+    CONTRACT_EXPIRY_LANE = "contract-expiry"
+
+    def _register_contract_expiry_job(self) -> None:
+        """Record the expiry-bucket alerts (the contract_expiry_bucket_check rule).
+
+        Toggle CONTRACT_EXPIRY_ENABLED (default on); interval
+        CONTRACT_EXPIRY_INTERVAL_MINUTES (default 60). Hourly is cheap -- two
+        reads and a handful of writes -- and an alert should not wait a day to
+        notice that a demand item closed or that a contract crossed a bucket edge.
+
+        Its own lane: proc.bp_contract_expiry_alert is written by this job and
+        nothing else, so it has no reason to queue behind the data pipeline.
+        """
+        import os
+        if os.environ.get("CONTRACT_EXPIRY_ENABLED", "1").strip() not in ("1", "true", "True"):
+            logger.info("contract expiry job disabled by CONTRACT_EXPIRY_ENABLED")
+            return
+        if self.CONTRACT_EXPIRY_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("CONTRACT_EXPIRY_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.CONTRACT_EXPIRY_JOB_NAME,
+            self._run_contract_expiry,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=2),
+            lane=self.CONTRACT_EXPIRY_LANE,
+        )
+
+    def _run_contract_expiry(self) -> None:
+        """Logged only when something changed, so a quiet system stays quiet. A
+        failure (rule missing, database unreachable) is logged as an error and the
+        next run tries again; the brief reads the rule live and does not depend on
+        this job having succeeded."""
+        try:
+            from src.services.contract_expiry import detector  # noqa: PLC0415
+            result = detector.run()
+            counts = result["counts"]
+            if any(counts[k] for k in ("new", "reopened", "suppressed", "cleared")):
+                logger.info("contract expiry alerts: %s", counts)
+        except Exception:
+            logger.exception("contract expiry job failed")
 
     CONTRACT_LINK_JOB_NAME = "contract-parent-links"
 

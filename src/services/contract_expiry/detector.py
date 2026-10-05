@@ -23,6 +23,12 @@ log = logging.getLogger(__name__)
 
 RULE_SLUG = "contract_expiry_bucket_check"
 
+_CONTRACTS_SQL = """
+    SELECT contract_id, supplier_id, contract_title, contract_end_date,
+           contract_lifecycle_status, total_contract_value, currency,
+           auto_renew_flag, renewal_term, spend_category
+      FROM proc.bp_contract_master
+"""
 # The brief names the supplier. Same two-route join the brief used before it read
 # buckets (see tests/services/test_brief_signals_contract_supplier.py for why it
 # is kept though it currently matches nothing). A crosswalk can in principle map
@@ -78,8 +84,31 @@ def _rows(cur) -> List[Dict[str, Any]]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def _load_contracts(cur, with_supplier: bool) -> List[Dict[str, Any]]:
+    """Contract rows, with the supplier's name when asked for AND obtainable.
+
+    The name comes from a crosswalk table that bp_sqldb does not have. An alert
+    never needs a name, so a missing table costs the name and nothing else; the
+    brief falls back to the contract's own title.
+    """
+    if with_supplier:
+        try:
+            cur.execute(_CONTRACTS_WITH_SUPPLIER_SQL)
+            return _rows(cur)
+        except Exception as exc:  # noqa: BLE001 - only a missing relation is expected
+            if "does not exist" not in str(exc):
+                raise
+            log.warning("supplier names unavailable for expiry alerts: %s", str(exc).splitlines()[0])
+            try:
+                cur.connection.rollback()   # a no-op under autocommit; frees an open transaction
+            except Exception:  # noqa: BLE001
+                pass
+    cur.execute(_CONTRACTS_SQL)
+    return _rows(cur)
+
+
 def evaluate(cur, as_of: Optional[date] = None, *, conditions: Optional[Dict[str, Any]] = None,
-             rule_book: Optional[RuleBook] = None) -> Dict[str, Any]:
+             rule_book: Optional[RuleBook] = None, with_supplier: bool = False) -> Dict[str, Any]:
     """Read-only: what every contract should be alerting as, right now.
 
     Writes nothing, so a page can call it on every load and never go stale. The
@@ -91,9 +120,8 @@ def evaluate(cur, as_of: Optional[date] = None, *, conditions: Optional[Dict[str
     key = cfg.get("demand_contract_key", "contract_id")
     inactive = cfg.get("inactive_demand_statuses", [])
 
-    cur.execute(_CONTRACTS_WITH_SUPPLIER_SQL)
     contracts: Dict[str, Dict[str, Any]] = {}
-    for row in _rows(cur):
+    for row in _load_contracts(cur, with_supplier):
         contracts.setdefault(str(row["contract_id"]), row)
     cur.execute(_DEMAND_SQL, (key, key))
     active_demand: Dict[str, str] = {}

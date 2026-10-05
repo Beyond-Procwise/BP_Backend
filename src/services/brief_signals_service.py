@@ -532,7 +532,7 @@ def build_brief_signals(*, username: Optional[str] = None, email: Optional[str] 
         attempt("spendTrend", lambda: spend_signal(_rows(cur, _SPEND_SQL), rates))
 
         attempt("expiringUndecided", lambda: expiry_buckets_signal(
-            expiry_detector.evaluate(cur, today), today, rates))
+            expiry_detector.evaluate(cur, today, with_supplier=True), today, rates))
 
         identities = identities_for(username=username, email=email, subject=subject)
         if identities:
