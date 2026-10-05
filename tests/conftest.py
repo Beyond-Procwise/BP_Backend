@@ -52,6 +52,9 @@ GOVERNED_LIMIT_SEED = {
         "contract_parent_proposals_enabled": True,
         "contract_parent_proposal_sweep_hours": 24},
     "reseller_catalog": {"fuzzy_propose_min": 88, "calibration_min_closed": 30},
+    "receipt_tolerances": {
+        "over_delivery_pct": 0.00, "billed_over_received_qty": 0,
+        "uom_conversion_required": True},
     "triage_tolerances": {
         "unit_price_over_pct": 1.0, "unit_price_over_abs": 5.0,
         "unit_price_combine": "min", "unit_price_under_pct": 5.0,

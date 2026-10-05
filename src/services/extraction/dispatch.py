@@ -918,7 +918,7 @@ def dispatch_document(
                 ),
             ))
 
-    # Three-way match: what does this document say that its purchase order does not?
+    # Two-way match: what does this document say that its purchase order does not?
     #
     # Everything above is the document arguing with ITSELF (its lines don't sum to its
     # header, a required field is missing). None of it is what a buyer actually needs,
@@ -931,13 +931,36 @@ def dispatch_document(
         po_findings = check_against_po(doc_type, columns, line_items)
         if po_findings:
             log.info(
-                "three-way match: %d finding(s) against the purchase order (%s)",
+                "two-way match: %d finding(s) against the purchase order (%s)",
                 len(po_findings),
                 ", ".join(sorted({f.issue_type for f in po_findings})),
             )
         discrepancies.extend(po_findings)
     except Exception:  # noqa: BLE001 — a match failure must not lose the extraction
-        log.exception("three-way match failed; extraction stands, no PO findings raised")
+        log.exception("two-way match failed; extraction stands, no PO findings raised")
+
+    # The THIRD document: what arrived. Everything above compares the bill with
+    # the order, by value. This compares the bill with the DELIVERY, by
+    # quantity -- the only comparison that can show that a supplier was paid for
+    # goods nobody received. It runs for an invoice and for a goods receipt,
+    # because a delivery note arriving after the bill is the moment an
+    # over-billing becomes visible, or stops being one.
+    #
+    # Raises findings only, blocks nothing, and says nothing at all when no
+    # receipt has reached the order (design §12 and Review Focus #2).
+    try:
+        from src.services.extraction.three_way_match import check_against_receipts
+
+        receipt_findings = check_against_receipts(doc_type, columns, line_items)
+        if receipt_findings:
+            log.info(
+                "three-way match: %d finding(s) against what was received (%s)",
+                len(receipt_findings),
+                ", ".join(sorted({f.issue_type for f in receipt_findings})),
+            )
+        discrepancies.extend(receipt_findings)
+    except Exception:  # noqa: BLE001 — a match failure must not lose the extraction
+        log.exception("three-way match failed; extraction stands, no receipt findings raised")
 
     blocking = any(d.blocks_promotion for d in discrepancies)
     promotion_status = "discrepancy" if blocking else "pending"
