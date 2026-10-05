@@ -29,6 +29,8 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
+from src.services.contract_expiry import detector as expiry_detector
+from src.services.contract_expiry.buckets import EXPIRED, NO_END_DATE, add_months, bucket_labels
 from src.services.db import get_conn
 # Single-sourced on purpose — see the FX note above. These are the same two
 # helpers GET /spendiq/value-summary converts with, so a figure in the brief
@@ -213,6 +215,80 @@ def expiring_signal(rows: Iterable[dict], today: date, within_days: int,
         "items": [{"name": i["name"], "due": i["due"], "days": i["days"]}
                   for i in items[:MAX_ITEMS]],
     }
+
+
+def _total_gbp(rows: list[dict], rates: Optional[dict]) -> tuple[Optional[float], bool]:
+    """(total in GBP or None, partial). A value that cannot be converted never
+    removes a contract from the COUNT; it makes the total say it is partial."""
+    total, converted, unconverted = 0.0, False, False
+    for row in rows:
+        value = row.get("total_contract_value")
+        if value is None:
+            unconverted = True
+            continue
+        gbp, _ = to_gbp(float(value), row.get("currency"), rates) if rates else (None, None)
+        if gbp is None:
+            unconverted = True
+        else:
+            total += gbp
+            converted = True
+    return (round(total, 2) if converted else None), (converted and unconverted)
+
+
+def expiry_buckets_signal(evaluation: dict, today: date, rates: Optional[dict]) -> Optional[dict]:
+    """Contracts nearing their end date, in the buckets the expiry rule defines.
+
+    The buckets, what counts as an alert, and which contracts an active demand
+    item already covers all come from proc.bp_rule via the detector -- none of
+    it is restated here. The headline is the SOONEST bucket that has anything in
+    it (``count``/``withinDays``/``nearest``/``items`` keep the shape the reading
+    already consumes); ``buckets`` carries the whole ladder, and contracts past
+    their end date and contracts with no end date are counted apart, never
+    folded into a bucket they do not belong to.
+    """
+    cfg, contracts = evaluation["cfg"], evaluation["contracts"]
+    months = cfg["bucket_months"]
+    live = [d for d in evaluation["desired"] if not d.suppressed_by]
+    suppressed = len(evaluation["desired"]) - len(live)
+    if not live:
+        return None
+
+    def rows_for(label: str) -> list[dict]:
+        return [contracts[d.contract_id] for d in live if d.bucket == label]
+
+    ladder = []
+    for label in bucket_labels(months):
+        rs = rows_for(label)
+        value, partial = _total_gbp(rs, rates)
+        ladder.append({"bucket": label, "count": len(rs), "valueGbp": value, "valuePartial": partial})
+
+    out: dict[str, Any] = {
+        "count": 0, "withinDays": None, "buckets": ladder, "suppressed": suppressed,
+        "bucketMonths": list(months),
+    }
+    for kind, key in ((EXPIRED, "expired"), (NO_END_DATE, "noEndDate")):
+        rs = rows_for(kind)
+        value, partial = _total_gbp(rs, rates)
+        out[key] = {"count": len(rs), "valueGbp": value, "valuePartial": partial}
+
+    head = next((b for b in ladder if b["count"]), None)
+    if head:
+        hi = int(head["bucket"].split("-")[1])
+        picked = sorted((d for d in live if d.bucket == head["bucket"]), key=lambda d: d.end_date)
+        first = contracts[picked[0].contract_id]
+        out.update({
+            "count": head["count"],
+            "withinDays": (add_months(today, hi) - today).days,
+            "headlineBucket": head["bucket"],
+            "valueGbp": head["valueGbp"],
+            "valuePartial": head["valuePartial"],
+            "nearest": {"name": first.get("supplier_name") or _contract_name(first),
+                        "days": picked[0].days_to_end},
+            "items": [{"name": _contract_name(contracts[d.contract_id]),
+                       "due": f"{d.end_date.day} {d.end_date:%b}", "days": d.days_to_end}
+                      for d in picked[:MAX_ITEMS]],
+        })
+    return out
 
 
 # ── the caller's own requests ────────────────────────────────────────────────
@@ -455,9 +531,8 @@ def build_brief_signals(*, username: Optional[str] = None, email: Optional[str] 
 
         attempt("spendTrend", lambda: spend_signal(_rows(cur, _SPEND_SQL), rates))
 
-        attempt("expiringUndecided", lambda: expiring_signal(
-            _rows(cur, _EXPIRING_SQL, (EXPIRY_WINDOW_DAYS,)),
-            today, EXPIRY_WINDOW_DAYS, rates))
+        attempt("expiringUndecided", lambda: expiry_buckets_signal(
+            expiry_detector.evaluate(cur, today), today, rates))
 
         identities = identities_for(username=username, email=email, subject=subject)
         if identities:
