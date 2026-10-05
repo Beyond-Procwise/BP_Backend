@@ -4281,6 +4281,7 @@ class OpportunityMinerAgent(BaseAgent):
             "price_variance_check": self._policy_price_benchmark_variance,
             "volume_consolidation_check": self._policy_volume_consolidation,
             "contract_expiry_check": self._policy_contract_expiry,
+            "contract_expiry_bucket_check": self._policy_contract_expiry_buckets,
             "supplier_risk_check": self._policy_supplier_risk,
             "maverick_spend_check": self._policy_maverick_spend,
             "duplicate_supplier_check": self._policy_duplicate_supplier,
@@ -6160,6 +6161,54 @@ class OpportunityMinerAgent(BaseAgent):
                 finding.supplier_name = supplier_name
             findings.append(finding)
 
+        return findings
+
+    def _policy_contract_expiry_buckets(
+        self,
+        tables: Dict[str, pd.DataFrame],
+        input_data: Dict[str, Any],
+        notifications: set[str],
+        policy_cfg: Dict[str, Any],
+    ) -> List[Finding]:
+        """Bucketed expiry alerts (3/6/9/12/18 months), edges read from proc.bp_rule.
+
+        Reads proc.bp_contract_master itself rather than ``tables["contracts"]``:
+        that table is ``proc.contracts``, which does not exist in either database,
+        so the older ``contract_expiry_check`` has never had a contract to look at.
+        Recording alerts is a side effect of detection here -- it is what makes a
+        bucket fire once -- and a finding is returned only for an alert that is NEW
+        this run (first time in a bucket, or back after its demand item closed).
+        """
+        from src.services.contract_expiry import detector
+
+        reference_date = self._to_date(self._get_condition(input_data, "reference_date"))
+        result = detector.run(reference_date)
+        findings: List[Finding] = []
+        for item in result["fired"]:
+            contract, desired = item["contract"], item["desired"]
+            details = {
+                "bucket": desired.bucket,
+                "contract_title": contract.get("contract_title"),
+                "contract_end_date": str(desired.end_date) if desired.end_date else None,
+                "days_to_expiry": desired.days_to_end,
+                "auto_renew": contract.get("auto_renew_flag"),
+                "renewal_term": contract.get("renewal_term"),
+            }
+            findings.append(
+                self._build_finding(
+                    policy_cfg["detector"],
+                    contract.get("supplier_id"),
+                    contract.get("spend_category"),
+                    f"{contract['contract_id']}:{desired.bucket}",
+                    self._to_float(contract.get("total_contract_value")),
+                    details,
+                    [str(contract["contract_id"])],
+                    policy_id=policy_cfg["policy_id"],
+                    policy_name=policy_cfg.get("policy_name"),
+                )
+            )
+        if findings:
+            self._default_notifications(notifications)
         return findings
 
     def _policy_contract_expiry(
