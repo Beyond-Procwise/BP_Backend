@@ -70,6 +70,7 @@ from api.routers import requirements as requirements_router
 from api.routers import fx as fx_router
 from api.routers import value_summary as value_summary_router
 from api.routers import brief_signals as brief_signals_router
+from api.routers import contract_renewals as contract_renewals_router
 from api.routers import value_ledger as value_ledger_router
 from api.routers import analysis as analysis_router
 from api.routers import approvals as approvals_router
@@ -593,6 +594,7 @@ _AUTHENTICATED_ROUTERS = [
     fx_router.router,
     value_summary_router.router,
     brief_signals_router.router,
+    contract_renewals_router.router,
     value_ledger_router.router,
     analysis_router.router,
     approvals_router.router,
