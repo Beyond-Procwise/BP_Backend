@@ -71,6 +71,14 @@ receipted AS (
    WHERE g.deal_id IS NOT NULL AND g.deal_id <> ''
      AND EXISTS (SELECT 1 FROM proc.bp_goods_receipt_line_items_trgt l
                   WHERE l.grn_id = g.grn_id)
+     -- AND the match actually compared something. A receipt whose every line
+     -- was REFUSED -- units that cannot be compared, a quantity that would not
+     -- parse, a unit no delivery note can prove -- raises no finding, and
+     -- without this that silence read as "goods received". The design's own
+     -- most-likely practical failure (a note in `each` against an order in
+     -- `box`) published as 100%. See
+     -- deploy/sql/2026-10-05_goods_receipt_match_outcome.sql.
+     AND coalesce(g.lines_assessed, 0) > 0
    GROUP BY g.deal_id
 ),
 gaps AS (

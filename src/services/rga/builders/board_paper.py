@@ -41,9 +41,21 @@ SECTION_ORDER = ["overview", "recommendation", "background", "risks", "benefits"
 _DEAL = """
 SELECT deal_name, supplier_id, supplier_name, quote_count, po_count, invoice_count,
        quote_total, po_total, invoice_total, currency, value_reconciled,
-       cycle_days_quote_to_po, three_way_matched
-  FROM proc.bp_deal_overview
- WHERE deal_id = %s
+       cycle_days_quote_to_po, three_way_matched,
+       -- How much of the delivery check could actually be done, so the rate
+       -- below has an honest denominator and the share nothing can prove is
+       -- stated rather than quietly excluded (design section 13.3).
+       (SELECT coalesce(sum(g.lines_assessed), 0) FROM proc.bp_goods_receipt_trgt g
+         WHERE g.deal_id = o.deal_id)                        AS lines_assessed,
+       (SELECT coalesce(sum(g.lines_unverifiable), 0) FROM proc.bp_goods_receipt_trgt g
+         WHERE g.deal_id = o.deal_id)                        AS lines_unverifiable,
+       (SELECT count(*) FROM proc.bp_extraction_discrepancy x
+          JOIN proc.bp_invoice_trgt i ON i.invoice_id = x.doc_pk_candidate
+         WHERE x.doc_type = 'invoice' AND x.status = 'open'
+           AND x.issue_type IN ('billed_not_received','nothing_received')
+           AND i.deal_id = o.deal_id)                        AS open_gaps
+  FROM proc.bp_deal_overview o
+ WHERE o.deal_id = %s
 """
 
 # Each supplier's latest bid on the deal.
@@ -84,11 +96,13 @@ FIXED_LABELS = [
     "Quote-to-PO cycle", "Open checks", "Critical checks", "Warning checks",
     "Opportunities raised on this deal", "Approvers required for this deal",
     "Decisions the Board is asked to take", "Approval decisions recorded",
-    # Appended, not placed beside "Quote, PO and invoice reconciled" where it
-    # belongs by subject: this list is in FACT-ID order, and inserting would
+    # Appended, not placed beside "Quote, PO and invoice reconciled" where they
+    # belong by subject: this list is in FACT-ID order, and inserting would
     # renumber every measure after it, so an already-written paper's F0013
     # would silently come to mean something else.
     "Goods billed were received",
+    "Purchase-order lines checked against a delivery note",
+    "Purchase-order lines no delivery note can prove",
 ]
 
 _PLACEMENT = {"required": "required", "not-required": "not required at this value",
@@ -112,7 +126,8 @@ def build(fb: FactBuilder) -> None:
     rows = _fetch(_DEAL, (deal_id,))
     deal = rows[0] if rows else None
     (name, supplier_id, _supplier_name, n_q, n_po, n_inv, q_tot, po_tot, inv_tot, ccy,
-     reconciled, cycle, received) = deal if deal else (None,) * 13
+     reconciled, cycle, received, n_assessed, n_unverifiable,
+     n_gaps) = deal if deal else (None,) * 16
     missing = "this deal is not on the record, so there is nothing measured to state"
 
     # ---- the four tiles ---------------------------------------------------------------
@@ -236,15 +251,44 @@ def build(fb: FactBuilder) -> None:
     # the goods arrived. NULL is NOT ASSESSED and must read that way: a deal
     # nobody sent a delivery note for has not failed the check, and rendering it
     # as 0% would put a failure in front of a board that no evidence supports.
-    if received is None:
+    #
+    # It is a RATE OVER THE LINES THAT COULD BE CHECKED, not the deal's boolean
+    # rendered as a percentage. The first version printed Decimal(100 if x else 0)
+    # with a PCT hint, so a deal where one line passed, two failed and one could
+    # not be assessed published as "0.0%" -- which is not what the data says.
+    # The two counts beneath it carry the denominator.
+    assessed = int(n_assessed or 0)
+    if received is None or assessed <= 0:
         fb.unmeasured(label="Goods billed were received",
                       derivation="board_paper.three_way_matched",
-                      reason="no goods receipt is recorded against this deal, so what was "
-                             "billed could not be compared with what arrived")
+                      reason="no delivery note on this deal records a line that could be "
+                             "compared, so what was billed has not been checked against "
+                             "what arrived")
     else:
-        fb.add(label="Goods billed were received", value=Decimal(100 if received else 0),
+        clean = max(assessed - int(n_gaps or 0), 0)
+        fb.add(label="Goods billed were received",
+               value=(Decimal(clean) / Decimal(assessed) * 100),
                derivation="board_paper.three_way_matched",
                confidence=Confidence.CORROBORATED, format_hint=FormatHint.PCT)
+
+    # The denominator, stated. Section 13.3 of the design: two fifths of
+    # purchase-order lines can never be covered by a delivery note, and the
+    # board paper must show that as a denominator rather than quietly excluding
+    # it from the rate above.
+    if deal:
+        _int(fb, "Purchase-order lines checked against a delivery note",
+             assessed, "board_paper.lines_assessed", "lines",
+             Confidence.CORROBORATED)
+        _int(fb, "Purchase-order lines no delivery note can prove",
+             int(n_unverifiable or 0), "board_paper.lines_unverifiable", "lines",
+             Confidence.CORROBORATED)
+    else:
+        fb.unmeasured(label="Purchase-order lines checked against a delivery note",
+                      derivation="board_paper.lines_assessed",
+                      reason="this deal is not on the record")
+        fb.unmeasured(label="Purchase-order lines no delivery note can prove",
+                      derivation="board_paper.lines_unverifiable",
+                      reason="this deal is not on the record")
 
     # ---- variable: bids, approval steps, check groups ---------------------------------
     for rank, (sid, sname, amount, bccy) in enumerate(bids, start=1):

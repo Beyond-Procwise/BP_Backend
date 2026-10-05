@@ -182,3 +182,50 @@ def test_the_receipt_reaches_the_same_po_an_invoice_would(tag, cited):
                 assert [r[0] for r in cur.fetchall()] == [po], table
     finally:
         _cleanup([grn], [po])
+
+
+def test_a_receipt_that_could_not_link_is_retried_when_its_po_arrives(tag):
+    """A note arriving BEFORE its purchase order waited for ever.
+
+    `link_receipt_to_po` is one best-effort call at ingestion, and every sweep
+    in deal_assignment_service iterates a hard-coded ("invoice","quote","po") --
+    so nothing ever woke a receipt that reported `no_matching_po` or
+    `po_has_no_deal`. It stayed in _stg, invisible to the match and to every
+    reader. Found in the whole-branch review of 2026-10-05.
+    """
+    from src.services.extraction.goods_receipt_link import (
+        link_pending_receipts, link_receipt_to_po,
+    )
+
+    grn, po, deal = f"GRN-LATE-{tag}", f"44{tag}", f"DEALTEST-{tag}"
+    try:
+        # The note lands first. Its order does not exist yet.
+        with get_conn() as conn, conn.cursor() as cur:
+            _seed_receipt_in_stg(cur, grn, po_id=po)
+        assert link_receipt_to_po(grn)["reason"] == "no_matching_po"
+
+        # A sweep now changes nothing, and says so rather than failing.
+        first = link_pending_receipts()
+        assert first["by_reason"].get("no_matching_po", 0) >= 1
+
+        # The order is extracted and grouped.
+        with get_conn() as conn, conn.cursor() as cur:
+            _seed_po(cur, po, deal_id=deal)
+
+        after = link_pending_receipts()
+        assert after["linked"] >= 1, after
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT deal_id FROM proc.bp_goods_receipt_trgt WHERE grn_id=%s",
+                        (grn,))
+            row = cur.fetchone()
+            assert row is not None, "the sweep did not promote the waiting receipt"
+            assert row[0] == deal
+
+        # And it does not promote it twice.
+        link_pending_receipts()
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM proc.bp_goods_receipt_trgt WHERE grn_id=%s",
+                        (grn,))
+            assert cur.fetchone()[0] == 1
+    finally:
+        _cleanup([grn], [po])

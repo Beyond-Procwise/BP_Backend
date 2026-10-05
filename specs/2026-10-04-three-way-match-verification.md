@@ -156,3 +156,101 @@ into "nothing is wrong".
 * **The live receipt stays in `bp_testdb`.** It is the only readable receipt in
   the corpus and the only thing holding the positive path open; the document
   states on its face that it is synthesised.
+
+
+---
+
+# Second pass — what the whole-branch review found, 2026-10-05
+
+A fresh reviewer read the ten commits, the spec, the plan and the rulings, and
+exercised the match against live `bp_testdb` with adversarial inputs. It proved
+**three Critical** and **eleven Important** findings. Every one is fixed below,
+each with a test that was watched red first.
+
+Its verdict on the first pass stands as written: *"the control still has both
+failure modes the review focus was written to catch."*
+
+## The three that mattered most
+
+Each of these turned **"this could not be checked"** into either a critical
+accusation against a supplier who did nothing wrong, or a clean pass.
+
+**1. An unreadable received quantity became a critical over-billing.**
+`_f` returns `None` for an absent value and its own docstring says absence must
+not read as "nothing arrived" — and the call site was `_f(...) or 0.0`. A
+delivery note whose quantity column did not parse produced *"10 each billed
+against 0 each received — 10 more than arrived"*, critical, against a supplier
+who delivered everything. `quantity_received` is `required: true` in the schema,
+but `build_line_items` does not enforce `required`, so a line with only a
+description promotes with NULL. **Now:** `UNVERIFIABLE_QUANTITY`, not assessed.
+
+**2. A receipt line the matcher could not place was discarded in silence, and
+its PO line then read `NOTHING_RECEIVED`.** `po_line_ref` was extracted, stored
+and selected — and never read. A note printing a shortened description or a
+bare item code went unplaced, and the line reported *"10 billed and no delivery
+recorded at all"* for a line whose delivery note is on file and names it.
+**Now:** a receipt line is placed by the PO line it NAMES first, and description
+matching only covers the rest; an unplaceable line is reported at order level
+and suppresses `NOTHING_RECEIVED` for that order, because the delivery it is
+missing may be the one that could not be placed.
+
+**3. Every refusal reached a reader as a pass.** `check()` computed
+`unverifiable` and `assessed` correctly and `check_against_receipts` threw them
+away. The deal's verdict was "a receipt with lines exists AND no open gap", so a
+note counting in `each` against an order in `box` — the design's own §13.4
+"single most likely practical failure" — raised nothing, had lines, and
+published as **"Goods billed were received: 100%"**. **Now:** the receipt
+records `lines_assessed` / `lines_unverifiable`
+(`deploy/sql/2026-10-05_goods_receipt_match_outcome.sql`), the view requires
+`lines_assessed > 0` before giving a verdict at all, and each refusal is filed
+as its own informational finding naming the reason.
+
+## The rest
+
+| # | Finding | Fix |
+|---|---|---|
+| 4 | 20 of 23 arithmetic guards were **red in the suite's default mode** — they needed a live database the default fake connection cannot provide. A guard red in the mode people run is a guard nobody reads. | the unit basis and the tolerances are injected, and a live-only test holds the injected copy to the real tables |
+| 5 | A **unit-less** delivery note manufactured a critical over-billing (PO 40 `each`, note prints `5`, invoice bills 40 → a shortfall of 35). Trusting the order's unit is safe for silence, not for accusing. | a missing unit refuses, like a different one |
+| 6 | **A gap that closed was never cleared.** Nothing in the codebase resolved an extraction discrepancy, so the Action Centre kept a stale critical finding and the deal stayed `false` for ever — while the module's docstring sold the receipt-side run as "the moment an over-billing stops being one". | `_clear_closed_gaps` resolves what this run no longer raises; resolved, not deleted |
+| 7 | One over-billing was **filed against the wrong document**, and twice. The gap is contained in the invoice that over-billed, not in whichever paper was being read. | filed against each contributing invoice, never against the note; the note's return value carries nothing |
+| 8 | An **invoice line with no quantity** billed 0, which is always ≤ what arrived, so the line counted as verified while the billed side was unreadable. Services and lump-sum lines have no quantity by design, so this was the common case. | `UNVERIFIABLE_QUANTITY` — and the live re-run now shows exactly this on PO000645 line 1 |
+| 9 | A receipt that **could not link was never retried**. `goods_receipt` was added to `_DOC` but every sweep iterates a hard-coded `("invoice","quote","po")`, so a note arriving before its order stayed in `_stg` for ever. | `link_pending_receipts`, in the scheduler's downstream chain |
+| 10 | The own-document substitution compared ids with a plain `strip()`, so `INV-1` and `inv-1` were **two invoices** — the document counted twice, manufacturing an over-billing: the exact failure the substitution exists to prevent. | normalised, like the PO side |
+| 11 | The board paper printed **a boolean as a percentage**: a deal with one line passing, two failing and one unassessable published "0.0%". | a rate over the lines that could be checked, with the two counts beneath it as the denominator §13.3 asks for |
+| 12 | The UI sentence this branch exists to delete **was still on the board paper** — only the `true` branch had moved — and the paper carried no delivery line at all. | both branches moved, the delivery line added, the analysis KPI tile relabelled |
+| 13 | The synthesised note was **driving live KPIs and accusing real seeded invoices**, with nothing in the data marking it synthetic. | removed; `scripts/three_way_match_live_proof.py` re-runs or cleans it on demand |
+| 14 | **Fail-silent loaders**: a missing table or a permission error was indistinguishable from "no receipts exist", with nothing in the log. | logged at warning |
+| — | `_MONEY_HEADER_RE` omitted `value` and `rate`, so a "Unit Rate" column still landed money in `unit_of_measure` | both added |
+| — | `rejected > received` produced "against -8 each received" | refuses |
+
+## The live proof, re-run against the fixed code
+
+`./.venv/bin/python scripts/three_way_match_live_proof.py`
+
+```
+status   Extracted
+header   DN-100645 | PO000645 | 2024-03-18 | J. Okafor | CON-884215
+         deal DEALV2-000645 | lines_assessed 2 | lines_unverifiable 2
+lines    3   (5 each, 1 tonne, 8 pack — each with its po_line_ref)
+priced columns on any goods-receipt table: none
+gaps     INV000645-1 + INV000645-2, po_line[2]: 2 tonne billed against 1 received
+         INV000645-1 + INV000645-2, po_line[3]: 16 pack billed against 8 received
+deal     value_reconciled False | three_way_matched False
+```
+
+`lines_assessed 2, lines_unverifiable 2` is the second pass visible in one line.
+Lines 2 and 3 were comparable and both failed. **Line 1 is now
+`UNVERIFIABLE_QUANTITY`** — `INV000645-1` bills it as a lump sum with no
+quantity, which the first pass read as "billed 0" and called verified. **Line 4
+is `UNVERIFIABLE_BY_RECEIPT`** — a licence is not something a delivery note can
+prove. The first pass reported two findings out of four lines and implied the
+other two were fine; this one says which two it could not check.
+
+A gap is filed against **each contributing invoice**, deliberately: two
+invoices that together over-bill are both implicated, and an AP clerk looking at
+either needs to see it. `_clear_closed_gaps` resolves them together when the
+rest of the delivery arrives.
+
+Everything the proof wrote is removed again by `--clean`, and the suite now
+leaves the database exactly as it found it (measured: zero goods-receipt rows
+and zero open quantity findings afterwards).

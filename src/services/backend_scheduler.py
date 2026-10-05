@@ -179,6 +179,20 @@ class BackendScheduler:
         except Exception:
             logger.exception("downstream chain: pending-raw catch-up failed")
         try:
+            # A goods receipt reaches _trgt by its PO's deal, not by the
+            # PO-gated promote_ready below and not by _look_forward (which only
+            # stamps documents whose uploader tagged a deal). A note that
+            # arrived before its order was extracted or grouped has nothing
+            # else waking it, so it is retried here.
+            from src.services.extraction.goods_receipt_link import (
+                link_pending_receipts,
+            )
+            recs = link_pending_receipts()
+            if recs.get("linked") or recs.get("waiting"):
+                logger.info("downstream chain: goods-receipt linking %s", recs)
+        except Exception:
+            logger.exception("downstream chain: goods-receipt linking failed")
+        try:
             from src.services.linking_engine import promote_ready
             prom = promote_ready()
             logger.info("downstream chain: trgt promotion %s", prom)

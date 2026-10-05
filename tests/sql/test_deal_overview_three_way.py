@@ -146,10 +146,16 @@ def test_the_verdict_moves_null_to_true_to_false_on_one_real_deal():
 
             assert verdict(cur) is None, "no receipt yet -- must be NOT ASSESSED"
 
-            cur.execute("INSERT INTO proc.bp_goods_receipt_trgt (grn_id, po_id, deal_id) "
-                        "VALUES (%s, %s, %s)", (grn, po, deal))
-            # A LINE, not just a header: a receipt whose lines were never read
-            # is not evidence of delivery, and the view counts it as nothing.
+            # A LINE and a RECORDED OUTCOME, both, because that is what the
+            # pipeline leaves: promote() writes the row, the linking copies it
+            # to _trgt, and run_match_for_receipt stamps how many lines it could
+            # actually compare. A receipt with lines but nothing comparable is
+            # not evidence of delivery -- see
+            # test_a_receipt_whose_every_line_is_refused... in
+            # tests/extraction/test_three_way_match_live.py.
+            cur.execute("INSERT INTO proc.bp_goods_receipt_trgt "
+                        "(grn_id, po_id, deal_id, lines_assessed, lines_unverifiable) "
+                        "VALUES (%s, %s, %s, 1, 0)", (grn, po, deal))
             cur.execute(
                 "INSERT INTO proc.bp_goods_receipt_line_items_trgt "
                 "(goods_receipt_line_id, grn_id, line_no, item_description, "
@@ -224,8 +230,9 @@ def test_a_receipt_with_no_lines_gives_the_deal_no_verdict():
                         "(invoice_id, deal_id, deal_name, invoice_amount, invoice_date) "
                         "VALUES (%s, %s, 'no-lines probe', 1000, DATE '2026-02-01')",
                         (inv, deal))
-            cur.execute("INSERT INTO proc.bp_goods_receipt_trgt (grn_id, po_id, deal_id) "
-                        "VALUES (%s, %s, %s)", (grn, po, deal))
+            cur.execute("INSERT INTO proc.bp_goods_receipt_trgt "
+                        "(grn_id, po_id, deal_id, lines_assessed) "
+                        "VALUES (%s, %s, %s, 1)", (grn, po, deal))
 
             assert verdict(cur) is None, (
                 "a receipt with no lines must leave the deal NOT ASSESSED")

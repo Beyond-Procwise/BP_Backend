@@ -19,12 +19,14 @@ SCOPE = {"deal_id": "DEAL-1", "period_label": "Cloud platform renewal", "categor
 
 # deal_name, supplier_id, supplier_name, quote_count, po_count, invoice_count,
 # quote_total, po_total, invoice_total, currency, value_reconciled,
-# cycle_days_quote_to_po, three_way_matched
+# cycle_days_quote_to_po, three_way_matched, lines_assessed, lines_unverifiable,
+# open_gaps
 #
-# three_way_matched is None here on purpose: the corpus holds no goods receipts,
-# so NOT ASSESSED is the state every real deal is in today.
+# three_way_matched is None here on purpose, with nothing assessed: the corpus
+# holds no goods receipts, so NOT ASSESSED is the state every real deal is in.
 DEAL = ("Cloud platform renewal", "SUP-A", "Ashcroft Associates 10", 3, 1, 1,
-        Decimal("300000"), Decimal("300000"), Decimal("300000"), "GBP", False, 12, None)
+        Decimal("300000"), Decimal("300000"), Decimal("300000"), "GBP", False, 12,
+        None, 0, 0, 0)
 # supplier_id, supplier_name, total_amount, currency  (each supplier's latest bid)
 BIDS = [("SUP-A", "Ashcroft Associates 10", Decimal("300000"), "GBP"),
         ("SUP-B", "Birch Ltd", Decimal("240000"), "GBP"),
@@ -209,9 +211,9 @@ def test_the_composer_is_given_this_deal_s_recommendations_and_only_those(monkey
     assert "Taking the lowest bid would recover {{F0012}}." in note
     assert "{{F0010}} suppliers bid, so there is a competing benchmark." in note
     one = bp.deal_note(_build(monkeypatch, bids=BIDS[:1], checks=[],
-                              deal=DEAL[:10] + (True, 12, None)).facts)
+                              deal=DEAL[:10] + (True, 12, None, 0, 0, 0)).facts)
     assert "Only one supplier bid, so there is no competing benchmark." in one
-    clean = bp.deal_note(_build(monkeypatch, checks=[], deal=DEAL[:10] + (True, 12, None),
+    clean = bp.deal_note(_build(monkeypatch, checks=[], deal=DEAL[:10] + (True, 12, None, 0, 0, 0),
                                 bids=[("SUP-A", "A", Decimal("1"), "GBP"),
                                       ("SUP-B", "B", Decimal("2"), "GBP")]).facts)
     rec = clean.split("RECOMMEND")[1].split("STATE")[0]
@@ -270,3 +272,36 @@ def test_a_draft_that_breaks_a_prose_rule_is_sent_back_once(monkeypatch):
                                  generate=generate, emit_audit=False)
     assert ast == good and len(asks) == 2
     assert "no approval decision is recorded" in asks[1].lower()
+
+
+def test_the_delivery_reading_is_a_rate_over_what_could_be_checked(monkeypatch):
+    """Not the deal's boolean rendered as a percentage.
+
+    The first version printed `Decimal(100 if received else 0)` with a PCT
+    hint, so a deal where one line passed, two failed and one could not be
+    assessed published "Goods billed were received: 0.0%" -- which is not what
+    the data says. Found in review.
+    """
+    # four lines: three assessable, one of them with an open gap; one line that
+    # no delivery note can prove.
+    fb = _build(monkeypatch, deal=DEAL[:12] + (False, 3, 1, 1))
+    f = _by(fb)["Goods billed were received"]
+    assert f.value == Decimal("200") / Decimal("3"), f.value   # 2 of 3 clean
+    assert _by(fb)["Purchase-order lines checked against a delivery note"].value == 3
+    assert _by(fb)["Purchase-order lines no delivery note can prove"].value == 1
+
+
+def test_a_deal_whose_every_line_was_refused_is_not_assessed(monkeypatch):
+    """A receipt exists and the view said `false`, but nothing was comparable.
+    Reporting a rate over zero lines is a verdict nothing supports."""
+    fb = _build(monkeypatch, deal=DEAL[:12] + (False, 0, 4, 0))
+    f = _by(fb)["Goods billed were received"]
+    assert f.value is None
+    assert f.confidence == Confidence.UNASSESSED
+    assert _by(fb)["Purchase-order lines no delivery note can prove"].value == 4
+
+
+def test_a_deal_with_no_delivery_note_at_all_is_not_assessed(monkeypatch):
+    fb = _build(monkeypatch)
+    assert _by(fb)["Goods billed were received"].value is None
+    assert _by(fb)["Purchase-order lines checked against a delivery note"].value == 0

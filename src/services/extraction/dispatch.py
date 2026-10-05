@@ -951,7 +951,13 @@ def dispatch_document(
     try:
         from src.services.extraction.three_way_match import check_against_receipts
 
-        receipt_findings = check_against_receipts(doc_type, columns, line_items)
+        # A goods receipt is matched LATER, in the promotion arm below, because
+        # the match writes its denominator onto the receipt's own _stg/_trgt
+        # rows and neither exists yet at this point in the extraction. An
+        # invoice is matched here: its PO, the receipts and the other invoices
+        # are all already persisted, and its own lines are substituted in.
+        receipt_findings = ([] if doc_type == "goods_receipt"
+                            else check_against_receipts(doc_type, columns, line_items))
         if receipt_findings:
             log.info(
                 "three-way match: %d finding(s) against what was received (%s)",
@@ -1106,9 +1112,15 @@ def dispatch_document(
             if doc_type == "goods_receipt":
                 try:
                     from src.services.extraction.goods_receipt_link import (
-                        link_receipt_to_po,
+                        link_receipt_to_po, run_match_for_receipt,
                     )
                     link_receipt_to_po(str(doc_pk))
+                    # Now, and not earlier: the match records how many lines it
+                    # could compare onto the rows promote() and the linking
+                    # above have just written, and it reasons over a set that
+                    # now includes this receipt. Its findings belong to the
+                    # INVOICES that over-billed, so it files them itself.
+                    run_match_for_receipt(str(doc_pk))
                 except Exception:
                     log.exception(
                         "goods receipt PO linking failed (extraction continues)")

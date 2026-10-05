@@ -19,7 +19,13 @@ log = logging.getLogger(__name__)
 
 #: A column header that names money. Matched against the HEADER TEXT, not a
 #: value, so "Unit Price" and "Line Total" are caught whatever is under them.
-_MONEY_HEADER_RE = re.compile(r"(price|amount|total|cost|currency|tax|vat)", re.I)
+#: `value` and `rate` are here because the SQL and YAML comments both list
+#: them and the first version of this regex did not: a "Unit Rate" or "Unit
+#: Value" column still matched the bare "Unit" label and landed money in
+#: unit_of_measure -- the same defect the live run of 2026-10-05 found on
+#: "Unit Price", wearing a different word.
+_MONEY_HEADER_RE = re.compile(
+    r"(price|amount|total|cost|currency|tax|vat|value|rate)", re.I)
 
 
 def _declares_money(line_fields: list[FieldSpec]) -> bool:

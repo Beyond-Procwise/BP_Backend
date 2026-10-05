@@ -18,12 +18,15 @@ Nothing here blocks anything. It raises findings.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Iterable, Optional
 
 from src.services.extraction.two_way_match import assign_lines
+
+log = logging.getLogger(__name__)
 
 #: Receipt-line assignment is recorded under its own profile id so a stored
 #: result can be told apart from the invoice side's. It is a version
@@ -66,10 +69,18 @@ BILLED_NOT_RECEIVED = "BILLED_NOT_RECEIVED"
 NOTHING_RECEIVED = "NOTHING_RECEIVED"
 OVER_DELIVERED = "OVER_DELIVERED"
 
-#: Why a line could not be checked. Each is a DENOMINATOR, never a failure.
+#: Why a line could not be checked. Each is a DENOMINATOR, never a failure,
+#: and each must reach a reader -- a refusal nobody can see is a pass.
+#:   NO_RECEIPT              nothing arrived and nothing was billed
+#:   UNVERIFIABLE_BY_RECEIPT the unit is not something a delivery note can prove
+#:   UNVERIFIABLE_UOM        the units cannot be compared, or one side printed none
+#:   UNVERIFIABLE_QUANTITY   a quantity on one side is absent or nonsensical
+#:   RECEIPT_LINE_UNPLACED   a receipt line names nothing on the order (order-level)
 NO_RECEIPT = "NO_RECEIPT"
 UNVERIFIABLE_BY_RECEIPT = "UNVERIFIABLE_BY_RECEIPT"
 UNVERIFIABLE_UOM = "UNVERIFIABLE_UOM"
+UNVERIFIABLE_QUANTITY = "UNVERIFIABLE_QUANTITY"
+RECEIPT_LINE_UNPLACED = "RECEIPT_LINE_UNPLACED"
 
 _TOLERANCE_POLICY = "receipt_tolerances"
 _TOLERANCE_RULES = ("over_delivery_pct", "billed_over_received_qty")
@@ -170,20 +181,26 @@ def receipt_basis(unit: Any) -> str:
     return _basis_by_unit().get(key, "none")
 
 
-def _units_agree(po_line: dict, counted: Iterable[dict]) -> bool:
-    """Do the receipt and invoice lines count in the order's unit?
+def _units_confirmed(po_line: dict, counted: Iterable[dict]) -> bool:
+    """Does every counted line explicitly agree with the order's unit?
 
-    A DIFFERENT unit refuses: `box` against `each` is the likeliest real
-    failure, nothing here converts, and reporting a shortfall that is really a
-    unit difference would be worse than silence. A MISSING unit does not
-    refuse -- a delivery note often prints no unit at all, and absence is not
-    disagreement. That is the one place this trusts the order's unit, and it is
-    a deliberate choice between two imperfect readings, not an oversight.
+    `box` against `each` is the likeliest real practical failure, nothing here
+    converts, and reporting a shortfall that is really a unit difference would
+    be worse than silence -- so a DIFFERENT unit refuses.
+
+    A MISSING unit also refuses, and that is a change of mind. The first
+    version let it through on the reasoning that absence is not disagreement,
+    which is true, and which is safe for staying SILENT and not safe for
+    ACCUSING. Measured in review: a PO of 40 `each`, a note printing `5` with
+    no unit (five boxes of eight) and an invoice for 40 produced a critical
+    over-billing of 35. Trusting the order's unit to raise a finding is
+    guessing, and the one thing section 5 of the design refuses to do is guess.
     """
     po_unit = _norm_uom(po_line.get("unit_of_measure"))
+    if po_unit is None:
+        return False
     for line in counted:
-        unit = _norm_uom(line.get("unit_of_measure"))
-        if unit is not None and po_unit is not None and unit != po_unit:
+        if _norm_uom(line.get("unit_of_measure")) != po_unit:
             return False
     return True
 
@@ -218,27 +235,80 @@ def _finding(kind: str, po_line: dict, ordered: float, received: float,
     }
 
 
+def _assign_by_po_line_ref(receipt_lines: list[dict],
+                           po_lines: list[dict]) -> dict[int, dict]:
+    """Receipt lines that NAME a PO line, placed by that name.
+
+    A delivery note printing "PO Line 2" is telling us which ordered line it
+    delivered, and that is better evidence than a description similarity
+    score. `po_line_ref` was extracted, stored and selected for a fortnight
+    before anything read it; a note with a shortened description or a bare item
+    code went unplaced and its PO line then reported NOTHING_RECEIVED.
+    """
+    by_ref: dict[str, dict] = {}
+    for po_line in po_lines:
+        key = str(_line_key(po_line) or "").strip()
+        if key:
+            by_ref.setdefault(key, po_line)
+    out: dict[int, dict] = {}
+    for idx, line in enumerate(receipt_lines or []):
+        ref = str(line.get("po_line_ref") or "").strip()
+        if ref and ref in by_ref:
+            out[idx] = by_ref[ref]
+    return out
+
+
 def check(*, po_lines: list[dict], receipt_lines: list[dict],
           invoice_lines: list[dict], limits: Optional[dict] = None,
-          po_id: Any = None) -> MatchResult:
+          po_id: Any = None,
+          basis_lookup: Optional[Any] = None) -> MatchResult:
     """Compare ordered / received / billed per PO line, over the whole set.
 
     Per line and over the set, not per document: two invoices that each pass
     alone can together bill more than arrived, and a line delivered in two
     parts has not been short-delivered twice.
+
+    Nothing here guesses. Every quantity that cannot be read, every unit that
+    cannot be compared and every receipt line that names nothing on the order
+    lands in `unverifiable` -- NEVER as a zero that reads as a shortfall, and
+    never as a silence that reads as a pass. `assessed` counts only the lines
+    where all three numbers were genuinely comparable, which is what makes any
+    rate computed from it honest.
+
+    `basis_lookup` exists so the arithmetic can be tested without the unit
+    table; the default reads proc.bp_uom_canonical.
     """
     limits = governed_tolerances() if limits is None else limits
+    basis = basis_lookup if basis_lookup is not None else receipt_basis
     po_lines = list(po_lines or [])
-    rec_by_idx = assign_receipt_lines(receipt_lines, po_lines, po_id=po_id)
-    inv_by_idx = assign_lines(list(invoice_lines or []), po_lines, po_id)
+    receipt_lines = list(receipt_lines or [])
+    invoice_lines = list(invoice_lines or [])
+
+    # By NAME first, then by description over the whole set for the rest.
+    rec_by_idx = dict(_assign_by_po_line_ref(receipt_lines, po_lines))
+    unnamed = [l for i, l in enumerate(receipt_lines) if i not in rec_by_idx]
+    if unnamed:
+        offsets = [i for i in range(len(receipt_lines)) if i not in rec_by_idx]
+        for local, assigned in assign_receipt_lines(unnamed, po_lines,
+                                                    po_id=po_id).items():
+            rec_by_idx[offsets[local]] = assigned
+    inv_by_idx = assign_lines(invoice_lines, po_lines, po_id)
 
     findings: list[dict[str, Any]] = []
     unverifiable: list[dict[str, Any]] = []
     assessed: list[Any] = []
 
-    for pos, po_line in enumerate(po_lines):
+    # A receipt line that names nothing on the order is a quantity that EXISTS
+    # and could not be placed. Reported once, at order level -- and while one
+    # is outstanding no PO line on this order may be called NOTHING_RECEIVED,
+    # because the delivery it is missing may be the line we could not place.
+    unplaced = [l for i, l in enumerate(receipt_lines) if i not in rec_by_idx]
+    if unplaced:
+        unverifiable.append({"po_line": None, "reason": RECEIPT_LINE_UNPLACED})
+
+    for po_line in po_lines:
         key = _line_key(po_line)
-        if receipt_basis(po_line.get("unit_of_measure")) != "goods_receipt":
+        if basis(po_line.get("unit_of_measure")) != "goods_receipt":
             unverifiable.append({"po_line": key, "reason": UNVERIFIABLE_BY_RECEIPT})
             continue
 
@@ -247,25 +317,28 @@ def check(*, po_lines: list[dict], receipt_lines: list[dict],
         invoices = [invoice_lines[i] for i, assigned in inv_by_idx.items()
                     if assigned is po_line]
 
-        if not _units_agree(po_line, [*receipts, *invoices]):
-            unverifiable.append({"po_line": key, "reason": UNVERIFIABLE_UOM})
-            continue
-
-        billed = sum(_f(line.get("quantity")) or 0.0 for line in invoices)
-        if not receipts and billed <= 0:
+        billed = _total(invoices, "quantity")
+        if not receipts and billed is not None and billed <= 0:
             # Nothing arrived and nothing was billed. Not a failure -- nobody
             # has claimed anything yet. Review Focus #2.
             unverifiable.append({"po_line": key, "reason": NO_RECEIPT})
             continue
 
-        ordered = _f(po_line.get("quantity")) or 0.0
+        if not _units_confirmed(po_line, [*receipts, *invoices]):
+            unverifiable.append({"po_line": key, "reason": UNVERIFIABLE_UOM})
+            continue
+
         # quantity_rejected is SUBTRACTED, never summed in: goods delivered and
         # refused were not received. Review Focus #5.
-        received = sum(
-            (_f(line.get("quantity_received")) or 0.0)
-            - (_f(line.get("quantity_rejected")) or 0.0)
-            for line in receipts
-        )
+        received = _received(receipts)
+        if billed is None or received is None:
+            # One side's numbers could not be read. Reading an absent quantity
+            # as zero accuses a supplier who delivered everything, and reading
+            # an absent BILLED quantity as zero passes a line nobody checked.
+            unverifiable.append({"po_line": key, "reason": UNVERIFIABLE_QUANTITY})
+            continue
+
+        ordered = _f(po_line.get("quantity")) or 0.0
         assessed.append(key)
 
         if not receipts:
@@ -279,7 +352,43 @@ def check(*, po_lines: list[dict], receipt_lines: list[dict],
             findings.append(_finding(OVER_DELIVERED, po_line, ordered, received, billed,
                                      receipts=receipts, invoices=invoices))
 
+    if unplaced:
+        # Stated after the fact so the suppression is visible in the result and
+        # not only in this comment.
+        findings = [f for f in findings if f["type"] != NOTHING_RECEIVED]
+
     return MatchResult(findings, unverifiable, assessed)
+
+
+def _total(lines: list[dict], field: str) -> Optional[float]:
+    """The sum of `field` over `lines`, or None if ANY line's value is unreadable.
+
+    Not `sum(... or 0)`: a line whose quantity did not parse makes the total
+    unknown, and an unknown total must refuse rather than understate.
+    """
+    total = 0.0
+    for line in lines:
+        value = _f(line.get(field))
+        if value is None:
+            return None
+        total += value
+    return total
+
+
+def _received(receipts: list[dict]) -> Optional[float]:
+    """What actually arrived and was accepted, or None if that cannot be read."""
+    total = 0.0
+    for line in receipts:
+        got = _f(line.get("quantity_received"))
+        if got is None:
+            return None
+        refused = _f(line.get("quantity_rejected")) or 0.0
+        if refused > got:
+            # "1 received, 9 rejected" is a document that does not make sense.
+            # The old arithmetic produced "against -8 each received".
+            return None
+        total += got - refused
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +425,13 @@ def _load_po_lines(cur, po_id: str) -> list[dict]:
                 f"FROM {table} WHERE po_id = %s ORDER BY line_number", (po_id,))
             rows = cur.fetchall()
         except Exception:  # noqa: BLE001 - table may be absent in some envs
+            # A missing table, a renamed column or a permission error is
+            # otherwise indistinguishable from "this order has no lines", and
+            # the whole control then returns nothing with no trace. See
+            # project_governance_fail_open_layers: an outage must not look like
+            # "nothing to report".
+            log.warning("three-way match: could not read %s for PO %s",
+                        table, po_id, exc_info=True)
             continue
         if rows:
             return [{"po_id": r[0], "line_number": r[1], "item_description": r[2],
@@ -337,6 +453,8 @@ def _load_receipt_lines(cur, po_id: str) -> list[dict]:
                 f"FROM {table} WHERE po_id = %s ORDER BY grn_id, line_no", (po_id,))
             rows = cur.fetchall()
         except Exception:  # noqa: BLE001
+            log.warning("three-way match: could not read %s for PO %s",
+                        table, po_id, exc_info=True)
             continue
         for r in rows:
             if r[0] in seen:
@@ -364,6 +482,8 @@ def _load_invoice_lines(cur, po_id: str) -> list[dict]:
                 f"FROM {table} WHERE po_id = %s ORDER BY invoice_id, line_no", (po_id,))
             rows = cur.fetchall()
         except Exception:  # noqa: BLE001
+            log.warning("three-way match: could not read %s for PO %s",
+                        table, po_id, exc_info=True)
             continue
         for r in rows:
             if r[0] in seen:
@@ -385,22 +505,66 @@ def _with_this_document(persisted: list[dict], own_lines: list[dict],
     over-billing -- the exact failure
     project_reread_does_not_refresh_trgt records for the value path.
     """
-    key = str(doc_pk).strip() if doc_pk is not None else ""
-    kept = [r for r in persisted if str(r.get(id_field) or "").strip() != key] if key \
+    def norm(value: Any) -> str:
+        # Case- and separator-insensitive, like the PO side already is.
+        # "INV-1" and "inv-1" are one invoice; comparing them with a plain
+        # strip() kept BOTH rows, counted the document's lines twice and
+        # manufactured an over-billing -- the exact failure this function
+        # exists to prevent. Measured in review.
+        return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+    key = norm(doc_pk)
+    kept = [r for r in persisted if norm(r.get(id_field)) != key] if key \
         else list(persisted)
     return kept + [{**line, id_field: doc_pk} for line in (own_lines or [])]
 
 
+#: Reason -> the snake_case issue_type a refusal is filed under. Informational
+#: and never blocking: these are the DENOMINATOR, not failures. They exist so
+#: section 6 of the design is honoured -- "the system must say which lines it
+#: could not check" -- at a surface a person reads, rather than only inside a
+#: return value.
+_REFUSAL_ISSUE_TYPE = {
+    UNVERIFIABLE_BY_RECEIPT: "line_not_receivable",
+    UNVERIFIABLE_UOM: "receipt_unit_not_comparable",
+    UNVERIFIABLE_QUANTITY: "receipt_quantity_unreadable",
+    RECEIPT_LINE_UNPLACED: "receipt_line_not_on_po",
+}
+#: NO_RECEIPT is deliberately absent. Every PO line on a corpus with no
+#: delivery notes is in that state, and filing one row per line would bury the
+#: queue under paperwork nobody has sent yet. It is visible as `lines_assessed`
+#: being zero on the deal instead.
+
+_REFUSAL_NOTE = {
+    UNVERIFIABLE_BY_RECEIPT:
+        "a line measured in this unit cannot be proved by a delivery note, so "
+        "what was billed against it has not been compared with what arrived",
+    UNVERIFIABLE_UOM:
+        "the delivery note and the order do not count this line in the same "
+        "unit, or one of them printed no unit, so the quantities cannot be "
+        "compared and nothing is assumed",
+    UNVERIFIABLE_QUANTITY:
+        "a quantity on one side of this line could not be read, so what was "
+        "billed has not been compared with what arrived",
+    RECEIPT_LINE_UNPLACED:
+        "a line on the delivery note names nothing on this order, so the "
+        "delivery it records cannot be matched to an ordered line",
+}
+
+
 def check_against_receipts(doc_type: str, columns: dict,
                            line_items: list[dict]) -> list[Any]:
-    """Findings from comparing this document's order against what arrived.
+    """Compare this document's order against what arrived, and RECORD the answer.
 
     Runs for an INVOICE (did we bill for more than arrived?) and for a GOODS
     RECEIPT (a note arriving after the invoice is exactly when an over-billing
     becomes visible, or stops being one).
 
-    Returns `two_way_match.Discrepancy` rows. None of them blocks promotion:
-    the design raises findings and holds nothing (§12).
+    Returns `two_way_match.Discrepancy` rows for the CURRENT document only.
+    Everything else it has to say -- a gap belonging to another invoice, a
+    refusal, a gap that has now closed -- it writes itself, because the caller
+    can only file against the document it is reading. None of it blocks: the
+    design raises findings and holds nothing.
     """
     from src.services.db import get_conn
     from src.services.extraction.two_way_match import Discrepancy
@@ -417,6 +581,7 @@ def check_against_receipts(doc_type: str, columns: dict,
         try:
             po_row = _pick_po(cur, str(cited).strip(), cols="t.po_id")
         except Exception:  # noqa: BLE001
+            log.warning("three-way match: could not resolve PO %r", cited, exc_info=True)
             return []
         if not po_row:
             # An unknown PO is two_way_match's finding to raise, not a second one.
@@ -428,13 +593,13 @@ def check_against_receipts(doc_type: str, columns: dict,
         receipts = _load_receipt_lines(cur, po_id)
         invoices = _load_invoice_lines(cur, po_id)
 
+    own_pk = columns.get("invoice_id") if doc_type == "invoice" else columns.get("grn_id")
     if doc_type == "invoice":
         invoices = _with_this_document(
-            invoices, line_items, id_field="invoice_id",
-            doc_pk=columns.get("invoice_id"))
+            invoices, line_items, id_field="invoice_id", doc_pk=own_pk)
     else:
         receipts = _with_this_document(
-            receipts, line_items, id_field="grn_id", doc_pk=columns.get("grn_id"))
+            receipts, line_items, id_field="grn_id", doc_pk=own_pk)
 
     if not receipts:
         # Nothing has been received against this order. That is not a finding --
@@ -446,19 +611,170 @@ def check_against_receipts(doc_type: str, columns: dict,
     result = check(po_lines=po_lines, receipt_lines=receipts,
                    invoice_lines=invoices, po_id=po_id)
 
-    out = []
+    # The receipt carries the match's denominator, so the deal overview can tell
+    # "checked and clean" from "nothing was checkable". Written for whichever
+    # receipts are on the order, because the assessment is of the SET.
+    _record_outcome(receipts, result)
+
+    out: list[Any] = []
+    foreign: list[tuple[str, dict]] = []
     for f in result.findings:
+        # A gap is contained in the INVOICE that over-billed, not in whichever
+        # document happened to be read when it was spotted (design section 8).
+        # Filing it against the note produced two rows for one gap -- one on the
+        # note, one on the invoice after a re-read -- each needing separate
+        # resolution, with the deal staying false until both were cleared.
+        owners = f.get("invoice_sources") or []
+        for invoice_id in owners:
+            if doc_type == "invoice" and str(invoice_id) == str(own_pk):
+                out.append(_as_discrepancy(Discrepancy, f))
+            else:
+                foreign.append((str(invoice_id), f))
+        if not owners:
+            out.append(_as_discrepancy(Discrepancy, f))
+
+    for reason_row in result.unverifiable:
+        reason = reason_row["reason"]
+        if reason not in _REFUSAL_ISSUE_TYPE:
+            continue
         out.append(Discrepancy(
-            field_name=f"po_line[{f['po_line']}]",
-            issue_type=_ISSUE_TYPE[f["type"]],
-            severity=_SEVERITY[f["type"]],
+            field_name=(f"po_line[{reason_row['po_line']}]"
+                        if reason_row.get("po_line") is not None else "receipt_lines"),
+            issue_type=_REFUSAL_ISSUE_TYPE[reason],
+            severity="info",
             blocks_promotion=False,
-            raw_value=f"billed {f['billed']:g}",
-            expected_value=f"received {f['received']:g}",
-            computed_value=f"ordered {f['ordered']:g}",
-            notes=_explain(f),
+            raw_value=str(po_id),
+            notes=f"purchase order {po_id}: {_REFUSAL_NOTE[reason]}",
         ))
+
+    _write_foreign_findings(foreign, po_id=po_id)
+    _clear_closed_gaps(po_id, result, own_doc_type=doc_type, own_pk=own_pk)
     return out
+
+
+def _as_discrepancy(Discrepancy, f: dict):
+    return Discrepancy(
+        field_name=f"po_line[{f['po_line']}]",
+        issue_type=_ISSUE_TYPE[f["type"]],
+        severity=_SEVERITY[f["type"]],
+        blocks_promotion=False,
+        raw_value=f"billed {f['billed']:g}",
+        expected_value=f"received {f['received']:g}",
+        computed_value=f"ordered {f['ordered']:g}",
+        notes=_explain(f),
+    )
+
+
+def _record_outcome(receipts: list[dict], result: "MatchResult") -> None:
+    """Write `lines_assessed` / `lines_unverifiable` onto every receipt on the order.
+
+    Best effort: a bookkeeping write must never lose an extraction. It is
+    logged rather than swallowed, because an outage here makes the deal read
+    "not assessed", and silence about that is how a fail-open layer hides.
+    """
+    from src.services.db import get_conn
+
+    grns = sorted({str(r.get("grn_id")) for r in receipts if r.get("grn_id")})
+    if not grns:
+        return
+    assessed, refused = len(result.assessed), len(result.unverifiable)
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            for table in ("proc.bp_goods_receipt_stg", "proc.bp_goods_receipt_trgt"):
+                cur.execute(
+                    f"UPDATE {table} SET lines_assessed = %s, lines_unverifiable = %s "
+                    f"WHERE grn_id = ANY(%s)", (assessed, refused, grns))
+    except Exception:  # noqa: BLE001
+        log.warning("three-way match: could not record the outcome for %s "
+                    "(the deal will read NOT ASSESSED)", grns, exc_info=True)
+
+
+def _write_foreign_findings(foreign: list[tuple[str, dict]], *, po_id: Any) -> None:
+    """File a gap against an invoice that is not the document being read.
+
+    Two invoices can together bill more than arrived; the gap belongs to both,
+    and neither may be the document in hand. The caller can only file against
+    what it is reading, so these are written here, through the ordinary
+    discrepancy writer, so the open-row key and the source_file normalisation
+    are the same ones every other finding gets.
+    """
+    if not foreign:
+        return
+    from src.services.db import get_conn
+    from src.services.extraction import persistence
+
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            for invoice_id, f in foreign:
+                cur.execute(
+                    "SELECT source_file FROM proc.bp_invoice_raw "
+                    "WHERE doc_pk_candidate = %s AND source_file IS NOT NULL "
+                    "ORDER BY raw_id DESC LIMIT 1", (invoice_id,))
+                row = cur.fetchone()
+                # source_file is part of the open-row key and is NOT NULL on the
+                # table (project_findings_key_per_document). An invoice loaded
+                # from outside the pipeline has no _raw row and so no path; a
+                # deterministic per-document key keeps the row addressable and
+                # keeps one invoice's gap from colliding with another's. It is
+                # not a file path and is not pretending to be one.
+                source_file = row[0] if row else f"po:{po_id}/invoice:{invoice_id}"
+                persistence.write_discrepancies(
+                    doc_type="invoice", raw_id=None, source_file=source_file,
+                    doc_pk_candidate=invoice_id,
+                    discrepancies=[_as_discrepancy(_Discrepancy(), f)],
+                )
+    except Exception:  # noqa: BLE001
+        log.warning("three-way match: could not file findings against %s",
+                    [i for i, _ in foreign], exc_info=True)
+
+
+def _Discrepancy():
+    from src.services.extraction.two_way_match import Discrepancy
+    return Discrepancy
+
+
+def _clear_closed_gaps(po_id: Any, result: "MatchResult", *,
+                       own_doc_type: str, own_pk: Any) -> None:
+    """Resolve the quantity findings that this run no longer raises.
+
+    The module's whole claim for running on the receipt side is that a note
+    arriving after the bill is the moment an over-billing stops being one. That
+    was computed and never recorded: nothing in this codebase resolved an
+    extraction discrepancy, so a closed gap stayed open in the Action Centre
+    for ever and the deal stayed `false`. Resolved, not deleted -- the row is
+    the record that it was once true.
+    """
+    from src.services.db import get_conn
+
+    still_open = {
+        (str(inv), f"po_line[{f['po_line']}]", _ISSUE_TYPE[f["type"]])
+        for f in result.findings
+        for inv in (f.get("invoice_sources") or [str(own_pk)])
+    }
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT discrepancy_id, doc_type, doc_pk_candidate, field_name,
+                          issue_type
+                     FROM proc.bp_extraction_discrepancy
+                    WHERE status = 'open' AND issue_type = ANY(%s)
+                      AND raw_value LIKE 'billed %%'
+                      AND (notes LIKE %s OR raw_value = %s)""",
+                (list(_ISSUE_TYPE.values()), f"%purchase order {po_id} line%", str(po_id)))
+            for did, dtype, pk, field, issue in cur.fetchall():
+                if (str(pk), field, issue) in still_open:
+                    continue
+                if dtype == "goods_receipt" or (str(pk), field, issue) not in still_open:
+                    cur.execute(
+                        "UPDATE proc.bp_extraction_discrepancy "
+                        "SET status = 'resolved', resolved_at = NOW(), "
+                        "    resolved_by = 'three_way_match', "
+                        "    resolution_outcome = 'accepted' "
+                        "WHERE discrepancy_id = %s", (did,))
+                    log.info("three-way match: gap %s on %s closed", did, pk)
+    except Exception:  # noqa: BLE001
+        log.warning("three-way match: could not clear closed gaps on PO %s",
+                    po_id, exc_info=True)
 
 
 def _explain(f: dict) -> str:

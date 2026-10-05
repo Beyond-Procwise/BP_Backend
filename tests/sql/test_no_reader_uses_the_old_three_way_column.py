@@ -55,10 +55,19 @@ def _sources():
             yield rel, path
 
 
+#: An import line names the MODULE `three_way_match`, which is a real module and
+#: now genuinely is one. Skipped rather than allow-listing each importer, and
+#: skipped by line shape rather than by a lookbehind, so a SQL string's
+#: `o.three_way_match` -- which is also preceded by a dot -- is still caught.
+_IMPORT_LINE = re.compile(r"^\s*(?:from|import)\s")
+
+
 def test_no_source_file_reads_the_old_column():
     offenders = []
     for rel, path in _sources():
         for n, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if _IMPORT_LINE.match(line):
+                continue
             if _OLD.search(line):
                 offenders.append(f"{rel}:{n}: {line.strip()}")
     assert offenders == [], "\n".join(offenders)
