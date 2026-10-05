@@ -242,6 +242,13 @@ def _assign_lines(line_items: list[dict], po_lines: list[dict],
     return assigned
 
 
+#: Public name for the line assignment above, so three_way_match can reuse it
+#: without reaching for a private one. No logic change: the receipt side and
+#: the invoice side MUST run the same matcher, or the two halves of a three-way
+#: comparison can disagree about which ordered line they are talking about.
+assign_lines = _assign_lines
+
+
 def _load_po(po_id: str) -> tuple[Optional[dict], list[dict]]:
     """The referenced PO and its lines, from _trgt if promoted else _stg.
 
