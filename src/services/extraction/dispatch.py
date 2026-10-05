@@ -1074,6 +1074,21 @@ def dispatch_document(
         prom = promotion.promote(raw_id, doc_type)
         if prom.get("ok"):
             final_status = "promoted"
+            # A goods receipt is grouped by its PURCHASE ORDER's deal, not on
+            # its own evidence, so it needs this one step the other types do
+            # not: the PO-gated linking_engine.promote_ready would hold it
+            # forever, and the deal scheduler's _look_forward only stamps
+            # documents whose uploader tagged a deal. Never fails the
+            # extraction -- an unlinked receipt keeps its _stg row and says why.
+            if doc_type == "goods_receipt":
+                try:
+                    from src.services.extraction.goods_receipt_link import (
+                        link_receipt_to_po,
+                    )
+                    link_receipt_to_po(str(doc_pk))
+                except Exception:
+                    log.exception(
+                        "goods receipt PO linking failed (extraction continues)")
         else:
             log.warning("inline promote failed: %s", prom.get("reason"))
             final_status = "pending"  # _raw kept; manual retry possible

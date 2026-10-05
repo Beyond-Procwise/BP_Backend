@@ -148,6 +148,14 @@ _DOC = {
     "po": ("po_id",
            "proc.bp_purchase_order_raw", "proc.bp_purchase_order_stg", "proc.bp_purchase_order_trgt",
            "proc.bp_po_line_items_stg", "proc.bp_po_line_items_trgt"),
+    # A goods receipt is grouped by its PO's deal, never on its own evidence --
+    # see extraction/goods_receipt_link.py. It is registered here so the generic
+    # helpers (_ensure_in_trgt, _persist_deal) apply to it unchanged.
+    "goods_receipt": ("grn_id",
+                      "proc.bp_goods_receipt_raw", "proc.bp_goods_receipt_stg",
+                      "proc.bp_goods_receipt_trgt",
+                      "proc.bp_goods_receipt_line_items_stg",
+                      "proc.bp_goods_receipt_line_items_trgt"),
 }
 _DEAL_COLS = ("deal_id", "deal_name", "document_id", "deal_date")
 # Permanent line-item _raw tables. They carry no natural doc pk of their own — each
@@ -157,6 +165,7 @@ _LINE_RAW = {
     "invoice": "proc.bp_invoice_line_items_raw",
     "quote": "proc.bp_quote_line_items_raw",
     "po": "proc.bp_po_line_items_raw",
+    "goods_receipt": "proc.bp_goods_receipt_line_items_raw",
 }
 _DOCTYPE_FROM_HINT = {"invoice": "invoice", "quote": "quote", "po": "po",
                       "purchase_order": "po", "purchaseorder": "po"}
