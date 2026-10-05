@@ -79,3 +79,36 @@ def build(today: Optional[date] = None) -> Dict[str, Any]:
     with get_conn() as conn:
         evaluation = detector.evaluate(conn.cursor(), today, with_supplier=True)
     return renewals_payload(evaluation, today, rates)
+
+
+_ACTIVE_CONTRACTS_SQL = """
+    SELECT contract_id, contract_title, spend_category, contract_end_date,
+           total_contract_value, currency, auto_renew_flag, cost_centre_id
+      FROM proc.bp_contract_master
+     WHERE COALESCE(contract_lifecycle_status, '') ILIKE 'active'
+       AND contract_end_date >= %s
+     ORDER BY contract_end_date, contract_id
+"""
+
+
+def active_contracts(today: Optional[date] = None) -> List[Dict[str, Any]]:
+    """The live contracts the demand intake can ask "is this a renewal of that?" about.
+
+    Real rows only, with no supplier name: the contract table carries a supplier id
+    that points at a register outside both databases, and the intake already refuses
+    to name a supplier it cannot know. Ending today still counts as live, which is
+    why the comparison is >= and not >.
+    """
+    today = today or date.today()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(_ACTIVE_CONTRACTS_SQL, (today,))
+        cols = [c[0] for c in cur.description]
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            r["contract_end_date"] = r["contract_end_date"].isoformat()
+            if r["total_contract_value"] is not None:
+                r["total_contract_value"] = float(r["total_contract_value"])
+            out.append(r)
+    return out

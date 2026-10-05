@@ -69,3 +69,31 @@ def test_the_output_filter_leaves_the_whole_payload_untouched():
               ("a", "0-1", date(2026, 10, 9), "DM-7", {})])
     payload = json.loads(json.dumps(renewals_payload(ev, TODAY, RATES), default=str))
     assert osafe.scrub_payload(json.loads(json.dumps(payload)), where="/spendiq/contract-renewals") == payload
+
+
+def test_active_contracts_reads_live_rows_only_and_carries_no_supplier_name(monkeypatch):
+    from datetime import date as _d
+    from src.services.contract_expiry import renewals
+
+    seen = {}
+
+    class Cur:
+        description = [("contract_id",), ("contract_title",), ("spend_category",), ("contract_end_date",),
+                       ("total_contract_value",), ("currency",), ("auto_renew_flag",), ("cost_centre_id",)]
+        def execute(self, sql, params): seen["sql"], seen["params"] = sql, params
+        def fetchall(self):
+            from decimal import Decimal
+            return [("C1", "Hosting", "IT", _d(2026, 12, 1), Decimal("100.50"), "GBP", "Yes", "CC-1")]
+
+    class Conn:
+        def cursor(self): return Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(renewals, "get_conn", lambda: Conn())
+    rows = renewals.active_contracts(_d(2026, 10, 5))
+    assert rows == [{"contract_id": "C1", "contract_title": "Hosting", "spend_category": "IT",
+                     "contract_end_date": "2026-12-01", "total_contract_value": 100.5,
+                     "currency": "GBP", "auto_renew_flag": "Yes", "cost_centre_id": "CC-1"}]
+    assert seen["params"] == (_d(2026, 10, 5),) and ">= %s" in seen["sql"]
+    assert "supplier" not in seen["sql"].lower()
