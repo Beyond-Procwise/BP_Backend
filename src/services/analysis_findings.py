@@ -34,7 +34,7 @@ _DEALS = """
 SELECT deal_id, deal_name, supplier_name, supplier_id, deal_date, currency,
        quote_count, po_count, invoice_count,
        quote_total, po_total, invoice_total,
-       three_way_match, price_variance_pct, cycle_days_quote_to_po
+       value_reconciled, price_variance_pct, cycle_days_quote_to_po
   FROM proc.bp_deal_overview WHERE deal_id = ANY(%s)
 """
 

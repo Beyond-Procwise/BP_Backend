@@ -18,9 +18,13 @@ from src.services.rga.factpack import FactBuilder, registered_types, title_for
 SCOPE = {"deal_id": "DEAL-1", "period_label": "Cloud platform renewal", "category": "SaaS / IT"}
 
 # deal_name, supplier_id, supplier_name, quote_count, po_count, invoice_count,
-# quote_total, po_total, invoice_total, currency, three_way_match, cycle_days_quote_to_po
+# quote_total, po_total, invoice_total, currency, value_reconciled,
+# cycle_days_quote_to_po, three_way_matched
+#
+# three_way_matched is None here on purpose: the corpus holds no goods receipts,
+# so NOT ASSESSED is the state every real deal is in today.
 DEAL = ("Cloud platform renewal", "SUP-A", "Ashcroft Associates 10", 3, 1, 1,
-        Decimal("300000"), Decimal("300000"), Decimal("300000"), "GBP", False, 12)
+        Decimal("300000"), Decimal("300000"), Decimal("300000"), "GBP", False, 12, None)
 # supplier_id, supplier_name, total_amount, currency  (each supplier's latest bid)
 BIDS = [("SUP-A", "Ashcroft Associates 10", Decimal("300000"), "GBP"),
         ("SUP-B", "Birch Ltd", Decimal("240000"), "GBP"),
@@ -205,9 +209,9 @@ def test_the_composer_is_given_this_deal_s_recommendations_and_only_those(monkey
     assert "Taking the lowest bid would recover {{F0012}}." in note
     assert "{{F0010}} suppliers bid, so there is a competing benchmark." in note
     one = bp.deal_note(_build(monkeypatch, bids=BIDS[:1], checks=[],
-                              deal=DEAL[:10] + (True, 12)).facts)
+                              deal=DEAL[:10] + (True, 12, None)).facts)
     assert "Only one supplier bid, so there is no competing benchmark." in one
-    clean = bp.deal_note(_build(monkeypatch, checks=[], deal=DEAL[:10] + (True, 12),
+    clean = bp.deal_note(_build(monkeypatch, checks=[], deal=DEAL[:10] + (True, 12, None),
                                 bids=[("SUP-A", "A", Decimal("1"), "GBP"),
                                       ("SUP-B", "B", Decimal("2"), "GBP")]).facts)
     rec = clean.split("RECOMMEND")[1].split("STATE")[0]

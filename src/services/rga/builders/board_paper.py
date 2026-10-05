@@ -40,7 +40,8 @@ SECTION_ORDER = ["overview", "recommendation", "background", "risks", "benefits"
 
 _DEAL = """
 SELECT deal_name, supplier_id, supplier_name, quote_count, po_count, invoice_count,
-       quote_total, po_total, invoice_total, currency, three_way_match, cycle_days_quote_to_po
+       quote_total, po_total, invoice_total, currency, value_reconciled,
+       cycle_days_quote_to_po, three_way_matched
   FROM proc.bp_deal_overview
  WHERE deal_id = %s
 """
@@ -83,6 +84,11 @@ FIXED_LABELS = [
     "Quote-to-PO cycle", "Open checks", "Critical checks", "Warning checks",
     "Opportunities raised on this deal", "Approvers required for this deal",
     "Decisions the Board is asked to take", "Approval decisions recorded",
+    # Appended, not placed beside "Quote, PO and invoice reconciled" where it
+    # belongs by subject: this list is in FACT-ID order, and inserting would
+    # renumber every measure after it, so an already-written paper's F0013
+    # would silently come to mean something else.
+    "Goods billed were received",
 ]
 
 _PLACEMENT = {"required": "required", "not-required": "not required at this value",
@@ -106,7 +112,7 @@ def build(fb: FactBuilder) -> None:
     rows = _fetch(_DEAL, (deal_id,))
     deal = rows[0] if rows else None
     (name, supplier_id, _supplier_name, n_q, n_po, n_inv, q_tot, po_tot, inv_tot, ccy,
-     reconciled, cycle) = deal if deal else (None,) * 12
+     reconciled, cycle, received) = deal if deal else (None,) * 13
     missing = "this deal is not on the record, so there is nothing measured to state"
 
     # ---- the four tiles ---------------------------------------------------------------
@@ -224,6 +230,21 @@ def build(fb: FactBuilder) -> None:
     fb.unmeasured(label="Approval decisions recorded", derivation="board_paper.signatures",
                   reason="no approval decision is recorded against a deal, so the paper can "
                          "show who must sign but not who has")
+
+    # The second reconciliation line, and the one a board actually asks about.
+    # "Quote, PO and invoice reconciled" above says the AMOUNTS agree; this says
+    # the goods arrived. NULL is NOT ASSESSED and must read that way: a deal
+    # nobody sent a delivery note for has not failed the check, and rendering it
+    # as 0% would put a failure in front of a board that no evidence supports.
+    if received is None:
+        fb.unmeasured(label="Goods billed were received",
+                      derivation="board_paper.three_way_matched",
+                      reason="no goods receipt is recorded against this deal, so what was "
+                             "billed could not be compared with what arrived")
+    else:
+        fb.add(label="Goods billed were received", value=Decimal(100 if received else 0),
+               derivation="board_paper.three_way_matched",
+               confidence=Confidence.CORROBORATED, format_hint=FormatHint.PCT)
 
     # ---- variable: bids, approval steps, check groups ---------------------------------
     for rank, (sid, sname, amount, bccy) in enumerate(bids, start=1):

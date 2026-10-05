@@ -18,6 +18,8 @@ Live-only.
 from __future__ import annotations
 
 import os
+import pathlib
+import re
 
 import pytest
 
@@ -27,12 +29,41 @@ pytestmark = pytest.mark.skipif(
     os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live db")
 
 
-def test_value_reconciled_reproduces_todays_three_way_match_exactly():
-    """The rename must not change a single deal's answer."""
+#: The expression three_way_match carried, lifted verbatim from the migration
+#: that defined it. Whitespace-normalised so a reflow is not a failure.
+_OLD_MIGRATION = pathlib.Path("deploy/sql/2026-07-29_bp_deal_overview_value_reconciliation.sql")
+_NEW_MIGRATION = pathlib.Path("deploy/sql/2026-10-04_deal_overview_drop_three_way_match.sql")
+
+
+def _expression_for(path: pathlib.Path, column: str) -> str:
+    """The boolean expression a migration binds to `column`, whitespace-normalised."""
+    text = path.read_text()
+    end = text.index(f") AS {column}")
+    start = text.rindex("(quote_count > 0", 0, end)
+    return re.sub(r"\s+", " ", text[start:end + 1]).strip()
+
+
+def test_value_reconciled_computes_exactly_what_three_way_match_computed():
+    """The rename must not change a single deal's answer.
+
+    While both columns existed this compared them row by row across all 5,042
+    deals and found zero differences -- that run is the evidence, recorded in
+    the commit. `three_way_match` is now dropped, so the comparison is no
+    longer expressible in SQL; what remains checkable forever is that the two
+    migrations bind the SAME expression, which is what made the row-by-row run
+    come out empty. A tolerance or a predicate edited into one and not the
+    other turns this red.
+    """
+    assert _expression_for(_OLD_MIGRATION, "three_way_match") == \
+        _expression_for(_NEW_MIGRATION, "value_reconciled")
+
+
+def test_the_old_column_is_really_gone():
     with get_conn() as c, c.cursor() as cur:
-        cur.execute("""SELECT count(*) FROM proc.bp_deal_overview
-                        WHERE value_reconciled IS DISTINCT FROM three_way_match""")
-        assert cur.fetchone()[0] == 0
+        cur.execute("""SELECT 1 FROM information_schema.columns
+                        WHERE table_schema='proc' AND table_name='bp_deal_overview'
+                          AND column_name='three_way_match'""")
+        assert cur.fetchone() is None
 
 
 def test_three_way_matched_is_null_where_no_receipt_exists():

@@ -52,8 +52,8 @@ _PERIOD = "COALESCE(deal_date, first_activity_date) BETWEEN %s AND %s"
 _DEAL_SHAPE = f"""
 SELECT COUNT(*)::int                                         AS deals,
        COUNT(DISTINCT supplier_id)::int                      AS suppliers,
-       SUM(CASE WHEN three_way_match THEN 1 ELSE 0 END)::int  AS matched,
-       COUNT(three_way_match)::int                           AS matchable,
+       SUM(CASE WHEN value_reconciled THEN 1 ELSE 0 END)::int AS matched,
+       COUNT(value_reconciled)::int                          AS matchable,
        AVG(cycle_days_quote_to_po)::numeric                  AS avg_cycle,
        COUNT(cycle_days_quote_to_po)::int                    AS cycle_n
   FROM proc.bp_deal_overview

@@ -5710,7 +5710,7 @@ class OpportunityMinerAgent(BaseAgent):
 
         proc.bp_deal_overview already reconciles quote/PO/invoice totals per
         deal, but nothing previously read its price_variance_pct — a deal
-        could be invoiced at 3x its PO value and still show three_way_match
+        could be invoiced at 3x its PO value and still show value_reconciled
         true (that flag only checked all three document types exist, not
         that their amounts agree) with no opportunity ever raised.
         """
