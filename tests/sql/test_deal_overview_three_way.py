@@ -75,22 +75,36 @@ def test_three_way_matched_is_null_where_no_receipt_exists():
         assert cur.fetchone()[0] == 0, "a deal with no receipt was given a verdict"
 
 
-def test_the_whole_corpus_is_not_assessed_because_it_holds_no_receipts():
-    """Today every deal must read NULL, because there are zero goods receipts.
-    Stated as a test so that the day one arrives, this goes red and somebody
-    reads the next test instead of assuming the column is dead."""
+def test_a_verdict_appears_exactly_when_a_readable_receipt_does():
+    """Counted the same way the view counts: a receipt with LINES, on a deal.
+
+    A receipt whose lines were never read is not evidence of delivery -- see
+    test_a_receipt_with_no_lines_gives_the_deal_no_verdict. So "receipts exist"
+    is not the right precondition for "some deal has a verdict"; "a receipt
+    with lines, on a deal that is in the overview" is.
+
+    The corpus held zero receipt-like documents when this was written, so the
+    usual answer is 0 and 0. The day a real one lands, this says whether the
+    deal_id join actually reached a deal.
+    """
     with get_conn() as c, c.cursor() as cur:
-        cur.execute("SELECT count(*) FROM proc.bp_goods_receipt_trgt")
-        receipts = cur.fetchone()[0]
+        cur.execute("""
+            SELECT count(*) FROM proc.bp_goods_receipt_trgt g
+             WHERE g.deal_id IS NOT NULL AND g.deal_id <> ''
+               AND EXISTS (SELECT 1 FROM proc.bp_goods_receipt_line_items_trgt l
+                            WHERE l.grn_id = g.grn_id)
+               AND EXISTS (SELECT 1 FROM proc.bp_deal_overview d
+                            WHERE d.deal_id = g.deal_id)""")
+        readable = cur.fetchone()[0]
         cur.execute("""SELECT count(*) FROM proc.bp_deal_overview
                         WHERE three_way_matched IS NOT NULL""")
         verdicts = cur.fetchone()[0]
-        if receipts == 0:
+        if readable == 0:
             assert verdicts == 0
         else:
             assert verdicts > 0, (
-                f"{receipts} receipt rows exist but no deal has a verdict -- "
-                f"the deal_id join is broken")
+                f"{readable} readable receipts are on deals in the overview but "
+                f"no deal has a verdict -- the deal_id join is broken")
 
 
 def test_the_verdict_moves_null_to_true_to_false_on_one_real_deal():
@@ -134,6 +148,14 @@ def test_the_verdict_moves_null_to_true_to_false_on_one_real_deal():
 
             cur.execute("INSERT INTO proc.bp_goods_receipt_trgt (grn_id, po_id, deal_id) "
                         "VALUES (%s, %s, %s)", (grn, po, deal))
+            # A LINE, not just a header: a receipt whose lines were never read
+            # is not evidence of delivery, and the view counts it as nothing.
+            cur.execute(
+                "INSERT INTO proc.bp_goods_receipt_line_items_trgt "
+                "(goods_receipt_line_id, grn_id, line_no, item_description, "
+                " quantity_received, unit_of_measure, po_id, deal_id) "
+                "VALUES (%s, %s, 1, 'Widget A', 10, 'each', %s, %s)",
+                (f"{grn}-L1", grn, po, deal))
             assert verdict(cur) is True, "a receipt with no open gap must pass"
 
             cur.execute(
@@ -161,6 +183,63 @@ def test_the_verdict_moves_null_to_true_to_false_on_one_real_deal():
         with get_conn() as c, c.cursor() as cur:
             cur.execute("DELETE FROM proc.bp_extraction_discrepancy "
                         "WHERE doc_pk_candidate IN (%s, %s)", (grn, inv))
+            cur.execute("DELETE FROM proc.bp_goods_receipt_line_items_trgt WHERE grn_id=%s", (grn,))
+            cur.execute("DELETE FROM proc.bp_goods_receipt_trgt WHERE grn_id = %s", (grn,))
+            cur.execute("DELETE FROM proc.bp_invoice_trgt WHERE invoice_id = %s", (inv,))
+            cur.execute("DELETE FROM proc.bp_purchase_order_trgt WHERE po_id = %s", (po,))
+
+
+def test_a_receipt_with_no_lines_gives_the_deal_no_verdict():
+    """A receipt row whose lines were never read must not read as "goods
+    received".
+
+    Found on the live run of 2026-10-05: the first delivery note extracted its
+    header, linked to its PO and reached _trgt with ZERO lines (the table
+    extractor's field-name defect). The match skips a receipt with no lines --
+    correctly, there is nothing to compare -- so it raised no finding, and a
+    `receipted` CTE that counted the HEADER turned that silence into
+    `three_way_matched = true`. A control that passes because it looked at
+    nothing is the one failure this feature must not have.
+    """
+    from uuid import uuid4
+
+    tag = f"{uuid4().int % 100000000:08d}"
+    deal = f"DEALTEST-{tag}"
+    po, inv, grn = f"49{tag}", f"INVNL-{tag}", f"GRN-NOLINES-{tag}"
+
+    def verdict(cur):
+        cur.execute("SELECT three_way_matched FROM proc.bp_deal_overview "
+                    "WHERE deal_id = %s", (deal,))
+        row = cur.fetchone()
+        assert row is not None, f"{deal} is not in bp_deal_overview"
+        return row[0]
+
+    try:
+        with get_conn() as c, c.cursor() as cur:
+            cur.execute("INSERT INTO proc.bp_purchase_order_trgt "
+                        "(po_id, deal_id, deal_name, total_amount, order_date) "
+                        "VALUES (%s, %s, 'no-lines probe', 1000, DATE '2026-01-01')",
+                        (po, deal))
+            cur.execute("INSERT INTO proc.bp_invoice_trgt "
+                        "(invoice_id, deal_id, deal_name, invoice_amount, invoice_date) "
+                        "VALUES (%s, %s, 'no-lines probe', 1000, DATE '2026-02-01')",
+                        (inv, deal))
+            cur.execute("INSERT INTO proc.bp_goods_receipt_trgt (grn_id, po_id, deal_id) "
+                        "VALUES (%s, %s, %s)", (grn, po, deal))
+
+            assert verdict(cur) is None, (
+                "a receipt with no lines must leave the deal NOT ASSESSED")
+
+            cur.execute(
+                "INSERT INTO proc.bp_goods_receipt_line_items_trgt "
+                "(goods_receipt_line_id, grn_id, line_no, item_description, "
+                " quantity_received, unit_of_measure, po_id, deal_id) "
+                "VALUES (%s, %s, 1, 'Widget A', 10, 'each', %s, %s)",
+                (f"{grn}-L1", grn, po, deal))
+            assert verdict(cur) is True, "one line is enough to have looked"
+    finally:
+        with get_conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_goods_receipt_line_items_trgt WHERE grn_id=%s", (grn,))
             cur.execute("DELETE FROM proc.bp_goods_receipt_trgt WHERE grn_id = %s", (grn,))
             cur.execute("DELETE FROM proc.bp_invoice_trgt WHERE invoice_id = %s", (inv,))
             cur.execute("DELETE FROM proc.bp_purchase_order_trgt WHERE po_id = %s", (po,))

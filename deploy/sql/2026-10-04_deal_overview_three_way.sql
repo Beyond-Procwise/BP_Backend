@@ -60,13 +60,20 @@ agg AS (
        - min(doc_date) FILTER (WHERE doc_type='po')) AS cycle_days_po_to_invoice
   FROM d GROUP BY deal_id
 ),
--- Which deals have any evidence of delivery at all. A deal absent from here
--- has not failed the match; it has not been checked.
+-- Which deals have any evidence of delivery that can actually be COMPARED.
+-- A receipt whose lines were never read is not evidence: the match skips it
+-- (nothing to compare), raises no finding, and counting its header here would
+-- turn that silence into "goods received". Found on the live run of
+-- 2026-10-05, where the first delivery note reached _trgt with a header, a PO
+-- link and zero lines. A deal absent from here has not failed the match; it
+-- has not been checked.
 receipted AS (
-  SELECT deal_id, count(*) AS receipt_count
-    FROM proc.bp_goods_receipt_trgt
-   WHERE deal_id IS NOT NULL AND deal_id <> ''
-   GROUP BY deal_id
+  SELECT g.deal_id, count(*) AS receipt_count
+    FROM proc.bp_goods_receipt_trgt g
+   WHERE g.deal_id IS NOT NULL AND g.deal_id <> ''
+     AND EXISTS (SELECT 1 FROM proc.bp_goods_receipt_line_items_trgt l
+                  WHERE l.grn_id = g.grn_id)
+   GROUP BY g.deal_id
 ),
 -- Open quantity gaps the match raised, reached from either side: the finding is
 -- filed against whichever document was being read when it was raised, so an

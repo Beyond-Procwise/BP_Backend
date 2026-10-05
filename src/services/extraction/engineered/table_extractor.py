@@ -17,15 +17,41 @@ from src.services.extraction_v3.yaml_schema.loader import DocSchema, FieldSpec
 log = logging.getLogger(__name__)
 
 
+#: A column header that names money. Matched against the HEADER TEXT, not a
+#: value, so "Unit Price" and "Line Total" are caught whatever is under them.
+_MONEY_HEADER_RE = re.compile(r"(price|amount|total|cost|currency|tax|vat)", re.I)
+
+
+def _declares_money(line_fields: list[FieldSpec]) -> bool:
+    """Does this doc type have any priced line field at all?
+
+    A goods receipt does not, by design (extraction_schemas/goods_receipt.yaml):
+    it proves DELIVERY and carries quantities only.
+    """
+    return any(
+        f.type == "money" or _MONEY_HEADER_RE.search(f.name or "")
+        for f in line_fields
+    )
+
+
 def _header_to_field(header_text: str, line_fields: list[FieldSpec]) -> str | None:
     """Match header cell text to a line-item field by canonical_labels.
 
     Substring matches pick the LONGEST (most specific) matching label, so a
     generic label like "Unit" (unit_of_measure) cannot steal a specific column
     like "Unit Price" (unit_price) just because its field is listed first.
+
+    That rule depends on a MORE specific label existing to be preferred. On a
+    doc type with no priced field there is none, so "Unit Price" matched "Unit"
+    and 'GBP 13.59' was about to be stored as the unit a line was delivered in
+    -- found on the live run of 2026-10-05. A doc type that declares no money
+    field refuses a money-named header outright: the same rule as the absent
+    column and the absent schema field, one layer further out.
     """
     h = (header_text or "").strip().lower()
     if not h:
+        return None
+    if _MONEY_HEADER_RE.search(h) and not _declares_money(line_fields):
         return None
     # exact match preferred
     for f in line_fields:

@@ -35,14 +35,24 @@ fields:
       - "Advice Note No"
     confidence_threshold: 0.70
     patterns:
+      # The value class allows a LETTER PREFIX SEPARATED FROM THE DIGITS --
+      # "DN-000645", "GRN/5521". The first version was
+      # `[A-Z]{0,4}[0-9][A-Z0-9\-\/\.]{2,19}`, which cannot span that
+      # separator: it matched "DN", needed a digit, found "-", and the engine
+      # advanced to the bare digits. The live run of 2026-10-05 stored
+      # "000645" for a note numbered DN-000645 -- a receipt id indistinguishable
+      # from the purchase order it cites, and a collision waiting on the _stg
+      # primary key between two notes against orders ending in the same digits.
+      # A digit is still REQUIRED somewhere, so "Delivery Note No:" followed by
+      # a word cannot be captured.
       - name: anchored_grn_no
         anchor: '(?i)\b(?:grn|goods\s+receipt|goods\s+received\s+note)\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
-        value: '([A-Z]{0,4}[0-9][A-Z0-9\-\/\.]{2,19})'
+        value: '([A-Z]{0,4}[\-\/]?[0-9][A-Z0-9\-\/\.]{2,19})'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.88
       - name: anchored_delivery_note_no
         anchor: '(?i)\b(?:delivery|despatch|dispatch|advice)\s+note\s*(?:number|no\.?|#)?\s*[:\-]?\s*'
-        value: '([A-Z]{0,4}[0-9][A-Z0-9\-\/\.]{2,19})'
+        value: '([A-Z]{0,4}[\-\/]?[0-9][A-Z0-9\-\/\.]{2,19})'
         max_span_after_anchor_chars: 60
         prior_confidence: 0.86
       - name: grn_prefixed_id
@@ -116,7 +126,18 @@ fields:
       - "Despatch Date"
       - "Date"
     confidence_threshold: 0.70
-    patterns: []
+    # The live run of 2026-10-05 read NO receipt_date: the field had no
+    # patterns and nothing else filled it, so the receipt reached _trgt with no
+    # record of when anything arrived -- which is most of what a delivery note
+    # is for. Both spellings a note actually prints, and nothing wider: a bare
+    # "Date" anchor would capture the invoice date off a document that restates
+    # one.
+    patterns:
+      - name: anchored_date_received
+        anchor: '(?i)\b(?:date\s+received|received\s+on|receipt\s+date|date\s+of\s+delivery|delivery\s+date|despatch(?:ed)?\s+date|date\s+despatched)\s*[:\-]?\s*'
+        value: '(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{4}-\d{2}-\d{2}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})'
+        max_span_after_anchor_chars: 40
+        prior_confidence: 0.86
     judge:
       tiebreaker: true
       grounded_last_resort: true
@@ -176,9 +197,13 @@ fields:
       - "Print Name"
     confidence_threshold: 0.70
     patterns:
+      # Spaces only BETWEEN name parts -- never \s, which matches a newline.
+      # The live run of 2026-10-05 stored "J. Okafor\n\nSignature" as the
+      # person who received the goods, because the next line's first word read
+      # as a further forename.
       - name: anchored_received_by
         anchor: '(?i)\b(?:received|signed\s+for|accepted)\s+by\s*[:\-]?\s*'
-        value: "([A-Z][A-Za-z'\\-\\.]{1,20}(?:\\s+[A-Z][A-Za-z'\\-\\.]{1,20}){0,3})"
+        value: "([A-Z][A-Za-z'\\-\\.]{1,20}(?:[ ]+[A-Z][A-Za-z'\\-\\.]{1,20}){0,3})"
         max_span_after_anchor_chars: 40
         prior_confidence: 0.78
     judge:
@@ -206,7 +231,13 @@ fields:
 line_items:
   primary_extractor: qwen_vlm
   fields:
-    - name: description
+    # Named item_description, not description: table_extractor only accepts a
+    # table row as a LINE ITEM once it has a field by that exact name (the
+    # summary-row guard). Called anything else, every row of a real delivery
+    # note is discarded in silence and the receipt reaches _trgt with no lines
+    # -- which the match reads as "no receipt" and passes. Found on the live
+    # run of 2026-10-05 against PO000645.
+    - name: item_description
       type: string
       required: false
       db_column: item_description

@@ -35,6 +35,8 @@ _ALLOWED = {
     "tests/sql/test_no_reader_uses_the_old_three_way_column.py",
     "tests/sql/test_deal_overview_three_way.py",
     "tests/sql/test_bp_deal_overview_reconciliation_sql.py",
+    # asserts the old column is ABSENT from both databases, so it has to name it
+    "tests/sql/test_goods_receipt_both_databases.py",
     "tests/extraction/test_three_way_match.py",
     "tests/extraction/test_three_way_match_live.py",
 }
