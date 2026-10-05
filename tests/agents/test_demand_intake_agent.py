@@ -284,3 +284,145 @@ def test_an_option_the_configuration_offers_is_never_an_instruction_example():
     with _replies(reply):
         out = _agent(template=_LEAKY + '- confidence "high", "medium" or "low".\n').extract(ctx)
     assert out['fields']['intake.priority']['value'] == 'High'
+
+
+# ---------------------------------------------------------------------------
+# A FIGURE THE REQUEST DOES NOT CLAIM IS NOT A FIGURE (2026-10-05).
+#
+# Prompt v2 says, in words, "Do not calculate a saving, split a budget into years, set a
+# target". Measured live against a resident AgentNick, it did it anyway. Three fields came
+# back on a request that states none of them:
+#
+#   finance.saving = 95000  -- and 95000 is the CURRENT MPLS cost in that request, not a
+#                              saving. Arithmetic would have given 45000 (3 x 95k = 285k
+#                              against a 240k budget). So it is both disobedient AND wrong.
+#   finance.tco    = 240000 -- the budget, relabelled as total cost of ownership.
+#   finance.type   = 'Hard / cash' -- a finance classification nobody wrote down.
+#
+# These decide an approval route and feed the savings KPI, so a made-up number here is worse
+# than a blank. Asking the prompt more firmly has been tried; this is the rule in code.
+#
+# It is NOT a blanket ban, because a requester may perfectly well state a saving — "this
+# saves us about 45k a year" — and deleting that would be the same crime in the other
+# direction. The test is evidence: the figure travels only when the request carries a cue
+# that it is talking about that field.
+# ---------------------------------------------------------------------------
+
+# The live request, verbatim. It states a budget, a current cost, sites and dates — and no
+# saving, no TCO and no benefit classification.
+_SDWAN = ('We need SD-WAN connectivity for 42 UK branch sites, live by 31 March 2027. '
+          'Budget is about £240,000 over three years on cost centre CC-4120. Today the '
+          'MPLS circuits cost us £95k a year and drop out weekly.')
+
+
+def _sdwan_reply():
+    return {'fields': {
+        'finance.saving': {'value': '95000', 'confidence': 'low'},
+        'finance.tco': {'value': '240000', 'confidence': 'low'},
+        'finance.type': {'value': 'Hard / cash', 'confidence': 'low'},
+        # the honest readings from the same reply, which must survive untouched
+        'value': {'value': '240000', 'confidence': 'low'},
+        'finance.cc': {'value': 'CC-4120', 'confidence': 'low'},
+        'problem.cur': {'value': '£95k a year and drop out weekly', 'confidence': 'low'},
+    }}
+
+
+def test_a_saving_the_request_never_mentions_does_not_travel():
+    ctx = dict(_CONTEXT, text=_SDWAN)
+    with _replies(_sdwan_reply()):
+        out = _agent().extract(ctx)
+    assert 'finance.saving' not in out['fields'], (
+        '95000 is the current cost in that request, not a saving anybody claimed')
+
+
+def test_a_tco_the_request_never_states_does_not_travel():
+    ctx = dict(_CONTEXT, text=_SDWAN)
+    with _replies(_sdwan_reply()):
+        out = _agent().extract(ctx)
+    assert 'finance.tco' not in out['fields'], 'that is the budget wearing another label'
+
+
+def test_a_benefit_classification_nobody_wrote_does_not_travel():
+    ctx = dict(_CONTEXT, text=_SDWAN)
+    with _replies(_sdwan_reply()):
+        out = _agent().extract(ctx)
+    assert 'finance.type' not in out['fields']
+
+
+def test_the_honest_readings_in_the_same_reply_are_untouched():
+    # THE POINT. This guard removes three fields from that reply and nothing else.
+    ctx = dict(_CONTEXT, text=_SDWAN)
+    with _replies(_sdwan_reply()):
+        out = _agent().extract(ctx)
+    assert out['fields']['value']['value'] == '240000'
+    assert out['fields']['finance.cc']['value'] == 'CC-4120'
+    assert 'problem.cur' in out['fields']
+    assert len(out['fields']) == 3
+
+
+def test_a_saving_the_requester_states_is_kept():
+    # THE SAFETY PROPERTY, and the reason this is not a deny-list. A requester who says it
+    # keeps it.
+    ctx = dict(_CONTEXT, text='Moving off MPLS saves us about £45k a year.')
+    with _replies({'fields': {'finance.saving': {'value': '45000', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['finance.saving']['value'] == '45000'
+
+
+def test_a_stated_tco_is_kept():
+    ctx = dict(_CONTEXT, text='Total cost of ownership is £1.32M over three years.')
+    with _replies({'fields': {'finance.tco': {'value': '1320000', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['finance.tco']['value'] == '1320000'
+
+
+def test_a_stated_benefit_type_is_kept():
+    ctx = dict(_CONTEXT, text='This is a cost avoidance case, not cashable.')
+    with _replies({'fields': {'finance.type': {'value': 'Cost avoidance', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['finance.type']['value'] == 'Cost avoidance'
+
+
+def test_wanting_to_reduce_something_other_than_cost_is_not_a_saving_cue():
+    # "reduce outages" must not open the door to an invented saving figure, which is why the
+    # cues are about money and not about the bare word "reduce".
+    ctx = dict(_CONTEXT, text='We want to reduce outages and improve reliability.')
+    with _replies({'fields': {'finance.saving': {'value': '50000', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'finance.saving' not in out['fields']
+
+
+def test_a_budget_spread_over_years_is_not_a_tco_cue():
+    # "over three years" is the budget's period, not a statement of total cost of ownership.
+    ctx = dict(_CONTEXT, text='Budget is £240,000 over three years.')
+    with _replies({'fields': {'finance.tco': {'value': '240000', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'finance.tco' not in out['fields']
+
+
+def test_the_question_just_asked_is_itself_the_claim():
+    # When the conversation ASKS "what saving do you expect?", the requester's "about 45k" is
+    # about the saving even though the sentence contains no cue word. Without this the guard
+    # would delete the answer to the question it had just put, which is worse than the bug.
+    ctx = dict(_CONTEXT, asked_field='finance.saving', text='About 45k a year, we think.')
+    with _replies({'fields': {'finance.saving': {'value': '45000', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['finance.saving']['value'] == '45000'
+
+
+def test_asking_one_derived_field_does_not_license_the_others():
+    ctx = dict(_CONTEXT, asked_field='finance.saving', text='About 45k a year, we think.')
+    reply = {'fields': {'finance.saving': {'value': '45000', 'confidence': 'high'},
+                        'finance.tco': {'value': '900000', 'confidence': 'high'},
+                        'finance.type': {'value': 'Hard / cash', 'confidence': 'high'}}}
+    with _replies(reply):
+        out = _agent().extract(ctx)
+    assert set(out['fields']) == {'finance.saving'}
+
+
+def test_tco_is_not_matched_inside_an_unrelated_word():
+    # A bare "tco" substring lives inside "bitcoin"; the cues are word-bounded for that reason.
+    ctx = dict(_CONTEXT, text='We need a bitcoin payment rail for the marketplace.')
+    with _replies({'fields': {'finance.tco': {'value': '240000', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'finance.tco' not in out['fields']

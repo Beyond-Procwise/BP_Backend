@@ -58,6 +58,46 @@ _PLACEHOLDERS = ("categories", "fields", "known", "asked_field", "text", "today"
 # is nonsense cannot be mistaken for one that merely failed validation.
 _FORBIDDEN_PATHS = frozenset({"__proto__", "constructor", "prototype"})
 _MAX_PATHS = 60
+
+# ---------------------------------------------------------------------------
+# Fields a procurement REQUEST does not state, and the cues that show it does after all.
+#
+# Measured live 2026-10-05 against a resident AgentNick. Prompt v2 says in words "Do not
+# calculate a saving, split a budget into years, set a target", and the model returned three
+# of them anyway on a request that states none:
+#
+#   finance.saving = 95000  -- 95000 is the CURRENT MPLS cost in that request. Arithmetic
+#                              would have said 45000 (3 x 95k = 285k against a 240k budget),
+#                              so the figure is both unasked-for and wrong.
+#   finance.tco    = 240000 -- the budget, relabelled.
+#   finance.type   = 'Hard / cash' -- a finance classification nobody wrote down.
+#
+# These three set an approval route and feed the savings KPI, so an invented number is worse
+# than a blank. Asking the prompt more firmly has been tried.
+#
+# NOT a deny-list. A requester may well state a saving, and deleting that would be the same
+# fault in the other direction, so the value travels when the text carries a cue for THAT
+# field — or when the field is the one the conversation just asked about, because then the
+# question itself is the claim.
+#
+# The cues are about MONEY on purpose. "reduce outages" must not license an invented saving,
+# which is why the bare words "reduce" and "reduction" are not cues, and "over three years"
+# is a budget period rather than a statement of total cost of ownership.
+# ---------------------------------------------------------------------------
+_CLAIM_CUES: Dict[str, tuple] = {
+    "finance.saving": ("save", "saves", "saving", "savings", "cost reduction",
+                       "unit-rate reduction", "rate reduction", "cost avoidance",
+                       "avoided cost", "cheaper"),
+    "finance.tco": ("tco", "total cost", "cost of ownership", "whole-life", "whole life",
+                    "lifetime cost", "life-cycle cost", "lifecycle cost"),
+    "finance.type": ("hard saving", "cash saving", "cashable", "cost avoidance",
+                     "non-financial", "non financial", "hard / cash", "soft saving"),
+}
+# Word boundaries matter: a bare "tco" would otherwise match inside "bitcoin".
+_CLAIM_PATTERNS = {
+    path: re.compile(r"\b(?:" + "|".join(re.escape(c) for c in cues) + r")\b", re.I)
+    for path, cues in _CLAIM_CUES.items()
+}
 # The quoted literals in the instruction's own prose — "IT-3300", "99.95% SLA". Both quote styles,
 # because the governed template is edited by hand and uses whichever the editor's keyboard gave.
 _QUOTED = re.compile(r'"([^"\n]{2,60})"|“([^”\n]{2,60})”')
@@ -97,11 +137,12 @@ class DemandIntakeAgent(BaseAgent):
         leaked = self._instruction_examples(str(template))
         said = self._said(context or {})
         offered = self._offered(context or {})
+        asked = str((context or {}).get("asked_field") or "").strip()
         # `failed` says the model did not answer — NOT that it found nothing. call_ollama does
         # not raise when Ollama refuses; it returns {"response": "", "error": …}, so without this
         # distinction a model that never ran looked exactly like a request with nothing in it,
         # and the screen would tell the requester their words held no values.
-        return {"fields": self._fields(parsed, leaked, said, offered),
+        return {"fields": self._fields(parsed, leaked, said, offered, asked),
                 "governed": True, "failed": not answered}
 
     # ------------------------------------------------------------------
@@ -197,6 +238,22 @@ class DemandIntakeAgent(BaseAgent):
                                      cls._one(context.get("categories"))]))
 
     @classmethod
+    def _unclaimed(cls, path: str, said: str, asked: str = "") -> bool:
+        """Is this a field the request never claims a figure for?
+
+        True only for the handful of fields in _CLAIM_CUES, and only when neither the text nor
+        the question just asked shows the requester talking about that field. Every other path
+        is none of this method's business.
+        """
+        pattern = _CLAIM_PATTERNS.get(path)
+        if pattern is None:
+            return False
+        if path == asked:
+            # The conversation asked for exactly this, so the answer is about this.
+            return False
+        return not pattern.search(said or "")
+
+    @classmethod
     def _leaked(cls, value: Any, leaked: frozenset, said: str, offered: str = "") -> bool:
         """Is this value the instruction's example rather than the requester's evidence?
 
@@ -213,7 +270,8 @@ class DemandIntakeAgent(BaseAgent):
 
     @classmethod
     def _fields(cls, parsed: Dict[str, Any], leaked: frozenset = frozenset(),
-                said: str = "", offered: str = "") -> Dict[str, Dict[str, Any]]:
+                said: str = "", offered: str = "",
+                asked: str = "") -> Dict[str, Dict[str, Any]]:
         """The fields the model found, in one shape.
 
         `{"fields": {...}}` is what the prompt asks for; a reply that IS the fields is accepted
@@ -226,6 +284,10 @@ class DemandIntakeAgent(BaseAgent):
         for path, entry in list(found.items())[:_MAX_PATHS]:
             key = str(path).strip()
             if not key or key in _FORBIDDEN_PATHS:
+                continue
+            if cls._unclaimed(key, said, asked):
+                logger.debug("demand intake extraction: %s is not something this request "
+                             "claims, so the model's figure is dropped", key)
                 continue
             value, confidence = cls._value_of(entry)
             if isinstance(value, (list, tuple)):
