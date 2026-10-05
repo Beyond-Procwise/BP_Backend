@@ -61,3 +61,11 @@ def test_a_signed_off_deck_that_changed_is_refused_by_both(client):
     code, detail = _refusal(lambda: rr.readable_deck("rpt-1", _P()))
     assert code == 409 and "does not match" in detail
     assert (via_download.status_code, via_download.json()["detail"]) == (code, detail)
+
+
+def test_a_reviewer_may_read_an_awaiting_deck_only_when_review_is_what_they_are_doing(client):
+    _awaiting(client)
+    client.signoff.may = True            # someone who may sign it off
+    assert rr.readable_deck("rpt-1", _P())[1] == b"PK-deck-bytes"            # review: allowed
+    code, detail = _refusal(lambda: rr.readable_deck("rpt-1", _P(), allow_review=False))
+    assert code == 409 and "awaiting sign-off" in detail

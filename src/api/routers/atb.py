@@ -10,6 +10,7 @@ replaces such fields with "[withheld]", which has silently emptied payloads here
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -18,13 +19,14 @@ from starlette.concurrency import run_in_threadpool
 
 from src.services.atb.pptx_import import store
 from src.services.atb.pptx_import.contract import validate_rating_scale
-from src.services.atb.pptx_import.import_pack import ImportRefused, import_pack
+from src.services.atb.pptx_import.import_pack import ImportRefused, import_pack, key_for
 from src.services.db import get_conn
 
 from api.auth import require_user
 from api.endpoint_gate import require as gate
 from api.routers.reports import readable_deck
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/atb", tags=["ATB"])
 _AGENT = "AtbRouter"
 _MAX_UPLOAD_BYTES = 64 * 1024 * 1024
@@ -117,6 +119,14 @@ async def post_import(file: UploadFile = File(...), principal=Depends(require_us
     if not name.lower().endswith(_PPTX_SUFFIX):
         raise HTTPException(status_code=415,
                             detail="only a .pptx can be read for its style")
+    if key_for(name).startswith(_FROM_REPORT_PREFIX):
+        # The pack key comes from the file name, and a pack keeps its names and rejections from
+        # one version to the next. An upload must not be able to become a version of a pack that
+        # was learned from a report, or to claim its key first.
+        raise HTTPException(status_code=400,
+                            detail=f"a deck cannot be uploaded under a name beginning "
+                                   f"'{_FROM_REPORT_PREFIX}': that is reserved for styles learned "
+                                   "from a generated report")
     data = await file.read()
     if len(data) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413,
@@ -130,6 +140,7 @@ async def post_import(file: UploadFile = File(...), principal=Depends(require_us
     return _import_response(result)
 
 
+_FROM_REPORT_PREFIX = "from-report-"
 _FROM_REPORT_NOTE = ("Learned from the generated report {job_id} ({report_type}). This pack measures "
                      "how that report looked, which is not necessarily how its source style pack "
                      "was defined.")
@@ -141,15 +152,22 @@ async def post_import_from_report(job_id: str, principal=Depends(require_user)):
          context={"job_id": job_id, "source": "report"})
     # Reading the deck asks the REPORT'S rules (sign-off hold, refusal, report.read, released-only,
     # the signed hash) -- the same function the download calls, so the two cannot drift apart.
-    job, content, _media_type, _filename = await run_in_threadpool(readable_deck, job_id, principal)
+    job, content, _media_type, _filename = await run_in_threadpool(
+        readable_deck, job_id, principal, allow_review=False)
     try:
         with get_conn() as conn:
             result = await run_in_threadpool(
-                import_pack, content, f"from-report-{job_id}.pptx", _subject(principal), conn)
-            await run_in_threadpool(
-                store.set_pack_notes, conn, result.pack_id,
-                _FROM_REPORT_NOTE.format(job_id=job_id,
-                                         report_type=job.get("report_type") or "report"))
+                import_pack, content, f"{_FROM_REPORT_PREFIX}{job_id}.pptx", _subject(principal), conn)
+            try:
+                await run_in_threadpool(
+                    store.set_pack_notes, conn, result.pack_id,
+                    _FROM_REPORT_NOTE.format(job_id=job_id,
+                                             report_type=job.get("report_type") or "report"))
+            except Exception:
+                # The pack is already stored as a candidate, so a 500 would hide a pack that exists
+                # and a retry would make a second version. Where it came from is still on record in
+                # its source file (from-report-<job_id>.pptx); only the sentence is missing.
+                logger.exception("style pack %s: the provenance note was not written", result.pack_id)
     except ImportRefused as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _import_response(result)

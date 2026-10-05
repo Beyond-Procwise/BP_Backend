@@ -392,7 +392,7 @@ def _releasable(job_id: str, principal: Any, fmt: str):
     return job, s
 
 
-def readable_deck(job_id: str, principal: Any):
+def readable_deck(job_id: str, principal: Any, allow_review: bool = True):
     """-> (job, content, media_type, filename) for a deck this caller may read, else raises.
 
     ONE RULE SET for everything that reads a stored deck: the download, and 'learn a style from this
@@ -401,6 +401,13 @@ def readable_deck(job_id: str, principal: Any):
     released-only rule and the signed-hash match all live in this function and nowhere else.
     """
     job, s = _releasable(job_id, principal, "deck")
+    if not allow_review and s["state"] == "awaiting":
+        # An approver may OPEN an unsigned report to review it. That is not leave to copy what is in
+        # it somewhere else: a caller that keeps the content (a style pack carries the slides' own
+        # words and figures, readable by everyone who may read packs) says allow_review=False.
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id} is awaiting sign-off; it can be used "
+                                   "once it has been signed off")
     found = job_store.deck(job_id)
     if found is None:
         raise HTTPException(status_code=409, detail=f"report job {job_id} has no deck")
