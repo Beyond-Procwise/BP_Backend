@@ -392,35 +392,51 @@ def _releasable(job_id: str, principal: Any, fmt: str):
     return job, s
 
 
-def _serve(job_id: str, principal: Any, fmt: str) -> Response:
-    """The deck or the page -- one set of rules for both, so the two cannot drift apart."""
-    job, s = _releasable(job_id, principal, fmt)
-    if fmt == "deck":
-        found = job_store.deck(job_id)
-        signed_hash = s.get("deck_sha256")
-    else:
-        found = job_store.page(job_id)
-        signed_hash = s.get("page_sha256")
+def readable_deck(job_id: str, principal: Any):
+    """-> (job, content, media_type, filename) for a deck this caller may read, else raises.
+
+    ONE RULE SET for everything that reads a stored deck: the download, and 'learn a style from this
+    report' (/atb/import/from-report). Both go through here so that a report a person may not
+    open cannot become a pack they can read. The sign-off hold, the refusal, report.read, the
+    released-only rule and the signed-hash match all live in this function and nowhere else.
+    """
+    job, s = _releasable(job_id, principal, "deck")
+    found = job_store.deck(job_id)
     if found is None:
-        if fmt == "page":
-            raise HTTPException(status_code=404,
-                                detail=f"report job {job_id} has no printable page -- it was "
-                                       "made before pages existed")
         raise HTTPException(status_code=409, detail=f"report job {job_id} has no deck")
-    content = found[0]
+    content, media_type, filename = found
     # A sign-off is for the files that were reviewed. An edit replaces them only as a new
     # version, which the sign-off does not count for (signoff.state), so a mismatch here --
     # or a sign-off that never saw this file -- means this is not what was signed off.
+    signed_hash = s.get("deck_sha256")
+    if s["state"] == "signed_off" and (not signed_hash
+                                       or signoff.deck_hash(content) != signed_hash):
+        raise HTTPException(status_code=409,
+                            detail=f"report job {job_id}: the stored deck does not match "
+                                   "the one that was signed off")
+    return job, content, media_type, filename
+
+
+def _serve(job_id: str, principal: Any, fmt: str) -> Response:
+    """The deck or the page -- one set of rules for both, so the two cannot drift apart."""
+    if fmt == "deck":
+        job, content, media_type, filename = readable_deck(job_id, principal)
+        return Response(content=content, media_type=media_type,
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                                 "X-Report-Run-Id": job.get("run_id") or ""})
+    job, s = _releasable(job_id, principal, fmt)
+    found = job_store.page(job_id)
+    signed_hash = s.get("page_sha256")
+    if found is None:
+        raise HTTPException(status_code=404,
+                            detail=f"report job {job_id} has no printable page -- it was "
+                                   "made before pages existed")
+    content = found[0]
     if s["state"] == "signed_off" and (not signed_hash
                                        or signoff.deck_hash(content) != signed_hash):
         raise HTTPException(status_code=409,
                             detail=f"report job {job_id}: the stored {fmt} does not match "
                                    "the one that was signed off")
-    if fmt == "deck":
-        _, media_type, filename = found
-        return Response(content=content, media_type=media_type,
-                        headers={"Content-Disposition": f'attachment; filename="{filename}"',
-                                 "X-Report-Run-Id": job.get("run_id") or ""})
     name = f"{job.get('report_type')}_{job.get('run_id') or job_id}.html"
     return Response(content=content, media_type=found[1],
                     headers={"Content-Disposition": f'inline; filename="{name}"',

@@ -28,8 +28,9 @@ class FakeStore:
     def __init__(self):
         self.jobs, self.decks, self.created = {}, {}, []
 
-    def create(self, report_type, *, scope, as_of, requested_by, entitlement=None):
+    def create(self, report_type, *, scope, as_of, requested_by, entitlement=None, pack_key=None):
         self.created.append((report_type, scope, as_of, requested_by))
+        self.pack_key = pack_key
         self.entitlement = entitlement
         for job in self.jobs.values():
             if job["status"] in ("queued", "running") and job["scope"] == scope:
