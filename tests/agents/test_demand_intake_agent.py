@@ -535,3 +535,89 @@ def test_each_of_the_five_is_asked_for_on_its_own_terms():
         with _replies({'fields': {path: {'value': 'an answer', 'confidence': 'high'}}}):
             out = _agent().extract(ctx)
         assert path in out['fields'], f'{path} was asked for and the answer was dropped'
+
+
+# ---------------------------------------------------------------------------
+# THE LAST THREE, read off the model's words rather than measured (2026-10-05 run).
+#
+#   party                    = 'UK Branch Sites'  -- the 42 branch sites are where the thing is
+#                                                   GOING. They are not a counterparty.
+#   intake.existing_contract = 'No'               -- the request says MPLS circuits are running
+#                                                   today, which points the other way if anything.
+#   intake.po_required       = 'Yes'              -- nowhere in the request.
+#
+# Prompt v2 stops all three today, which is exactly the position the other five were in before
+# they were pinned: held back by wording, one prompt edit from returning.
+# ---------------------------------------------------------------------------
+
+_LAST_THREE = {
+    'party': 'UK Branch Sites',
+    'intake.existing_contract': 'No',
+    'intake.po_required': 'Yes',
+}
+
+
+def test_none_of_the_last_three_travel_on_a_request_that_states_none_of_them():
+    ctx = dict(_CONTEXT, text=_SDWAN)
+    reply = {'fields': {k: {'value': v, 'confidence': 'high'} for k, v in _LAST_THREE.items()}}
+    with _replies(reply):
+        out = _agent().extract(ctx)
+    assert out['fields'] == {}, f'still through: {sorted(out["fields"])}'
+
+
+def test_a_named_supplier_is_kept():
+    ctx = dict(_CONTEXT, text='We want to buy from Vodafone, our incumbent supplier.')
+    with _replies({'fields': {'party': {'value': 'Vodafone', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['party']['value'] == 'Vodafone'
+
+
+def test_delivery_sites_are_not_a_counterparty():
+    # The live failure: somewhere the thing is going is not somebody you contract with.
+    ctx = dict(_CONTEXT, text='Roll out to 42 UK branch sites and two data centres.')
+    with _replies({'fields': {'party': {'value': 'UK Branch Sites', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'party' not in out['fields']
+
+
+def test_a_stated_framework_is_kept():
+    ctx = dict(_CONTEXT, text='We can buy this under the existing CCS framework.')
+    with _replies({'fields': {'intake.existing_contract': {'value': 'Yes — on framework',
+                                                           'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'intake.existing_contract' in out['fields']
+
+
+def test_a_renewal_implies_an_existing_contract():
+    # A renewal is itself a statement that something is already contracted, so the field is
+    # claimed even though the sentence never says the word "contract".
+    ctx = dict(_CONTEXT,
+               text='Renew our cloud data platform for another year, consolidated onto one '
+                    '3-year agreement.')
+    with _replies({'fields': {'intake.existing_contract': {'value': 'Yes — on framework',
+                                                           'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'intake.existing_contract' in out['fields']
+
+
+def test_a_stated_po_requirement_is_kept():
+    ctx = dict(_CONTEXT, text='A purchase order will be raised against the cost centre.')
+    with _replies({'fields': {'intake.po_required': {'value': 'Yes', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert out['fields']['intake.po_required']['value'] == 'Yes'
+
+
+def test_po_is_not_matched_inside_a_longer_word():
+    # "po" is two letters and lives inside plenty of words; the cues are word-bounded.
+    ctx = dict(_CONTEXT, text='This is important for the postal sorting hub upgrade.')
+    with _replies({'fields': {'intake.po_required': {'value': 'Yes', 'confidence': 'high'}}}):
+        out = _agent().extract(ctx)
+    assert 'intake.po_required' not in out['fields']
+
+
+def test_each_of_the_last_three_is_asked_for_on_its_own_terms():
+    for path in _LAST_THREE:
+        ctx = dict(_CONTEXT, asked_field=path, text='Whatever the form asked for.')
+        with _replies({'fields': {path: {'value': 'an answer', 'confidence': 'high'}}}):
+            out = _agent().extract(ctx)
+        assert path in out['fields'], f'{path} was asked for and the answer was dropped'

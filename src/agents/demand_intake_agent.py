@@ -114,6 +114,31 @@ _CLAIM_CUES: Dict[str, tuple] = {
     "pillar": ("pillar", "pillars", "strategic priority", "strategic priorities"),
     "alignment": ("align", "aligns", "aligned", "alignment", "okr", "okrs", "strategy",
                   "strategic", "objective", "objectives", "initiative", "initiatives"),
+    # The last three, read off the model's words rather than measured in the same run:
+    #   party                    = 'UK Branch Sites' -- where the thing is GOING, not somebody
+    #                                                   you contract with
+    #   intake.existing_contract = 'No'              -- the request says MPLS circuits run today,
+    #                                                   which points the other way if anything
+    #   intake.po_required       = 'Yes'             -- nowhere in the request
+    #
+    # A counterparty is named, not inferred from a delivery address, so the cues are the words
+    # that mark somebody as the other side of a deal. A requester who writes "buy from Vodafone"
+    # is covered by "buy from"; one who writes only "from Vodafone" is not, and waits to be asked.
+    "party": ("supplier", "suppliers", "vendor", "vendors", "incumbent", "sole source",
+              "sole-source", "single source", "provider", "providers", "reseller",
+              "distributor", "manufacturer", "oem", "buy from", "quote from",
+              "purchase from", "award to", "contract with", "partner with"),
+    # A renewal is itself a statement that something is already contracted, which is why "renew"
+    # belongs here even though it never says the word "contract".
+    "intake.existing_contract": ("framework", "frameworks", "existing contract",
+                                 "current contract", "contract in place", "under contract",
+                                 "contracted", "renewal", "renew", "renewing", "off-contract",
+                                 "off contract", "expiring", "expires", "incumbent",
+                                 "call-off", "call off"),
+    # "po" is two letters and lives inside plenty of words, so the word boundaries in
+    # _CLAIM_PATTERNS are doing real work here.
+    "intake.po_required": ("po", "pos number", "p.o.", "purchase order", "purchase orders",
+                           "p-card", "pcard", "procurement card", "invoice without"),
 }
 # DELIBERATELY ABSENT: benefit.baseline. "Today the MPLS circuits cost us £95k a year" is a
 # baseline the requester really did state, and putting it in this table would turn a rule against
