@@ -88,6 +88,8 @@ ACTIONS: Dict[str, str] = {
     # --- configuring -----------------------------------------------------
     "policy.write": "configure",
     "policy.reload": "configure",
+    # Which buyers a Buyer/Viewer may see in reports. Changes what every report shows that person.
+    "report.scope.write": "configure",
     "prompt.write": "configure",
     # Authoring a strategy and approving one are configuration: they change
     # what the system will recommend, for every finding that matches, until

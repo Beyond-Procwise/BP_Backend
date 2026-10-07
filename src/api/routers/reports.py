@@ -38,6 +38,8 @@ from src.services.rga import audit, editing, job_runner, job_store, signoff
 from src.services.rga.factpack import registered_types
 
 from src.services import report_export
+from src.services.report_data import mode as rd_mode, scope as rd_scope, service as rd_service
+from src.services.report_data.spec import SpecRejected
 from src.services.agent_actions import record_action_or_fail
 
 from api.auth import require_user
@@ -200,38 +202,162 @@ class ExportBody(BaseModel):
     html: Optional[str] = None
     css: Optional[str] = None
     tables: Optional[list] = None
+    # The report-data request the page was drawn from. When given, the export is built from a
+    # fresh compute of it under the EXPORTER's rights, and carries every tile and its parameters.
+    request: Optional[Dict[str, Any]] = None
 
 
 _EXPORT_TYPES = {"pdf": "application/pdf",
                  "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
 
 
+def _may(principal: Any):
+    """A read-action check that answers yes/no instead of raising, so one denied source marks its
+    own tiles ``forbidden`` rather than failing the whole report."""
+    def check(action: str) -> bool:
+        try:
+            gate(action, principal, agent=_AGENT, context={"via": "report_data"})
+            return True
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                return False
+            raise
+    return check
+
+
+def _compute_report(request: Dict[str, Any], principal: Any) -> Dict[str, Any]:
+    try:
+        return rd_service.compute(principal, request, authorise=_may(principal),
+                                  mode_ok=lambda: rd_mode.is_active(principal))
+    except rd_service.ModeRefused:
+        # whatever the client sent: only an Admin with an active presentation session gets this
+        raise HTTPException(status_code=403, detail="presentation data is not available")
+    except SpecRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+
+
+@router.post("/data")
+def report_data(body: Dict[str, Any], principal=Depends(require_user)):
+    """Per-tile results for a list of tile specs, under the caller's rights and scope.
+
+    ``data_mode`` is on every tile. Presentation data is refused (403) to anyone but an Admin with an
+    active presentation session, whatever the request says.
+    """
+    gate("report.read", principal, agent=_AGENT, context={"via": "report_data"})
+    return _compute_report(body, principal)
+
+
+@router.get("/presentation-mode")
+def presentation_status(principal=Depends(require_user)):
+    return {"eligible": rd_mode.is_admin(principal), "active": rd_mode.is_active(principal)}
+
+
+@router.post("/presentation-mode")
+def presentation_set(body: Dict[str, Any], principal=Depends(require_user)):
+    """Admin only; per session; ends with the sign-in."""
+    try:
+        return rd_mode.activate(principal) if body.get("active") else rd_mode.deactivate(principal)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+class ScopeBody(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    buyer_id: str = Field(min_length=1, max_length=64)
+
+
+@router.get("/scope")
+def scope_list(subject: Optional[str] = None, principal=Depends(require_user)):
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "list"})
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT subject, buyer_id, granted_by, granted_at FROM proc.bp_user_buyer_scope "
+                    "WHERE revoked_at IS NULL AND (%s::text IS NULL OR subject = %s) ORDER BY subject, buyer_id",
+                    (subject, subject))
+        return {"data": [{"subject": r[0], "buyer_id": r[1], "granted_by": r[2], "granted_at": r[3].isoformat()}
+                         for r in cur.fetchall()]}
+
+
+@router.post("/scope", status_code=201)
+def scope_grant(body: ScopeBody, principal=Depends(require_user)):
+    """Admin only: let ``subject`` see the deals of one buyer in reports. A user cannot grant themselves."""
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "grant", "subject": body.subject})
+    by = getattr(principal, "subject", None) or "unknown"
+    if body.subject == by:
+        raise HTTPException(status_code=403, detail="you cannot change your own report scope")
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO proc.bp_user_buyer_scope (subject, buyer_id, granted_by) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (subject, buyer_id) WHERE revoked_at IS NULL DO NOTHING", (body.subject, body.buyer_id, by))
+    return {"subject": body.subject, "buyer_id": body.buyer_id, "granted_by": by}
+
+
+@router.delete("/scope")
+def scope_revoke(body: ScopeBody, principal=Depends(require_user)):
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "revoke", "subject": body.subject})
+    by = getattr(principal, "subject", None) or "unknown"
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_user_buyer_scope SET revoked_at = now(), revoked_by = %s "
+                    "WHERE subject = %s AND buyer_id = %s AND revoked_at IS NULL", (by, body.subject, body.buyer_id))
+        return {"revoked": cur.rowcount}
+
+
 @router.post("/export")
 def export_report(body: ExportBody, principal=Depends(require_user)):
-    """Render the builder's page to a PDF (or its tables to a workbook) and download it.
+    """Render the builder's page to a PDF (or the report's tables to a workbook) and download it.
 
     The file goes back only to the person who composed the page, so this is a read
     (``report.read``), not a share: anyone may export a report they are building. Sending
-    one on to somebody else is ``report.export`` and stays governed. A copy is kept in S3
-    and its key written to ``bp_reports.report_url``; if either fails the download still
-    works and the response says so (``X-Report-Stored``).
+    one on to somebody else is ``report.export`` and stays governed.
+
+    When ``request`` (the report-data request) is given, the export is built from a fresh compute
+    of it under the exporter's own rights and scope: every tile appears in its true state with its
+    parameters, a presentation report is watermarked on every page (PDF) and flagged on the first
+    sheet with a ``-DEMO`` filename (XLSX), and a mark cannot be switched off by the request. A copy is
+    kept in S3 and its key written to ``bp_reports.report_url`` (never for a presentation export); if
+    either fails the download still works and the response says so (``X-Report-Stored``).
     """
     gate("report.read", principal, agent=_AGENT,
          context={"format": body.format, "report_id": body.report_id})
+    payload = _compute_report(body.request, principal) if body.request else None
+    presentation = bool(payload and payload["data_mode"] == "presentation")
     try:
-        content = (report_export.render_pdf(body.html or "", body.css or "") if body.format == "pdf"
-                   else report_export.render_xlsx(body.tables or []))
+        if body.format == "pdf":
+            html, css = body.html or "", body.css or ""
+            if payload:
+                appendix = report_export.report_appendix_html(
+                    payload, title=body.name, generated_by=getattr(principal, "email", None) or getattr(principal, "subject", "") or "")
+                html = (html or "") + appendix if html.strip() else "<html><body>" + appendix + "</body></html>"
+                css += "\n" + report_export.APPENDIX_CSS
+            if presentation:
+                html = (html.replace("</body>", report_export.watermark_html() + "</body>", 1)
+                        if "</body>" in html else html + report_export.watermark_html())
+                css += "\n" + report_export.watermark_css()
+            content = report_export.render_pdf(html, css)
+        else:
+            tables = report_export.payload_tables(payload) if payload else (body.tables or [])
+            content = report_export.render_xlsx(tables)
     except report_export.ExportRefused as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    key = report_export.storage_key(body.report_id, body.name, body.format, stamp)
-    stored = report_export.store(content, key, _EXPORT_TYPES[body.format])
-    recorded = bool(stored and body.report_id and report_export.record_url(body.report_id, key))
-    filename = re.sub(r"[^A-Za-z0-9._ -]+", "_", body.name)[:80] or "report"
+    name = body.name + ("-DEMO" if presentation and body.format == "xlsx" else "")
+    key = report_export.storage_key(body.report_id, name, body.format, stamp)
+    if presentation:
+        # a presentation export is logged and handed back, never stored or recorded against a report
+        rd_mode.log_export(principal, {"format": body.format, "name": name})
+        stored = recorded = False
+    else:
+        stored = report_export.store(content, key, _EXPORT_TYPES[body.format])
+        recorded = bool(stored and body.report_id and report_export.record_url(body.report_id, key))
+    filename = re.sub(r"[^A-Za-z0-9._ -]+", "_", name)[:80] or "report"
     return Response(content=content, media_type=_EXPORT_TYPES[body.format],
                     headers={"Content-Disposition": f'attachment; filename="{filename}.{body.format}"',
                              "X-Report-Stored": "true" if stored else "false",
-                             "X-Report-Url-Recorded": "true" if recorded else "false"})
+                             "X-Report-Url-Recorded": "true" if recorded else "false",
+                             "X-Report-Data-Mode": payload["data_mode"] if payload else "unspecified"})
 
 
 @router.get("/jobs")
