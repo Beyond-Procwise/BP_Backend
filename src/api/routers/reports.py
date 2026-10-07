@@ -317,14 +317,29 @@ def scope_grant(body: ScopeBody, principal=Depends(require_user)):
 
 
 @router.delete("/scope")
-def scope_revoke(body: ScopeBody, principal=Depends(require_user)):
-    gate("report.scope.write", principal, agent=_AGENT, context={"op": "revoke", "subject": body.subject})
+def scope_revoke(subject: str, buyer_id: str, principal=Depends(require_user)):
+    """Admin only. Query parameters, not a body, so the product's plain DELETE bridge can call it."""
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "revoke", "subject": subject})
     by = getattr(principal, "subject", None) or "unknown"
     from src.services.db import get_conn
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("UPDATE proc.bp_user_buyer_scope SET revoked_at = now(), revoked_by = %s "
-                    "WHERE subject = %s AND buyer_id = %s AND revoked_at IS NULL", (by, body.subject, body.buyer_id))
+                    "WHERE subject = %s AND buyer_id = %s AND revoked_at IS NULL", (by, subject, buyer_id))
         return {"revoked": cur.rowcount}
+
+
+@router.get("/scope/buyers")
+def scope_buyers(q: Optional[str] = None, principal=Depends(require_user)):
+    """Admin only: the buyer codes a person can be given, with how many deals each has, so the grant
+    screen can offer a list instead of asking someone to type a code from memory."""
+    gate("report.scope.write", principal, agent=_AGENT, context={"op": "buyers"})
+    needle = (q or "").strip()[:40]
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT buyer_id, COUNT(*) FROM proc.bp_deal_overview WHERE buyer_id IS NOT NULL "
+                    "AND (%s = '' OR buyer_id ILIKE %s) GROUP BY buyer_id ORDER BY COUNT(*) DESC, buyer_id LIMIT 50",
+                    (needle, f"%{needle}%"))
+        return {"data": [{"buyer_id": r[0], "deals": int(r[1])} for r in cur.fetchall()]}
 
 
 @router.post("/export")

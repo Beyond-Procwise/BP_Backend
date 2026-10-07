@@ -171,3 +171,31 @@ def test_a_buyer_is_offered_only_their_own_suppliers_as_filter_choices():
     assert live.values("invoice", "supplier", None, Scope("Buyer", False, ()), 50) == []
     hit = live.values("invoice", "supplier", "cloud", ADMIN, 10)
     assert hit and all("cloud" in l.lower() for _, l in hit)
+
+
+def test_a_grant_can_be_listed_found_by_search_and_revoked_through_the_api(monkeypatch):
+    from types import SimpleNamespace as NS
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from api.routers import reports as rr
+    from src.services import rbac
+    from src.services.db import get_conn
+    monkeypatch.setattr(rr, "gate", lambda *a, **k: None)
+    monkeypatch.setattr(rbac, "effective_role", lambda p, *a, **k: "Admin")
+    app = FastAPI(); app.include_router(rr.router)
+    app.dependency_overrides[rr.require_user] = lambda: NS(subject="livecheck-admin", claims={})
+    c = TestClient(app)
+    sub, code = "livecheck-grantee", _buyers()[0]
+    try:
+        found = c.get("/reports/scope/buyers", params={"q": code[:5]}).json()["data"]
+        assert any(b["buyer_id"] == code and b["deals"] > 0 for b in found)
+        assert c.post("/reports/scope", json={"subject": sub, "buyer_id": code}).status_code == 201
+        assert c.post("/reports/scope", json={"subject": sub, "buyer_id": code}).status_code == 201      # twice: still one active grant
+        listed = c.get("/reports/scope", params={"subject": sub}).json()["data"]
+        assert [(g["subject"], g["buyer_id"], g["granted_by"]) for g in listed] == [(sub, code, "livecheck-admin")]
+        assert c.delete("/reports/scope", params={"subject": sub, "buyer_id": code}).json() == {"revoked": 1}
+        assert c.get("/reports/scope", params={"subject": sub}).json()["data"] == []
+        assert c.delete("/reports/scope", params={"subject": sub, "buyer_id": code}).json() == {"revoked": 0}
+    finally:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM proc.bp_user_buyer_scope WHERE subject=%s", (sub,))

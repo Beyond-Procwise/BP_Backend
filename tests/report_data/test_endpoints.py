@@ -253,3 +253,13 @@ def test_presentation_values_are_synthetic_and_admin_only(env):
     assert r.status_code == 200 and labels and all(l.startswith("Synthetic Supplier") for l in labels)
     assert r.json()["marker"] == "PRESENTATION DATA - NOT REAL"
     assert env.client.post("/reports/values", json={**body, "dimension": "finding_type"}).status_code == 422
+
+
+def test_the_grant_screen_endpoints_are_admin_only(env):
+    # the whole scope surface is one gate: a Buyer reaches none of it
+    env.who = principal("Buyer", "u-b")
+    env.client.app.dependency_overrides[rr.require_user] = lambda: env.who
+    assert env.client.get("/reports/scope/buyers").status_code == 403
+    assert env.client.get("/reports/scope").status_code == 403
+    assert env.client.delete("/reports/scope?subject=u-x&buyer_id=CC1").status_code == 403
+    assert env.client.post("/reports/scope", json={"subject": "u-x", "buyer_id": "CC1"}).status_code == 403
