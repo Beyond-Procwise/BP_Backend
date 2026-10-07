@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from src.services import policy_observation, rbac
+from src.services import policy_condition, policy_observation, rbac
 
 logger = logging.getLogger(__name__)
 
@@ -152,11 +152,10 @@ def _evaluate(
 
     Decide whether ``principal`` may perform ``action``.
 
-    ``context`` is accepted for interface symmetry with callers that carry
-    request-scoped data, but is not read by this function today. It is
-    intentionally left uncoerced: a coercion that is never used can only
-    ever turn a caller's type error into a silently swallowed denial,
-    hiding a bug in the caller rather than surfacing it.
+    ``context`` is read only by a policy's ``details.condition`` (see
+    :mod:`policy_condition`), and left uncoerced: a context that is not a dict
+    simply carries no fields, so a condition on it cannot be checked and the
+    request goes to a person rather than being waved through.
     """
 
     try:
@@ -208,6 +207,39 @@ def _evaluate(
         for policy in policies:
             details = policy.get("details") or {}
             rules = details.get("rules") or {}
+
+            # A condition narrows WHEN the policy applies. One that does not
+            # apply is skipped whole -- including its required_role -- but one
+            # that cannot be checked is never skipped: a deny must not stop
+            # denying because the caller left out a field.
+            if "condition" in details:
+                try:
+                    applies = policy_condition.evaluate(
+                        details["condition"], context
+                    )
+                except policy_condition.MissingField as exc:
+                    return _unresolved(
+                        f"{policy.get('policyName')} has a condition on "
+                        f"{exc.field!r}, which this request did not carry, so "
+                        f"it cannot be said whether it applies",
+                        policy,
+                        action=action,
+                        action_class=action_class,
+                        role=role,
+                        missing_field=exc.field,
+                    )
+                except policy_condition.ConditionError as exc:
+                    # Unenforceable as written: deny, as an unresolvable
+                    # required_role does, rather than let it evaporate.
+                    return deny_from_policy(
+                        f"{policy.get('policyName')} has a condition that "
+                        f"cannot be evaluated: {exc}",
+                        policy,
+                        action=action,
+                        role=role,
+                    )
+                if not applies:
+                    continue
 
             required_role = details.get("required_role")
             if required_role:
