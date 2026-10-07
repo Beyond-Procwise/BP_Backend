@@ -55,7 +55,7 @@ from src.services.extraction.engineered.contract_parties import (  # noqa: E402
     BUYER_FIELD, CONFIDENCE, SUPPLIER_FIELD, decide_correction,
 )
 from src.services.extraction.engineered.contract_dates import (  # noqa: E402
-    END_FIELD, START_FIELD, decide_date_correction,
+    DERIVED_END_PATTERN, END_FIELD, START_FIELD, decide_date_correction,
 )
 from src.services.extraction.engineered.contract_header import (  # noqa: E402
     LAW_FIELD, PAYMENT_FIELD, TITLE_FIELD, decide_header_correction,
@@ -239,9 +239,14 @@ def main() -> int:
             print(f"    {'':38s} why: {dt.reason}")
             terms += 1
             if args.apply:
-                patch = _provenance_patch({START_FIELD: dt.start, END_FIELD: dt.end},
+                # A derived end is recorded as derived: its own pattern_name, so
+                # provenance never claims a printed date was read.
+                patch = _provenance_patch({START_FIELD: dt.start},
                                           source="date",
                                           pattern="contract_term_clause")
+                patch.update(_provenance_patch(
+                    {END_FIELD: dt.end}, source="date",
+                    pattern=DERIVED_END_PATTERN if dt.end_derived else "contract_term_clause"))
                 cur.execute(
                     """UPDATE proc.bp_contract_raw
                           SET contract_start_date = %s, contract_end_date = %s,

@@ -39,6 +39,17 @@ WHAT IT REFUSES, each one a test:
   * a value dateparser cannot parse ("the first Tuesday after Michaelmas");
   * a term whose start falls after its end -- that is a misread, not two facts,
     and both are dropped.
+
+A TERM STATED AS A DURATION. Some contracts never print an end date: "shall
+commence on 5 January 2026 and shall continue for a period of thirtysix (36)
+months". When -- and only when -- no end date is printed, the end is worked out as
+start + N months - 1 day and the candidate carries `DERIVED_END_PATTERN` as its
+pattern_name, so provenance says "derived", never "read". Narrow on purpose: the
+duration must follow the start date in the same sentence ("continue for", "remain
+in force for"), so a payment term, a notice period, a price-fix window or a renewal
+period is never mistaken for the term; words and digits must agree; and a start on
+a day the end month lacks (31 January + 1 month) is refused, because there is no
+single answer.
 """
 from __future__ import annotations
 
@@ -51,6 +62,10 @@ from .contract_parties import CONFIDENCE, _squeeze
 
 START_FIELD = "contract_start_date"
 END_FIELD = "contract_end_date"
+
+#: pattern_name recorded in a field's provenance when the end was worked out from
+#: a stated duration rather than read as a date. The marker IS the provenance.
+DERIVED_END_PATTERN = "contract_term_duration_derived"
 
 _MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
           r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|"
@@ -122,6 +137,7 @@ class ContractDates:
     end: Optional[str] = None
     start_text: Optional[str] = None
     end_text: Optional[str] = None
+    end_derived: bool = False
 
 
 #: Every spelling accepted, in full. Keyed on the WHOLE word, not a three-letter
@@ -250,6 +266,85 @@ def _from(text: str, label: re.Pattern, *prose: re.Pattern) -> tuple[Optional[st
                 return got
     return (None, None)
 
+_ONES = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+         "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+         "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+         "eighteen": 18, "nineteen": 19}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60}
+
+#: A duration immediately after the start date: "and shall continue for a period of
+#: thirtysix (36) months". Anchored to the end of the start date, so a duration
+#: elsewhere in the document is never in reach.
+_DURATION_AFTER_START = re.compile(
+    r"(?i)^[\s,]*(?:and\s+)?(?:shall\s+|will\s+)?"
+    r"(?:continue|remain\s+in\s+(?:force|effect)|run)\s+for\s+"
+    r"(?:an?\s+)?(?:(?:initial\s+)?(?:period|term)\s+of\s+)?"
+    r"(?P<num>\d{1,4}|[a-z][a-z\- ]{0,28}?)\s*(?:\((?P<digits>\d{1,4})\)\s*)?"
+    r"(?P<unit>months?|years?)\b"
+)
+
+#: Longest term worth believing, in months. 9999 years is a misread.
+_MAX_TERM_MONTHS = 600
+
+
+def _number(text: str) -> Optional[int]:
+    """`36`, `thirty-six`, `thirty six`, `thirtysix`, `three` -> int; else None."""
+    t = _squeeze(text).lower().replace("-", " ").strip()
+    if t.isdigit():
+        return int(t)
+    if t in _ONES:
+        return _ONES[t]
+    if t in _TENS:
+        return _TENS[t]
+    parts = t.split()
+    if len(parts) == 2 and parts[0] in _TENS and parts[1] in _ONES and _ONES[parts[1]] < 10:
+        return _TENS[parts[0]] + _ONES[parts[1]]
+    if len(parts) == 1:                               # "thirtysix": the hyphen lost
+        for tens, value in _TENS.items():
+            rest = t[len(tens):]
+            if t.startswith(tens) and rest in _ONES and _ONES[rest] < 10:
+                return value + _ONES[rest]
+    return None
+
+
+def _end_from_duration(start_iso: str, months: int) -> Optional[str]:
+    """start + `months` - 1 day, or None when the end month lacks the start's day."""
+    from calendar import monthrange
+    from datetime import date, timedelta
+    s = date.fromisoformat(start_iso)
+    year, month0 = divmod(s.month - 1 + months, 12)
+    year, month = s.year + year, month0 + 1
+    if s.day > monthrange(year, month)[1]:
+        return None                                   # 31 Jan + 1 month: no single answer
+    return (date(year, month, s.day) - timedelta(days=1)).isoformat()
+
+
+def _derive_end(text: str, start_iso: str) -> tuple[Optional[str], Optional[str]]:
+    """``(iso, literal)``: the end implied by a duration stated with the start."""
+    for pattern in (_START_PROSE_STRONG, _START_PROSE_WEAK):
+        for m in pattern.finditer(text):
+            if pattern is _START_PROSE_WEAK and _cites_another_agreement(text, m.start()):
+                continue
+            dm = _DATE.match(text[m.end():m.end() + 40])
+            if not dm or _iso(dm.group(1)) != start_iso:
+                continue                              # a different date: not THIS start
+            tail_at = m.end() + dm.end()
+            d = _DURATION_AFTER_START.match(text[tail_at:tail_at + 200])
+            if not d:
+                continue
+            n = _number(d.group("num"))
+            if n is None:
+                continue
+            if d.group("digits") is not None and int(d.group("digits")) != n:
+                continue                              # "thirty (36)": refuse, do not pick
+            months = n * 12 if d.group("unit").lower().startswith("year") else n
+            if not 1 <= months <= _MAX_TERM_MONTHS:
+                continue
+            iso = _end_from_duration(start_iso, months)
+            if iso:
+                return iso, text[m.start():tail_at + d.end()].strip()
+    return (None, None)
+
 
 def read_dates(full_text: str) -> ContractDates:
     """The contract's term, or None for either end it does not state."""
@@ -259,6 +354,10 @@ def read_dates(full_text: str) -> ContractDates:
     start, start_text = _from(full_text, _START_LABEL,
                               _START_PROSE_STRONG, _START_PROSE_WEAK)
     end, end_text = _from(full_text, _END_LABEL, _END_PROSE)
+    end_derived = False
+    if not end and start:
+        end, end_text = _derive_end(full_text, start)
+        end_derived = bool(end)
 
     # A term that ends before it begins has been misread. Two wrong dates are
     # worse than two empty ones, and a start date is what blocks promotion -- so
@@ -267,7 +366,8 @@ def read_dates(full_text: str) -> ContractDates:
         return ContractDates()
 
     return ContractDates(start=start, end=end,
-                         start_text=start_text, end_text=end_text)
+                         start_text=start_text, end_text=end_text,
+                         end_derived=end_derived)
 
 
 def date_candidates(full_text: str) -> list[Candidate]:
@@ -288,14 +388,15 @@ def date_candidates(full_text: str) -> list[Candidate]:
             value=value,
             span=Span(page=0, bbox=(0.0, 0.0, 0.0, 0.0), text=literal or value),
             source="date",
-            pattern_name="contract_term_clause",
+            pattern_name=(DERIVED_END_PATTERN if field == END_FIELD and d.end_derived
+                          else "contract_term_clause"),
             confidence=CONFIDENCE,
         ))
     return out
 
 
 __all__ = ["ContractDates", "read_dates", "date_candidates",
-           "START_FIELD", "END_FIELD"]
+           "START_FIELD", "END_FIELD", "DERIVED_END_PATTERN"]
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +409,7 @@ class DateCorrection:
     end: Optional[str]
     changed: bool
     reason: str
+    end_derived: bool = False
 
 
 def decide_date_correction(
@@ -343,7 +445,10 @@ def decide_date_correction(
 
     d = read_dates(full_text)
     start = d.start or stored_start
-    end = d.end or stored_end
+    # A derived end never replaces a stored one: arithmetic on a duration is weaker
+    # evidence than a value the context layer grounded or a person confirmed.
+    derived = d.end_derived and not stored_end
+    end = (d.end if (d.end and (not d.end_derived or derived)) else None) or stored_end
     changed = (start != stored_start) or (end != stored_end)
     if not d.start and not d.end:
         return DateCorrection(stored_start, stored_end, False,
@@ -351,8 +456,10 @@ def decide_date_correction(
                               "left as found rather than cleared")
     return DateCorrection(
         start, end, changed,
-        "read from the document's own term wording"
-        + ("" if changed else " and already stored correctly"),
+        ("read from the document's own term wording"
+         + ("" if changed else " and already stored correctly")
+         + ("; the end is DERIVED from the stated duration" if derived else "")),
+        end_derived=derived,
     )
 
 
