@@ -194,3 +194,31 @@ def test_scope_is_granted_and_revoked_only_by_an_admin_and_never_to_oneself(env)
     env.who = principal("Admin", "u-admin")
     env.client.app.dependency_overrides[rr.require_user] = lambda: env.who
     assert env.client.post("/reports/scope", json={"subject": "u-admin", "buyer_id": "CC1"}).status_code == 403
+
+
+def test_the_picker_lists_only_what_the_caller_may_read_and_hides_presentation_only_tiles_in_live_mode(env):
+    keys = lambda r: {m["key"] for m in r.json()["metrics"]}
+    live_keys = keys(env.client.get("/reports/registry"))
+    assert "committed_spend" in live_keys and "compliance_rate" not in live_keys and "spend_by_category" not in live_keys
+    env.denied = {"invoice.read"}
+    assert "committed_spend" not in keys(env.client.get("/reports/registry"))      # no access, not listed
+    assert "quote_volume" in keys(env.client.get("/reports/registry"))
+    env.denied = set()
+    env.client.post("/reports/presentation-mode", json={"active": True})
+    r = env.client.get("/reports/registry")
+    assert "compliance_rate" in keys(r) and {m["mode"] for m in r.json()["metrics"] if m["key"] == "compliance_rate"} == {"presentation"}
+    assert "category" in {d["key"] for d in r.json()["dimensions"]}
+    env.client.post("/reports/presentation-mode", json={"active": False})
+    assert "category" not in {d["key"] for d in env.client.get("/reports/registry").json()["dimensions"]}
+
+
+def test_a_new_metric_is_available_by_registry_entry_alone(env, monkeypatch):
+    from src.services.report_data import registry as R
+    extra = R.Metric("po_value_test", "PO value (test)", "currency", R.LIVE, "invoice", "SUM(i.invoice_amount)",
+                     additive=True, dimensions=("month",))
+    monkeypatch.setitem(R.METRICS, "po_value_test", extra)
+    assert "po_value_test" in {m["key"] for m in env.client.get("/reports/registry").json()["metrics"]}
+    out = env.client.post("/reports/data", json={**REQ, "tiles": [{"id": "n", "metric": "po_value_test", "viz": "kpi"}]})
+    assert out.json()["tiles"][0]["status"] == "ok"                                 # no code outside the registry changed
+    bad = env.client.post("/reports/data", json={**REQ, "tiles": [{"id": "n", "metric": "po_value_test", "groupBy": ["supplier"]}]})
+    assert bad.json()["tiles"][0]["status"] == "rejected"                           # and it only allows what it lists

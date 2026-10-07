@@ -348,3 +348,32 @@ def compute(principal: Any, request: Dict[str, Any], *, scope: Optional[Scope] =
     return {"data_mode": mode, "org": presentation.ORG if mode == "presentation" else None,
             "marker": _marker_for(mode), "as_of": today.isoformat(),
             "period": {"from": f.isoformat(), "to": t.isoformat()}, "tiles": tiles_out}
+
+
+def catalogue(*, authorise: Callable[[str], bool], presentation_ok: bool) -> Dict[str, Any]:
+    """What this caller may pick: live metrics whose source they may read, plus the presentation-only
+    ones only when presentation mode is active for them. An unavailable metric is never listed, and a
+    presentation-only one is never shown as a dead tile in live mode."""
+    seen: Dict[str, bool] = {}
+
+    def may(a: str) -> bool:
+        if a not in seen:
+            seen[a] = bool(authorise(a))
+        return seen[a]
+
+    metrics = []
+    for m in R.METRICS.values():
+        if m.availability == R.LIVE and may(R.SOURCES[m.source].requires):
+            metrics.append({"key": m.key, "label": m.label, "format": m.format, "unit": m.unit, "additive": m.additive,
+                            "dimensions": list(m.dimensions), "default_comparison": m.default_comparison,
+                            "mode": "live", "note": m.note})
+        elif m.availability == R.PRESENTATION_ONLY and presentation_ok:
+            dims = [d for d in tuple(m.dimensions) + tuple(m.presentation_dimensions) if d in R.PRESENTATION_DIMS]
+            metrics.append({"key": m.key, "label": m.label, "format": m.format, "unit": m.unit, "additive": m.additive,
+                            "dimensions": dims, "default_comparison": m.default_comparison, "mode": "presentation",
+                            "note": None})
+    used = {d for m in metrics for d in m["dimensions"]}
+    dims = [{"key": d.key, "label": d.label, "is_time": d.is_time} for d in R.DIMENSIONS.values()
+            if d.key in used and (d.availability == R.LIVE or presentation_ok)]
+    return {"metrics": metrics, "dimensions": dims, "viz": list(R.VIZ), "comparisons": list(R.COMPARISONS),
+            "derive_ops": list(R.DERIVE_OPS), "max_group_by": R.MAX_GROUP_BY}

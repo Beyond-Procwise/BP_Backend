@@ -249,6 +249,14 @@ def report_data(body: Dict[str, Any], principal=Depends(require_user)):
     return _compute_report(body, principal)
 
 
+@router.get("/registry")
+def registry_catalogue(principal=Depends(require_user)):
+    """The metrics and dimensions the caller may build tiles from. Presentation-only metrics appear only
+    while presentation mode is active for this session; an unavailable one never does."""
+    gate("report.read", principal, agent=_AGENT, context={"via": "registry"})
+    return rd_service.catalogue(authorise=_may(principal), presentation_ok=rd_mode.is_active(principal))
+
+
 @router.get("/presentation-mode")
 def presentation_status(principal=Depends(require_user)):
     return {"eligible": rd_mode.is_admin(principal), "active": rd_mode.is_active(principal)}
