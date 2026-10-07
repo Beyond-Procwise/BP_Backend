@@ -222,3 +222,34 @@ def test_a_new_metric_is_available_by_registry_entry_alone(env, monkeypatch):
     assert out.json()["tiles"][0]["status"] == "ok"                                 # no code outside the registry changed
     bad = env.client.post("/reports/data", json={**REQ, "tiles": [{"id": "n", "metric": "po_value_test", "groupBy": ["supplier"]}]})
     assert bad.json()["tiles"][0]["status"] == "rejected"                           # and it only allows what it lists
+
+
+def test_filter_values_are_scoped_gated_and_never_leak_through_a_refusal(env, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(live, "values", lambda src, dim, q, scope, limit=50: seen.update(src=src, dim=dim, q=q, scope=scope) or [("S1", "Supplier One")])
+    body = {"metric": "committed_spend", "dimension": "supplier", "q": " sup "}
+    r = env.client.post("/reports/values", json=body)
+    assert r.status_code == 200 and r.json()["values"] == [{"key": "S1", "label": "Supplier One"}]
+    assert seen["q"] == "sup" and seen["src"] == "invoice" and seen["scope"].all_rows
+    env.who = principal("Buyer", "u-b")
+    env.client.app.dependency_overrides[rr.require_user] = lambda: env.who
+    env.client.post("/reports/values", json=body)
+    assert not seen["scope"].all_rows and seen["scope"].buyers == ("CC1",)          # a Buyer is offered only their own
+    env.denied = {"invoice.read"}
+    r = env.client.post("/reports/values", json=body)
+    assert r.json() == {"data_mode": "live", "status": "forbidden", "values": []}      # a refusal, not an empty list
+    env.denied = set()
+    assert env.client.post("/reports/values", json={**body, "dimension": "month"}).status_code == 422
+    assert env.client.post("/reports/values", json={**body, "dimension": "detector_type"}).status_code == 422
+    assert env.client.post("/reports/values", json={**body, "metric": "nope"}).status_code == 422
+
+
+def test_presentation_values_are_synthetic_and_admin_only(env):
+    body = {"metric": "committed_spend", "dimension": "supplier", "data_mode": "presentation"}
+    assert env.client.post("/reports/values", json=body).status_code == 403
+    env.client.post("/reports/presentation-mode", json={"active": True})
+    r = env.client.post("/reports/values", json=body)
+    labels = [v["label"] for v in r.json()["values"]]
+    assert r.status_code == 200 and labels and all(l.startswith("Synthetic Supplier") for l in labels)
+    assert r.json()["marker"] == "PRESENTATION DATA - NOT REAL"
+    assert env.client.post("/reports/values", json={**body, "dimension": "finding_type"}).status_code == 422

@@ -377,3 +377,43 @@ def catalogue(*, authorise: Callable[[str], bool], presentation_ok: bool) -> Dic
             if d.key in used and (d.availability == R.LIVE or presentation_ok)]
     return {"metrics": metrics, "dimensions": dims, "viz": list(R.VIZ), "comparisons": list(R.COMPARISONS),
             "derive_ops": list(R.DERIVE_OPS), "max_group_by": R.MAX_GROUP_BY}
+
+
+VALUES_LIMIT = 50
+
+
+def dimension_values(principal: Any, request: Dict[str, Any], *, scope: Optional[Scope] = None,
+                     authorise: Optional[Callable[[str], bool]] = None, mode_ok: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+    """The values a filter on ``dimension`` may offer for ``metric``, under the caller's rights and scope.
+    Same rules as a tile: the registry decides what may be asked, a source the caller cannot read answers
+    forbidden (never an empty list that looks like "nothing there"), and presentation is Admin-only."""
+    mode = str(request.get("data_mode") or default_mode()).lower()
+    if mode not in ("live", "presentation"):
+        raise SpecRejected(f"data_mode must be live or presentation, not {mode!r}")
+    if mode == "presentation" and not (mode_ok and mode_ok()):
+        raise ModeRefused("presentation data is not available")
+    key, dim = str(request.get("metric") or ""), str(request.get("dimension") or "")
+    q = str(request.get("q") or "").strip()[:80] or None
+    m = R.METRICS.get(key)
+    d = R.DIMENSIONS.get(dim)
+    if m is None or d is None:
+        raise SpecRejected("unknown metric or dimension")
+    if d.is_time:
+        raise SpecRejected("filter by period, not by a time dimension")
+    allowed = set(m.dimensions) if mode == "live" else {x for x in tuple(m.dimensions) + tuple(m.presentation_dimensions) if x in R.PRESENTATION_DIMS}
+    if dim not in allowed:
+        raise SpecRejected(f"metric {key!r} cannot be filtered by {dim!r}")
+    if mode == "presentation":
+        vals = presentation.values(dim, q, VALUES_LIMIT)
+        return {"data_mode": mode, "marker": MARKER, "status": "ok", "values": [{"key": k, "label": l} for k, l in vals]}
+    if m.availability != R.LIVE:
+        return {"data_mode": mode, "status": "no_data_source", "values": []}
+    src = R.SOURCES[m.source]
+    if not (authorise and authorise(src.requires)):
+        return {"data_mode": mode, "status": "forbidden", "values": []}
+    from .scope import resolve
+    scope = scope or resolve(principal)
+    if scope.assigned_nothing:
+        return {"data_mode": mode, "status": "empty_scope", "values": []}
+    vals = live.values(m.source, dim, q, scope, VALUES_LIMIT)
+    return {"data_mode": mode, "status": "ok", "values": [{"key": k, "label": l} for k, l in vals]}

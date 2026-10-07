@@ -158,3 +158,16 @@ def test_presentation_activation_is_logged_per_session_in_the_real_table(monkeyp
     finally:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM proc.bp_presentation_log WHERE subject='livecheck-admin'")
+
+
+def test_a_buyer_is_offered_only_their_own_suppliers_as_filter_choices():
+    from src.services.report_data import live
+    a = _buyers()[0]
+    mine = {r[0] for r in q("SELECT DISTINCT i.supplier_id::text FROM proc.bp_invoice_trgt i WHERE i.buyer_id=%s AND i.supplier_id IS NOT NULL", (a,))}
+    offered = {k for k, _ in live.values("invoice", "supplier", None, Scope("Buyer", False, (a,)), 500)}
+    assert offered == mine
+    everyone = {k for k, _ in live.values("invoice", "supplier", None, ADMIN, 100000)}
+    assert mine <= everyone and len(everyone) > len(mine)
+    assert live.values("invoice", "supplier", None, Scope("Buyer", False, ()), 50) == []
+    hit = live.values("invoice", "supplier", "cloud", ADMIN, 10)
+    assert hit and all("cloud" in l.lower() for _, l in hit)

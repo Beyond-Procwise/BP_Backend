@@ -87,3 +87,24 @@ def test_findings_are_scoped_through_their_document_to_the_deals_buyer():
 def test_a_buyer_with_nothing_assigned_runs_no_query(monkeypatch):
     monkeypatch.setattr(live, "run_query", lambda *a, **k: pytest.fail("must not query"))
     assert live.series(R.METRICS["committed_spend"], [], {}, F, T, Scope("Buyer", False, ())) == []
+
+
+def test_a_values_query_binds_the_search_and_carries_the_scope():
+    evil = "x'%; DROP TABLE proc.bp_invoice_trgt; --"
+    sql, params = live.build_values_query("invoice", "supplier", evil, BUYER, 50)
+    assert evil not in sql and "DROP" not in sql
+    assert params["q"] == f"%{evil}%" and params["buyers"] == ["CC000109", "CC000021"]
+    assert "i.buyer_id = ANY(%(buyers)s)" in sql and "LIMIT %(lim)s" in sql
+    import re
+    assert set(re.findall(r"%\((\w+)\)s", sql)) == set(params)
+    a_sql, a_params = live.build_values_query("invoice", "supplier", None, ADMIN, 50)
+    assert "buyers" not in a_params and "ANY(%(buyers)s)" not in a_sql
+
+
+def test_every_dimension_of_every_live_metric_can_be_offered_as_a_filter():
+    for m in R.live_metrics():
+        for d in m.dimensions:
+            if R.DIMENSIONS[d].is_time:
+                continue
+            sql, _ = live.build_values_query(m.source, d, "a", BUYER, 5)
+            assert "GROUP BY" in sql

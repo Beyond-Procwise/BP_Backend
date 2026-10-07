@@ -249,6 +249,20 @@ def report_data(body: Dict[str, Any], principal=Depends(require_user)):
     return _compute_report(body, principal)
 
 
+@router.post("/values")
+def dimension_values(body: Dict[str, Any], principal=Depends(require_user)):
+    """The choices a tile filter may offer, under the caller's rights and scope: a Buyer is offered
+    only their own suppliers and deals. Presentation mode offers only synthetic names."""
+    gate("report.read", principal, agent=_AGENT, context={"via": "report_values"})
+    try:
+        return rd_service.dimension_values(principal, body, authorise=_may(principal),
+                                           mode_ok=lambda: rd_mode.is_active(principal))
+    except rd_service.ModeRefused:
+        raise HTTPException(status_code=403, detail="presentation data is not available")
+    except SpecRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/registry")
 def registry_catalogue(principal=Depends(require_user)):
     """The metrics and dimensions the caller may build tiles from. Presentation-only metrics appear only

@@ -82,3 +82,32 @@ def unattributed_findings(start: dt.date, end_inclusive: dt.date, where: Optiona
         cur.execute(f"SELECT COUNT(*) FROM {src.from_sql} WHERE {src.time_expr} >= %s AND {src.time_expr} < %s "
                     "AND o.deal_id IS NULL" + (f" AND ({where})" if where else ""), (start, end_inclusive + dt.timedelta(days=1)))
         return int(cur.fetchone()[0])
+
+
+def build_values_query(source_key: str, dim: str, q: Optional[str], scope: Scope, limit: int) -> Tuple[str, Dict[str, Any]]:
+    """The distinct (key, label) pairs of one dimension, for a filter picker. Scoped exactly like a tile:
+    a Buyer is offered only suppliers, deals and so on that are theirs. The search text is a bound
+    parameter, never part of the SQL."""
+    src = R.SOURCES[source_key]
+    key_sql, label_sql = src.dims[dim]
+    params: Dict[str, Any] = {"lim": int(limit)}
+    where = [f"{key_sql} IS NOT NULL"]
+    if not scope.all_rows:
+        params["buyers"] = list(scope.buyers)
+        where.append(f"{src.scope_expr} = ANY(%(buyers)s)")
+    if q:
+        params["q"] = f"%{q}%"
+        where.append(f"({label_sql})::text ILIKE %(q)s")
+    sql = (f"SELECT {key_sql}::text AS k, {label_sql}::text AS l FROM {src.from_sql} WHERE {' AND '.join(where)} "
+           f"GROUP BY {key_sql}, {label_sql} ORDER BY {label_sql} LIMIT %(lim)s")
+    return sql, params
+
+
+def values(source_key: str, dim: str, q: Optional[str], scope: Scope, limit: int = 50) -> List[Tuple[str, str]]:
+    if scope.assigned_nothing:
+        return []
+    sql, params = build_values_query(source_key, dim, q, scope, limit)
+    from src.services.db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        return [(r[0], r[1]) for r in cur.fetchall()]

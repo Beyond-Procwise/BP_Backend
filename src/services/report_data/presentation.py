@@ -162,3 +162,16 @@ def _risk_series(group_by: List[str], filters: Dict[str, List[str]]) -> List[Row
                 out.append(Row(tuple(kv[g][0] for g in order), tuple(kv[g][1] for g in order), cells[(s[0], d)]))
         return out
     raise LookupError("supplier_risk_profile is grouped by risk_dimension, supplier, or both")
+
+
+def values(dim: str, q: Optional[str], limit: int = 50) -> List[Tuple[str, str]]:
+    """The choices a filter offers in presentation mode: only the synthetic names, never a real one."""
+    pools = {
+        "supplier": [_sup(i) for i in range(1, N_SUPPLIERS + 1)],
+        "buyer": [(b, b) for b in BUYERS], "region": [(r, r) for r in REGIONS], "currency": [("GBP", "GBP")],
+        "country": [("Country 1", "Country 1")], "category": [(c, c) for c in CATEGORIES],
+        "tail_band": [(b, b) for b in BANDS], "risk_dimension": [(d, d) for d in RISK_DIMS],
+    }
+    pool = pools.get(dim, [])
+    needle = (q or "").lower()
+    return [p for p in pool if not needle or needle in p[1].lower()][:limit]
