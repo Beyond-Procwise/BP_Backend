@@ -37,6 +37,7 @@ import src.services.rga  # noqa: F401  registers the Fact Pack builders
 from src.services.rga import audit, editing, job_runner, job_store, signoff
 from src.services.rga.factpack import registered_types
 
+from src.services import report_export
 from src.services.agent_actions import record_action_or_fail
 
 from api.auth import require_user
@@ -189,6 +190,48 @@ def generate(body: GenerateBody, principal=Depends(require_user)):
         job_runner.submit(job["job_id"])
     return {"job_id": job["job_id"], "status": job["status"],
             "already_requested": not created}
+
+
+class ExportBody(BaseModel):
+    """The report builder's rendered page, or its tables, to be made into a file."""
+    format: str = Field(default="pdf", pattern="^(pdf|xlsx)$")
+    name: str = Field(default="report", min_length=1, max_length=120)
+    report_id: Optional[str] = Field(default=None, max_length=64)
+    html: Optional[str] = None
+    css: Optional[str] = None
+    tables: Optional[list] = None
+
+
+_EXPORT_TYPES = {"pdf": "application/pdf",
+                 "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+
+
+@router.post("/export")
+def export_report(body: ExportBody, principal=Depends(require_user)):
+    """Render the builder's page to a PDF (or its tables to a workbook) and download it.
+
+    The file goes back only to the person who composed the page, so this is a read
+    (``report.read``), not a share: anyone may export a report they are building. Sending
+    one on to somebody else is ``report.export`` and stays governed. A copy is kept in S3
+    and its key written to ``bp_reports.report_url``; if either fails the download still
+    works and the response says so (``X-Report-Stored``).
+    """
+    gate("report.read", principal, agent=_AGENT,
+         context={"format": body.format, "report_id": body.report_id})
+    try:
+        content = (report_export.render_pdf(body.html or "", body.css or "") if body.format == "pdf"
+                   else report_export.render_xlsx(body.tables or []))
+    except report_export.ExportRefused as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    key = report_export.storage_key(body.report_id, body.name, body.format, stamp)
+    stored = report_export.store(content, key, _EXPORT_TYPES[body.format])
+    recorded = bool(stored and body.report_id and report_export.record_url(body.report_id, key))
+    filename = re.sub(r"[^A-Za-z0-9._ -]+", "_", body.name)[:80] or "report"
+    return Response(content=content, media_type=_EXPORT_TYPES[body.format],
+                    headers={"Content-Disposition": f'attachment; filename="{filename}.{body.format}"',
+                             "X-Report-Stored": "true" if stored else "false",
+                             "X-Report-Url-Recorded": "true" if recorded else "false"})
 
 
 @router.get("/jobs")

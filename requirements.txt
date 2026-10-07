@@ -20,6 +20,7 @@ python-pptx
 #   openpyxl -> extraction_v3/parsers/spreadsheet_backend.py, structural_extractor xlsx_parser
 #   spacy    -> extraction_v3/extractors/spacy_ner.py, agents/extraction_engine.py
 openpyxl
+weasyprint>=68
 spacy
 transformers
 pandas
