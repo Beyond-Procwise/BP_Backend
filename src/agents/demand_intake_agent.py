@@ -28,9 +28,18 @@ what a demand gets routed for approval by. So a value the INSTRUCTION supplied i
 only when the requester's own text does not contain it, which is why a genuine reading can never
 be caught by this (see `_leaked`).
 
+**Confidence is measured, not reported.** The same live run showed the model's confidence word
+carries no information: "high" on all thirty fields (thirteen in no part of the request), then
+"low" on all nineteen once the guards removed the inventions. The browser lets a HIGH reading
+correct an earlier machine one, so the word has to be earned. It now comes from `_grounding`:
+HIGH when the request itself carries the value (verbatim, or the same figure under another
+spelling — "240000" for "£240k"), MEDIUM when most of its words are the request's own and every
+figure in it is, LOW otherwise. The model's word is ignored. Dates the browser has normalised
+("2027-03-31" for "31 March 2027") read LOW, which fails safe: LOW never overwrites an answer.
+
 **Nothing leaves in a shape the caller has to defend itself against.** A model answers
-`{"title": "x"}` as readily as `{"title": {"value": "x"}}`, invents confidence words, and
-occasionally answers in prose. All of that is normalised here, so what comes back is always
+`{"title": "x"}` as readily as `{"title": {"value": "x"}}` and occasionally answers in prose.
+All of that is normalised here, so what comes back is always
 `{path: {"value": …, "confidence": "high"|"medium"|"low"}}`.
 
 The placeholders are filled with str.replace, NOT str.format: the template ends with a JSON
@@ -151,6 +160,16 @@ _CLAIM_PATTERNS = {
 # The quoted literals in the instruction's own prose — "IT-3300", "99.95% SLA". Both quote styles,
 # because the governed template is edited by hand and uses whichever the editor's keyboard gave.
 _QUOTED = re.compile(r'"([^"\n]{2,60})"|“([^”\n]{2,60})”')
+
+
+# A figure as a requester writes it: "£95k", "240,000", "1.5m". Not preceded by a word character
+# or a point, so the 95 inside "1950" or "2.95" is not a figure of its own.
+_FIGURE = re.compile(r"(?<![\w.])[£$€]?(\d[\d,]*(?:\.\d+)?)\s?(k|m|bn)?(?![\w])", re.I)
+_SCALE = {"": 1, "k": 1_000, "m": 1_000_000, "bn": 1_000_000_000}
+# Words that say nothing about whether a value was read out of a request.
+_FILLER = frozenset("a an the of to for and or in on at by with our we is are be it its this that".split())
+# Share of a value's words that must be the request's own for it to count as a paraphrase.
+_PARAPHRASE_SHARE = 0.6
 
 
 class DemandIntakeUnavailable(RuntimeError):
@@ -339,7 +358,7 @@ class DemandIntakeAgent(BaseAgent):
                 logger.debug("demand intake extraction: %s is not something this request "
                              "claims, so the model's figure is dropped", key)
                 continue
-            value, confidence = cls._value_of(entry)
+            value = cls._value_of(entry)
             if isinstance(value, (list, tuple)):
                 # Each element on its own: the live reply mixed two of the template's examples in
                 # with one real reading, and the real one must survive.
@@ -355,20 +374,54 @@ class DemandIntakeAgent(BaseAgent):
             # A field left with nothing but examples falls out here rather than travelling empty.
             if not cls._has_value(value):
                 continue
-            out[key] = {"value": value, "confidence": confidence}
+            out[key] = {"value": value, "confidence": cls._grounding(value, said)}
         return out
 
     @staticmethod
-    def _value_of(entry: Any) -> tuple[Any, str]:
-        if isinstance(entry, dict):
-            value = entry.get("value")
-            stated = str(entry.get("confidence") or "").strip().lower()
-            # An invented confidence word becomes 'low' rather than travelling: the screen
-            # shows confidence to the requester, so "extremely high" would be a claim the
-            # model made up about itself.
-            return value, stated if stated in _CONFIDENCE else "low"
-        # A bare value carries no claim about itself, so it is the lowest confidence there is.
-        return entry, "low"
+    def _figures(text: str) -> set:
+        """Every number in a text, as a number: "£95k" and "95,000" are both 95000."""
+        out = set()
+        for m in _FIGURE.finditer(text or ""):
+            try:
+                out.add(round(float(m.group(1).replace(",", "")) * _SCALE[(m.group(2) or "").lower()], 2))
+            except ValueError:
+                continue
+        return out
+
+    @classmethod
+    def _grounding(cls, value: Any, said: str) -> str:
+        """How much of this value is the requester's own words: "high" | "medium" | "low".
+
+        A list is only as sure as its least sure element. `said` is already normalised.
+        """
+        if isinstance(value, (list, tuple)):
+            order = ("low", "medium", "high")
+            return min((cls._grounding(v, said) for v in value), key=order.index, default="low")
+        if isinstance(value, bool) or value is None:
+            return "low"                     # a yes/no is never read out of a sentence
+        norm = cls._norm(value)
+        if not norm or not said:
+            return "low"
+        if re.search(r"(?<!\w)" + re.escape(norm) + r"(?!\w)", said):
+            return "high"
+        value_figs, said_figs = cls._figures(norm), cls._figures(said)
+        bare = re.sub(r"[£$€\s,]", "", norm)
+        if value_figs and re.fullmatch(r"\d+(?:\.\d+)?(?:k|m|bn)?", bare) and value_figs <= said_figs:
+            return "high"                    # the same figure, spelt differently
+        words = [w for w in re.findall(r"\w+", norm) if w not in _FILLER]
+        if not words:
+            return "low"
+        # A figure in the value that the request does not state sinks it, whatever else overlaps.
+        if not value_figs <= said_figs:
+            return "low"
+        said_words = set(re.findall(r"\w+", said))
+        share = sum(w in said_words for w in words) / len(words)
+        return "medium" if share >= _PARAPHRASE_SHARE else "low"
+
+    @staticmethod
+    def _value_of(entry: Any) -> Any:
+        # The model's own confidence word is deliberately not read: see `_grounding`.
+        return entry.get("value") if isinstance(entry, dict) else entry
 
     @staticmethod
     def _has_value(value: Any) -> bool:

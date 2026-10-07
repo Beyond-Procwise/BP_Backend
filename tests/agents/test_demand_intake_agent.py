@@ -77,22 +77,79 @@ def test_it_returns_the_fields_the_model_found():
     with _replies(reply):
         out = _agent().extract(_CONTEXT)
     assert out['fields']['title'] == {'value': 'SD-WAN renewal', 'confidence': 'high'}
-    assert out['fields']['value'] == {'value': 240000, 'confidence': 'medium'}
+    # 240000 is the request's "240k": the same figure, so it is a direct reading
+    assert out['fields']['value'] == {'value': 240000, 'confidence': 'high'}
     assert out['governed'] is True
 
 
-def test_a_bare_value_is_accepted_as_a_value_of_unknown_confidence():
+def test_a_bare_value_is_accepted():
     # Models answer {"title": "x"} as often as {"title": {"value": "x"}}. Dropping the first
     # shape would make the feature look broken half the time.
     with _replies({'fields': {'title': 'SD-WAN renewal'}}):
         out = _agent().extract(_CONTEXT)
-    assert out['fields']['title'] == {'value': 'SD-WAN renewal', 'confidence': 'low'}
+    assert out['fields']['title']['value'] == 'SD-WAN renewal'
 
 
-def test_an_invented_confidence_becomes_low_rather_than_travelling():
-    with _replies({'fields': {'title': {'value': 'x', 'confidence': 'extremely high'}}}):
-        out = _agent().extract(_CONTEXT)
-    assert out['fields']['title']['confidence'] == 'low'
+# ---------------------------------------------------------------------------
+# Confidence is MEASURED against the request, never taken from the model.
+#
+# Live, 2026-10-05: the model claimed "high" on all thirty fields (thirteen of them in no part of
+# the request), and after the fabrication guards it claimed "low" on all nineteen. Either way the
+# word told the browser nothing, and the browser lets a HIGH reading correct an earlier machine
+# one. So the word is now earned: high only when the request itself carries the value.
+# ---------------------------------------------------------------------------
+def _conf(value, text, model_says='high', path='title'):
+    ctx = dict(_CONTEXT, text=text, asked_field='')
+    with _replies({'fields': {path: {'value': value, 'confidence': model_says}}}):
+        out = _agent().extract(ctx)
+    return out['fields'].get(path, {}).get('confidence')
+
+
+def test_a_value_the_request_states_is_high_whatever_the_model_claims():
+    assert _conf('SD-WAN renewal', 'We need the SD-WAN renewal by March.', 'low') == 'high'
+
+
+def test_a_value_the_request_does_not_state_is_low_whatever_the_model_claims():
+    # the model's own "high" is exactly what the live run showed to be worthless
+    assert _conf('Professional services', 'We need the SD-WAN renewal by March.', 'high') == 'low'
+
+
+def test_a_paraphrase_of_the_request_is_medium():
+    assert _conf('renew the SD-WAN contract', 'We need to renew our SD-WAN circuits.') == 'medium'
+
+
+def test_a_figure_is_read_through_its_spelling():
+    assert _conf('95000', 'costs us £95k a year', path='finance.cost') == 'high'
+    assert _conf('240000', 'budget of £240,000', path='finance.cost') == 'high'
+
+
+def test_a_figure_the_request_does_not_state_is_never_better_than_low():
+    # 45000 is arithmetic the model did; a paraphrase that shares only the word "cost" with the
+    # request must not read as "medium" because the words overlap
+    assert _conf('45000', 'costs us £95k a year, budget £240k', path='finance.cost') == 'low'
+    assert _conf('cost of £45k a year', 'costs us £95k a year', path='finance.cost') == 'low'
+
+
+def test_a_wrong_figure_sinks_a_value_whose_words_all_match():
+    # three of its four words are the request's own; the one figure is not
+    assert _conf('costs us £45k a year', 'costs us £95k a year', path='finance.cost') == 'low'
+    assert _conf('costs us £95k a year', 'costs us £95k a year', path='finance.cost') == 'high'
+
+
+def test_a_digit_inside_a_longer_number_is_not_a_match():
+    # the digit-hole: 95 sits inside 1950 and 295
+    assert _conf('95', 'about 1950 users and 295 sites', path='finance.cost') == 'low'
+
+
+def test_a_list_is_only_as_sure_as_its_least_sure_element():
+    assert _conf(['weekly outages eliminated', 'a 99% uptime'],
+                 'weekly outages eliminated is the aim', path='criteria') == 'low'
+    assert _conf(['weekly outages eliminated'],
+                 'weekly outages eliminated is the aim', path='criteria') == 'high'
+
+
+def test_a_value_the_request_cannot_have_said_is_low():
+    assert _conf(True, 'We need the SD-WAN renewal.', path='approval.granted') == 'low'
 
 
 def test_an_empty_value_is_not_a_value():
