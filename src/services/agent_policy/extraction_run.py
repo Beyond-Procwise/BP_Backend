@@ -26,7 +26,7 @@ from services.agent_policy.settings import load_settings
 from services.obligations.grounding import is_quote_grounded
 
 UNGROUNDED_NOTE = "The excerpt was not found word for word in the document."
-RETIRE_HELD_NOTE = ("Some sections could not be read, so no policy from this document was proposed "
+RETIRE_HELD_NOTE = ("Some sections or policies could not be read, so no policy from this document was proposed "
                     "for retirement. Run the extraction again to check for removed clauses.")
 _ACTOR_FALLBACK = "extraction_agent"
 _COUNT_KEYS = ("documents", "chunks", "policies", "new", "changed", "unchanged", "proposedRetire",
@@ -55,21 +55,61 @@ def _document(conn, document_id) -> Optional[Dict[str, Any]]:
 
 
 def _existing(conn, document_id) -> List[Dict[str, Any]]:
-    """The document's current policies with their latest form. A retired policy is no longer
-    current: it is neither matched nor proposed for retirement again."""
+    """The document's current policies. A retired policy is no longer current: it is neither
+    matched nor proposed for retirement again.
+
+    ``form`` is the agent's baseline -- the last version an extraction run saved (its
+    ``policy`` items record which) -- so a person's later edit is never mistaken for a change
+    in the document. A policy with no such item falls back to its latest version. The change
+    note and ``hidden.setBy`` are not used: a person's save carries both forward.
+    ``latestForm``/``latestVersion`` are what a new draft is based on.
+    """
     cur = conn.cursor()
     cur.execute(
-        "SELECT p.policy_key, p.source_reference, p.source_split, p.latest_version, v.form_state"
-        "  FROM proc.bp_agent_policy p JOIN proc.bp_agent_policy_version v"
-        "    ON v.policy_key = p.policy_key AND v.version = p.latest_version"
+        "SELECT p.policy_key, p.source_reference, p.source_split, p.latest_version, lv.form_state,"
+        "       av.version, av.form_state"
+        "  FROM proc.bp_agent_policy p"
+        "  JOIN proc.bp_agent_policy_version lv"
+        "    ON lv.policy_key = p.policy_key AND lv.version = p.latest_version"
+        "  LEFT JOIN LATERAL ("
+        "       SELECT i.saved_version FROM proc.bp_policy_extraction_item i"
+        "        WHERE i.policy_key = p.policy_key AND i.kind = 'policy'"
+        "          AND i.decision IN ('new', 'changed') AND i.saved_version IS NOT NULL"
+        "        ORDER BY i.saved_version DESC LIMIT 1) a ON TRUE"
+        "  JOIN proc.bp_agent_policy_version av"
+        "    ON av.policy_key = p.policy_key AND av.version = COALESCE(a.saved_version, p.latest_version)"
         " WHERE p.source_document_id = %s AND p.status <> 'retired' ORDER BY p.policy_key",
         (document_id,))
     out = []
-    for key, ref, split, latest, form in cur.fetchall():
-        form = json.loads(form) if isinstance(form, str) else (form or {})
-        out.append({"policyKey": key, "reference": ref, "split": split, "latestVersion": latest,
-                    "form": form})
+    for key, ref, split, latest, latest_form, agent_version, agent_form in cur.fetchall():
+        out.append({"policyKey": key, "reference": ref, "split": split,
+                    "latestVersion": latest, "latestForm": _j(latest_form),
+                    "agentVersion": agent_version, "form": _j(agent_form)})
     return out
+
+
+def _j(value: Any) -> Dict[str, Any]:
+    return json.loads(value) if isinstance(value, str) else (value or {})
+
+
+# Fields a person sets that say nothing about what the document requires: kept when the
+# document changes and the policy is re-extracted.
+_PERSON_FIELDS = ("owner", "effectiveFrom", "reviewBy")
+_NOT_AN_EDIT = ("checked", "changeNote") + _PERSON_FIELDS
+
+
+def _carry_person_fields(form: Dict[str, Any], old: Dict[str, Any]) -> None:
+    for f in _PERSON_FIELDS:
+        if old["latestForm"].get(f) != old["form"].get(f):
+            form[f] = old["latestForm"].get(f)
+
+
+def _replaces_edits(old: Dict[str, Any]) -> bool:
+    """Did a person edit the policy after the agent's last save (beyond the carried fields)?"""
+    if old["agentVersion"] == old["latestVersion"]:
+        return False
+    strip = lambda f: {k: v for k, v in f.items() if k not in _NOT_AN_EDIT}  # noqa: E731
+    return strip(old["latestForm"]) != strip(old["form"])
 
 
 def _as_proposal(form: Dict[str, Any]) -> Dict[str, Any]:
@@ -120,7 +160,7 @@ def _extract_document(conn, run: Dict[str, Any], emit: Emit, req: Dict[str, Any]
 
     chunks = chunk_sections(split_sections(text))
     proposed: List[Dict[str, Any]] = []
-    failed_chunk = False
+    incomplete = False   # a chunk or a policy was lost: removed clauses cannot be told apart
     for chunk in chunks:
         counts["chunks"] += 1
         refs = [s.get("reference") for s in chunk]
@@ -130,7 +170,7 @@ def _extract_document(conn, run: Dict[str, Any], emit: Emit, req: Dict[str, Any]
         except extractor.PromptUnavailable:
             raise  # a governed prompt is missing: the whole run fails, as the ruling says
         except Exception as exc:  # noqa: BLE001 - one chunk must not end the run
-            failed_chunk = True
+            incomplete = True
             counts["errors"] += 1
             named = ", ".join(r or "(no number)" for r in refs)
             emit("error", {"message": f"Sections {named} could not be read by the agent: {_one_line(exc)}",
@@ -144,6 +184,7 @@ def _extract_document(conn, run: Dict[str, Any], emit: Emit, req: Dict[str, Any]
                 form = converter.to_form(p, document_title=title, document_version=version,
                                          registry=registry, taxonomy=taxonomy)
             except Exception as exc:  # noqa: BLE001
+                incomplete = True
                 counts["errors"] += 1
                 emit("error", {"message": f"A policy in section {p.reference} could not be converted: "
                                           f"{_one_line(exc)}", "name": p.name},
@@ -155,6 +196,18 @@ def _extract_document(conn, run: Dict[str, Any], emit: Emit, req: Dict[str, Any]
             counts["policies"] += 1
             proposed.append(form)
 
+    try:
+        _settle(conn, emit, proposed, counts, incomplete=incomplete, actor=actor, title=title,
+                version=version, document_id=document_id, text=text, at=at)
+    except Exception as exc:  # noqa: BLE001 - one document must not end the run
+        counts["errors"] += 1
+        emit("error", {"message": f"The policies from this document could not be matched and saved: "
+                                  f"{_one_line(exc)}"}, **at)
+
+
+def _settle(conn, emit: Emit, proposed: List[Dict[str, Any]], counts: Dict[str, int], *, incomplete: bool,
+            actor, title, version, document_id, text, at) -> None:
+    """Match the document's proposals with its existing policies and act on each decision."""
     existing = _existing(conn, document_id)
     decisions = matching.match(existing, proposed)
     by_key = {e["policyKey"]: e for e in existing}
@@ -163,9 +216,10 @@ def _extract_document(conn, run: Dict[str, Any], emit: Emit, req: Dict[str, Any]
                 document_id=document_id, text=text, at=at)
 
     retire = decisions[len(proposed):]
-    if retire and failed_chunk:
-        # A clause in a section the agent could not read is missing from `proposed`, not from
-        # the document: proposing its policy for retirement would be a false finding.
+    if retire and incomplete:
+        # A clause in a section the agent could not read (or a policy that could not be
+        # converted) is missing from `proposed`, not from the document: proposing its policy
+        # for retirement would be a false finding.
         emit("note", {"message": RETIRE_HELD_NOTE,
                       "policyKeys": [d["policyKey"] for d in retire]}, **at)
         return
@@ -194,6 +248,9 @@ def _decide(conn, emit: Emit, form: Dict[str, Any], d: Dict[str, Any], by_key, c
         elif decision == "changed":
             old = by_key[d["policyKey"]]
             note = f"Re-extracted from {title} v{version}, section {ref}."
+            if _replaces_edits(old):
+                note += f" Replaces the edits in v{old['latestVersion']}."  # history keeps them
+            _carry_person_fields(form, old)
             form["changeNote"] = note
             saved = repo.save_version(conn, d["policyKey"], form, base_version=old["latestVersion"],
                                       intent="draft", actor=actor, change_note=note, document_text=text)
@@ -218,8 +275,8 @@ def _decide(conn, emit: Emit, form: Dict[str, Any], d: Dict[str, Any], by_key, c
 
 
 def run_extract(conn, run: Dict[str, Any], emit: Emit) -> Dict[str, int]:
-    # Settings are read by each save (compile + confidence); the registry and taxonomy are
-    # read once here so every chunk of the run is judged against the same snapshot.
+    # Settings are not loaded here: each save reads them itself (compile + confidence). The
+    # registry and taxonomy are read once so every chunk is judged against one snapshot.
     registry = load_registry(conn)
     taxonomy = load_taxonomy(conn)
     counts = _new_counts()

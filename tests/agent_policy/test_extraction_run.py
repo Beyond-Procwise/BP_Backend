@@ -329,3 +329,97 @@ def test_fix_run_emits_one_fix_item_and_writes_no_version(conn, actor, monkeypat
     assert set(prop) == {"situation", "hidden", "examples", "outcome", "deciders", "notify", "messages"}
     assert matching.split_key({"outcome": prop["outcome"], "hidden": prop["hidden"]}) == "approve|gt:750"
     assert prop["hidden"]["setBy"] == "extraction_agent"
+
+
+# ---------------------------------------------------------------- fix round 1
+
+def _run_many(conn, docs, actor):
+    run = store.create(conn, kind="extract",
+                       request={"documents": [{"documentId": d, "version": v} for d, v in docs]}, actor=actor)
+
+    def emit(kind, payload, **fields):
+        return store.append_item(conn, run["run_id"], kind=kind, payload=payload, **fields)
+
+    counts = X.run_extract(conn, run, emit)
+    return counts, store.get(conn, run["run_id"])["items"]
+
+
+def _person_saves(conn, key, **changes):
+    got = repo.get_policy(conn, key)
+    form = dict(got["versions"][-1]["form"], **changes)
+    return repo.save_version(conn, key, form, base_version=got["latestVersion"], intent="draft",
+                             actor="person", change_note="a person's edit")
+
+
+def test_a_persons_edit_is_not_mistaken_for_a_document_change(conn, actor, monkeypatch):
+    _stub(monkeypatch, CANNED_V1)
+    doc = _document(conn, V1)
+    _run(conn, doc, 1, actor)
+    keys = {p["ref"] + "|" + p["split"]: p["key"] for p in _policies(conn, doc)}
+    k11, k12 = keys["1.1|approve|gt:500"], keys["1.2|notify|gt:200"]
+    _person_saves(conn, k11, deciders=["CFO"])
+    _person_saves(conn, k12, outcome="block")
+    v2_before = {k: repo.get_policy(conn, k)["versions"][1] for k in (k11, k12)}
+
+    counts, items = _run(conn, doc, 1, actor)          # the same text again
+    assert counts["unchanged"] == 4 and counts["changed"] == counts["new"] == counts["proposedRetire"] == 0
+    assert not [i for i in items if i["kind"] == "proposed_retire"]
+    for k in (k11, k12):
+        got = repo.get_policy(conn, k)
+        assert got["latestVersion"] == 2 and got["versions"][1] == v2_before[k]   # v2 untouched, no v3
+
+
+def test_changed_clause_keeps_the_persons_owner_and_dates_and_says_it_replaces_their_edits(conn, actor, monkeypatch):
+    _stub(monkeypatch, CANNED_V1)
+    doc = _document(conn, V1, V2)
+    _run(conn, doc, 1, actor)
+    k11 = [p for p in _policies(conn, doc) if p["ref"] == "1.1"][0]["key"]
+    _person_saves(conn, k11, deciders=["CFO"], owner="Head of Refunds", effectiveFrom="2026-11-01",
+                  reviewBy="2027-11-01")
+    _stub(monkeypatch, CANNED_V2)
+    _run(conn, doc, 2, actor)
+    got = repo.get_policy(conn, k11)
+    assert got["latestVersion"] == 3
+    v3 = got["versions"][2]
+    assert (v3["form"]["owner"], v3["form"]["effectiveFrom"], v3["form"]["reviewBy"]) == \
+        ("Head of Refunds", "2026-11-01", "2027-11-01")
+    assert v3["form"]["deciders"] == ["Finance Manager"]                 # the document's reading
+    assert v3["changeNote"].endswith(" v2, section 1.1. Replaces the edits in v2.")
+    assert got["versions"][1]["form"]["deciders"] == ["CFO"]              # history keeps the edit
+
+
+def test_failed_conversion_holds_back_proposed_retire(conn, actor, monkeypatch):
+    _stub(monkeypatch, CANNED_V1)
+    doc = _document(conn, V1)
+    _run(conn, doc, 1, actor)
+    real = X.converter.to_form
+
+    def flaky(p, **k):
+        if p.reference == "1.2":
+            raise ValueError("cannot convert")
+        return real(p, **k)
+
+    monkeypatch.setattr(X.converter, "to_form", flaky)
+    counts, items = _run(conn, doc, 1, actor)
+    assert counts["errors"] == 1 and counts["proposedRetire"] == 0
+    assert not [i for i in items if i["kind"] == "proposed_retire"]
+    assert [i["kind"] for i in items if i["kind"] == "note"] == ["note"]
+
+
+def test_one_documents_crash_is_an_error_item_and_the_next_document_runs(conn, actor, monkeypatch):
+    _stub(monkeypatch, CANNED_V1)
+    first, second = _document(conn, V1), _document(conn, V1)
+    real, calls = matching.match, []
+
+    def crash_once(existing, proposed):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("matching blew up")
+        return real(existing, proposed)
+
+    monkeypatch.setattr(X.matching, "match", crash_once)
+    counts, items = _run_many(conn, [(first, 1), (second, 1)], actor)
+    errors = [i for i in items if i["kind"] == "error"]
+    assert len(errors) == 1 and errors[0]["document_id"] == first and "matching blew up" in errors[0]["payload"]["message"]
+    assert counts["documents"] == 2 and counts["new"] == 4
+    assert len(_policies(conn, second)) == 4 and _policies(conn, first) == []
