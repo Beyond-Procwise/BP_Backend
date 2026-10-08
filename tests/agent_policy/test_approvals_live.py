@@ -1,7 +1,9 @@
 """Approval cases, decisions and the timeout sweeper against bp_testdb.
 
-Needs PROCWISE_TEST_LIVE_DB=1 and DB_NAME=bp_testdb. Firing rows are append-only by design and
-stay; the decider-map rows, decisions and notifications made here are removed afterwards.
+Needs PROCWISE_TEST_LIVE_DB=1 and DB_NAME=bp_testdb. The decider-map rows, decisions and
+notifications made here are removed afterwards. proc.bp_policy_firing is append-only BY DESIGN,
+so every run leaves its firing rows (policy_key 'TST-<hex>') in bp_testdb; dashboards and counts
+over the firing log must exclude policy_key LIKE 'TST-%'.
 """
 import copy
 import os
@@ -20,6 +22,10 @@ from tests.agent_policy.fixtures import FORM_EXAMPLE, SETTINGS
 live = pytest.mark.skipif(os.getenv("PROCWISE_TEST_LIVE_DB") != "1", reason="live DB required")
 
 NOW = datetime(2026, 10, 8, 9, 0, tzinfo=timezone.utc)
+
+
+def _NO_REPLAY(_decision_id):
+    return None
 
 
 # ------------------------------------------------------------------ pure
@@ -274,7 +280,8 @@ def test_act_refuses_ineligible(conn, world):
     did, _ = _open(conn, world)
     for p in (_P("admin", "admin@example.test", ["PROCWISE_ADMIN"]), _P("sub-l2", groups=[world.l2_group])):
         with pytest.raises(A.ApprovalRefused) as e:
-            A.act(conn, did, principal=p, verb="approve", reason=None, now=NOW)
+            A.act(conn, did, principal=p, verb="approve", reason=None, now=NOW,
+              replay=_NO_REPLAY)
         assert e.value.code == "not_eligible" and e.value.status == 403
     assert _row(conn, "bp_decision", "decision_id", did)["status"] == "open" and not _actions(conn, world)
 
@@ -284,11 +291,13 @@ def test_act_refuses_self_approval(conn, world):
     # the requester IS linked to level 1, and is still refused
     did, _ = _open(conn, world, requested_by=world.l1_email)
     with pytest.raises(A.ApprovalRefused) as e:
-        A.act(conn, did, principal=_P("someone", world.l1_email), verb="approve", reason=None, now=NOW)
+        A.act(conn, did, principal=_P("someone", world.l1_email), verb="approve", reason=None, now=NOW,
+              replay=_NO_REPLAY)
     assert e.value.code == "self_approval"
     did2, _ = _open(conn, world, requested_by="sub-l1")
     with pytest.raises(A.ApprovalRefused) as e:
-        A.act(conn, did2, principal=_P("sub-l1", world.l1_email), verb="approve", reason=None, now=NOW)
+        A.act(conn, did2, principal=_P("sub-l1", world.l1_email), verb="approve", reason=None, now=NOW,
+              replay=_NO_REPLAY)
     assert e.value.code == "self_approval"
     assert not _actions(conn, world)
 
@@ -300,7 +309,8 @@ def test_act_refuses_reject_without_reason_and_already_closed(conn, world):
     with pytest.raises(A.ApprovalRefused) as e:
         A.act(conn, did, principal=p, verb="reject", reason="", now=NOW)
     assert e.value.code == "reason_required"
-    A.act(conn, did, principal=p, verb="approve", reason=None, now=NOW)
+    A.act(conn, did, principal=p, verb="approve", reason=None, now=NOW,
+              replay=_NO_REPLAY)
     with pytest.raises(A.ApprovalRefused) as e:
         A.act(conn, did, principal=p, verb="reject", reason="changed my mind", now=NOW)
     assert e.value.code == "not_open" and e.value.status == 409
@@ -335,3 +345,62 @@ def test_timer_and_agent_are_told_the_same_wait(conn, world, sla, expect):
     told = enforcement.check({"checkpoint": "tool.call.before", "tool.name": "refund.issue",
                               "args": {"amount": 900}}, [doc], default_response_time="PT6H")
     assert told.to_agent["respondWithin"] == r["levels"][0]["respondWithin"]
+
+
+@live
+def test_approve_without_injected_replay_runs_replay_module(conn, world, monkeypatch):
+    import sys
+    called = []
+    stub = SimpleNamespace(run=lambda d: called.append(d))
+    import services.agent_policy as pkg
+    monkeypatch.setitem(sys.modules, "services.agent_policy.replay", stub)
+    monkeypatch.setattr(pkg, "replay", stub, raising=False)
+    did, _ = _open(conn, world)
+    A.act(conn, did, principal=_P("sub-l1", world.l1_email), verb="approve", reason=None, now=NOW)
+    assert called == [did]
+
+
+@live
+def test_missing_replay_module_is_an_error_not_silence(conn, world, monkeypatch, caplog):
+    import logging
+    import sys
+    import services.agent_policy as pkg
+    monkeypatch.setitem(sys.modules, "services.agent_policy.replay", None)   # import -> ImportError
+    monkeypatch.delattr(pkg, "replay", raising=False)
+    did, _ = _open(conn, world)
+    with caplog.at_level(logging.ERROR, logger=A.__name__):
+        out = A.act(conn, did, principal=_P("sub-l1", world.l1_email), verb="approve", reason=None, now=NOW)
+    assert out["result"] == "approved"
+    assert any(r.levelno == logging.ERROR and "approved action has nowhere to run" in r.getMessage()
+               for r in caplog.records)
+
+
+@live
+def test_multi_level_escalates_even_if_sla_says_reject(conn, world):
+    doc = _doc(world, [world.l1, world.l2])
+    doc["enforcement"]["intervention"]["sla"]["onTimeout"] = "reject"
+    fid = _firing(conn, doc["id"])
+    did = A.open_case(conn, policy_doc=doc, firing_id=fid, action={"tool": "refund.issue", "args": {}},
+                      requested_by=None, now=NOW)
+    assert _row(conn, "bp_decision", "decision_id", did)["on_timeout"] == "escalate_next"
+    assert A.sweep(conn, NOW + timedelta(hours=3), decision_ids=[did])["escalated"] == 1
+    # even a stored 'reject' on a multi-level row escalates: only the last level rejects
+    did2, _ = _open(conn, world)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_decision SET on_timeout = 'reject' WHERE decision_id = %s", (did2,))
+    assert A.sweep(conn, NOW + timedelta(hours=3), decision_ids=[did2])["escalated"] == 1
+    assert _row(conn, "bp_decision", "decision_id", did2)["current_level"] == 1
+
+
+@live
+def test_unroutable_level_refuses_admin_and_times_out_to_rejected(conn, world):
+    nobody = f"Nobody {world.tag}"
+    did, fid = _open(conn, world, levels=[nobody])
+    assert _row(conn, "bp_decision", "decision_id", did)["facts"]["unroutable"] == [nobody]
+    with pytest.raises(A.ApprovalRefused) as e:
+        A.act(conn, did, principal=_P("admin", "admin@example.test", ["PROCWISE_ADMIN"]),
+              verb="approve", reason=None, now=NOW, replay=_NO_REPLAY)
+    assert e.value.code == "not_eligible"
+    assert A.sweep(conn, NOW + timedelta(hours=3), decision_ids=[did])["rejected"] == 1
+    assert _row(conn, "bp_policy_firing", "firing_id", fid)["result"] == "timed_out"
+    assert [a[:2] for a in _actions(conn, world)] == [("reject", "system:timeout")]

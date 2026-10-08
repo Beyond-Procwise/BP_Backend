@@ -45,14 +45,6 @@ class ApprovalRefused(Exception):
         self.status = status
 
 
-def _no_replay(decision_id: int) -> None:
-    """Default replay hook; Task 5 replaces it with replay.run."""
-    return None
-
-
-#: Called with the decision_id AFTER an approval has committed. Replaceable (Task 5) and injectable.
-replay_hook: Callable[[int], Any] = _no_replay
-
 #: Test seam: called inside the sweep's per-row transaction right after the row is locked.
 _after_lock: Optional[Callable[[int], None]] = None
 
@@ -66,7 +58,11 @@ def _delta(value: Any) -> timedelta:
 # ---------------------------------------------------------------------------- db helpers
 @contextmanager
 def _tx(conn):
-    """One explicit transaction on a (normally autocommit) connection; commit or roll back."""
+    """One explicit transaction on an AUTOCOMMIT connection (get_conn()); commit or roll back.
+
+    Callers must pass an autocommit connection with no open work: on a connection already in a
+    transaction this commits (or rolls back) the caller's pending statements too.
+    """
     prev = getattr(conn, "autocommit", False)
     if prev:
         conn.autocommit = False
@@ -141,7 +137,8 @@ def open_case(conn, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[
     names = [str(e.get("name")).strip() for e in intervention.get("escalateTo") or []
              if isinstance(e, dict) and str(e.get("name") or "").strip()]
     levels = [{"name": n, "respondWithin": within} for n in names]
-    on_timeout = "escalate_next" if len(levels) > 1 and sla.get("onTimeout") != "reject" else "reject"
+    # A timeout escalates while a next level exists; only the last level rejects.
+    on_timeout = "escalate_next" if len(levels) > 1 else "reject"
     source = policy_doc.get("source") or {}
     to_approver = (policy_doc.get("outputs") or {}).get("toApprover") or {}
     facts: Dict[str, Any] = {
@@ -311,10 +308,28 @@ def act(conn, decision_id: int, *, principal, verb: str, reason: Optional[str], 
     if verb == "approve":
         # After commit, never inside the lock. A replay failure never undoes the decision.
         try:
-            (replay or replay_hook)(decision_id)
+            _replay_after_commit(decision_id, replay)
         except Exception:  # noqa: BLE001
             logger.exception("replay after approval %s failed", decision_id)
     return out
+
+
+def _replay_after_commit(decision_id: int, replay: Optional[Callable[[int], Any]]) -> None:
+    """Run the approved action: the injected callable (tests), else replay.run (Task 5).
+
+    Imported lazily so this module never depends on the replay at import time. A missing replay
+    module is an ERROR, never a silent no-op: an approved action would otherwise vanish.
+    """
+    if replay is not None:
+        replay(decision_id)
+        return
+    try:
+        from services.agent_policy import replay as _replay
+    except ImportError:
+        logger.error("approved action has nowhere to run: services.agent_policy.replay is missing "
+                     "(decision %s)", decision_id)
+        return
+    _replay.run(decision_id)
 
 
 # ---------------------------------------------------------------------------- sweep
@@ -360,11 +375,12 @@ def _sweep_one(conn, decision_id: int, now: datetime) -> str:
             case["facts"] = facts
             levels = _jsonable(case["levels"], [])
             level = int(case["current_level"] or 0)
-            on_timeout = case["on_timeout"]
             firing_id = facts.get("firingId")
             what = _action_text(facts)
 
-            if on_timeout != "reject" and level < len(levels) - 1:
+            # Escalate while a next level exists, whatever on_timeout says (it only describes the
+            # case for the screen); only the last level rejects.
+            if level < len(levels) - 1:
                 nxt = level + 1
                 cur.execute(
                     "UPDATE proc.bp_decision SET current_level = %s, respond_by = %s WHERE decision_id = %s",
