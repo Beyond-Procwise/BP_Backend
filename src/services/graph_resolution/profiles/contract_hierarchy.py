@@ -250,10 +250,8 @@ SIGNALS = [
 # DECLARED UNMEASURED, like contract_succession and contract_coverage: no
 # labelled sample of true parent links exists, because the only parent pointers
 # in the corpus all dangle.
-_le.register_profile(PROFILE, {
-    "p0": 0.02, "alpha": 0.35, "floor": 0.55,
-    "signals": SIGNALS, "date_field": "contract_start_date",
-})
+_PARAMS = {"p0": 0.02, "alpha": 0.35, "floor": 0.55, "date_field": "contract_start_date"}
+_le.register_profile(PROFILE, {**_PARAMS, "signals": SIGNALS})
 
 
 def observations_for(src: dict, tgt: dict) -> dict[str, frozenset]:
@@ -273,13 +271,13 @@ def observations_for(src: dict, tgt: dict) -> dict[str, frozenset]:
 def score(src: dict, tgt: dict) -> dict:
     """Score child -> parent, with correlated signals merged into one cluster.
 
-    This is the entry point callers use, NOT score_link directly. It mirrors
-    contract_succession.score exactly: remap_clusters does union-find over
-    "shares at least one observation", so two signals reading the same field
-    cannot each contribute full weight for what is really one piece of
-    evidence. Today every signal here reads a distinct field, so the remap is a
-    no-op -- which is precisely why it must be wired now rather than when
-    someone adds a sixth signal that overlaps an existing one.
+    This is the entry point callers use, NOT score_link directly. The five base
+    signals always apply; the corroborating signals in contract_signals join only
+    when BOTH documents carry what they read (applicability.score_pair), so a
+    contract with none of those fields scores exactly as it did before they
+    existed. The result's `profile` is always the base name.
     """
-    overrides = remap_clusters(SIGNALS, observations_for(src, tgt))
-    return _le.score_link(src, tgt, PROFILE, cluster_overrides=overrides)
+    # Imported here, not at the top: contract_signals imports this module.
+    from . import contract_signals as _cs
+    from ..applicability import score_pair
+    return score_pair(PROFILE, SIGNALS, _cs.HIERARCHY_OPTIONAL, src, tgt)
