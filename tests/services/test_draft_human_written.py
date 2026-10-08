@@ -67,7 +67,8 @@ class Cur(FakeCursor):
             super().execute(sql, params)
 
     def fetchone(self):
-        return getattr(self, "last", None)
+        last = getattr(self, "last", None)
+        return last if last is not None else (self.rows[0] if self.rows else None)
 
 
 class Conn(FakeConn):

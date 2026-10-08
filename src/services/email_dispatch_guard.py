@@ -541,6 +541,32 @@ def check_dispatch(
         else:
             ready = {"ready": None, "reason": "draft carries no assurance record"}
 
+        # --- 1e. No unreviewed suspected payment-detail request on this thread ---
+        # A supplier reply asking for new or changed bank details is the classic invoice-redirection fraud. While one stands flagged
+        # (open or confirmed) nothing goes to that supplier on that thread, whoever approved it and whatever mode the family is in:
+        # clearing the flag needs approver-class authority and is the only way through. Not being able to look is a refusal, not a pass.
+        # A connection that cannot run SQL at all (a test double) holds no flags, so there is nothing to check.
+        if hasattr(conn, "cursor"):
+            from src.services.draft_assurance import inbound
+
+            try:
+                standing = inbound.blocking_flags(conn, draft.get("workflow_id"), draft.get("supplier_id"))
+            except inbound.FlagLookupFailed:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason="this draft cannot be sent: whether the supplier's thread holds an unreviewed request to change payment details could not be checked",
+                    policy_name="EmailFamilyPolicy",
+                    evidence={"workflow_id": draft.get("workflow_id"), "supplier_id": draft.get("supplier_id")},
+                )
+            if standing:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=("this draft cannot be sent: a reply from this supplier asks to change payment details and has not been "
+                            "cleared by an approver"),
+                    policy_name="EmailFamilyPolicy",
+                    evidence={"flag_ids": [f["id"] for f in standing], "message_ids": [f.get("message_id") for f in standing]},
+                )
+
         # The draft has no deal_id; the approval does. Check 1 has already
         # fetched it by the time the classifier needs it.
         deal_id = approval.get("deal_id")

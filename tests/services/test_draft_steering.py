@@ -39,10 +39,16 @@ class StoreCur:
 
     def execute(self, sql, params=None):
         self.store.queries.append((sql, params))
+        if "to_regclass" in sql:                       # the inbound-flag lookup: this store holds no flag table, so nothing is flagged
+            self.rows = [(None,)]
+            return
         self.rows = list(self.store.rules if "bp_style_rule" in sql else self.store.exemplars if "bp_exemplar_candidate" in sql else [])
 
     def fetchall(self):
         return self.rows
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
 
 
 class Store:

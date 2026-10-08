@@ -42,6 +42,9 @@ class FakeCursor:
     def execute(self, sql, params=None):
         self.conn.log.append(sql)
         params = list(params or [])
+        if "to_regclass" in sql:                     # the inbound-flag lookup asks whether its table exists: here it does not,
+            self.rows = [(None,)]                    # so nothing on any thread is flagged
+            return
         m = re.match(r"SELECT (\w+), (\w+) FROM proc\.(\w+) WHERE (.+?)(?: ORDER BY (.+?))? LIMIT 2$", sql)
         if m:
             rid, col, table, where, order = m.groups()
@@ -62,6 +65,9 @@ class FakeCursor:
 
     def fetchall(self):
         return self.rows
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
 
 
 class FakeConn:
