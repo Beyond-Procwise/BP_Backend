@@ -90,15 +90,23 @@ def cmp_value_rollup(src, tgt) -> tuple[float, str]:
 _SIGNATORY_FIELDS = ("contract_signatory_name", "buyer_signatory_name")
 
 
-def _names(row) -> set:
-    return {_ch._norm_ref(row.get(f)) for f in _SIGNATORY_FIELDS if _has(row.get(f))}
-
-
 def cmp_signatory(src, tgt) -> tuple[float, str]:
-    a, b = _names(src), _names(tgt)
-    if not a or not b:
+    """Each party's signatory against the SAME party's on the other document.
+
+    The supplier's signatory on one and the buyer's on the other are different
+    roles, so a name matching across them is not corroboration. A match on either
+    party is OK; parties that are comparable but all differ are neutral
+    (signatories legitimately change); no comparable party is MISSING.
+    """
+    compared = matched = False
+    for field in _SIGNATORY_FIELDS:
+        a, b = src.get(field), tgt.get(field)
+        if _has(a) and _has(b):
+            compared = True
+            matched = matched or _eq(a, b)
+    if not compared:
         return 0.5, "MISSING"
-    return (1.0, "OK") if a & b else (0.5, "WEAK")
+    return (1.0, "OK") if matched else (0.5, "WEAK")
 
 
 _COST_FIELDS = ("cost_centre_id", "business_unit_id", "spend_category")
