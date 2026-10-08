@@ -65,6 +65,12 @@ def test_live_stays_live_while_a_new_draft_exists(conn, monkeypatch):
     got = repo.get_policy(conn, key)
     assert got["status"] == "retired" and got["liveVersion"] is None and got["latestVersion"] == 4
     assert key not in {d["id"] for d in repo.live_documents(conn)}
+    vs = {v["version"]: v for v in got["versions"]}
+    assert vs[4]["form"] == vs[2]["form"] and vs[4]["form"] != vs[3]["form"]   # the form that was live, not the newer draft
+    with pytest.raises(repo.InvalidTransition):
+        repo.retire(conn, key, base_version=4, actor="t", change_note="again")
+    after = repo.get_policy(conn, key)
+    assert after["latestVersion"] == 4 and len(after["versions"]) == 4
 
 
 def test_unknown_business_area_does_not_crash_and_leaves_area_unchanged(conn):
@@ -77,3 +83,41 @@ def test_unknown_business_area_does_not_crash_and_leaves_area_unchanged(conn):
     bad = repo.create_draft(conn, {"name": "Area probe 2", "businessArea": "No such area"}, actor="test")
     assert bad["policyKey"].startswith("GEN-")
     assert repo.get_policy(conn, bad["policyKey"])["areaName"] is None
+
+
+def _count(conn, key):
+    cur = conn.cursor()
+    cur.execute("SELECT count(*) FROM proc.bp_agent_policy_version WHERE policy_key=%s", (key,))
+    return cur.fetchone()[0]
+
+
+def test_activate_refused_with_readiness_and_contract_problems_in_one_list(conn, monkeypatch):
+    key = repo.create_draft(conn, {"name": "Both"}, actor="test")["policyKey"]
+    monkeypatch.setattr(repo, "_activation_problems", lambda f, r, s: [{"field": "outcome", "message": "r1", "routeTo": "author"}])
+    monkeypatch.setattr(repo, "_contract_problems", lambda d, r: ["c1", "c2", "c1"])
+    with pytest.raises(repo.NotReady) as err:
+        repo.save_version(conn, key, {"name": "Both"}, base_version=1, intent="activate", actor="t", change_note="")
+    msgs = [p["message"] for p in err.value.problems]
+    assert msgs == ["r1", "c1", "c2"]
+    assert err.value.problems[0]["field"] == "outcome" and err.value.problems[1]["field"] == "registry"
+    assert repo.get_policy(conn, key)["latestVersion"] == 1 and _count(conn, key) == 1
+
+
+def test_refused_activation_writes_nothing(conn, monkeypatch):
+    key = repo.create_draft(conn, {"name": "Nothing written"}, actor="test")["policyKey"]
+    monkeypatch.setattr(repo, "_activation_problems", lambda f, r, s: [])
+    monkeypatch.setattr(repo, "_contract_problems", lambda d, r: ["x"])
+    with pytest.raises(repo.NotReady):
+        repo.save_version(conn, key, {"name": "Nothing written"}, base_version=1, intent="activate", actor="t", change_note="")
+    got = repo.get_policy(conn, key)
+    assert got["latestVersion"] == 1 and got["status"] == "draft" and _count(conn, key) == 1
+
+
+def test_retiring_a_retired_policy_is_refused_and_writes_nothing(conn):
+    key = repo.create_draft(conn, {"name": "Retire me"}, actor="test")["policyKey"]
+    assert repo.retire(conn, key, base_version=1, actor="t", change_note="")["version"] == 2   # draft may be retired
+    got = repo.get_policy(conn, key)
+    assert got["versions"][1]["form"] == got["versions"][0]["form"]   # draft-only: latest form
+    with pytest.raises(repo.InvalidTransition):
+        repo.retire(conn, key, base_version=2, actor="t", change_note="")
+    assert repo.get_policy(conn, key)["latestVersion"] == 2 and _count(conn, key) == 2

@@ -34,6 +34,10 @@ class NotFound(Exception):
     pass
 
 
+class InvalidTransition(Exception):
+    pass
+
+
 _activation_problems = readiness.activation_problems
 _contract_problems = contract.validate
 
@@ -65,15 +69,20 @@ def _allocate(cur, area_name: str) -> str:
     return f"{prefix}-{number:04d}"
 
 
-def _write_version(cur, key, version, saved_as, form, actor, note, document_text):
+def _compile(cur, key, version, saved_as, form, document_text):
+    """Compile and contract-check a form without writing anything."""
     settings = load_settings(cur.connection)
     registry = load_registry(cur.connection)
     area = _area(cur, form.get("businessArea"))
-    status = {"draft": "draft", "live": "live", "retired": "retired"}[saved_as]
-    compiled = compile_policy(form, policy_key=key, version=version, status=status,
+    compiled = compile_policy(form, policy_key=key, version=version, status=saved_as,
                               settings=settings, never_suggest=area["never_suggest"])
     problems = _contract_problems(compiled, registry)
     confidence = readiness.extraction_confidence(form, document_text, registry, settings)
+    return compiled, problems, confidence
+
+
+def _write_version(cur, key, version, saved_as, form, actor, note, document_text):
+    compiled, problems, confidence = _compile(cur, key, version, saved_as, form, document_text)
     cur.execute(
         "INSERT INTO proc.bp_agent_policy_version (policy_key, version, saved_as, form_state, compiled,"
         " problems, confidence, change_note, saved_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -124,12 +133,16 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
         version = base_version + 1
         if intent == "activate":
             settings, registry = load_settings(conn), load_registry(conn)
-            problems = _activation_problems(form, registry, settings)
+            problems = list(_activation_problems(form, registry, settings))
+            _, contract_problems, _ = _compile(cur, policy_key, version, "live", form, document_text)
+            seen = set()
+            for m in contract_problems:
+                if m not in seen:
+                    seen.add(m)
+                    problems.append({"field": "registry", "message": m, "routeTo": "administrator"})
             if problems:
-                raise NotReady(problems)
-            _, contract_problems = _write_version(cur, policy_key, version, "live", form, actor, change_note, document_text)
-            if contract_problems:
-                raise NotReady([{"field": "registry", "message": m, "routeTo": "administrator"} for m in contract_problems])
+                raise NotReady(problems)   # the full list, in one go; nothing written
+            _write_version(cur, policy_key, version, "live", form, actor, change_note, document_text)
             cur.execute("UPDATE proc.bp_agent_policy SET status='live', live_version=%s, latest_version=%s,"
                         " area_name=COALESCE(%s, area_name) WHERE policy_key=%s",
                         (version, version, _real_area(cur, form.get("businessArea")), policy_key))
@@ -152,8 +165,12 @@ def retire(conn, policy_key: str, *, base_version: int, actor: str, change_note:
         row = _lock(cur, policy_key)
         if row["latest_version"] != base_version:
             raise StaleVersion(f"latest is {row['latest_version']}, retire was based on {base_version}")
+        if row["status"] == "retired":
+            raise InvalidTransition(f"{policy_key} is already retired")
+        # record the form that was actually live; a draft-only policy has its latest form
+        source_version = row["live_version"] if row["live_version"] is not None else base_version
         cur.execute("SELECT form_state FROM proc.bp_agent_policy_version WHERE policy_key=%s AND version=%s",
-                    (policy_key, base_version))
+                    (policy_key, source_version))
         form = cur.fetchone()[0]
         form = json.loads(form) if isinstance(form, str) else form
         version = base_version + 1
