@@ -304,3 +304,18 @@ migration file (the kind column was already free text; only its comment changed,
 | J5 | **Only mail that reaches `insert_response` is screened.** Mail the extraction pipeline reads elsewhere is not. |
 | J6 | **Not in the golden-case runner.** The runner cannot yet seed inbound flags, so the cases live as real-Postgres tests in `tests/email_evals/test_inbound_flags.py` (run in the same CI job). |
 | J7 | The send-block and agent-block messages now name the actual reason (payment / instruction text / unverified sender); the violation recorded on a human-written draft was renamed `payment_change_unreviewed` -> `inbound_flag_unreviewed`. Nothing outside this repo reads the old name. |
+
+## Confirming an offer read from an email (2026-10-08) - built, applied nowhere
+
+Closes V5 above: a person can now vouch for (or reject) the price and lead time on a supplier reply ROW, so the offer stops being a "claim"
+in every later draft, not just the one they were looking at. `POST /email-learning/offers/{id}/decision` (`{"action": "confirm"|"reject",
+"price", "lead_time"}`); the id is the reply row's id, which the draft's fact record already carries.
+
+| # | Limit / assumption |
+|---|---|
+| O1 | **Confirming is approver-class** (`offer.extraction.confirm`, `approve_email`): it lets a figure be stated as fact. **Rejecting is an ordinary write** (`email.learning.decide`). |
+| O2 | **A confirmation names the figures the person saw** (`price`, `lead_time`). It is refused if either differs from the row now (a missing figure must be stated as missing), so nobody can vouch for a value they did not look at. |
+| O3 | **Once only, by a named person.** The name is the authenticated principal, never a body field. A confirmed or rejected row is never decided again, and the extraction stamper never overwrites it. A row of unrecorded origin (NULL) can be vouched for. |
+| O4 | **It writes the PRODUCT table** (`proc.supplier_response`) through the application's own connection, not the email writer role (which cannot, by design). It needs the provenance migration (`deploy/sql/2026-10-08_supplier_response_provenance.sql`, applied separately); without it the answer is "not available" and nothing changes. |
+| O5 | **Rejected still reads as a claim**, not as absent: the draft still shows the figure, flagged unconfirmed. Making a rejected value disappear from drafts is not built. |
+| O6 | No screen: the reviewer's UI would call this endpoint; the UI repo is untouched. Nothing lists "offers awaiting confirmation" yet; the draft's claim item is the entry point. |

@@ -380,6 +380,52 @@ def record_extraction(*, workflow_id: Optional[str], unique_id: Optional[str], r
         return False
 
 
+def decide_extraction(response_id: Any, by: Optional[str], action: str, *, seen_price: Any = None, seen_lead_time: Any = None) -> Dict[str, Any]:
+    """A person confirms or rejects the price / lead time read from a supplier's email, once, by name.
+
+    Confirming names the figures the person SAW and is refused if the row now holds different ones, so a confirmation can never vouch for
+    a value the person did not look at. A row already confirmed or rejected is not decided again. Never raises: a database without the
+    provenance columns answers "not available".
+    """
+
+    if action not in ("confirm", "reject") or not isinstance(by, str) or not by.strip():
+        return {"ok": False, "error": "action must be confirm or reject, by a named person"}
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT extraction_status, price, lead_time FROM proc.supplier_response WHERE id = %s", (response_id,))
+            found = cur.fetchone()
+            if found is None:
+                return {"ok": False, "error": "no such offer"}
+            status, price, lead_time = found
+            if status in ("confirmed", "rejected"):
+                return {"ok": False, "error": "this offer has already been decided"}
+            if action == "confirm":
+                if price is None and lead_time is None:
+                    return {"ok": False, "error": "there is nothing extracted on this reply to confirm"}
+                if not _same_figure(price, seen_price) or not _same_figure(lead_time, seen_lead_time):
+                    return {"ok": False, "error": "the figures changed since you looked; review them again"}
+            cur.execute(
+                "UPDATE proc.supplier_response SET extraction_status = %s, confirmed_by = %s, confirmed_at = now() "
+                "WHERE id = %s AND COALESCE(extraction_status, 'extracted_unverified') = 'extracted_unverified' RETURNING id",
+                ("confirmed" if action == "confirm" else "rejected", by.strip(), response_id))
+            if not cur.fetchall():
+                return {"ok": False, "error": "this offer has already been decided"}
+            return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("offer decision not recorded: %s", type(exc).__name__)
+        return {"ok": False, "error": "offer confirmation is not available"}
+
+
+def _same_figure(stored: Any, seen: Any) -> bool:
+    if stored is None or seen is None:
+        return stored is None and seen is None
+    try:
+        return Decimal(str(stored)) == Decimal(str(seen))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def insert_response(row: SupplierResponseRow) -> None:
     _screen_inbound(row)
     base_text = row.response_text or row.response_body or ""

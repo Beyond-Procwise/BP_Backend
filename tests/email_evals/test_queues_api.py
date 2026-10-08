@@ -263,3 +263,56 @@ def test_a_blank_person_cannot_clear_a_flag_and_nothing_is_asked(api):
     n = len(api.gate.asked)
     assert api.post(f"/email-learning/inbound-flags/{f}/decision", json={"action": "clear"}).status_code == 401
     assert len(api.gate.asked) == n
+
+
+# --- offers read from an email: confirming is approver-class, rejecting is a write ---------------------------------------------------
+
+@pytest.fixture
+def offers(api, monkeypatch):
+    import importlib
+    repo = importlib.import_module("repositories.supplier_response_repo")
+
+    @contextmanager
+    def get_conn():
+        yield api.db
+    monkeypatch.setattr(repo, "get_conn", get_conn)
+    with api.db.cursor() as cur:
+        cur.execute("TRUNCATE proc.supplier_response")
+        cur.execute("INSERT INTO proc.supplier_response (workflow_id, unique_id, supplier_id, response_message_id, price, lead_time, extraction_status) "
+                    "VALUES ('wf-1', 'U-1', 'S-1', '<o1>', 47.5, 14, 'extracted_unverified') RETURNING id")
+        api.offer_id = cur.fetchone()[0]
+    return api
+
+
+def offer_status(api):
+    return row(api.db, "SELECT extraction_status, confirmed_by FROM proc.supplier_response WHERE id = %s", api.offer_id)
+
+
+def test_confirming_an_offer_needs_approver_authority_and_records_the_authenticated_person(offers):
+    r = offers.post(f"/email-learning/offers/{offers.offer_id}/decision", json={"action": "confirm", "price": 47.5, "lead_time": 14, "by": "mallory"})
+    assert r.status_code == 200 and offers.gate.asked[-1][:2] == ("offer.extraction.confirm", "approve_email")
+    assert offer_status(offers) == ("confirmed", NICK)
+
+
+def test_a_caller_who_may_write_but_not_approve_cannot_confirm_an_offer(offers):
+    offers.gate.deny.add("offer.extraction.confirm")
+    r = offers.post(f"/email-learning/offers/{offers.offer_id}/decision", json={"action": "confirm", "price": 47.5, "lead_time": 14})
+    assert r.status_code == 403 and offer_status(offers) == ("extracted_unverified", None)
+
+
+def test_rejecting_an_offer_is_an_ordinary_write(offers):
+    offers.gate.deny.add("offer.extraction.confirm")
+    assert offers.post(f"/email-learning/offers/{offers.offer_id}/decision", json={"action": "reject"}).status_code == 200
+    assert offers.gate.asked[-1][:2] == ("email.learning.decide", "write") and offer_status(offers) == ("rejected", NICK)
+
+
+def test_figures_that_changed_a_second_decision_and_an_unknown_offer_are_refused_with_the_right_codes(offers):
+    url = f"/email-learning/offers/{offers.offer_id}/decision"
+    assert offers.post(url, json={"action": "confirm", "price": 40.0, "lead_time": 14}).status_code == 422
+    assert offers.post(url, json={"action": "confirm", "price": 47.5, "lead_time": 14}).status_code == 200
+    assert offers.post(url, json={"action": "reject"}).status_code == 422
+    assert offers.post("/email-learning/offers/999999/decision", json={"action": "reject"}).status_code == 404
+
+
+def test_the_offer_confirmation_is_in_the_closed_vocabulary():
+    assert actions.action_class("offer.extraction.confirm") == "approve_email"

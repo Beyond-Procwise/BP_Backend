@@ -94,6 +94,9 @@ ACTIONS: Dict[str, str] = {
     # it, so it needs the authority of approving an email, not of an ordinary write. Confirming it as fraud only keeps the block and
     # is an ordinary `email.learning.decide`.
     "inbound.flag.clear": "approve_email",
+    # Confirming a price or lead time read from a supplier's email makes it usable as a stated FACT in a draft, so it needs the authority
+    # of approving an email. Rejecting one only withholds trust and is an ordinary `email.learning.decide`.
+    "offer.extraction.confirm": "approve_email",
     # --- sharing (leaves the tenant) -------------------------------------
     "report.export": "share",
     "research.web": "share",
