@@ -16,11 +16,13 @@ from pydantic import ValidationError
 from services.agent_policy import conditions
 from services.agent_policy.extraction_schema import ChunkResult, ProposedPolicy, grammar_schema
 from services.agent_policy.registry import RegistrySnapshot
+from services import ollama_client
 from services.ollama_client import ollama_generate
 
 EXTRACT_PROMPT = "agent_policy_extract"
 FIX_PROMPT = "agent_policy_fix"
 _UNUSABLE = "the model did not return a usable answer"
+MODEL_BUSY = "The model is busy at a different context size; try again when it is idle."
 
 
 class PromptUnavailable(RuntimeError):
@@ -29,6 +31,50 @@ class PromptUnavailable(RuntimeError):
 
 class ExtractionError(RuntimeError):
     pass
+
+
+class ModelBusy(ExtractionError):
+    """AgentNick is loaded at another context size: calling it would reload the shared model
+    (minutes, for every session). The call is not made."""
+
+    def __init__(self) -> None:
+        super().__init__(MODEL_BUSY)
+
+
+def read_ps() -> Optional[Dict[str, Any]]:
+    """GET {OLLAMA_BASE_URL}/api/ps, or None when it cannot be read."""
+    try:
+        response = ollama_client.egress.get(f"{ollama_client.OLLAMA_BASE_URL}/api/ps",
+                                            purpose=ollama_client.egress.Purpose.MODEL_INFERENCE,
+                                            require_global=False, timeout=5)
+        if getattr(response, "status_code", 0) != 200:
+            return None
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
+    except Exception:  # noqa: BLE001 - unreadable means "not known": the call goes ahead as before
+        return None
+
+
+def model_busy(ps: Optional[Callable[[], Optional[Dict[str, Any]]]] = None) -> bool:
+    """Would our call make Ollama reload AgentNick? True only when it is loaded now with a
+    context_length other than load_options()'s num_ctx. Not loaded (a first load, not a
+    reload), loaded at our size, or /api/ps unreadable: False, and the call goes ahead."""
+    want = ollama_client.load_options(include_gpu=False)["num_ctx"]
+    for m in ((ps or read_ps)() or {}).get("models") or []:
+        if not isinstance(m, dict) or ollama_client.DEFAULT_MODEL not in (m.get("name"), m.get("model")):
+            continue
+        ctx = m.get("context_length")
+        if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx != want:
+            return True
+    return False
+
+
+def _busy_check(call: Callable[..., Optional[str]],
+                busy: Optional[Callable[[], bool]]) -> Callable[[], bool]:
+    if busy is not None:
+        return busy
+    # Only the real model call is guarded by default; a stand-in `call` reaches no model.
+    return model_busy if call is ollama_generate else (lambda: False)
 
 
 def registry_digest(registry: RegistrySnapshot) -> str:
@@ -95,7 +141,9 @@ def _sections_text(sections: List[Mapping[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def _call(call: Callable[..., Optional[str]], prompt: str, model) -> Any:
+def _call(call: Callable[..., Optional[str]], prompt: str, model, busy: Callable[[], bool]) -> Any:
+    if busy():
+        raise ModelBusy()
     raw = call(prompt, format=grammar_schema(model), think=False, temperature=0, num_predict=8192,
                background=True, use_load_options=True)
     if not raw:
@@ -108,8 +156,10 @@ def _call(call: Callable[..., Optional[str]], prompt: str, model) -> Any:
 
 def extract_chunk(sections: List[Mapping[str, Any]], *, document: Mapping[str, Any],
                   taxonomy: List[Mapping[str, Any]], registry: RegistrySnapshot,
-                  call: Callable[..., Optional[str]] = ollama_generate) -> ChunkResult:
-    """``document`` carries ``title`` and ``version``."""
+                  call: Callable[..., Optional[str]] = ollama_generate,
+                  busy: Optional[Callable[[], bool]] = None) -> ChunkResult:
+    """``document`` carries ``title`` and ``version``. Raises ModelBusy, without calling the
+    model, when the call would reload it (``model_busy``)."""
     version = document.get("version")
     prompt = _fill(load_prompt(EXTRACT_PROMPT), {
         "taxonomy": _taxonomy_text(taxonomy),
@@ -118,12 +168,13 @@ def extract_chunk(sections: List[Mapping[str, Any]], *, document: Mapping[str, A
         "document_version": "" if version is None else str(version),
         "sections": _sections_text(sections),
     })
-    return _call(call, prompt, ChunkResult)
+    return _call(call, prompt, ChunkResult, _busy_check(call, busy))
 
 
 def fix_policy(form: Mapping[str, Any], flipped: List[Mapping[str, Any]], *, registry: RegistrySnapshot,
                taxonomy: List[Mapping[str, Any]], settings: Mapping[str, Any],
-               call: Callable[..., Optional[str]] = ollama_generate) -> ProposedPolicy:
+               call: Callable[..., Optional[str]] = ollama_generate,
+               busy: Optional[Callable[[], bool]] = None) -> ProposedPolicy:
     h = form.get("hidden") or {}
     source = form.get("source") or {}
     current = {
@@ -139,8 +190,9 @@ def fix_policy(form: Mapping[str, Any], flipped: List[Mapping[str, Any]], *, reg
     }
     examples = [{"input": e.get("input") or {}, "expected": e.get("agentExpected")}
                 for e in form.get("examples") or []]
-    # `flipped` are stage-1 examples ({"input", "agentExpected", "flipped": True}); what the
-    # reviewer expects is computed by the same code the review screen uses, never guessed.
+    # `flipped` are what the screen sends: {"input", "expects"} (a stage-1 example's other keys
+    # may ride along). Only "input" is read: the backend recomputes what the reviewer expects
+    # with the same code the review screen uses (reviewer_view), so a sent "expects" is never trusted.
     view = conditions.reviewer_view({**form, "examples": [dict(f, flipped=True) for f in flipped]}, settings)
     constraints = "\n".join(
         f"- these inputs must give {row['reviewer_expects']}: {json.dumps(row['input'], sort_keys=True)}"
@@ -155,4 +207,4 @@ def fix_policy(form: Mapping[str, Any], flipped: List[Mapping[str, Any]], *, reg
         "taxonomy": _taxonomy_text(taxonomy),
         "registry": registry_digest(registry),
     })
-    return _call(call, prompt, ProposedPolicy)
+    return _call(call, prompt, ProposedPolicy, _busy_check(call, busy))

@@ -229,7 +229,8 @@ def _bump_latest(cur, document_id, version) -> None:
 
 # ---------------------------------------------------------------- register
 
-def _fetch_upload(client, bucket: str, key: str, max_bytes: int, label: str = "") -> bytes:
+def _head_size(client, bucket: str, key: str, max_bytes: int, label: str = "") -> int:
+    """The object's size, refused when it is missing, empty or over the limit. Reads no bytes."""
     label = label or "The upload"
     try:
         head = client.head_object(Bucket=bucket, Key=key)
@@ -243,6 +244,11 @@ def _fetch_upload(client, bucket: str, key: str, max_bytes: int, label: str = ""
         raise ValueError(f"{label}: the uploaded file is empty.")
     if size > max_bytes:
         raise ValueError(f"{label}: the uploaded file is larger than the {max_bytes} byte limit.")
+    return size
+
+
+def _read_upload(client, bucket: str, key: str, max_bytes: int, size: int, label: str = "") -> bytes:
+    label = label or "The upload"
     body = client.get_object(Bucket=bucket, Key=key)["Body"]
     try:
         data = body.read(max_bytes + 1)  # never pull more than the limit, whatever head said
@@ -280,7 +286,9 @@ def _is_hash_violation(exc: Exception) -> bool:
     return getattr(exc, "pgcode", None) == "23505" and getattr(diag, "constraint_name", None) == _HASH_CONSTRAINT
 
 
-def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, Any]:
+def _validate_one(conn, client, bucket, max_bytes, upload) -> Dict[str, Any]:
+    """Every refusal a register can give before it writes: choice, type, key, the object's
+    existence and size, and the document a revision names. Reads, never writes."""
     name = str(upload.get("name") or "")
     revision_of = upload.get("revisionOf")
     # asNew: the person says this is a different document even though its name matches one.
@@ -291,7 +299,15 @@ def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, A
         raise ValueError(f"{name or 'A file'}: only {', '.join(sorted(ACCEPTED))} files are accepted.")
     key = upload_key(upload.get("uploadId"), name)
     _check_issued_key(key, name)
-    data = _fetch_upload(client, bucket, key, max_bytes, label=name)
+    size = _head_size(client, bucket, key, max_bytes, label=name)
+    if revision_of is not None and _doc_by_id(conn.cursor(), revision_of) is None:
+        raise ValueError(f"Document {revision_of} does not exist.")
+    return {"name": name, "revision_of": revision_of, "as_new": as_new, "key": key, "size": size}
+
+
+def _register_one(conn, client, bucket, max_bytes, checked, actor) -> Dict[str, Any]:
+    name, revision_of, as_new, key = checked["name"], checked["revision_of"], checked["as_new"], checked["key"]
+    data = _read_upload(client, bucket, key, max_bytes, checked["size"], label=name)
     content_hash = hashlib.sha256(data).hexdigest()
     filename = safe_name(name)
     match_name = normalise(name)
@@ -357,15 +373,35 @@ def _duplicate(doc: Dict[str, Any], version: int) -> Dict[str, Any]:
             "isRevision": version > 1, "duplicate": True}
 
 
+def _extracted(conn, document_id, version) -> bool:
+    """Has any extraction run read this document version (any item references it)?"""
+    cur = conn.cursor()
+    cur.execute("SELECT EXISTS (SELECT 1 FROM proc.bp_policy_extraction_item"
+                " WHERE document_id = %s AND document_version = %s)", (document_id, version))
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
 def register_uploads(conn, uploads: List[Dict[str, Any]], *, actor: str) -> List[Dict[str, Any]]:
     """Record each uploaded object as a document version (or recognise it as one already held).
 
     Each upload is {uploadId, name, revisionOf?, asNew?}: revisionOf names the document it revises;
     asNew: true makes a new document even when the name matches one; both at once is refused.
+
+    All or nothing for refusals: every entry is checked (type, key, the object's existence and
+    size, the revised document) before any is written, so a bad file N never leaves files
+    1..N-1 registered. Each result says whether an extraction run has already read that
+    version (``extracted``), so a duplicate can be told from one that still needs a run.
     """
     _, max_bytes = intake_limits()
     client, bucket = _s3(), _bucket()
-    return [_register_one(conn, client, bucket, max_bytes, u, actor) for u in (uploads or [])]
+    checked = [_validate_one(conn, client, bucket, max_bytes, u) for u in (uploads or [])]
+    out = []
+    for c in checked:
+        result = _register_one(conn, client, bucket, max_bytes, c, actor)
+        result["extracted"] = _extracted(conn, result["documentId"], result["version"])
+        out.append(result)
+    return out
 
 
 # ---------------------------------------------------------------- text

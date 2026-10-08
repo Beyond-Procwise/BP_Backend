@@ -6,7 +6,10 @@ Same shape as services.rga.job_store.
 
 A run is spotted as stranded by its HEARTBEAT: the runner stamps ``heartbeat_at``
 every 30 seconds, and a running run whose stamp is older than STALE_SECONDS is
-healed to failed when next read or listed. A restart fails a run rather than
+healed to failed when next read or listed. Queued runs are vouched for the same
+way: the runner stamps its own queued runs when one is submitted and on every
+beat, so a queued run is failed only when nobody has stamped it for STALE_SECONDS
+-- never merely because another process owns it (that process may be busy, not dead). A restart fails a run rather than
 resuming it: items already appended stay, and a second model pass nobody asked
 for is worse than saying what happened.
 
@@ -50,8 +53,8 @@ def _run(row) -> Optional[Dict[str, Any]]:
 def heal(conn: Any, run_id: Optional[int] = None) -> int:
     """Fail stranded runs -- one run, or all. Returns how many were moved.
 
-    Running: the heartbeat lapsed. Queued: owned by another (dead) process or by
-    nobody, and older than the stale limit -- nothing can ever claim it.
+    Running: the heartbeat lapsed. Queued: its heartbeat lapsed (or, never stamped,
+    it is older than the stale limit) -- whoever owned it is gone.
     """
     scoped = "run_id = %s AND " if run_id is not None else ""
     extra = (run_id,) if run_id is not None else ()
@@ -68,9 +71,8 @@ def heal(conn: Any, run_id: Optional[int] = None) -> int:
             "UPDATE proc.bp_policy_extraction_run "
             "   SET status = 'failed', error = %s, finished_at = now() "
             f" WHERE {scoped}status = 'queued' "
-            "   AND (owner IS NULL OR owner <> %s) "
-            "   AND created_at < now() - make_interval(secs => %s)",
-            (NOT_STARTED_ERROR, *extra, OWNER, STALE_SECONDS))
+            "   AND COALESCE(heartbeat_at, created_at) < now() - make_interval(secs => %s)",
+            (NOT_STARTED_ERROR, *extra, STALE_SECONDS))
         moved += cur.rowcount
     return moved
 
@@ -102,6 +104,14 @@ def beat(conn: Any, run_id: int, owner: str) -> None:
         cur.execute(
             "UPDATE proc.bp_policy_extraction_run SET heartbeat_at = now() "
             " WHERE run_id = %s AND owner = %s AND status = 'running'", (run_id, owner))
+
+
+def beat_queued(conn: Any, owner: str) -> None:
+    """Vouch for this process's queued runs: they are waiting, not stranded."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE proc.bp_policy_extraction_run SET heartbeat_at = now() "
+            " WHERE owner = %s AND status = 'queued'", (owner,))
 
 
 def append_item(conn: Any, run_id: int, *, kind: str, payload: Dict[str, Any],

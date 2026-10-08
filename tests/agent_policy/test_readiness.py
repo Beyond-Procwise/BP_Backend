@@ -138,6 +138,22 @@ def test_extraction_confidence_high_medium_low():
                                   "The agent's expected result differs from the computed one for 1 example"}
 
 
+def test_confidence_and_the_agent_note_use_one_word_for_word_check():
+    """Minor 8: a short excerpt that does appear in the text is still not proof (min 4 words),
+    for confidence exactly as for the extraction run's agent note."""
+    from services.agent_policy import extraction_run
+    form = _ready_form()
+    for ex, agent in zip(form["examples"], ["approve", "none", "none", "none"]):
+        ex["agentExpected"] = agent
+    short = DOC_TEXT.split()[:3]
+    form["source"]["excerpt"] = " ".join(short)
+    assert " ".join(short) in DOC_TEXT
+    assert R.excerpt_grounded(form["source"]["excerpt"], DOC_TEXT) is False
+    assert "The excerpt does not appear word for word in the document" in \
+        R.extraction_confidence(form, DOC_TEXT, REGISTRY, SETTINGS)["failed"]
+    assert extraction_run.readiness.excerpt_grounded is R.excerpt_grounded
+
+
 def test_no_source_means_no_extraction_confidence():
     form = _ready_form(); form["source"] = None
     assert R.extraction_confidence(form, None, REGISTRY, SETTINGS) is None

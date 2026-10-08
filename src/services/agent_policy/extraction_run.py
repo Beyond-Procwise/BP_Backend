@@ -19,11 +19,10 @@ import json
 from typing import Any, Callable, Dict, List, Optional
 
 from repositories import agent_policy_repo as repo
-from services.agent_policy import converter, documents, extractor, matching
+from services.agent_policy import converter, documents, extractor, matching, readiness
 from services.agent_policy.registry import load_registry
 from services.agent_policy.sections import chunk_sections, split_sections
 from services.agent_policy.settings import load_settings
-from services.obligations.grounding import is_quote_grounded
 
 UNGROUNDED_NOTE = "The excerpt was not found word for word in the document."
 RETIRE_HELD_NOTE = ("Some sections or policies could not be read, so no policy from this document was proposed "
@@ -169,6 +168,13 @@ def _extract_document(conn, run: Dict[str, Any], emit: Emit, req: Dict[str, Any]
                                              taxonomy=taxonomy, registry=registry)
         except extractor.PromptUnavailable:
             raise  # a governed prompt is missing: the whole run fails, as the ruling says
+        except extractor.ModelBusy as exc:
+            # Not called: it would have reloaded the shared model. A failed chunk, so retires wait.
+            incomplete = True
+            counts["errors"] += 1
+            emit("error", {"message": str(exc), "references": refs},
+                 reference=refs[0] if refs else None, **at)
+            continue
         except Exception as exc:  # noqa: BLE001 - one chunk must not end the run
             incomplete = True
             counts["errors"] += 1
@@ -191,7 +197,7 @@ def _extract_document(conn, run: Dict[str, Any], emit: Emit, req: Dict[str, Any]
                      reference=p.reference, **at)
                 continue
             form = _as_proposal(form)
-            if not is_quote_grounded(p.excerpt, text, min_words=4):
+            if not readiness.excerpt_grounded(p.excerpt, text):   # the check confidence uses
                 form["hidden"]["agentNotes"] = list(form["hidden"].get("agentNotes") or []) + [UNGROUNDED_NOTE]
             counts["policies"] += 1
             proposed.append(form)
@@ -253,11 +259,17 @@ def _decide(conn, emit: Emit, form: Dict[str, Any], d: Dict[str, Any], by_key, c
             _carry_person_fields(form, old)
             form["changeNote"] = note
             saved = repo.save_version(conn, d["policyKey"], form, base_version=old["latestVersion"],
-                                      intent="draft", actor=actor, change_note=note, document_text=text)
+                                      intent="draft", actor=actor, change_note=note, document_text=text,
+                                      source={"reference": ref, "split": matching.split_key(form)})
             key, saved_version = saved["policyKey"], saved["version"]
-        else:  # unchanged: nothing is written
+        else:  # unchanged: no version is written
             key, saved_version = d["policyKey"], None
-            payload["latestVersion"] = by_key[key]["latestVersion"]
+            old = by_key[key]
+            payload["latestVersion"] = old["latestVersion"]
+            split = matching.split_key(form)
+            if (old["reference"], old["split"]) != (ref, split):
+                # the same clause under a new number (matched on its excerpt): follow it
+                repo.update_source(conn, key, reference=ref, split=split)
     except repo.StaleVersion:
         counts["errors"] += 1
         emit("error", {"message": f"{d['policyKey']} was edited while the agent was reading the document, "
@@ -285,14 +297,20 @@ def run_extract(conn, run: Dict[str, Any], emit: Emit) -> Dict[str, int]:
     return counts
 
 
-_FIX_FIELDS = ("situation", "hidden", "examples", "outcome", "deciders", "notify")
+# What a fix may change: the condition and what it rests on. Everything a person sets --
+# deciders, notify, owner, the messages, and the other hidden settings (onMissingData,
+# timeWindow, whilePaused, units, reasonCode, setBy) -- stays as the reviewer has it, so
+# accepting a fix can never wipe them.
+_FIX_FIELDS = ("situation", "outcome", "examples")
+_FIX_HIDDEN = ("condition", "inputs", "missingInputs", "unknownNames", "agentNotes", "actions", "checkpoint")
 
 
 def run_fix(conn, run: Dict[str, Any], emit: Emit) -> Dict[str, int]:
     """Ask the agent to fix one policy so the flipped examples come out as the reviewer expects.
 
     Emits one ``fix`` item and never saves: the reviewer accepts it in the form, and the
-    normal save follows.
+    normal save follows. The proposal carries only ``_FIX_FIELDS`` and, under ``hidden``,
+    only ``_FIX_HIDDEN``.
     """
     req = run.get("request") or {}
     key, base = req.get("policyKey"), req.get("baseVersion")
@@ -310,7 +328,7 @@ def run_fix(conn, run: Dict[str, Any], emit: Emit) -> Dict[str, int]:
                                            document_version=src.get("documentVersion"),
                                            registry=registry, taxonomy=taxonomy))
     proposed = {k: fixed.get(k) for k in _FIX_FIELDS}
-    proposed["messages"] = {"messageForAgent": fixed.get("messageForAgent"),
-                            "messageForPerson": fixed.get("messageForPerson")}
+    hidden = fixed.get("hidden") or {}
+    proposed["hidden"] = {k: hidden.get(k) for k in _FIX_HIDDEN}
     emit("fix", {"proposed": proposed, "basedOn": base}, policy_key=key)
     return {"fixes": 1}

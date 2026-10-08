@@ -180,3 +180,58 @@ def test_digest_lists_one_action_per_line_with_its_purpose():
     assert reg.actions == {"tool.call.before": {"run_email_dispatch"}}
     assert reg.action_plain == {("tool.call.before", "run_email_dispatch"): "send a drafted email to a supplier"}
     assert "  - run_email_dispatch: send a drafted email to a supplier" in extractor.registry_digest(reg)
+
+
+# ---------------------------------------------------------------- fast failure when busy
+
+def _ps(*models):
+    return lambda: {"models": [dict(m) for m in models]}
+
+
+AGENTNICK = extractor.ollama_client.DEFAULT_MODEL
+WANT = extractor.ollama_client.load_options(include_gpu=False)["num_ctx"]
+
+
+@pytest.mark.parametrize("ps,busy", [
+    (_ps({"name": AGENTNICK, "model": AGENTNICK, "context_length": WANT - 4096}), True),   # loaded, other size
+    (_ps({"name": AGENTNICK, "model": AGENTNICK, "context_length": WANT}), False),         # loaded, our size
+    (_ps(), False),                                                                        # not loaded: a load, not a reload
+    (_ps({"name": "someone/else:7b", "model": "someone/else:7b", "context_length": 2048}), False),
+    (_ps({"name": AGENTNICK, "model": AGENTNICK}), False),                                 # size not said
+    (lambda: None, False),                                                                 # /api/ps unreadable
+])
+def test_model_busy_reads_api_ps(ps, busy):
+    assert extractor.model_busy(ps) is busy
+
+
+def test_a_busy_model_is_not_called_and_the_chunk_fails_with_the_message():
+    stub = Stub(json.dumps({"policies": [], "not_enforceable": []}))
+    busy = lambda: extractor.model_busy(_ps({"name": AGENTNICK, "context_length": WANT - 4096}))  # noqa: E731
+    with pytest.raises(extractor.ModelBusy, match="The model is busy at a different context size; "
+                                                  "try again when it is idle."):
+        extractor.extract_chunk(SECTIONS, document={"title": "t", "version": 1}, taxonomy=TAXONOMY,
+                                registry=REGISTRY, call=stub, busy=busy)
+    assert stub.calls == []
+    assert issubclass(extractor.ModelBusy, extractor.ExtractionError)
+
+
+def test_the_real_model_call_is_guarded_by_default(monkeypatch):
+    """The default call (ollama_generate) reads /api/ps first; with the model busy nothing is
+    posted. egress.post is made to fail the test, so a broken guard can never reach a model."""
+    def no_post(*a, **k):
+        raise AssertionError("the model must not be called")
+    monkeypatch.setattr(extractor.ollama_client.egress, "post", no_post)
+    monkeypatch.setattr(extractor, "read_ps", _ps({"name": AGENTNICK, "context_length": WANT - 4096}))
+    with pytest.raises(extractor.ModelBusy):
+        extractor.extract_chunk(SECTIONS, document={"title": "t", "version": 1}, taxonomy=TAXONOMY,
+                                registry=REGISTRY)
+    with pytest.raises(extractor.ModelBusy):
+        extractor.fix_policy(FORM_EXAMPLE, [], registry=REGISTRY, taxonomy=TAXONOMY, settings=SETTINGS)
+
+
+def test_a_stand_in_call_reads_no_api_ps(monkeypatch):
+    monkeypatch.setattr(extractor, "read_ps", lambda: (_ for _ in ()).throw(AssertionError("read /api/ps")))
+    stub = Stub(json.dumps({"policies": [], "not_enforceable": []}))
+    extractor.extract_chunk(SECTIONS, document={"title": "t", "version": 1}, taxonomy=TAXONOMY,
+                            registry=REGISTRY, call=stub)
+    assert len(stub.calls) == 1

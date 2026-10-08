@@ -146,6 +146,33 @@ def _write_version(cur, key, version, saved_as, form, actor, note, document_text
     return compiled, problems
 
 
+def _source_text(cur, form: Dict[str, Any], document_id: Optional[int] = None) -> Optional[str]:
+    """The stored text of the document version the form says it came from, so a person's save
+    is judged against the same document as the agent's (confidence stays what it was).
+
+    The document is the policy's ``source_document_id`` when known, else the one titled as
+    the form's source. Only text already parsed is used: a save never reads S3.
+    """
+    src = form.get("source") or {}
+    try:
+        version = int(src.get("documentVersion"))
+    except (TypeError, ValueError):
+        return None
+    if document_id is None:
+        if not src.get("document"):
+            return None
+        cur.execute("SELECT document_id FROM proc.bp_policy_document WHERE title = %s"
+                    " ORDER BY document_id LIMIT 1", (src.get("document"),))
+        row = cur.fetchone()
+        if not row:
+            return None
+        document_id = row[0]
+    cur.execute("SELECT parsed_text FROM proc.bp_policy_document_version WHERE document_id = %s AND version = %s",
+                (document_id, version))
+    row = cur.fetchone()
+    return row[0] if row and row[0] else None
+
+
 def _txn(conn):
     conn.autocommit = False
     return conn.cursor()
@@ -155,12 +182,15 @@ def create_draft(conn, form: Dict[str, Any], *, actor: str, source: Optional[Dic
                  document_text: Optional[str] = None) -> Dict[str, Any]:
     """``source`` ({"documentId", "reference", "split"}) records which document clause the policy
     was extracted from, in the same transaction; ``document_text`` lets the save compute the
-    extraction confidence. A person's save passes neither."""
+    extraction confidence. A person's save passes neither, and the text is then the stored
+    text of the form's source document version (``_source_text``)."""
     _refuse_withheld(form)
     src = source or {}
     cur = _txn(conn)
     try:
         form = attribute_confirmation(form, None, actor=actor, now_iso=_now_iso())
+        if document_text is None:
+            document_text = _source_text(cur, form, src.get("documentId"))
         area = _area(cur, form.get("businessArea"))
         key = _allocate(cur, area["area_name"])
         cur.execute("INSERT INTO proc.bp_agent_policy (policy_key, area_name, status, latest_version, created_by,"
@@ -185,8 +215,23 @@ def _lock(cur, key):
     return {"status": row[0], "live_version": row[1], "latest_version": row[2]}
 
 
+def _set_source(cur, policy_key: str, source: Optional[Dict[str, Any]]) -> None:
+    if source is not None:
+        cur.execute("UPDATE proc.bp_agent_policy SET source_reference = %s, source_split = %s WHERE policy_key = %s",
+                    (source.get("reference"), source.get("split"), policy_key))
+
+
+def update_source(conn, policy_key: str, *, reference: Optional[str], split: Optional[str]) -> None:
+    """Point a policy at its clause's current number (a renumbered clause, matched unchanged).
+    One statement: atomic under autocommit."""
+    _set_source(conn.cursor(), policy_key, {"reference": reference, "split": split})
+
+
 def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: int, intent: str,
-                 actor: str, change_note: str, document_text: Optional[str] = None) -> Dict[str, Any]:
+                 actor: str, change_note: str, document_text: Optional[str] = None,
+                 source: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """``source`` ({"reference", "split"}), from an extraction run, moves the policy's clause
+    reference with the new version in the same transaction (a renumbered clause)."""
     if intent not in ("draft", "activate"):
         raise ValueError(intent)
     _refuse_withheld(form)
@@ -202,6 +247,9 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
             raise NotFound(policy_key)
         prev_form = json.loads(prev[0]) if isinstance(prev[0], str) else prev[0]
         form = attribute_confirmation(form, prev_form, actor=actor, now_iso=_now_iso())
+        if document_text is None:
+            cur.execute("SELECT source_document_id FROM proc.bp_agent_policy WHERE policy_key = %s", (policy_key,))
+            document_text = _source_text(cur, form, cur.fetchone()[0])
         version = base_version + 1
         if intent == "activate":
             settings, registry = load_settings(conn), load_registry(conn)
@@ -224,6 +272,7 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
             _write_version(cur, policy_key, version, "draft", form, actor, change_note, document_text)
             cur.execute("UPDATE proc.bp_agent_policy SET latest_version=%s, area_name=COALESCE(%s, area_name)"
                         " WHERE policy_key=%s", (version, _real_area(cur, form.get("businessArea")), policy_key))
+        _set_source(cur, policy_key, source)
         conn.commit()
         return {"policyKey": policy_key, "version": version}
     except Exception:

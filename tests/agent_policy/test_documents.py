@@ -39,6 +39,7 @@ class FakeDB:
         self.commits = self.rollbacks = 0
         self._staged = None
         self.log = []
+        self.extracted = set()  # (document_id, version) an extraction run item references
 
     # connection API
     def cursor(self):
@@ -95,6 +96,8 @@ class FakeCursor:
         elif s.startswith("SELECT filename, s3_key, parsed_text FROM proc.bp_policy_document_version"):
             v = db.versions.get((params[0], params[1]))
             self._rows = [(v["filename"], v["key"], v["text"])] if v else []
+        elif s.startswith("SELECT EXISTS (SELECT 1 FROM proc.bp_policy_extraction_item WHERE document_id"):
+            self._rows = [((params[0], params[1]) in db.extracted,)]
         elif s.startswith("UPDATE proc.bp_policy_document_version SET parsed_text"):
             v = db.versions[(params[1], params[2])]
             v["text"], v["parsed_at"] = params[0], "now"
@@ -235,14 +238,14 @@ def test_name_normalisation(name, expected):
 def test_same_bytes_same_version_new_bytes_new_version(s3, db):
     first = d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")[0]
     assert first == {"documentId": 1, "version": 1, "title": "Refund Policy", "isRevision": False,
-                     "duplicate": False}
+                     "duplicate": False, "extracted": False}
     again = d.register_uploads(db, [_put(s3, "Refund Policy v2.pdf", b"one")], actor="u")[0]
     assert again == {**first, "duplicate": True}
     assert len(db.versions) == 1 and db.docs[1]["latest"] == 1
 
     second = d.register_uploads(db, [_put(s3, "refund_policy (1).pdf", b"two")], actor="u")[0]
     assert second == {"documentId": 1, "version": 2, "title": "Refund Policy", "isRevision": True,
-                      "duplicate": False}
+                      "duplicate": False, "extracted": False}
     assert db.docs[1]["latest"] == 2 and len(db.docs) == 1
     v2 = db.versions[(1, 2)]
     assert v2["hash"] == hashlib.sha256(b"two").hexdigest() and v2["size"] == 3 and v2["by"] == "u"
@@ -451,7 +454,8 @@ def test_a_concurrent_identical_upload_is_a_duplicate_not_an_error(s3, db, monke
     monkeypatch.setattr(d, "_version_by_hash", racing_check)
     monkeypatch.setattr(d, "_insert_version", insert_loses_race)
     out = d.register_uploads(db, [_put(s3, "Refund.pdf", b"one")], actor="u")[0]
-    assert out == {"documentId": 1, "version": 1, "title": "Refund", "isRevision": False, "duplicate": True}
+    assert out == {"documentId": 1, "version": 1, "title": "Refund", "isRevision": False, "duplicate": True,
+                   "extracted": False}
     assert db.docs[1]["latest"] == 1 and db.autocommit is True
 
 
@@ -540,3 +544,37 @@ def test_an_as_new_retry_is_the_version_it_already_made(s3, db):
     again = d.register_uploads(db, [up], actor="u")[0]
     assert again == {**first, "duplicate": True}
     assert len(db.docs) == 2 and db.autocommit is True
+
+
+# ---------------------------------------------------------------- final fix wave (I4)
+
+@pytest.mark.parametrize("bad", ["type", "key", "missing", "size", "revision"])
+def test_one_refused_upload_registers_none_of_the_batch(s3, db, monkeypatch, bad):
+    """All or nothing: a refusal anywhere in the batch writes nothing, even for the good files
+    before it."""
+    good = [_put(s3, "Refund Policy.pdf", b"one"), _put(s3, "Travel Policy.pdf", b"two")]
+    if bad == "type":
+        last = {"uploadId": str(uuid.uuid4()), "name": "Notes.exe"}
+    elif bad == "key":
+        last = {"uploadId": "documents", "name": "o.pdf"}
+    elif bad == "missing":
+        last = {"uploadId": str(uuid.uuid4()), "name": "Gone.pdf"}
+    elif bad == "size":
+        last = _put(s3, "Big.pdf", b"x" * 50)
+        monkeypatch.setattr(d, "intake_limits", lambda: (20, 10))
+    else:
+        last = dict(_put(s3, "Other.pdf", b"three"), revisionOf=99)
+    with pytest.raises(ValueError):
+        d.register_uploads(db, good + [last], actor="u")
+    assert db.docs == {} and db.versions == {} and db.commits == 0
+
+
+def test_each_result_says_whether_an_extraction_has_read_that_version(s3, db):
+    up = _put(s3, "Refund Policy.pdf", b"one")
+    first = d.register_uploads(db, [up], actor="u")[0]
+    assert first["extracted"] is False
+    db.extracted.add((first["documentId"], first["version"]))
+    again = d.register_uploads(db, [_put(s3, "Refund Policy v2.pdf", b"one")], actor="u")[0]
+    assert again["duplicate"] is True and again["extracted"] is True
+    other = d.register_uploads(db, [_put(s3, "Refund Policy v3.pdf", b"two")], actor="u")[0]
+    assert other["version"] == 2 and other["extracted"] is False

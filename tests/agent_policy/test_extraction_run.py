@@ -326,9 +326,38 @@ def test_fix_run_emits_one_fix_item_and_writes_no_version(conn, actor, monkeypat
     kind, payload, fields = emitted[0]
     assert kind == "fix" and payload["basedOn"] == 1 and fields["policy_key"] == key
     prop = payload["proposed"]
-    assert set(prop) == {"situation", "hidden", "examples", "outcome", "deciders", "notify", "messages"}
+    assert set(prop) == {"situation", "hidden", "examples", "outcome"}
+    assert set(prop["hidden"]) == set(X._FIX_HIDDEN)
     assert matching.split_key({"outcome": prop["outcome"], "hidden": prop["hidden"]}) == "approve|gt:750"
-    assert prop["hidden"]["setBy"] == "extraction_agent"
+
+
+def test_a_fix_never_proposes_what_a_person_sets(conn, actor, monkeypatch):
+    """I2: accepting a fix must not wipe deciders, notify, owner, messages or the reviewer's
+    other hidden settings -- the proposal never carries them."""
+    _stub(monkeypatch, CANNED_V1)
+    doc = _document(conn, V1)
+    _run(conn, doc, 1, actor)
+    key = [p for p in _policies(conn, doc) if p["ref"] == "1.1"][0]["key"]
+    got = repo.get_policy(conn, key)
+    form = got["versions"][-1]["form"]
+    hidden = dict(form["hidden"], onMissingData="fail_closed", whilePaused="retry",
+                  timeWindow={"from": "09:00", "to": "17:00", "timeZone": "Europe/London"},
+                  units={"currency": "EUR", "convertOther": "rate_on_action_date", "amountsIncludeTax": True})
+    _person_saves(conn, key, deciders=["Head of Refunds"], notify=["Audit"], owner="Refunds Lead",
+                  messageForAgent="Ask the refunds lead.", messageForPerson="Please check.", hidden=hidden)
+    base = repo.get_policy(conn, key)["latestVersion"]
+    monkeypatch.setattr(extractor, "fix_policy", lambda *a, **k: P11_V2)   # its deciders etc. differ
+    run = store.create(conn, kind="fix", request={"policyKey": key, "baseVersion": base,
+                                                  "flipped": [{"input": {"args.amount": 600}}]}, actor=actor)
+    emitted = []
+    X.run_fix(conn, run, lambda kind, payload, **f: emitted.append(payload) or 1)
+    prop = emitted[0]["proposed"]
+    for person_field in ("deciders", "notify", "owner", "messages", "messageForAgent", "messageForPerson"):
+        assert person_field not in prop
+    for kept in ("onMissingData", "whilePaused", "timeWindow", "units", "reasonCode", "setBy"):
+        assert kept not in prop["hidden"]
+    assert prop["hidden"]["condition"] == {"all": [{"field": "tool.name", "op": "in", "value": ["refund.issue"]},
+                                                   {"field": "args.amount", "op": "gt", "value": 750}]}
 
 
 # ---------------------------------------------------------------- fix round 1
@@ -423,3 +452,88 @@ def test_one_documents_crash_is_an_error_item_and_the_next_document_runs(conn, a
     assert len(errors) == 1 and errors[0]["document_id"] == first and "matching blew up" in errors[0]["payload"]["message"]
     assert counts["documents"] == 2 and counts["new"] == 4
     assert len(_policies(conn, second)) == 4 and _policies(conn, first) == []
+
+
+# ---------------------------------------------------------------- final fix wave
+
+def test_a_persons_save_keeps_the_agents_confidence(conn, actor, monkeypatch):
+    """I3: a person's save passes no document text; the save reads the source version's stored
+    text, so the excerpt is still found and confidence does not drop."""
+    from services.agent_policy import readiness
+    monkeypatch.setattr(readiness, "activation_problems", lambda f, r, s: [])   # test-only names
+    monkeypatch.setattr(readiness, "_cant_enforce", lambda f, r: False)
+    _stub(monkeypatch, CANNED_V1)
+    doc = _document(conn, V1)
+    _run(conn, doc, 1, actor)
+    k11 = [p for p in _policies(conn, doc) if p["ref"] == "1.1"][0]["key"]
+    assert repo.get_policy(conn, k11)["versions"][0]["confidence"] == {"level": "High", "failed": []}
+    _person_saves(conn, k11, situation="The agent is about to issue a refund over 500 dollars.")
+    assert repo.get_policy(conn, k11)["versions"][1]["confidence"] == {"level": "High", "failed": []}
+
+
+def test_a_persons_first_save_of_an_extracted_form_finds_its_document_by_title(conn, actor, monkeypatch):
+    """I3, create_draft: no source block, so the document is found by the form's source title."""
+    from services.agent_policy import readiness
+    monkeypatch.setattr(readiness, "activation_problems", lambda f, r, s: [])
+    monkeypatch.setattr(readiness, "_cant_enforce", lambda f, r: False)
+    _stub(monkeypatch, CANNED_V1)
+    doc = _document(conn, V1)
+    _run(conn, doc, 1, actor)
+    k11 = [p for p in _policies(conn, doc) if p["ref"] == "1.1"][0]["key"]
+    form = repo.get_policy(conn, k11)["versions"][0]["form"]
+    saved = repo.create_draft(conn, dict(form, changeNote="a copy"), actor="person")
+    assert repo.get_policy(conn, saved["policyKey"])["versions"][0]["confidence"] == {"level": "High", "failed": []}
+
+
+V3_RENUMBERED = """1. Refunds
+1.4 Credits to a customer account above 200 dollars must be reported to the Finance team.
+1.5 Refunds above 750 dollars need approval from the Finance Manager before they are issued.
+2. Large refunds
+2.1 Refunds above 500 dollars need Finance Manager approval, and refunds above 10000 dollars are not allowed at all.
+3. Conduct
+3.1 Staff should always be courteous and helpful to customers.
+"""
+
+
+def test_a_renumbered_clause_moves_the_policys_reference(conn, actor, monkeypatch):
+    """Minor 4: 1.1 -> 1.5 (and changed), 1.2 -> 1.4 (unchanged). Both policies follow their
+    clause, so the next run matches them exactly instead of by excerpt."""
+    _stub(monkeypatch, CANNED_V1)
+    doc = _document(conn, V1, V3_RENUMBERED)
+    _run(conn, doc, 1, actor)
+    first = {p["ref"] + "|" + p["split"]: p["key"] for p in _policies(conn, doc)}
+    k11, k12 = first["1.1|approve|gt:500"], first["1.2|notify|gt:200"]
+    p15 = _p("1.5", "Refunds above 750 dollars need approval from the Finance Manager", "approve", 750,
+             "Issue a refund over 500")
+    p14 = _p("1.4", P12.excerpt, "notify", 200, "Credit an account over 200", notify=("Finance team",))
+    _stub(monkeypatch, [p14, p15, P21_APPROVE, P21_BLOCK])
+    counts, items = _run(conn, doc, 2, actor)
+    assert counts["changed"] == 1 and counts["unchanged"] == 3 and counts["new"] == counts["proposedRetire"] == 0
+    by = {p["key"]: p for p in _policies(conn, doc)}
+    assert (by[k11]["ref"], by[k11]["split"], by[k11]["latest"]) == ("1.5", "approve|gt:750", 2)
+    assert (by[k12]["ref"], by[k12]["split"], by[k12]["latest"]) == ("1.4", "notify|gt:200", 1)
+
+
+def test_a_busy_model_is_an_error_item_per_chunk_and_holds_back_retires(conn, actor, monkeypatch):
+    """Fast failure: a chunk whose call would reload the shared model is not called; it is an
+    error item with the plain message, the run goes on, and Proposed retire waits."""
+    _stub(monkeypatch, CANNED_V1)
+    doc = _document(conn, V1, V1)
+    _run(conn, doc, 1, actor)
+    seen = _stub(monkeypatch, CANNED_V1)
+    real = X.extractor.extract_chunk
+
+    def busy_on_1_2(sections, **k):
+        if any(s.get("reference") == "1.2" for s in sections):
+            raise extractor.ModelBusy()
+        return real(sections, **k)
+
+    monkeypatch.setattr(X.extractor, "extract_chunk", busy_on_1_2)
+    monkeypatch.setattr(X, "chunk_sections", lambda sections: [[s] for s in sections])
+    counts, items = _run(conn, doc, 2, actor)
+    errors = [i for i in items if i["kind"] == "error"]
+    assert [e["payload"]["message"] for e in errors] == [extractor.MODEL_BUSY]
+    assert errors[0]["payload"]["references"] == ["1.2"] and counts["errors"] == 1
+    assert counts["unchanged"] == 3 and counts["proposedRetire"] == 0
+    assert [i["kind"] for i in items if i["kind"] == "note"] == ["note"]
+    assert len(seen) == len(X.split_sections(V1)) - 1           # every other chunk still ran

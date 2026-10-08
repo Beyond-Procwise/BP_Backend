@@ -3,7 +3,7 @@
 A single worker thread, because a run holds the GPU for minutes and two at once
 would each take twice as long. A heartbeat thread beats every 30 s for the
 duration of ``work`` (stopped when it ends) so a long model call stays vouched
-for. ``submit`` and ``run`` never raise.
+for, and the runs queued behind it with it. ``submit`` and ``run`` never raise.
 
 ``work(conn, run, emit)`` does the run: ``emit(kind, payload, **fields)`` appends
 an item and returns its seq; ``work`` returns the counts dict.
@@ -35,6 +35,7 @@ def _heartbeat(run_id: int, stop: threading.Event, store: Any, conn_factory: Cal
         try:
             with conn_factory() as conn:
                 store.beat(conn, run_id, store.OWNER)
+                store.beat_queued(conn, store.OWNER)   # the runs waiting behind this one
         except Exception:  # noqa: BLE001 - one missed beat is not a reason to stop
             logger.exception("agent_policy: extraction heartbeat failed for run %s", run_id)
 
@@ -83,7 +84,13 @@ def submit(run_id: int, work: Callable[..., Optional[Dict[str, Any]]], *,
     """Queue a filed run. Returns at once; never raises.
 
     If it cannot be queued, the run is marked failed so it is not left queued forever.
+    Queuing stamps this process's queued runs, so a run waiting its turn is not healed.
     """
+    try:
+        with conn_factory() as conn:
+            store.beat_queued(conn, store.OWNER)
+    except Exception:  # noqa: BLE001 - an unstamped run is judged by its age instead
+        logger.exception("agent_policy: could not stamp queued run %s", run_id)
     try:
         (executor or _EXECUTOR).submit(run, run_id, work)
     except Exception as exc:  # noqa: BLE001

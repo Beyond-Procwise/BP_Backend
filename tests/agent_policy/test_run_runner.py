@@ -13,6 +13,7 @@ class FakeStore:
     def __init__(self, claimable=True):
         self.claimable, self.beats, self.finished, self.items = claimable, 0, None, []
         self.finish_result = True
+        self.queued_beats = []
 
     def claim(self, conn, run_id, owner):
         return self.claimable
@@ -22,6 +23,9 @@ class FakeStore:
 
     def beat(self, conn, run_id, owner):
         self.beats += 1
+
+    def beat_queued(self, conn, owner):
+        self.queued_beats.append(owner)
 
     def append_item(self, conn, run_id, **kw):
         self.items.append(kw)
@@ -121,3 +125,42 @@ def test_submit_failure_marks_run_failed_and_does_not_raise():
     run_runner.submit(8, lambda *a: {}, executor=Dead(), store=store, conn_factory=_conn)
     status, _, error = store.finished
     assert status == "failed" and "could not be queued" in error
+
+
+def test_submit_stamps_this_processs_queued_runs_first():
+    store = FakeStore()
+    order = []
+
+    class Exec:
+        def submit(self, *a):
+            order.append(("submitted", list(store.queued_beats)))
+
+    run_runner.submit(9, lambda *a: {}, executor=Exec(), store=store, conn_factory=_conn)
+    assert order == [("submitted", ["me"])]
+
+
+def test_the_heartbeat_also_vouches_for_the_queued_runs():
+    store = FakeStore()
+
+    def work(conn, run, emit):
+        time.sleep(0.3)
+        return {}
+
+    run_runner.run(10, work, store=store, conn_factory=_conn, interval=0.05)
+    assert len(store.queued_beats) >= 2 and set(store.queued_beats) == {"me"}
+
+
+def test_a_failed_stamp_still_queues_the_run():
+    store = FakeStore()
+
+    def boom(conn, owner):
+        raise RuntimeError("db down")
+    store.beat_queued = boom
+    queued = []
+
+    class Exec:
+        def submit(self, *a):
+            queued.append(a[1])
+
+    run_runner.submit(11, lambda *a: {}, executor=Exec(), store=store, conn_factory=_conn)
+    assert queued == [11] and store.finished is None

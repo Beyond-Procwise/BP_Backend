@@ -135,36 +135,61 @@ def test_finish_after_heal_returns_false_and_keeps_failed(conn):
     assert rs.finish(conn, other, "done", counts={}) is True
 
 
-def test_orphaned_queued_run_heals_but_own_and_young_ones_do_not(conn):
+def test_queued_run_heals_only_when_its_heartbeat_is_stale(conn):
+    """Minor 1: a queued run is failed when nobody has vouched for it for STALE_SECONDS -- not
+    because another process owns it (with several workers, that process may just be busy)."""
     orphan = _new(conn)["run_id"]
     _age(conn, orphan, "created_at", 600, owner="proc-dead")
+    _age(conn, orphan, "heartbeat_at", 600)
     nobody = _new(conn)["run_id"]
     with conn.cursor() as cur:
-        cur.execute("UPDATE proc.bp_policy_extraction_run SET owner = NULL, "
+        cur.execute("UPDATE proc.bp_policy_extraction_run SET owner = NULL, heartbeat_at = NULL, "
                     "created_at = now() - interval '600 seconds' WHERE run_id = %s", (nobody,))
     young_foreign = _new(conn)["run_id"]
     _age(conn, young_foreign, "created_at", 10, owner="proc-dead")
-    own_old = _new(conn)["run_id"]
-    _age(conn, own_old, "created_at", 600)
+    busy_foreign = _new(conn)["run_id"]                     # old, but its owner keeps stamping it
+    _age(conn, busy_foreign, "created_at", 600, owner="proc-busy")
+    _age(conn, busy_foreign, "heartbeat_at", 20)
+    own_vouched = _new(conn)["run_id"]
+    _age(conn, own_vouched, "created_at", 600)
+    rs.beat_queued(conn, rs.OWNER)
     assert rs.get(conn, orphan)["error"] == rs.NOT_STARTED_ERROR
     assert rs.get(conn, orphan)["status"] == "failed"
     assert rs.NOT_STARTED_ERROR == "The server restarted before this run started. Start it again."
     assert rs.get(conn, nobody)["status"] == "failed"
     assert rs.get(conn, young_foreign)["status"] == "queued"
-    assert rs.get(conn, own_old)["status"] == "queued"
+    assert rs.get(conn, busy_foreign)["status"] == "queued"
+    assert rs.get(conn, own_vouched)["status"] == "queued"
+
+
+def test_own_queued_run_with_a_stale_heartbeat_heals(conn):
+    run_id = _new(conn)["run_id"]
+    _age(conn, run_id, "created_at", 600)
+    _age(conn, run_id, "heartbeat_at", 600)
+    assert rs.get(conn, run_id)["status"] == "failed"
+
+
+def _status(conn, run_id):
+    """Read the row without healing it (get() heals), so list_recent's own heal is what is tested."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM proc.bp_policy_extraction_run WHERE run_id = %s", (run_id,))
+        return cur.fetchone()[0]
 
 
 def test_heal_all_via_list_recent(conn):
+    """By run id, whatever else is in the table: list_recent heals every run, listed or not."""
     stale = _new(conn)["run_id"]
     rs.claim(conn, stale, rs.OWNER)
     _age(conn, stale, "heartbeat_at", 600)
     orphan = _new(conn)["run_id"]
     _age(conn, orphan, "created_at", 600, owner="proc-dead")
+    _age(conn, orphan, "heartbeat_at", 600)
     fresh = _new(conn)["run_id"]
     rs.claim(conn, fresh, rs.OWNER)
-    rows = {r["run_id"]: r for r in rs.list_recent(conn, 200)}
-    assert rows[stale]["status"] == "failed" and rows[orphan]["status"] == "failed"
-    assert rows[fresh]["status"] == "running"
+    assert (_status(conn, stale), _status(conn, orphan)) == ("running", "queued")
+    rs.list_recent(conn, 1)
+    assert _status(conn, stale) == "failed" and _status(conn, orphan) == "failed"
+    assert _status(conn, fresh) == "running"
 
 
 def test_append_error_is_not_masked_by_a_broken_rollback():

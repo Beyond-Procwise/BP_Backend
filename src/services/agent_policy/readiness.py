@@ -183,8 +183,16 @@ def confirmation_cleared(old: Dict[str, Any], new: Dict[str, Any]) -> bool:
            [e.get("input") for e in old.get("examples") or []] != [e.get("input") for e in new.get("examples") or []]
 
 
-def _normalise(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
+# The one word-for-word check for an excerpt: extraction confidence and the agent's
+# "not found word for word" note must never disagree. Whole-quote containment only
+# (services.obligations.grounding), never extraction_v3's digit fallback.
+EXCERPT_MIN_WORDS = 4
+
+
+def excerpt_grounded(excerpt: Optional[str], document_text: Optional[str]) -> bool:
+    from services.obligations.grounding import is_quote_grounded
+
+    return is_quote_grounded(excerpt or "", document_text or "", min_words=EXCERPT_MIN_WORDS)
 
 
 def extraction_confidence(form: Dict[str, Any], document_text: Optional[str], registry: RegistrySnapshot,
@@ -192,8 +200,7 @@ def extraction_confidence(form: Dict[str, Any], document_text: Optional[str], re
     if not form.get("source"):
         return None
     failed: List[str] = []
-    excerpt = _normalise((form.get("source") or {}).get("excerpt"))
-    if not excerpt or excerpt not in _normalise(document_text or ""):
+    if not excerpt_grounded((form.get("source") or {}).get("excerpt"), document_text):
         failed.append("The excerpt does not appear word for word in the document")
     required = ("name", "category", "businessArea", "subArea", "situation", "outcome", "owner")
     if any(_blank(form.get(k)) for k in required) or _blank((form.get("hidden") or {}).get("condition")):
