@@ -56,6 +56,8 @@ from src.services.concepts.contract_type_map import structure_for_contract_type
 from src.services.concepts.vocabulary import ensure_vocabulary
 from src.services.db import get_conn
 from src.services.extraction.persistence import normalise_source_file
+from src.services.graph_resolution.profiles import contract_amendment as _am
+from src.services.graph_resolution.profiles import contract_attachment as _at
 from src.services.graph_resolution.profiles import contract_hierarchy as _ch
 
 log = logging.getLogger(__name__)
@@ -131,10 +133,14 @@ SEPARATION = 8.0
 # scorer's reference_resolves use ONE normalisation (_ch._norm_ref) on BOTH sides:
 # a pointer differing only in case, spacing or punctuation resolves for both.
 # Direction chosen: normalise both sides, i.e. 'msa 4417' resolves to 'MSA-4417'.
-_CHILD_SQL = """
+_CORROBORATING = """c.buyer_org_id, c.currency, c.payment_terms, c.governing_law, c.jurisdiction,
+           c.contract_signatory_name, c.buyer_signatory_name, c.cost_centre_id,
+           c.business_unit_id, c.spend_category"""
+_CHILD_SQL = f"""
     SELECT c.contract_id, c.contract_title, c.supplier_id, c.resolved_doc_type,
            c.resolved_role, c.framework_ref, c.parent_agreement_ref, c.parent_contract_id,
-           c.contract_start_date, c.contract_end_date, c.total_contract_value, c.currency
+           c.contract_start_date, c.contract_end_date, c.total_contract_value,
+           {_CORROBORATING}
       FROM proc.bp_contracts c
      WHERE c.resolved_doc_type IS NOT NULL
 """
@@ -154,6 +160,33 @@ def _is_variation(child: dict) -> bool:
     return (dt.role if dt else child.get("resolved_role")) == "role.variation"
 
 
+def _role_of(child: dict):
+    dt = ensure_vocabulary().document_types.get(child.get("resolved_doc_type"))
+    return dt.role if dt else child.get("resolved_role")
+
+
+def _is_attachment(child: dict) -> bool:
+    """A schedule or SLA: cited by an agreement, with no force of its own."""
+    return _role_of(child) == "role.attachment"
+
+
+def _profile_module(child: dict):
+    """The scoring profile for this child, chosen by its role in the vocabulary."""
+    if _is_variation(child):
+        return _am
+    if _is_attachment(child):
+        return _at
+    return _ch
+
+
+def _link_type(child: dict) -> str:
+    if _is_variation(child):
+        return "amends"
+    if _is_attachment(child):
+        return "attaches_to"
+    return "child_of"
+
+
 def _wanted_parent_types(child: dict) -> set[str]:
     """The structures this child may sit under. Two paths, on purpose.
 
@@ -170,6 +203,12 @@ def _wanted_parent_types(child: dict) -> set[str]:
     if _is_variation(child):
         return {code for code, dt in ensure_vocabulary().document_types.items()
                 if dt.pipeline_doc_type == "contract" and dt.role != "role.variation"}
+    if _is_attachment(child):
+        # A schedule sits under SEVERAL kinds of agreement, and default_parent_type
+        # holds one value (also read by the upload gate), so the set is chosen here.
+        return {code for code, dt in ensure_vocabulary().document_types.items()
+                if dt.pipeline_doc_type == "contract"
+                and dt.role in ("role.master", "role.framework")}
     want = _ch.expected_parent_type(child.get("resolved_doc_type"))
     return {want} if want else set()
 
@@ -177,6 +216,32 @@ def _wanted_parent_types(child: dict) -> set[str]:
 def is_child(child: dict) -> bool:
     """Does this document sit under something at all?"""
     return bool(_wanted_parent_types(child))
+
+
+_COMMON_COLS = ("contract_id", "contract_title", "supplier_id", "contract_start_date",
+                "contract_end_date", "buyer_org_id", "currency", "total_contract_value",
+                "payment_terms", "governing_law", "jurisdiction", "contract_signatory_name",
+                "cost_centre_id", "business_unit_id", "spend_category")
+
+
+def _fetch(cur, table: str, where: str, params: tuple) -> list[dict]:
+    """Candidate rows from either table, with the same keys.
+
+    bp_contract_master holds the free-text contract_type (read as a structure, never
+    written back) and has no buyer_signatory_name; bp_contracts holds the resolved
+    structure and both. The result has resolved_doc_type and buyer_signatory_name
+    either way, so a profile never has to know which table a candidate came from.
+    """
+    master = table.endswith("bp_contract_master")
+    cols = list(_COMMON_COLS) + (["contract_type"] if master
+                                 else ["resolved_doc_type", "buyer_signatory_name"])
+    cur.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE {where}", params)
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    if master:
+        for row in rows:
+            row["resolved_doc_type"] = structure_for_contract_type(row.pop("contract_type"))
+            row["buyer_signatory_name"] = None
+    return rows
 
 
 def candidate_parents(cur, child: dict) -> list[dict]:
@@ -223,36 +288,13 @@ def candidate_parents(cur, child: dict) -> list[dict]:
 
     # 1. The contracts this document names. No supplier needed.
     own = _ch._norm_ref(child.get("contract_id"))
+    norm = "upper(regexp_replace(contract_id, '[^A-Za-z0-9]', '', 'g'))"
     for ref in _claimed_references(child):
         if _ch._norm_ref(ref) == own:
             continue                     # itself; _drop_self_parent_reference's case
-        cur.execute(
-            """SELECT contract_id, contract_title, supplier_id, resolved_doc_type,
-                      contract_start_date, contract_end_date
-                 FROM proc.bp_contracts
-                WHERE upper(regexp_replace(contract_id, '[^A-Za-z0-9]', '', 'g'))
-                      = upper(regexp_replace(%s, '[^A-Za-z0-9]', '', 'g'))""",
-            (ref,),
-        )
-        rows = [dict(zip(
-            ("contract_id", "contract_title", "supplier_id", "resolved_doc_type",
-             "contract_start_date", "contract_end_date"), r)) for r in cur.fetchall()]
-        if not rows:
-            cur.execute(
-                """SELECT contract_id, contract_title, supplier_id, contract_type,
-                          contract_start_date, contract_end_date
-                     FROM proc.bp_contract_master
-                    WHERE upper(regexp_replace(contract_id, '[^A-Za-z0-9]', '', 'g'))
-                          = upper(regexp_replace(%s, '[^A-Za-z0-9]', '', 'g'))""",
-                (ref,),
-            )
-            rows = []
-            for r in cur.fetchall():
-                row = dict(zip(
-                    ("contract_id", "contract_title", "supplier_id", "contract_type",
-                     "contract_start_date", "contract_end_date"), r))
-                row["resolved_doc_type"] = structure_for_contract_type(row.pop("contract_type"))
-                rows.append(row)
+        where = f"{norm} = upper(regexp_replace(%s, '[^A-Za-z0-9]', '', 'g'))"
+        rows = (_fetch(cur, "proc.bp_contracts", where, (ref,))
+                or _fetch(cur, "proc.bp_contract_master", where, (ref,)))
         for row in rows:
             key = _ch._norm_ref(row["contract_id"])
             if key in seen or key == own:
@@ -265,38 +307,18 @@ def candidate_parents(cur, child: dict) -> list[dict]:
     # 2. Everything this supplier holds that the child could sit under.
     if not supplier:
         return out
-    cur.execute(
-        """SELECT contract_id, contract_title, supplier_id, resolved_doc_type,
-                  contract_start_date, contract_end_date
-             FROM proc.bp_contracts
-            WHERE supplier_id = %s AND resolved_doc_type = ANY(%s)
-              AND contract_id <> %s""",
-        (supplier, sorted(wanted), child.get("contract_id")),
-    )
-    for r in cur.fetchall():
-        row = dict(zip(
-            ("contract_id", "contract_title", "supplier_id", "resolved_doc_type",
-             "contract_start_date", "contract_end_date"), r))
+    for row in _fetch(cur, "proc.bp_contracts",
+                      "supplier_id = %s AND resolved_doc_type = ANY(%s) AND contract_id <> %s",
+                      (supplier, sorted(wanted), child.get("contract_id"))):
         key = _ch._norm_ref(row["contract_id"])
         if key in seen:
             continue
         seen.add(key)
         out.append(row)
 
-    cur.execute(
-        """SELECT contract_id, contract_title, supplier_id, contract_type,
-                  contract_start_date, contract_end_date
-             FROM proc.bp_contract_master
-            WHERE supplier_id = %s AND contract_id <> %s""",
-        (supplier, child.get("contract_id")),
-    )
-    for r in cur.fetchall():
-        row = dict(zip(
-            ("contract_id", "contract_title", "supplier_id", "contract_type",
-             "contract_start_date", "contract_end_date"), r))
-        # The corpus's free-text type, read as a structure. Not written back:
-        # contract_type is source data.
-        row["resolved_doc_type"] = structure_for_contract_type(row.pop("contract_type"))
+    for row in _fetch(cur, "proc.bp_contract_master",
+                      "supplier_id = %s AND contract_id <> %s",
+                      (supplier, child.get("contract_id"))):
         key = _ch._norm_ref(row["contract_id"])
         if key in seen:
             continue
@@ -419,8 +441,12 @@ def propose_parent_links(limit: Optional[int] = None,
             # reads every non-match as dangling and never reports a CONFLICT.
             scoring_child = dict(child)
             scoring_child["_ref_resolves"] = reference_resolves(child, known_ids)
+            module = _profile_module(child)
+            link_type = _link_type(child)
+            verb = {"child_of": "sit under", "amends": "amend",
+                    "attaches_to": "attach to"}[link_type]
             scored = sorted(
-                ((_ch.score(scoring_child, parent), parent)
+                ((module.score(scoring_child, parent), parent)
                  for parent in candidates),
                 key=lambda pair: -pair[0]["F"],
             )
@@ -455,7 +481,7 @@ def propose_parent_links(limit: Optional[int] = None,
                     ", ".join(alternatives) or None,
                     (
                         f"this {child['resolved_doc_type'].split('.')[-1]} appears to "
-                        f"sit under contract {best_parent['contract_id']} "
+                        f"{verb} contract {best_parent['contract_id']} "
                         f"(score {best['F']:.1f}, band {best['decision']}, {routing}). "
                         f"reference: {why.get('declared_reference')}; "
                         f"structure: {why.get('expected_structure')}; "
@@ -474,7 +500,8 @@ def propose_parent_links(limit: Optional[int] = None,
             contested += 1 if routing == "contested" else 0
             details.append({"contract_id": child["contract_id"],
                             "parent": best_parent["contract_id"],
-                            "F": best["F"], "routing": routing})
+                            "F": best["F"], "routing": routing,
+                            "link_type": link_type, "profile": module.PROFILE})
 
     result = {"proposed": proposed, "contested": contested,
               "no_candidate": no_candidate, "below_threshold": below_threshold,
