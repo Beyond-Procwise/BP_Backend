@@ -151,16 +151,23 @@ def _txn(conn):
     return conn.cursor()
 
 
-def create_draft(conn, form: Dict[str, Any], *, actor: str) -> Dict[str, Any]:
+def create_draft(conn, form: Dict[str, Any], *, actor: str, source: Optional[Dict[str, Any]] = None,
+                 document_text: Optional[str] = None) -> Dict[str, Any]:
+    """``source`` ({"documentId", "reference", "split"}) records which document clause the policy
+    was extracted from, in the same transaction; ``document_text`` lets the save compute the
+    extraction confidence. A person's save passes neither."""
     _refuse_withheld(form)
+    src = source or {}
     cur = _txn(conn)
     try:
         form = attribute_confirmation(form, None, actor=actor, now_iso=_now_iso())
         area = _area(cur, form.get("businessArea"))
         key = _allocate(cur, area["area_name"])
-        cur.execute("INSERT INTO proc.bp_agent_policy (policy_key, area_name, status, latest_version, created_by)"
-                    " VALUES (%s,%s,'draft',1,%s)", (key, _real_area(cur, form.get("businessArea")), actor))
-        _write_version(cur, key, 1, "draft", form, actor, form.get("changeNote") or "", None)
+        cur.execute("INSERT INTO proc.bp_agent_policy (policy_key, area_name, status, latest_version, created_by,"
+                    " source_document_id, source_reference, source_split) VALUES (%s,%s,'draft',1,%s,%s,%s,%s)",
+                    (key, _real_area(cur, form.get("businessArea")), actor,
+                     src.get("documentId"), src.get("reference"), src.get("split")))
+        _write_version(cur, key, 1, "draft", form, actor, form.get("changeNote") or "", document_text)
         conn.commit()
         return {"policyKey": key, "version": 1}
     except Exception:
