@@ -22,6 +22,8 @@ def to_engine(cond: Any) -> Dict[str, Any]:
         raise ConditionError("a condition must be a non-empty object")
     if "all" in cond or "any" in cond:
         key = "all" if "all" in cond else "any"
+        if not isinstance(cond[key], list) or not cond[key]:
+            raise ConditionError(f"{key!r} needs a non-empty list of conditions")
         return {key: [to_engine(c) for c in cond[key]]}
     if "not" in cond:
         return {"not": to_engine(cond["not"])}
@@ -40,6 +42,8 @@ def _leaves(cond: Any) -> List[Dict[str, Any]]:
         return []
     for key in ("all", "any"):
         if key in cond:
+            if not isinstance(cond[key], list):
+                return []
             return [leaf for c in cond[key] for leaf in _leaves(c)]
     if "not" in cond:
         return _leaves(cond["not"])

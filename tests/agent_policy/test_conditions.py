@@ -41,3 +41,13 @@ def test_reviewer_view_labels_and_flip():
     assert [r["label"] for r in rows] == ["A person decides", "Nothing happens", "Nothing happens", "Nothing happens"]
     assert rows[1]["flipped"] and rows[1]["reviewer_expects"] == "approve"
     assert rows[0]["reviewer_expects"] == "approve"
+
+
+def test_malformed_all_is_a_condition_error():
+    with pytest.raises(C.ConditionError):
+        C.to_engine({"all": 5})
+
+
+def test_empty_any_is_a_condition_error():
+    with pytest.raises(C.ConditionError):
+        C.to_engine({"any": []})
