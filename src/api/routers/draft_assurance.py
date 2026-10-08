@@ -58,6 +58,15 @@ def _authorize(principal: Any, unique_id: str) -> None:
         raise HTTPException(status_code=403, detail="you are not permitted to review this draft")
 
 
+def _authorize_read(principal: Any, unique_id: str) -> None:
+    """Name the person, then ask the read gate. A blank person is refused before anything is asked."""
+    _subject(principal)
+    decision = guardrail.authorize("email.draft.read", "read", principal, {"unique_id": unique_id},
+                                   policy_engine=rbac.policy_engine())
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail="you are not permitted to view this draft")
+
+
 def _conn():
     from src.services.db import get_conn
     return get_conn()
@@ -81,6 +90,7 @@ def _view(conn: Any, unique_id: str) -> Dict[str, Any]:
 
 @router.get("/{unique_id}/assurance")
 def get_assurance(unique_id: str, principal=Depends(require_user)) -> Dict[str, Any]:
+    _authorize_read(principal, unique_id)
     with _conn() as conn:
         return _view(conn, unique_id)
 
@@ -99,7 +109,7 @@ def confirm(unique_id: str, body: ConfirmRequest, principal=Depends(require_user
 
 @router.post("/{unique_id}/preflight")
 def preflight(unique_id: str, principal=Depends(require_user)) -> Dict[str, Any]:
-    _subject(principal)
+    _authorize_read(principal, unique_id)
     with _conn() as conn:
         raw = capture.load_raw(conn, unique_id)
         if raw is None:

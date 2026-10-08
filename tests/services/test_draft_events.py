@@ -306,3 +306,44 @@ def test_the_router_is_registered_in_the_authenticated_list():
     names = {ast.unparse(e) for e in listed[0].value.elts}
     assert "draft_assurance_router.router" in names
     assert len([r for r in router_mod.router.routes]) == 4
+
+
+# --- reading a draft's assurance is a governed read, not just "logged in" ------------------------------------------------------
+
+def test_reading_a_drafts_assurance_asks_the_read_gate_with_the_draft_named(api, monkeypatch):
+    asked = []
+    monkeypatch.setattr(router_mod.guardrail, "authorize",
+                        lambda action, cls, principal, context=None, policy_engine=None: asked.append((action, cls, dict(context or {}))) or SimpleNamespace(allowed=True))
+    assert api.get("/drafts/U-1/assurance").status_code == 200
+    assert asked == [("email.draft.read", "read", {"unique_id": "U-1"})]
+
+
+def test_a_caller_the_policy_refuses_cannot_read_a_drafts_assurance(api, monkeypatch):
+    monkeypatch.setattr(router_mod.guardrail, "authorize", lambda *a, **k: SimpleNamespace(allowed=False))
+    r = api.get("/drafts/U-1/assurance")
+    assert r.status_code == 403 and "Thank" not in r.text and "supplier" not in r.text.lower().replace("not permitted", "")
+
+
+def test_an_unidentified_caller_cannot_read_a_drafts_assurance_and_nothing_is_asked(api, monkeypatch):
+    asked = []
+    monkeypatch.setattr(router_mod.guardrail, "authorize", lambda *a, **k: asked.append(a) or SimpleNamespace(allowed=True))
+    api.app_.dependency_overrides[router_mod.require_user] = lambda: SimpleNamespace(subject=" ")
+    assert api.get("/drafts/U-1/assurance").status_code == 401 and asked == []
+
+
+def test_an_unknown_draft_is_still_a_404_for_a_permitted_reader(api):
+    assert api.get("/drafts/U-404/assurance").status_code == 404
+
+
+def test_preflight_discloses_fact_changes_so_it_asks_the_same_read_gate_and_refuses_the_same_callers(api, monkeypatch):
+    asked = []
+    monkeypatch.setattr(router_mod, "recheck_for_send", lambda c, d, e: {"checked": True, "mode": "shadow", "changed": [
+        {"fact": "supplier_current_offer", "was": "47.50", "now": "49.00"}]})
+    monkeypatch.setattr(router_mod.guardrail, "authorize",
+                        lambda action, cls, principal, context=None, policy_engine=None: asked.append((action, cls)) or SimpleNamespace(allowed=True))
+    assert api.post("/drafts/U-1/preflight").status_code == 200 and asked == [("email.draft.read", "read")]
+    monkeypatch.setattr(router_mod.guardrail, "authorize", lambda *a, **k: SimpleNamespace(allowed=False))
+    r = api.post("/drafts/U-1/preflight")
+    assert r.status_code == 403 and "49.00" not in r.text and "47.50" not in r.text            # nothing about the facts leaks in the refusal
+    api.app_.dependency_overrides[router_mod.require_user] = lambda: SimpleNamespace(subject="")
+    assert api.post("/drafts/U-1/preflight").status_code == 401

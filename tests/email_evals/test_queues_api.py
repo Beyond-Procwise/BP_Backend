@@ -56,7 +56,8 @@ def row(db, sql, *p):
 
 # --- the vocabulary -----------------------------------------------------------------------------------------------------------
 
-def test_the_three_new_actions_are_in_the_closed_vocabulary_with_the_right_classes():
+def test_the_new_actions_are_in_the_closed_vocabulary_with_the_right_classes():
+    assert actions.action_class("email.draft.read") == "read"
     assert actions.action_class("email.learning.read") == "read"
     assert actions.action_class("email.learning.decide") == "write"
     assert actions.action_class("exemplar.approve") == "configure"
