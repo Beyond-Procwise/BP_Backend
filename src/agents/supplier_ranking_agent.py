@@ -708,8 +708,49 @@ class SupplierRankingAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def _apply_requirement_shortlist(self, data: Dict[str, Any]) -> Optional[str]:
+        """Narrow ``supplier_candidates`` to suppliers that have sold what the
+        buyer asked for. Returns an error message, or None to carry on.
+
+        Untouched when the caller already chose candidates or supplied the
+        supplier data, or when the requirement names nothing searchable.
+        Delivery and risk alone shortlisted logistics firms for a laptop
+        requirement (capability audit 2026-10-08), so this fails closed: no
+        match, or a failed lookup, is reported rather than ranking everyone.
+        """
+        from src.services import supplier_shortlist
+
+        if data.get("supplier_candidates") or data.get("supplier_data") is not None:
+            return None
+        term = supplier_shortlist.product_term(data.get("requirement"))
+        if term is None:
+            return None
+        try:
+            conn = self.agent_nick.get_db_connection()
+            try:
+                sellers = supplier_shortlist.suppliers_selling(conn, term)
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception("Shortlist lookup failed for %r", term)
+            return f"Could not check which suppliers sell '{term}', so no shortlist was made"
+        if not sellers:
+            return (
+                f"No supplier with a purchase, invoice or quote line for '{term}' "
+                "was found, so no shortlist was made"
+            )
+        data["supplier_candidates"] = sorted(sellers)
+        return None
+
     def run(self, context: AgentContext) -> AgentOutput:
         logger.info("SupplierRankingAgent: Starting ranking...")
+
+        shortlist_error = self._apply_requirement_shortlist(context.input_data)
+        if shortlist_error:
+            return self._with_plan(
+                context,
+                AgentOutput(status=AgentStatus.FAILED, data={}, error=shortlist_error),
+            )
 
         supplier_data = context.input_data.get("supplier_data")
         if supplier_data is None:
