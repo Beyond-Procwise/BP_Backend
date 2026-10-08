@@ -26,7 +26,7 @@ from src.services.extraction.engineered.table_extractor import extract_line_item
 from src.services.extraction.parser import parse
 from src.services.extraction.pattern_registry import get_registry
 from src.services.extraction.persistence import build_line_items
-from src.services.linking_engine import _copy_lines, _rows
+from src.services.linking_engine import _copy_lines, _rows, _table_columns
 
 DOCS = {
     # doc_type: (header _trgt, pk, header total, raw, lines stg, lines trgt, line no col, line id col)
@@ -78,7 +78,15 @@ def _rewrite(cur, doc_type, pk_val, lines):
         cols = list(row)
         cur.execute(f"insert into {stg} ({', '.join(cols)}) values ({', '.join(['%s'] * len(cols))})",
                     [row[c] for c in cols])
-    return _copy_lines(cur, pk, pk_val, stg, trgt)
+    n = _copy_lines(cur, pk, pk_val, stg, trgt)
+    # _copy_lines leaves the deal columns out (deal assignment owns them), so the copied
+    # lines would fall off their deal. A document's lines carry its header's deal values.
+    deal_cols = [c for c in ("deal_id", "deal_name", "document_id")
+                 if c in _table_columns(cur, trgt) and c in _table_columns(cur, head)]
+    if deal_cols:
+        cur.execute(f"update {trgt} l set " + ", ".join(f"{c} = h.{c}" for c in deal_cols)
+                    + f" from {head} h where h.{pk} = l.{pk} and l.{pk} = %s", (pk_val,))
+    return n
 
 
 def main() -> None:
