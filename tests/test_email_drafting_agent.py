@@ -721,3 +721,50 @@ def test_manual_draft_inherits_workflow_id(monkeypatch):
     manual_draft = drafts[-1]
     assert manual_draft.get("workflow_id") == "wf-1"
     assert manual_draft.get("metadata", {}).get("workflow_id") == "wf-1"
+
+
+# --- Capability audit 2026-10-08: the buyer's requirement must reach the RFQ ---
+
+_REQ = {
+    "title": "Business Laptops (14-inch, 16GB RAM, 512GB SSD, 3-year warranty)",
+    "quantity": 200.0,
+    "delivery_location": "London",
+    "needed_by_date": "2026-12-03",
+    "target_budget": 250000.0,
+    "currency": "GBP",
+}
+
+
+def _scope_args(requirement=None, profile=None):
+    agent = EmailDraftingAgent()
+    ctx = {"requirement": requirement} if requirement is not None else {}
+    return agent._build_template_args(
+        {"supplier_id": "S1", "total_spend": 0}, profile or {}, {}, ctx,
+    )
+
+
+def test_rfq_scope_states_what_the_buyer_asked_for():
+    import re
+    out = _scope_args(_REQ)
+    text = re.sub(r"<[^>]+>", " ", out["scope_summary_html"] + out["rfq_table_html"])
+    assert "Business Laptops" in text
+    assert "200" in text
+    assert "London" in text
+    assert "2026-12-03" in text
+    assert "detailed requirement is TBC" not in text
+
+
+def test_rfq_never_discloses_the_buyers_budget_to_the_supplier():
+    out = _scope_args(_REQ)
+    blob = out["scope_summary_html"] + out["rfq_table_html"]
+    assert "250" not in blob.replace("2026", "")
+
+
+def test_rfq_requirement_beats_unrelated_purchase_history():
+    out = _scope_args(_REQ, profile={"items": ["External works & hardstanding"]})
+    assert "External works" not in out["scope_summary_html"] + out["rfq_table_html"]
+
+
+def test_rfq_without_a_requirement_is_unchanged():
+    out = _scope_args(None)
+    assert "TBC" in out["scope_summary_html"]

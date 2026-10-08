@@ -127,6 +127,31 @@ def test_explicit_threshold_is_recorded_as_a_caller_override():
     assert out.data["grounding"]["threshold_source"] == "request_override"
 
 
+def test_caller_cannot_loosen_the_governed_threshold():
+    # Capability audit 2026-10-08: threshold=99999999 approved a 230000 spend
+    # that the governed 10000 limit escalates.
+    out = _agent(_GOVERNED).run(_ctx(amount=230000, threshold=99999999))
+    assert out.data["decision"] == DECISION_ESCALATE
+    assert out.data["approved"] is False
+    assert out.data["threshold"] == 10000.0
+    g = out.data["grounding"]
+    assert g["threshold_source"] == "governed_policy"
+    assert g["override_rejected"] == "99999999"
+
+
+def test_loosening_override_is_rejected_even_when_amount_fits_the_override():
+    out = _agent(_GOVERNED).run(_ctx(amount=50000, threshold=60000))
+    assert out.data["decision"] == DECISION_ESCALATE
+
+
+def test_override_without_a_governed_policy_is_not_trusted():
+    # No policy to compare against means the override cannot be shown to be
+    # stricter, so a human decides.
+    out = _agent(None).run(_ctx(amount=5, threshold=1000000))
+    assert out.data["decision"] == DECISION_ESCALATE
+    assert out.data["threshold"] is None
+
+
 def test_missing_amount_fails_rather_than_guessing():
     out = _agent(_GOVERNED).run(_ctx(supplier_id="SUP001"))
     assert out.status is AgentStatus.FAILED

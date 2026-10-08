@@ -203,6 +203,14 @@ def approve(conn: Any, sales_quote_id: int, *, approver: Optional[str]) -> Dict[
             raise StateConflict("an approval needs an authenticated approver")
         if row["created_by"] and row["created_by"] == approver:
             raise StateConflict("nobody approves their own quote")
+        # A quote priced below its own cost is a loss the ladder labels
+        # "margin-floor-tested" but nothing tested (capability audit 2026-10-08).
+        # Unknown cost (NULL margin) is not a loss we can show, so it passes.
+        if row["total_margin"] is not None and row["total_margin"] < 0:
+            raise StateConflict(
+                f"quote {sales_quote_id} is priced below cost (margin "
+                f"{row['total_margin']}); it needs a deal-desk exception, "
+                "not a routine approval")
     return _transition(conn, sales_quote_id, frm="in_review", to="approved", check=_check,
                        sets=", approved_by = %s, approved_at = now()", params=(approver,))
 

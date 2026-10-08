@@ -102,6 +102,37 @@ def test_nobody_approves_their_own_quote(live_db):
         quotes.approve(conn, q["sales_quote_id"], approver="sub-author")
 
 
+def _below_cost(conn, item, **kw):
+    kw.setdefault("created_by", "sub-author")
+    return quotes.create_draft(
+        conn, account_id="LIVETEST-Q", currency="GBP",
+        valid_until=TODAY + dt.timedelta(days=30),
+        lines=[{"catalog_item_id": item, "quantity": D("4"), "unit_price": D("5.00")}], **kw)
+
+
+def test_a_below_cost_quote_cannot_be_approved(live_db):
+    # Capability audit 2026-10-08: a quote at -GBP 17,500 margin went
+    # approve -> issue -> won with nothing asking a human.
+    conn, dist = live_db
+    q = _below_cost(conn, _setup(conn, dist, cost="10.0000", list_price="15.0000"))
+    assert q["total_margin"] < 0
+    quotes.submit(conn, q["sales_quote_id"], actor="sub-author")
+    with pytest.raises(StateConflict, match="below cost"):
+        quotes.approve(conn, q["sales_quote_id"], approver="sub-approver")
+    assert quotes.get_quote(conn, q["sales_quote_id"])["status"] == "in_review"
+
+
+def test_a_quote_at_exactly_cost_can_still_be_approved(live_db):
+    conn, dist = live_db
+    item = _setup(conn, dist, cost="10.0000", list_price="15.0000")
+    q = quotes.create_draft(
+        conn, account_id="LIVETEST-Q", currency="GBP", created_by="sub-author",
+        valid_until=TODAY + dt.timedelta(days=30),
+        lines=[{"catalog_item_id": item, "quantity": D("4"), "unit_price": D("10.00")}])
+    quotes.submit(conn, q["sales_quote_id"], actor="sub-author")
+    assert quotes.approve(conn, q["sales_quote_id"], approver="sub-approver")["status"] == "approved"
+
+
 def test_an_anonymous_approval_is_refused(live_db):
     conn, dist = live_db
     q = _draft(conn, _setup(conn, dist))

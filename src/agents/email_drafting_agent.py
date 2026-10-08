@@ -576,7 +576,9 @@ def _current_rfq_date() -> str:
     return datetime.utcnow().strftime("%Y%m%d")
 
 
-def _build_rfq_table_html(descriptions: Iterable[str]) -> str:
+def _build_rfq_table_html(
+    descriptions: Iterable[str], quantities: Optional[Dict[str, str]] = None
+) -> str:
     header_cells = "".join(
         f'<th style="{_RFQ_HEADER_CELL_STYLE}">{escape(col)}</th>'
         for col in _RFQ_TABLE_COLUMNS
@@ -588,8 +590,10 @@ def _build_rfq_table_html(descriptions: Iterable[str]) -> str:
     for description in rows:
         first_cell = escape(description.strip()) if description else "&nbsp;"
         cells = [f'<td style="{_RFQ_BODY_CELL_STYLE}">{first_cell}</td>']
-        for _ in range(len(_RFQ_TABLE_COLUMNS) - 1):
-            cells.append(f'<td style="{_RFQ_BODY_CELL_STYLE}">&nbsp;</td>')
+        qty = (quantities or {}).get(description)
+        for col in _RFQ_TABLE_COLUMNS[1:]:
+            shown = escape(qty) if (col == "Qty" and qty) else "&nbsp;"
+            cells.append(f'<td style="{_RFQ_BODY_CELL_STYLE}">{shown}</td>')
         body_rows.append(f"<tr>{''.join(cells)}</tr>")
 
     blank_cells = [
@@ -4518,7 +4522,10 @@ class EmailDraftingAgent(BaseAgent):
         }
         base_args.update(html_augmented)
 
-        rfq_table = self._render_rfq_table(profile) if include_rfq_table else ""
+        requirement = self._buyer_requirement(context)
+        rfq_table = (
+            self._render_rfq_table(profile, requirement) if include_rfq_table else ""
+        )
         scope_summary = self._compose_scope_summary(supplier, profile, context)
 
         deadline_value = base_args.get("deadline")
@@ -4536,12 +4543,51 @@ class EmailDraftingAgent(BaseAgent):
             "deadline_html": base_args.get("deadline_html"),
         }
 
+    @staticmethod
+    def _buyer_requirement(context: Dict) -> Optional[Dict]:
+        """The requirement the buyer stated, if the workflow carried one.
+
+        Only a dict with a title counts: an RFQ must say WHAT is wanted, and a
+        requirement without that cannot stand in for the supplier-history scope.
+        """
+        req = context.get("requirement") if isinstance(context, dict) else None
+        if isinstance(req, dict) and str(req.get("title") or "").strip():
+            return req
+        return None
+
+    @staticmethod
+    def _requirement_quantity(requirement: Dict) -> Optional[str]:
+        try:
+            qty = float(requirement.get("quantity"))
+        except (TypeError, ValueError):
+            return None
+        return str(int(qty)) if qty == int(qty) else str(qty)
+
+    def _requirement_sentence(self, requirement: Dict) -> str:
+        """What we are buying, from stated fields only. The target budget is
+        deliberately left out: an RFQ that names the buyer's budget hands the
+        bidders the number to bid up to."""
+        title = str(requirement["title"]).strip()
+        qty = self._requirement_quantity(requirement)
+        sentence = f"We need {qty} x {title}" if qty else f"We need {title}"
+        location = str(requirement.get("delivery_location") or "").strip()
+        if location:
+            sentence += f", delivered to {location}"
+        needed_by = str(requirement.get("needed_by_date") or "").strip()
+        if needed_by:
+            sentence += f", by {needed_by}"
+        return sentence
+
     def _compose_scope_summary(
         self, supplier: Dict, profile: Dict, context: Dict
     ) -> str:
         sentences: List[str] = []
         relationship = self._relationship_sentence(supplier)
-        scope_sentences = self._scope_sentences(supplier, profile, context)
+        requirement = self._buyer_requirement(context)
+        if requirement:
+            scope_sentences = [self._requirement_sentence(requirement)]
+        else:
+            scope_sentences = self._scope_sentences(supplier, profile, context)
 
         for candidate in [relationship, *scope_sentences]:
             formatted = self._ensure_sentence(candidate)
@@ -4660,7 +4706,13 @@ class EmailDraftingAgent(BaseAgent):
         except Exception:
             return None
 
-    def _render_rfq_table(self, profile: Dict) -> str:
+    def _render_rfq_table(
+        self, profile: Dict, requirement: Optional[Dict] = None
+    ) -> str:
+        if requirement:
+            title = str(requirement["title"]).strip()
+            qty = self._requirement_quantity(requirement)
+            return _build_rfq_table_html([title], {title: qty} if qty else None)
         items = profile.get("items") or []
         if not items:
             return RFQ_TABLE_HEADER
