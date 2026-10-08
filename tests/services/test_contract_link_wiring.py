@@ -322,3 +322,42 @@ def test_a_scoped_pass_for_an_unknown_contract_does_not_become_a_corpus_pass(two
     assert result["considered"]["children"] == 0, result
     assert _open(two_children["sow"]) == []
     assert _open(two_children["var"]) == []
+
+
+def test_the_proposal_thresholds_are_read_from_governance(monkeypatch):
+    from src.services import contract_links as CL
+    seen = []
+
+    def fake_limit(policy, rule, **kw):
+        seen.append((policy, rule))
+        return {"contract_parent_min_score": 70.0, "contract_parent_separation": 5.0}[rule]
+
+    monkeypatch.setattr(CL, "_governed_limit", fake_limit)
+    assert CL.MIN_SCORE() == 70.0 and CL.SEPARATION() == 5.0
+    assert ("promotion_thresholds", "contract_parent_min_score") in seen
+    assert ("promotion_thresholds", "contract_parent_separation") in seen
+
+
+def test_a_missing_threshold_refuses_rather_than_guessing(monkeypatch):
+    from src.services import contract_links as CL
+
+    def absent(policy, rule, **kw):
+        raise LimitUnavailable(f"{policy}.{rule} is not stated")
+
+    monkeypatch.setattr(CL, "_governed_limit", absent)
+    with pytest.raises(LimitUnavailable):
+        CL.MIN_SCORE()
+
+
+def test_the_live_policy_states_both_thresholds(monkeypatch):
+    """Live-DB: the migration is applied, so the real lookup answers 65 and 8.
+
+    tests/conftest.py seeds a fake policy engine for every test; this one puts
+    the real engine back, otherwise it would read the seed and prove nothing
+    about the database.
+    """
+    from src.services import contract_links as CL
+    from src.services import governed_limits, rbac
+    monkeypatch.setattr(governed_limits, "_engine", rbac.policy_engine)
+    governed_limits.reset_cache()
+    assert CL.MIN_SCORE() == 65.0 and CL.SEPARATION() == 8.0
