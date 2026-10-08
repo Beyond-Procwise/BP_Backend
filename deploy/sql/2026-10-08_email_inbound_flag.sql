@@ -11,7 +11,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS email_agent.bp_inbound_flag (
     flag_id             BIGSERIAL   PRIMARY KEY,
-    kind                TEXT        NOT NULL,                       -- payment_detail_change (more screens may be added)
+    kind                TEXT        NOT NULL,                       -- payment_detail_change, sender_not_verified, injection_suspected (more screens may be added)
     workflow_id         TEXT,
     unique_id           TEXT,                                       -- the dispatch the reply answers
     supplier_id         TEXT,

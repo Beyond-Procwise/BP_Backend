@@ -1,6 +1,6 @@
 # Rehearsal of the email-assurance DDL pack on a copy of `bp_sqldb`'s structure
 
-- run at 2026-10-08 21:44:15 UTC; container `postgres:16-alpine`
+- run at 2026-10-08 22:42:30 UTC; container `postgres:16-alpine`
 
 ## 1. The copy (read-only dump of the real structure)
 
@@ -17,23 +17,23 @@
 
 | file | result |
 |---|---|
-| `2026-10-08_supplier_response_provenance.sql` | ok (0.1s) |
+| `2026-10-08_supplier_response_provenance.sql` | ok (0.0s) |
 | `2026-10-07_email_agent_capture.sql` | ok (0.1s) |
 | `2026-10-08_email_agent_capture_v2.sql` | ok (0.1s) |
 | `2026-10-08_email_agent_sent_text.sql` | ok (0.1s) |
-| `2026-10-08_email_agent_steering_column.sql` | ok (0.1s) |
+| `2026-10-08_email_agent_steering_column.sql` | ok (0.0s) |
 | `2026-10-08_email_inbound_flag.sql` | ok (0.1s) |
 | `2026-10-08_email_sender_auth.sql` | ok (0.1s) |
 | `2026-10-08_email_agent_steering.sql` | ok (0.1s) |
-| `2026-10-08_email_draft_sweep.sql` | ok (0.1s) |
+| `2026-10-08_email_draft_sweep.sql` | ok (0.0s) |
 | `2026-10-07_email_family_negotiation_counter.sql` | ok (0.1s) |
 | `2026-10-07_email_family_free_prompt.sql` | ok (0.1s) |
-| `2026-10-08_email_family_rfq_batch.sql` | ok (0.1s) |
-| `2026-10-08_email_family_human_written.sql` | ok (0.1s) |
-| `2026-10-08_email_family_v2.sql` | ok (0.1s) |
+| `2026-10-08_email_family_rfq_batch.sql` | ok (0.0s) |
+| `2026-10-08_email_family_human_written.sql` | ok (0.0s) |
+| `2026-10-08_email_family_v2.sql` | ok (0.0s) |
 | `2026-10-08_email_tone_rules.sql` | ok (0.1s) |
 | `2026-10-08_email_assurance_prompts.sql` | ok (0.1s) |
-| `2026-10-09_email_agent_learning.sql` | ok (0.2s) |
+| `2026-10-09_email_agent_learning.sql` | ok (0.1s) |
 | `2026-10-09_email_agent_roles.sql` | ok (0.1s) |
 
 - fingerprint after apply: `e2e00484f53ef287` (differs from before: True)
@@ -46,7 +46,7 @@ free_prompt                  26      26   100%
 negotiation_counter          34      34   100%
 ```
 - (the runner re-applies the migrations itself, which also proves they are idempotent on the copy)
-- `pytest tests/email_evals` against the copy: **424 passed in 54.45s**
+- `pytest tests/email_evals` against the copy: **428 passed in 52.56s**
 
 ## 5. Roll the pack back, newest first
 
