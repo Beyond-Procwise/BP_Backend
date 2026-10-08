@@ -123,6 +123,50 @@ def derive_subtotal_from_lines(
     return round(sum(vals), 2), None
 
 
+def restore_dropped_lines(
+    doc_type: str,
+    recovered: list[dict[str, Any]],
+    original: list[dict[str, Any]],
+    header_total: Optional[float],
+) -> tuple[list[dict[str, Any]], int]:
+    """Add back lines the AI recovery dropped, when the document's own total says they belong.
+
+    Recovery replaces the table extractor's lines wholesale when its sum is closer to the
+    header total -- even if it left out lines the table had read correctly. On Meridian's V2
+    quote it kept 7 of 9 lines and lost Overtime (24,000) and Expenses (72,000), so a quote
+    that totals 2,153,090 was stored with lines summing to 2,057,090.
+
+    Each original line whose amount the recovered set does not already carry is tried in
+    document order and kept only if it brings the line sum strictly closer to the header
+    total; a subtotal row or a duplicate overshoots and stays out. Nothing is invented: every
+    line restored was read from the document by the table extractor. Without a header total
+    there is nothing to check against, so nothing changes. Returns (lines, restored count).
+    """
+    amt_col = _LINE_AMOUNT_COL.get(doc_type)
+    if not amt_col or not header_total or not original:
+        return recovered, 0
+    have = [_to_float(li.get(amt_col)) for li in recovered]
+    current = sum(v for v in have if v is not None)
+    if abs(current - header_total) <= _RECONCILE_ABS_TOLERANCE:
+        return recovered, 0
+    pool = [v for v in have if v is not None]
+    out = list(recovered)
+    restored = 0
+    for li in original:
+        a = _to_float(li.get(amt_col))
+        if a is None or not str(li.get("item_description") or "").strip():
+            continue
+        match = next((i for i, v in enumerate(pool) if abs(v - a) <= 0.01), None)
+        if match is not None:          # already among the recovered lines
+            pool.pop(match)
+            continue
+        if abs(current + a - header_total) < abs(current - header_total) - 0.005:
+            out.append(li)
+            current += a
+            restored += 1
+    return out, restored
+
+
 def _reconciles(lsum: Optional[float], header_total: Optional[float]) -> bool:
     # Can't check without a header total -> don't flag a gap.
     if header_total in (None, 0) or header_total == 0.0:
