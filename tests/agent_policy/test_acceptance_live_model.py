@@ -302,6 +302,22 @@ def _activate_one(conn, items):
     policy after a reviewer's correction (recorded).
     """
     from repositories import agent_policy_repo as repo
+    from services.agent_policy import readiness
+
+    # Test setup: the named deciders are linked (in-memory), as an administrator would have done.
+    linked = {"groups": ["ACCEPTANCE_TEST"], "emails": []}
+    names = {"Finance Manager"}
+    for i in items:
+        names.update(repo.get_policy(conn, i["policy_key"])["versions"][-1]["form"].get("deciders") or [])
+    readiness_load, readiness._load_deciders = readiness._load_deciders, lambda: {n: linked for n in names}
+    try:
+        return _activate_one_linked(conn, items)
+    finally:
+        readiness._load_deciders = readiness_load
+
+
+def _activate_one_linked(conn, items):
+    from repositories import agent_policy_repo as repo
 
     attempts = [(i["policy_key"], None) for i in items]
     attempts += [(i["policy_key"], _reviewer_correction) for i in items if i["reference"] == "1.2"]

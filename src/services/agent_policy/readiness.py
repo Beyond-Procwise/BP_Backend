@@ -194,7 +194,7 @@ def activation_problems(form: Dict[str, Any], registry: RegistrySnapshot,
                 mapping = _load_deciders()
             except Exception:  # noqa: BLE001 - never pass silently when the map can't be read
                 mapping = None
-                add("deciders", "decider_map_unavailable",
+                add(wanted[0][0] if wanted else "deciders", "decider_map_unavailable",
                     "Can't check who is linked to the people named here right now. Try again shortly.",
                     routeTo="administrator")
         if mapping is not None:
@@ -242,7 +242,7 @@ def extraction_confidence(form: Dict[str, Any], document_text: Optional[str], re
     required = ("name", "category", "businessArea", "subArea", "situation", "outcome", "owner")
     if any(_blank(form.get(k)) for k in required) or _blank((form.get("hidden") or {}).get("condition")):
         failed.append("Not every field is filled")
-    probs = activation_problems(form, registry, settings)
+    probs = activation_problems(form, registry, settings, deciders={})   # only registry problems are read; no DB
     if any(p["field"] == "registry" for p in probs):
         failed.append("The condition uses names the orchestrator does not recognise")
     rows = conditions.reviewer_view(form, settings)

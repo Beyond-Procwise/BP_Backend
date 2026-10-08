@@ -78,3 +78,12 @@ def test_map_unavailable_is_reported(monkeypatch):
     def boom(): raise RuntimeError("db down")
     monkeypatch.setattr(R, "_load_deciders", boom)
     assert ("deciders", "decider_map_unavailable") in _codes(R.activation_problems(_form(), REGISTRY, SETTINGS))
+
+
+def test_string_groups_claim():
+    p = SimpleNamespace(subject="s", email=None, claims={"cognito:groups": "PROCWISE_FINANCE"})
+    assert D.eligible(p, "Finance Manager", MAP)
+
+
+def test_none_principal_not_eligible():
+    assert not D.eligible(None, "Finance Manager", MAP)

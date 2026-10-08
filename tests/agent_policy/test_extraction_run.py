@@ -460,7 +460,7 @@ def test_a_persons_save_keeps_the_agents_confidence(conn, actor, monkeypatch):
     """I3: a person's save passes no document text; the save reads the source version's stored
     text, so the excerpt is still found and confidence does not drop."""
     from services.agent_policy import readiness
-    monkeypatch.setattr(readiness, "activation_problems", lambda f, r, s: [])   # test-only names
+    monkeypatch.setattr(readiness, "activation_problems", lambda f, r, s, deciders=None: [])   # test-only names
     monkeypatch.setattr(readiness, "_cant_enforce", lambda f, r: False)
     _stub(monkeypatch, CANNED_V1)
     doc = _document(conn, V1)
@@ -474,7 +474,7 @@ def test_a_persons_save_keeps_the_agents_confidence(conn, actor, monkeypatch):
 def test_a_persons_first_save_of_an_extracted_form_finds_its_document_by_title(conn, actor, monkeypatch):
     """I3, create_draft: no source block, so the document is found by the form's source title."""
     from services.agent_policy import readiness
-    monkeypatch.setattr(readiness, "activation_problems", lambda f, r, s: [])
+    monkeypatch.setattr(readiness, "activation_problems", lambda f, r, s, deciders=None: [])
     monkeypatch.setattr(readiness, "_cant_enforce", lambda f, r: False)
     _stub(monkeypatch, CANNED_V1)
     doc = _document(conn, V1)
