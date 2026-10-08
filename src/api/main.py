@@ -84,6 +84,7 @@ from api.routers import reports as reports_router
 from api.routers import triage as triage_router
 from api.routers import atb as atb_router
 from api.routers import i18n as i18n_router
+from api.routers import agent_policies as agent_policies_router
 from api.routers import demand_intake as demand_intake_router
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
@@ -531,6 +532,10 @@ app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=_al
 # could reach the port and knew a session id was served its outcomes.
 # tests/api/test_ws_authentication.py is what now holds this to be true.
 app.include_router(ws_router_mod.router)
+# Agent policies trust only the gateway's key + forwarded identity (design 2026-10-08 §3.2),
+# so they are NOT in _AUTHENTICATED_ROUTERS: the browser never calls them directly.
+app.include_router(agent_policies_router.router)
+app.include_router(agent_policies_router.orchestrator_router)
 
 # The one signed-out translation path: the sign-in screens' text, from cache only. It takes
 # no input text and never calls the model (see api/routers/i18n.py). Listed in _PUBLIC in
