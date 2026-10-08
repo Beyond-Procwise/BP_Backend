@@ -1,0 +1,337 @@
+"""Policy documents with S3 and the DB faked. Nothing here reaches AWS or Postgres."""
+import hashlib
+import io
+
+import pytest
+
+from services.agent_policy import documents as d
+
+
+# ---------------------------------------------------------------- fakes
+
+class FakeS3:
+    def __init__(self):
+        self.objects = {}
+        self.presigned = []
+
+    def generate_presigned_url(self, op, Params, ExpiresIn):
+        self.presigned.append((op, Params, ExpiresIn))
+        return f"https://s3.example/{Params['Key']}?sig=1"
+
+    def head_object(self, Bucket, Key):
+        return {"ContentLength": len(self.objects[Key])}
+
+    def get_object(self, Bucket, Key):
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+
+class FakeDB:
+    """Just enough of the two tables, keyed on the statements documents.py sends."""
+
+    def __init__(self):
+        self.docs = {}       # id -> dict
+        self.versions = {}   # (id, version) -> dict
+        self.autocommit = True
+        self.commits = self.rollbacks = 0
+        self._staged = None
+
+    # connection API
+    def cursor(self):
+        return FakeCursor(self)
+
+    def commit(self):
+        self.commits += 1
+        self._staged = None
+
+    def rollback(self):
+        self.rollbacks += 1
+        if self._staged is not None:
+            self.docs, self.versions = self._staged
+            self._staged = None
+
+    def _snapshot(self):
+        if not self.autocommit and self._staged is None:
+            import copy
+            self._staged = (copy.deepcopy(self.docs), copy.deepcopy(self.versions))
+
+
+class FakeCursor:
+    def __init__(self, db):
+        self.db, self._rows = db, []
+
+    def execute(self, sql, params=()):
+        db, s = self.db, " ".join(sql.split())
+        db._snapshot()
+        if s.startswith("SELECT document_id, title, latest_version FROM proc.bp_policy_document WHERE document_id"):
+            doc = db.docs.get(params[0])
+            self._rows = [(doc["id"], doc["title"], doc["latest"])] if doc else []
+        elif s.startswith("SELECT document_id, title, latest_version FROM proc.bp_policy_document WHERE match_name"):
+            hits = sorted((k, v) for k, v in db.docs.items() if v["match"] == params[0])
+            self._rows = [(v["id"], v["title"], v["latest"]) for _, v in hits[:1]]
+        elif s.startswith("SELECT version FROM proc.bp_policy_document_version WHERE document_id = %s AND content_hash"):
+            self._rows = [(k[1],) for k, v in db.versions.items() if k[0] == params[0] and v["hash"] == params[1]]
+        elif s.startswith("SELECT latest_version FROM proc.bp_policy_document WHERE document_id"):
+            self._rows = [(db.docs[params[0]]["latest"],)]
+        elif s.startswith("INSERT INTO proc.bp_policy_document ("):
+            new_id = max(db.docs, default=0) + 1
+            db.docs[new_id] = {"id": new_id, "title": params[0], "match": params[1], "latest": 1, "by": params[2]}
+            self._rows = [(new_id,)]
+        elif s.startswith("INSERT INTO proc.bp_policy_document_version"):
+            doc_id, version, filename, key, size, h, actor = params
+            assert (doc_id, version) not in db.versions
+            assert not any(k[0] == doc_id and v["hash"] == h for k, v in db.versions.items())
+            db.versions[(doc_id, version)] = {"filename": filename, "key": key, "size": size, "hash": h,
+                                              "by": actor, "text": None, "parsed_at": None}
+        elif s.startswith("UPDATE proc.bp_policy_document SET latest_version"):
+            db.docs[params[1]]["latest"] = params[0]
+        elif s.startswith("SELECT filename, s3_key, parsed_text FROM proc.bp_policy_document_version"):
+            v = db.versions.get((params[0], params[1]))
+            self._rows = [(v["filename"], v["key"], v["text"])] if v else []
+        elif s.startswith("UPDATE proc.bp_policy_document_version SET parsed_text"):
+            v = db.versions[(params[1], params[2])]
+            v["text"], v["parsed_at"] = params[0], "now"
+        else:  # pragma: no cover - a new statement must be taught to the fake
+            raise AssertionError(f"unexpected SQL: {s}")
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+@pytest.fixture
+def s3(monkeypatch):
+    fake = FakeS3()
+    monkeypatch.setattr(d, "_s3", lambda: fake)
+    monkeypatch.setattr(d, "_bucket", lambda: "test-bucket")
+    monkeypatch.setattr(d, "intake_limits", lambda: (20, 26_214_400))
+    return fake
+
+
+@pytest.fixture
+def db():
+    return FakeDB()
+
+
+def _put(s3, name, data):
+    key = f"{d.UPLOAD_PREFIX}{hashlib.md5(data + name.encode()).hexdigest()}/{d.safe_name(name)}"
+    s3.objects[key] = data
+    return {"key": key, "name": name, "revisionOf": None}
+
+
+# ---------------------------------------------------------------- presign
+
+def test_presign_returns_a_put_per_file_under_the_prefix(s3):
+    out = d.presign_uploads([{"name": "a/b/Refund Policy?.pdf", "size": 10, "contentType": "application/pdf"}],
+                            actor="t")
+    assert len(out) == 1
+    item = out[0]
+    assert item["key"] == f"agent-policy-documents/uploads/{item['uploadId']}/Refund Policy_.pdf"
+    assert item["headers"] == {"Content-Type": "application/pdf"}
+    op, params, expires = s3.presigned[0]
+    assert op == "put_object" and expires == 900
+    assert params == {"Bucket": "test-bucket", "Key": item["key"], "ContentType": "application/pdf"}
+
+
+def test_safe_name_is_capped_at_120():
+    assert len(d.safe_name("x" * 300 + ".pdf")) == 120
+
+
+@pytest.mark.parametrize("name", ["policy.exe", "policy.doc", "policy", "policy.PDF.zip"])
+def test_suffix_refused(s3, name):
+    with pytest.raises(ValueError, match="accepted"):
+        d.presign_uploads([{"name": name, "size": 10, "contentType": "x"}], actor="t")
+    assert s3.presigned == []
+
+
+def test_uppercase_accepted_suffix_is_fine(s3):
+    assert len(d.presign_uploads([{"name": "P.DOCX", "size": 1, "contentType": "x"}], actor="t")) == 1
+
+
+def test_size_refused_over_limit_and_whole_request_refused(s3):
+    files = [{"name": "ok.pdf", "size": 10, "contentType": "x"},
+             {"name": "big.pdf", "size": 26_214_401, "contentType": "x"}]
+    with pytest.raises(ValueError, match="big.pdf"):
+        d.presign_uploads(files, actor="t")
+    assert s3.presigned == []  # the valid one was not presigned either
+
+
+def test_size_at_limit_accepted_and_empty_refused(s3):
+    assert d.presign_uploads([{"name": "a.txt", "size": 26_214_400, "contentType": "x"}], actor="t")
+    with pytest.raises(ValueError, match="empty"):
+        d.presign_uploads([{"name": "a.txt", "size": 0, "contentType": "x"}], actor="t")
+
+
+def test_the_21st_file_is_refused(s3):
+    files = [{"name": f"f{i}.txt", "size": 1, "contentType": "text/plain"} for i in range(21)]
+    with pytest.raises(ValueError, match="At most 20"):
+        d.presign_uploads(files, actor="t")
+    assert s3.presigned == []
+    assert len(d.presign_uploads(files[:20], actor="t")) == 20
+
+
+def test_missing_limits_refuse(monkeypatch):
+    from fastapi import HTTPException
+
+    def refuse():
+        raise HTTPException(status_code=503, detail="not configured")
+    monkeypatch.setattr(d, "intake_limits", refuse)
+    with pytest.raises(HTTPException):
+        d.presign_uploads([{"name": "a.txt", "size": 1, "contentType": "x"}], actor="t")
+
+
+def test_intake_limits_is_the_routers_function(monkeypatch):
+    import api.routers.documents as router
+    monkeypatch.setattr(router, "_intake_limits", lambda: (7, 99))
+    assert d.intake_limits() == (7, 99)
+
+
+# ---------------------------------------------------------------- normalise
+
+@pytest.mark.parametrize("name,expected", [
+    ("Refund Policy v2.docx", "refund policy"),
+    ("refund_policy (1).pdf", "refund policy"),
+    ("Refund Policy.pdf", "refund policy"),
+    ("Refund Policy - final v3.pdf", "refund policy"),
+    ("Refund   Policy_draft.md", "refund policy"),
+    ("Refund Policy rev2.txt", "refund policy"),
+    ("draft.docx", "draft"),  # never normalised to nothing
+])
+def test_name_normalisation(name, expected):
+    assert d.normalise(name) == expected
+
+
+# ---------------------------------------------------------------- register
+
+def test_same_bytes_same_version_new_bytes_new_version(s3, db):
+    first = d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")[0]
+    assert first == {"documentId": 1, "version": 1, "title": "Refund Policy", "isRevision": False,
+                     "duplicate": False}
+    again = d.register_uploads(db, [_put(s3, "Refund Policy v2.pdf", b"one")], actor="u")[0]
+    assert again == {**first, "duplicate": True}
+    assert len(db.versions) == 1 and db.docs[1]["latest"] == 1
+
+    second = d.register_uploads(db, [_put(s3, "refund_policy (1).pdf", b"two")], actor="u")[0]
+    assert second == {"documentId": 1, "version": 2, "title": "Refund Policy", "isRevision": True,
+                      "duplicate": False}
+    assert db.docs[1]["latest"] == 2 and len(db.docs) == 1
+    v2 = db.versions[(1, 2)]
+    assert v2["hash"] == hashlib.sha256(b"two").hexdigest() and v2["size"] == 3 and v2["by"] == "u"
+    assert db.autocommit is True  # restored
+
+
+def test_unrelated_name_is_a_new_document(s3, db):
+    d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")
+    other = d.register_uploads(db, [_put(s3, "Travel Policy.pdf", b"one")], actor="u")[0]
+    assert other["documentId"] == 2 and other["version"] == 1 and other["title"] == "Travel Policy"
+
+
+def test_revision_of_overrides_name_matching(s3, db):
+    d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")
+    d.register_uploads(db, [_put(s3, "Travel Policy.pdf", b"t1")], actor="u")
+    up = _put(s3, "Refund Policy v2.pdf", b"t2")  # the name matches document 1 ...
+    up["revisionOf"] = 2                            # ... but the caller says document 2
+    out = d.register_uploads(db, [up], actor="u")[0]
+    assert out["documentId"] == 2 and out["version"] == 2 and out["title"] == "Travel Policy"
+    assert db.docs[1]["latest"] == 1
+
+
+def test_revision_of_unknown_document_is_refused(s3, db):
+    up = _put(s3, "Refund Policy.pdf", b"one")
+    up["revisionOf"] = 99
+    with pytest.raises(ValueError, match="does not exist"):
+        d.register_uploads(db, [up], actor="u")
+    assert db.docs == {} and db.autocommit is True
+
+
+def test_register_refuses_keys_outside_the_prefix_and_oversize(s3, db, monkeypatch):
+    s3.objects["documents/other.pdf"] = b"x"
+    with pytest.raises(ValueError, match="not an agent-policy upload"):
+        d.register_uploads(db, [{"key": "documents/other.pdf", "name": "o.pdf"}], actor="u")
+    up = _put(s3, "Big.pdf", b"0123456789")
+    monkeypatch.setattr(d, "intake_limits", lambda: (20, 5))
+    with pytest.raises(ValueError, match="larger"):
+        d.register_uploads(db, [up], actor="u")
+    assert db.docs == {}
+
+
+def test_a_failed_insert_rolls_back_and_restores_autocommit(s3, db, monkeypatch):
+    d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")
+
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(d, "_bump_latest", boom)
+    with pytest.raises(RuntimeError):
+        d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"two")], actor="u")
+    assert (1, 2) not in db.versions and db.docs[1]["latest"] == 1
+    assert db.rollbacks >= 1 and db.autocommit is True
+
+
+# ---------------------------------------------------------------- text
+
+def test_document_text_txt_is_decoded_stored_and_then_served_from_the_row(s3, db):
+    d.register_uploads(db, [_put(s3, "Refund.txt", "Refunds over £500 need approval.\xff".encode("utf-8") + b"\xff")],
+                       actor="u")
+    text = d.document_text(db, 1, 1)
+    assert text.startswith("Refunds over £500 need approval.") and "�" in text
+    assert db.versions[(1, 1)]["text"] == text and db.versions[(1, 1)]["parsed_at"]
+    s3.objects.clear()  # the second read must not touch S3
+    assert d.document_text(db, 1, 1) == text
+
+
+def test_document_text_pdf_goes_through_the_parser(s3, db, monkeypatch):
+    from services.extraction import parser
+    seen = {}
+
+    class Parsed:
+        full_text = "# Refunds\nOver 500 needs approval."
+
+    def fake_parse(path):
+        with open(path, "rb") as fh:
+            seen["bytes"] = fh.read()
+        seen["path"] = path
+        return Parsed()
+    monkeypatch.setattr(parser, "parse", fake_parse)
+    d.register_uploads(db, [_put(s3, "Refund.pdf", b"%PDF-fake")], actor="u")
+    assert d.document_text(db, 1, 1) == Parsed.full_text
+    assert seen["bytes"] == b"%PDF-fake" and seen["path"].endswith(".pdf")
+    import os
+    assert not os.path.exists(seen["path"])  # temp file removed
+
+
+def test_empty_text_is_unreadable(s3, db):
+    d.register_uploads(db, [_put(s3, "Blank.md", b"   \n\t")], actor="u")
+    with pytest.raises(d.DocumentUnreadable):
+        d.document_text(db, 1, 1)
+    assert db.versions[(1, 1)]["text"] is None
+
+
+# ---------------------------------------------------------------- list
+
+def test_list_documents_has_every_version_and_no_text(s3, db, monkeypatch):
+    d.register_uploads(db, [_put(s3, "Refund Policy.txt", b"one")], actor="u")
+    d.register_uploads(db, [_put(s3, "Refund Policy v2.txt", b"two")], actor="u")
+
+    class ListCursor:
+        def __init__(self):
+            self.rows = []
+
+        def execute(self, sql, params=()):
+            if "FROM proc.bp_policy_document_version" in sql:
+                self.rows = [(k[0], k[1], v["filename"], v["size"], v["hash"], v["by"], None, None)
+                             for k, v in sorted(db.versions.items())]
+            else:
+                self.rows = [(v["id"], v["title"], v["match"], v["latest"], v["by"], None)
+                             for v in db.docs.values()]
+
+        def fetchall(self):
+            return self.rows
+
+    class ListConn:
+        def cursor(self):
+            return ListCursor()
+    out = d.list_documents(ListConn())
+    assert len(out) == 1 and [v["version"] for v in out[0]["versions"]] == [1, 2]
+    assert out[0]["latestVersion"] == 2
+    assert all("parsedText" not in v and "text" not in v for v in out[0]["versions"])
