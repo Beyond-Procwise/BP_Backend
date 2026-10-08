@@ -65,10 +65,13 @@ def _proposal(cid):
 def world():
     made = []
     yield made
-    with get_conn() as c:
-        cur = c.cursor()
-        cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE doc_pk_candidate = ANY(%s)", (made,))
-        cur.execute("DELETE FROM proc.bp_contracts WHERE contract_id = ANY(%s)", (made,))
+    try:
+        with get_conn() as c:
+            c.cursor().execute(
+                "DELETE FROM proc.bp_extraction_discrepancy WHERE doc_pk_candidate = ANY(%s)", (made,))
+    finally:
+        with get_conn() as c:
+            c.cursor().execute("DELETE FROM proc.bp_contracts WHERE contract_id = ANY(%s)", (made,))
 
 
 def _score(notes):
@@ -97,12 +100,15 @@ def test_no_reference_is_proposed_only_for_the_types_identified_by_supplier_and_
     sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
     _insert(world, P, pt, ptitle, sup, "2026-01-01", "2027-12-31", "role.master")
     _insert(world, C, ct, title, sup, "2026-03-01", "2026-09-30", role)
-    CL.propose_parent_links(contract_id=C)
+    r = CL.propose_parent_links(contract_id=C)
     row = _proposal(C)
     if name in ("sow", "call_off", "order_form"):
         assert row and row[0] == P
     else:
         assert row is None, "an amendment or attachment with no reference is not guessed a parent"
+        print(name, "no_ref counters", r["considered"], r["no_candidate"], r["below_threshold"])
+        assert r["considered"]["with_structure"] == 1, r
+        assert r["below_threshold"] == 1, r
 
 
 @pytest.mark.parametrize("name", ["sow", "call_off", "order_form"])
@@ -123,11 +129,13 @@ def test_a_reference_naming_a_parent_of_another_supplier_is_not_proposed(world, 
     P, C = f"P-{k}", f"C-{k}"
     _insert(world, P, pt, ptitle, f"S-{k}1", "2026-01-01", "2027-12-31", "role.master")
     _insert(world, C, ct, title, f"S-{k}2", "2026-03-01", "2026-09-30", role, ref=P)
-    CL.propose_parent_links(contract_id=C)
+    r = CL.propose_parent_links(contract_id=C)
     row = _proposal(C)
     # The reference resolves a candidate (step 1 of candidate_parents), but the supplier
     # conflict (tier 1) caps the score below the proposal floor.
     assert row is None
+    assert r["considered"]["with_candidates"] == 1, r
+    assert r["below_threshold"] == 1, r
 
 
 @pytest.mark.parametrize("name", ["sow", "call_off", "order_form"])
