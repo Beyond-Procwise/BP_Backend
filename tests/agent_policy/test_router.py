@@ -251,7 +251,7 @@ def test_create_with_withheld_text_is_a_422(client, monkeypatch):
 
 
 # ---- stage 2: documents, extraction runs, agent-fix ----------------------------------------
-UPKEY = "agent-policy-documents/uploads/3d0b8f2e-1111-4a4a-8888-123456789abc/policy.pdf"
+UPID = "3d0b8f2e-1111-4a4a-8888-123456789abc"
 
 
 def _audited(client, intent):
@@ -260,13 +260,13 @@ def _audited(client, intent):
 
 @pytest.mark.parametrize("method,path,body", [
     ("post", "/agent-policies/documents/upload-urls", {"files": [{"name": "a.pdf", "size": 1}]}),
-    ("post", "/agent-policies/documents", {"uploads": [{"key": UPKEY, "name": "policy.pdf"}]}),
+    ("post", "/agent-policies/documents", {"uploads": [{"uploadId": UPID, "name": "policy.pdf"}]}),
     ("post", "/agent-policies/extraction-runs", {"documents": [{"documentId": 1, "version": 1}]}),
     ("post", "/agent-policies/FIN-0001/agent-fix", {"baseVersion": 1, "flipped": [{"input": {}}]}),
 ])
 def test_stage2_writes_need_buyer_and_the_refusal_is_audited(client, monkeypatch, method, path, body):
     called = []
-    for name in ("presign_uploads", "register_uploads"):
+    for name in ("issue_uploads", "register_uploads"):
         monkeypatch.setattr(R.documents, name, lambda *a, **k: called.append(1) or [])
     monkeypatch.setattr(R.run_store, "create", lambda *a, **k: called.append(1) or {"run_id": 1})
     r = client.request(method, path, json=body, headers=VIEWER)
@@ -280,22 +280,32 @@ def test_stage2_reads_need_the_gateway_key(client, path):
     assert client.get(path).status_code == 401
 
 
-def test_upload_urls_returns_uploads_and_is_audited_first(client, monkeypatch):
+def test_upload_urls_returns_issued_uploads_and_is_audited_first(client, monkeypatch):
     order = []
     monkeypatch.setattr(R.agent_actions, "record_action_or_fail", lambda **kw: order.append(("audit", kw)))
-    out = [{"uploadId": "u", "key": UPKEY, "url": "https://s3/x", "headers": {}}]
-    monkeypatch.setattr(R.documents, "presign_uploads", lambda files, actor: order.append(("presign", files, actor)) or out)
+    out = [{"uploadId": UPID, "safeName": "policy.pdf", "contentType": "application/pdf"}]
+    monkeypatch.setattr(R.documents, "issue_uploads", lambda files, actor: order.append(("issue", files, actor)) or out)
     r = client.post("/agent-policies/documents/upload-urls", json={"files": [{"name": "a.pdf", "size": 3}]}, headers=BUYER)
     assert r.status_code == 200 and r.json() == {"uploads": out}
-    assert [o[0] for o in order] == ["audit", "presign"]
+    assert [o[0] for o in order] == ["audit", "issue"]
     assert order[0][1]["status"] == "allowed" and order[0][1]["details"]["intent"] == "upload_urls"
     assert order[1][1] == [{"name": "a.pdf", "size": 3}] and order[1][2] == "u1"
+
+
+def test_no_route_presigns(client, monkeypatch):
+    """The gateway signs the PUT; the backend never answers with a URL or a key."""
+    assert not hasattr(R.documents, "presign_uploads")
+    monkeypatch.setattr(R.documents, "intake_limits", lambda: (20, 100))
+    r = client.post("/agent-policies/documents/upload-urls", json={"files": [{"name": "a.pdf", "size": 3}]}, headers=BUYER)
+    item = r.json()["uploads"][0]
+    assert set(item) == {"uploadId", "safeName", "contentType"}
+    assert "url" not in json.dumps(r.json()).lower() and "agent-policy-documents" not in r.text
 
 
 @pytest.mark.parametrize("files", [[], [{"name": "a.exe", "size": 1}], [{"name": "a.pdf"}]])
 def test_upload_refusal_is_a_422_problems_body(client, monkeypatch, files):
     def refuse(files, actor): raise ValueError("a.exe: only .docx, .md, .pdf, .txt files are accepted.")
-    monkeypatch.setattr(R.documents, "presign_uploads", refuse)
+    monkeypatch.setattr(R.documents, "issue_uploads", refuse)
     r = client.post("/agent-policies/documents/upload-urls", json={"files": files}, headers=BUYER)
     assert r.status_code == 422
     assert r.json() == {"problems": [{"field": "files", "code": "upload_refused",
@@ -304,25 +314,21 @@ def test_upload_refusal_is_a_422_problems_body(client, monkeypatch, files):
 
 def test_intake_limits_503_passes_through(client, monkeypatch):
     def unavailable(files, actor): raise R.HTTPException(status_code=503, detail="intake limits are not set")
-    monkeypatch.setattr(R.documents, "presign_uploads", unavailable)
+    monkeypatch.setattr(R.documents, "issue_uploads", unavailable)
     r = client.post("/agent-policies/documents/upload-urls", json={"files": [{"name": "a.pdf", "size": 1}]}, headers=BUYER)
     assert r.status_code == 503
 
 
-def test_presign_key_outside_uploads_is_refused(client, monkeypatch):
-    monkeypatch.setattr(R.documents, "presign_uploads",
-                        lambda files, actor: [{"uploadId": "u", "key": "agent-policy-documents/other/x.pdf", "url": "u"}])
-    r = client.post("/agent-policies/documents/upload-urls", json={"files": [{"name": "x.pdf", "size": 1}]}, headers=BUYER)
-    assert r.status_code == 422 and r.json()["problems"][0]["code"] == "upload_refused"
-
-
-@pytest.mark.parametrize("key", ["agent-policy-documents/other/x.pdf", "contracts/x.pdf", "", None,
-                                 "x/agent-policy-documents/uploads/a/b.pdf"])
-def test_register_refuses_a_key_outside_uploads_without_touching_s3(client, monkeypatch, key):
-    called = []
-    monkeypatch.setattr(R.documents, "register_uploads", lambda *a, **k: called.append(1) or [])
-    r = client.post("/agent-policies/documents", json={"uploads": [{"key": key, "name": "x.pdf"}]}, headers=BUYER)
-    assert r.status_code == 422 and r.json()["problems"][0]["field"] == "files" and not called
+@pytest.mark.parametrize("upload_id", ["agent-policy-documents/other", "contracts", "", None, f"{UPID}/../x"])
+def test_register_refuses_an_upload_id_that_is_not_an_issued_one(client, monkeypatch, upload_id):
+    """The real register_uploads: a bad id is refused before S3 is read (the stand-in client has no
+    methods, so any S3 call would be a 500) or the DB is touched."""
+    monkeypatch.setattr(R.documents, "intake_limits", lambda: (20, 100))
+    monkeypatch.setattr(R.documents, "_bucket", lambda: "b")
+    monkeypatch.setattr(R.documents, "_s3", lambda: object())
+    r = client.post("/agent-policies/documents", json={"uploads": [{"uploadId": upload_id, "name": "x.pdf"}]}, headers=BUYER)
+    assert r.status_code == 422 and r.json()["problems"] == [
+        {"field": "files", "code": "upload_refused", "message": "x.pdf is not an agent-policy upload."}]
     assert _audited(client, "register_documents")[-1]["status"] == "allowed"
 
 
@@ -330,7 +336,7 @@ def test_register_returns_documents_and_maps_valueerror(client, monkeypatch):
     seen = []
     monkeypatch.setattr(R.documents, "register_uploads",
                         lambda conn, uploads, actor: seen.append((uploads, actor)) or [{"documentId": 4, "version": 2}])
-    body = {"uploads": [{"key": UPKEY, "name": "policy.pdf", "revisionOf": 4}]}
+    body = {"uploads": [{"uploadId": UPID, "name": "policy.pdf", "revisionOf": 4}]}
     r = client.post("/agent-policies/documents", json=body, headers=BUYER)
     assert r.status_code == 200 and r.json() == {"documents": [{"documentId": 4, "version": 2}]}
     assert seen == [(body["uploads"], "u1")]
@@ -457,3 +463,26 @@ def test_work_dispatches_on_the_run_kind(monkeypatch):
     assert R._work(object(), {"kind": "fix"}, None) == {"did": "fix"}
     with pytest.raises(ValueError):
         R._work(object(), {"kind": "other"}, None)
+
+
+def test_answers_survive_the_output_scrubber():
+    """The real response shapes, through services.output_safety.scrub_payload as OutputSafetyMiddleware
+    applies it. upload-urls and documents must come back whole. Compare text MAY be scrubbed (known,
+    pending a user decision) -- reported, not asserted."""
+    from services import output_safety as osafe
+    from services.agent_policy import documents as D
+    import uuid as _uuid
+
+    def unchanged(body, path):
+        return osafe.scrub_payload(json.loads(json.dumps(body)), where=path) == body
+
+    issued = [{"uploadId": str(_uuid.uuid4()), "safeName": "Refund Policy v2.pdf", "contentType": D._CONTENT_TYPES[".pdf"]},
+              {"uploadId": str(_uuid.uuid4()), "safeName": "Travel_policy.docx", "contentType": D._CONTENT_TYPES[".docx"]}]
+    assert unchanged({"uploads": issued}, "/agent-policies/documents/upload-urls")
+    registered = {"documents": [{"documentId": 12, "version": 2, "title": "Refund Policy", "isRevision": True,
+                                 "duplicate": False}]}
+    assert unchanged(registered, "/agent-policies/documents")
+    refused = {"problems": [{"field": "files", "code": "upload_refused",
+                             "message": "Refund.pdf: the file was not uploaded."}]}
+    assert unchanged(refused, "/agent-policies/documents")
+    assert unchanged({"runId": 31}, "/agent-policies/extraction-runs")

@@ -1,4 +1,8 @@
-"""Policy documents: presign an upload, register it as a version, read its text.
+"""Policy documents: issue an upload, register it as a version, read its text.
+
+The gateway signs the S3 PUT (fix round 1, 2026-10-08): this module only validates the request
+and issues an upload id and a safe name, and never returns a URL or a key, which the output
+scrubber would withhold. The key is rebuilt here from the id and the name when registering.
 
 A document is recognised by its normalised filename (or named explicitly by revisionOf);
 the same bytes uploaded twice are the same version, so nothing is written the second time.
@@ -21,7 +25,12 @@ from typing import Any, Dict, List, Optional, Tuple
 ACCEPTED = {".pdf", ".docx", ".txt", ".md"}
 PREFIX = "agent-policy-documents/"
 UPLOAD_PREFIX = PREFIX + "uploads/"
-PRESIGN_SECONDS = 900
+_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+}
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9._ -]")
 # A version mark only counts after a separator (or as a parenthesised number), so a word that
 # merely ends in one -- "Overdraft", "Semifinal" -- is left whole and cannot match another document.
@@ -112,10 +121,10 @@ def _s3():
     return egress.aws_client("s3", purpose=egress.Purpose.OBJECT_STORAGE, **kwargs)
 
 
-# ---------------------------------------------------------------- presign
+# ---------------------------------------------------------------- issue
 
-def presign_uploads(files: List[Dict[str, Any]], *, actor: str) -> List[Dict[str, Any]]:
-    """Validate the whole request, then return one presigned PUT per file. First violation refuses all."""
+def _validated(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The whole request against the intake limits. First violation refuses all."""
     max_files, max_bytes = intake_limits()
     files = list(files or [])
     if not files:
@@ -134,20 +143,30 @@ def presign_uploads(files: List[Dict[str, Any]], *, actor: str) -> List[Dict[str
             raise ValueError(f"{name}: the file is empty.")
         if size > max_bytes:
             raise ValueError(f"{name}: the file is larger than the {max_bytes} byte limit.")
+    return files
 
-    client, bucket, out = _s3(), _bucket(), []
-    for f in files:
-        upload_id = str(uuid.uuid4())
-        key = f"{UPLOAD_PREFIX}{upload_id}/{safe_name(f['name'])}"
-        content_type = str(f.get("contentType") or "application/octet-stream")
-        url = client.generate_presigned_url(
-            "put_object",
-            Params={"Bucket": bucket, "Key": key, "ContentType": content_type},
-            ExpiresIn=PRESIGN_SECONDS,
-        )
-        out.append({"uploadId": upload_id, "key": key, "url": url,
-                    "headers": {"Content-Type": content_type}})
-    return out
+
+def issue_uploads(files: List[Dict[str, Any]], *, actor: str) -> List[Dict[str, Any]]:
+    """One upload id per file, with its safe name and the content type the PUT must carry.
+
+    No URL and no key: the gateway signs the PUT for upload_key(uploadId, name).
+    """
+    return [{"uploadId": str(uuid.uuid4()), "safeName": safe_name(f["name"]),
+             "contentType": _CONTENT_TYPES[_suffix(str(f["name"]))]}
+            for f in _validated(files)]
+
+
+def upload_key(upload_id: Any, name: str) -> str:
+    """agent-policy-documents/uploads/<uuid4>/<safe name>; refuses anything but a canonical uuid4."""
+    uid = str(upload_id or "")
+    refused = ValueError(f"{name or 'An upload'} is not an agent-policy upload.")
+    try:
+        parsed = uuid.UUID(uid)
+    except ValueError:
+        raise refused from None
+    if str(parsed) != uid or parsed.version != 4:
+        raise refused
+    return f"{UPLOAD_PREFIX}{uid}/{safe_name(name)}"
 
 
 # ---------------------------------------------------------------- data access (tuple cursors)
@@ -198,13 +217,20 @@ def _bump_latest(cur, document_id, version) -> None:
 
 # ---------------------------------------------------------------- register
 
-def _fetch_upload(client, bucket: str, key: str, max_bytes: int) -> bytes:
-    head = client.head_object(Bucket=bucket, Key=key)
+def _fetch_upload(client, bucket: str, key: str, max_bytes: int, label: str = "") -> bytes:
+    label = label or "The upload"
+    try:
+        head = client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:  # noqa: BLE001 - botocore ClientError; a missing object is a refusal
+        code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+        if code in ("404", "NoSuchKey", "NotFound"):
+            raise ValueError(f"{label}: the file was not uploaded.") from None
+        raise
     size = int(head.get("ContentLength") or 0)
     if size <= 0:
-        raise ValueError(f"{key}: the uploaded file is empty.")
+        raise ValueError(f"{label}: the uploaded file is empty.")
     if size > max_bytes:
-        raise ValueError(f"{key}: the uploaded file is larger than the {max_bytes} byte limit.")
+        raise ValueError(f"{label}: the uploaded file is larger than the {max_bytes} byte limit.")
     body = client.get_object(Bucket=bucket, Key=key)["Body"]
     try:
         data = body.read(max_bytes + 1)  # never pull more than the limit, whatever head said
@@ -214,15 +240,15 @@ def _fetch_upload(client, bucket: str, key: str, max_bytes: int) -> bytes:
         except Exception:  # noqa: BLE001 - closing is best effort
             pass
     if len(data) > max_bytes:
-        raise ValueError(f"{key}: the uploaded file is larger than the {max_bytes} byte limit.")
+        raise ValueError(f"{label}: the uploaded file is larger than the {max_bytes} byte limit.")
     if len(data) != size:
-        raise ValueError(f"{key}: the uploaded file changed while it was being read.")
+        raise ValueError(f"{label}: the uploaded file changed while it was being read.")
     return data
 
 
 def _check_issued_key(key: str, name: str) -> None:
-    """The key must be exactly one presign_uploads issues for this name: uploads/<uuid4>/<safe name>."""
-    refused = ValueError(f"{key or 'An upload'} is not an agent-policy upload for {name or 'this file'}.")
+    """The key must be exactly one upload_key builds for this name: uploads/<uuid4>/<safe name>."""
+    refused = ValueError(f"{name or 'An upload'} is not an agent-policy upload.")
     if not key.startswith(UPLOAD_PREFIX):
         raise refused
     parts = key[len(UPLOAD_PREFIX):].split("/")
@@ -243,13 +269,13 @@ def _is_hash_violation(exc: Exception) -> bool:
 
 
 def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, Any]:
-    key = str(upload.get("key") or "")
     name = str(upload.get("name") or "")
     revision_of = upload.get("revisionOf")
     if _suffix(name) not in ACCEPTED:
         raise ValueError(f"{name or 'A file'}: only {', '.join(sorted(ACCEPTED))} files are accepted.")
+    key = upload_key(upload.get("uploadId"), name)
     _check_issued_key(key, name)
-    data = _fetch_upload(client, bucket, key, max_bytes)
+    data = _fetch_upload(client, bucket, key, max_bytes, label=name)
     content_hash = hashlib.sha256(data).hexdigest()
     filename = safe_name(name)
     match_name = normalise(name)

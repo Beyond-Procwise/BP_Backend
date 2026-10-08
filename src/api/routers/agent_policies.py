@@ -167,7 +167,7 @@ def preview(body: PreviewBody, p: Principal = Depends(gateway_principal)):
 # ---------------------------------------------------------------- documents and extraction runs
 # Declared before "/{key}" so "documents" and "extraction-runs" are never read as policy ids.
 
-# Files and uploads stay plain dicts: documents.presign_uploads/register_uploads judge each one and
+# Files and uploads stay plain dicts: documents.issue_uploads/register_uploads judge each one and
 # say what is wrong in words, which arrives as the 422 {problems} shape rather than a schema error.
 class UploadUrlsBody(BaseModel):
     files: List[Dict[str, Any]]
@@ -194,10 +194,6 @@ class FixBody(BaseModel):
 def _refused(message: str) -> JSONResponse:
     return JSONResponse(status_code=422, content={"problems": [
         {"field": "files", "code": "upload_refused", "message": message}]})
-
-
-def _outside_uploads(key: str) -> bool:
-    return not str(key or "").startswith(documents.UPLOAD_PREFIX)
 
 
 def _missing_versions(conn, refs: List[DocumentRef]) -> List[str]:
@@ -232,26 +228,22 @@ def _start(kind: str, request_body: Dict[str, Any], actor: str) -> JSONResponse:
 
 @router.post("/documents/upload-urls")
 def upload_urls(body: UploadUrlsBody, p: Principal = Depends(gateway_principal)):
+    """Validates the request and issues an id per file. The GATEWAY signs the S3 PUT (fix round 1):
+    a URL or key in this answer would be withheld by the output scrubber, so neither is ever sent."""
     _require(p, "Buyer", "agent_policy.write", {"intent": "upload_urls", "files": len(body.files)})
     try:
-        uploads = documents.presign_uploads(body.files, actor=p.subject)
+        return {"uploads": documents.issue_uploads(body.files, actor=p.subject)}
     except ValueError as exc:
         return _refused(str(exc))
-    if any(_outside_uploads(u.get("key")) for u in uploads):
-        logger.error("agent-policy presign issued a key outside %s", documents.UPLOAD_PREFIX)
-        return _refused("The upload could not be prepared.")
-    return {"uploads": uploads}
 
 
 @router.post("/documents")
 def register_documents(body: RegisterBody, p: Principal = Depends(gateway_principal)):
+    """uploads: [{uploadId, name, revisionOf?}]; the key is rebuilt from the id and the name."""
     _require(p, "Buyer", "agent_policy.write", {"intent": "register_documents",
-                                                "keys": [str(u.get("key") or "") for u in body.uploads]})
+                                                "uploadIds": [str(u.get("uploadId") or "") for u in body.uploads]})
     if not body.uploads:
         return _refused("No uploads were sent.")
-    for u in body.uploads:
-        if _outside_uploads(u.get("key")):
-            return _refused(f"{u.get('name') or 'An upload'} is not an agent-policy upload.")
     with _conn() as conn:
         try:
             return {"documents": documents.register_uploads(conn, body.uploads, actor=p.subject)}

@@ -11,17 +11,18 @@ from services.agent_policy import documents as d
 
 # ---------------------------------------------------------------- fakes
 
+class _NoSuchKey(Exception):
+    response = {"Error": {"Code": "404"}}
+
+
 class FakeS3:
     def __init__(self):
         self.objects = {}
-        self.presigned = []
         self.head_sizes = {}  # lets a test make head_object disagree with the body
 
-    def generate_presigned_url(self, op, Params, ExpiresIn):
-        self.presigned.append((op, Params, ExpiresIn))
-        return f"https://s3.example/{Params['Key']}?sig=1"
-
     def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise _NoSuchKey()
         return {"ContentLength": self.head_sizes.get(Key, len(self.objects[Key]))}
 
     def get_object(self, Bucket, Key):
@@ -120,23 +121,40 @@ def db():
 
 
 def _put(s3, name, data):
-    key = f"{d.UPLOAD_PREFIX}{uuid.uuid4()}/{d.safe_name(name)}"
-    s3.objects[key] = data
-    return {"key": key, "name": name, "revisionOf": None}
+    upload_id = str(uuid.uuid4())
+    s3.objects[d.upload_key(upload_id, name)] = data
+    return {"uploadId": upload_id, "name": name, "revisionOf": None}
 
 
-# ---------------------------------------------------------------- presign
+def _key(up):
+    return d.upload_key(up["uploadId"], up["name"])
 
-def test_presign_returns_a_put_per_file_under_the_prefix(s3):
-    out = d.presign_uploads([{"name": "a/b/Refund Policy?.pdf", "size": 10, "contentType": "application/pdf"}],
-                            actor="t")
+
+# ---------------------------------------------------------------- issue
+
+def test_issue_returns_an_id_name_and_type_per_file_and_no_url_or_key(s3):
+    out = d.issue_uploads([{"name": "a/b/Refund Policy?.pdf", "size": 10, "contentType": "text/html"}], actor="t")
     assert len(out) == 1
     item = out[0]
-    assert item["key"] == f"agent-policy-documents/uploads/{item['uploadId']}/Refund Policy_.pdf"
-    assert item["headers"] == {"Content-Type": "application/pdf"}
-    op, params, expires = s3.presigned[0]
-    assert op == "put_object" and expires == 900
-    assert params == {"Bucket": "test-bucket", "Key": item["key"], "ContentType": "application/pdf"}
+    assert set(item) == {"uploadId", "safeName", "contentType"}
+    assert str(uuid.UUID(item["uploadId"])) == item["uploadId"] and uuid.UUID(item["uploadId"]).version == 4
+    assert item["safeName"] == "Refund Policy_.pdf"
+    assert item["contentType"] == "application/pdf"  # from the suffix, not what the browser claimed
+    assert d.upload_key(item["uploadId"], "a/b/Refund Policy?.pdf") == \
+        f"agent-policy-documents/uploads/{item['uploadId']}/Refund Policy_.pdf"
+
+
+@pytest.mark.parametrize("name,ctype", [("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                                        ("a.TXT", "text/plain"), ("a.md", "text/markdown")])
+def test_issue_content_type_follows_the_suffix(s3, name, ctype):
+    assert d.issue_uploads([{"name": name, "size": 1}], actor="t")[0]["contentType"] == ctype
+
+
+@pytest.mark.parametrize("upload_id", ["not-a-uuid", uuid.uuid4().hex, str(uuid.uuid4()).upper(), "",
+                                       None, str(uuid.uuid1()), f"{uuid.uuid4()}/../x"])
+def test_upload_key_needs_a_canonical_uuid4(upload_id):
+    with pytest.raises(ValueError, match="not an agent-policy upload"):
+        d.upload_key(upload_id, "Refund.pdf")
 
 
 def test_safe_name_is_capped_at_120():
@@ -146,34 +164,31 @@ def test_safe_name_is_capped_at_120():
 @pytest.mark.parametrize("name", ["policy.exe", "policy.doc", "policy", "policy.PDF.zip"])
 def test_suffix_refused(s3, name):
     with pytest.raises(ValueError, match="accepted"):
-        d.presign_uploads([{"name": name, "size": 10, "contentType": "x"}], actor="t")
-    assert s3.presigned == []
+        d.issue_uploads([{"name": name, "size": 10, "contentType": "x"}], actor="t")
 
 
 def test_uppercase_accepted_suffix_is_fine(s3):
-    assert len(d.presign_uploads([{"name": "P.DOCX", "size": 1, "contentType": "x"}], actor="t")) == 1
+    assert len(d.issue_uploads([{"name": "P.DOCX", "size": 1, "contentType": "x"}], actor="t")) == 1
 
 
 def test_size_refused_over_limit_and_whole_request_refused(s3):
     files = [{"name": "ok.pdf", "size": 10, "contentType": "x"},
              {"name": "big.pdf", "size": 26_214_401, "contentType": "x"}]
     with pytest.raises(ValueError, match="big.pdf"):
-        d.presign_uploads(files, actor="t")
-    assert s3.presigned == []  # the valid one was not presigned either
+        d.issue_uploads(files, actor="t")
 
 
 def test_size_at_limit_accepted_and_empty_refused(s3):
-    assert d.presign_uploads([{"name": "a.txt", "size": 26_214_400, "contentType": "x"}], actor="t")
+    assert d.issue_uploads([{"name": "a.txt", "size": 26_214_400, "contentType": "x"}], actor="t")
     with pytest.raises(ValueError, match="empty"):
-        d.presign_uploads([{"name": "a.txt", "size": 0, "contentType": "x"}], actor="t")
+        d.issue_uploads([{"name": "a.txt", "size": 0, "contentType": "x"}], actor="t")
 
 
 def test_the_21st_file_is_refused(s3):
     files = [{"name": f"f{i}.txt", "size": 1, "contentType": "text/plain"} for i in range(21)]
     with pytest.raises(ValueError, match="At most 20"):
-        d.presign_uploads(files, actor="t")
-    assert s3.presigned == []
-    assert len(d.presign_uploads(files[:20], actor="t")) == 20
+        d.issue_uploads(files, actor="t")
+    assert len(d.issue_uploads(files[:20], actor="t")) == 20
 
 
 def test_missing_limits_refuse(monkeypatch):
@@ -183,7 +198,7 @@ def test_missing_limits_refuse(monkeypatch):
         raise HTTPException(status_code=503, detail="not configured")
     monkeypatch.setattr(d, "intake_limits", refuse)
     with pytest.raises(HTTPException):
-        d.presign_uploads([{"name": "a.txt", "size": 1, "contentType": "x"}], actor="t")
+        d.issue_uploads([{"name": "a.txt", "size": 1, "contentType": "x"}], actor="t")
 
 
 def test_intake_limits_is_the_routers_function(monkeypatch):
@@ -256,14 +271,26 @@ def test_revision_of_unknown_document_is_refused(s3, db):
     assert db.docs == {} and db.autocommit is True
 
 
-def test_register_refuses_keys_outside_the_prefix_and_oversize(s3, db, monkeypatch):
+def test_register_refuses_a_bad_upload_id_and_oversize(s3, db, monkeypatch):
     s3.objects["documents/o.pdf"] = b"x"
     with pytest.raises(ValueError, match="not an agent-policy upload"):
-        d.register_uploads(db, [{"key": "documents/o.pdf", "name": "o.pdf"}], actor="u")
+        d.register_uploads(db, [{"uploadId": "documents", "name": "o.pdf"}], actor="u")
     up = _put(s3, "Big.pdf", b"0123456789")
     monkeypatch.setattr(d, "intake_limits", lambda: (20, 5))
     with pytest.raises(ValueError, match="larger"):
         d.register_uploads(db, [up], actor="u")
+    assert db.docs == {}
+
+
+def test_register_of_an_object_that_was_never_uploaded_is_a_refusal(s3, db):
+    class Missing(Exception):
+        response = {"Error": {"Code": "404"}}
+
+    def head(Bucket, Key):
+        raise Missing()
+    s3.head_object = head
+    with pytest.raises(ValueError, match="Refund.pdf: the file was not uploaded"):
+        d.register_uploads(db, [{"uploadId": str(uuid.uuid4()), "name": "Refund.pdf"}], actor="u")
     assert db.docs == {}
 
 
@@ -352,26 +379,27 @@ def test_list_documents_has_every_version_and_no_text(s3, db, monkeypatch):
 
 def test_key_must_carry_the_issued_name(s3, db):
     up = _put(s3, "Refund Policy.pdf", b"one")
-    up["name"] = "Travel Policy.pdf"  # registering someone else's object under another name
-    with pytest.raises(ValueError, match="not an agent-policy upload"):
+    up["name"] = "Travel Policy.pdf"  # the key is rebuilt from the name, so it names no uploaded object
+    with pytest.raises(ValueError, match="Travel Policy.pdf: the file was not uploaded"):
         d.register_uploads(db, [up], actor="u")
     assert db.docs == {}
 
 
-@pytest.mark.parametrize("segment", ["not-a-uuid", uuid.uuid4().hex, str(uuid.uuid4()).upper(), ""])
-def test_key_middle_segment_must_be_a_uuid(s3, db, segment):
-    key = f"{d.UPLOAD_PREFIX}{segment}/Refund.pdf"
-    s3.objects[key] = b"one"
+@pytest.mark.parametrize("segment", ["not-a-uuid", uuid.uuid4().hex, str(uuid.uuid4()).upper(), "",
+                                     f"{uuid.uuid4()}/../x"])
+def test_upload_id_must_be_a_canonical_uuid4(s3, db, segment):
+    s3.objects[f"{d.UPLOAD_PREFIX}{segment}/Refund.pdf"] = b"one"
     with pytest.raises(ValueError, match="not an agent-policy upload"):
-        d.register_uploads(db, [{"key": key, "name": "Refund.pdf"}], actor="u")
+        d.register_uploads(db, [{"uploadId": segment, "name": "Refund.pdf"}], actor="u")
     assert db.docs == {}
 
 
-def test_key_with_extra_path_segments_refused(s3, db):
-    key = f"{d.UPLOAD_PREFIX}{uuid.uuid4()}/../Refund.pdf"
-    s3.objects[key] = b"one"
-    with pytest.raises(ValueError, match="not an agent-policy upload"):
-        d.register_uploads(db, [{"key": key, "name": "Refund.pdf"}], actor="u")
+def test_refusal_messages_never_carry_the_key(s3, db, monkeypatch):
+    up = _put(s3, "Refund.pdf", b"0123456789")
+    monkeypatch.setattr(d, "intake_limits", lambda: (20, 5))
+    with pytest.raises(ValueError) as err:
+        d.register_uploads(db, [up], actor="u")
+    assert d.UPLOAD_PREFIX not in str(err.value) and up["uploadId"] not in str(err.value)
 
 
 def test_dot_dot_names(s3, db):
@@ -380,7 +408,7 @@ def test_dot_dot_names(s3, db):
     assert out["version"] == 1 and db.versions[(1, 1)]["filename"] == "Refund..pdf"
     # a path in the name is reduced to its basename, so it cannot point anywhere else
     up = _put(s3, "../../etc/Travel.pdf", b"two")
-    assert up["key"].endswith("/Travel.pdf")
+    assert _key(up).endswith("/Travel.pdf")
     assert d.register_uploads(db, [up], actor="u")[0]["title"] == "Travel"
 
 
@@ -439,8 +467,8 @@ def test_other_integrity_errors_still_raise(s3, db, monkeypatch):
 def test_body_longer_than_the_limit_is_refused_even_if_head_said_small(s3, db, monkeypatch):
     monkeypatch.setattr(d, "intake_limits", lambda: (20, 5))
     up = _put(s3, "Refund.txt", b"0123456789")
-    s3.objects[up["key"]] = b"0123456789"
-    s3.head_sizes[up["key"]] = 3  # head under-reports
+    s3.objects[_key(up)] = b"0123456789"
+    s3.head_sizes[_key(up)] = 3  # head under-reports
     reads = []
     real_get = s3.get_object
 

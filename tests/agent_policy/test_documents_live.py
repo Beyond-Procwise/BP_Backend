@@ -1,4 +1,7 @@
-"""One real round trip: presign -> PUT with requests -> register -> document_text, on bp_testdb.
+"""One real round trip: issue -> PUT with requests -> register -> document_text, on bp_testdb.
+
+The gateway signs the PUT in production; here the test signs it itself with boto3 for the
+same key (upload_key), with the content type issue_uploads gave.
 
 Needs PROCWISE_TEST_LIVE_DB=1 and DB_NAME=bp_testdb. The S3 object is deleted afterwards, also
 on failure. The document rows stay (versions are the record); each run uses a unique name so it
@@ -20,7 +23,7 @@ def conn():
         yield c
 
 
-def test_presign_put_register_and_read_back(conn):
+def test_issue_put_register_and_read_back(conn):
     import requests
 
     from services.agent_policy import documents as d
@@ -31,22 +34,26 @@ def test_presign_put_register_and_read_back(conn):
     body = (line * (1024 // len(line) + 1)).encode("utf-8")[:1024]
     assert len(body) == 1024
 
-    upload = d.presign_uploads([{"name": name, "size": len(body), "contentType": "text/plain"}],
-                               actor="test-live")[0]
-    assert upload["key"].startswith(f"agent-policy-documents/uploads/{upload['uploadId']}/")
+    upload = d.issue_uploads([{"name": name, "size": len(body), "contentType": "text/plain"}],
+                             actor="test-live")[0]
+    assert set(upload) == {"uploadId", "safeName", "contentType"} and upload["contentType"] == "text/plain"
+    key = d.upload_key(upload["uploadId"], name)
+    assert key == f"agent-policy-documents/uploads/{upload['uploadId']}/{upload['safeName']}"
     client, bucket = d._s3(), d._bucket()
+    url = client.generate_presigned_url("put_object", ExpiresIn=900, Params={
+        "Bucket": bucket, "Key": key, "ContentType": upload["contentType"]})
     try:
-        put = requests.put(upload["url"], data=body, headers=upload["headers"], timeout=60)
+        put = requests.put(url, data=body, headers={"Content-Type": upload["contentType"]}, timeout=60)
         if put.status_code == 403:
             pytest.fail(f"BLOCKED: S3 refused the PUT (403): {put.text[:500]}")
         assert put.status_code == 200, put.text[:500]
 
-        first = d.register_uploads(conn, [{"key": upload["key"], "name": name, "revisionOf": None}],
+        first = d.register_uploads(conn, [{"uploadId": upload["uploadId"], "name": name, "revisionOf": None}],
                                    actor="test-live")[0]
         assert first["version"] == 1 and first["duplicate"] is False and first["isRevision"] is False
         assert first["title"] == f"Live Probe Policy {tag}"
 
-        again = d.register_uploads(conn, [{"key": upload["key"], "name": name, "revisionOf": None}],
+        again = d.register_uploads(conn, [{"uploadId": upload["uploadId"], "name": name, "revisionOf": None}],
                                    actor="test-live")[0]
         assert again == {**first, "duplicate": True}
 
@@ -58,7 +65,7 @@ def test_presign_put_register_and_read_back(conn):
         assert len(listed) == 1 and [v["version"] for v in listed[0]["versions"]] == [1]
         assert listed[0]["versions"][0]["parsed"] is True
     finally:
-        client.delete_object(Bucket=bucket, Key=upload["key"])
+        client.delete_object(Bucket=bucket, Key=key)
     from botocore.exceptions import ClientError
     with pytest.raises(ClientError):
-        client.head_object(Bucket=bucket, Key=upload["key"])
+        client.head_object(Bucket=bucket, Key=key)
