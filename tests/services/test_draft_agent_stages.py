@@ -139,7 +139,7 @@ def test_the_counter_path_records_the_same_stages(monkeypatch):
     agent._handle_negotiation_counter(ctx, payload)
     a = stored[0]["assurance"]
     assert a["accountability"] == {"initiated_by": "nick@acme.test", "kind": "user"}
-    assert set(a["stage_status"]) == {"classify", "tone", "exemplars", "brief", "judge", "authority"}
+    assert set(a["stage_status"]) == {"classify", "tone", "exemplars", "brief", "judge", "authority", "steering"}
 
 
 def test_the_whole_record_fits_the_capture_row(monkeypatch):

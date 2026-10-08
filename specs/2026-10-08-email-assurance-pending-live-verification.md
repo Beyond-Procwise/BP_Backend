@@ -155,3 +155,23 @@ now **unblocked in storage, not in use**: the text is kept but `learning.py` doe
 | T7 | A draft sent after its own text expired records NO edit distance (NULL, not 1.0) and stores the sent text with no diff. |
 | T8 | `request_text` / `user_instruction` (the person's own words) are still stored unmasked in `bp_draft_capture`; a bank detail typed there is not masked. |
 | T9 | The retention job needs the DELETE grant, so it only works under the writer role or the app login; it was never run against a shared database. |
+
+## Steering: tone, the author's approved style rules, approved exemplars (2026-10-08) - built, quality PENDING a live model
+
+`draft_assurance/steering.py`, `deploy/sql/2026-10-08_email_agent_steering.sql`, and a `directives` block in the tone rules.
+Appended as delimited data to the user message of the three model-writing prompts (counter, `from_decision`, `from_prompt`). The
+RFQ batch, human-written and stub paths are not model-written here and are not steered.
+
+| # | What is true |
+|---|---|
+| S1 | Tone steers only when a variable came from Postgres or the person's own words. A variable that fell back to its default has no data behind it and steers NOTHING (tested). |
+| S2 | Style rules are the draft author's own, status `approved` or `edited` (the edit wins). Nobody's rules are applied to somebody else's email. The author is `requested_by`; an agent-initiated draft has none, so it gets organisation exemplars and no personal rules. |
+| S3 | Exemplars: approved, in date (`review_after`), this family; the author's first, then the organisation's. Cut at a word, and a delimiter inside stored text is stripped so an exemplar cannot close its own block (tested). |
+| S4 | **Config:** `EmailSteeringRules` (`enabled`, three limits). Missing, unreadable, malformed or `enabled: false` = no steering and a prompt identical to before (tested by comparing prompts). The migration's row ships `enabled: true`; it belongs to pack (b) with the tone rules, so it is held back with them. |
+| S5 | Nothing steers a CHECK. A figure copied from an exemplar into a new email is caught by the ordinary grounding check (tested end to end). |
+| S6 | What steered a draft is recorded by id (`bp_draft_capture.steering`, plus a `steering` stage in `stage_status`), never as text. |
+| S7 | A steering failure (store down) is recorded `unavailable` and the draft is written exactly as without steering. |
+| S8 | **PENDING LIVE VERIFICATION:** whether steered drafts are better, whether the model obeys "imitate register, never copy figures", whether 2 exemplars + 5 rules + tone lines is the right amount, and the effect on length/latency. Nothing here has met a real model. |
+| S9 | Reads of the style rules and exemplars use the writer door (the reader role has no access to `email_agent`, and `bp_exemplar_candidate.draft_text` is raw text). |
+| S10 | Existing mailbox-derived style (`services/style`, the system prompt's `_with_style`) is untouched and still applies. The two sources can both be present in one prompt; their interaction is unverified. |
+| S11 | Tone directive wording (19 sentences in the tone rules row) is a proposal for your review, like the rest of that row. |

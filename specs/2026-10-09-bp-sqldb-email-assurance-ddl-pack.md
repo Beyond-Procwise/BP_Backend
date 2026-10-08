@@ -145,3 +145,7 @@ email a person typed (reply panel, report panel, manual passthrough). Same statu
 `capture_v2` and before the roles migration. **`2026-10-09_email_agent_roles.sql` was edited** to grant the writer
 SELECT/INSERT/DELETE on that one table (guarded by `to_regclass`, so it is a no-op where the table is absent); its
 checksum above is therefore stale. Twelve files now; rehearsal still to be re-run, and none of this touches bp_sqldb.
+
+`2026-10-08_email_agent_steering.sql` (+ rollback): `bp_draft_capture.steering` and the `EmailSteeringRules` policy row. Belongs to
+**pack (b)** (tone rules, prompts, steering: held back until live verification). `2026-10-08_email_tone_rules.sql` was also
+edited (a `directives` block). Thirteen files now; checksums above stale for the tone rules; rehearsal to be re-run.

@@ -1645,6 +1645,7 @@ class EmailDraftingAgent(BaseAgent):
                 "Summarise the commercial position, list the key asks as bullet points, and close "
                 "with a clear call to action."
             )
+            user_prompt = self._with_guidance(user_prompt, assurance_run)
 
             model_name = getattr(
                 self.agent_nick.settings,
@@ -1894,6 +1895,7 @@ class EmailDraftingAgent(BaseAgent):
             "Compose a professional procurement email with a clear Subject line and structured body. "
             "Keep the tone courteous and do not expose internal scoring or analysis logic."
         )
+        user_prompt = self._with_guidance(user_prompt, assurance_run)
 
         model_name = getattr(self.agent_nick.settings, "email_compose_model", self.compose_model)
         try:
@@ -2239,6 +2241,7 @@ class EmailDraftingAgent(BaseAgent):
         self,
         context: AgentContext,
         data: Dict[str, Any],
+        assurance_run=None,
     ) -> str:
         round_value = data.get("round") or 1
         try:
@@ -2382,6 +2385,7 @@ class EmailDraftingAgent(BaseAgent):
             strategic_elements=strategic_formatted,
             cta_guidance=cta_guidance,
         )
+        user_prompt = self._with_guidance(user_prompt, assurance_run)
 
         model_name = getattr(
             self.agent_nick.settings,
@@ -2452,6 +2456,7 @@ class EmailDraftingAgent(BaseAgent):
         access: Dict[str, Any] = {}      # filled in as the reader is opened: which control actually applied
         return Env(
             conn_factory=lambda: connections.reader(self.agent_nick, access),
+            store_factory=lambda: connections.writer(self.agent_nick),   # reads approved style rules + exemplars
             access=access,
             policy_engine=getattr(self.agent_nick, "policy_engine", None),
             ask=ask,
@@ -2495,6 +2500,16 @@ class EmailDraftingAgent(BaseAgent):
             slug=slug or da.SLUG, workflow_id=workflow_id, instruction=instruction,
             request=request, classify=classify,
         )
+
+    @staticmethod
+    def _with_guidance(user_prompt: str, run) -> str:
+        """Append the run's steering block (tone, the author's approved style rules, approved exemplars) as data.
+
+        Unchanged when nothing steers: no run, steering off, or nothing applicable.
+        """
+
+        block = run.guidance() if run is not None else ""
+        return f"{user_prompt}\n\n{block}" if block else user_prompt
 
     def _assurance_finalize(self, run, composed_body, recipients, supplier_id, *, repaired: bool) -> Dict[str, Any]:
         return run.finalize(composed_body, recipients, supplier_id, repaired=repaired)
@@ -2633,7 +2648,9 @@ class EmailDraftingAgent(BaseAgent):
             instruction=combined_data.get("user_instruction"),
         )
 
-        email_text = self._draft_intelligent_negotiation_email(context, combined_data)
+        # The steering run is passed only when something steers, so an unsteered call is exactly the old call.
+        steer = {"assurance_run": assurance_run} if assurance_run is not None and assurance_run.guidance() else {}
+        email_text = self._draft_intelligent_negotiation_email(context, combined_data, **steer)
         subject_line, body_text = self._split_subject_and_body(email_text)
         body_content = self._sanitise_generated_body(body_text)
         body_clean = self._clean_body_text(body_content)

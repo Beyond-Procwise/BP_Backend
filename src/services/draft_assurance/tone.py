@@ -31,6 +31,7 @@ class ToneRules:
     overrides: List[Dict[str, Any]]
     version: Any = None
     cues: Optional[str] = None       # regex of words that mark an instruction as a tone request
+    directives: Optional[Dict[str, Dict[str, str]]] = None   # variable -> value -> the sentence it steers the drafter with
 
 
 def parse_rules(rules: Any, version: Any = None) -> ToneRules:
@@ -75,7 +76,20 @@ def parse_rules(rules: Any, version: Any = None) -> ToneRules:
             re.compile(cues)
         except (re.error, TypeError) as exc:
             raise ToneRulesUnavailable(f"bad tone_cues: {exc}") from exc
-    return ToneRules(variables=variables, overrides=list(overrides), version=version, cues=cues)
+    directives = rules.get("directives")
+    if directives is not None:
+        if not isinstance(directives, dict):
+            raise ToneRulesUnavailable("directives must be an object")
+        for var, by_value in directives.items():
+            if var not in variables or not isinstance(by_value, dict):
+                raise ToneRulesUnavailable(f"directives name {var!r}, which is not a tone variable")
+            allowed = {str(a) for a in variables[var]["allowed"]}
+            for value, text in by_value.items():
+                if str(value) not in allowed:
+                    raise ToneRulesUnavailable(f"directive for {var}={value!r}, which is not an allowed value")
+                if not isinstance(text, str) or not text.strip():
+                    raise ToneRulesUnavailable(f"directive for {var}={value!r} is empty")
+    return ToneRules(variables=variables, overrides=list(overrides), version=version, cues=cues, directives=directives)
 
 
 def load_rules(policy_engine: Optional[Any], slug: str = "email_tone_rules") -> ToneRules:
