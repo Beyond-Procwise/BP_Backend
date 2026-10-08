@@ -166,13 +166,30 @@ def _is_unparented(child: dict, known: set[str]) -> bool:
 
 def _is_variation(child: dict) -> bool:
     """A document that changes another one: variation, addendum, CCN."""
-    dt = ensure_vocabulary().document_types.get(child.get("resolved_doc_type"))
-    return (dt.role if dt else child.get("resolved_role")) == "role.variation"
+    return _role_of(child) == "role.variation"
 
 
 def _role_of(child: dict):
     dt = ensure_vocabulary().document_types.get(child.get("resolved_doc_type"))
     return dt.role if dt else child.get("resolved_role")
+
+
+#: Short labels the notes have always used for the five base signals; every other
+#: signal is printed under its own id.
+_NOTE_LABELS = {"declared_reference": "reference", "expected_structure": "structure",
+                "supplier": "supplier", "term_containment": "term",
+                "title_overlap": "title"}
+
+
+def _evidence_clause(signals: list[dict]) -> str:
+    """Every signal in the pair's profile, in profile order, as ``label: status``."""
+    return "; ".join(f"{_NOTE_LABELS.get(d['id'], d['id'])}: {d['status']}"
+                     for d in signals) + ". "
+
+
+def _reference_status(scored: dict):
+    return next((d["status"] for d in scored["signals"]
+                 if d["id"] == "declared_reference"), None)
 
 
 def _is_attachment(child: dict) -> bool:
@@ -480,6 +497,14 @@ def propose_parent_links(limit: Optional[int] = None,
                 # the same as never finding one, so it is counted apart.
                 below_threshold += 1
                 continue
+            if module is _am and _reference_status(best) != "OK":
+                # An amendment is identified by what it amends. Buyer, currency,
+                # law and signatory are shared by all of a supplier's contracts
+                # and cannot say WHICH one, so without a resolving reference
+                # nothing is proposed (spec 4, Revision 1). The score stays as
+                # computed; the gate refuses it.
+                below_threshold += 1
+                continue
 
             runner_up = scored[1][0]["F"] if len(scored) > 1 else None
             separated = runner_up is None or (best["F"] - runner_up) >= separation
@@ -488,7 +513,6 @@ def propose_parent_links(limit: Optional[int] = None,
 
             source_file = _source_file_for(cur, child["contract_id"])
 
-            why = {d["id"]: d["status"] for d in best["signals"]}
             # The scored output reads MISSING for a dangling reference and for an
             # absent one alike. We still hold the raw field, so say which it was.
             claimed = _claimed_references(child)
@@ -507,11 +531,7 @@ def propose_parent_links(limit: Optional[int] = None,
                         f"this {child['resolved_doc_type'].split('.')[-1]} appears to "
                         f"{verb} contract {best_parent['contract_id']} "
                         f"(score {best['F']:.1f}, band {best['decision']}, {routing}). "
-                        f"reference: {why.get('declared_reference')}; "
-                        f"structure: {why.get('expected_structure')}; "
-                        f"supplier: {why.get('supplier')}; "
-                        f"term: {why.get('term_containment')}; "
-                        f"title: {why.get('title_overlap')}. "
+                        + _evidence_clause(best["signals"])
                         + dangling_note
                         + (f"Other candidates: {', '.join(alternatives)}. "
                            if alternatives else "")

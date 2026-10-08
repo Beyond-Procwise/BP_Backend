@@ -55,7 +55,6 @@ from typing import Optional
 
 from src.services import linking_engine as _le
 from src.services.concepts.vocabulary import Vocabulary, ensure_vocabulary
-from ..composition import remap_clusters
 from ..observations import Observation
 
 PROFILE = "contract_hierarchy"

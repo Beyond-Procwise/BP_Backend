@@ -41,7 +41,6 @@ def test_the_profile_is_registered_and_never_reaches_auto_link():
 def test_a_resolving_reference_with_a_generic_title_is_proposed():
     """The defect found 2026-10-08: 'Addendum No. 1' scored 36 under the hierarchy profile."""
     got = am.score(_amend(), _parent())
-    print("F =", got["F"], [(s["id"], s.get("status")) for s in got["signals"]])
     assert got["F"] >= 65.0, got
     assert got["profile"] == "contract_amendment"
     ids = [s["id"] for s in got["signals"]]
@@ -51,20 +50,17 @@ def test_a_resolving_reference_with_a_generic_title_is_proposed():
 def test_a_matching_buyer_strengthens_it():
     plain = am.score(_amend(), _parent())["F"]
     with_buyer = am.score(_amend(buyer_org_id="B-1"), _parent(buyer_org_id="B-1"))["F"]
-    print("plain", plain, "with_buyer", with_buyer)
     assert with_buyer > plain
 
 
 def test_no_reference_is_not_proposed():
     """Supplier alone cannot say WHICH contract is being amended."""
     got = am.score(_amend(parent_agreement_ref=None, _ref_resolves=False), _parent())
-    print("no-ref F =", got["F"])
     assert got["F"] < 65.0
 
 
 def test_a_reference_to_a_different_real_contract_is_a_conflict():
     got = am.score(_amend(parent_agreement_ref="SOW-9", _ref_resolves=True), _parent())
-    print("conflict F =", got["F"])
     assert got["F"] < 50.0
 
 

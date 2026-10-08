@@ -41,15 +41,19 @@ CASES = {
 AMENDMENT_TYPES = {"variation", "addendum", "ccn"}
 
 
-def _insert(made, cid, dtype, title, sup, start, end, role, ref=None):
+def _insert(made, cid, dtype, title, sup, start, end, role, ref=None, **extra):
+    """``extra`` are optional further bp_contracts columns (buyer_org_id, currency, ...)."""
     made.append(cid)
+    cols = {"contract_id": cid, "contract_title": title, "supplier_id": sup,
+            "contract_start_date": start, "contract_end_date": end,
+            "resolved_doc_type": dtype, "resolved_role": role,
+            "type_agreement": "refined", "parent_agreement_ref": ref, **extra}
+    names = list(cols)
     with get_conn() as c:
         c.cursor().execute(
-            """INSERT INTO proc.bp_contracts (contract_id, contract_title, supplier_id,
-                   contract_start_date, contract_end_date, resolved_doc_type, resolved_role,
-                   type_agreement, parent_agreement_ref)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,'refined',%s)""",
-            (cid, title, sup, start, end, dtype, role, ref))
+            f"INSERT INTO proc.bp_contracts ({', '.join(names)}) "
+            f"VALUES ({', '.join(['%s'] * len(names))})",
+            [cols[n] for n in names])
 
 
 def _proposal(cid):
@@ -106,7 +110,6 @@ def test_no_reference_is_proposed_only_for_the_types_identified_by_supplier_and_
         assert row and row[0] == P
     else:
         assert row is None, "an amendment or attachment with no reference is not guessed a parent"
-        print(name, "no_ref counters", r["considered"], r["no_candidate"], r["below_threshold"])
         assert r["considered"]["with_structure"] == 1, r
         assert r["below_threshold"] == 1, r
 
@@ -148,3 +151,58 @@ def test_two_equal_parents_are_contested(world, name):
     _insert(world, C, ct, title, sup, "2026-03-01", "2026-09-30", role)
     r = CL.propose_parent_links(contract_id=C)
     assert r["contested"] == 1 and r["proposed"] == 0
+
+
+_CORROBORATORS = dict(buyer_org_id="BUYER-1", currency="GBP", governing_law="England and Wales",
+                      contract_signatory_name="Jane Smith")
+
+
+@pytest.mark.parametrize("name", sorted(AMENDMENT_TYPES))
+def test_an_amendment_naming_nothing_is_not_proposed_however_much_else_matches(world, name):
+    """Buyer, currency, law and signatory are shared by all of a supplier's contracts, so
+    they cannot say WHICH contract is amended (spec 4, Revision 1). The score stays honest
+    (it can clear the floor); the gate refuses it."""
+    ct, pt, _wrong, title, role, ptitle = CASES[name]
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, pt, ptitle, sup, "2026-01-01", "2027-12-31", "role.master", **_CORROBORATORS)
+    _insert(world, C, ct, title, sup, "2026-03-01", "2026-09-30", role, **_CORROBORATORS)
+    r = CL.propose_parent_links(contract_id=C)
+    assert _proposal(C) is None, r
+    assert r["below_threshold"] == 1 and r["proposed"] == 0, r
+    assert r["considered"]["with_candidates"] == 1, r
+
+
+@pytest.mark.parametrize("name", sorted(AMENDMENT_TYPES))
+def test_the_same_amendment_naming_its_parent_is_proposed(world, name):
+    ct, pt, _wrong, title, role, ptitle = CASES[name]
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, pt, ptitle, sup, "2026-01-01", "2027-12-31", "role.master", **_CORROBORATORS)
+    _insert(world, C, ct, title, sup, "2026-03-01", "2026-09-30", role, ref=P, **_CORROBORATORS)
+    CL.propose_parent_links(contract_id=C)
+    row = _proposal(C)
+    assert row and row[0] == P
+
+
+def test_the_notes_show_the_evidence_that_scored_an_amendment(world):
+    ct, pt, _w, title, role, ptitle = CASES["addendum"]
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, pt, ptitle, sup, "2026-01-01", "2027-12-31", "role.master", **_CORROBORATORS)
+    _insert(world, C, ct, title, sup, "2026-03-01", "2026-09-30", role, ref=P, **_CORROBORATORS)
+    CL.propose_parent_links(contract_id=C)
+    notes = _proposal(C)[1]
+    assert "reference: OK" in notes and "buyer: OK" in notes, notes
+    assert "structure:" not in notes and "title:" not in notes and "None" not in notes, notes
+
+
+def test_the_notes_show_a_matching_buyer_on_a_hierarchy_proposal(world):
+    ct, pt, _w, title, role, ptitle = CASES["sow"]
+    k = uuid.uuid4().hex[:6].upper()
+    sup, P, C = f"S-{k}", f"P-{k}", f"C-{k}"
+    _insert(world, P, pt, ptitle, sup, "2026-01-01", "2027-12-31", "role.master", **_CORROBORATORS)
+    _insert(world, C, ct, title, sup, "2026-03-01", "2026-09-30", role, ref=P, **_CORROBORATORS)
+    CL.propose_parent_links(contract_id=C)
+    notes = _proposal(C)[1]
+    assert "buyer: OK" in notes and "structure:" in notes and "title:" in notes, notes
