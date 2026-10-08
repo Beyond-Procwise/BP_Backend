@@ -159,10 +159,10 @@ def test_record_draft_swallows_a_database_failure():
 
 def _captured_row(text=DRAFT, captures=2):
     return (7, capture.plain(text), datetime.now(timezone.utc), captures,
-            json.dumps(ASSURANCE["facts"]), json.dumps(ASSURANCE["reasoned"]))
+            json.dumps(ASSURANCE["facts"]), json.dumps(ASSURANCE["reasoned"]), None)     # text_expired_at
 
 
-def test_record_sent_stores_a_score_and_changed_figures_but_not_the_sent_text():
+def test_record_sent_without_a_retention_period_stores_a_score_and_changed_figures_but_not_the_sent_text():
     cur = Cur(select_row=_captured_row())
     sent = DRAFT.replace("Thank you for your offer", "Cheers regarding").replace("47.50", "45")
     assert capture.record_sent(Conn(cur), "U-1", sent) == 99

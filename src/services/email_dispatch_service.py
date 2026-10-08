@@ -512,12 +512,23 @@ class EmailDispatchService:
                 # What was actually sent, measured against what the model drafted. Only a
                 # score and the changed figures are kept; record_sent never raises.
                 try:
-                    from src.services.draft_assurance import capture
+                    from src.services.draft_assurance import capture, retention
 
+                    # The governed period decides whether the sent text is kept at all: None (unreadable
+                    # or unset) means only the score and changed figures are stored, never the words.
+                    try:
+                        from src.services import rbac
+
+                        keep_days = retention.raw_text_days(
+                            getattr(self.agent_nick, "policy_engine", None) or rbac.policy_engine()
+                        )
+                    except Exception:  # noqa: BLE001
+                        keep_days = None
                     capture.record_sent(
                         conn, unique_id, body,
                         reviewed_by=(getattr(gate, "evidence", None) or {}).get("reviewed_by"),
                         sent_by=getattr(principal, "subject", None),
+                        retention_days=keep_days,
                     )
                 except Exception:  # pragma: no cover - bookkeeping only
                     self.logger.exception("send outcome capture failed for %s", unique_id)

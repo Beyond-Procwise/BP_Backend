@@ -138,3 +138,20 @@ because it cannot reach a supplier by itself:
 empty. Setting either to `warn` / a real intent would let an un-assured body reach a supplier, and this decision would have
 to be reopened. Also, the stub text is still shown to anyone who reads the negotiation agent's `drafts` output; it carries
 no assurance record and should not be presented to a reviewer as a checked draft.
+
+## Sent text and diffs (decision 3, 2026-10-08) - built, not applied
+
+`2026-10-08_email_agent_sent_text.sql` + `draft_assurance/retention.py`. Item 20 above (the learning job's blocked rules) is
+now **unblocked in storage, not in use**: the text is kept but `learning.py` does not read it yet.
+
+| # | What is true |
+|---|---|
+| T1 | On a successful send, with a retention period, the plain text that went out and a word-level diff from the model's draft are stored in `email_agent.bp_draft_sent_text` (one row per send). The diff is complete: `capture.apply_diff(draft, diff)` rebuilds the sent text exactly (tested). |
+| T2 | **Access:** only `email_agent_writer` (SELECT/INSERT/DELETE on that table alone). The reader and PUBLIC have nothing (tested as real logins). No API returns it: `to_view` carries neither the sent text nor the draft (tested). Until the dedicated logins exist the app's own login is used, so this restriction is NOT in force in a running system yet. |
+| T3 | **Retention:** `EmailTextRetention.raw_text_days` (policy row, default 90). Unreadable, missing, zero or negative = **no raw text is stored** and the purge refuses. A job (`email-text-retention`, ON unless `EMAIL_TEXT_RETENTION_ENABLED=0`, every 360 min) deletes sent text older than the period and blanks the model's draft text, keeping the row, hash, facts, scores and classes. |
+| T4 | **Derived features are kept, with no expiry.** No derived-retention period is implemented, because deleting capture/outcome rows would break the learning tables that reference them. If you want one it needs its own ruling. |
+| T5 | **Bank details are masked before anything is stored** (IBAN, UK sort code, "account number ..."), in the sent text, the diff, the model's draft and the changed-figure columns. Found and fixed while testing: the changed-figure columns had been storing an account number as a "figure". This is pattern-based: a bank detail in an unusual format would not be caught. |
+| T6 | **Not redacted:** names, phone numbers and email addresses in signatures, and any quoted thread history the body carried. They are stored as sent, under T2/T3 only. A real PII pass is not built; `style/redaction.py` over-redacts figures and would destroy the diff, so it is not used here. |
+| T7 | A draft sent after its own text expired records NO edit distance (NULL, not 1.0) and stores the sent text with no diff. |
+| T8 | `request_text` / `user_instruction` (the person's own words) are still stored unmasked in `bp_draft_capture`; a bank detail typed there is not masked. |
+| T9 | The retention job needs the DELETE grant, so it only works under the writer role or the app login; it was never run against a shared database. |

@@ -139,3 +139,9 @@ this pack is used; the counts above become eleven of eleven.
 
 `2026-10-08_email_family_human_written.sql` (+ `_rollback.sql`) is the same shape for the `human_written` family: an
 email a person typed (reply panel, report panel, manual passthrough). Same status: eval database only, pack (a).
+
+`2026-10-08_email_agent_sent_text.sql` (+ `_rollback.sql`) adds `email_agent.bp_draft_sent_text` (raw text, writer-only),
+`bp_draft_capture.text_expired_at`, and the `EmailTextRetention` policy row (`raw_text_days: 90`). It sits after
+`capture_v2` and before the roles migration. **`2026-10-09_email_agent_roles.sql` was edited** to grant the writer
+SELECT/INSERT/DELETE on that one table (guarded by `to_regclass`, so it is a no-op where the table is absent); its
+checksum above is therefore stale. Twelve files now; rehearsal still to be re-run, and none of this touches bp_sqldb.
