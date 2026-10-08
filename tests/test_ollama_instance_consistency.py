@@ -215,3 +215,32 @@ def test_no_module_outside_ollama_client_sets_a_load_affecting_option():
     assert not offenders, (
         "these set an option Ollama keys a loaded runner on, outside the one module that "
         "owns them — each one costs a full reload of the model:\n  " + "\n  ".join(offenders))
+
+
+def test_default_request_body_is_unchanged_without_use_load_options(monkeypatch):
+    """Opt-in only: a caller that does not pass use_load_options sends exactly this."""
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", model="m", retries=1)
+    assert seen["payload"] == {
+        "model": "m",
+        "prompt": "hello",
+        "stream": False,
+        "keep_alive": oc.KEEP_ALIVE,
+        "options": {"temperature": 0, "num_predict": 8192, **oc.gpu_options()},
+    }
+    assert "num_ctx" not in seen["payload"]["options"]
+
+
+def test_use_load_options_sends_the_shared_runner_set(monkeypatch):
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", model="m", retries=1, use_load_options=True)
+    opts = seen["payload"]["options"]
+    shared = oc.load_options()
+    assert opts["num_ctx"] == shared["num_ctx"]
+    for key, value in shared.items():
+        assert opts[key] == value
+    assert opts["temperature"] == 0 and opts["num_predict"] == 8192

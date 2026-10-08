@@ -270,6 +270,7 @@ def _ollama_generate(
     think: Optional[bool] = None,
     format: Optional[Any] = None,
     base_url: Optional[str] = None,
+    use_load_options: bool = False,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -289,6 +290,11 @@ def _ollama_generate(
 
     ``base_url`` overrides OLLAMA_BASE_URL for one call (the translation
     provider's own endpoint); the GPU semaphore is still shared.
+
+    ``use_load_options=True`` merges load_options() into the request options, so the call
+    matches the shared runner (num_ctx/num_batch/num_thread/num_gpu) and does not trigger
+    a reload. Off by default: other callers' request bodies are unchanged. An explicit
+    ``num_gpu`` pin still wins over the shared one.
     """
     model = model or DEFAULT_MODEL
     options: Dict[str, Any] = {
@@ -301,6 +307,8 @@ def _ollama_generate(
         options["num_gpu"] = num_gpu
     else:
         options.update(gpu_options())
+    if use_load_options:
+        options.update(load_options(include_gpu=num_gpu is None))
     if stop:
         options["stop"] = stop
     payload: Dict[str, Any] = {
@@ -632,8 +640,16 @@ def foreground_busy() -> bool:
     return _foreground_count > 0
 
 
-def ollama_generate(prompt: str, *, background: bool = False, **kwargs: Any) -> Optional[str]:
+def ollama_generate(
+    prompt: str,
+    *,
+    background: bool = False,
+    use_load_options: bool = False,
+    **kwargs: Any,
+) -> Optional[str]:
     global _foreground_count
+    if use_load_options:
+        kwargs["use_load_options"] = True
     if background:
         return _ollama_generate(prompt, **kwargs)
     with _foreground_lock:
