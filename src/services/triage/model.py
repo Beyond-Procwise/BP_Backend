@@ -102,7 +102,7 @@ class Doc:
     po_id: Optional[str] = None           # invoice -> PO number on its header
     quote_ref: Optional[str] = None       # PO -> quote
     contract_ref: Optional[str] = None    # quote/PO/invoice -> the contract it cites
-    parent_contract_id: Optional[str] = None   # contract -> the contract it amends
+    parent_contract_id: Optional[str] = None   # contract -> its parent: what it sits under, amends, or attaches to (a family pointer)
     revision: Optional[int] = None        # PO revision (None = unstated)
     approval: Optional[str] = None        # PO approval_status (None = unstated)
     confidence: Optional[float] = None    # 0-1; None = not reported

@@ -197,6 +197,18 @@ def _link_type(child: dict) -> str:
     return "child_of"
 
 
+def link_type_of(contract_id: str) -> Optional[str]:
+    """child_of / amends / attaches_to for a stored contract, or None if unknown."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT resolved_doc_type, resolved_role FROM proc.bp_contracts "
+                    "WHERE contract_id = %s", (contract_id,))
+        row = cur.fetchone()
+    if not row or not row[0]:
+        return None
+    return _link_type({"resolved_doc_type": row[0], "resolved_role": row[1]})
+
+
 def _wanted_parent_types(child: dict) -> set[str]:
     """The structures this child may sit under. Two paths, on purpose.
 
