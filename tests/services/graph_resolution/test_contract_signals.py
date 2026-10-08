@@ -33,11 +33,26 @@ def test_payment_terms_differing_is_neutral_not_a_conflict():
     assert cs.cmp_payment_terms({}, {"payment_terms": "Net 60"}) == (0.5, "MISSING")
 
 
-def test_governing_law_falls_back_to_jurisdiction():
+def test_governing_law_compares_like_with_like():
     assert cs.cmp_governing_law({"governing_law": "England"}, {"governing_law": "england"}) == (1.0, "OK")
-    assert cs.cmp_governing_law({"governing_law": "England"}, {"jurisdiction": "England"}) == (1.0, "OK")
     assert cs.cmp_governing_law({"governing_law": "England"}, {"governing_law": "Delaware"}) == (0.0, "CONFLICT")
     assert cs.cmp_governing_law({"governing_law": "England"}, {}) == (0.5, "MISSING")
+    # Neither side states a law: the jurisdictions are compared with each other.
+    assert cs.cmp_governing_law({"jurisdiction": "UK"}, {"jurisdiction": "uk"}) == (1.0, "OK")
+    assert cs.cmp_governing_law({"jurisdiction": "UK"}, {"jurisdiction": "France"}) == (0.0, "CONFLICT")
+    # A law on one side and only a jurisdiction on the other are different facts.
+    assert cs.cmp_governing_law({"governing_law": "England"}, {"jurisdiction": "England"}) == (0.5, "MISSING")
+
+
+def test_a_jurisdiction_is_never_compared_with_a_governing_law():
+    """Live 2026-10-08, OF-2026-0211 vs FA-2026-0077 on bp_testdb: the order form
+    states only a jurisdiction, the framework both. Reading the child's
+    jurisdiction against the parent's law called 'United Kingdom' vs 'England and
+    Wales' a CONFLICT, though the two documents state the SAME jurisdiction."""
+    order_form = {"governing_law": None, "jurisdiction": "United Kingdom"}
+    framework = {"governing_law": "England and Wales", "jurisdiction": "United Kingdom"}
+    assert cs.cmp_governing_law(order_form, framework) == (1.0, "OK")
+    assert cs.cmp_governing_law(framework, order_form) == (1.0, "OK")
 
 
 def test_value_rollup_is_necessary_not_sufficient():

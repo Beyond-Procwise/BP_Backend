@@ -62,18 +62,21 @@ def cmp_payment_terms(src, tgt) -> tuple[float, str]:
     return (1.0, "OK") if _eq(a, b) else (0.5, "WEAK")
 
 
-def _law(row) -> Optional[str]:
-    for field in ("governing_law", "jurisdiction"):
-        if _has(row.get(field)):
-            return row[field]
-    return None
-
-
 def cmp_governing_law(src, tgt) -> tuple[float, str]:
-    a, b = _law(src), _law(tgt)
-    if a is None or b is None:
-        return 0.5, "MISSING"
-    return (1.0, "OK") if _eq(a, b) else (0.0, "CONFLICT")
+    """Like with like: a governing law against a governing law, else a
+    jurisdiction against a jurisdiction. A law on one side and only a
+    jurisdiction on the other are different facts and say nothing.
+
+    Picking each side's first stated field independently compared the order
+    form OF-2026-0211's jurisdiction ('United Kingdom') with its framework's
+    governing law ('England and Wales') and called it a CONFLICT, though both
+    documents state the same jurisdiction (live, bp_testdb, 2026-10-08).
+    """
+    for field in ("governing_law", "jurisdiction"):
+        a, b = src.get(field), tgt.get(field)
+        if _has(a) and _has(b):
+            return (1.0, "OK") if _eq(a, b) else (0.0, "CONFLICT")
+    return 0.5, "MISSING"
 
 
 def cmp_value_rollup(src, tgt) -> tuple[float, str]:
