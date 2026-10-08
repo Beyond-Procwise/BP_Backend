@@ -23,6 +23,7 @@ REDACTED_SIGNALS = frozenset({"bank_account", "bank_iban", "bank_swift"})
 #: edges never reach auto_link, whatever F says, until a labelled sample exists.
 UNCALIBRATED_PROFILES = frozenset({
     "contract_coverage", "contract_succession", "contract_hierarchy",
+    "contract_amendment", "contract_attachment",
     "supplier_identity", "item_equivalence",
 })
 
