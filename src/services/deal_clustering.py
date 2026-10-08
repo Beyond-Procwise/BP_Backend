@@ -85,22 +85,26 @@ def _corr(matrix: dict, qa: str, qb: str) -> float:
 def complete_linkage(bids: list[dict], matrix: dict, threshold: float = THRESHOLD) -> list[list[dict]]:
     """Agglomerative clustering under COMPLETE linkage: merge two clusters only when
     EVERY cross-pair clears the threshold. Single linkage was measured and rejected —
-    one 0.626 pair chained IT-MSA and Platform into a six-supplier blob."""
-    clusters = [[b] for b in bids]
-    changed = True
-    while changed:
-        changed = False
+    one 0.626 pair chained IT-MSA and Platform into a six-supplier blob.
+
+    Each step merges the CLOSEST qualifying pair (highest minimum cross-pair
+    correlation), ties broken on quote ids. Merging the first qualifying pair met
+    let input order decide: a bid correlated with two rivals that do not correlate
+    with each other joined whichever the unordered batch fetch listed first."""
+    clusters = sorted(([b] for b in bids), key=lambda c: c[0]["quote_id"])
+    while True:
+        best = None
         for i in range(len(clusters)):
             for j in range(i + 1, len(clusters)):
-                if all(_corr(matrix, x["quote_id"], y["quote_id"]) >= threshold
-                       for x in clusters[i] for y in clusters[j]):
-                    clusters[i] = clusters[i] + clusters[j]
-                    del clusters[j]
-                    changed = True
-                    break
-            if changed:
-                break
-    return clusters
+                link = min(_corr(matrix, x["quote_id"], y["quote_id"])
+                           for x in clusters[i] for y in clusters[j])
+                if link >= threshold and (best is None or link > best[0]):
+                    best = (link, i, j)
+        if best is None:
+            return clusters
+        _, i, j = best
+        clusters[i] = sorted(clusters[i] + clusters[j], key=lambda b: b["quote_id"])
+        del clusters[j]
 
 
 def cluster_confidence(cluster: list[dict], matrix: dict) -> float:
@@ -325,9 +329,14 @@ def _explicit_award(bid: dict, pos: list[dict], po_lines: dict) -> Optional[str]
 
 
 def _fmt_name(cluster: list[dict], quote_lines: dict) -> str:
-    """Human-readable proposed name from the shared requirement description."""
-    first = cluster[0]["quote_id"]
-    lines = quote_lines.get(first) or [{}]
+    """Human-readable proposed name from the shared requirement description.
+
+    Read from the anchor bid's first line in document order. Neither the cluster's
+    member order nor the line rows' order is fixed (the batch fetch has no ORDER BY),
+    so taking "the first of each" named one upload differently on every run."""
+    anchor = min(b["quote_id"] for b in cluster)
+    lines = sorted(quote_lines.get(anchor) or [{}],
+                   key=lambda l: (l.get("line_number") is None, l.get("line_number") or 0))
     desc = (lines[0].get("item_description") or "Sourcing event")[:60]
     return f"{desc} — {len(cluster)} bidders"
 

@@ -275,3 +275,54 @@ def test_earlier_rounds_are_not_counted_as_bidders():
     for p in res["proposals"]:
         bidders = [m for m in p["members"] if m["role"] in ("anchor_quote", "competing_quote")]
         assert p["proposed_name"].endswith(f"{len(bidders)} bidders")
+
+
+def test_proposed_name_does_not_depend_on_row_order():
+    # The batch fetch has no fixed order, so the same upload came back named after a
+    # Meridian line one run and an Apex line the next. The name must be a function of
+    # the documents, not of the order the database happened to return them in.
+    # Like the Vantage upload: every bid opens with its own line (a role only that
+    # supplier names) ahead of the shared requirement, and lines carry line_number.
+    import random
+
+    def numbered(quote_lines):
+        out = {}
+        for qid, ls in quote_lines.items():
+            own = {"item_description": f"Lead role named by {qid.split()[0]}",
+                   "quantity": 1, "unit_price": 1.0, "line_number": 1}
+            out[qid] = [own] + [dict(l, line_number=i + 2) for i, l in enumerate(ls)]
+        return out
+
+    kw = dict(purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(), invoices=gb.invoices())
+    seen = set()
+    rng = random.Random(7)
+    for _ in range(8):
+        quotes = gb.quotes(); rng.shuffle(quotes)
+        lines = {k: rng.sample(v, len(v)) for k, v in numbered(gb.quote_lines()).items()}
+        res = dc.cluster_batch(quotes=quotes, quote_lines=lines, **kw)
+        seen.add(tuple(sorted(p["proposed_name"] for p in res["proposals"])))
+    assert len(seen) == 1, seen
+
+
+def test_grouping_does_not_depend_on_row_order():
+    # ORB correlates with both NXF and CPS, which do not correlate with each other.
+    # Merging "the first qualifying pair met" let input order decide ORB's rival; the
+    # closest pair must win instead, whatever order the batch arrives in.
+    import random
+    kw = dict(purchase_orders=gb.purchase_orders(), po_lines=gb.po_lines(), invoices=gb.invoices())
+
+    def own_first_line(quote_lines):
+        return {k: [{"item_description": f"Lead role named by {k.split()[0]}",
+                     "quantity": 1, "unit_price": 1.0}] + v for k, v in quote_lines.items()}
+
+    def groups(res):
+        return tuple(sorted(tuple(sorted(m["doc_pk"] for m in p["members"]
+                                         if m["role"] in ("anchor_quote", "competing_quote")))
+                            for p in res["proposals"]))
+    seen = set()
+    rng = random.Random(7)
+    for _ in range(8):
+        quotes = gb.quotes(); rng.shuffle(quotes)
+        seen.add(groups(dc.cluster_batch(quotes=quotes,
+                                         quote_lines=own_first_line(gb.quote_lines()), **kw)))
+    assert len(seen) == 1, seen
