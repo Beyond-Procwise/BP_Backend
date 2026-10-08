@@ -992,6 +992,15 @@ def dispatch_document(
     # on every path would fall back to "context_layer" regardless of what actually
     # produced it.
     _parser_snapshot = _serialize_parsed(parsed)
+    # Commercial terms (payment terms, validity, surcharges...) as the document states them.
+    # Not line items: read as lines they became amountless "lines" (engineered/terms_extractor).
+    try:
+        from src.services.extraction.engineered.terms_extractor import terms_from_parsed
+        _terms = terms_from_parsed(parsed)
+        if _terms:
+            _parser_snapshot["commercial_terms"] = _terms
+    except Exception:  # noqa: BLE001 -- terms are additive; never block extraction on them
+        log.warning("commercial terms capture failed", exc_info=True)
     try:
         from src.services.extraction import provenance as _prov
         _parser_snapshot["_field_provenance"] = _prov.snapshot(columns, candidates)
