@@ -128,3 +128,11 @@ What the rehearsal found (all fixed): production's `supplier_response` and `work
   exercised (one function, `proc.bp_agent_actions_append_only`, was not part of the copy; the guard does not call it).
 - **A real model.** Classifier accuracy, planner quality and judge calibration remain unverified (checklist section 1).
 - **Your approvals.** The tone rules and the three prompts are applied by files 6 and 7 but are still awaiting your review.
+
+## Addendum 2026-10-08: a tenth file, not yet rehearsed
+
+`2026-10-08_email_family_rfq_batch.sql` (+ `_rollback.sql`) adds the `rfq_batch` family row (mode `shadow`, same shape as
+`free_prompt`; INSERT one row into `proc.bp_policy`). It was added AFTER the rehearsal above and has run only in the
+throwaway eval database (apply, roll back, re-apply: green), NOT against the restored bp_sqldb copy. Under the 2026-10-08
+ruling it belongs in pack (a) (schema, capture, validators in shadow). Re-run `python -m evals.email.rehearsal` before
+this pack is used; the counts above become ten of ten.

@@ -1002,6 +1002,13 @@ class EmailDraftingAgent(BaseAgent):
             content = f"{content}{negotiation_section_html}"
         body = self._clean_body_text(content)
 
+        # Assurance (shadow): checked on the message itself, before the hidden marker and thread history
+        # are added -- their ids and dates are not the buyer's claims. Never changes the body.
+        rfq_checked_text = self._html_to_plain_text(body)
+        rfq_assurance = self._rfq_assurance_begin(
+            data, supplier_id=supplier_id, profile=profile, workflow_id=workflow_id,
+        )
+
         body, marker_token = attach_hidden_marker(
             body,
             supplier_id=supplier_id,
@@ -1109,7 +1116,11 @@ class EmailDraftingAgent(BaseAgent):
         if negotiation_message_plain:
             metadata.setdefault("negotiation_message", negotiation_message_plain)
 
+        metadata["intent"] = "RFQ_BATCH"
         draft["metadata"] = metadata
+        draft["assurance"] = self._rfq_assurance_finish(
+            rfq_assurance, rfq_checked_text, recipients, supplier_id,
+        )
 
         supplier_state = updated_state.get("suppliers", {}).get(supplier_key, {})
         supplier_state = dict(supplier_state) if isinstance(supplier_state, dict) else {}
@@ -2483,6 +2494,42 @@ class EmailDraftingAgent(BaseAgent):
 
     def _assurance_finalize(self, run, composed_body, recipients, supplier_id, *, repaired: bool) -> Dict[str, Any]:
         return run.finalize(composed_body, recipients, supplier_id, repaired=repaired)
+
+    RFQ_FAMILY_SLUG = "email_family_rfq_batch"
+
+    def _rfq_assurance_begin(self, data: Dict[str, Any], *, supplier_id: Any, profile: Any, workflow_id: Optional[str]):
+        """Begin the RFQ family's run for one supplier. Returns ``(run, None)`` or ``(None, reason)``; never raises.
+
+        The buyer's own deadline and the upstream supplier profile are CARRIED (reported unverified, not
+        failed); the supplier contact is read from Postgres. The batch must go out whatever happens here.
+        """
+
+        try:
+            payload = dict(data)
+            payload["supplier_id"] = supplier_id
+            payload["supplier_profile"] = profile
+            run = self._assurance_prepare(
+                payload, workflow_id=workflow_id, slug=self.RFQ_FAMILY_SLUG,
+                user_id=data.get("requested_by"),
+            )
+            return run, None
+        except Exception as exc:  # noqa: BLE001 - one supplier's fault must not lose the batch
+            logger.exception("RFQ assurance could not begin for supplier %s", supplier_id)
+            return None, f"{type(exc).__name__}: {exc}"
+
+    def _rfq_assurance_finish(self, began, checked_text: str, recipients, supplier_id: Any) -> Dict[str, Any]:
+        """The assurance record for one RFQ draft. Shadow: records, never repairs, never edits the body."""
+
+        run, error = began
+        if run is None:
+            return {"family_id": "rfq_batch", "status": "unassured", "reason": error or "not run",
+                    "violations": [], "ready": False}
+        try:
+            return self._assurance_finalize(run, checked_text, recipients, supplier_id, repaired=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("RFQ assurance could not finish for supplier %s", supplier_id)
+            return {"family_id": "rfq_batch", "status": "unassured",
+                    "reason": f"{type(exc).__name__}: {exc}", "violations": [], "ready": False}
 
     def _assure_composed(self, run, body: str):
         """One repair pass over ``body`` if it fails a check. Returns ``(body, repaired)``."""

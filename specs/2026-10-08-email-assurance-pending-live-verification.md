@@ -89,3 +89,18 @@ DONE since this was written: read-only roles + connection doors, and the bp_sqld
 
 Written, NOT applied anywhere: `2026-10-08_email_tone_rules.sql`, `2026-10-08_email_assurance_prompts.sql`.
 Each has a `_rollback.sql`.
+
+## RFQ batch wrap (2026-10-08, shadow)
+
+The RFQ batch (`_render_supplier_draft`) now carries a per-supplier assurance record (family `rfq_batch`, config row in
+`deploy/sql/2026-10-08_email_family_rfq_batch.sql`, NOT applied anywhere). It records and never changes the body, makes no
+model call (the body is templated; the family has no rubric so the judge reports unavailable), and a fault on one supplier
+leaves that draft `unassured` without losing the batch. What it does NOT do, and why it matters for criteria 1-2:
+
+| # | Limit |
+|---|---|
+| R1 | An RFQ's deadline, items and quantities come from the request and upstream supplier profiles, not a Postgres row. They are CARRIED: numeric figures are listed under `unverified_figures`; nothing confirms them. |
+| R2 | **Shared gap (all families):** a carried DATE is accepted but NOT listed under `unverified_figures` (only numbers are). So "flagged user_asserted" (criterion 1) is not met for dates anywhere. Needs a decision on whether to list dates too. |
+| R3 | Quantities/items for an RFQ may exist in Postgres (requisition or PO lines); the family reads only the supplier contact. Adding a fact source is config, but the right table needs your ruling. |
+| R4 | No repair pass and no judge for RFQs (shadow, templated). Model-composed RFQ bodies (`_render_dynamic_body`) are checked but not repaired. |
+| R5 | One assurance read per supplier, in the batch's worker threads: N suppliers = N small reads. Not load-tested. |
