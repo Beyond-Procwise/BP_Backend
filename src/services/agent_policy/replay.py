@@ -5,32 +5,37 @@ session is NOT resumed (design §3.8): the tool runs by name with its stored arg
 the same ``agentnick_control.build_tools`` the agent used, and the outcome is written down.
 
 Order of work for one call:
+0. Resolve the agent runtime first. Without one nothing is claimed or written, so a later
+   run (once a runtime exists) can still proceed.
 1. Find the case's group: every approval case sharing ``facts.firing_group`` (or the case alone).
    Any rejected/timed-out member -> never run. Any member still open -> wait (the last approval
    to commit is the one whose run proceeds).
-2. Under a row lock on every member, check that no replay was already recorded for the group
-   (exactly-once: two approvals finishing together run the tool once).
+2. Under a row lock on every member, re-read the group with a fresh statement (a concurrent run
+   may have added a case while we waited) and check that no replay was already recorded for the
+   group (exactly-once: two approvals finishing together run the tool once).
 3. Re-check against the CURRENT live policies with the stored context:
    a block now matches -> do not run; a new approve policy the group did not cover -> open a
-   case for it in the same group and stop (its approval calls run() again).
+   case for it in the same group, in this same transaction, and stop (its approval calls run()
+   again).
 4. Claim the run by inserting the replay row (subject_type 'agent_policy_replay'), commit,
    then run the tool outside any lock and write the outcome onto that row. A crash mid-run
    leaves the claim behind: the action is run AT MOST once, never twice.
 
-The firing log is append-only: a firing row is only touched while it is still
-``paused_for_approval`` (act() has normally moved it to 'approved' already), and only through
-the decision columns the guard trigger allows.
+Where the outcome lives (controller ruling): the firing row records the HUMAN decision
+('approved', set by act()); the replay outcome lives only on the agent_policy_replay row. Replay
+never updates firing rows.
 
-``run`` never raises: every failure is logged and, where possible, recorded.
+``run`` never raises. Logs carry exception TYPES and masked summaries only, never input values.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from services.agent_policy import approvals, enforcement, live_policies
+from services.agent_policy import approvals, deciders, enforcement, live_policies
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,7 @@ APPROVAL = approvals.SUBJECT_TYPE
 ACTOR = "system:replay"
 CHECKPOINT = "tool.call.before"
 SUMMARY_LIMIT = 2000
+ERROR_LIMIT = 500
 BLOCKED_REASON = "A policy now forbids this action"
 NO_RUNTIME = "no agent runtime available"
 
@@ -59,12 +65,13 @@ def _resolve_agent_nick(agent_nick: Any) -> Any:
 
         inst = BackendScheduler._instance
         return getattr(inst, "agent_nick", None) if inst is not None else None
-    except Exception:  # noqa: BLE001
-        logger.exception("replay could not reach the BackendScheduler for agent_nick")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("replay could not reach the BackendScheduler for agent_nick: %s", type(exc).__name__)
         return None
 
 
 def _load_policies() -> List[Dict[str, Any]]:
+    """CURRENT live policies: own connection (a failed load never aborts our transaction), no cache."""
     return live_policies.load(None, ttl=0)
 
 
@@ -72,6 +79,24 @@ def _build_tools(agent_nick: Any, *, workflow_id: Optional[str], user_id: Option
     from orchestration import agentnick_control
 
     return agentnick_control.build_tools(agent_nick, workflow_id=workflow_id, user_id=user_id)
+
+
+def _stored_policy_docs(cur, members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The compiled policy versions the group's cases were opened under (for their sensitive inputs)."""
+    pairs = []
+    for m in members:
+        p = m["facts"].get("policy") or {}
+        if p.get("id") and str(p.get("version") or "").isdigit():
+            pairs.append((str(p["id"]), int(p["version"])))
+    docs = []
+    for key, version in sorted(set(pairs)):
+        cur.execute("SELECT compiled FROM proc.bp_agent_policy_version WHERE policy_key = %s AND version = %s",
+                    (key, version))
+        row = cur.fetchone()
+        doc = _facts(row[0]) if row else None
+        if isinstance(doc, dict):
+            docs.append(doc)
+    return docs
 
 
 # ---------------------------------------------------------------------------- helpers
@@ -106,13 +131,17 @@ def _ctx(facts: Dict[str, Any]) -> Dict[str, Any]:
             "args": dict(action.get("args") or {})}
 
 
-def _sensitive_args(policies: Iterable[Dict[str, Any]]) -> Set[str]:
+def _sensitive_args(policies: Iterable[Any]) -> Set[str]:
     """Argument names any policy marks sensitive (``args.<name>`` inputs)."""
     out: Set[str] = set()
     for p in policies or []:
-        for i in (p.get("inputs") or []) if isinstance(p, dict) else []:
-            f = str((i or {}).get("field") or "") if isinstance(i, dict) else ""
-            if i.get("sensitive") and f.startswith("args."):
+        if not isinstance(p, dict):
+            continue
+        for i in p.get("inputs") or []:
+            if not isinstance(i, dict) or not i.get("sensitive"):
+                continue
+            f = str(i.get("field") or "")
+            if f.startswith("args."):
                 out.add(f[len("args."):])
     return out
 
@@ -125,20 +154,35 @@ def _scrub(value: Any, keys: Set[str]) -> Any:
     return value
 
 
-def summarise(result: Any, args: Dict[str, Any], sensitive: Set[str]) -> str:
-    """A <=2000-char text of the result with sensitive input values masked."""
+def _leaves(value: Any) -> Iterable[str]:
+    if isinstance(value, dict):
+        for v in value.values():
+            yield from _leaves(v)
+    elif isinstance(value, (list, tuple, set)):
+        for v in value:
+            yield from _leaves(v)
+    elif value is not None:
+        s = str(value)
+        if s:
+            yield s
+
+
+def mask_text(text: str, args: Dict[str, Any], sensitive: Set[str]) -> str:
+    """Mask every sensitive argument value (any type, any length) where it stands as a token."""
+    vals = sorted({s for name in sensitive for s in _leaves((args or {}).get(name))}, key=len, reverse=True)
+    for s in vals:
+        # a whole token, so a sensitive 5 masks "5" but never the 5 inside "2025"
+        text = re.sub(r"(?<![\w.])" + re.escape(s) + r"(?![\w])", enforcement.MASK, text)
+    return text
+
+
+def summarise(result: Any, args: Dict[str, Any], sensitive: Set[str], limit: int = SUMMARY_LIMIT) -> str:
+    """A capped text of the result with sensitive input values masked (by key and by value)."""
     try:
         text = result if isinstance(result, str) else json.dumps(_scrub(result, sensitive), default=str)
     except Exception:  # noqa: BLE001
-        text = repr(result)
-    for name in sensitive:
-        val = (args or {}).get(name)
-        if val is None:
-            continue
-        s = str(val)
-        if len(s) >= 3 or isinstance(val, str) and s:
-            text = text.replace(s, enforcement.MASK)
-    return text[:SUMMARY_LIMIT]
+        text = repr(_scrub(result, sensitive))
+    return mask_text(text, args, sensitive)[:limit]
 
 
 def _load_case(cur, decision_id: int) -> Optional[Dict[str, Any]]:
@@ -213,24 +257,10 @@ def _finish_replay(conn, replay_id: int, facts: Dict[str, Any]) -> None:
                     (json.dumps(facts, default=str), datetime.now(timezone.utc), replay_id, SUBJECT_TYPE))
 
 
-def _firing_ids(members: List[Dict[str, Any]]) -> List[int]:
-    return [int(m["facts"]["firingId"]) for m in members
-            if str(m["facts"].get("firingId") or "").isdigit()]
-
-
-def _update_paused_firings(cur, firing_ids: List[int], *, result: str, reason: str) -> None:
-    """Only decision columns, only on rows still paused (the guard trigger refuses anything else)."""
-    if not firing_ids:
-        return
-    cur.execute("UPDATE proc.bp_policy_firing SET result = %s, decided_by = %s, decided_at = %s, reason = %s "
-                "WHERE firing_id = ANY(%s) AND result = 'paused_for_approval'",
-                (result, ACTOR, datetime.now(timezone.utc), reason, firing_ids))
-
-
 def _open_new_case(conn, cur, hit: Dict[str, Any], case: Dict[str, Any], members, group: str,
-                   requested_by: Optional[str]) -> int:
+                   requested_by: Optional[str], mapping) -> int:
+    """A paused firing row + an approval case, on the caller's cursor (no commit here)."""
     action = case["facts"].get("action") or {}
-    policy = hit["policy"]
     cur.execute(
         "INSERT INTO proc.bp_policy_firing (policy_key, policy_version, checkpoint, action_name, agent, "
         "workflow_id, requested_by, outcome, result, matched_values, missing_inputs, reason) "
@@ -241,11 +271,9 @@ def _open_new_case(conn, cur, hit: Dict[str, Any], case: Dict[str, Any], members
          "Approval newly required when the approved action was re-checked"),
     )
     firing_id = int(cur.fetchone()[0])
-    # open_case commits this connection's transaction (its own _tx on a non-autocommit
-    # connection); the member locks are held until then, so a concurrent run sees the new case.
-    return approvals.open_case(
-        conn, policy_doc=policy, firing_id=firing_id, action=action, requested_by=requested_by,
-        now=datetime.now(timezone.utc),
+    return approvals._insert_case(
+        cur, policy_doc=hit["policy"], firing_id=firing_id, action=action, requested_by=requested_by,
+        now=datetime.now(timezone.utc), mapping=mapping,
         extra_facts={"firing_group": group, "replayOf": [m["decision_id"] for m in members],
                      "ctx": _ctx(case["facts"])})
 
@@ -257,26 +285,30 @@ def run(decision_id: int, *, agent_nick: Any = None) -> Dict[str, Any]:
     Returns {"status": ...} describing what happened; never raises.
     """
     try:
+        nick = _resolve_agent_nick(agent_nick)
+        if nick is None:
+            # nothing claimed, nothing written: a later run with a runtime can still proceed
+            logger.warning("replay of decision %s not attempted: %s", decision_id, NO_RUNTIME)
+            return {"status": "no_runtime", "error": NO_RUNTIME}
         with _connect() as conn:
-            return _run(conn, int(decision_id), agent_nick)
+            return _run(conn, int(decision_id), nick)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("replay of decision %s failed", decision_id)
-        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"[:500]}
+        # type only: a driver/DB message can quote stored arguments
+        logger.error("replay of decision %s failed: %s", decision_id, type(exc).__name__)
+        return {"status": "error", "error": type(exc).__name__}
 
 
 def _run(conn, decision_id: int, agent_nick: Any) -> Dict[str, Any]:
+    """_claim in ONE transaction (locks, re-check, new cases, claim), then the tool outside it."""
     prev = getattr(conn, "autocommit", False)
     conn.autocommit = False
     try:
         out = _claim(conn, decision_id)
+        conn.commit()
     except BaseException:
         conn.rollback()
         raise
     finally:
-        try:
-            conn.commit()
-        except Exception:  # noqa: BLE001 - already rolled back / closed
-            pass
         conn.autocommit = prev
     if out.get("status") != "claimed":
         return out
@@ -284,14 +316,16 @@ def _run(conn, decision_id: int, agent_nick: Any) -> Dict[str, Any]:
 
 
 def _claim(conn, decision_id: int) -> Dict[str, Any]:
-    """Inside one transaction: group check, exactly-once guard, re-check, claim."""
+    """Inside the caller's transaction: group check, exactly-once guard, re-check, claim."""
     with conn.cursor() as cur:
         case = _load_case(cur, decision_id)
         if case is None:
             return {"status": "not_found"}
-        members = _members(cur, case, lock=True)
-        if not members:
+        if not _members(cur, case, lock=True):
             return {"status": "not_found"}
+        # Fresh statement AFTER the lock: a run that held the lock may have committed a new case
+        # into this group, which the locking statement's snapshot cannot see.
+        members = _members(cur, case, lock=False)
         verdicts = {m["decision_id"]: _verdict_of(cur, m) for m in members}
         if any(v == "reject" for v in verdicts.values()):
             return {"status": "rejected", "cases": verdicts}
@@ -303,13 +337,11 @@ def _claim(conn, decision_id: int) -> Dict[str, Any]:
 
         facts = case["facts"]
         action = facts.get("action") or {}
-        ctx = _ctx(facts)
         try:
-            # own connection (a failed load must not abort this transaction), no cache: CURRENT
             policies = _load_policies()
-            verdict = enforcement.check(ctx, policies)
+            verdict = enforcement.check(_ctx(facts), policies)
         except Exception as exc:  # noqa: BLE001 - fail closed: never run unchecked
-            logger.exception("replay re-check failed for decision %s", decision_id)
+            logger.error("replay re-check failed for decision %s: %s", decision_id, type(exc).__name__)
             rid = _insert_replay(cur, key=key, case=case, members=members,
                                  facts={"ok": False, "outcome": "not_run", "resultSummary": None,
                                         "error": f"policy_check_unavailable: {type(exc).__name__}"})
@@ -320,22 +352,21 @@ def _claim(conn, decision_id: int) -> Dict[str, Any]:
                                  facts={"ok": False, "outcome": "blocked", "resultSummary": None,
                                         "error": BLOCKED_REASON,
                                         "blockedBy": [h["id"] for h in verdict.blocks]})
-            _update_paused_firings(cur, _firing_ids(members), result="rejected", reason=BLOCKED_REASON)
             return {"status": "blocked", "replayId": rid}
 
         covered = {str((m["facts"].get("policy") or {}).get("id") or "") for m in members}
         new = [h for h in verdict.approvals if str(h["id"]) not in covered]
         if new:
+            mapping = deciders.load_map(conn)
             group = _effective_group(case)
-            opened = [_open_new_case(conn, cur, h, case, members, group, facts.get("requestedBy"))
+            opened = [_open_new_case(conn, cur, h, case, members, group, facts.get("requestedBy"), mapping)
                       for h in new]
             return {"status": "new_approval_required", "caseIds": opened}
 
-        sensitive = _sensitive_args(policies)
+        sensitive = _sensitive_args(policies) | _sensitive_args(_stored_policy_docs(cur, members))
         rid = _insert_replay(cur, key=key, case=case, members=members,
                              facts={"ok": None, "outcome": "running", "resultSummary": None, "error": None})
-        return {"status": "claimed", "replayId": rid, "action": action, "sensitive": sensitive,
-                "firingIds": _firing_ids(members)}
+        return {"status": "claimed", "replayId": rid, "action": action, "sensitive": sensitive}
 
 
 def _execute(conn, claim: Dict[str, Any], agent_nick: Any) -> Dict[str, Any]:
@@ -344,28 +375,21 @@ def _execute(conn, claim: Dict[str, Any], agent_nick: Any) -> Dict[str, Any]:
     args = dict(action.get("args") or {})
     ok, summary, error = False, None, None
     try:
-        nick = _resolve_agent_nick(agent_nick)
-        if nick is None:
-            error = NO_RUNTIME
+        tools = _build_tools(agent_nick, workflow_id=action.get("workflowId"), user_id=action.get("userId"))
+        tool = next((t for t in tools if getattr(t, "name", None) == action.get("tool")), None)
+        if tool is None:
+            error = f"tool {action.get('tool')!r} is not available"
         else:
-            tools = _build_tools(nick, workflow_id=action.get("workflowId"), user_id=action.get("userId"))
-            tool = next((t for t in tools if getattr(t, "name", None) == action.get("tool")), None)
-            if tool is None:
-                error = f"tool {action.get('tool')!r} is not available"
-            else:
-                result = tool.handler(**args)
-                ok, summary = True, summarise(result, args, claim["sensitive"])
+            result = tool.handler(**args)
+            ok, summary = True, summarise(result, args, claim["sensitive"])
     except Exception as exc:  # noqa: BLE001
-        logger.exception("replayed tool %s failed (replay %s)", action.get("tool"), rid)
-        error = summarise(f"{type(exc).__name__}: {exc}", args, claim["sensitive"])[:500]
+        error = summarise(f"{type(exc).__name__}: {exc}", args, claim["sensitive"], ERROR_LIMIT)
+        # no exc_info: a traceback's message and locals can carry the raw arguments
+        logger.warning("replayed tool %s failed (replay %s): %s", action.get("tool"), rid, error)
 
-    facts = {"ok": ok, "outcome": "ran" if ok else ("not_run" if error == NO_RUNTIME else "error"),
-             "resultSummary": summary, "error": error}
+    facts = {"ok": ok, "outcome": "ran" if ok else "error", "resultSummary": summary, "error": error}
     try:
         _finish_replay(conn, rid, facts)
-        if not ok:
-            with conn.cursor() as cur:
-                _update_paused_firings(cur, claim["firingIds"], result="error", reason=error or "error")
-    except Exception:  # noqa: BLE001
-        logger.exception("could not record replay outcome %s", rid)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("could not record replay outcome %s: %s", rid, type(exc).__name__)
     return {"status": "ran" if ok else "error", "replayId": rid, **facts}

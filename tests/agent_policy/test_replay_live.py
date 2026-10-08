@@ -39,14 +39,25 @@ def test_run_never_raises_when_the_database_is_unreachable(monkeypatch):
     def boom():
         raise RuntimeError("db down")
     monkeypatch.setattr(R, "_connect", boom)
-    out = R.run(123)
-    assert out["status"] == "error" and "db down" in out["error"]
+    out = R.run(123, agent_nick=object())
+    assert out["status"] == "error" and out["error"] == "RuntimeError"
 
 
 def test_summary_masks_sensitive_values_and_is_capped():
     s = R.summarise({"iban": "GB00SECRET", "note": "paid to GB00SECRET", "pad": "x" * 5000},
                     ARGS, {"iban"})
     assert "GB00SECRET" not in s and len(s) == R.SUMMARY_LIMIT
+
+
+def test_short_and_non_string_sensitive_values_are_masked_as_tokens():
+    s = R.summarise("pin 5 sent in 2025; code 42, nested ok", {"pin": 5, "code": [42]}, {"pin", "code"})
+    assert s == f"pin {R.enforcement.MASK} sent in 2025; code {R.enforcement.MASK}, nested ok"
+
+
+def test_sensitive_args_tolerates_malformed_inputs():
+    docs = [None, "x", {"inputs": [None, "bad", {"field": "args.iban", "sensitive": True},
+                                   {"field": "tool.name", "sensitive": True}]}]
+    assert R._sensitive_args(docs) == {"iban"}
 
 
 # ------------------------------------------------------------------ live fixtures
@@ -78,13 +89,13 @@ def world(conn):
         cur.execute("DELETE FROM proc.bp_policy_decider_map WHERE decider_name = %s", (w.decider,))
 
 
-def _doc(w, key, outcome="approve"):
+def _doc(w, key, outcome="approve", sensitive=True):
     form = copy.deepcopy(FORM_EXAMPLE)
     form["checked"] = {"by": "user_8841", "at": "2026-10-08T09:14:00Z"}
     form["outcome"] = outcome
     form["deciders"] = [w.decider] if outcome == "approve" else []
     form["hidden"]["inputs"].append({"name": "IBAN", "field": "args.iban", "type": "string",
-                                     "from": "action", "showApprover": False, "sensitive": True})
+                                     "from": "action", "showApprover": False, "sensitive": sensitive})
     return compile_policy(form, policy_key=key, version=1, status="live",
                           settings=SETTINGS, never_suggest=False)
 
@@ -278,7 +289,9 @@ def test_exactly_once_under_two_concurrent_approvals(world, stub, monkeypatch):
 
 
 @live
-def test_replay_error_is_recorded_and_never_raises(conn, world, stub, monkeypatch):
+def test_replay_error_is_recorded_and_never_raises(conn, world, stub, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG, logger=R.__name__)
     doc = _doc(world, f"TST-{world.tag}")
     _policies(monkeypatch, [doc])
     did, _ = _open(conn, world, doc)
@@ -290,18 +303,81 @@ def test_replay_error_is_recorded_and_never_raises(conn, world, stub, monkeypatc
     assert len(rows) == 1
     f = rows[0]["facts"]
     assert f["ok"] is False and "ValueError" in f["error"] and "GB00SECRET" not in f["error"]
+    logged = "\n".join(caplog.text.splitlines()) + "".join(
+        str(r.exc_info) + str(r.exc_text) for r in caplog.records)
+    assert "ValueError" in caplog.text and "GB00SECRET" not in logged
 
 
 @live
-def test_no_agent_runtime_is_recorded_and_not_run(conn, world, stub, monkeypatch):
+def test_missing_runtime_does_not_consume_the_claim(conn, world, stub, monkeypatch):
     doc = _doc(world, f"TST-{world.tag}")
     _policies(monkeypatch, [doc])
-    monkeypatch.setattr(R, "_resolve_agent_nick", lambda _n: None)
     did, _ = _open(conn, world, doc)
     _approve(conn, world, did)
-    out = R.run(did)
-    assert out["status"] == "error" and out["error"] == R.NO_RUNTIME and stub.calls == []
-    assert _replays(conn, world)[0]["facts"]["outcome"] == "not_run"
+    with monkeypatch.context() as m:
+        m.setattr(R, "_resolve_agent_nick", lambda _n: None)
+        out = R.run(did)
+    assert out["status"] == "no_runtime" and out["error"] == R.NO_RUNTIME
+    assert stub.calls == [] and _replays(conn, world) == []
+    # once a runtime exists, a later run proceeds
+    assert R.run(did, agent_nick=stub.nick)["status"] == "ran"
+    assert stub.calls == [ARGS]
+
+
+@live
+def test_two_waiters_open_one_new_case_not_two(world, stub, monkeypatch):
+    from services.db import get_conn
+    first, newer = _doc(world, f"TST-{world.tag}"), _doc(world, f"TSN-{world.tag}")
+    with get_conn() as c:
+        did, _ = _open(c, world, first)
+        _approve(c, world, did)
+
+    def slow_policies():
+        time.sleep(0.3)          # hold the member lock while the other waiter queues behind it
+        return [first, newer]
+    monkeypatch.setattr(R, "_load_policies", slow_policies)
+    barrier, outs = threading.Barrier(2), []
+
+    def waiter():
+        barrier.wait(timeout=10)
+        outs.append(R.run(did, agent_nick=stub.nick))
+    ts = [threading.Thread(target=waiter) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout=30)
+    assert sorted(o["status"] for o in outs) == ["new_approval_required", "waiting"]
+    with get_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM proc.bp_decision WHERE subject_type = %s AND policy_name = %s "
+                    "AND decision = 'approve_or_reject'", (A.SUBJECT_TYPE, f"TSN-{world.tag}"))
+        assert cur.fetchone()[0] == 1
+    assert stub.calls == []
+
+
+@live
+def test_stored_case_policy_sensitive_inputs_are_masked(conn, world, stub, monkeypatch):
+    stored = _doc(world, f"TST-{world.tag}")                      # marks args.iban sensitive
+    now_live = _doc(world, f"TST-{world.tag}", sensitive=False)   # the current version no longer does
+    _policies(monkeypatch, [now_live])
+    monkeypatch.setattr(R, "_stored_policy_docs", lambda _cur, _m: [stored])
+    did, _ = _open(conn, world, now_live)
+    _approve(conn, world, did)
+    assert R.run(did, agent_nick=stub.nick)["status"] == "ran"
+    assert "GB00SECRET" not in _replays(conn, world)[0]["facts"]["resultSummary"]
+
+
+@live
+def test_real_live_policy_loader_with_no_matching_policy_runs(conn, world, stub):
+    from services.agent_policy import enforcement, live_policies
+    doc = _doc(world, f"TST-{world.tag}")
+    ctx = {"checkpoint": "tool.call.before", "tool.name": "refund.issue", "agent.name": "agent_nick",
+           "agent.reason": "customer asked", "args": dict(ARGS)}
+    assert enforcement.check(ctx, live_policies.load(None, ttl=0)).result == "allowed", \
+        "bp_testdb now has a live policy matching refund.issue; this test assumes none"
+    did, _ = _open(conn, world, doc)
+    _approve(conn, world, did)
+    assert R.run(did, agent_nick=stub.nick)["status"] == "ran"      # R._load_policies NOT patched
+    assert stub.calls == [ARGS]
 
 
 @live
