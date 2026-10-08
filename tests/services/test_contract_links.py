@@ -340,17 +340,27 @@ def _delete_contracts(*ids):
 
 
 def _capture_flags(monkeypatch, wanted):
-    """Record the _ref_resolves value the runner hands the scorer, per child."""
-    from src.services.graph_resolution.profiles import contract_hierarchy as ch
+    """Record the _ref_resolves value the runner hands the scorer, per child.
+
+    Wraps every profile the runner can choose (hierarchy, amendment, attachment),
+    since a variation or a schedule is no longer scored by contract_hierarchy.
+    """
+    from src.services.graph_resolution.profiles import (
+        contract_amendment, contract_attachment, contract_hierarchy)
     seen = {}
-    real = ch.score
 
-    def spy(child, parent):
-        if child.get("contract_id") in wanted:
-            seen[child["contract_id"]] = child.get("_ref_resolves", "ABSENT")
-        return real(child, parent)
+    def wrap(mod):
+        real = mod.score
 
-    monkeypatch.setattr(ch, "score", spy)
+        def spy(child, parent):
+            if child.get("contract_id") in wanted:
+                seen[child["contract_id"]] = child.get("_ref_resolves", "ABSENT")
+            return real(child, parent)
+
+        monkeypatch.setattr(mod, "score", spy)
+
+    for mod in (contract_hierarchy, contract_amendment, contract_attachment):
+        wrap(mod)
     return seen
 
 
@@ -978,3 +988,82 @@ def test_a_named_contract_of_the_wrong_structure_is_still_not_a_candidate():
     finally:
         with get_conn() as conn:
             conn.cursor().execute("DELETE FROM proc.bp_contracts WHERE contract_id = %s", (wrong,))
+
+
+def test_profile_and_link_type_follow_the_childs_role():
+    from src.services.graph_resolution.profiles import (
+        contract_amendment, contract_attachment, contract_hierarchy)
+    assert CL._profile_module({"resolved_doc_type": "doctype.addendum"}) is contract_amendment
+    assert CL._profile_module({"resolved_doc_type": "doctype.ccn"}) is contract_amendment
+    assert CL._profile_module({"resolved_doc_type": "doctype.sla"}) is contract_attachment
+    assert CL._profile_module({"resolved_doc_type": "doctype.schedule"}) is contract_attachment
+    assert CL._profile_module({"resolved_doc_type": "doctype.sow"}) is contract_hierarchy
+    assert CL._link_type({"resolved_doc_type": "doctype.addendum"}) == "amends"
+    assert CL._link_type({"resolved_doc_type": "doctype.sla"}) == "attaches_to"
+    assert CL._link_type({"resolved_doc_type": "doctype.sow"}) == "child_of"
+
+
+def test_schedules_and_slas_are_children_with_master_and_framework_parents():
+    wanted = CL._wanted_parent_types({"resolved_doc_type": "doctype.sla"})
+    assert "doctype.master_agreement" in wanted and "doctype.framework_agreement" in wanted
+    assert "doctype.sla" not in wanted and "doctype.addendum" not in wanted
+    assert CL.is_child({"resolved_doc_type": "doctype.schedule"})
+    assert not CL.is_child({"resolved_doc_type": "doctype.termination_notice"})
+
+
+_CORROBORATING_KEYS = {"buyer_org_id", "currency", "payment_terms", "governing_law",
+                       "contract_signatory_name", "buyer_signatory_name", "cost_centre_id"}
+
+
+def test_candidate_rows_carry_the_corroborating_fields_from_both_tables(fixture_contracts):
+    """Review Focus 4: bp_contract_master has no buyer_signatory_name; it must not crash."""
+    from src.services.db import get_conn
+    with get_conn() as conn:
+        cur = conn.cursor()
+        child = {"contract_id": "X-NONE", "resolved_doc_type": "doctype.sow",
+                 "supplier_id": fixture_contracts["supplier"]}
+        rows = CL.candidate_parents(cur, child)
+        master = CL._fetch(cur, "proc.bp_contract_master", "supplier_id = %s", ("nobody",))
+        # A real bp_contract_master candidate, so the master branch of _fetch is exercised.
+        cur.execute("SELECT supplier_id FROM proc.bp_contract_master "
+                    "WHERE contract_type = 'Master Agreement' AND supplier_id IS NOT NULL LIMIT 1")
+        found = cur.fetchone()
+        assert found, "bp_testdb has no Master Agreement row in bp_contract_master"
+        master_rows = CL.candidate_parents(cur, {
+            "contract_id": "X-NONE", "resolved_doc_type": "doctype.sow",
+            "supplier_id": found[0]})
+    assert any(r["contract_id"] == fixture_contracts["msa"] for r in rows)
+    for r in rows:
+        assert _CORROBORATING_KEYS <= set(r)
+    assert master == []
+    assert master_rows, "expected at least one candidate from bp_contract_master"
+    for r in master_rows:
+        assert _CORROBORATING_KEYS <= set(r)
+
+
+def test_a_proposal_for_an_addendum_says_amend_and_reports_its_link_type():
+    from src.services.db import get_conn
+    tag = uuid.uuid4().hex[:6].upper()
+    sup, sow, add = f"S-{tag}", f"SOW-{tag}", f"ADD-{tag}"
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO proc.bp_contracts (contract_id, contract_title, supplier_id,
+                contract_start_date, contract_end_date, resolved_doc_type, resolved_role, type_agreement)
+            VALUES (%s,'Statement of Work Helix',%s,'2026-01-01','2027-12-31','doctype.sow','role.master','refined')""",
+                    (sow, sup))
+        cur.execute("""INSERT INTO proc.bp_contracts (contract_id, contract_title, supplier_id,
+                contract_start_date, contract_end_date, resolved_doc_type, resolved_role, type_agreement,
+                parent_agreement_ref)
+            VALUES (%s,'Addendum No. 1',%s,'2026-03-01','2026-09-30','doctype.addendum','role.variation','refined',%s)""",
+                    (add, sup, sow))
+    try:
+        result = CL.propose_parent_links(contract_id=add)
+        assert result["details"][0]["link_type"] == "amends"
+        assert result["details"][0]["profile"] == "contract_amendment"
+        row = _open_proposals(add)[0]
+        assert row["expected_value"] == sow and "appears to amend contract" in row["notes"]
+    finally:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE doc_pk_candidate = ANY(%s)", ([add, sow],))
+            cur.execute("DELETE FROM proc.bp_contracts WHERE contract_id = ANY(%s)", ([add, sow],))
