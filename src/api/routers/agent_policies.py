@@ -188,7 +188,7 @@ class ExtractionRunBody(BaseModel):
 
 class FixBody(BaseModel):
     baseVersion: int
-    flipped: List[Dict[str, Any]] = Field(min_length=1)
+    flipped: List[Dict[str, Any]] = Field(min_length=1, max_length=20)
 
 
 def _refused(message: str) -> JSONResponse:
@@ -232,9 +232,17 @@ def upload_urls(body: UploadUrlsBody, p: Principal = Depends(gateway_principal))
     a URL or key in this answer would be withheld by the output scrubber, so neither is ever sent."""
     _require(p, "Buyer", "agent_policy.write", {"intent": "upload_urls", "files": len(body.files)})
     try:
-        return {"uploads": documents.issue_uploads(body.files, actor=p.subject)}
+        uploads = documents.issue_uploads(body.files, actor=p.subject)
     except ValueError as exc:
         return _refused(str(exc))
+    # The ids are only known once issued; recorded before they are returned, so every key a later
+    # register can name traces back to who was given it.
+    agent_actions.record_action_or_fail(
+        phase="issue", action_type="agent_policy.write", agent="agent_policy_api", status="issued",
+        summary=f"{len(uploads)} upload id(s) issued to {p.subject}",
+        details={"intent": "upload_urls", "principal": p.subject,
+                 "uploads": [{"uploadId": u["uploadId"], "safeName": u["safeName"]} for u in uploads]})
+    return {"uploads": uploads}
 
 
 @router.post("/documents")

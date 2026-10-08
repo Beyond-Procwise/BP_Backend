@@ -287,8 +287,12 @@ def test_upload_urls_returns_issued_uploads_and_is_audited_first(client, monkeyp
     monkeypatch.setattr(R.documents, "issue_uploads", lambda files, actor: order.append(("issue", files, actor)) or out)
     r = client.post("/agent-policies/documents/upload-urls", json={"files": [{"name": "a.pdf", "size": 3}]}, headers=BUYER)
     assert r.status_code == 200 and r.json() == {"uploads": out}
-    assert [o[0] for o in order] == ["audit", "issue"]
+    assert [o[0] for o in order] == ["audit", "issue", "audit"]
     assert order[0][1]["status"] == "allowed" and order[0][1]["details"]["intent"] == "upload_urls"
+    issued = order[2][1]
+    assert issued["status"] == "issued" and issued["action_type"] == "agent_policy.write"
+    assert issued["details"]["principal"] == "u1"
+    assert issued["details"]["uploads"] == [{"uploadId": UPID, "safeName": "policy.pdf"}]
     assert order[1][1] == [{"name": "a.pdf", "size": 3}] and order[1][2] == "u1"
 
 
@@ -504,3 +508,14 @@ def test_register_as_new_with_revision_of_is_a_422(client, monkeypatch):
     r = client.post("/agent-policies/documents", json=body, headers=BUYER)
     assert r.status_code == 422 and r.json()["problems"] == [{"field": "files", "code": "upload_refused",
         "message": "policy.pdf: choose either a revision or a new document."}]
+
+
+def test_agent_fix_takes_at_most_20_flipped_examples(client, monkeypatch):
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: _policy())
+    monkeypatch.setattr(R.run_store, "create", lambda conn, kind, request, actor: {"run_id": 1})
+    monkeypatch.setattr(R.run_runner, "submit", lambda run_id, work: None)
+    flips = [{"input": {"a": i}} for i in range(21)]
+    r = client.post("/agent-policies/FIN-0001/agent-fix", json={"baseVersion": 1, "flipped": flips}, headers=BUYER)
+    assert r.status_code == 422
+    r = client.post("/agent-policies/FIN-0001/agent-fix", json={"baseVersion": 1, "flipped": flips[:20]}, headers=BUYER)
+    assert r.status_code == 202

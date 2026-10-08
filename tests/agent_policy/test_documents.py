@@ -76,6 +76,8 @@ class FakeCursor:
             self._rows = [(v["id"], v["title"], v["latest"]) for _, v in hits[:1]]
         elif s.startswith("SELECT version FROM proc.bp_policy_document_version WHERE document_id = %s AND content_hash"):
             self._rows = [(k[1],) for k, v in db.versions.items() if k[0] == params[0] and v["hash"] == params[1]]
+        elif s.startswith("SELECT document_id, version FROM proc.bp_policy_document_version WHERE s3_key"):
+            self._rows = sorted((k[0], k[1]) for k, v in db.versions.items() if v["key"] == params[0])[:1]
         elif s.startswith("SELECT latest_version FROM proc.bp_policy_document WHERE document_id"):
             self._rows = [(db.docs[params[0]]["latest"],)]
         elif s.startswith("INSERT INTO proc.bp_policy_document ("):
@@ -509,3 +511,32 @@ def test_as_new_with_revision_of_is_refused(s3, db):
     with pytest.raises(ValueError, match="choose either a revision or a new document"):
         d.register_uploads(db, [up], actor="u")
     assert len(db.docs) == 1 and db.docs[1]["latest"] == 1
+
+
+
+# ---------------------------------------------------------------- fix round 2
+
+def test_a_long_name_keeps_its_extension_through_issue_register_and_read(s3, db):
+    name = "x" * 125 + ".txt"
+    issued = d.issue_uploads([{"name": name, "size": 3}], actor="u")[0]
+    assert len(issued["safeName"]) == 120 and issued["safeName"].endswith(".txt")
+    assert issued["safeName"] == "x" * 116 + ".txt"
+    s3.objects[d.upload_key(issued["uploadId"], name)] = b"Refunds need approval."
+    out = d.register_uploads(db, [{"uploadId": issued["uploadId"], "name": name}], actor="u")[0]
+    assert out["version"] == 1 and db.versions[(out["documentId"], 1)]["filename"].endswith(".txt")
+    assert d.document_text(db, out["documentId"], 1) == "Refunds need approval."
+
+
+def test_a_long_pdf_name_is_issued_with_its_suffix(s3):
+    issued = d.issue_uploads([{"name": "x" * 125 + ".pdf", "size": 3}], actor="u")[0]
+    assert issued["safeName"] == "x" * 116 + ".pdf" and issued["contentType"] == "application/pdf"
+
+
+def test_an_as_new_retry_is_the_version_it_already_made(s3, db):
+    d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")
+    up = dict(_put(s3, "Refund Policy.pdf", b"two"), asNew=True)
+    first = d.register_uploads(db, [up], actor="u")[0]
+    assert first["documentId"] == 2 and first["duplicate"] is False
+    again = d.register_uploads(db, [up], actor="u")[0]
+    assert again == {**first, "duplicate": True}
+    assert len(db.docs) == 2 and db.autocommit is True

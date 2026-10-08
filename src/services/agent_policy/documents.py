@@ -57,8 +57,13 @@ def intake_limits() -> Tuple[int, int]:
 
 
 def safe_name(name: str) -> str:
+    """Basename, unsafe characters replaced, at most 120 characters -- cut from the stem, so the
+    extension (which decides how the file is read) survives."""
     base = re.split(r"[\\/]", str(name or ""))[-1]
-    cleaned = _SAFE_CHARS.sub("_", base)[:_MAX_NAME]
+    cleaned = _SAFE_CHARS.sub("_", base)
+    if len(cleaned) > _MAX_NAME:
+        suffix = Path(cleaned).suffix
+        cleaned = (cleaned[:_MAX_NAME - len(suffix)] + suffix) if len(suffix) < _MAX_NAME else cleaned[:_MAX_NAME]
     return cleaned or "upload"
 
 
@@ -192,6 +197,13 @@ def _version_by_hash(cur, document_id, content_hash: str) -> Optional[int]:
     return int(row[0]) if row else None
 
 
+def _version_by_key(cur, key: str) -> Optional[Tuple[Any, int]]:
+    cur.execute("SELECT document_id, version FROM proc.bp_policy_document_version WHERE s3_key = %s"
+                " ORDER BY document_id, version LIMIT 1", (key,))
+    row = cur.fetchone()
+    return (row[0], int(row[1])) if row else None
+
+
 def _lock_latest(cur, document_id) -> int:
     cur.execute("SELECT latest_version FROM proc.bp_policy_document WHERE document_id = %s FOR UPDATE",
                 (document_id,))
@@ -294,6 +306,13 @@ def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, A
             if doc is None:
                 raise ValueError(f"Document {revision_of} does not exist.")
         elif as_new:
+            # A retry of the same upload (same uploadId, so the same key) is the version it already
+            # made, not a second new document.
+            held = _version_by_key(cur, key)
+            if held is not None:
+                held_doc = _doc_by_id(cur, held[0])
+                conn.rollback()
+                return _duplicate(held_doc, held[1])
             doc = None
         else:
             doc = _doc_by_match(cur, match_name)
