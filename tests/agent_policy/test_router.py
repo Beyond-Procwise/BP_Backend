@@ -486,3 +486,21 @@ def test_answers_survive_the_output_scrubber():
                              "message": "Refund.pdf: the file was not uploaded."}]}
     assert unchanged(refused, "/agent-policies/documents")
     assert unchanged({"runId": 31}, "/agent-policies/extraction-runs")
+
+
+def test_register_passes_as_new_through(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(R.documents, "register_uploads", lambda conn, uploads, actor: seen.append(uploads) or [])
+    body = {"uploads": [{"uploadId": UPID, "name": "policy.pdf", "asNew": True}]}
+    assert client.post("/agent-policies/documents", json=body, headers=BUYER).status_code == 200
+    assert seen == [body["uploads"]]
+
+
+def test_register_as_new_with_revision_of_is_a_422(client, monkeypatch):
+    monkeypatch.setattr(R.documents, "intake_limits", lambda: (20, 100))
+    monkeypatch.setattr(R.documents, "_bucket", lambda: "b")
+    monkeypatch.setattr(R.documents, "_s3", lambda: object())
+    body = {"uploads": [{"uploadId": UPID, "name": "policy.pdf", "asNew": True, "revisionOf": 3}]}
+    r = client.post("/agent-policies/documents", json=body, headers=BUYER)
+    assert r.status_code == 422 and r.json()["problems"] == [{"field": "files", "code": "upload_refused",
+        "message": "policy.pdf: choose either a revision or a new document."}]

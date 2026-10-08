@@ -271,6 +271,10 @@ def _is_hash_violation(exc: Exception) -> bool:
 def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, Any]:
     name = str(upload.get("name") or "")
     revision_of = upload.get("revisionOf")
+    # asNew: the person says this is a different document even though its name matches one.
+    as_new = upload.get("asNew") is True
+    if as_new and revision_of is not None:
+        raise ValueError(f"{name or 'An upload'}: choose either a revision or a new document.")
     if _suffix(name) not in ACCEPTED:
         raise ValueError(f"{name or 'A file'}: only {', '.join(sorted(ACCEPTED))} files are accepted.")
     key = upload_key(upload.get("uploadId"), name)
@@ -289,6 +293,8 @@ def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, A
             doc = _doc_by_id(cur, revision_of)
             if doc is None:
                 raise ValueError(f"Document {revision_of} does not exist.")
+        elif as_new:
+            doc = None
         else:
             doc = _doc_by_match(cur, match_name)
 
@@ -333,7 +339,11 @@ def _duplicate(doc: Dict[str, Any], version: int) -> Dict[str, Any]:
 
 
 def register_uploads(conn, uploads: List[Dict[str, Any]], *, actor: str) -> List[Dict[str, Any]]:
-    """Record each uploaded object as a document version (or recognise it as one already held)."""
+    """Record each uploaded object as a document version (or recognise it as one already held).
+
+    Each upload is {uploadId, name, revisionOf?, asNew?}: revisionOf names the document it revises;
+    asNew: true makes a new document even when the name matches one; both at once is refused.
+    """
     _, max_bytes = intake_limits()
     client, bucket = _s3(), _bucket()
     return [_register_one(conn, client, bucket, max_bytes, u, actor) for u in (uploads or [])]

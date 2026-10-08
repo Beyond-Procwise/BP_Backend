@@ -481,3 +481,31 @@ def test_body_longer_than_the_limit_is_refused_even_if_head_said_small(s3, db, m
     with pytest.raises(ValueError, match="larger"):
         d.register_uploads(db, [up], actor="u")
     assert reads == [6] and db.docs == {}
+
+
+# ---------------------------------------------------------------- asNew
+
+def test_as_new_makes_a_new_document_despite_a_matching_name(s3, db):
+    d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")
+    up = dict(_put(s3, "Refund Policy v2.pdf", b"two"), asNew=True)
+    out = d.register_uploads(db, [up], actor="u")[0]
+    assert out["documentId"] == 2 and out["version"] == 1 and out["isRevision"] is False
+    assert db.docs[1]["latest"] == 1  # the matching document was left alone
+    # without asNew the same name is a revision of document 1
+    again = d.register_uploads(db, [_put(s3, "Refund Policy v3.pdf", b"three")], actor="u")[0]
+    assert again["documentId"] == 1 and again["version"] == 2
+
+
+@pytest.mark.parametrize("flag", [False, None, "true", 1])
+def test_only_a_real_true_as_new_skips_matching(s3, db, flag):
+    d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")
+    out = d.register_uploads(db, [dict(_put(s3, "Refund Policy.pdf", b"two"), asNew=flag)], actor="u")[0]
+    assert out["documentId"] == 1 and out["version"] == 2
+
+
+def test_as_new_with_revision_of_is_refused(s3, db):
+    d.register_uploads(db, [_put(s3, "Refund Policy.pdf", b"one")], actor="u")
+    up = dict(_put(s3, "Refund Policy.pdf", b"two"), asNew=True, revisionOf=1)
+    with pytest.raises(ValueError, match="choose either a revision or a new document"):
+        d.register_uploads(db, [up], actor="u")
+    assert len(db.docs) == 1 and db.docs[1]["latest"] == 1
