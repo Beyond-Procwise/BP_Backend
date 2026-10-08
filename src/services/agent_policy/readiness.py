@@ -45,6 +45,12 @@ def _cant_enforce(form: Dict[str, Any], registry: RegistrySnapshot) -> List[str]
     for i in h.get("inputs") or []:
         if not registry.available(cp, i.get("field")):
             out.append(f"Can't be enforced yet: the orchestrator does not receive {i.get('name') or i.get('field')} at this point")
+    listed = {i.get("field") for i in h.get("inputs") or []}
+    for f in sorted(conditions.condition_fields(h.get("condition"))):
+        row = registry.input_row(cp, f)
+        # A field with no registry row is reported as unknown by activation_problems.
+        if f not in listed and row and not registry.available(cp, f):
+            out.append(f"Can't be enforced yet: the orchestrator does not receive {row.get('plain') or f} at this point")
     for m in h.get("missingInputs") or []:
         out.append(f"Can't be enforced yet: the orchestrator does not receive {m.get('name')} at this point")
     if cp and registry.knows_checkpoint(cp) and not registry.checkpoint_live(cp):

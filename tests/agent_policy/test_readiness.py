@@ -133,3 +133,30 @@ def test_extraction_confidence_high_medium_low():
 def test_no_source_means_no_extraction_confidence():
     form = _ready_form(); form["source"] = None
     assert R.extraction_confidence(form, None, REGISTRY, SETTINGS) is None
+
+
+def _planned_in_condition(also_in_inputs):
+    form = _ready_form()
+    form["hidden"]["condition"]["all"].append({"field": "agg.refunds_30d", "op": "gt", "value": 3})
+    if also_in_inputs:
+        form["hidden"]["inputs"].append({"name": "refunds in 30 days", "field": "agg.refunds_30d",
+                                         "type": "number", "from": "total:refunds_30d",
+                                         "showApprover": False, "sensitive": False})
+    return form
+
+
+def test_condition_field_not_live_and_not_in_inputs_cannot_be_enforced():
+    form = _planned_in_condition(also_in_inputs=False)
+    assert "inputs" in _fields(R.activation_problems(form, REGISTRY, SETTINGS))
+    he = R.how_enforced(form, REGISTRY, SETTINGS)
+    assert he["ok"] is False
+    assert he["cantEnforce"] == ["Can't be enforced yet: the orchestrator does not receive "
+                                 "refunds in 30 days at this point"]
+    form["source"] = {"excerpt": "Refunds or credits above $500", "documentId": "d"}
+    conf = R.extraction_confidence(form, DOC_TEXT, REGISTRY, SETTINGS)
+    assert conf["level"] != "High"
+
+
+def test_field_in_both_inputs_and_condition_is_reported_once():
+    form = _planned_in_condition(also_in_inputs=True)
+    assert len(R.how_enforced(form, REGISTRY, SETTINGS)["cantEnforce"]) == 1
