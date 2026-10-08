@@ -56,6 +56,7 @@ from src.services.concepts.contract_type_map import structure_for_contract_type
 from src.services.concepts.vocabulary import ensure_vocabulary
 from src.services.db import get_conn
 from src.services.extraction.persistence import normalise_source_file
+from src.services.governed_limits import limit as _governed_limit
 from src.services.graph_resolution.profiles import contract_amendment as _am
 from src.services.graph_resolution.profiles import contract_attachment as _at
 from src.services.graph_resolution.profiles import contract_hierarchy as _ch
@@ -102,13 +103,22 @@ _PROPOSAL_UPSERT = """
       blocks_promotion = EXCLUDED.blocks_promotion
 """
 
-#: Below this the evidence is too thin to be worth a person's attention. The
-#: linking engine's own review band -- not a number invented here.
-MIN_SCORE = 65.0
+def MIN_SCORE() -> float:
+    """Below this F the evidence is too thin for a person's attention.
 
-#: How far apart the best and second-best must be for the proposal to read as
-#: "confirm this" rather than "choose between these".
-SEPARATION = 8.0
+    promotion_thresholds.contract_parent_min_score (65: the linking engine's own
+    review band). Read when used, never at import, and RAISES if absent.
+    """
+    return _governed_limit("promotion_thresholds", "contract_parent_min_score")
+
+
+def SEPARATION() -> float:
+    """How far apart best and runner-up must be to read 'confirm this'.
+
+    promotion_thresholds.contract_parent_separation (8).
+    """
+    return _governed_limit("promotion_thresholds", "contract_parent_separation")
+
 
 # "Unparented" means the pointer does not RESOLVE, not that it is absent.
 #
@@ -424,6 +434,8 @@ def propose_parent_links(limit: Optional[int] = None,
         if limit:
             children = children[:limit]
 
+        # Read once per pass so one pass can never mix two values.
+        min_score, separation = MIN_SCORE(), SEPARATION()
         for child in children:
             considered["children"] += 1
             if not is_child(child):
@@ -451,14 +463,14 @@ def propose_parent_links(limit: Optional[int] = None,
                 key=lambda pair: -pair[0]["F"],
             )
             best, best_parent = scored[0]
-            if best["F"] < MIN_SCORE:
+            if best["F"] < min_score:
                 # Candidates existed and were scored; none was good enough. Not
                 # the same as never finding one, so it is counted apart.
                 below_threshold += 1
                 continue
 
             runner_up = scored[1][0]["F"] if len(scored) > 1 else None
-            separated = runner_up is None or (best["F"] - runner_up) >= SEPARATION
+            separated = runner_up is None or (best["F"] - runner_up) >= separation
             routing = "suggested" if separated else "contested"
             alternatives = [p["contract_id"] for _s, p in scored[1:4]]
 
