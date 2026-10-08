@@ -2,6 +2,8 @@
 import ast, pathlib, sys
 
 WRITE = {"post", "put", "patch", "delete"}
+# gateway_principal: the agent-policy routes trust only the gateway's verified identity (design 3.2).
+RESOLVERS = {"require_user", "gateway_principal"}
 rows = []
 
 for path in sorted(pathlib.Path("src/api/routers").glob("*.py")):
@@ -24,7 +26,7 @@ for path in sorted(pathlib.Path("src/api/routers").glob("*.py")):
         has_principal = False
         for d in defaults:
             if isinstance(d, ast.Call) and getattr(d.func, "id", getattr(d.func, "attr", "")) == "Depends":
-                if d.args and getattr(d.args[0], "id", "") == "require_user":
+                if d.args and getattr(d.args[0], "id", "") in RESOLVERS:
                     has_principal = True
         # does the body call the gate?
         src = ast.get_source_segment(path.read_text(), node) or ""
@@ -33,7 +35,7 @@ for path in sorted(pathlib.Path("src/api/routers").glob("*.py")):
 
 unauth = [r for r in rows if not r[4]]
 print(f"write/send endpoints in src/api/routers: {len(rows)}")
-print(f"  with Depends(require_user): {len(rows) - len(unauth)}")
+print(f"  with Depends(require_user|gateway_principal): {len(rows) - len(unauth)}")
 print(f"  WITHOUT:                    {len(unauth)}")
 print()
 cur = None
