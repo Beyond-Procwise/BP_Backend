@@ -23,7 +23,10 @@ PREFIX = "agent-policy-documents/"
 UPLOAD_PREFIX = PREFIX + "uploads/"
 PRESIGN_SECONDS = 900
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9._ -]")
-_SUFFIX = re.compile(r"[\s_-]*(v\d+|\(\d+\)|final|draft|rev\d*)$")
+# A version mark only counts after a separator (or as a parenthesised number), so a word that
+# merely ends in one -- "Overdraft", "Semifinal" -- is left whole and cannot match another document.
+_SUFFIX = re.compile(r"(?:[\s_-]+|(?=\())(v\d+|\(\d+\)|final|draft|rev\d*)$")
+_HASH_CONSTRAINT = "ux_bp_policy_document_version_hash"
 _MAX_NAME = 120
 
 
@@ -204,31 +207,55 @@ def _fetch_upload(client, bucket: str, key: str, max_bytes: int) -> bytes:
         raise ValueError(f"{key}: the uploaded file is larger than the {max_bytes} byte limit.")
     body = client.get_object(Bucket=bucket, Key=key)["Body"]
     try:
-        data = body.read()
+        data = body.read(max_bytes + 1)  # never pull more than the limit, whatever head said
     finally:
         try:
             body.close()
         except Exception:  # noqa: BLE001 - closing is best effort
             pass
+    if len(data) > max_bytes:
+        raise ValueError(f"{key}: the uploaded file is larger than the {max_bytes} byte limit.")
     if len(data) != size:
         raise ValueError(f"{key}: the uploaded file changed while it was being read.")
     return data
+
+
+def _check_issued_key(key: str, name: str) -> None:
+    """The key must be exactly one presign_uploads issues for this name: uploads/<uuid4>/<safe name>."""
+    refused = ValueError(f"{key or 'An upload'} is not an agent-policy upload for {name or 'this file'}.")
+    if not key.startswith(UPLOAD_PREFIX):
+        raise refused
+    parts = key[len(UPLOAD_PREFIX):].split("/")
+    if len(parts) != 2:
+        raise refused
+    try:
+        if str(uuid.UUID(parts[0])) != parts[0]:
+            raise refused
+    except ValueError:
+        raise refused from None
+    if parts[1] != safe_name(name):
+        raise refused
+
+
+def _is_hash_violation(exc: Exception) -> bool:
+    diag = getattr(exc, "diag", None)
+    return getattr(exc, "pgcode", None) == "23505" and getattr(diag, "constraint_name", None) == _HASH_CONSTRAINT
 
 
 def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, Any]:
     key = str(upload.get("key") or "")
     name = str(upload.get("name") or "")
     revision_of = upload.get("revisionOf")
-    if not key.startswith(UPLOAD_PREFIX) or ".." in key:
-        raise ValueError(f"{key or 'An upload'} is not an agent-policy upload.")
     if _suffix(name) not in ACCEPTED:
         raise ValueError(f"{name or 'A file'}: only {', '.join(sorted(ACCEPTED))} files are accepted.")
+    _check_issued_key(key, name)
     data = _fetch_upload(client, bucket, key, max_bytes)
     content_hash = hashlib.sha256(data).hexdigest()
     filename = safe_name(name)
     match_name = normalise(name)
     title = Path(filename).stem or filename
 
+    previous_autocommit = conn.autocommit
     conn.autocommit = False
     cur = conn.cursor()
     try:
@@ -240,13 +267,24 @@ def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, A
             doc = _doc_by_match(cur, match_name)
 
         if doc is not None:
+            # Lock first, so a concurrent upload of the same bytes waits and then sees this one.
+            latest = _lock_latest(cur, doc["document_id"])
             existing = _version_by_hash(cur, doc["document_id"], content_hash)
             if existing is not None:
                 conn.rollback()
-                return {"documentId": doc["document_id"], "version": existing, "title": doc["title"],
-                        "isRevision": existing > 1, "duplicate": True}
-            version = _lock_latest(cur, doc["document_id"]) + 1
-            _insert_version(cur, doc["document_id"], version, filename, key, len(data), content_hash, actor)
+                return _duplicate(doc, existing)
+            version = latest + 1
+            try:
+                _insert_version(cur, doc["document_id"], version, filename, key, len(data), content_hash, actor)
+            except Exception as exc:
+                if not _is_hash_violation(exc):
+                    raise
+                conn.rollback()  # someone registered these bytes between our check and insert
+                existing = _version_by_hash(conn.cursor(), doc["document_id"], content_hash)
+                conn.rollback()  # end the read's transaction; autocommit cannot change inside one
+                if existing is None:
+                    raise
+                return _duplicate(doc, existing)
             _bump_latest(cur, doc["document_id"], version)
             document_id, doc_title = doc["document_id"], doc["title"]
         else:
@@ -260,7 +298,12 @@ def _register_one(conn, client, bucket, max_bytes, upload, actor) -> Dict[str, A
         conn.rollback()
         raise
     finally:
-        conn.autocommit = True
+        conn.autocommit = previous_autocommit
+
+
+def _duplicate(doc: Dict[str, Any], version: int) -> Dict[str, Any]:
+    return {"documentId": doc["document_id"], "version": version, "title": doc["title"],
+            "isRevision": version > 1, "duplicate": True}
 
 
 def register_uploads(conn, uploads: List[Dict[str, Any]], *, actor: str) -> List[Dict[str, Any]]:

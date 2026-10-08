@@ -1,6 +1,8 @@
 """Policy documents with S3 and the DB faked. Nothing here reaches AWS or Postgres."""
 import hashlib
 import io
+import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,13 +15,14 @@ class FakeS3:
     def __init__(self):
         self.objects = {}
         self.presigned = []
+        self.head_sizes = {}  # lets a test make head_object disagree with the body
 
     def generate_presigned_url(self, op, Params, ExpiresIn):
         self.presigned.append((op, Params, ExpiresIn))
         return f"https://s3.example/{Params['Key']}?sig=1"
 
     def head_object(self, Bucket, Key):
-        return {"ContentLength": len(self.objects[Key])}
+        return {"ContentLength": self.head_sizes.get(Key, len(self.objects[Key]))}
 
     def get_object(self, Bucket, Key):
         return {"Body": io.BytesIO(self.objects[Key])}
@@ -34,6 +37,7 @@ class FakeDB:
         self.autocommit = True
         self.commits = self.rollbacks = 0
         self._staged = None
+        self.log = []
 
     # connection API
     def cursor(self):
@@ -61,6 +65,7 @@ class FakeCursor:
 
     def execute(self, sql, params=()):
         db, s = self.db, " ".join(sql.split())
+        db.log.append(s)
         db._snapshot()
         if s.startswith("SELECT document_id, title, latest_version FROM proc.bp_policy_document WHERE document_id"):
             doc = db.docs.get(params[0])
@@ -115,7 +120,7 @@ def db():
 
 
 def _put(s3, name, data):
-    key = f"{d.UPLOAD_PREFIX}{hashlib.md5(data + name.encode()).hexdigest()}/{d.safe_name(name)}"
+    key = f"{d.UPLOAD_PREFIX}{uuid.uuid4()}/{d.safe_name(name)}"
     s3.objects[key] = data
     return {"key": key, "name": name, "revisionOf": None}
 
@@ -197,6 +202,12 @@ def test_intake_limits_is_the_routers_function(monkeypatch):
     ("Refund   Policy_draft.md", "refund policy"),
     ("Refund Policy rev2.txt", "refund policy"),
     ("draft.docx", "draft"),  # never normalised to nothing
+    ("Refund Policy(2).pdf", "refund policy"),  # a parenthesised number needs no separator
+    # a suffix word only counts after a separator: these are words, not version marks
+    ("Overdraft.pdf", "overdraft"),
+    ("Semifinal.docx", "semifinal"),
+    ("Card Overdraft Final.pdf", "card overdraft"),
+    ("Preview.md", "preview"),
 ])
 def test_name_normalisation(name, expected):
     assert d.normalise(name) == expected
@@ -246,9 +257,9 @@ def test_revision_of_unknown_document_is_refused(s3, db):
 
 
 def test_register_refuses_keys_outside_the_prefix_and_oversize(s3, db, monkeypatch):
-    s3.objects["documents/other.pdf"] = b"x"
+    s3.objects["documents/o.pdf"] = b"x"
     with pytest.raises(ValueError, match="not an agent-policy upload"):
-        d.register_uploads(db, [{"key": "documents/other.pdf", "name": "o.pdf"}], actor="u")
+        d.register_uploads(db, [{"key": "documents/o.pdf", "name": "o.pdf"}], actor="u")
     up = _put(s3, "Big.pdf", b"0123456789")
     monkeypatch.setattr(d, "intake_limits", lambda: (20, 5))
     with pytest.raises(ValueError, match="larger"):
@@ -335,3 +346,110 @@ def test_list_documents_has_every_version_and_no_text(s3, db, monkeypatch):
     assert len(out) == 1 and [v["version"] for v in out[0]["versions"]] == [1, 2]
     assert out[0]["latestVersion"] == 2
     assert all("parsedText" not in v and "text" not in v for v in out[0]["versions"])
+
+
+# ---------------------------------------------------------------- fix round 1
+
+def test_key_must_carry_the_issued_name(s3, db):
+    up = _put(s3, "Refund Policy.pdf", b"one")
+    up["name"] = "Travel Policy.pdf"  # registering someone else's object under another name
+    with pytest.raises(ValueError, match="not an agent-policy upload"):
+        d.register_uploads(db, [up], actor="u")
+    assert db.docs == {}
+
+
+@pytest.mark.parametrize("segment", ["not-a-uuid", uuid.uuid4().hex, str(uuid.uuid4()).upper(), ""])
+def test_key_middle_segment_must_be_a_uuid(s3, db, segment):
+    key = f"{d.UPLOAD_PREFIX}{segment}/Refund.pdf"
+    s3.objects[key] = b"one"
+    with pytest.raises(ValueError, match="not an agent-policy upload"):
+        d.register_uploads(db, [{"key": key, "name": "Refund.pdf"}], actor="u")
+    assert db.docs == {}
+
+
+def test_key_with_extra_path_segments_refused(s3, db):
+    key = f"{d.UPLOAD_PREFIX}{uuid.uuid4()}/../Refund.pdf"
+    s3.objects[key] = b"one"
+    with pytest.raises(ValueError, match="not an agent-policy upload"):
+        d.register_uploads(db, [{"key": key, "name": "Refund.pdf"}], actor="u")
+
+
+def test_dot_dot_names(s3, db):
+    # "Refund..pdf" is an ordinary file name and registers under its issued key
+    out = d.register_uploads(db, [_put(s3, "Refund..pdf", b"one")], actor="u")[0]
+    assert out["version"] == 1 and db.versions[(1, 1)]["filename"] == "Refund..pdf"
+    # a path in the name is reduced to its basename, so it cannot point anywhere else
+    up = _put(s3, "../../etc/Travel.pdf", b"two")
+    assert up["key"].endswith("/Travel.pdf")
+    assert d.register_uploads(db, [up], actor="u")[0]["title"] == "Travel"
+
+
+def test_autocommit_is_restored_to_what_the_caller_had(s3, db):
+    db.autocommit = False
+    d.register_uploads(db, [_put(s3, "Refund.pdf", b"one")], actor="u")
+    assert db.autocommit is False
+    db.autocommit = True
+    d.register_uploads(db, [_put(s3, "Refund.pdf", b"two")], actor="u")
+    assert db.autocommit is True
+
+
+def test_the_document_is_locked_before_the_duplicate_check(s3, db):
+    d.register_uploads(db, [_put(s3, "Refund.pdf", b"one")], actor="u")
+    db.log.clear()
+    d.register_uploads(db, [_put(s3, "Refund.pdf", b"one")], actor="u")
+    lock = next(i for i, q in enumerate(db.log) if q.endswith("FOR UPDATE"))
+    check = next(i for i, q in enumerate(db.log) if "content_hash = %s" in q and q.startswith("SELECT"))
+    assert lock < check
+
+
+class _UniqueViolation(Exception):
+    pgcode = "23505"
+    diag = SimpleNamespace(constraint_name="ux_bp_policy_document_version_hash")
+
+
+def test_a_concurrent_identical_upload_is_a_duplicate_not_an_error(s3, db, monkeypatch):
+    d.register_uploads(db, [_put(s3, "Refund.pdf", b"one")], actor="u")
+    calls = {"n": 0}
+    real = d._version_by_hash
+
+    def racing_check(cur, doc_id, h):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real(cur, doc_id, h)  # the other writer lands after our check
+
+    def insert_loses_race(*a, **k):
+        raise _UniqueViolation("duplicate key")
+    monkeypatch.setattr(d, "_version_by_hash", racing_check)
+    monkeypatch.setattr(d, "_insert_version", insert_loses_race)
+    out = d.register_uploads(db, [_put(s3, "Refund.pdf", b"one")], actor="u")[0]
+    assert out == {"documentId": 1, "version": 1, "title": "Refund", "isRevision": False, "duplicate": True}
+    assert db.docs[1]["latest"] == 1 and db.autocommit is True
+
+
+def test_other_integrity_errors_still_raise(s3, db, monkeypatch):
+    d.register_uploads(db, [_put(s3, "Refund.pdf", b"one")], actor="u")
+
+    class Other(Exception):
+        pgcode = "23505"
+        diag = SimpleNamespace(constraint_name="bp_policy_document_version_pkey")
+    monkeypatch.setattr(d, "_insert_version", lambda *a, **k: (_ for _ in ()).throw(Other("pk")))
+    with pytest.raises(Other):
+        d.register_uploads(db, [_put(s3, "Refund.pdf", b"two")], actor="u")
+
+
+def test_body_longer_than_the_limit_is_refused_even_if_head_said_small(s3, db, monkeypatch):
+    monkeypatch.setattr(d, "intake_limits", lambda: (20, 5))
+    up = _put(s3, "Refund.txt", b"0123456789")
+    s3.objects[up["key"]] = b"0123456789"
+    s3.head_sizes[up["key"]] = 3  # head under-reports
+    reads = []
+    real_get = s3.get_object
+
+    def get_object(Bucket, Key):
+        body = real_get(Bucket, Key)["Body"]
+        orig = body.read
+        body.read = lambda n=-1: (reads.append(n), orig(n))[1]
+        return {"Body": body}
+    monkeypatch.setattr(s3, "get_object", get_object)
+    with pytest.raises(ValueError, match="larger"):
+        d.register_uploads(db, [up], actor="u")
+    assert reads == [6] and db.docs == {}
