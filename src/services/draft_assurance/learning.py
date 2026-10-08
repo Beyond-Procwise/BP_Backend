@@ -307,3 +307,59 @@ def approve_exemplar(conn: Any, exemplar_id: int, by: str, rules: Dict[str, Any]
                        WHERE exemplar_id = %s AND status = 'candidate' AND author IS DISTINCT FROM %s RETURNING exemplar_id""",
                     (by, now, _add_months(now.date(), rules["exemplar_review_months"]), exemplar_id, by))
         return {"ok": bool(cur.fetchone())}
+
+
+def _named(by: Any) -> bool:
+    return isinstance(by, str) and bool(by.strip())
+
+
+def decide_dq_item(conn: Any, dq_id: int, by: Optional[str], action: str, note: Optional[str] = None) -> Dict[str, Any]:
+    """The data owner resolves or dismisses a data-quality item. Open items only; a named person only."""
+
+    if action not in ("resolve", "dismiss") or not _named(by):
+        return {"ok": False, "error": "action must be resolve or dismiss, by a named person"}
+    status = "resolved" if action == "resolve" else "dismissed"
+    with conn.cursor() as cur:
+        cur.execute("UPDATE email_agent.bp_dq_item SET status = %s, resolved_by = %s, resolved_at = now(), note = COALESCE(%s, note) "
+                    "WHERE dq_id = %s AND status = 'open' RETURNING dq_id", (status, by.strip(), (note or "").strip()[:500] or None, int(dq_id)))
+        row = cur.fetchone()
+    return {"ok": True} if row else {"ok": False, "error": "no such open item"}
+
+
+def decide_review_item(conn: Any, review_id: int, by: Optional[str], action: str) -> Dict[str, Any]:
+    if action not in ("accept", "dismiss") or not _named(by):
+        return {"ok": False, "error": "action must be accept or dismiss, by a named person"}
+    status = "accepted" if action == "accept" else "dismissed"
+    with conn.cursor() as cur:
+        cur.execute("UPDATE email_agent.bp_review_item SET status = %s, decided_by = %s, decided_at = now() "
+                    "WHERE review_id = %s AND status = 'open' RETURNING review_id", (status, by.strip(), int(review_id)))
+        row = cur.fetchone()
+    return {"ok": True} if row else {"ok": False, "error": "no such open item"}
+
+
+_CANDIDATE_TABLES = {"eval": ("bp_eval_candidate", "eval_id"), "classifier": ("bp_classifier_example", "example_id")}
+
+
+def decide_candidate(conn: Any, kind: str, item_id: int, by: Optional[str], action: str) -> Dict[str, Any]:
+    """Mark an eval or classifier candidate as taken into the set (export) or turned down (reject). From 'candidate' only."""
+
+    if kind not in _CANDIDATE_TABLES or action not in ("export", "reject") or not _named(by):
+        return {"ok": False, "error": "kind must be eval or classifier, action export or reject, by a named person"}
+    table, pk = _CANDIDATE_TABLES[kind]
+    status = "exported" if action == "export" else "rejected"
+    with conn.cursor() as cur:
+        cur.execute(f"UPDATE email_agent.{table} SET status = %s WHERE {pk} = %s AND status = 'candidate' RETURNING {pk}", (status, int(item_id)))
+        row = cur.fetchone()
+    return {"ok": True} if row else {"ok": False, "error": "no such candidate"}
+
+
+def reject_exemplar(conn: Any, exemplar_id: int, by: Optional[str]) -> Dict[str, Any]:
+    """Turn an exemplar candidate down. Who did it is recorded by the authorisation audit, not on the row."""
+
+    if not _named(by):
+        return {"ok": False, "error": "a named person is required"}
+    with conn.cursor() as cur:
+        cur.execute("UPDATE email_agent.bp_exemplar_candidate SET status = 'rejected' WHERE exemplar_id = %s AND status = 'candidate' "
+                    "RETURNING exemplar_id", (int(exemplar_id),))
+        row = cur.fetchone()
+    return {"ok": True} if row else {"ok": False, "error": "no such candidate"}

@@ -544,3 +544,21 @@ and no new screen. They arrive in `assumptions[]` exactly like the others:
   recorded but do NOT ask anything; they are visible in the brief's tone line as "(default)".
 - `brief.tone_rationale` lists all eight variables with their source: postgres, user_instruction or default.
 - Machine ids contain a colon (`tone:escalation_level`): URL-encode nothing, they travel in the JSON body only.
+
+## Addendum: endpoints now available for a learning-queues screen (2026-10-08)
+
+The backend half exists; the UI is untouched. Everything is under `/email-learning`, authenticated, and every write names the signed-in
+person on the server (never in the body).
+
+| screen element | call |
+|---|---|
+| badge counts per queue | `GET /queues` |
+| "Facts a reviewer changed" list; resolve / dismiss | `GET /data-quality`, `POST /data-quality/{id}/decision` `{"action":"resolve"|"dismiss","note":"..."}` |
+| "Patterns across reviewers"; accept / dismiss | `GET /review-items`, `POST /review-items/{id}/decision` `{"action":"accept"|"dismiss"}` |
+| "My suggested writing rules"; approve / edit / reject | `GET /style-rules`, `POST /style-rules/{id}/decision` `{"action":"approve"|"edit"|"reject","text":"..."}` |
+| exemplar candidates; read one; approve / reject | `GET /exemplars`, `GET /exemplars/{id}` (text), `POST /exemplars/{id}/decision` `{"action":"approve"|"reject"}` (Admin; never the author) |
+| eval and classifier candidates; export / reject | `GET /eval-candidates`, `GET /classifier-examples`, `POST .../{id}/decision` `{"action":"export"|"reject"}` |
+| quality over time | `GET /metrics?bucket=day|week|month&family=...&days=90` |
+
+A 403 means the person may not; a 422 means the item is not in a state that allows the action (already decided, or you are its author);
+a 404 means no such item for you.
