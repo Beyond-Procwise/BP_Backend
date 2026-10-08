@@ -12,6 +12,7 @@ anything but the latest version is refused, never merged silently.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from services.agent_policy import contract, readiness
@@ -40,6 +41,31 @@ class InvalidTransition(Exception):
 
 _activation_problems = readiness.activation_problems
 _contract_problems = contract.validate
+
+
+def attribute_confirmation(new_form: Dict[str, Any], previous_form: Optional[Dict[str, Any]], *,
+                           actor: str, now_iso: str) -> Dict[str, Any]:
+    """Return a copy of new_form whose `checked` is what the server records, never what the browser sent.
+
+    No confirmation -> None. The very same confirmation carried forward unchanged (and not cleared by an
+    edit to what it vouches for) -> the earlier one is kept. Anything else is a fresh confirmation by the
+    authenticated caller; saving a confirmed form after a change therefore re-attributes it to the saver.
+    """
+    out = dict(new_form)
+    sent = new_form.get("checked")
+    if not sent:
+        out["checked"] = None
+    elif (previous_form is not None and previous_form.get("checked")
+          and not readiness.confirmation_cleared(previous_form, new_form)
+          and sent == previous_form["checked"]):
+        out["checked"] = previous_form["checked"]
+    else:
+        out["checked"] = {"by": actor, "at": now_iso}
+    return out
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _area(cur, name: Optional[str]) -> Dict[str, Any]:
@@ -99,6 +125,7 @@ def _txn(conn):
 def create_draft(conn, form: Dict[str, Any], *, actor: str) -> Dict[str, Any]:
     cur = _txn(conn)
     try:
+        form = attribute_confirmation(form, None, actor=actor, now_iso=_now_iso())
         area = _area(cur, form.get("businessArea"))
         key = _allocate(cur, area["area_name"])
         cur.execute("INSERT INTO proc.bp_agent_policy (policy_key, area_name, status, latest_version, created_by)"
@@ -130,6 +157,11 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
         row = _lock(cur, policy_key)
         if row["latest_version"] != base_version:
             raise StaleVersion(f"latest is {row['latest_version']}, edit was based on {base_version}")
+        cur.execute("SELECT form_state FROM proc.bp_agent_policy_version WHERE policy_key=%s AND version=%s",
+                    (policy_key, base_version))
+        prev = cur.fetchone()
+        prev_form = (json.loads(prev[0]) if isinstance(prev[0], str) else prev[0]) if prev else None
+        form = attribute_confirmation(form, prev_form, actor=actor, now_iso=_now_iso())
         version = base_version + 1
         if intent == "activate":
             settings, registry = load_settings(conn), load_registry(conn)

@@ -121,3 +121,21 @@ def test_retiring_a_retired_policy_is_refused_and_writes_nothing(conn):
     with pytest.raises(repo.InvalidTransition):
         repo.retire(conn, key, base_version=2, actor="t", change_note="")
     assert repo.get_policy(conn, key)["latestVersion"] == 2 and _count(conn, key) == 2
+
+
+def test_create_draft_ignores_a_forged_checked_by(conn):
+    key = repo.create_draft(conn, {"name": "Forged", "checked": {"by": "someone-else", "at": "1999-01-01T00:00:00Z"}},
+                            actor="real-actor")["policyKey"]
+    checked = repo.get_policy(conn, key)["versions"][0]["form"]["checked"]
+    assert checked["by"] == "real-actor" and not checked["at"].startswith("1999")
+
+
+def test_save_version_keeps_a_carried_confirmation_and_reattributes_after_change(conn):
+    key = repo.create_draft(conn, {"name": "Carry", "situation": "s", "checked": {"by": "x", "at": "y"}},
+                            actor="alice")["policyKey"]
+    first = repo.get_policy(conn, key)["versions"][0]["form"]
+    repo.save_version(conn, key, {**first, "owner": "Ops"}, base_version=1, intent="draft", actor="bob", change_note="")
+    v2 = repo.get_policy(conn, key)["versions"][1]["form"]
+    assert v2["checked"] == first["checked"] and v2["checked"]["by"] == "alice"
+    repo.save_version(conn, key, {**v2, "situation": "new"}, base_version=2, intent="draft", actor="bob", change_note="")
+    assert repo.get_policy(conn, key)["versions"][2]["form"]["checked"]["by"] == "bob"
