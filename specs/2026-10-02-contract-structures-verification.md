@@ -1140,9 +1140,11 @@ failure belongs to the first run. No other failure.
 | Addendum | **65.9** review | below | below | - | below | below |
 | Change Control Note | **65.9** review | below | below | - | below | below |
 
-Before this branch: Variation and Addendum 75.6 on their own titles' terms, CCN below threshold, with
-these generic titles. Now all three score 65.9 when they declare a reference that resolves to a
-supplier-matched parent, with no buyer on the row; the design measured 78.4 with a buyer. A
+Measured in the design session, 2026-10-08, before this branch (same `cl_matrix.py` scenarios, run
+against Development code; declared-reference row, generic titles): Variation 75.6 review, Addendum 75.6
+review, Change Control Note below threshold (its title "Change Control Note Helix" read WEAK on
+title overlap). That earlier run is not reproduced here; this section's own run gives the 65.9 figures. Now all three score 65.9 when they declare a reference that resolves to a
+supplier-matched parent; the design (not re-measured here) gave 78.4 with a buyer. A
 variation or addendum that names nothing is still NOT proposed (the amendment profile does not
 read a generic title as evidence), and is counted as `below_threshold`, not `no_candidate`.
 
@@ -1159,13 +1161,21 @@ role's profile with the corroborating signals.
 | OF-2026-0211 | FA-2026-0042 | 23.5 | 45.0 weak_relation (loser) |
 
 Proposals before / after: 1 / 2. Contested before / after: 0 / 0. Highest band reached: `auto_link`
-(F 93.05) after, `auto_link_with_warning` before. This is the evidence for spec section 8 risk 3:
+final score 93.05 (shown as 93.0 in the table) after, `auto_link_with_warning` before. This is the evidence for spec section 8 risk 3:
 corroborators DO lift a pair into a higher band. It is still a proposal a person confirms
 (the profiles are in `UNCALIBRATED_PROFILES`, so no graph edge is written at auto_link either).
 The real `propose_parent_links()` pass returned proposed 2, contested 0, no_candidate 0,
 below_threshold 0, considered children 5 / with_structure 2 / with_candidates 2.
-Both proposals attach to the two rows that already existed open (the five verification documents'
-rows); the pass created 0 new rows, deleted 0, and refreshed the evidence on those 2 (accepted).
+The two open rows for these two children already existed (discrepancy_id 12581 for OF-2026-0117,
+created 2026-10-03 19:30 UTC; 15140 for OF-2026-0211, created 2026-10-04 21:48 UTC), both from earlier
+runs under code that predates this branch. The pass created 0 new rows and deleted 0. **It did refresh
+the evidence text on those two existing open rows on bp_testdb**; their notes now read score 72.6 and
+93.0, and the earlier text is overwritten and not recoverable, so the score each row first carried
+cannot be stated. That is why a row exists for OF-2026-0117 although the old five-signal profile scores
+it 54.6 today: the row was written by an earlier run, and I could not establish which (a verification
+run or the sweep) or at what score. "Proposals before / after" above are counts from SCORING the same
+children, not counts of database rows. Nothing is linked by any of this: `confirm()` is the only thing
+that links, and a person must call it.
 
 ### Still unproven / deployment prerequisites
 
