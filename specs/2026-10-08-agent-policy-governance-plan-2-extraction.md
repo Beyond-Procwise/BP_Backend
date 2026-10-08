@@ -454,6 +454,7 @@ Copy the shape of `src/services/rga/job_store.py` and `job_runner.py` (read them
 
 - Register `GET /agent-policies/documents*` and `/extraction-runs*` before the `/{key}` route.
 - `upload-urls` and `documents` refuse a key that is not under `agent-policy-documents/uploads/`.
+- **Gateway, local bypass group (ruling):** in `src/auth/guards/cognito.guard.ts`, the local bypass (which already needs AUTH_BYPASS, IS_OFFLINE, non-production NODE_ENV and no Lambda) reads its groups from `AUTH_BYPASS_GROUPS` (a comma list). The default stays `['Admin']`, so nothing changes for anyone who doesn't set it. Then set `AUTH_BYPASS_GROUPS=PROCWISE_ADMIN` for the local demo, so gateway writes work locally. Add a spec for the default and for the override. Nothing changes outside bypass mode.
 - **Gateway:** add the same routes to `agent-policy.controller.ts`, with the same roles, `need()`, and an id allow-list:
   - `documentId` and `runId`: `^[0-9]{1,18}$`;
   - `from`/`to`: `^[0-9]{1,6}$`.
