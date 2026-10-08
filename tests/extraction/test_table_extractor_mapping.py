@@ -119,3 +119,19 @@ def test_header_mapping_for_the_new_labels():
     assert _header_to_field("Role / Grade", LF) == "item_description"
     assert _header_to_field("Days", LF) == "quantity"
     assert _header_to_field("Provision", LF) == "item_description"
+
+
+def test_a_fixed_fee_row_keeps_its_quantity_and_fee():
+    # "1 package" at "£80,000" with 6% off = "£75,200". The quantity did not coerce and "Fee"
+    # was no label, so the row kept only its net amount and read as a lump sum.
+    lines = _lines(_doc(FIXED))
+    assert lines[0]["quantity"] == "1"
+    assert lines[0]["unit_of_measure"] == "package"
+    assert lines[0]["unit_price"] == "£80,000"
+    assert lines[0]["line_amount"] == "£75,200"
+
+
+def test_a_fee_column_with_no_amount_column_is_the_amount():
+    lines = _lines(_doc([["Service", "Fee (£)"], ["Annual audit", "£12,000"]]))
+    assert lines[0]["line_amount"] == "£12,000"
+    assert "unit_price" not in lines[0]

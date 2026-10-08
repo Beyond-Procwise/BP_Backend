@@ -681,6 +681,7 @@ line_items:
       db_column: unit_price
       canonical_labels:
         - "Unit Price"
+        - "Fee"
         - "Rate"
         - "Price Each"
         - "Unit Cost"
