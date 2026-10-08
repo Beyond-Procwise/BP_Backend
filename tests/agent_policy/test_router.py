@@ -519,3 +519,15 @@ def test_agent_fix_takes_at_most_20_flipped_examples(client, monkeypatch):
     assert r.status_code == 422
     r = client.post("/agent-policies/FIN-0001/agent-fix", json={"baseVersion": 1, "flipped": flips[:20]}, headers=BUYER)
     assert r.status_code == 202
+
+
+def test_save_and_retire_invalidate_the_enforcement_cache(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(R.live_policies, "invalidate", lambda: calls.append(1))
+    monkeypatch.setattr(R.repo, "save_version", lambda *a, **k: {"policyKey": "GEN-0001", "version": 2})
+    monkeypatch.setattr(R.repo, "retire", lambda *a, **k: {"policyKey": "GEN-0001", "version": 3})
+    body = {"form": {"name": "x"}, "baseVersion": 1, "intent": "draft", "changeNote": ""}
+    assert client.post("/agent-policies/GEN-0001/versions", json=body, headers=GOOD).status_code == 200
+    assert client.post("/agent-policies/GEN-0001/retire", json={"baseVersion": 2, "changeNote": ""},
+                       headers=GOOD).status_code == 200
+    assert len(calls) == 2

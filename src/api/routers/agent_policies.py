@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
-from services.agent_policy import conditions, contract, documents, readiness, run_runner, run_store, sections
+from services.agent_policy import conditions, contract, documents, live_policies, readiness, run_runner, run_store, sections
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -340,16 +340,19 @@ def create(body: CreateBody, p: Principal = Depends(gateway_principal)):
 def save(key: str, body: VersionBody, p: Principal = Depends(gateway_principal)):
     minimum, action = ("Approver", "agent_policy.activate") if body.intent == "activate" else ("Buyer", "agent_policy.write")
     _require(p, minimum, action, {"policy": key, "intent": body.intent, "baseVersion": body.baseVersion})
-    with _conn() as conn:
-        try:
-            return repo.save_version(conn, key, body.form, base_version=body.baseVersion, intent=body.intent,
-                                     actor=p.subject, change_note=body.changeNote)
-        except repo.StaleVersion as exc:
-            raise HTTPException(status_code=409, detail=f"Someone saved a newer version ({exc}). Reload and try again.")
-        except repo.NotReady as exc:
-            return JSONResponse(status_code=422, content={"problems": exc.problems})
-        except repo.NotFound:
-            raise HTTPException(status_code=404, detail="no such policy")
+    try:
+        with _conn() as conn:
+            try:
+                return repo.save_version(conn, key, body.form, base_version=body.baseVersion, intent=body.intent,
+                                         actor=p.subject, change_note=body.changeNote)
+            except repo.StaleVersion as exc:
+                raise HTTPException(status_code=409, detail=f"Someone saved a newer version ({exc}). Reload and try again.")
+            except repo.NotReady as exc:
+                return JSONResponse(status_code=422, content={"problems": exc.problems})
+            except repo.NotFound:
+                raise HTTPException(status_code=404, detail="no such policy")
+    finally:
+        live_policies.invalidate()   # after the connection closes, so the next check sees this save
 
 
 @router.post("/{key}/agent-fix")
@@ -372,15 +375,18 @@ def agent_fix(key: str, body: FixBody, p: Principal = Depends(gateway_principal)
 @router.post("/{key}/retire")
 def retire(key: str, body: RetireBody, p: Principal = Depends(gateway_principal)):
     _require(p, "Approver", "agent_policy.activate", {"policy": key, "intent": "retire"})
-    with _conn() as conn:
-        try:
-            return repo.retire(conn, key, base_version=body.baseVersion, actor=p.subject, change_note=body.changeNote)
-        except repo.StaleVersion as exc:
-            raise HTTPException(status_code=409, detail=f"Someone saved a newer version ({exc}). Reload and try again.")
-        except repo.InvalidTransition:
-            raise HTTPException(status_code=409, detail="This policy is already retired.")
-        except repo.NotFound:
-            raise HTTPException(status_code=404, detail="no such policy")
+    try:
+        with _conn() as conn:
+            try:
+                return repo.retire(conn, key, base_version=body.baseVersion, actor=p.subject, change_note=body.changeNote)
+            except repo.StaleVersion as exc:
+                raise HTTPException(status_code=409, detail=f"Someone saved a newer version ({exc}). Reload and try again.")
+            except repo.InvalidTransition:
+                raise HTTPException(status_code=409, detail="This policy is already retired.")
+            except repo.NotFound:
+                raise HTTPException(status_code=404, detail="no such policy")
+    finally:
+        live_policies.invalidate()
 
 
 @orchestrator_router.get("/v2/live")
