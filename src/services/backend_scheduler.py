@@ -445,6 +445,7 @@ class BackendScheduler:
         self._register_contract_expiry_job()
         self._register_email_learning_job()
         self._register_email_text_retention_job()
+        self._register_email_draft_sweep_job()
 
     EMAIL_LEARNING_JOB_NAME = "email-learning"
 
@@ -526,6 +527,44 @@ class BackendScheduler:
         except Exception:
             # An unreadable period, an absent schema or a database fault stops THIS run and says why.
             logger.exception("email text retention run failed")
+
+    EMAIL_DRAFT_SWEEP_JOB_NAME = "email-draft-sweep"
+
+    def _register_email_draft_sweep_job(self) -> None:
+        """Record drafts nobody sent and nobody abandoned as abandoned, once they have been quiet for the governed period.
+
+        ON unless EMAIL_DRAFT_SWEEP_ENABLED is 0/false. Where the email_agent schema or the sweep rules are absent the run
+        does nothing and says why. It abandons a draft only when the product tables confirm it was not sent (see
+        draft_assurance.sweep). Interval EMAIL_DRAFT_SWEEP_INTERVAL_MINUTES (default 60); idempotent.
+        """
+        import os
+        if os.environ.get("EMAIL_DRAFT_SWEEP_ENABLED", "1").strip().lower() in ("0", "false", "no", "off"):
+            logger.info("email draft sweep job not registered (EMAIL_DRAFT_SWEEP_ENABLED)")
+            return
+        if self.EMAIL_DRAFT_SWEEP_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("EMAIL_DRAFT_SWEEP_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.EMAIL_DRAFT_SWEEP_JOB_NAME,
+            self._run_email_draft_sweep,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=20),
+        )
+
+    def _run_email_draft_sweep(self) -> None:
+        try:
+            from src.services import rbac
+            from src.services.draft_assurance import connections, sweep
+
+            rules = sweep.load_rules(rbac.policy_engine())
+            with connections.writer(self.agent_nick) as writer_conn, connections.reader(self.agent_nick) as reader_conn:
+                report = sweep.sweep(writer_conn, reader_conn, rules)
+            logger.info("email draft sweep: %s", report)
+        except Exception:
+            logger.exception("email draft sweep run failed")
 
     TRIAGE_JOB_NAME = "discrepancy-triage"
 

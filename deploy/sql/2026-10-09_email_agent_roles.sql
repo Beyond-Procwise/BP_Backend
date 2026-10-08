@@ -53,6 +53,15 @@ GRANT SELECT (supplier_id, supplier_name, contact_name_1, contact_email_1, conta
     ON proc.bp_supplier TO email_agent_reader;
 ALTER ROLE email_agent_reader SET default_transaction_read_only = on;
 
+-- The abandoned-draft sweep must confirm a draft was NOT sent before it records it as abandoned. Two columns of the drafts table
+-- say whether it went; the body, the recipients and the payload are NOT readable. Skipped where the table is absent.
+DO $$
+BEGIN
+    IF to_regclass('proc.draft_rfq_emails') IS NOT NULL THEN
+        GRANT SELECT (unique_id, sent, sent_on) ON proc.draft_rfq_emails TO email_agent_reader;
+    END IF;
+END $$;
+
 -- ---- writer: the capture and learning tables, nothing else -----------------------------------------------------
 GRANT USAGE ON SCHEMA email_agent TO email_agent_writer;
 GRANT SELECT, INSERT, UPDATE ON

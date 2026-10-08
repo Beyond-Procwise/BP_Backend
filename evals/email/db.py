@@ -26,7 +26,9 @@ MIGRATIONS: List[str] = [
     "2026-10-07_email_agent_capture.sql",
     "2026-10-08_email_agent_capture_v2.sql",
     "2026-10-08_email_agent_sent_text.sql",
+    "2026-10-08_email_agent_steering_column.sql",
     "2026-10-08_email_agent_steering.sql",
+    "2026-10-08_email_draft_sweep.sql",
     "2026-10-07_email_family_negotiation_counter.sql",
     "2026-10-07_email_family_free_prompt.sql",
     "2026-10-08_email_family_rfq_batch.sql",
@@ -37,6 +39,13 @@ MIGRATIONS: List[str] = [
     "2026-10-09_email_agent_learning.sql",
     "2026-10-09_email_agent_roles.sql",
 ]
+
+
+# The groups the DDL pack is applied in (specs/2026-10-09-bp-sqldb-email-assurance-ddl-pack.md). (a) must work ALONE: it is applied
+# first and (b) waits for live verification. tests/email_evals/test_pack_split.py proves it.
+PACK_B = ("2026-10-08_email_agent_steering.sql", "2026-10-08_email_tone_rules.sql", "2026-10-08_email_assurance_prompts.sql")
+ROLES = ("2026-10-09_email_agent_roles.sql",)
+PACK_A = tuple(m for m in MIGRATIONS if m not in PACK_B and m not in ROLES)
 
 
 class NoDatabase(RuntimeError):

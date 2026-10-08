@@ -1,17 +1,14 @@
--- email_agent: what steered each draft, and the switch + limits for steering.
+-- The switch and limits for steering. (The column that records what steered a draft is its own file, in pack (a):
+-- 2026-10-08_email_agent_steering_column.sql, because the capture code writes to it.)
 --
 -- NOT applied anywhere. Belongs to PACK (b) with the tone rules and prompts (ruling 2026-10-08: held back until live
 -- verification), because steering changes what the model is asked to write and its effect on quality cannot be
 -- judged without a real model.
 --
 -- Steering = tone directives (only for tone that came from data or the person's words), the draft author's own
--- approved style rules, and approved exemplars. The column records WHICH, by id, never the text.
+-- approved style rules, and approved exemplars.
 
 BEGIN;
-
-ALTER TABLE email_agent.bp_draft_capture ADD COLUMN IF NOT EXISTS steering JSONB;
-COMMENT ON COLUMN email_agent.bp_draft_capture.steering IS
-    'What steered the draft: {status, tone:[{variable,value}], style_rule_ids, exemplar_ids, exemplar_scope}. NULL = steering never ran for this row.';
 
 INSERT INTO proc.bp_policy
     (policy_name, policy_type, policy_desc, policy_details,

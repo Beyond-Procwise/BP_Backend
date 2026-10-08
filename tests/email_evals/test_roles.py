@@ -137,6 +137,22 @@ def test_the_read_only_default_is_a_guardrail_and_the_missing_privilege_is_the_b
     fresh.close()
 
 
+def test_the_reader_can_see_whether_a_draft_was_sent_and_nothing_else_about_it(logins):
+    ro, rw = logins
+    assert ok(ro, "SELECT unique_id, sent, sent_on FROM proc.draft_rfq_emails LIMIT 1") is not None
+    for column in ("body", "subject", "recipient_email", "payload", "sender", "supplier_id", "attachments"):
+        denied(ro, f"SELECT {column} FROM proc.draft_rfq_emails LIMIT 1")
+    denied(ro, "SELECT * FROM proc.draft_rfq_emails")
+    denied(ro, "UPDATE proc.draft_rfq_emails SET sent = true")
+    denied(rw, "SELECT unique_id FROM proc.draft_rfq_emails")                       # the writer has no product access at all
+    with ro.cursor() as c:                                                           # and not merely because it lacks the schema:
+        c.execute("SELECT has_column_privilege('email_agent_writer', 'proc.draft_rfq_emails', 'unique_id', 'SELECT'), "
+                  "has_schema_privilege('email_agent_writer', 'proc', 'USAGE'), "
+                  "has_column_privilege('email_agent_reader', 'proc.draft_rfq_emails', 'sent', 'SELECT'), "
+                  "has_column_privilege('email_agent_reader', 'proc.draft_rfq_emails', 'body', 'SELECT')")
+        assert c.fetchone() == (False, False, True, False)
+
+
 def test_the_reader_cannot_become_anything_more_powerful(logins):
     ro, _ = logins
     for role in ("postgres", "email_agent_writer"):
