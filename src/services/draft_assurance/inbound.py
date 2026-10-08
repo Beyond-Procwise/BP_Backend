@@ -100,6 +100,104 @@ def screen_payment_change(subject: Any = "", body: Any = "") -> Dict[str, Any]:
             "bank_details_present": bank, "pressure": pressure}
 
 
+# --- prompt injection -----------------------------------------------------------------------------------------------------------
+# An inbound reply reaches a model in two places. Text in it that tries to instruct the assistant must be seen by a person first.
+# Narrow on purpose: ordinary supplier mail says "please ignore my previous message", so an override needs an INSTRUCTION-class noun
+# (instructions, prompts, rules, guidelines...) and an action directed at the assistant needs the assistant to be addressed.
+
+_OBJ = r"(?:instructions?|prompts?|rules|directions|guidelines|programming|system\s+prompt|constraints)"
+_PREV = r"(?:previous|prior|above|earlier|preceding|former|original)"
+_OVERRIDE_PATTERNS = {
+    "ignore-previous-instructions": re.compile(r"\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+|any\s+|the\s+|your\s+|my\s+|these\s+|those\s+|of\s+)*" + _PREV + r"\s+" + _OBJ),
+    "forget-everything": re.compile(r"\bforget\s+(?:everything|all)\s+(?:you|that|above|before)"),
+    "role-reset": re.compile(
+        r"\byou\s+are\s+(?:now|no\s+longer)\s+(?:an?|the|free|unrestricted|in|my|operating|acting|bound)\b"
+        r"|\bfrom\s+now\s+on,?\s+you\s+(?:are|will|must|should|shall)\b|\bpretend\s+(?:to\s+be|you\s+are)\b"
+        r"|\bact\s+as\s+(?:an?|the)\s+(?:ai|assistant|language\s+model|chatbot|different|unrestricted|system)\b"
+        r"|\bdeveloper\s+mode\b|\bjailbreak\b|\bdo\s+anything\s+now\b"),
+    "reveal-prompt": re.compile(r"\b(?:reveal|print|show|output|repeat|disclose)\s+(?:your|the)\s+(?:system\s+)?prompt\b"
+                                r"|\b(?:reveal|print|show|output|repeat|disclose)\s+your\s+(?:system\s+)?instructions\b|\bsystem\s+prompt\b"),
+}
+_SQUASHED_OVERRIDE = re.compile(r"(?:ignore|disregard|forget|override|bypass)(?:all|any|the|your|my|these|those|of)*" + _PREV.replace("\\", "")
+                                + r"(?:instructions?|prompts?|rules|directions|guidelines|programming|systemprompt|constraints)")
+_ROLE_MARKERS = {
+    "role-marker-tag": re.compile(r"<\s*/?\s*(?:system|assistant|instructions?|prompt)\s*>"),
+    "role-marker-bracket": re.compile(r"\[\s*/?\s*(?:inst|sys|system)\s*\]|<<\s*/?\s*sys\s*>>"),
+    "role-marker-token": re.compile(r"<\|[a-z_]+\|>"),
+    "role-marker-heading": re.compile(r"(?m)^\s*#{2,}\s*(?:system|instructions?)\b"),
+}
+_AI_TERMS = re.compile(r"\b(?:assistant|ai|chatbot|llm|language\s+model|gpt|claude|bot|automated\s+(?:system|agent|assistant|reader)|procwise|procurement\s+agent)\b")
+_DIRECTED = {
+    "directed-forward": re.compile(r"\b(?:forward|send|copy|bcc|cc|email|share)\b[^.!?]{0,80}?\bto\s+\S+@\S+"),
+    "directed-recipient": re.compile(r"change\s+the\s+recipients?\b|(?:reply|respond)\s+(?:only\s+)?to\s+(?:this|the\s+following)\s+address|use\s+this\s+(?:email\s+)?address\s+instead"),
+}
+_HIDDEN_ELEMENT = re.compile(
+    r"<(\w+)\b[^>]*\bstyle\s*=\s*[\"'][^\"']*(?:display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?![.\d])|opacity\s*:\s*0(?![.\d]))[^\"']*[\"'][^>]*>(.*?)</\1\s*>",
+    re.I | re.S)
+_COMMENT = re.compile(r"<!--(.*?)-->", re.S)
+
+
+def _light(text: Any) -> str:
+    """Zero-width characters and entities resolved, lower-cased, TAGS KEPT (a fake <system> tag is itself a signal)."""
+    if not isinstance(text, str) or not text:
+        return ""
+    if len(text) > 2 * MAX_SCAN:
+        text = text[:MAX_SCAN] + "\n" + text[-MAX_SCAN:]
+    return html.unescape(_ZERO_WIDTH.sub("", text)).lower()
+
+
+def _instruction_hits(norm: str, light: str) -> Dict[str, str]:
+    """{pattern id: kind} for every instruction-class signal in the text. ``norm`` has tags stripped, ``light`` has them."""
+    hits: Dict[str, str] = {}
+    for pid, rx in _OVERRIDE_PATTERNS.items():
+        if rx.search(norm):
+            hits[pid] = "instruction_override"
+    if "ignore-previous-instructions" not in hits and _SQUASHED_OVERRIDE.search(re.sub(r"[^a-z]", "", norm)):
+        hits["ignore-previous-instructions"] = "instruction_override"      # words spelled out letter by letter merge into one blob
+    for pid, rx in _ROLE_MARKERS.items():
+        if rx.search(light):
+            hits[pid] = "role_marker"
+    if _AI_TERMS.search(norm):
+        for pid, rx in _DIRECTED.items():
+            if rx.search(norm):
+                hits[pid] = "assistant_directed_action"
+    return hits
+
+
+def _hidden_segments(raw: str) -> List[str]:
+    out: List[str] = []
+    for m in _HIDDEN_ELEMENT.finditer(raw):
+        out.append(m.group(2))
+    for m in _COMMENT.finditer(raw):
+        inner = m.group(1).strip()
+        if inner.lower().startswith(("[if", "<![endif", "procwise_marker")) or not inner:
+            continue                                                       # conditional comments and our own tracking marker
+        out.append(inner)
+    return out
+
+
+def screen_injection(subject: Any = "", body: Any = "", html: Any = None) -> Dict[str, Any]:
+    """{"suspected", "kinds", "terms", "hidden_text"}: does this reply try to instruct the assistant? Never raises.
+
+    ``terms`` are pattern ids (e.g. ``ignore-previous-instructions``), never text from the email. ``hidden_text`` says invisible text was
+    present at all; it is a reason to suspect only when that text itself carries an instruction.
+    """
+
+    raw = "\n".join(x for x in (subject, body, html) if isinstance(x, str) and x)
+    norm, light = _normalise(raw), _light(raw)
+    hits = _instruction_hits(norm, light)
+    kinds = set(hits.values())
+    terms = sorted(hits)
+    segments = _hidden_segments(light)
+    if segments:
+        hidden = " ".join(segments)
+        hidden_hits = _instruction_hits(_normalise(hidden), hidden)
+        if hidden_hits:
+            kinds.add("hidden_instruction")
+            terms = sorted(set(terms) | {"hidden-text"})
+    return {"suspected": bool(kinds), "kinds": sorted(kinds), "terms": terms[:8], "hidden_text": bool(segments)}
+
+
 # --- recording what the screen found --------------------------------------------------------------------------------------------
 
 class FlagLookupFailed(RuntimeError):
@@ -129,28 +227,72 @@ def record_flag(conn: Any, *, workflow_id: Optional[str], unique_id: Optional[st
     return int(got[0]) if got else None
 
 
-def screen_and_record(row: Any, conn_factory: Optional[Callable[[], Any]] = None) -> Optional[int]:
-    """Screen an inbound reply and, if suspected, flag it. NEVER raises and never blocks the ingest: this runs inside the path
-    that stores a supplier's reply, and a fault here must cost a missed flag at worst (logged), not a lost reply."""
+def _record_screen(row: Any, screen: Callable[[Any], Dict[str, Any]], kind: str, label: str,
+                   conn_factory: Optional[Callable[[], Any]]) -> Optional[int]:
+    """Run ``screen`` on a stored reply and flag it as ``kind`` if suspected. NEVER raises and never blocks the ingest: this runs inside
+    the path that stores a supplier's reply, and a fault here must cost a missed flag at worst (logged), not a lost reply."""
 
     try:
         if row is None:
             return None
-        text = "\n".join(str(getattr(row, k, None) or "") for k in ("response_text", "response_body", "body_html"))
-        result = screen_payment_change(getattr(row, "response_subject", None), text)
+        result = screen(row)
         if not result["suspected"]:
             return None
         with (conn_factory or _default_factory)() as conn:
             return record_flag(conn, workflow_id=getattr(row, "workflow_id", None), unique_id=getattr(row, "unique_id", None),
                                supplier_id=getattr(row, "supplier_id", None), message_id=getattr(row, "response_message_id", None),
-                               result=result)
+                               result=result, kind=kind)
     except Exception as exc:  # noqa: BLE001
         # An absent email_agent schema is the normal state before the pack is applied: say so quietly, not as an error.
         if "bp_inbound_flag" in str(exc) and ("does not exist" in str(exc) or "UndefinedTable" in type(exc).__name__):
             logger.debug("inbound flag not recorded: the email_agent schema is not applied")
         else:
-            logger.exception("inbound payment-change screen failed; the reply was stored regardless")
+            logger.exception("inbound %s screen failed; the reply was stored regardless", label)
         return None
+
+
+def _field(row: Any, name: str) -> str:
+    return str(getattr(row, name, None) or "")
+
+
+def screen_and_record(row: Any, conn_factory: Optional[Callable[[], Any]] = None) -> Optional[int]:
+    """Screen an inbound reply for a request to change payment details and, if suspected, flag it."""
+
+    def screen(r: Any) -> Dict[str, Any]:
+        text = "\n".join(_field(r, k) for k in ("response_text", "response_body", "body_html"))
+        return screen_payment_change(getattr(r, "response_subject", None), text)
+
+    return _record_screen(row, screen, "payment_detail_change", "payment-change", conn_factory)
+
+
+def screen_injection_and_record(row: Any, conn_factory: Optional[Callable[[], Any]] = None) -> Optional[int]:
+    """Screen an inbound reply for text that tries to instruct the assistant and, if suspected, flag it. The flag holds fixed pattern
+    ids and the kinds, never the text."""
+
+    def screen(r: Any) -> Dict[str, Any]:
+        body = _field(r, "response_text") or _field(r, "response_body")
+        return screen_injection(getattr(r, "response_subject", None), body, _field(r, "body_html") or None)
+
+    return _record_screen(row, screen, INJECTION_FLAG, "injection", conn_factory)
+
+
+INJECTION_FLAG = "injection_suspected"
+_INJECTION_KINDS = {"instruction_override", "role_marker", "assistant_directed_action", "hidden_instruction"}
+_AUTH_KINDS = {"auth_failed", "auth_missing", "domain_mismatch"}
+
+
+def block_phrase(flags: List[Dict[str, Any]]) -> str:
+    """What the standing flags say about the reply, in words, so a refusal names the real reason (not always a payment change)."""
+
+    kinds = {k for f in flags for k in (f.get("kinds") or [])}
+    parts = []
+    if kinds - _INJECTION_KINDS - _AUTH_KINDS or not kinds:
+        parts.append("asks to change payment details")
+    if kinds & _INJECTION_KINDS:
+        parts.append("contains text that tries to instruct the assistant")
+    if kinds & _AUTH_KINDS:
+        parts.append("could not be verified as coming from the supplier")
+    return " and ".join(parts)
 
 
 def blocking_flags(conn: Any, workflow_id: Optional[str], supplier_id: Optional[str]) -> List[Dict[str, Any]]:

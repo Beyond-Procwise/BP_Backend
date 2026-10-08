@@ -116,7 +116,7 @@ def test_no_flag_and_an_absent_flag_table_leave_drafting_exactly_as_before(monke
         agent = wire(monkeypatch, _decision_agent(monkeypatch), store)
         out, stored = counter(agent)
         assert out.status == AgentStatus.SUCCESS and len(stored) == 1
-        assert not any(v["kind"] == "payment_change_unreviewed" for v in stored[0]["assurance"]["violations"])
+        assert not any(v["kind"] == "inbound_flag_unreviewed" for v in stored[0]["assurance"]["violations"])
 
 
 def test_the_lookup_is_scoped_to_this_workflow_and_supplier(monkeypatch):
@@ -132,7 +132,7 @@ def test_the_lookup_is_scoped_to_this_workflow_and_supplier(monkeypatch):
 def test_a_draft_a_person_asked_for_goes_ahead_but_carries_a_failing_violation_and_is_not_ready(monkeypatch):
     agent = wire(monkeypatch, _agent(monkeypatch, good_model), FlagStore([OPEN]))
     a = _prompt(agent, requested_by="nick")["assurance"]
-    bad = [v for v in a["violations"] if v["kind"] == "payment_change_unreviewed"]
+    bad = [v for v in a["violations"] if v["kind"] == "inbound_flag_unreviewed"]
     assert len(bad) == 1 and bad[0]["severity"] == "fail" and "payment details" in bad[0]["detail"]
     assert a["status"] == "needs_review" and a["ready"] is False and a["inbound_block"]["state"] == "blocked"
     assert a["inbound_block"]["flag_ids"] == [7]
@@ -141,21 +141,23 @@ def test_a_draft_a_person_asked_for_goes_ahead_but_carries_a_failing_violation_a
 def test_a_person_writing_on_a_flagged_thread_by_hand_is_marked_the_same_way(monkeypatch):
     agent = wire(monkeypatch, _agent(monkeypatch, good_model), FlagStore([OPEN]))
     a = agent.assure_human_written(text="Thanks, agreed.", recipients=["a@x.test"], supplier_id="S-1", workflow_id="wf-1", requested_by="nick")
-    assert any(v["kind"] == "payment_change_unreviewed" and v["severity"] == "fail" for v in a["violations"]) and a["ready"] is False
+    assert any(v["kind"] == "inbound_flag_unreviewed" and v["severity"] == "fail" for v in a["violations"]) and a["ready"] is False
 
 
 def test_the_record_says_the_check_ran_and_found_nothing_when_it_found_nothing(monkeypatch):
     agent = wire(monkeypatch, _agent(monkeypatch, good_model), FlagStore([]))
     a = _prompt(agent, requested_by="nick")["assurance"]
-    assert a.get("inbound_block") in (None, {"state": "clear", "flag_ids": []}) and not [v for v in a["violations"] if v["kind"] == "payment_change_unreviewed"]
+    assert a.get("inbound_block") in (None, {"state": "clear", "flag_ids": []}) and not [v for v in a["violations"] if v["kind"] == "inbound_flag_unreviewed"]
 
 
 def test_the_run_exposes_blocked_reason_only_when_blocked():
     clear = R.AssuranceRun(env=env(), data={}, family_source="declared", inbound_block={"state": "clear", "flag_ids": []})
-    blocked = R.AssuranceRun(env=env(), data={}, family_source="declared", inbound_block={"state": "blocked", "flag_ids": [3]})
+    blocked = R.AssuranceRun(env=env(), data={}, family_source="declared", inbound_block={"state": "blocked", "flag_ids": [3], "phrase": "asks to change payment details"})
+    injected = R.AssuranceRun(env=env(), data={}, family_source="declared", inbound_block={"state": "blocked", "flag_ids": [4], "phrase": "contains text that tries to instruct the assistant"})
     unknown = R.AssuranceRun(env=env(), data={}, family_source="declared", inbound_block={"state": "unknown", "flag_ids": []})
     assert clear.blocked_reason() is None and R.AssuranceRun(env=env(), data={}, family_source="declared").blocked_reason() is None
     assert "payment details" in blocked.blocked_reason() and "could not be checked" in unknown.blocked_reason()
+    assert "tries to instruct the assistant" in injected.blocked_reason() and "payment" not in injected.blocked_reason()
 
 
 # --- the send guard: the last line, whatever the drafting layer did ----------------------------------------------------------------
@@ -215,4 +217,9 @@ def test_a_draft_on_a_flagged_thread_is_marked_even_when_no_family_could_be_load
     agent.agent_nick.policy_engine = SimpleNamespace(get_policy=lambda slug: None, list_policies=lambda: [])      # no family rows at all
     a = agent.assure_human_written(text="Thanks.", recipients=["a@x.test"], supplier_id="S-1", workflow_id="wf-1", requested_by="nick")
     assert a["status"] == "unassured" and a["ready"] is False
-    assert [v["kind"] for v in a["violations"]] == ["payment_change_unreviewed"] and a["inbound_block"]["state"] == "blocked"
+    assert [v["kind"] for v in a["violations"]] == ["inbound_flag_unreviewed"] and a["inbound_block"]["state"] == "blocked"
+
+
+def test_the_guard_says_an_injection_flag_is_about_the_assistant_not_about_payment():
+    d = guard.check_dispatch(**base_kwargs(conn=GuardConn([{"id": 9, "status": "open", "kinds": ["instruction_override"]}])))
+    assert d.allowed is False and "instruct the assistant" in d.reason and "payment" not in d.reason

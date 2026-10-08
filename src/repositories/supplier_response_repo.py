@@ -343,6 +343,14 @@ def _screen_inbound(row: SupplierResponseRow) -> None:
         sender_auth.check_and_record(row)
     except Exception:  # noqa: BLE001
         logger.debug("inbound sender check did not run", exc_info=True)
+    try:                                           # and independent of both: prompt-injection text in the reply
+        try:
+            from services.draft_assurance import inbound as _inbound
+        except ImportError:
+            from src.services.draft_assurance import inbound as _inbound
+        _inbound.screen_injection_and_record(row)
+    except Exception:  # noqa: BLE001
+        logger.debug("inbound injection screen did not run", exc_info=True)
 
 
 def record_extraction(*, workflow_id: Optional[str], unique_id: Optional[str], response_message_id: Optional[str], method: Optional[str],

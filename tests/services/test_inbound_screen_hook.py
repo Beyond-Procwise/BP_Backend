@@ -101,3 +101,26 @@ def test_a_fault_in_the_sender_check_does_not_stop_the_payment_screen_or_the_ins
     with pytest.raises(Reached):                      # the insert still ran
         repo.insert_response(a_row())
     assert [c[0] for c in calls] == ["screen"]
+
+
+def test_the_injection_screen_runs_even_when_the_other_two_fault(monkeypatch):
+    inbound = importlib.import_module("services.draft_assurance.inbound")
+    sender_auth = importlib.import_module("services.draft_assurance.sender_auth")
+    seen_rows = []
+    boom = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    monkeypatch.setattr(inbound, "screen_and_record", boom)
+    monkeypatch.setattr(sender_auth, "check_and_record", boom)
+    monkeypatch.setattr(inbound, "screen_injection_and_record", lambda row, *a, **k: seen_rows.append(row) or 1)
+    monkeypatch.setattr(repo, "get_conn", lambda: (_ for _ in ()).throw(Reached()))
+    row = a_row()
+    with pytest.raises(Reached):
+        repo.insert_response(row)
+    assert seen_rows == [row]
+
+
+def test_a_fault_in_the_injection_screen_does_not_stop_the_reply_being_stored(monkeypatch):
+    inbound = importlib.import_module("services.draft_assurance.inbound")
+    monkeypatch.setattr(inbound, "screen_injection_and_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(repo, "get_conn", lambda: (_ for _ in ()).throw(Reached()))
+    with pytest.raises(Reached):
+        repo.insert_response(a_row())

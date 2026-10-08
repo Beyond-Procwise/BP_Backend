@@ -157,7 +157,11 @@ def list_classifier_examples(conn: Any, status: Optional[str] = "candidate", lim
              "created_at": _iso(r[6])} for r in rows]
 
 
-_FLAG_LABELS = {"payment_detail_change": "Asks for new or changed payment details",
+_FLAG_LABELS = {"instruction_override": "Tries to override the assistant's instructions",
+                "role_marker": "Contains a fake system or role marker",
+                "assistant_directed_action": "Tells the assistant to forward or send something",
+                "hidden_instruction": "Hides an instruction in invisible text",
+                "payment_detail_change": "Asks for new or changed payment details",
                 "bank_details_with_pressure": "Bank details with pressure language",
                 "auth_failed": "The sender failed authentication",
                 "auth_missing": "The sender could not be authenticated",

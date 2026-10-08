@@ -61,8 +61,8 @@ class AssuranceRun:
 
         state = (self.inbound_block or {}).get("state")
         if state == "blocked":
-            return ("a reply from this supplier asks to change payment details and has not been reviewed by a person; "
-                    "nothing is drafted on this thread until it is")
+            return (f"a reply from this supplier {(self.inbound_block or {}).get('phrase') or 'has been flagged'} and has not been reviewed by a "
+                    "person; nothing is drafted on this thread until it is")
         if state == "unknown":
             return "whether this supplier's thread holds an unreviewed payment-detail request could not be checked, so nothing is drafted"
         return None
@@ -87,7 +87,7 @@ class AssuranceRun:
                                 "steering": self.steering.record() if self.steering is not None else None}
         if self.inputs is None:
             # Nothing was checked, but a draft on a flagged thread is still marked: the mark does not depend on a family loading.
-            marks = ({"violations": [{"kind": "payment_change_unreviewed", "severity": "fail", "detail": blocked}]}
+            marks = ({"violations": [{"kind": "inbound_flag_unreviewed", "severity": "fail", "detail": blocked}]}
                      if blocked and (self.inbound_block or {}).get("state") in ("blocked", "unknown") else {})
             return {"status": "unassured", "reason": self.error or "not run", **base, **marks,
                     **({"inbound_block": dict(self.inbound_block)} if self.inbound_block and self.inbound_block.get("state") != "not_checked" else {}),
@@ -113,7 +113,7 @@ class AssuranceRun:
             # A person may still write on this thread (they may be the one dealing with it) but the draft is marked, not ready, and the
             # send guard will refuse it while the flag stands.
             record["violations"] = list(record.get("violations") or []) + [
-                {"kind": "payment_change_unreviewed", "severity": "fail", "detail": blocked}]
+                {"kind": "inbound_flag_unreviewed", "severity": "fail", "detail": blocked}]
             record["status"], record["ready"] = "needs_review", False
         if self.inbound_block and self.inbound_block.get("state") != "not_checked":
             record["inbound_block"] = dict(self.inbound_block)
@@ -159,7 +159,10 @@ def _inbound_state(env: Env, workflow_id: Optional[str], supplier_id: Optional[s
     except Exception:  # noqa: BLE001 - the flag lookup failing, or the door itself failing
         logger.exception("could not check the thread for an unreviewed payment-detail request")
         return {"state": "unknown", "flag_ids": []}
-    return {"state": "blocked" if flags else "clear", "flag_ids": [f["id"] for f in flags]}
+    out = {"state": "blocked" if flags else "clear", "flag_ids": [f["id"] for f in flags]}
+    if flags:
+        out["phrase"] = inbound_mod.block_phrase(flags)
+    return out
 
 
 def begin(env: Env, data: Dict[str, Any], *, slug: Optional[str], workflow_id: Optional[str],

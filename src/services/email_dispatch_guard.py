@@ -99,11 +99,15 @@ def _peer_prices(
         return []
     try:
         cur = conn.cursor()
+        # A competitor is another SUPPLIER. When the recipient's own supplier id is unknown
+        # (NULL), NULL-supplier quotes cannot be told apart from theirs, so they are not
+        # treated as a competitor's prices -- that denied a draft for quoting its own figures.
         cur.execute(
             "SELECT supplier_id, total_amount FROM proc.bp_quote_trgt "
             "WHERE deal_id = %s AND supplier_id IS DISTINCT FROM %s "
+            "AND NOT (%s IS NULL AND supplier_id IS NULL) "
             "AND total_amount IS NOT NULL",
-            (deal_id, supplier_id),
+            (deal_id, supplier_id, supplier_id),
         )
         return [{"supplier_id": r[0], "amount": r[1]} for r in cur.fetchall()]
     except Exception as exc:  # noqa: BLE001
@@ -561,7 +565,7 @@ def check_dispatch(
             if standing:
                 return guardrail.Decision(
                     allowed=False,
-                    reason=("this draft cannot be sent: a reply from this supplier asks to change payment details and has not been "
+                    reason=(f"this draft cannot be sent: a reply from this supplier {inbound.block_phrase(standing)} and has not been "
                             "cleared by an approver"),
                     policy_name="EmailFamilyPolicy",
                     evidence={"flag_ids": [f["id"] for f in standing], "message_ids": [f.get("message_id") for f in standing]},
