@@ -15,6 +15,8 @@ SELECT
   "required_role": "Admin",
   "rules": {
     "family_id": "negotiation_counter",
+    "request_description": "A request to counter, negotiate or push back on a supplier's price, rate or terms, including asking for a discount, a lower quote or better payment terms.",
+    "request_label": "a counter-offer",
     "mode": "shadow",
     "length_target": 250,
     "required_facts": ["supplier_current_offer", "currency"],

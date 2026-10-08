@@ -49,7 +49,7 @@ def _run(ask: Ask, system: str, user: str):
 
 
 def classify_request(ask: Ask, template: Optional[str], request: str,
-                     families: Dict[str, str]) -> Dict[str, Any]:
+                     families: Dict[str, str], labels: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Stage 1 for free text. ``families`` is {family_id: description}, read from config at run time."""
 
     if not template:
@@ -65,7 +65,7 @@ def classify_request(ask: Ask, template: Optional[str], request: str,
         c = parse_classification(raw, request, families)
     except ClassificationInvalid as exc:
         return {"status": "invalid", "reason": str(exc)}
-    labels = {fid: desc.split(".")[0].strip() or fid for fid, desc in families.items()}
+    labels = {fid: (labels or {}).get(fid) or desc.split(".")[0].strip() or fid for fid, desc in families.items()}
     return {"status": "captured", "classification": c.as_dict(),
             "clarification": clarification_for(c, labels)}
 

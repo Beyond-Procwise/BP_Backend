@@ -23,6 +23,7 @@ SELECT
   "rules": {
     "family_id": "human_written",
     "mode": "shadow",
+    "classifiable": false,
     "length_target": 0,
     "required_facts": [],
     "carried_keys": ["body"],

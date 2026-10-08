@@ -17,6 +17,8 @@ SELECT
   "required_role": "Admin",
   "rules": {
     "family_id": "free_prompt",
+    "request_description": "Any other supplier correspondence the person describes in their own words: confirming, chasing, thanking, requesting documents or information, informing, or arranging a meeting.",
+    "request_label": "an ordinary supplier message",
     "mode": "shadow",
     "length_target": 300,
     "required_facts": [],
