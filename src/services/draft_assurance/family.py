@@ -54,6 +54,9 @@ class FamilyConfig:
     rubric: List[str] = field(default_factory=list)
     authority_agent: Optional[str] = None
     description: str = ""
+    classifiable: bool = True      # False = an assured path, not a kind of request: the classifier never offers it
+    request_description: str = ""  # when to choose this family, in the words the classifier is shown
+    request_label: str = ""        # a short name for it, used in the question put to the person
 
 
 def _fail(msg: str) -> "FamilyConfigUnavailable":
@@ -100,6 +103,12 @@ def parse_family(rules: Any, version: Any = None, description: str = "") -> Fami
     patterns = rules.get("forbidden_patterns") or {}
     if not isinstance(patterns, dict):
         raise _fail("forbidden_patterns must be an object")
+    if "request_description" in rules and not (isinstance(rules["request_description"], str) and rules["request_description"].strip()):
+        raise _fail("request_description must be non-empty text")
+    if "request_label" in rules and not (isinstance(rules["request_label"], str) and rules["request_label"].strip()):
+        raise _fail("request_label must be non-empty text")
+    if "classifiable" in rules and not isinstance(rules["classifiable"], bool):
+        raise _fail("classifiable must be true or false")
     mode = rules.get("mode", "shadow")
     if mode not in ("shadow", "enforce"):
         raise _fail(f"mode must be shadow or enforce, got {mode!r}")
@@ -116,6 +125,9 @@ def parse_family(rules: Any, version: Any = None, description: str = "") -> Fami
         mode=mode,
         rubric=[str(r) for r in (rules.get("rubric") or [])],
         authority_agent=(str(rules["authority_agent"]) if rules.get("authority_agent") else None),
+        classifiable=rules.get("classifiable", True),
+        request_description=str(rules.get("request_description") or "").strip(),
+        request_label=str(rules.get("request_label") or "").strip(),
     )
 
 
@@ -158,6 +170,31 @@ def list_families(policy_engine: Optional[Any]) -> Dict[str, str]:
             continue
         rules = (p.get("details") or {}).get("rules") or {}
         fid = rules.get("family_id")
+        if rules.get("classifiable") is False:     # an assured path (RFQ batch, human-written), not a kind of request
+            continue
         if isinstance(fid, str) and fid:
-            out[fid] = str(p.get("policy_desc") or fid)
+            out[fid] = str(rules.get("request_description") or p.get("policy_desc") or fid)
+    return out
+
+
+def list_labels(policy_engine: Optional[Any]) -> Dict[str, str]:
+    """{family_id: short label} for the classifiable families that declare one. The question put to a person uses these;
+    a family without one is named by the first sentence of its description instead."""
+
+    out: Dict[str, str] = {}
+    if policy_engine is None:
+        return out
+    try:
+        policies = policy_engine.list_policies()
+    except Exception:  # noqa: BLE001
+        return out
+    for p in policies or []:
+        if p.get("policy_type") != "email_family":
+            continue
+        rules = (p.get("details") or {}).get("rules") or {}
+        fid, label = rules.get("family_id"), rules.get("request_label")
+        if rules.get("classifiable") is False or not (isinstance(fid, str) and fid):
+            continue
+        if isinstance(label, str) and label.strip():
+            out[fid] = label.strip()
     return out

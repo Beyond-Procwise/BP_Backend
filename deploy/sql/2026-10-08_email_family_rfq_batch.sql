@@ -21,6 +21,7 @@ SELECT
   "rules": {
     "family_id": "rfq_batch",
     "mode": "shadow",
+    "classifiable": false,
     "length_target": 220,
     "required_facts": [],
     "carried_keys": ["deadline", "submission_deadline", "supplier_profile", "line_items", "asks", "scope"],

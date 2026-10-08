@@ -149,3 +149,7 @@ checksum above is therefore stale. Twelve files now; rehearsal still to be re-ru
 `2026-10-08_email_agent_steering.sql` (+ rollback): `bp_draft_capture.steering` and the `EmailSteeringRules` policy row. Belongs to
 **pack (b)** (tone rules, prompts, steering: held back until live verification). `2026-10-08_email_tone_rules.sql` was also
 edited (a `directives` block). Thirteen files now; checksums above stale for the tone rules; rehearsal to be re-run.
+
+Also edited after the rehearsal: the four family rows gained config keys (`classifiable` on `rfq_batch` and `human_written`;
+`request_description` and `request_label` on `negotiation_counter` and `free_prompt`). Insert-only rows, nothing applied; the
+checksums of those four files above are stale and the rehearsal must be re-run.

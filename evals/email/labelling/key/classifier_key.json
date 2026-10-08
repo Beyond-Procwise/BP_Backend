@@ -1,0 +1,301 @@
+{
+ "R-001": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-002": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {
+   "po_number": "PO-51007"
+  }
+ },
+ "R-003": {
+  "intended": "negotiation_counter",
+  "kind": "adversarial",
+  "lookup_keys": {}
+ },
+ "R-004": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-005": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-006": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {
+   "po_number": "PO-60418"
+  }
+ },
+ "R-007": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-008": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {
+   "po_number": "PO-77123"
+  }
+ },
+ "R-009": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-010": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-011": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {
+   "rfq_id": "RFQ-20260801-CD34"
+  }
+ },
+ "R-012": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {
+   "po_number": "PO-48211"
+  }
+ },
+ "R-013": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-014": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {
+   "po_number": "PO-58830"
+  }
+ },
+ "R-015": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-016": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-017": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-018": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-019": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-020": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {
+   "invoice_number": "INV-77310"
+  }
+ },
+ "R-021": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-022": {
+  "intended": "unclear",
+  "kind": "adversarial",
+  "lookup_keys": {}
+ },
+ "R-023": {
+  "intended": "unclear",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-024": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-025": {
+  "intended": "unclear",
+  "kind": "adversarial",
+  "lookup_keys": {}
+ },
+ "R-026": {
+  "intended": "negotiation_counter",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-027": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-028": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-029": {
+  "intended": "unclear",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-030": {
+  "intended": "unclear",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-031": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-032": {
+  "intended": "unclear",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-033": {
+  "intended": "unclear",
+  "kind": "ambiguous",
+  "lookup_keys": {
+   "po_number": "PO-66150"
+  }
+ },
+ "R-034": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-035": {
+  "intended": "unclear",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-036": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-037": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-038": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {
+   "invoice_number": "INV-30221"
+  }
+ },
+ "R-039": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-040": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-041": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-042": {
+  "intended": "unclear",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-043": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-044": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-045": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-046": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {
+   "rfq_id": "RFQ-20260912-AB12"
+  }
+ },
+ "R-047": {
+  "intended": "negotiation_counter",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-048": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {
+   "rfq_id": "RFQ-20260801-CD34"
+  }
+ },
+ "R-049": {
+  "intended": "negotiation_counter",
+  "kind": "ambiguous",
+  "lookup_keys": {}
+ },
+ "R-050": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-051": {
+  "intended": "free_prompt",
+  "kind": "plain",
+  "lookup_keys": {
+   "po_number": "PO-82004"
+  }
+ },
+ "R-052": {
+  "intended": "free_prompt",
+  "kind": "adversarial",
+  "lookup_keys": {}
+ },
+ "R-053": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ },
+ "R-054": {
+  "intended": "negotiation_counter",
+  "kind": "adversarial",
+  "lookup_keys": {}
+ },
+ "R-055": {
+  "intended": "negotiation_counter",
+  "kind": "plain",
+  "lookup_keys": {}
+ }
+}

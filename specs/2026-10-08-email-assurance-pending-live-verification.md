@@ -175,3 +175,19 @@ RFQ batch, human-written and stub paths are not model-written here and are not s
 | S9 | Reads of the style rules and exemplars use the writer door (the reader role has no access to `email_agent`, and `bp_exemplar_candidate.draft_text` is raw text). |
 | S10 | Existing mailbox-derived style (`services/style`, the system prompt's `_with_style`) is untouched and still applies. The two sources can both be present in one prompt; their interaction is unverified. |
 | S11 | Tone directive wording (19 sentences in the tone rules row) is a proposal for your review, like the rest of that row. |
+
+## Labelling set for the classifier and judge (2026-10-08) - built; nothing filled in yet
+
+Items 1, 2, 5 and 8 of section 1 needed gold data that did not exist. `evals/email/labelling/` now holds blank sheets for your team
+(55 requests; 15 + 14 draft emails to score) and a separate key. See its `README.md`. **No result exists until people fill the sheets
+and a real model is run.** `python -m evals.email.labelling.live ... --live` refuses to run without `--live` so a stand-in cannot
+produce a number that looks like one.
+
+| # | What is true |
+|---|---|
+| L1 | The "intended" family on each request is MY hypothesis, kept in `key/`, not printed on the sheet, so your team's judgement is independent. Where the team and I disagree, the family definitions are ambiguous (reported as `intent_vs_team`). |
+| L2 | The flawed drafts are deliberate controls, also keyed. The report shows whether the **team** found them (are the controls fair?) and whether the **model** did (does the judge separate good from bad?). A judge that gives everything a 4 is shown as not separating even if it never disagrees much (tested). |
+| L3 | All requests and drafts are invented, in one house style. 55 + 29 items expose gross failure, not a ranking: treat accuracy as roughly +/- 10 points. Real requests should be added when there are some. |
+| L4 | **Found while building it, and fixed (tested):** the classifier was offered every `email_family` row, so a free-text request could be classified as `rfq_batch` or `human_written`. Rows now carry `classifiable` (false for those two), and the classifier is shown a `request_description` (when to choose the family) instead of the config text ("Guardrails for ..."), and a short `request_label` in its question ("Is this a counter-offer, or an ordinary supplier message?"). Whether those descriptions classify well is exactly what the sheets will measure. |
+| L5 | Only two families can be classified into. A third family is config plus new rows in the sheets. |
+| L6 | The criteria definitions the team reads are my wording of the rubric names. Please check they say what you meant by them. |

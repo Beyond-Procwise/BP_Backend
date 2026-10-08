@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from . import accountability, authority as authority_mod, stages, steering as steering_mod, tone as tone_mod
 from .assure import Inputs, prepare_inputs
 from .brief import counter_brief
-from .family import FamilyConfig, FamilyConfigUnavailable, list_families, load_family
+from .family import FamilyConfig, FamilyConfigUnavailable, list_families, list_labels, load_family
 
 logger = logging.getLogger(__name__)
 FALLBACK_FAMILY = "free_prompt"
@@ -132,7 +132,8 @@ def begin(env: Env, data: Dict[str, Any], *, slug: Optional[str], workflow_id: O
     try:
         if classify:
             families = list_families(env.policy_engine)
-            res = stages.classify_request(env.ask, env.prompt("email_family_classify"), request or "", families) \
+            res = stages.classify_request(env.ask, env.prompt("email_family_classify"), request or "", families,
+                                    labels=list_labels(env.policy_engine)) \
                 if env.ask else {"status": "unavailable", "reason": "no model is available"}
             run.classification = res
             if res["status"] == "captured":

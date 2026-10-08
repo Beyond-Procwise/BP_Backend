@@ -1,0 +1,205 @@
+{
+ "J-C-001": {
+  "expected_low": [
+   "position_follows_from_offer"
+  ],
+  "family": "negotiation_counter",
+  "flaw": "reveals the internal walkaway price",
+  "kind": "flawed"
+ },
+ "J-C-002": {
+  "expected_low": [
+   "ask_is_specific",
+   "deadline_stated"
+  ],
+  "family": "negotiation_counter",
+  "flaw": "vague ask: no figure and no date",
+  "kind": "flawed"
+ },
+ "J-C-003": {
+  "expected_low": [],
+  "family": "negotiation_counter",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-C-004": {
+  "expected_low": [],
+  "family": "negotiation_counter",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-C-005": {
+  "expected_low": [
+   "concise"
+  ],
+  "family": "negotiation_counter",
+  "flaw": "rambling and padded",
+  "kind": "flawed"
+ },
+ "J-C-006": {
+  "expected_low": [],
+  "family": "negotiation_counter",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-C-007": {
+  "expected_low": [],
+  "family": "negotiation_counter",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-C-008": {
+  "expected_low": [
+   "tone_matches_escalation_level"
+  ],
+  "family": "negotiation_counter",
+  "flaw": "aggressive tone on a first contact",
+  "kind": "flawed"
+ },
+ "J-C-009": {
+  "expected_low": [
+   "position_follows_from_offer"
+  ],
+  "family": "negotiation_counter",
+  "flaw": "counter is ABOVE the supplier's offer",
+  "kind": "flawed"
+ },
+ "J-C-010": {
+  "expected_low": [],
+  "family": "negotiation_counter",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-C-011": {
+  "expected_low": [],
+  "family": "negotiation_counter",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-C-012": {
+  "expected_low": [
+   "position_follows_from_offer"
+  ],
+  "family": "negotiation_counter",
+  "flaw": "quotes the supplier's offer wrongly (49.50 not 47.50)",
+  "kind": "flawed"
+ },
+ "J-C-013": {
+  "expected_low": [
+   "deadline_stated"
+  ],
+  "family": "negotiation_counter",
+  "flaw": "no deadline stated",
+  "kind": "flawed"
+ },
+ "J-C-014": {
+  "expected_low": [],
+  "family": "negotiation_counter",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-C-015": {
+  "expected_low": [],
+  "family": "negotiation_counter",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-001": {
+  "expected_low": [],
+  "family": "free_prompt",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-002": {
+  "expected_low": [],
+  "family": "free_prompt",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-003": {
+  "expected_low": [
+   "completeness",
+   "clarity_of_ask"
+  ],
+  "family": "free_prompt",
+  "flaw": "does not do what was asked",
+  "kind": "flawed"
+ },
+ "J-F-004": {
+  "expected_low": [
+   "completeness"
+  ],
+  "family": "free_prompt",
+  "flaw": "invents a PO number and a price that are in no fact",
+  "kind": "flawed"
+ },
+ "J-F-005": {
+  "expected_low": [],
+  "family": "free_prompt",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-006": {
+  "expected_low": [],
+  "family": "free_prompt",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-007": {
+  "expected_low": [],
+  "family": "free_prompt",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-008": {
+  "expected_low": [],
+  "family": "free_prompt",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-009": {
+  "expected_low": [
+   "tone_fit"
+  ],
+  "family": "free_prompt",
+  "flaw": "curt, with no greeting warmth or sign-off courtesy",
+  "kind": "flawed"
+ },
+ "J-F-010": {
+  "expected_low": [],
+  "family": "free_prompt",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-011": {
+  "expected_low": [
+   "tone_fit"
+  ],
+  "family": "free_prompt",
+  "flaw": "rude where thanks were asked for",
+  "kind": "flawed"
+ },
+ "J-F-012": {
+  "expected_low": [
+   "concision"
+  ],
+  "family": "free_prompt",
+  "flaw": "rambling around a simple ask",
+  "kind": "flawed"
+ },
+ "J-F-013": {
+  "expected_low": [],
+  "family": "free_prompt",
+  "flaw": null,
+  "kind": "good"
+ },
+ "J-F-014": {
+  "expected_low": [
+   "completeness",
+   "clarity_of_ask"
+  ],
+  "family": "free_prompt",
+  "flaw": "the ask is unclear and omits the PO and the due date",
+  "kind": "flawed"
+ }
+}
