@@ -16,6 +16,7 @@
     GET  /email-learning/inbound-flags                 replies a person must look at (suspected payment-detail change)
     POST /email-learning/inbound-flags/{id}/decision   confirm (keeps the block) | clear (lifts it; approver authority)
     POST /email-learning/classifier-examples/{id}/decision export | reject
+    POST /email-learning/offers/{id}/decision          confirm | reject a price read from a supplier's email (confirm: approver authority)
     GET  /email-learning/metrics                       edit distance and fact-conflict rate by family over time
 
 Who did a thing is ``principal.subject`` and nothing else: no body field names a person, and there is no fallback when the
@@ -41,6 +42,7 @@ router = APIRouter(prefix="/email-learning", tags=["Email learning"])
 
 READ, DECIDE, APPROVE = ("email.learning.read", "read"), ("email.learning.decide", "write"), ("exemplar.approve", "configure")
 CLEAR_FLAG = ("inbound.flag.clear", "approve_email")
+CONFIRM_OFFER = ("offer.extraction.confirm", "approve_email")
 
 
 class Decision(BaseModel):
@@ -211,6 +213,24 @@ def decide_inbound_flag(flag_id: int, body: Decision, principal=Depends(require_
     who = _gate(principal, gate, {"queue": "inbound_flags", "id": flag_id, "action": body.action})
     with _store(agent_nick) as conn:
         return _settle(inbound.decide_flag(conn, flag_id, who, body.action, body.note))
+
+
+class OfferDecision(BaseModel):
+    action: str
+    price: Optional[float] = None            # the figures the person SAW; a confirmation is refused if the row now differs
+    lead_time: Optional[int] = None
+
+
+@router.post("/offers/{response_id}/decision")
+def decide_offer(response_id: int, body: OfferDecision, principal=Depends(require_user)):
+    # Rejecting only withholds trust (an ordinary write). CONFIRMING lets the figure be stated as fact, so it needs approver authority.
+    gate = CONFIRM_OFFER if body.action == "confirm" else DECIDE
+    who = _gate(principal, gate, {"queue": "offers", "id": response_id, "action": body.action})
+    try:
+        from repositories import supplier_response_repo as repo
+    except ImportError:
+        from src.repositories import supplier_response_repo as repo
+    return _settle(repo.decide_extraction(response_id, who, body.action, seen_price=body.price, seen_lead_time=body.lead_time))
 
 
 @router.post("/exemplars/{exemplar_id}/decision")
