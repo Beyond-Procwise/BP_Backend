@@ -335,6 +335,14 @@ def _screen_inbound(row: SupplierResponseRow) -> None:
         inbound.screen_and_record(row)
     except Exception:  # noqa: BLE001
         logger.debug("inbound payment-change screen did not run", exc_info=True)
+    try:                                           # independent of the screen above: a fault in either must not stop the other
+        try:
+            from services.draft_assurance import sender_auth
+        except ImportError:
+            from src.services.draft_assurance import sender_auth
+        sender_auth.check_and_record(row)
+    except Exception:  # noqa: BLE001
+        logger.debug("inbound sender check did not run", exc_info=True)
 
 
 def record_extraction(*, workflow_id: Optional[str], unique_id: Optional[str], response_message_id: Optional[str], method: Optional[str],

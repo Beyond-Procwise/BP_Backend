@@ -1,6 +1,6 @@
 # Rehearsal of the email-assurance DDL pack on a copy of `bp_sqldb`'s structure
 
-- run at 2026-10-08 19:50:43 UTC; container `postgres:16-alpine`
+- run at 2026-10-08 21:44:15 UTC; container `postgres:16-alpine`
 
 ## 1. The copy (read-only dump of the real structure)
 
@@ -21,21 +21,22 @@
 | `2026-10-07_email_agent_capture.sql` | ok (0.1s) |
 | `2026-10-08_email_agent_capture_v2.sql` | ok (0.1s) |
 | `2026-10-08_email_agent_sent_text.sql` | ok (0.1s) |
-| `2026-10-08_email_agent_steering_column.sql` | ok (0.0s) |
+| `2026-10-08_email_agent_steering_column.sql` | ok (0.1s) |
 | `2026-10-08_email_inbound_flag.sql` | ok (0.1s) |
-| `2026-10-08_email_agent_steering.sql` | ok (0.0s) |
+| `2026-10-08_email_sender_auth.sql` | ok (0.1s) |
+| `2026-10-08_email_agent_steering.sql` | ok (0.1s) |
 | `2026-10-08_email_draft_sweep.sql` | ok (0.1s) |
-| `2026-10-07_email_family_negotiation_counter.sql` | ok (0.0s) |
+| `2026-10-07_email_family_negotiation_counter.sql` | ok (0.1s) |
 | `2026-10-07_email_family_free_prompt.sql` | ok (0.1s) |
-| `2026-10-08_email_family_rfq_batch.sql` | ok (0.0s) |
-| `2026-10-08_email_family_human_written.sql` | ok (0.0s) |
-| `2026-10-08_email_family_v2.sql` | ok (0.0s) |
+| `2026-10-08_email_family_rfq_batch.sql` | ok (0.1s) |
+| `2026-10-08_email_family_human_written.sql` | ok (0.1s) |
+| `2026-10-08_email_family_v2.sql` | ok (0.1s) |
 | `2026-10-08_email_tone_rules.sql` | ok (0.1s) |
-| `2026-10-08_email_assurance_prompts.sql` | ok (0.0s) |
-| `2026-10-09_email_agent_learning.sql` | ok (0.1s) |
+| `2026-10-08_email_assurance_prompts.sql` | ok (0.1s) |
+| `2026-10-09_email_agent_learning.sql` | ok (0.2s) |
 | `2026-10-09_email_agent_roles.sql` | ok (0.1s) |
 
-- fingerprint after apply: `a86537b428a9a337` (differs from before: True)
+- fingerprint after apply: `e2e00484f53ef287` (differs from before: True)
 
 ## 4. The eval suite, run against the copy
 
@@ -45,7 +46,7 @@ free_prompt                  26      26   100%
 negotiation_counter          34      34   100%
 ```
 - (the runner re-applies the migrations itself, which also proves they are idempotent on the copy)
-- `pytest tests/email_evals` against the copy: **406 passed in 56.34s**
+- `pytest tests/email_evals` against the copy: **424 passed in 54.45s**
 
 ## 5. Roll the pack back, newest first
 
@@ -62,6 +63,7 @@ negotiation_counter          34      34   100%
 | `2026-10-07_email_family_negotiation_counter_rollback.sql` | ok |
 | `2026-10-08_email_draft_sweep_rollback.sql` | ok |
 | `2026-10-08_email_agent_steering_rollback.sql` | ok |
+| `2026-10-08_email_sender_auth_rollback.sql` | ok |
 | `2026-10-08_email_inbound_flag_rollback.sql` | ok |
 | `2026-10-08_email_agent_steering_column_rollback.sql` | ok |
 | `2026-10-08_email_agent_sent_text_rollback.sql` | ok |
@@ -72,6 +74,6 @@ negotiation_counter          34      34   100%
 - fingerprint after rollback: `74e91df8f5922063`  **equals the one before: True**
 - left behind (roles / email_agent schema / policy rows / prompt rows): `0|0|0|0`
 
-## 6. Re-applied after rollback: fingerprint `a86537b428a9a337` (same as the first apply: True)
+## 6. Re-applied after rollback: fingerprint `e2e00484f53ef287` (same as the first apply: True)
 
 **Overall: PASS**
