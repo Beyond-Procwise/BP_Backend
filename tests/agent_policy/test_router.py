@@ -127,3 +127,98 @@ def test_one_document_that_cannot_be_validated_does_not_sink_the_feed(client, mo
     body = r.json()
     assert [p["id"] for p in body["policies"]] == ["FIN-0001"]
     assert body["refused"] == [{"id": "FIN-0002", "problems": ["could not be validated: KeyError"]}]
+
+
+# ---- fix round 1 -------------------------------------------------------------------------
+BUYER = {**GOOD, "X-User-Groups": json.dumps(["PROCWISE_PROCUMENT_BUYER_ANALYST"])}
+VIEWER = {**GOOD, "X-User-Groups": json.dumps(["PROCWISE_VIEWER"])}
+OKBODY = {"form": {"name": "x"}}
+
+
+@pytest.mark.parametrize("sub", [None, "", "   "])
+def test_blank_or_missing_user_sub_is_401(client, sub):
+    hdr = {k: v for k, v in GOOD.items() if k != "X-User-Sub"}
+    if sub is not None:
+        hdr["X-User-Sub"] = sub
+    assert client.get("/agent-policies", headers=hdr).status_code == 401
+
+
+@pytest.mark.parametrize("groups", ["not json", json.dumps({"a": 1}), json.dumps("PROCWISE_ADMIN"), json.dumps([1, None])])
+def test_malformed_or_non_list_groups_mean_no_groups(client, monkeypatch, groups):
+    seen = []
+    monkeypatch.setattr(R, "_role_of", lambda p: seen.append(p.claims["cognito:groups"]) or "Viewer")
+    hdr = {**GOOD, "X-User-Groups": groups}
+    assert client.post("/agent-policies", json=OKBODY, headers=hdr).status_code == 403
+    assert seen == [[]]
+
+
+def _policy():
+    return {"policyKey": "FIN-0001", "versions": [{"version": 1, "compiled": {"a": 1}}, {"version": 2, "compiled": {"a": 2}}]}
+
+
+def test_get_policy_strips_compiled_for_non_admin_only(client, monkeypatch):
+    monkeypatch.setattr(R.repo, "get_policy", lambda conn, key: _policy())
+    for hdr in (VIEWER, BUYER):
+        assert all("compiled" not in v for v in client.get("/agent-policies/FIN-0001", headers=hdr).json()["versions"])
+    assert all("compiled" in v for v in client.get("/agent-policies/FIN-0001", headers=GOOD).json()["versions"])
+
+
+def test_feed_is_503_when_its_key_is_unset(client, monkeypatch):
+    monkeypatch.delenv("AGENT_POLICY_ORCHESTRATOR_KEY")
+    assert client.get("/orchestrator/agent-policies/v2/live", headers={"X-Orchestrator-Key": "o1"}).status_code == 503
+
+
+class _Cur:
+    def execute(self, *a, **k): pass
+    def fetchone(self): return ("Finance",)
+
+
+class _CurConn:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def cursor(self): return _Cur()
+
+
+def test_taxonomy_update_needs_admin(client, monkeypatch):
+    monkeypatch.setattr(R, "_conn", _CurConn)
+    body = {"subAreas": ["Refunds"], "neverSuggest": False, "secondReviewer": False}
+    assert client.put("/agent-policies/taxonomy/Finance", json=body, headers=BUYER).status_code == 403
+    r = client.put("/agent-policies/taxonomy/Finance", json=body, headers=GOOD)
+    assert r.status_code == 200 and r.json()["subAreas"] == ["General", "Refunds"]
+
+
+def test_retire_needs_approver(client, monkeypatch):
+    monkeypatch.setattr(R.repo, "retire", lambda *a, **k: {"policyKey": "FIN-0001", "version": 3})
+    body = {"baseVersion": 2, "changeNote": ""}
+    assert client.post("/agent-policies/FIN-0001/retire", json=body, headers=BUYER).status_code == 403
+    assert client.post("/agent-policies/FIN-0001/retire", json=body, headers=GOOD).status_code == 200
+
+
+def test_roles_resolve_through_the_real_rbac_table(client, monkeypatch):
+    """_role_of is left REAL: groups -> role goes through rbac with a stand-in policy engine."""
+    from services import rbac
+    from tests.guardrails.test_rbac import FakePolicyEngine, ROLE_ASSIGNMENT, ROLE_DEFINITION
+    import copy
+    assign = copy.deepcopy(ROLE_ASSIGNMENT)
+    assign["details"]["rules"]["group_to_role"] = {"PROCWISE_ADMIN": "Admin", "PROCWISE_VIEWER": "Viewer"}
+    engine = FakePolicyEngine({"role_definition": ROLE_DEFINITION, "role_assignment": assign})
+    monkeypatch.setattr(R, "_role_of", lambda principal: rbac.effective_role(principal))
+    monkeypatch.setattr(rbac, "_build_engine", lambda: engine)
+    monkeypatch.setattr(rbac, "_load_role_assignments", lambda: {})
+    rbac.reset_policy_cache()
+    monkeypatch.setattr(R.repo, "create_draft", lambda conn, form, actor: {"policyKey": "GEN-0001", "version": 1})
+    try:
+        assert client.post("/agent-policies", json=OKBODY, headers=VIEWER).status_code == 403
+        assert client.post("/agent-policies", json=OKBODY, headers=GOOD).status_code == 200
+    finally:
+        rbac.reset_policy_cache()
+
+
+def test_a_non_dict_stored_document_is_refused_not_a_500(client, monkeypatch):
+    good = _docs()[0]
+    monkeypatch.setattr(R.repo, "live_documents", lambda conn: [None, good])
+    r = client.get("/orchestrator/agent-policies/v2/live", headers={"X-Orchestrator-Key": "o1"})
+    assert r.status_code == 200
+    body = r.json()
+    assert [p["id"] for p in body["policies"]] == ["FIN-0001"] and len(body["refused"]) == 1
+    assert body["refused"][0]["id"] is None

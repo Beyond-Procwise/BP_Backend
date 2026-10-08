@@ -56,6 +56,27 @@ _WEBSOCKET_PREFIX = "/ws/"
 _REFUSALS = {401, 403}
 
 
+# Agent-policy routes are NOT behind require_user: they trust only the gateway's shared key
+# (design 2026-10-08 3.2), so a keyless request must be refused with 401 -- and, with the key
+# env unset, they answer 503, which is why the fixture below sets test keys.
+_GATEWAY_KEYED_PREFIXES = ("/agent-policies", "/orchestrator/agent-policies")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _agent_policy_keys():
+    import os
+    names = ("AGENT_POLICY_GATEWAY_KEY", "AGENT_POLICY_ORCHESTRATOR_KEY")
+    previous = {n: os.environ.get(n) for n in names}
+    for n in names:
+        os.environ[n] = "test-key-" + n.lower()
+    yield
+    for n, v in previous.items():
+        if v is None:
+            os.environ.pop(n, None)
+        else:
+            os.environ[n] = v
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _enforce_auth():
     """Force enforce mode for this module, whatever the sandbox's .env says.
@@ -128,7 +149,8 @@ def test_every_endpoint_refuses_an_unauthenticated_caller(client):
     served = []
     for method, path in _endpoints():
         response = client.request(method, _fill(path))
-        if response.status_code not in _REFUSALS:
+        expected = {401} if path.startswith(_GATEWAY_KEYED_PREFIXES) else _REFUSALS
+        if response.status_code not in expected:
             served.append(f"{method} {path} -> {response.status_code}")
 
     assert not served, (

@@ -218,13 +218,17 @@ def live_feed(request: Request):
         docs = repo.live_documents(conn)
     good, refused = [], []
     for doc in docs:
-        # One bad stored policy must never take the whole feed down.
+        # One bad stored policy (even a non-dict row) must never take the whole feed down.
+        doc_id = doc.get("id") if isinstance(doc, dict) else None
         try:
             problems = contract.validate(doc, registry)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("agent-policy feed could not validate %s", doc.get("id") if isinstance(doc, dict) else "?")
+            logger.exception("agent-policy feed could not validate %s", doc_id)
             problems = [f"could not be validated: {type(exc).__name__}"]
-        (refused.append({"id": doc.get("id"), "problems": problems}) if problems else good.append(doc))
+        if problems:
+            refused.append({"id": doc_id, "problems": problems})
+        else:
+            good.append(doc)
     if refused:
         logger.warning("agent-policy feed refused %d live policies: %s", len(refused), [r["id"] for r in refused])
     return {"feed": "hard-policy-feed/2", "generatedAt": datetime.now(timezone.utc).isoformat(),
