@@ -199,3 +199,23 @@ getting risk from the supplier; negotiation rounds.
   one does not.
 - After `max_attempts` the gap is escalated to a person, visibly.
 - Re-running every step changes nothing the second time.
+
+## Amendments found while planning (2026-10-08; these override the sections above)
+
+1. **Rule registration (4.1, section 3).** The opportunity miner logs an ERROR and
+   skips every `bp_rule` row it has no handler for. The gap rule is evaluated by the
+   ranking agent per ranking, not by the sweep, so the miner is changed to skip rules
+   scoped `supplier_ranking` quietly. The `bp_rule` row stays, for governance visibility.
+2. **Wording of the request (4.4).** The request text is built from a fixed template
+   from stated requirement fields, not written by the email agent. A model adds no
+   value to a factual list of missing items, could vary it between runs, and would need
+   the GPU. The draft is still an ordinary `draft_rfq_emails` row in the same approval path.
+3. **Reading replies (4.5).** The existing reply parser takes the first number in the
+   text as the price and does not read payment terms (see "Probe result"). This feature
+   uses its own strict reader (`services/reply_values.py`) and treats
+   `supplier_response.price` as untrusted. A reply naming two amounts, or an amount with
+   no unit/total marker, yields no value and a review flag.
+4. **How an answer reaches the score (4.5, 4.7).** Answered unit prices in one currency
+   feed the existing deal-price score (ratio to cheapest, two or more bidders). Prices in
+   different currencies are not compared and the ranking says so. A "total" is not
+   converted to a unit price.
