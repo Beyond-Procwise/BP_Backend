@@ -1,6 +1,6 @@
 # Contract link signals — design
 
-Date: 2026-10-08. Status: awaiting review. Follows `2026-10-02-contract-structures-design.md`.
+Date: 2026-10-08. Status: approved; revision 2 after an integration review (section 10). Follows `2026-10-02-contract-structures-design.md`.
 
 ## 1. Why
 
@@ -175,3 +175,45 @@ The proposal notes gain a link type derived from the child's profile: `child_of`
 A. (moot, see revision 1.3) start-before-parent as a conflict: dropped until an execution date exists.
 B. Termination notice stays out of child scoring: **assumed yes**.
 C. The four new document types go in as `proposed`: **assumed yes**.
+
+## 10. Revision 2: integration with the rest of the product
+
+Checked against the code on 2026-10-08, after Nick asked whether the design accounts for the
+current maths, agents and wider capabilities.
+
+**What the consumers actually do**
+
+- `contract_links.confirm()` writes `parent_contract_id` for every link type, as approved on
+  2026-10-02. Its main reader, triage (`triage/loader.py`), loads the whole contract FAMILY
+  through it: the seed contract's parent and every child pointing at it. A SOW, amendment or
+  attachment under its agreement is exactly what that needs, so the column is a family pointer,
+  not an "amends" pointer. Only a comment (`triage/model.py:105`) said otherwise; it is
+  corrected.
+- Confirmations are already audited: `DecisionEngine._accept_contract_parent` writes a
+  `proc.bp_decision` row through `_record_human_action`.
+- No agent reads the contract hierarchy today. The opportunity critic reads
+  `parent_contract_id` as a plain field.
+- The hierarchy profile has never produced graph edges (`pass_runner.PASS_ORDER` runs supplier
+  identity, item equivalence, succession and coverage only). Unchanged by this design.
+- `scripts/graph_resolution/calibrate.py` tunes a profile's `p0`/`alpha` from labelled pairs,
+  choosing the best separation with zero false auto-links. Confirmed and dismissed proposals are
+  such labels; the corpus has about one proposal so far, so there is nothing to fit yet.
+
+**Three changes**
+
+1. **Variants follow their base profile.** `applicability.score_pair` re-reads the base
+   profile's current `p0`/`alpha`/`floor` and re-registers the variant on every call. The first
+   draft cached a copy at first use, so a recalibrated base would have left every pair with an
+   optional signal scoring on stale values.
+2. **The two proposal thresholds are governed.** `MIN_SCORE` (65) and `SEPARATION` (8) move from
+   constants to `promotion_thresholds.contract_parent_min_score` / `contract_parent_separation` in
+   `proc.bp_policy`, beside the product's other link thresholds. Values unchanged. A missing key
+   RAISES, so the migration must reach both databases before the code ships.
+3. **The confirmed link type is audited.** `child_of` / `amends` / `attaches_to` is written into
+   the confirmation's `proc.bp_decision.facts` and returned by the action. No new column: no
+   reader needs it yet, and the record now exists for the first one that does (precedence: an
+   amendment's terms override, an attachment's do not).
+
+**Still out, until something needs them:** graph edges for confirmed parent links; a dedicated
+link-type column; a calibration loop fed by confirmations; the reference prompt as an AI judge
+for review-band pairs (second spec, with the wording signals).

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give contract parent-link scoring per-role profiles (hierarchy, amendment, attachment) and a set of corroborating signals that join a pair's score only when both documents carry the data.
+**Goal:** Give contract parent-link scoring per-role profiles (hierarchy, amendment, attachment) and a set of corroborating signals that join a pair's score only when both documents carry the data; govern the proposal thresholds; keep the confirmed link type in the audit trail.
 
 **Architecture:** `linking_engine.py` is not touched. A small generic helper (`graph_resolution/applicability.py`) registers a profile *variant* per pair containing only the optional signals both documents can supply, so absent data cannot lower coverage `C`. Two new profile modules sit beside `contract_hierarchy`; `contract_links.py` picks the profile by the child's vocabulary role and widens the candidate rows so the new signals have data.
 
@@ -27,10 +27,11 @@
 ## Review Focus
 
 1. A contract with no optional fields at all (the corpus norm) must score as it does today; a profile that taxed absent data would silently stop proposing parents (Task 1, Task 3 tests).
-2. An amendment whose title shares no words with its parent, but whose reference resolves, must be proposed (Task 4 test, Task 7 matrix).
+2. An amendment whose title shares no words with its parent, but whose reference resolves, must be proposed (Task 4 test, Task 9 matrix).
 3. A child whose currency differs from the parent's must not have a value compared (no FX) (Task 2 test).
 4. A rows-from-`bp_contract_master` candidate has no `buyer_signatory_name` column; widening the query must not crash on it (Task 6 test).
-5. A proposed vocabulary type must not route an upload or resolve a document (Task 8 test).
+5. A proposed vocabulary type must not route an upload or resolve a document (Task 10 test).
+6. A recalibrated base profile must change the scores of pairs that carry optional signals, not only the pairs that do not (Task 1 test).
 
 ## File Structure
 
@@ -42,7 +43,9 @@
 | `src/services/graph_resolution/profiles/contract_amendment.py` (new) | Profile for `role.variation` children |
 | `src/services/graph_resolution/profiles/contract_attachment.py` (new) | Profile for `role.attachment` children |
 | `src/services/graph_resolution/edge_writer.py` (modify) | Two names added to `UNCALIBRATED_PROFILES` |
-| `src/services/contract_links.py` (modify) | Profile selection by role, attachment parent types, widened candidate rows, link type |
+| `src/services/contract_links.py` (modify) | Profile selection by role, attachment parent types, widened candidate rows, link type, governed thresholds, `link_type_of` |
+| `src/engines/decision_engine.py`, `src/services/triage/model.py` (modify) | Link type in the confirmation audit row; corrected column comment |
+| `deploy/sql/2026-10-08_contract_parent_thresholds*.sql` (new) | The two thresholds as governed limits |
 | `src/services/concepts/seed.py`, `deploy/sql/2026-10-08_contract_link_vocabulary*.sql` (modify/new) | Four proposed document types |
 | `tests/services/graph_resolution/test_applicability.py`, `test_contract_signals.py`, `test_contract_amendment.py`, `test_contract_attachment.py` (new); `test_contract_hierarchy.py` (modify); `tests/services/test_contract_link_matrix.py` (new); `tests/services/concepts/test_contract_link_types.py` (new) | Tests |
 
@@ -56,7 +59,7 @@
 
 **Interfaces:**
 - Consumes: `linking_engine.register_profile`, `linking_engine._signal_match`, `linking_engine.score_link`, `composition.remap_clusters`.
-- Produces: `applicable(optional, src, tgt, date_field) -> list[dict]`, `variant_name(base, extra) -> str`, `score_pair(base_name, params, base_specs, optional, src, tgt) -> dict` (a `score_link` result plus `"profile": base_name`).
+- Produces: `applicable(optional, src, tgt, date_field) -> list[dict]`, `variant_name(base, extra) -> str`, `score_pair(base_name, base_specs, optional, src, tgt) -> dict` (a `score_link` result plus `"profile": base_name`). The base profile must already be registered; its CURRENT p0/alpha/floor/date_field are read on every call.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -94,9 +97,14 @@ def _direct_base_score(src, tgt):
     return le.score_link(src, tgt, "tap_base_only")
 
 
+def _base(name):
+    le.register_profile(name, {**PARAMS, "signals": BASE})
+    return name
+
+
 def test_absent_optional_data_scores_exactly_as_the_base_profile():
     src, tgt = {"id": "C", "ref": "P"}, {"id": "P"}
-    got = ap.score_pair("tap_prof", PARAMS, BASE, OPT, src, tgt)
+    got = ap.score_pair(_base("tap_prof"), BASE, OPT, src, tgt)
     assert got["F"] == _direct_base_score(src, tgt)["F"]
     assert got["profile"] == "tap_prof"
     assert "tap_prof" in le.PROFILES and [s["id"] for s in le.PROFILES["tap_prof"]["signals"]] == ["ref"]
@@ -104,7 +112,7 @@ def test_absent_optional_data_scores_exactly_as_the_base_profile():
 
 def test_present_optional_data_joins_the_pair_and_is_reported_under_the_base_name():
     src, tgt = {"id": "C", "ref": "P", "x": "GBP"}, {"id": "P", "x": "GBP"}
-    got = ap.score_pair("tap_prof2", PARAMS, BASE, OPT, src, tgt)
+    got = ap.score_pair(_base("tap_prof2"), BASE, OPT, src, tgt)
     assert [s["id"] for s in got["signals"]] == ["ref", "opt"]
     assert got["profile"] == "tap_prof2"
     assert "tap_prof2+opt" in le.PROFILES
@@ -112,8 +120,27 @@ def test_present_optional_data_joins_the_pair_and_is_reported_under_the_base_nam
 
 def test_a_conflicting_optional_signal_lowers_the_score_below_the_base():
     src, tgt = {"id": "C", "ref": "P", "x": "GBP"}, {"id": "P", "x": "USD"}
-    got = ap.score_pair("tap_prof3", PARAMS, BASE, OPT, src, tgt)
+    got = ap.score_pair(_base("tap_prof3"), BASE, OPT, src, tgt)
     assert got["F"] < _direct_base_score(src, tgt)["F"]
+
+
+def test_a_variant_follows_its_base_profile_when_the_base_is_recalibrated():
+    """scripts/graph_resolution/calibrate.py tunes a profile by changing its p0/alpha.
+    A variant that kept the copy taken at first use would go on scoring with the old
+    values, silently, for every pair that carries an optional signal."""
+    src, tgt = {"id": "C", "ref": "P", "x": "GBP"}, {"id": "P", "x": "GBP"}
+    name = _base("tap_prof4")
+    before = ap.score_pair(name, BASE, OPT, src, tgt)["F"]
+    le.PROFILES[name]["alpha"] = 0.10                      # a recalibration
+    after = ap.score_pair(name, BASE, OPT, src, tgt)["F"]
+    assert after != before
+    assert le.PROFILES[name + "+opt"]["alpha"] == 0.10
+
+
+def test_an_unregistered_base_profile_is_refused():
+    import pytest
+    with pytest.raises(KeyError):
+        ap.score_pair("tap_never_registered", BASE, OPT, {"id": "C"}, {"id": "P"})
 
 
 def test_the_variant_name_does_not_depend_on_declaration_order():
@@ -185,19 +212,26 @@ def _observations(specs: Sequence[dict], src: dict, tgt: dict) -> dict:
     return out
 
 
-def score_pair(base_name: str, params: dict, base_specs: Sequence[dict],
+def score_pair(base_name: str, base_specs: Sequence[dict],
                optional: Sequence[dict], src: dict, tgt: dict) -> dict:
     """Score src -> tgt under base_specs plus the optional signals that apply.
 
-    ``params`` is the profile's p0/alpha/floor/date_field. The result is the
-    engine's full auditable score_link result with ``profile`` set to the BASE
-    name, so callers and the UNCALIBRATED_PROFILES check never see a variant name.
+    The base profile must already be registered. Its p0/alpha/floor/date_field
+    are read from the registry on EVERY call and the variant is re-registered
+    from them, never cached: scripts/graph_resolution/calibrate.py tunes a
+    profile by changing those values, and a variant holding the copy taken at
+    first use would go on scoring with the old ones without anyone noticing.
+    Re-registering is one dict assignment.
+
+    The result is the engine's full auditable score_link result with
+    ``profile`` set to the BASE name, so callers and the UNCALIBRATED_PROFILES
+    check never see a variant name.
     """
+    params = {k: v for k, v in _le.PROFILES[base_name].items() if k != "signals"}
     extra = applicable(optional, src, tgt, params["date_field"])
     name = variant_name(base_name, extra)
     specs = list(base_specs) + extra
-    if name not in _le.PROFILES:
-        _le.register_profile(name, {**params, "signals": specs})
+    _le.register_profile(name, {**params, "signals": specs})
     overrides = remap_clusters(specs, _observations(specs, src, tgt))
     result = _le.score_link(src, tgt, name, cluster_overrides=overrides)
     result["profile"] = base_name
@@ -207,11 +241,12 @@ def score_pair(base_name: str, params: dict, base_specs: Sequence[dict],
 - [ ] **Step 4: Run the tests and see them pass**
 
 Run: `CUDA_VISIBLE_DEVICES="" ./venv/bin/python -m pytest tests/services/graph_resolution/test_applicability.py -v`
-Expected: 4 passed.
+Expected: 6 passed.
 
-- [ ] **Step 5: Break the guard and watch it go red**
+- [ ] **Step 5: Break both guards and watch them go red**
 
-Change `if status != "MISSING":` to `if True:` in `applicable`, run the file. Expected: `test_absent_optional_data_scores_exactly_as_the_base_profile` FAILS (the variant carries the MISSING signal and coverage drops). Restore the line and re-run: 4 passed.
+(a) Change `if status != "MISSING":` to `if True:` in `applicable`, run the file. Expected: `test_absent_optional_data_scores_exactly_as_the_base_profile` FAILS (the variant carries the MISSING signal and coverage drops). Restore.
+(b) Wrap the `_le.register_profile(name, ...)` line in `if name not in _le.PROFILES:` (the cached-copy design). Expected: `test_a_variant_follows_its_base_profile...` FAILS. Restore, re-run: 6 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -565,7 +600,7 @@ def score(src: dict, tgt: dict) -> dict:
     # Imported here, not at the top: contract_signals imports this module.
     from . import contract_signals as _cs
     from ..applicability import score_pair
-    return score_pair(PROFILE, _PARAMS, SIGNALS, _cs.HIERARCHY_OPTIONAL, src, tgt)
+    return score_pair(PROFILE, SIGNALS, _cs.HIERARCHY_OPTIONAL, src, tgt)
 ```
 
 Leave `observations_for` and `SIGNALS` unchanged (existing tests use them).
@@ -714,7 +749,7 @@ _le.register_profile(PROFILE, {**_PARAMS, "signals": SIGNALS})
 
 
 def score(src: dict, tgt: dict) -> dict:
-    return score_pair(PROFILE, _PARAMS, SIGNALS, _cs.AMENDMENT_OPTIONAL, src, tgt)
+    return score_pair(PROFILE, SIGNALS, _cs.AMENDMENT_OPTIONAL, src, tgt)
 ```
 
 In `edge_writer.py`, add `"contract_amendment", "contract_attachment"` to `UNCALIBRATED_PROFILES` (both now, so Task 5 needs no second edit):
@@ -845,7 +880,7 @@ _le.register_profile(PROFILE, {**_PARAMS, "signals": SIGNALS})
 
 
 def score(src: dict, tgt: dict) -> dict:
-    return score_pair(PROFILE, _PARAMS, SIGNALS, _cs.ATTACHMENT_OPTIONAL, src, tgt)
+    return score_pair(PROFILE, SIGNALS, _cs.ATTACHMENT_OPTIONAL, src, tgt)
 ```
 
 - [ ] **Step 4: Run** — `CUDA_VISIBLE_DEVICES="" ./venv/bin/python -m pytest tests/services/graph_resolution -q`. Expected all pass (design measured 84.7 for the reference case).
@@ -1107,7 +1142,235 @@ Expected: all pass. The old note text "appears to sit under" is unchanged for hi
 
 ---
 
-### Task 7: The matrix, kept
+### Task 7: The two proposal thresholds are governed
+
+**Files:**
+- Create: `deploy/sql/2026-10-08_contract_parent_thresholds.sql`, `deploy/sql/2026-10-08_contract_parent_thresholds_rollback.sql`
+- Modify: `src/services/contract_links.py` (`MIN_SCORE`, `SEPARATION` near line 105, their two uses in `propose_parent_links`)
+- Test: `tests/services/test_contract_link_wiring.py` (append; it already imports `LimitUnavailable`)
+
+**Interfaces:**
+- Consumes: `src.services.governed_limits.limit(policy, rule, *, env=None, cast=float)`; it RAISES `LimitUnavailable` when the key is absent.
+- Produces: `contract_links.MIN_SCORE() -> float`, `contract_links.SEPARATION() -> float` (functions, as `linking_engine.MIN_CONFIDENCE()` is). Names stay in `__all__`.
+
+**Why:** every other link threshold in this product lives in `proc.bp_policy` (`promotion_thresholds`), and a missing one refuses rather than falling back to a number in code. These two were constants, and the per-role design now leans on the 65 floor.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_the_proposal_thresholds_are_read_from_governance(monkeypatch):
+    from src.services import contract_links as CL
+    seen = []
+
+    def fake_limit(policy, rule, **kw):
+        seen.append((policy, rule))
+        return {"contract_parent_min_score": 70.0, "contract_parent_separation": 5.0}[rule]
+
+    monkeypatch.setattr(CL, "_governed_limit", fake_limit)
+    assert CL.MIN_SCORE() == 70.0 and CL.SEPARATION() == 5.0
+    assert ("promotion_thresholds", "contract_parent_min_score") in seen
+    assert ("promotion_thresholds", "contract_parent_separation") in seen
+
+
+def test_a_missing_threshold_refuses_rather_than_guessing(monkeypatch):
+    from src.services import contract_links as CL
+
+    def absent(policy, rule, **kw):
+        raise LimitUnavailable(f"{policy}.{rule} is not stated")
+
+    monkeypatch.setattr(CL, "_governed_limit", absent)
+    with pytest.raises(LimitUnavailable):
+        CL.MIN_SCORE()
+
+
+def test_the_live_policy_states_both_thresholds():
+    """Live-DB: the migration is applied, so the real lookup answers 65 and 8."""
+    from src.services import contract_links as CL
+    from src.services import governed_limits
+    governed_limits.reset_cache()
+    assert CL.MIN_SCORE() == 65.0 and CL.SEPARATION() == 8.0
+```
+
+- [ ] **Step 2: Run and see failure**
+
+Run: `RUN tests/services/test_contract_link_wiring.py -q -k "thresholds or threshold"`
+Expected: FAIL (`'float' object is not callable`, `_governed_limit` absent).
+
+- [ ] **Step 3: Write the migration**
+
+```sql
+-- deploy/sql/2026-10-08_contract_parent_thresholds.sql
+-- The contract parent-proposal floor and the contested gap, governed.
+--
+-- They were constants in src/services/contract_links.py (65.0 and 8.0). Every
+-- other link threshold lives here, under promotion_thresholds, and
+-- governed_limits.limit() RAISES on an absent key -- so a database without this
+-- migration proposes no contract parents at all, which is the correct failure.
+-- Run on BOTH bp_testdb AND bp_sqldb BEFORE the code that reads them ships.
+-- Values unchanged from the constants: this moves them, it does not retune them.
+-- Idempotent: jsonb || jsonb overwrites the two keys and leaves every other rule.
+UPDATE proc.bp_policy
+   SET policy_details = jsonb_set(
+         policy_details, '{rules}',
+         (policy_details -> 'rules') || jsonb_build_object(
+            -- Below this F a contract parent is not worth a person's attention.
+            -- 65 is the linking engine's own review band.
+            'contract_parent_min_score', 65,
+            -- How far apart best and runner-up must be to read "confirm this"
+            -- rather than "choose between these" (contested).
+            'contract_parent_separation', 8
+         )),
+       last_modified_date = NOW(),
+       last_modified_by   = 'deploy/sql/2026-10-08_contract_parent_thresholds.sql',
+       version            = COALESCE(version, 1) + 1
+ WHERE policy_details ->> 'policy_identifier' = 'promotion_thresholds';
+
+SELECT policy_details -> 'rules' -> 'contract_parent_min_score'  AS min_score,
+       policy_details -> 'rules' -> 'contract_parent_separation' AS separation
+  FROM proc.bp_policy
+ WHERE policy_details ->> 'policy_identifier' = 'promotion_thresholds';
+```
+
+Rollback:
+
+```sql
+-- deploy/sql/2026-10-08_contract_parent_thresholds_rollback.sql
+-- Only safe together with reverting the code: the code RAISES without these keys.
+UPDATE proc.bp_policy
+   SET policy_details = jsonb_set(policy_details, '{rules}',
+         (policy_details -> 'rules') - 'contract_parent_min_score' - 'contract_parent_separation'),
+       last_modified_date = NOW(),
+       last_modified_by   = 'deploy/sql/2026-10-08_contract_parent_thresholds_rollback.sql',
+       version            = COALESCE(version, 1) + 1
+ WHERE policy_details ->> 'policy_identifier' = 'promotion_thresholds';
+```
+
+Apply to `bp_testdb` only (twice: the second run must leave the same values):
+`set -a; . ./.env 2>/dev/null; set +a; PYTHONPATH=. ./venv/bin/python -c "from src.services.db import get_conn; c=get_conn().__enter__(); c.cursor().execute(open('deploy/sql/2026-10-08_contract_parent_thresholds.sql').read())"`
+
+- [ ] **Step 4: Implement**
+
+In `contract_links.py`, add to the imports `from src.services.governed_limits import limit as _governed_limit`, and replace the two constants (keep their comments, reworded to say where the value now lives):
+
+```python
+def MIN_SCORE() -> float:
+    """Below this F the evidence is too thin for a person's attention.
+
+    promotion_thresholds.contract_parent_min_score (65: the linking engine's own
+    review band). Read when used, never at import, and RAISES if absent.
+    """
+    return _governed_limit("promotion_thresholds", "contract_parent_min_score")
+
+
+def SEPARATION() -> float:
+    """How far apart best and runner-up must be to read 'confirm this'.
+
+    promotion_thresholds.contract_parent_separation (8).
+    """
+    return _governed_limit("promotion_thresholds", "contract_parent_separation")
+```
+
+In `propose_parent_links`, read both ONCE before the loop (`min_score, separation = MIN_SCORE(), SEPARATION()`), then use `if best["F"] < min_score:` and `(best["F"] - runner_up) >= separation`. Reading them once per pass means one pass can never mix two values.
+
+- [ ] **Step 5: Run the contract suites**
+
+Run: `RUN tests/services/test_contract_links.py tests/services/test_contract_link_wiring.py -q`
+Expected: all pass.
+
+- [ ] **Step 6: Break the guard** — run the rollback on `bp_testdb`, then `RUN tests/services/test_contract_link_wiring.py -q -k live_policy`; expected FAIL with `LimitUnavailable`. Re-apply the migration; expected PASS.
+
+- [ ] **Step 7: Commit** the two SQL files, `contract_links.py` and the test file: `feat(contracts): the parent-proposal floor and contested gap are governed, not constants`. Tell the controller: **the migration must reach `bp_sqldb` before this code is deployed**, or contract parent proposals stop (by design).
+
+---
+
+### Task 8: The link type is kept in the confirmation's audit row
+
+**Files:**
+- Modify: `src/services/contract_links.py` (add `link_type_of`), `src/engines/decision_engine.py` (`_accept_contract_parent`, ~line 1423), `src/services/triage/model.py:105` (comment only)
+- Test: `tests/engines/test_finding_action_status.py` (append)
+
+**Interfaces:**
+- Consumes: `contract_links._link_type(child: dict) -> str` (Task 6).
+- Produces: `contract_links.link_type_of(contract_id: str) -> Optional[str]`; `_accept_contract_parent`'s result gains `"link_type"`; the `proc.bp_decision.facts` JSON of a confirmation gains `"link_type"`.
+
+**Why:** `confirm()` writes `parent_contract_id` for every link type, and triage reads that column as a FAMILY pointer (it loads the parent and every child), which is right for SOWs, amendments and attachments alike. What was lost is WHICH kind of link a person confirmed. No reader needs it today, so no column: it goes in the audit row the decision engine already writes. If a consumer later needs precedence (an amendment's terms override, an attachment's do not), the record exists.
+
+- [ ] **Step 1: Write the failing tests** (append; `_proposal_engine`, `FakeCursor` and `pytest` already exist in the file)
+
+```python
+def test_a_confirmed_parent_records_its_link_type(monkeypatch):
+    import json
+    import src.services.contract_links as CL
+    monkeypatch.setattr(CL, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(CL, "link_type_of", lambda cid: "child_of")
+    eng, cur = _proposal_engine()
+    result = eng.execute(9001, "approve", user_id="buyer-7", override_reason="under test")
+    assert result["applied"] is True and result["link_type"] == "child_of", result
+    facts = [json.loads(p[9]) for p in cur.decision_inserts]
+    assert facts and facts[0].get("link_type") == "child_of", facts
+
+
+def test_an_unknown_link_type_never_blocks_the_link(monkeypatch):
+    import src.services.contract_links as CL
+    monkeypatch.setattr(CL, "confirm", lambda *a, **k: True)
+
+    def boom(cid):
+        raise RuntimeError("lookup failed")
+
+    monkeypatch.setattr(CL, "link_type_of", boom)
+    eng, _cur = _proposal_engine()
+    result = eng.execute(9001, "approve", user_id="buyer-7", override_reason="under test")
+    assert result["applied"] is True and result["link_type"] is None, result
+```
+
+`FakeCursor` (top of this file) records UPDATEs but not the decision INSERT. Extend it, test-side only: in `__init__` add `self.decision_inserts: list[tuple] = []`, and in the `elif norm.startswith("INSERT INTO proc.bp_decision"):` branch add `self.decision_inserts.append(params)` before `self._last_result = (555,)`. `p[9]` is the `facts` position in `_record_human_action`'s INSERT (subject_type, subject_id, deal_id, supplier_id, decision, resolution, rationale, policy_id, policy_name, **facts**).
+
+- [ ] **Step 2: Run and see failure** — `RUN tests/engines/test_finding_action_status.py -q -k "link_type"`; expected FAIL (`AttributeError: link_type_of` / `KeyError: 'link_type'`).
+
+- [ ] **Step 3: Implement**
+
+`contract_links.py`, below `_link_type`:
+
+```python
+def link_type_of(contract_id: str) -> Optional[str]:
+    """child_of / amends / attaches_to for a stored contract, or None if unknown."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT resolved_doc_type, resolved_role FROM proc.bp_contracts "
+                    "WHERE contract_id = %s", (contract_id,))
+        row = cur.fetchone()
+    if not row or not row[0]:
+        return None
+    return _link_type({"resolved_doc_type": row[0], "resolved_role": row[1]})
+```
+
+`decision_engine.py`, in `_accept_contract_parent`, after the `if not linked:` block and BEFORE `decision_id = self._record_human_action(...)`:
+
+```python
+        # Which KIND of link the person confirmed. parent_contract_id holds every
+        # kind (triage reads it as a family pointer), so the kind is kept here, in
+        # the audit row. A failed lookup never undoes or blocks a link already made.
+        try:
+            link_type = contract_links.link_type_of(str(child))
+        except Exception:
+            logger.exception("link type lookup failed for %s", child)
+            link_type = None
+        recommendation.facts["link_type"] = link_type
+```
+
+and add `"link_type": link_type,` to the returned dict, next to `"parent_contract_id"`.
+
+`triage/model.py:105`: change the comment `# contract -> the contract it amends` to `# contract -> its parent: what it sits under, amends, or attaches to (a family pointer)`.
+
+- [ ] **Step 4: Run** — `RUN tests/engines/test_finding_action_status.py tests/services/test_contract_links.py -q`; expected all pass, including the three older parent-proposal tests.
+
+- [ ] **Step 5: Break the guard** — delete the `recommendation.facts["link_type"] = link_type` line; expected: `test_a_confirmed_parent_records_its_link_type` FAILS. Restore.
+
+- [ ] **Step 6: Commit** `contract_links.py`, `decision_engine.py`, `triage/model.py`, the test file: `feat(contracts): a confirmed parent link records which kind of link it was`.
+
+---
+
+### Task 9: The matrix, kept
 
 **Files:**
 - Create: `tests/services/test_contract_link_matrix.py`
@@ -1272,7 +1535,7 @@ Expected: all pass. Anything that fails is a finding about the design or the cod
 
 ---
 
-### Task 8: Four proposed document types
+### Task 10: Four proposed document types
 
 **Files:**
 - Modify: `src/services/concepts/seed.py` (`_DOCUMENT_TYPE_CONCEPTS`, the `Concept(...)` comprehension status expression, the `DOCUMENT_TYPES` tuple)
@@ -1434,7 +1697,7 @@ Expected: all pass, including `test_document_type_rows_equal_the_seed_column_for
 
 ---
 
-### Task 9: Verify against the real database and record it
+### Task 11: Verify against the real database and record it
 
 **Files:**
 - Modify: `specs/2026-10-02-contract-structures-verification.md` (append a section)
@@ -1447,7 +1710,7 @@ Expected: no failures. Also run the engine's own vectors: `RUN tests/test_linkin
 
 - [ ] **Step 2: Re-run the 2026-10-08 matrix as a script on `bp_testdb` and compare**
 
-Use the scenario script from the design session (`scratchpad/cl_matrix.py`) if it is still on disk; otherwise Task 7's tests are the same matrix. Record, for the Variation, Addendum and CCN rows with a declared reference and a generic title, the new score (design measured 65.9; with a buyer 78.4).
+Use the scenario script from the design session (`scratchpad/cl_matrix.py`) if it is still on disk; otherwise Task 9's tests are the same matrix. Record, for the Variation, Addendum and CCN rows with a declared reference and a generic title, the new score (design measured 65.9; with a buyer 78.4).
 
 - [ ] **Step 3: Measure the corpus effect**
 
@@ -1461,8 +1724,8 @@ Run `propose_parent_links()` over the whole `bp_testdb` parentless set before an
 
 ## Self-review
 
-- **Spec coverage:** section 4 (profiles, signal table, applicability) -> Tasks 1-5; role selection and attachment parent types -> Task 6; section 5 (vocabulary) -> Task 8; section 6 (link type) -> Task 6; section 7 (testing, matrix, defects) -> Task 7 and each task's guards; section 8 risk 3 -> Task 9 step 3. Out-of-scope items (wording signals, amendment sequence, calibration, renewal, start-order) have no task, by design.
+- **Spec coverage:** section 4 (profiles, signal table, applicability) -> Tasks 1-5; role selection and attachment parent types -> Task 6; section 5 (vocabulary) -> Task 10; section 6 (link type) -> Tasks 6 and 8; section 7 (testing, matrix, defects) -> Task 9 and each task's guards; section 8 risk 3 -> Task 11 step 3; section 10 (revision 2: live calibration, governed thresholds, audit link type) -> Tasks 1, 7, 8. Out-of-scope items (wording signals, amendment sequence, calibration, renewal, start-order) have no task, by design.
 - **Placeholders:** none. The loose `or True` assertions drafted for Tasks 2, 3 and 8 were replaced with exact ones in the plan itself.
-- **Type consistency:** `score_pair(base_name, params, base_specs, optional, src, tgt)` is used identically in Tasks 3-5; `HIERARCHY_OPTIONAL / AMENDMENT_OPTIONAL / ATTACHMENT_OPTIONAL` defined in Task 2 and consumed under those names; `_profile_module`, `_link_type`, `_fetch` defined in Task 6 and used in its tests; `contract_hierarchy._PARAMS` defined in Task 3 and consumed in Tasks 4-5.
+- **Type consistency:** `score_pair(base_name, base_specs, optional, src, tgt)` is used identically in Tasks 3-5; `HIERARCHY_OPTIONAL / AMENDMENT_OPTIONAL / ATTACHMENT_OPTIONAL` defined in Task 2 and consumed under those names; `_profile_module`, `_link_type`, `_fetch` defined in Task 6 and used in its tests; `contract_hierarchy._PARAMS` defined in Task 3 and consumed in Tasks 4-5 (for registering their base profiles only); `MIN_SCORE()`/`SEPARATION()` are functions from Task 7 on; `link_type_of` defined and consumed in Task 8.
 
-Execution handoff: subagent-driven is recommended: nine tasks, each with its own test cycle, but Tasks 3-6 depend on each other's exact names. Do NOT use Haiku implementers (shared index).
+Execution handoff: subagent-driven is recommended: eleven tasks, each with its own test cycle, but Tasks 3-6 depend on each other's exact names. Do NOT use Haiku implementers (shared index).
