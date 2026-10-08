@@ -697,10 +697,15 @@ def test_the_minimum_applies_to_aliases_not_to_aliases_plus_signals():
 
 
 def test_a_signal_phrase_does_not_leak_aliases_from_inside_itself():
-    """'bill' (an invoice alias) sits inside the signal 'Bill-To Address'."""
+    """'bill' (an invoice alias) sits inside the signal 'Bill-To Address'.
+
+    The heading must be a phrase no type claims. It was 'Delivery Note' until
+    2026-10-04, when that became a goods-receipt alias and the document rightly
+    resolved as a goods receipt -- the fixture's premise changed, not the rule.
+    """
     r = resolve_document_type(
         declared_concept=None, vocabulary=V,
-        full_text="Delivery Note\nzzzzzzzzzz\nBill-To Address: 1 High St\n"
+        full_text="Customer Letter\nzzzzzzzzzz\nBill-To Address: 1 High St\n"
                   "Bill-To Address: 2 Low St\n")
     assert r.status == "unknown" and r.evidence_concept is None
 

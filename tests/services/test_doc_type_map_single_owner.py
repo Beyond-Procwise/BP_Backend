@@ -24,11 +24,12 @@ def _pipelines_in_the_vocabulary() -> set[str]:
     }
 
 
-def test_the_vocabulary_names_exactly_the_four_live_pipelines():
-    """A fifth pipeline value means tables that do not exist; a missing one
-    means a working ingestion path has no vocabulary entry."""
+def test_the_vocabulary_names_exactly_the_five_live_pipelines():
+    """A sixth pipeline value means tables that do not exist; a missing one
+    means a working ingestion path has no vocabulary entry. goods_receipt is the
+    fifth since 2026-10-04 (deploy/sql/2026-10-04_goods_receipt_tables.sql)."""
     assert _pipelines_in_the_vocabulary() == {
-        "invoice", "purchase_order", "quote", "contract"
+        "invoice", "purchase_order", "quote", "contract", "goods_receipt"
     }
 
 

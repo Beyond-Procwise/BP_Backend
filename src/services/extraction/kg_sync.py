@@ -40,12 +40,14 @@ _TRGT_TABLE = {
     # proc.bp_contracts. Without this entry a contract could be extracted and
     # still never reach the graph.
     "contract": "proc.bp_contracts",
+    "goods_receipt": "proc.bp_goods_receipt_trgt",
 }
 _PK_COL = {
     "invoice": "invoice_id",
     "purchase_order": "po_id",
     "quote": "quote_id",
     "contract": "contract_id",
+    "goods_receipt": "grn_id",
 }
 
 
