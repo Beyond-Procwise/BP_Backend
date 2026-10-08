@@ -8,6 +8,15 @@ from tests.agent_policy.fixtures import FORM_EXAMPLE, REGISTRY, SETTINGS
 DOC_TEXT = "1.1 Refunds or credits above $500 need approval from the Finance Manager.\n1.2 ..."
 
 
+MAPPED = {n: {"groups": ["g"], "emails": []} for n in ("Finance Manager", "CFO", "Procurement Lead")}
+
+
+@pytest.fixture(autouse=True)
+def _decider_map(monkeypatch):
+    """Existing tests are about other fields: give them a fully linked decider map."""
+    monkeypatch.setattr(R, "_load_deciders", lambda: MAPPED)
+
+
 def _ready_form():
     form = copy.deepcopy(FORM_EXAMPLE)
     form["hidden"]["condition"]["all"][0]["value"] = ["refund.issue", "credit.issue"]

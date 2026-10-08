@@ -10,6 +10,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from services.agent_policy import conditions
+from services.agent_policy import deciders as deciders_mod
 from services.agent_policy.compiler import response_time
 from services.agent_policy.registry import RegistrySnapshot
 
@@ -106,8 +107,20 @@ def how_enforced(form: Dict[str, Any], registry: RegistrySnapshot, settings: Dic
             "then": then + tail}
 
 
+UNMAPPED = ("Nobody is linked to {names} yet. An administrator must link them before this policy "
+            "can be Active.")
+
+
+def _load_deciders():
+    from services.db import get_conn
+
+    with get_conn() as conn:
+        return deciders_mod.load_map(conn)
+
+
 def activation_problems(form: Dict[str, Any], registry: RegistrySnapshot,
-                        settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+                        settings: Dict[str, Any], deciders: Optional[Dict[str, Any]] = None
+                        ) -> List[Dict[str, Any]]:
     p: List[Dict[str, Any]] = []
     add = lambda f, c, m, **kw: p.append({"field": f, "code": c, "message": m, **kw})  # noqa: E731
     h = form.get("hidden") or {}
@@ -166,6 +179,30 @@ def activation_problems(form: Dict[str, Any], registry: RegistrySnapshot,
         add("notify", "notify_required", "Add at least one person to tell.")
     if outcome in ("approve", "block") and _blank(form.get("messageForAgent")):
         add("messageForAgent", "message_for_agent_required", "Write the message the agent receives.")
+
+    # Every name a person must answer for has to be linked to someone, or the policy could
+    # pause an action that nobody is allowed to release.
+    wanted = []
+    if outcome == "approve":
+        wanted.append(("deciders", [d for d in form.get("deciders") or [] if str(d).strip()]))
+    if outcome in ("block", "notify"):
+        wanted.append(("notify", [n for n in form.get("notify") or [] if str(n).strip()]))
+    if any(names for _, names in wanted):
+        mapping = deciders
+        if mapping is None:
+            try:
+                mapping = _load_deciders()
+            except Exception:  # noqa: BLE001 - never pass silently when the map can't be read
+                mapping = None
+                add("deciders", "decider_map_unavailable",
+                    "Can't check who is linked to the people named here right now. Try again shortly.",
+                    routeTo="administrator")
+        if mapping is not None:
+            for field, names in wanted:
+                missing_names = deciders_mod.unmapped(names, mapping)
+                if missing_names:
+                    add(field, "decider_unmapped", UNMAPPED.format(names=", ".join(missing_names)),
+                        names=missing_names, routeTo="administrator")
 
     limit = form.get("limit") or {}
     if limit.get("on") and _blank(limit.get("text")):
