@@ -241,3 +241,34 @@ on it (and reproduces the bug if the column is put back into (b)). The rehearsal
 migrations are not applied, capture, send-outcome recording, the sweep and retention each log an error and record nothing, while drafting and
 sending carry on. `bp_testdb` has only the first capture files applied, so any code that reaches it from `Development` records nothing for the
 newer columns. Apply pack (a) before the code reaches an environment you want captured, or accept that it will not be.
+
+## Inbound payment-detail screen (2026-10-08) - built, applied nowhere
+
+`draft_assurance/inbound.py`, `deploy/sql/2026-10-08_email_inbound_flag.sql` (pack a), a best-effort hook at the top of
+`supplier_response_repo.insert_response`, the review queue in `/email-learning/inbound-flags`, and three enforcement points.
+
+| # | What is true |
+|---|---|
+| P1 | **Deterministic, no model.** It finds a payment instrument (bank/account/IBAN/sort code/remittance/payment details/beneficiary...) within 100 characters of a change word (changed, new, updated, replace, switch, from now on...). Markup inside words, zero-width characters, spaced-out letters, capitals and odd whitespace do not defeat it; both ends of a very long mail are read. Bank details WITH pressure language (urgent, today, do not call...) are also suspected; bank details alone are noted, not blocked. |
+| P2 | **Biased to flag.** Fixtures pin what must be flagged (22 phrasings, including disguised ones), what must not (16 ordinary supplier messages), and the accepted false positives (e.g. "the bank transfer fee has changed"). A false alarm costs a person a look. It is a keyword screen and will miss a fraud that avoids every payment word (a request to "use the other account" is caught; one that names nothing is not). It does not read attachments. |
+| P3 | **Recording keeps no email text.** A flag stores the message id, dispatch id, workflow, supplier, which signals fired and the matched keywords. Tested: a bank detail in the reply appears nowhere in the table. |
+| P4 | **Ingest is never at risk.** The screen runs first in `insert_response`, so a reply that fails to store is still screened, and a fault in the screen is swallowed (logged), so it costs a missed flag and never a lost reply. |
+| P5 | **Three enforcement points.** (1) An agent-started draft (the counter path and `from_decision`) REFUSES: no model is called and nothing is stored; being unable to check the thread counts as blocked. (2) A draft a person asked for goes ahead but carries a failing `payment_change_unreviewed` violation and is not ready. (3) The send guard (new check 1e) denies a send while a flag is open or confirmed, whatever the approval and the family's mode. An absent flag table blocks nothing; an unreadable one blocks. |
+| P6 | **Clearing needs approver authority** (`inbound.flag.clear`, class `approve_email`); confirming it as fraud is an ordinary write. A confirmed flag cannot be cleared by a second click. Clearing is by flag, so a second suspicious reply on the same thread needs its own clearing. |
+| P7 | **Limits.** A flag is per workflow and supplier; a draft with no supplier (the manual passthrough) on a workflow whose flag names a supplier is not blocked. A reply that cannot be matched to a workflow is not flagged at all (there is nothing to attach it to). The screen sees the reply as stored; it does not authenticate the sender (finding 2 stays open). |
+| P8 | **Depends on pack (a) being applied.** Where the flag table does not exist nothing is flagged, so until then the screen records nothing. |
+
+## Offers read from an email are claims (2026-10-08) - built, applied nowhere
+
+`2026-10-08_supplier_response_provenance.sql` (a PRODUCT-table change, its own change request, not in the email pack), the analyser, the
+fact resolver and the assurance record.
+
+| # | What is true |
+|---|---|
+| V1 | **What the analyser does is unchanged:** the first number in the email is the price unless a model returns one. What is new is that the choice is recorded: `extraction_method` (`llm`, `regex_first_number`, `regex_days`), the model's name, a prompt identifier, a timestamp, and `extraction_status = extracted_unverified`. The prompt is inline in the code, so it is named by where it lives; neither the regex nor the model reports a confidence, so that column stays NULL. |
+| V2 | **Stamping is best-effort and tolerant.** It never overwrites a person's word (a `confirmed` or `rejected` row is left alone), only stamps a row that holds an extracted value, and a database without the columns costs nothing. |
+| V3 | **A fact source can name a provenance column** (`claim_column`, `claim_unless`). The offer and the lead time (counter family) and the offer (human-written family) do. A value is a CLAIM unless the column says `confirmed`; a NULL, an unknown value and a missing column all count as claims. A claim is still the row's value, so the figure checks are unchanged: this is about trust, not about the number. |
+| V4 | **Every row that exists today is a claim**: nothing recorded its origin. So once the families carry the setting, every counter draft lists its offer as a claim and carries a "confirm this" item. In shadow mode nothing is blocked; in enforce the draft is not ready until a person confirms. |
+| V5 | **Confirming is per draft.** It does not mark the product row confirmed: that is a product-table write the writer role cannot make and no endpoint does (tested). So the same offer is a claim again on the next draft. A way for a person to confirm the ROW is not built. |
+| V6 | **Not applied, and the families need refreshing.** `bp_testdb` holds the earlier counter-family row; editing the migration file does not change it, so claims appear there only after the family row is replaced. Until the product migration is applied, every offer reads as "origin not recorded". |
+| V7 | The reviewer view says, in words, "Read from the supplier's email by software; not confirmed by a person" (or that the origin was not recorded), never a table or column name. |

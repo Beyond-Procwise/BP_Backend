@@ -337,6 +337,33 @@ def _screen_inbound(row: SupplierResponseRow) -> None:
         logger.debug("inbound payment-change screen did not run", exc_info=True)
 
 
+def record_extraction(*, workflow_id: Optional[str], unique_id: Optional[str], response_message_id: Optional[str], method: Optional[str],
+                      model: Optional[str], prompt_version: Optional[str], confidence: Optional[float] = None) -> bool:
+    """Record HOW the price / lead time on a reply row were read, so a value taken from an email is never mistaken for a confirmed one.
+
+    Best-effort and tolerant: it never raises, and a database that does not have the provenance columns yet (the migration is a separate
+    change) simply returns False. It stamps only a row that actually holds an extracted value, finds it by the reply's message id (or,
+    with none, its dispatch id), and NEVER overwrites a person's word: a row already ``confirmed`` or ``rejected`` is left alone.
+    """
+
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE proc.supplier_response SET extraction_status = 'extracted_unverified', extraction_method = %s, extraction_model = %s, "
+                "extraction_prompt_version = %s, extraction_confidence = %s, extracted_at = now() "
+                "WHERE workflow_id = %s AND (price IS NOT NULL OR lead_time IS NOT NULL) "
+                "AND ((%s IS NOT NULL AND response_message_id = %s) OR (%s IS NULL AND unique_id = %s)) "
+                "AND COALESCE(extraction_status, 'extracted_unverified') = 'extracted_unverified' RETURNING id",
+                (method, model, prompt_version, confidence, workflow_id,
+                 response_message_id, response_message_id, response_message_id, unique_id),
+            )
+            return bool(cur.fetchall())
+    except Exception:  # noqa: BLE001 - provenance is bookkeeping; the reply is already stored
+        logger.debug("extraction provenance not recorded", exc_info=True)
+        return False
+
+
 def insert_response(row: SupplierResponseRow) -> None:
     _screen_inbound(row)
     base_text = row.response_text or row.response_body or ""

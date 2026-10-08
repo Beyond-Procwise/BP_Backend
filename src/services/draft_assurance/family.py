@@ -35,6 +35,8 @@ class FactSource:
     value_type: str = "text"        # text | number | date
     caller_keys: List[str] = field(default_factory=list)
     label: str = ""            # human wording; internal table/column names never leave the backend
+    claim_column: Optional[str] = None       # a column on the same row recording where the value came from
+    claim_unless: List[str] = field(default_factory=list)   # values of it that mean a person vouched for the value; anything else is a CLAIM
 
 
 @dataclass(frozen=True)
@@ -89,12 +91,20 @@ def parse_family(rules: Any, version: Any = None, description: str = "") -> Fami
         vt = raw.get("value_type", "text")
         if vt not in ("text", "number", "date"):
             raise _fail(f"fact_sources.{key}.value_type unknown: {vt}")
+        claim_column, claim_unless = raw.get("claim_column"), raw.get("claim_unless")
+        if "claim_column" in raw or "claim_unless" in raw:
+            if not isinstance(claim_column, str) or not _IDENT.match(claim_column):
+                raise _fail(f"fact_sources.{key}.claim_column is not a plain identifier")
+            if not (isinstance(claim_unless, list) and claim_unless and all(isinstance(v, str) and v for v in claim_unless)):
+                raise _fail(f"fact_sources.{key}.claim_unless must be a non-empty list of text values")
         sources[key] = FactSource(
             key=key, table=table, column=column, row_id=row_id,
             lookup={str(c): str(n) for c, n in lookup.items()},
             order_by=order_by, value_type=vt,
             caller_keys=[str(k) for k in (raw.get("caller_keys") or [])],
             label=str(raw.get("label") or key.replace("_", " ")),
+            claim_column=claim_column if isinstance(claim_column, str) else None,
+            claim_unless=[str(v) for v in claim_unless] if isinstance(claim_unless, list) else [],
         )
     required = [str(k) for k in (rules.get("required_facts") or [])]
     unknown = [k for k in required if k not in sources]

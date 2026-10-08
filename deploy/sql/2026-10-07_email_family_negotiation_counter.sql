@@ -21,7 +21,7 @@ SELECT
     "length_target": 250,
     "required_facts": ["supplier_current_offer", "currency"],
     "fact_sources": {
-      "supplier_current_offer": {"table": "supplier_response", "column": "price", "row_id": "id",
+      "supplier_current_offer": {"table": "supplier_response", "column": "price", "claim_column": "extraction_status", "claim_unless": ["confirmed"], "row_id": "id",
         "lookup": {"workflow_id": "workflow_id", "supplier_id": "supplier_id"},
         "order_by": "round_number DESC, id DESC", "value_type": "number",
         "caller_keys": ["current_offer_numeric", "current_offer"]},
@@ -29,7 +29,7 @@ SELECT
         "lookup": {"workflow_id": "workflow_id", "supplier_id": "supplier_id"},
         "order_by": "round_number DESC, id DESC", "value_type": "text",
         "caller_keys": ["currency", "currency_code"]},
-      "supplier_lead_time": {"table": "supplier_response", "column": "lead_time", "row_id": "id",
+      "supplier_lead_time": {"table": "supplier_response", "column": "lead_time", "claim_column": "extraction_status", "claim_unless": ["confirmed"], "row_id": "id",
         "lookup": {"workflow_id": "workflow_id", "supplier_id": "supplier_id"},
         "order_by": "round_number DESC, id DESC", "value_type": "text"},
       "rfq_id": {"table": "supplier_response", "column": "rfq_id", "row_id": "id",

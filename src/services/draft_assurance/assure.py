@@ -54,6 +54,7 @@ class Inputs:
     assumptions: List[str] = field(default_factory=list)
     never_state: Dict[str, Set[Decimal]] = field(default_factory=dict)
     data: Dict[str, Any] = field(default_factory=dict)
+    claims: List[Dict[str, Any]] = field(default_factory=list)   # facts read from Postgres that no person has vouched for
 
     # -- allowed sets --------------------------------------------------------
     def _allowed(self):
@@ -113,7 +114,7 @@ class Inputs:
         verified = self._verified_numbers()
         verified |= {Decimal(int(self.data.get("round") or 1))}   # "round 2" is not a claim
         unverified = sorted(str(n) for n in V.figures_in(text) - verified)
-        problems = bool(hard or self.conflicts or self.assumptions or unverified
+        problems = bool(hard or self.conflicts or self.assumptions or unverified or self.claims
                         or [k for k in missing if k not in self.carried] or carried_required)
         record = {
             "family_id": self.family.family_id,
@@ -124,6 +125,7 @@ class Inputs:
                       for k, f in self.facts.items()},
             "unresolved": [{"fact": u.key, "reason": u.reason} for u in self.unresolved.values()],
             "carried_unverified": {k: _jsonable(v) for k, v in self.carried.items()},
+            "claims": self.claims,
             "conflicts": self.conflicts,
             "reasoned": {k: {"value": _jsonable(r["value"]), "basis": r["basis"]}
                          for k, r in self.reasoned.items()},
@@ -135,6 +137,16 @@ class Inputs:
         }
         record.update(stage_fields(extras or {}, record, self.reasoned))
         return record
+
+
+def _claim_reason(origin: Optional[str]) -> str:
+    if origin is None:
+        return "The row does not say where this value came from (its origin was never recorded), so it is treated as a claim."
+    if origin == "extracted_unverified":
+        return "Read from the supplier's email by software and not yet confirmed by a person."
+    if origin == "rejected":
+        return "A person rejected this extracted value."
+    return f"Its recorded origin ({origin}) is not a confirmed one."
 
 
 def prepare_inputs(conn: Any, family: FamilyConfig, data: Dict[str, Any],
@@ -153,6 +165,9 @@ def prepare_inputs(conn: Any, family: FamilyConfig, data: Dict[str, Any],
         supplied = _first(data, src.caller_keys)
         if isinstance(got, ResolvedFact):
             inp.facts[key] = got
+            if got.claim:
+                inp.claims.append({"fact": key, "label": src.label, "origin": got.origin or "not recorded",
+                                   "reason": _claim_reason(got.origin)})
             if supplied is not None and not _same(supplied, got.value):
                 inp.conflicts.append({"fact": key, "postgres": _jsonable(got.value),
                                       "supplied": _jsonable(supplied),
@@ -254,6 +269,12 @@ def stage_fields(extras: Dict[str, Any], record: Dict[str, Any], reasoned: Dict[
         if not r["basis"] and key not in have:
             items.append({"id": key, "key": key, "text": f"{key} = {r['value']} has no verified basis",
                           "resolution": None})
+    # A value read from Postgres that no person has vouched for (a price taken from an email) is a claim: a person confirms it
+    # before the draft counts as ready, through the same mechanism as every other assumption.
+    for c in record.get("claims") or []:
+        items.append({"id": f"claim:{c['fact']}", "key": f"claim.{c['fact']}",
+                      "text": f"{c['label']} was read from the supplier's email by software and has not been confirmed by a person. "
+                              "Confirm it, or give the right value.", "resolution": None})
     # Tone gaps a person must confirm: a variable whose rule is `assume` that fell back to its default,
     # and any tone word in the instruction that nothing understood. Same mechanism, same screen.
     if tone and tone.get("status") == "captured":

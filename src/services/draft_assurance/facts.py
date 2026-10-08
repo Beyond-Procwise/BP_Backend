@@ -26,10 +26,15 @@ class ResolvedFact:
     column: str
     row_id: str
     retrieved_at: str
+    claim: bool = False                 # read from the row, but not vouched for by a person: a CLAIM (e.g. a price taken from an email)
+    origin: Optional[str] = None        # what the row says about where it came from; None = never recorded
 
     def provenance(self) -> Dict[str, Any]:
-        return {"source": "postgres", "table": self.table, "column": self.column,
-                "row_id": self.row_id, "retrieved_at": self.retrieved_at}
+        out = {"source": "postgres", "table": self.table, "column": self.column,
+               "row_id": self.row_id, "retrieved_at": self.retrieved_at}
+        if self.claim:
+            out.update({"claim": True, "origin": self.origin or "not recorded"})
+        return out
 
 
 @dataclass(frozen=True)
@@ -88,8 +93,23 @@ class FactResolver:
         if len(rows) > 1 and not src.order_by:
             return Unresolved(src.key, "multiple")
         row_id, raw = rows[0]
+        claim, origin = False, None
+        if src.claim_column:
+            origin = self._origin(src, row_id)
+            claim = origin not in src.claim_unless      # a missing column, a NULL and any unknown value are all "not vouched for"
         return ResolvedFact(src.key, coerce(raw, src.value_type), src.table, src.column,
-                            str(row_id), _now())
+                            str(row_id), _now(), claim=claim, origin=origin)
+
+    def _origin(self, src: FactSource, row_id: Any) -> Optional[str]:
+        """What the row says about where its value came from. Any failure (the column does not exist yet) is 'never recorded'."""
+
+        try:
+            rows = self._fetch(f"SELECT {src.claim_column} FROM proc.{src.table} WHERE {src.row_id} = %s", [row_id])
+        except Exception:  # noqa: BLE001
+            logger.debug("origin column %s unreadable for %s; treating the value as a claim", src.claim_column, src.key)
+            return None
+        value = rows[0][0] if rows else None
+        return str(value) if value is not None else None
 
     def reread(self, fact: ResolvedFact, src: FactSource) -> Any:
         """The value now held by the exact row a fact was first read from."""
