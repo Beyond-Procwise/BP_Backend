@@ -255,12 +255,30 @@ def _strip_biz_suffix(name: str) -> str:
     return out or name
 
 # Noise tokens that indicate the extracted value is not a real supplier name.
-_NOISE_LOWER = (
-    "bank ", "bank,", "banking", " bank", "trust ", " trust",
-    "credit union", "savings", "branch", "sort code", "iban",
-    "swift", "bsb", "routing", "invoice", "purchase order",
-    "bill to", "remit", "payable", "payment",
+# Bank-details / payment-instruction words. They mark a captured fragment as noise only when
+# USED as one (see _noise_reason): labelled ("Bank:"), followed by a code ("SWIFT BARCGB22",
+# "Sort code 20-00-00"), as an instruction ("Remit to"), or standing alone. They used to be
+# matched as substrings anywhere, which rejected real suppliers -- "Swift Distribution
+# Partners Ltd" (the freight tender's winner, 2026-10-08), any "... Trust", "Branch Logistics",
+# "Payment Solutions Ltd", even "Premiter" (r-e-m-i-t).
+_NOISE_WORDS = (
+    "bank", "banking", "trust", "credit union", "savings", "branch", "sort code", "iban",
+    "swift", "bic", "bsb", "routing", "invoice", "purchase order", "remit", "payable", "payment",
+    "account",
 )
+_NOISE_WORD_RE = "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in sorted(_NOISE_WORDS, key=len, reverse=True))
+_NOISE_LABEL_RE = re.compile(rf"\b(?:{_NOISE_WORD_RE})\b\s*(?:code|number|no\.?|#)?\s*[:/]", re.I)
+_NOISE_CODE_RE = re.compile(
+    r"\b(?:swift|bic|iban|bsb|sort\s*code|routing|account)\b(?:\s*(?:code|number|no\.?|#))?"
+    r"\s*[:/#-]?\s*(?=[A-Z0-9 -]*\d)[A-Z0-9][A-Z0-9 -]{2,}", re.I)
+_NOISE_INSTRUCTION_RE = re.compile(r"\b(?:bill|remit|payable|ship|deliver(?:ed)?|sold)\s+to\b", re.I)
+_NOISE_ALONE_RE = re.compile(rf"^\s*(?:{_NOISE_WORD_RE})(?:\s*(?:details?|information|info))?\s*[:.]?\s*$", re.I)
+
+
+def _noise_reason(name: str) -> bool:
+    """Is this a bank-details or payment-instruction fragment rather than a name?"""
+    return bool(_NOISE_LABEL_RE.search(name) or _NOISE_CODE_RE.search(name)
+                or _NOISE_INSTRUCTION_RE.search(name) or _NOISE_ALONE_RE.match(name))
 
 # Label/header phrases that are never supplier names (extracted from table headers / form labels).
 _LABEL_PHRASES_LOWER = frozenset({
@@ -273,8 +291,11 @@ _LABEL_PHRASES_LOWER = frozenset({
 })
 
 # Document-reference patterns — strings that look like doc IDs (INV-…, PO-…, etc.)
+# The reference part must contain a digit: with letters allowed and IGNORECASE, "INV" + "OICE"
+# matched, so "Invoice Cloud", "Polymer Products Ltd", "Service Masters" and "Docusign" were
+# all rejected as document references.
 _DOC_REF_RE = re.compile(
-    r'^\s*(INV|PO|REC|ORD|REF|DOC|SER|QUOT?|BILL|RFQ)\s*[-#]?\s*[\d\-A-Z/]{3,}',
+    r'^\s*(INV|PO|REC|ORD|REF|DOC|SER|QUOT?|BILL|RFQ)\s*[-#]?\s*(?=[\-A-Z/]*\d)[\d\-A-Z/]{3,}',
     re.IGNORECASE,
 )
 
@@ -572,8 +593,8 @@ def _garbage_reason(name: str) -> str | None:
     if _EMAIL_RE.search(stripped):
         return "email"
 
-    # Noise markers (legacy list)
-    if any(m in lo for m in _NOISE_LOWER):
+    # Bank-details / payment-instruction fragments
+    if _noise_reason(stripped):
         return "noise_token"
 
     # Address contamination (street keyword with number OR long address)
