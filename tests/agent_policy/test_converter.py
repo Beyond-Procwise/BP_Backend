@@ -169,3 +169,90 @@ def test_known_bad_registry_gives_only_registry_problems():
     assert all(_REGISTRY_PROBLEM.search(p) for p in problems), problems
     assert any("credit.issue" in p for p in problems)
     assert any("agent.reason" in p for p in problems)
+
+
+def _registry_with(*extra):
+    rows = [
+        {"kind": "checkpoint", "name": "tool.call.before", "checkpoint": None, "plain": "before a tool runs",
+         "status": "live"},
+        {"kind": "action", "name": "refund.issue", "checkpoint": "tool.call.before", "plain": "x", "status": "live"},
+        {"kind": "action", "name": "credit.issue", "checkpoint": "tool.call.before", "plain": "x", "status": "live"},
+        {"kind": "action", "name": "run_email_dispatch", "checkpoint": "tool.call.before", "plain": "x",
+         "status": "live"},
+    ]
+    base = {"tool.name": ("string", "live"), "agent.reason": ("string", "live"),
+            "args.payload_json": ("string", "live"), "args.note": ("string", "live")}
+    base.update({k: v for k, v in extra})
+    for name, (vt, status) in base.items():
+        rows.append({"kind": "input", "name": name, "checkpoint": "tool.call.before", "plain": f"the {name}",
+                     "value_type": vt, "source": "action", "status": status})
+    return registry.snapshot_from_rows(rows)
+
+
+def test_planned_input_is_a_missing_input_found_by_code():
+    reg = _registry_with(("args.amount", ("number", "planned")))
+    form = _form(_proposal(missing_inputs=[]), reg=reg)
+    assert {"name": "the args.amount", "reason": "not received at tool.call.before yet"} in form["hidden"]["missingInputs"]
+    # the model's own entry under the same name is not duplicated
+    form = _form(_proposal(missing_inputs=[{"name": "the args.amount", "reason": "planned"}]), reg=reg)
+    assert [m["name"] for m in form["hidden"]["missingInputs"]] == ["the args.amount"]
+
+
+def test_live_inputs_add_no_missing_input():
+    reg = _registry_with(("args.amount", ("number", "live")))
+    assert _form(reg=reg)["hidden"]["missingInputs"] == []
+
+
+def test_number_comparison_on_a_text_field_is_a_misfit():
+    reg = _registry_with()
+    form = _form(_proposal(rules=[{"field": "args.note", "op": "gte", "value_number": 500}],
+                           inputs=[], examples=[]), reg=reg)
+    assert any(n.startswith("a number for:") for n in form["hidden"]["unknownNames"])
+    assert any("args.note compares a number" in n for n in form["hidden"]["agentNotes"])
+
+
+def test_payload_json_is_a_misfit():
+    reg = _registry_with()
+    form = _form(_proposal(rules=[{"field": "args.payload_json", "op": "eq", "value_text": "refund"}],
+                           inputs=[], examples=[]), reg=reg)
+    assert any("args.payload_json" in n for n in form["hidden"]["unknownNames"])
+    assert any("whole payload" in n for n in form["hidden"]["agentNotes"])
+
+
+def test_the_live_smoke_case_is_flagged():
+    # 2026-10-08 smoke call: a refund threshold built on args.payload_json over run_* tools.
+    reg = _registry_with()
+    p = _proposal(action_tools=["run_email_dispatch"], inputs=[], examples=[], rules=[
+        {"field": "args.payload_json", "op": "exists"},
+        {"field": "args.payload_json", "op": "eq", "value_text": "refund"},
+        {"field": "args.payload_json", "op": "gte", "value_number": 500}])
+    h = _form(p, reg=reg)["hidden"]
+    assert len(h["unknownNames"]) >= 2 and len(h["agentNotes"]) >= 2
+    assert any(n.startswith("a number for:") for n in h["unknownNames"])
+    assert any("payload_json" in n for n in h["unknownNames"])
+
+
+def test_tool_checkpoint_without_tools_is_a_misfit():
+    form = _form(_proposal(action_tools=[]))
+    assert any(n.startswith("the action for:") for n in form["hidden"]["unknownNames"])
+    assert "The policy is checked before a tool runs but names no tool." in form["hidden"]["agentNotes"]
+
+
+def test_amount_input_on_a_text_field_is_a_misfit():
+    reg = _registry_with(("args.amount", ("number", "live")))
+    p = _proposal(inputs=[{"name": "Refund value", "field": "args.note", "type": "number", "is_amount": True}])
+    form = _form(p, reg=reg)
+    assert "an amount for: Refund value" in form["hidden"]["unknownNames"]
+    assert any("Refund value is an amount" in n for n in form["hidden"]["agentNotes"])
+
+
+def test_off_taxonomy_area_drops_the_sub_area_with_its_own_note():
+    notes = _form(_proposal(business_area="Treasury"))["hidden"]["agentNotes"]
+    assert ("The agent proposed sub-area 'Refunds and credits', which was dropped because its business area "
+            "is not in the taxonomy.") in notes
+
+
+def test_example_field_not_in_the_registry_is_unknown():
+    p = _proposal(examples=[{"values": [{"field": "args.amount", "value_number": 501},
+                                        {"field": "customer.tier", "value_text": "gold"}], "expected": "approve"}])
+    assert "customer.tier" in _form(p)["hidden"]["unknownNames"]

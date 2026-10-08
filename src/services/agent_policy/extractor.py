@@ -8,10 +8,12 @@ load options, and a union-free JSON-schema grammar.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from pydantic import ValidationError
 
+from services.agent_policy import conditions
 from services.agent_policy.extraction_schema import ChunkResult, ProposedPolicy, grammar_schema
 from services.agent_policy.registry import RegistrySnapshot
 from services.ollama_client import ollama_generate
@@ -39,7 +41,12 @@ def registry_digest(registry: RegistrySnapshot) -> str:
             continue
         lines.append("")
         lines.append(f"At {cp} ({registry.plain(cp)}):")
-        lines.append("  Actions: " + (", ".join(sorted(registry.actions.get(cp, set()))) or "(none)"))
+        lines.append("  Actions:")
+        names = sorted(registry.actions.get(cp, set()))
+        if not names:
+            lines.append("  (none)")
+        for name in names:
+            lines.append(f"  - {name}: {registry.action_plain.get((cp, name)) or name}")
         lines.append("  Inputs:")
         rows = registry.inputs.get(cp, {})
         if not rows:
@@ -63,10 +70,13 @@ def load_prompt(name: str) -> str:
     raise PromptUnavailable(f"prompt unavailable: {name}")
 
 
+_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+
 def _fill(template: str, values: Mapping[str, str]) -> str:
-    for key, value in values.items():
-        template = template.replace("{" + key + "}", value)
-    return template
+    """One pass: a filled value is never re-scanned, so text that happens to contain
+    "{sections}" cannot pull another value in. Unknown {words} are left as they are."""
+    return _PLACEHOLDER.sub(lambda m: values[m.group(1)] if m.group(1) in values else m.group(0), template)
 
 
 def _taxonomy_text(taxonomy: List[Mapping[str, Any]]) -> str:
@@ -111,16 +121,8 @@ def extract_chunk(sections: List[Mapping[str, Any]], *, document: Mapping[str, A
     return _call(call, prompt, ChunkResult)
 
 
-def _expected(flip: Mapping[str, Any], form: Mapping[str, Any]) -> str:
-    for key in ("expected", "reviewer_expects", "reviewerExpects"):
-        if flip.get(key):
-            return flip[key]
-    # A flipped example says the agent's own result was wrong.
-    return "none" if flip.get("agentExpected") not in (None, "none") else (form.get("outcome") or "none")
-
-
 def fix_policy(form: Mapping[str, Any], flipped: List[Mapping[str, Any]], *, registry: RegistrySnapshot,
-               taxonomy: List[Mapping[str, Any]],
+               taxonomy: List[Mapping[str, Any]], settings: Mapping[str, Any],
                call: Callable[..., Optional[str]] = ollama_generate) -> ProposedPolicy:
     h = form.get("hidden") or {}
     source = form.get("source") or {}
@@ -137,9 +139,12 @@ def fix_policy(form: Mapping[str, Any], flipped: List[Mapping[str, Any]], *, reg
     }
     examples = [{"input": e.get("input") or {}, "expected": e.get("agentExpected")}
                 for e in form.get("examples") or []]
+    # `flipped` are stage-1 examples ({"input", "agentExpected", "flipped": True}); what the
+    # reviewer expects is computed by the same code the review screen uses, never guessed.
+    view = conditions.reviewer_view({**form, "examples": [dict(f, flipped=True) for f in flipped]}, settings)
     constraints = "\n".join(
-        f"- these inputs must give {_expected(f, form)}: {json.dumps(f.get('input') or {}, sort_keys=True)}"
-        for f in flipped) or "(none)"
+        f"- these inputs must give {row['reviewer_expects']}: {json.dumps(row['input'], sort_keys=True)}"
+        for row in view) or "(none)"
     prompt = _fill(load_prompt(FIX_PROMPT), {
         "policy": json.dumps(current, sort_keys=True, default=str),
         "excerpt": str(source.get("excerpt") or ""),

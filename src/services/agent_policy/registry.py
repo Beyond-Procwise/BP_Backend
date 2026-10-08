@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass(frozen=True)
@@ -11,6 +11,9 @@ class RegistrySnapshot:
     checkpoints: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     actions: Dict[str, Set[str]] = field(default_factory=dict)
     inputs: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
+    # (checkpoint, action name) -> what the action does, in plain words. Kept apart from
+    # `actions` so every caller of that set is unchanged.
+    action_plain: Dict[Tuple[str, str], str] = field(default_factory=dict)
 
     def checkpoint_live(self, cp: Optional[str]) -> bool:
         return bool(cp) and (self.checkpoints.get(cp) or {}).get("status") == "live"
@@ -41,16 +44,19 @@ def snapshot_from_rows(rows: List[Dict[str, Any]]) -> RegistrySnapshot:
     cps: Dict[str, Dict[str, Any]] = {}
     acts: Dict[str, Set[str]] = {}
     ins: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    plains: Dict[Tuple[str, str], str] = {}
     for r in rows:
         if r["kind"] == "checkpoint":
             cps[r["name"]] = {"plain": r["plain"], "status": r.get("status", "live")}
         elif r["kind"] == "action":
             acts.setdefault(r["checkpoint"], set()).add(r["name"])
+            if r.get("plain"):
+                plains[(r["checkpoint"], r["name"])] = r["plain"]
         elif r["kind"] == "input":
             ins.setdefault(r["checkpoint"], {})[r["name"]] = {
                 "plain": r["plain"], "type": r.get("value_type"),
                 "source": r.get("source"), "status": r.get("status", "live")}
-    return RegistrySnapshot(cps, acts, ins)
+    return RegistrySnapshot(cps, acts, ins, plains)
 
 
 def load_registry(conn: Any = None) -> RegistrySnapshot:

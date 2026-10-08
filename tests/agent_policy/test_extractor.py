@@ -4,7 +4,7 @@ import pytest
 
 from services.agent_policy import extractor
 from services.agent_policy.extraction_schema import ChunkResult, ProposedPolicy, grammar_schema
-from tests.agent_policy.fixtures import FORM_EXAMPLE, REGISTRY
+from tests.agent_policy.fixtures import FORM_EXAMPLE, REGISTRY, SETTINGS
 from tests.agent_policy.test_converter import TAXONOMY, _proposal
 
 PROMPTS = {
@@ -134,7 +134,7 @@ def test_registry_digest_lists_checkpoints_actions_and_inputs():
     text = extractor.registry_digest(reg)
     assert "- tool.call.before: before a tool runs (checked today)" in text
     assert "- message.send.before: before a message is sent (not checked yet)" in text
-    assert "Actions: refund.issue" in text
+    assert "  - refund.issue: x" in text
     assert "- args.amount (number, from action): amount" in text
     assert "- agg.r30 (number, from total:r30): refunds in 30 days - not received yet" in text
     assert "At message.send.before" not in text
@@ -142,11 +142,16 @@ def test_registry_digest_lists_checkpoints_actions_and_inputs():
 
 def test_fix_policy_sends_flipped_examples_as_constraints():
     stub = Stub(_proposal(rules=[{"field": "args.amount", "op": "gte", "value_number": 500}]).model_dump_json())
-    flipped = [{"input": {"tool.name": "refund.issue", "args.amount": 500}, "reviewer_expects": "approve"}]
-    out = extractor.fix_policy(FORM_EXAMPLE, flipped, registry=REGISTRY, taxonomy=TAXONOMY, call=stub)
+    # the stage-1 example shape, as the review screen flips it: the agent said none, the
+    # condition computes none, and the reviewer says that is wrong -> the outcome
+    flipped = [{"input": {"tool.name": "refund.issue", "args.amount": 500}, "agentExpected": "none", "flipped": True},
+               {"input": {"tool.name": "refund.issue", "args.amount": 501}, "agentExpected": "approve", "flipped": True}]
+    out = extractor.fix_policy(FORM_EXAMPLE, flipped, registry=REGISTRY, taxonomy=TAXONOMY, settings=SETTINGS,
+                               call=stub)
     assert isinstance(out, ProposedPolicy) and out.rules[0].op == "gte"
     prompt, kw = stub.calls[0]
     assert 'these inputs must give approve: {"args.amount": 500, "tool.name": "refund.issue"}' in prompt
+    assert 'these inputs must give none: {"args.amount": 501, "tool.name": "refund.issue"}' in prompt
     assert FORM_EXAMPLE["source"]["excerpt"] in prompt
     assert kw["think"] is False and kw["use_load_options"] is True
     _assert_grammar_safe(kw["format"])
@@ -154,4 +159,24 @@ def test_fix_policy_sends_flipped_examples_as_constraints():
 
 def test_fix_policy_bad_reply_raises():
     with pytest.raises(extractor.ExtractionError):
-        extractor.fix_policy(FORM_EXAMPLE, [], registry=REGISTRY, taxonomy=TAXONOMY, call=Stub("{}"))
+        extractor.fix_policy(FORM_EXAMPLE, [], registry=REGISTRY, taxonomy=TAXONOMY, settings=SETTINGS,
+                             call=Stub("{}"))
+
+
+def test_fill_is_one_pass_and_leaves_unknown_words():
+    out = extractor._fill("A={a} B={b} C={c}", {"a": "{b}", "b": "x"})
+    assert out == "A={b} B=x C={c}"
+
+
+def test_digest_lists_one_action_per_line_with_its_purpose():
+    text = extractor.registry_digest(REGISTRY)
+    assert "  - refund.issue: refund.issue" in text  # fixture plain == name
+    from services.agent_policy import registry
+    reg = registry.snapshot_from_rows([
+        {"kind": "checkpoint", "name": "tool.call.before", "checkpoint": None, "plain": "before a tool runs",
+         "status": "live"},
+        {"kind": "action", "name": "run_email_dispatch", "checkpoint": "tool.call.before",
+         "plain": "send a drafted email to a supplier", "status": "live"}])
+    assert reg.actions == {"tool.call.before": {"run_email_dispatch"}}
+    assert reg.action_plain == {("tool.call.before", "run_email_dispatch"): "send a drafted email to a supplier"}
+    assert "  - run_email_dispatch: send a drafted email to a supplier" in extractor.registry_digest(reg)

@@ -6,7 +6,7 @@ never trusts the model.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from services.agent_policy.extraction_schema import ProposedPolicy
 from services.agent_policy.registry import RegistrySnapshot
@@ -50,7 +50,11 @@ def _area(p: ProposedPolicy, taxonomy: List[Mapping[str, Any]], notes: List[str]
     if area not in areas:
         notes.append(f"The agent proposed business area '{p.business_area}', which is not in the taxonomy.")
         area = None
-    if area is None or sub not in areas[area]:
+    if area is None:
+        notes.append(f"The agent proposed sub-area '{p.sub_area}', which was dropped because its business area "
+                     "is not in the taxonomy.")
+        sub = None
+    elif sub not in areas[area]:
         notes.append(f"The agent proposed sub-area '{p.sub_area}', which is not in the taxonomy.")
         sub = None
     return area, sub
@@ -74,6 +78,39 @@ def _rule_input(fld: str, p: ProposedPolicy, registry: RegistrySnapshot) -> Dict
     numeric = any(r.field == fld and r.value_number is not None for r in p.rules)
     return {"name": fld, "field": fld, "type": "number" if numeric else "string", "isAmount": False,
             "from": "action", "showApprover": True, "sensitive": False}
+
+
+def _misfits(p: ProposedPolicy, registry: RegistrySnapshot) -> List[Tuple[str, str]]:
+    """Names the registry has, used for something they cannot be: (unknown name, note).
+
+    Judged on registry data only. The model reaches for an existing name rather than admit
+    one is missing (live smoke call 2026-10-08: a refund threshold built on args.payload_json
+    over run_* tools), and a name that exists passes every existence check.
+    """
+    cp = p.checkpoint
+    out: List[Tuple[str, str]] = []
+
+    def kind(fld: str) -> Optional[str]:
+        return (registry.input_row(cp, fld) or {}).get("type")
+
+    for r in p.rules:
+        numeric = r.op in ("gt", "gte", "lt", "lte") or r.value_number is not None
+        if numeric and kind(r.field) not in (None, "number"):
+            out.append((f"a number for: {p.situation}",
+                        f"The rule on {r.field} compares a number, but {r.field} is not a number."))
+    for fld in _unique([r.field for r in p.rules] + [i.field for i in p.inputs]):
+        if fld.endswith(".payload_json"):
+            out.append((f"a named field instead of {fld}: {p.situation}",
+                        f"{fld} is the action's whole payload, not a named value; the policy needs a field "
+                        "the registry does not have yet."))
+    if cp == "tool.call.before" and not p.action_tools:
+        out.append((f"the action for: {p.action_plain or p.situation}",
+                    "The policy is checked before a tool runs but names no tool."))
+    for i in p.inputs:
+        if i.is_amount and kind(i.field) not in (None, "number"):
+            out.append((f"an amount for: {i.name}",
+                        f"{i.name} is an amount, but {i.field} is not a number."))
+    return out
 
 
 def to_form(p: ProposedPolicy, *, document_title: str, document_version: Optional[int],
@@ -103,6 +140,23 @@ def to_form(p: ProposedPolicy, *, document_title: str, document_version: Optiona
         + [i.field for i in p.inputs if i.source == "action" and registry.input_row(cp, i.field) is None]
         + [t for t in list(p.action_tools) + rule_tools if not registry.knows_action(cp, t)])
 
+    example_fields = [v.field for ex in p.examples for v in ex.values]
+    unknown = _unique(unknown + [f for f in example_fields if registry.input_row(cp, f) is None])
+    notes: List[str] = []
+    for name, note in _misfits(p, registry):
+        unknown = _unique(unknown + [name])
+        notes.append(note)
+
+    # Verified by code, not copied from the model: a known input that is not received at
+    # this checkpoint (a planned input, or a checkpoint not checked yet).
+    missing = [m.model_dump() for m in p.missing_inputs]
+    for fld in _unique([leaf["field"] for leaf in leaves] + [i.field for i in p.inputs if i.source == "action"]):
+        row = registry.input_row(cp, fld)
+        if row and not registry.available(cp, fld):
+            name = row.get("plain") or fld
+            if not any(m.get("name") in (name, fld) for m in missing):
+                missing.append({"name": name, "reason": f"not received at {cp} yet"})
+
     examples = []
     for ex in p.examples:
         values = {v.field: (v.value_number if v.value_number is not None else v.value_text) for v in ex.values}
@@ -112,7 +166,6 @@ def to_form(p: ProposedPolicy, *, document_title: str, document_version: Optiona
             values = {"tool.name": p.action_tools[0], **values}
         examples.append({"input": values, "agentExpected": ex.expected, "flipped": False})
 
-    notes: List[str] = []
     area, sub = _area(p, taxonomy, notes)
     window = None
     if p.time_window_from or p.time_window_to:
@@ -125,7 +178,7 @@ def to_form(p: ProposedPolicy, *, document_title: str, document_version: Optiona
         "units": {"currency": p.currency, "convertOther": "rate_on_action_date",
                   "amountsIncludeTax": p.amounts_include_tax},
         "inputs": inputs,
-        "missingInputs": [m.model_dump() for m in p.missing_inputs],
+        "missingInputs": missing,
         "unknownNames": unknown,
         "condition": {p.match: leaves} if leaves else None,
         "onMissingData": None,
