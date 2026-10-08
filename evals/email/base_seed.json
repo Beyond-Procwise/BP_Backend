@@ -22,7 +22,8 @@
     "round_number": 1,
     "price": 50.0,
     "currency": "GBP",
-    "lead_time": 21
+    "lead_time": 21,
+    "extraction_status": "confirmed"
    },
    {
     "workflow_id": "wf-1",
@@ -33,7 +34,8 @@
     "round_number": 2,
     "price": 47.5,
     "currency": "GBP",
-    "lead_time": 14
+    "lead_time": 14,
+    "extraction_status": "confirmed"
    }
   ],
   "workflow_email_tracking": [

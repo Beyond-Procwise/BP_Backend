@@ -442,12 +442,24 @@ def load_raw(conn: Any, unique_id: str) -> Optional[Dict[str, Any]]:
     return out
 
 
+def _origin_label(origin: Any) -> str:
+    """In words, why a value is a claim. Never an internal name."""
+    if origin in (None, "not recorded"):
+        return "Where this value came from was not recorded, so it is not confirmed"
+    if origin == "extracted_unverified":
+        return "Read from the supplier's email by software; not confirmed by a person"
+    if origin == "rejected":
+        return "A person rejected this value; not confirmed"
+    return "Not confirmed by a person"
+
+
 def to_view(raw: Dict[str, Any], reviewed_by: Optional[str] = None) -> Dict[str, Any]:
     """What a reviewer's screen may see. Facts carry a human label and a row id, never an internal table or column name."""
 
     res = raw.get("assumptions_resolution") or {}
     facts = {k: {"value": f.get("value"), "label": f.get("label") or k.replace("_", " "), "source": "postgres",
-                 "row_id": f.get("row_id"), "retrieved_at": f.get("retrieved_at")}
+                 "row_id": f.get("row_id"), "retrieved_at": f.get("retrieved_at"),
+                 **({"claim": True, "origin_label": _origin_label(f.get("origin"))} if f.get("claim") else {})}
              for k, f in (raw.get("facts") or {}).items()}
     for k, v in (raw.get("carried_unverified") or {}).items():
         facts.setdefault(k, {"value": v, "label": k.replace("_", " "), "source": "carried_unverified",

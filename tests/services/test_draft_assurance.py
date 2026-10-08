@@ -87,9 +87,9 @@ class FakeConn:
 TABLES = {
     "supplier_response": [
         {"id": 1, "workflow_id": "wf-1", "supplier_id": "S-1", "round_number": 1,
-         "price": Decimal("50.00"), "currency": "GBP", "lead_time": "14 days", "rfq_id": "RFQ-20260901-AAAA"},
+         "price": Decimal("50.00"), "currency": "GBP", "lead_time": "14 days", "rfq_id": "RFQ-20260901-AAAA", "extraction_status": "confirmed"},
         {"id": 2, "workflow_id": "wf-1", "supplier_id": "S-1", "round_number": 2,
-         "price": Decimal("47.50"), "currency": "GBP", "lead_time": "14 days", "rfq_id": "RFQ-20260901-AAAA"},
+         "price": Decimal("47.50"), "currency": "GBP", "lead_time": "14 days", "rfq_id": "RFQ-20260901-AAAA", "extraction_status": "confirmed"},
     ],
     "bp_supplier": [{"supplier_id": "S-1", "contact_name_1": "Alex Morgan"}],
 }

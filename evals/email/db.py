@@ -22,7 +22,12 @@ REPO = HERE.parents[1]
 SQL = REPO / "deploy" / "sql"
 
 #: The real migrations, in the order they must run. The evals therefore also prove they load.
+# A change to a PRODUCT table (proc.supplier_response), not to email_agent: its own change request, never part of pack (a), but applied
+# FIRST in the harness so the families' claim settings have a column to read. Rolled back last.
+PRODUCT = ("2026-10-08_supplier_response_provenance.sql",)
+
 MIGRATIONS: List[str] = [
+    *PRODUCT,
     "2026-10-07_email_agent_capture.sql",
     "2026-10-08_email_agent_capture_v2.sql",
     "2026-10-08_email_agent_sent_text.sql",
@@ -46,7 +51,7 @@ MIGRATIONS: List[str] = [
 # first and (b) waits for live verification. tests/email_evals/test_pack_split.py proves it.
 PACK_B = ("2026-10-08_email_agent_steering.sql", "2026-10-08_email_tone_rules.sql", "2026-10-08_email_assurance_prompts.sql")
 ROLES = ("2026-10-09_email_agent_roles.sql",)
-PACK_A = tuple(m for m in MIGRATIONS if m not in PACK_B and m not in ROLES)
+PACK_A = tuple(m for m in MIGRATIONS if m not in PACK_B and m not in ROLES and m not in PRODUCT)
 
 
 class NoDatabase(RuntimeError):

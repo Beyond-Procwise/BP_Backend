@@ -28,7 +28,7 @@ SELECT
     "required_facts": [],
     "carried_keys": ["body"],
     "fact_sources": {
-      "supplier_current_offer": {"table": "supplier_response", "column": "price", "row_id": "id",
+      "supplier_current_offer": {"table": "supplier_response", "column": "price", "claim_column": "extraction_status", "claim_unless": ["confirmed"], "row_id": "id",
         "lookup": {"workflow_id": "workflow_id", "supplier_id": "supplier_id"},
         "order_by": "round_number DESC, id DESC", "value_type": "number", "label": "Supplier's latest offer"},
       "currency": {"table": "supplier_response", "column": "currency", "row_id": "id",

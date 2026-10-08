@@ -28,6 +28,23 @@ Status words: **Covered** (does what the item asks), **Partial** (some of it, or
    **0** tracked dispatches. `bp_testdb` has 7 inbound replies, 44 drafts (43 in the last 30 days, almost all test activity), 8 tracked
    dispatches. See "Scope check".
 
+## Update 2026-10-08 (later): what has been built since this audit
+
+You ruled on the audit's questions: build the payment-detail-change detector, add provenance to `proc.supplier_response`, accept the
+scope recommendation (no full extraction pipeline), and keep `value_digest` and `support_agent` as accepted internal exceptions.
+Status of the headline findings, in code, **nothing applied to any database**:
+
+| finding | status now |
+|---|---|
+| 1. A price read from an email is treated as a Postgres fact | **Addressed in code, not applied.** `supplier_response` gets provenance columns (separate product-table migration `2026-10-08_supplier_response_provenance.sql`); the analyser records HOW it read each value (first number by regex, or a named model); a fact source may name a provenance column and the fact is a CLAIM unless a person confirmed it. A claim is listed in the assurance record, labelled in words in the reviewer view, and becomes an item a person must confirm before the draft is ready. Rows that exist today have no recorded origin, so they are claims too. |
+| 2. No sender authentication | **Still open.** Not selected for this round. |
+| 3. No inbound payment-detail-change or injection detection | **Payment-detail-change: built, not applied.** Every inbound reply is screened as it is stored; a suspected one is flagged by message id and dispatch id (no email text kept), a person reviews it, an agent will not draft on that thread, a person's own draft on it is marked failing and not ready, and the send guard refuses to send on it until an approver clears it. **Injection: still open** (not selected). |
+| 4. Inbound bodies stored raw with no retention | **Still open.** |
+| 5. Volume is near zero | Unchanged; the scope recommendation was accepted. |
+
+Details of what the claim and flag work do and do not do are in `2026-10-08-email-assurance-pending-live-verification.md`
+(sections "Inbound payment-detail screen" and "Offers read from an email are claims").
+
 ## Sources of truth
 
 | item | status | where | what is needed |
@@ -57,7 +74,7 @@ trustworthy as the extraction under it.
 
 | item | status | where | what is needed |
 |---|---|---|---|
-| Extracted values are claims, never facts; never write to or override a Postgres fact; differences recorded as a conflict and shown at drafting | **Missing for the inbound writer; Covered inside the drafting layer** | Drafting: a caller-supplied value that differs from Postgres is recorded as a conflict and Postgres wins (`assure.prepare_inputs`). Inbound: `_store_response` writes extracted price/lead time straight into `supplier_response` | Finding 1. Needs provenance on `supplier_response` (extracted_by, model + prompt version, confidence, status) and a fact-source rule: an `extracted_unverified` price is shown to the reviewer AS A CLAIM from the email, not as a verified fact. Product-table change: your ruling |
+| Extracted values are claims, never facts; never write to or override a Postgres fact; differences recorded as a conflict and shown at drafting | **Addressed in code 2026-10-08, not applied** (was: Missing for the inbound writer) | Drafting: a caller-supplied value that differs from Postgres is recorded as a conflict and Postgres wins (`assure.prepare_inputs`). Inbound: `_store_response` writes extracted price/lead time straight into `supplier_response` | Finding 1. Needs provenance on `supplier_response` (extracted_by, model + prompt version, confidence, status) and a fact-source rule: an `extracted_unverified` price is shown to the reviewer AS A CLAIM from the email, not as a verified fact. Product-table change: your ruling |
 | Extracted fields never become exemplars, style rules or eval ground truth without human review | **Covered** (for what exists) | Every learning route ends in a queue a person decides; a reviewer's replacement for a Postgres-backed fact goes only to the data-quality queue, marked unverified, and is tested to appear in no eval/exemplar/style/classifier table; an exemplar needs a second person | Inbound extracted fields feed none of this today |
 | Validate extraction output against a schema; reject and log malformed output rather than store partial fields | **Partial** | The new stages (classify, plan, judge) use strict parsers: malformed output is rejected, recorded `invalid`, never partly stored. The inbound analyser does not: `_coerce_float` on whatever comes back, and the regex first-number fallback | Put the inbound analyser behind the same strict-parse-or-reject pattern, with the rejection logged |
 | Never store bank details | **Partial** | `email_agent`: bank details (IBAN, UK sort code, "account number ...") are masked before anything is stored: sent text, diff, the model's draft, and the changed-figure columns (testing found and fixed an account number being stored as a "figure"). Pattern-based, so an unusual format is missed | Inbound bodies in `supplier_response(s)` and the S3 `.eml` are stored raw, bank details included. Needs either masking on ingest of the DERIVED copies, or a deliberate ruling that the mailbox/S3 copy is the one place they may exist, under retention and access control |
