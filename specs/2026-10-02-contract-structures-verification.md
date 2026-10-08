@@ -1085,3 +1085,95 @@ from a mention.
    manufacture real order forms.
 4. **The sweep has never run on a tick.** Its runner is unit-tested and the same function ran by
    hand; what has not been observed is the scheduler firing it 30 minutes after a start.
+
+
+## 15. Per-role signals, 2026-10-08
+
+Verified on bp_testdb against the branch `contract-link-signals`. Design:
+`specs/2026-10-08-contract-link-signals-design.md`.
+
+### What was built (git log 2a3b8f4..HEAD)
+
+```
+7c5e834 feat(vocabulary): dpa, side letter, renewal and guaranty are known, proposed, and resolve to nothing
+8d0a6c8 test(contracts): matrix pins the counters behind its no-proposal cases; teardown always removes contracts
+74be011 test(contracts): every contract child type through the real runner, six situations each
+7780cfe feat(contracts): a confirmed parent link records which kind of link it was
+c5033ed test(contracts): the live threshold test is live-only
+e124491 feat(contracts): the parent-proposal floor and contested gap are governed, not constants
+a69c77d feat(contracts): pick the scoring profile by the child's role; carry the corroborating fields; say amend or attach
+4b2cc00 feat(contracts): a schedule or SLA is scored for the agreement it attaches to
+bfb4a30 feat(contracts): an amendment is scored on what it names, not on its title
+7894546 feat(contracts): the hierarchy profile takes the corroborating signals when both sides carry them
+92dcebe feat(contracts): seven corroborating link signals - buyer, value, currency, payment terms, law, signatory, cost centre
+3a324b2 feat(linking): score a pair on the optional signals both documents can supply
+21caaef docs(contracts): close the code fence in the plan's Task 1
+```
+
+### Suites (CUDA_VISIBLE_DEVICES="" PROCWISE_TEST_LIVE_DB=1, DB = bp_testdb)
+
+| Run | Result |
+|---|---|
+| graph_resolution, test_contract_links, test_contract_link_wiring, test_contract_link_matrix, concepts, extraction/test_type_resolver | 435 passed, 1 failed |
+| engine golden vectors and every other `score_link` consumer (test_link_proposals, formulas/test_registered_formulas, test_po_revision_deals, test_duplicate_invoice_detector, test_deal_assignment_service, test_deal_clustering_awards, tests/governance) | 231 passed, 2 failed |
+
+(The engine has no file of its own; its vectors live in the graph_resolution and
+test_link_proposals tests above. `tests/test_linking_engine.py` does not exist.)
+
+Failures, all PRE-EXISTING and not caused by this branch:
+- `tests/services/extraction/test_type_resolver.py::test_a_signal_phrase_does_not_leak_aliases_from_inside_itself`
+- `tests/governance/test_governed_limits.py::test_every_governed_limit_is_present_in_the_live_policy_set`
+- `tests/governance/test_governed_limits.py::test_the_in_memory_seed_matches_the_live_rows`
+  (both: live policy slug `supplier_info_request` is absent from the conftest seed.)
+
+The second run is 231 passed, 2 failed (the two governance tests above); the type-resolver
+failure belongs to the first run. No other failure.
+
+### Matrix re-run (scratchpad cl_matrix.py, bp_testdb, rows created and deleted by the script)
+
+| Child type | A declared ref + same supplier | B no reference | C dangling ref | D wrong parent type | E two parents | F ref names parent, supplier differs |
+|---|---|---|---|---|---|---|
+| Statement of Work | 96.9 auto_link | 75.6 review | 75.6 review | no candidate | 75.6 contested | below threshold |
+| Call-Off Contract | 96.9 | 75.6 | 75.6 | no candidate | 75.6 contested | below threshold |
+| Order Form | 96.9 | 75.6 | 75.6 | no candidate | 75.6 contested | below threshold |
+| Variation | **65.9** review | below threshold | below | - | below | below |
+| Addendum | **65.9** review | below | below | - | below | below |
+| Change Control Note | **65.9** review | below | below | - | below | below |
+
+Before this branch: Variation and Addendum 75.6 on their own titles' terms, CCN below threshold, with
+these generic titles. Now all three score 65.9 when they declare a reference that resolves to a
+supplier-matched parent, with no buyer on the row; the design measured 78.4 with a buyer. A
+variation or addendum that names nothing is still NOT proposed (the amendment profile does not
+read a generic title as evidence), and is counted as `below_threshold`, not `no_candidate`.
+
+### Corpus effect (whole bp_testdb parentless set, nothing left behind)
+
+bp_testdb has only 5 parentless contract documents; 2 are child types, both with candidate parents.
+Before = five base signals via `score_link(child, parent, "contract_hierarchy")`; after = the
+role's profile with the corroborating signals.
+
+| Child | Parent | Before | After |
+|---|---|---|---|
+| OF-2026-0117 | FA-2026-0042 | 54.6 weak_relation (below floor, no proposal) | 72.6 review (proposed) |
+| OF-2026-0211 | FA-2026-0077 | 85.8 auto_link_with_warning (proposed) | 93.0 auto_link (proposed) |
+| OF-2026-0211 | FA-2026-0042 | 23.5 | 45.0 weak_relation (loser) |
+
+Proposals before / after: 1 / 2. Contested before / after: 0 / 0. Highest band reached: `auto_link`
+(F 93.05) after, `auto_link_with_warning` before. This is the evidence for spec section 8 risk 3:
+corroborators DO lift a pair into a higher band. It is still a proposal a person confirms
+(the profiles are in `UNCALIBRATED_PROFILES`, so no graph edge is written at auto_link either).
+The real `propose_parent_links()` pass returned proposed 2, contested 0, no_candidate 0,
+below_threshold 0, considered children 5 / with_structure 2 / with_candidates 2.
+Both proposals attach to the two rows that already existed open (the five verification documents'
+rows); the pass created 0 new rows, deleted 0, and refreshed the evidence on those 2 (accepted).
+
+### Still unproven / deployment prerequisites
+
+1. bp_sqldb needs `deploy/sql/2026-10-08_contract_parent_thresholds.sql` BEFORE the code is
+   deployed (otherwise proposals stop, by design: a missing governed value raises), and
+   `deploy/sql/2026-10-08_contract_link_vocabulary.sql`. Both were applied on bp_testdb only.
+2. The running procwise server must be restarted to load the new profiles.
+3. Out of scope and unbuilt: wording signals, amendment sequence, the calibration loop, graph edges.
+4. No real corpus contract document has ever produced a proposal; the only children on bp_testdb are
+   the verification documents and the matrix fixtures, so every figure above is on constructed data.
+5. The 65.9 / 75.6 / 96.9 figures are declared weights, not calibrated ones.
