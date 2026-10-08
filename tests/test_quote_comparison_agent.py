@@ -245,3 +245,37 @@ def test_quote_comparison_normalises_metric_weights():
     assert set(resolved.keys()) == {"total_cost", "tenure"}
     assert sum(resolved.values()) == pytest.approx(1.0)
     assert all(entry.get("weighting_score", 0.0) > 0 for entry in entries)
+
+
+def _versions_tables():
+    q = lambda qid, sup, amt: {"quote_id": qid, "supplier_id": sup, "total_amount": amt,
+                                "total_amount_incl_tax": amt * 1.2, "currency": "GBP",
+                                "quote_date": "2024-04-01", "validity_date": "2024-05-01"}
+    quotes = pd.DataFrame([
+        q("MCG-1", "S1", 2265700), q("MCG-1 (V2)", "S1", 2153090), q("MCG-1 (V3 (BAFO))", "S1", 2074438),
+        q("APX-5", "S2", 2667200), q("APX-5 (V2)", "S2", 2447082), q("APX-5 (V3)", "S2", 2269682),
+        q("SDP-9", None, 207656), q("SDP-9 (V3)", None, 199806),
+    ])
+    lines = pd.DataFrame([{"quote_id": qid, "line_total": amt / 2, "quantity": 1}
+                          for qid, amt in zip(quotes["quote_id"], quotes["total_amount"]) for _ in (0, 1)])
+    tables = {"proc.bp_quote_trgt": quotes, "proc.bp_quote_line_items_trgt": lines,
+              "proc.bp_supplier": pd.DataFrame([{"supplier_id": "S1", "supplier_name": "Meridian"},
+                                                {"supplier_id": "S2", "supplier_name": "Apex"}])}
+    return tables
+
+
+def test_each_bid_is_compared_once_at_its_latest_version(monkeypatch):
+    # V1+V2+V3 used to be summed per supplier, and the header total was repeated on every line
+    # before summing, so a supplier's "total cost" was versions x lines x its price.
+    agent = QuoteComparisonAgent(DummyNick())
+    tables = _versions_tables()
+    monkeypatch.setattr(agent, "_read_table", lambda t, *a, **k: tables[t].copy())
+    ctx = AgentContext(workflow_id="wf-1", agent_id="quote_comparison", user_id="tester",
+                       input_data={"weights": 1.0})
+    out = agent.run(ctx)
+    rows = [r for r in out.data["comparison"] if str(r.get("name", "")).lower() != "weighting"]
+    assert len(rows) == 3                                   # three bids, not eight versions
+    # total_cost is the tax-inclusive header total of the LATEST version; total_spend its lines.
+    assert sorted(round(r["total_cost"]) for r in rows) == [round(v * 1.2) for v in (199806, 2074438, 2269682)]
+    assert sorted(round(r["total_spend"]) for r in rows) == [199806, 2074438, 2269682]
+    assert any(r["supplier_id"] == "quote SDP-9" for r in rows)   # unresolved supplier kept

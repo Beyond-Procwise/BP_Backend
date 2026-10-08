@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from src.services.version_collapse import latest_quote_pred
 
 logger = logging.getLogger(__name__)
 
@@ -218,11 +219,15 @@ class ProcurementContextService:
                     })
 
                 # Quotes approaching expiry
-                cur.execute("""
-                    SELECT quote_id, supplier_id, validity_date
-                    FROM proc.bp_quote
-                    WHERE validity_date IS NOT NULL
-                    AND validity_date BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+                # proc.bp_quote no longer exists (the query always failed); quotes live in
+                # bp_quote_trgt. Only a bid's latest version is a standing offer that can expire.
+                cur.execute(f"""
+                    SELECT q.quote_id, q.supplier_id, q.validity_date
+                    FROM proc.bp_quote_trgt q
+                    WHERE q.validity_date IS NOT NULL
+                    AND q.validity_date BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+                    AND {latest_quote_pred('q')}
+                    ORDER BY q.validity_date, q.quote_id
                 """)
                 for r in cur.fetchall():
                     opportunities.append({

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+from src.services.version_collapse import latest_quote_pred
 
 LIVE, PRESENTATION_ONLY, UNAVAILABLE = "live", "presentation-only", "unavailable"
 
@@ -155,7 +156,9 @@ METRICS: Dict[str, Metric] = {m.key: m for m in [
     Metric("non_po_spend", "Non-PO spend share", "percent", LIVE, "invoice",
            f"100.0 * SUM(CASE WHEN NOT {_PO_EXISTS} THEN {_USD} ELSE 0 END) / NULLIF(SUM({_USD}), 0)",
            dimensions=_INV, note="Share of invoiced spend with no matching PO."),
-    Metric("quote_volume", "Quote volume", "count", LIVE, "quote", "COUNT(*)", additive=True, dimensions=_QUOTE),
+    # Quotes, not quote records: each bid once, at its latest version.
+    Metric("quote_volume", "Quote volume", "count", LIVE, "quote",
+           f"COUNT(*) FILTER (WHERE {latest_quote_pred('q')})", additive=True, dimensions=_QUOTE),
     Metric("cycle_time_to_po", "Cycle time to PO", "days", LIVE, "deal",
            "AVG(o.cycle_days_quote_to_po)", where="o.cycle_days_quote_to_po IS NOT NULL", dimensions=_DEAL),
     Metric("value_reconciled_rate", "Value reconciled", "percent", LIVE, "deal",

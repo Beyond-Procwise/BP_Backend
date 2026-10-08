@@ -107,6 +107,13 @@ def _find_header(tbl: Any, line_fields: list[FieldSpec]) -> tuple[int | None, di
             if fld and (fld not in best or score > best[fld][0]):
                 best[fld] = (score, cell.col_index)
         cmap: dict[int, str] = {col: fld for fld, (_score, col) in best.items()}
+        # A "Fee" column is the unit price when the table also states a line amount ("Fee |
+        # Disc. | Net"), and IS the line amount when it is the only money column.
+        if "line_amount" not in best and "unit_price" in best:
+            fee_col = best["unit_price"][1]
+            fee_text = next((c.text for c in tbl.rows[i] if c.col_index == fee_col), "")
+            if _FEE_HEADER_RE.search(fee_text or ""):
+                cmap[fee_col] = "line_amount"
         if len(cmap) > len(best_map):
             best_i, best_map = i, cmap
         # A declared header with 2+ recognised columns is trusted as-is.
@@ -116,6 +123,9 @@ def _find_header(tbl: Any, line_fields: list[FieldSpec]) -> tuple[int | None, di
 
 
 _AMOUNT_CLEAN_RE = re.compile(r"[^\d.\-]")
+_FEE_HEADER_RE = re.compile(r"\bfees?\b", re.I)
+#: A quantity written with its unit in the same cell: "1 package", "12 months", "3.5 days".
+_QTY_WITH_UNIT_RE = re.compile(r"^\s*(\d[\d,]*(?:\.\d+)?)\s+([A-Za-z][A-Za-z .\-/]{0,30}?)\s*$")
 _DIGIT_RE = re.compile(r"\d")
 
 # Summary-label patterns that procurement docs put in the DESCRIPTION
@@ -224,6 +234,16 @@ def extract_line_items(parsed: Any, schema: DocSchema) -> list[Candidate]:
                 desc_value = row_values["item_description"][0]
                 if _is_summary_row(desc_value, row):
                     continue
+                # "1 package": the number is the quantity; the word is its unit when the table
+                # has no unit column of its own. As one string it coerced to nothing.
+                if "quantity" in row_values:
+                    qv, qcell = row_values["quantity"]
+                    mq = _QTY_WITH_UNIT_RE.match(qv)
+                    if mq:
+                        row_values["quantity"] = (mq.group(1), qcell)
+                        if "unit_of_measure" not in row_values and any(
+                                f.name == "unit_of_measure" for f in line_fields):
+                            row_values["unit_of_measure"] = (mq.group(2).strip(), qcell)
                 local_idx = line_index
                 for fld, (value, cell) in row_values.items():
                     out.append(Candidate(

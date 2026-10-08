@@ -10,18 +10,30 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from src.services.version_collapse import QUOTE_BASE_SQL, latest_quote_pred
+
 log = logging.getLogger(__name__)
 
-_ALT_SQL = """
-select count(distinct q2.supplier_id) as n
+# Items THIS deal currently asks for -- each bid's latest version (an item dropped in a later
+# round is no longer wanted) -- against every supplier who has ever quoted the same item. A
+# quote with no resolved supplier counts once, by its own quote reference.
+_ALT_SQL = f"""
+select count(distinct coalesce(q2.supplier_id, {QUOTE_BASE_SQL('q2.quote_id')})) as n
 from proc.bp_quote_line_items_trgt mine
+join proc.bp_quote_trgt qm on qm.quote_id = mine.quote_id and {latest_quote_pred('qm')}
 join proc.bp_quote_line_items_trgt theirs
   on lower(trim(theirs.item_description)) = lower(trim(mine.item_description))
 join proc.bp_quote_trgt q2 on q2.quote_id = theirs.quote_id
 where mine.deal_id = %s
   and mine.item_description is not null
   and length(trim(mine.item_description)) > 3
-  and q2.supplier_id is not null
+"""
+
+# Suppliers with a current bid on the deal (one per supplier; an unresolved one per quote).
+_BIDDERS_SQL = f"""
+select count(distinct coalesce(q.supplier_id, {QUOTE_BASE_SQL('q.quote_id')})) as n
+from proc.bp_quote_trgt q
+where q.deal_id = %s and {latest_quote_pred('q')}
 """
 
 
@@ -63,6 +75,13 @@ def gather_signals(cur, deal_id: str) -> Optional[dict]:
         log.debug("alternative-supplier count failed for %s", deal_id,
                   exc_info=True)
 
+    bidders: Optional[int] = None
+    try:
+        b = _rows(cur, _BIDDERS_SQL, (deal_id,))
+        bidders = int(b[0]["n"]) if b and b[0].get("n") else None
+    except Exception:
+        log.debug("bidder count failed for %s", deal_id, exc_info=True)
+
     risk: Optional[float] = None
     preferred: Optional[bool] = None
     if d.get("supplier_id"):
@@ -89,7 +108,9 @@ def gather_signals(cur, deal_id: str) -> Optional[dict]:
         "deal_value": invoice_total or po_total or quote_total,
         "invoice_total": invoice_total,
         "po_total": po_total,
-        "quote_supplier_count": int(d.get("quote_count") or 0) or None,
+        # Suppliers bidding, not quote documents: one supplier's V1-V3 used to read as three
+        # competing suppliers and mark "competitive tension" ready on a single-bidder deal.
+        "quote_supplier_count": bidders,
         "alternative_supplier_count": alt,
         "risk_score": risk,
         "is_preferred": preferred,

@@ -16,6 +16,7 @@ import pandas as pd
 
 from utils.gpu import configure_gpu
 from utils.instructions import parse_instruction_sources
+from services.version_collapse import base_reference, version_ordinal
 from utils.db import read_sql_compat
 from utils.reference_loader import load_reference_dataset
 from services.supplier_relationship_service import SupplierRelationshipService
@@ -1574,15 +1575,10 @@ class SupplierRankingAgent(BaseAgent):
     @staticmethod
     def _quote_version(quote_id: Any) -> Optional[int]:
         """Pull the bidding round out of a quote_id like 'STC-RFQ-2204 (V3 (BAFO))'."""
+        # The shared grammar (services/version_collapse): an unversioned id is round 1.
         if not isinstance(quote_id, str):
             return None
-        match = re.search(r"\(\s*V(\d+)", quote_id, re.IGNORECASE)
-        if not match:
-            return None
-        try:
-            return int(match.group(1))
-        except (TypeError, ValueError):
-            return None
+        return version_ordinal(quote_id)
 
     def _infer_deal_id(self, supplier_ids: Iterable[str]) -> Optional[str]:
         """Find the deal these suppliers actually competed on, when nobody named one.
@@ -1639,7 +1635,8 @@ class SupplierRankingAgent(BaseAgent):
         """
         quotes = self._read_table(
             "proc.bp_quote_trgt",
-            "deal_id = %s AND supplier_id IS NOT NULL",
+            # A bid whose supplier was not resolved is still a rival on the price.
+            "deal_id = %s",
             (deal_id,),
             columns=(
                 "quote_id",
@@ -1658,48 +1655,57 @@ class SupplierRankingAgent(BaseAgent):
         quotes["_version"] = quotes["quote_id"].apply(self._quote_version)
         quotes["_qdate"] = pd.to_datetime(quotes["quote_date"], errors="coerce")
 
-        rows: List[Dict[str, Any]] = []
-        for supplier_id, grp in quotes.groupby("supplier_id", dropna=True):
-            priced = grp.dropna(subset=["total_amount"])
-            if priced.empty:
-                continue
-            # Latest round wins: explicit version if the supplier used one, else date.
-            # If neither can order the bids, we cannot tell which offer stands, so we
-            # decline to guess -- we take the single row only when there is just one.
-            ordered = priced.sort_values(
-                by=["_version", "_qdate"], ascending=True, na_position="first"
-            )
-            if ordered["_version"].notna().any() or ordered["_qdate"].notna().any():
-                latest = ordered.iloc[-1]
-                opening = ordered.iloc[0]
-            elif len(ordered) == 1:
-                latest = opening = ordered.iloc[0]
-            else:
+        # One standing offer per BID -- a supplier's quote family (base reference) -- at its
+        # latest version. Grouping by supplier mixed a supplier's separate lots into one
+        # "round" history, and dropping unpriced rows before picking the latest let a V2 stand
+        # in for a V3 whose total could not be read.
+        quotes["_supplier"] = quotes["supplier_id"].where(quotes["supplier_id"].notna(), None)
+        quotes["_family"] = quotes["quote_id"].astype(str).apply(base_reference)
+        families: List[Dict[str, Any]] = []
+        for (_sup, family), grp in quotes.groupby(
+                [quotes["_supplier"].fillna(""), "_family"], sort=True):
+            ordered = grp.sort_values(by=["_version", "_qdate", "quote_id"], ascending=True,
+                                      na_position="first")
+            latest, opening = ordered.iloc[-1], ordered.iloc[0]
+            if pd.isna(latest["total_amount"]):
                 logger.warning(
-                    "Deal %s supplier %s: %d quotes with no version or date to order "
-                    "them by; cannot identify the standing offer, skipping",
-                    deal_id,
-                    supplier_id,
-                    len(ordered),
-                )
+                    "Deal %s quote %s: the latest version has no total, so there is no standing "
+                    "price for this bid; not ranking it on an earlier version's price",
+                    deal_id, latest.get("quote_id"))
                 continue
+            families.append({
+                "supplier_id": (str(_sup).strip() if _sup else f"quote {family}"),
+                "final": float(latest["total_amount"]),
+                "open": float(opening["total_amount"]) if pd.notna(opening["total_amount"]) else None,
+                "rounds": int(len(ordered)),
+                "currency": latest.get("currency"),
+                "quote_id": latest.get("quote_id"),
+            })
 
-            final_amount = float(latest["total_amount"])
-            open_amount = float(opening["total_amount"])
+        rows: List[Dict[str, Any]] = []
+        by_supplier: Dict[str, List[Dict[str, Any]]] = {}
+        for f in families:
+            by_supplier.setdefault(f["supplier_id"], []).append(f)
+        for supplier_id, fams in by_supplier.items():
+            # A supplier with two lots on one deal stands at both lots' latest prices together.
+            final_amount = sum(f["final"] for f in fams)
+            open_amount = (sum(f["open"] for f in fams)
+                           if all(f["open"] is not None for f in fams) else None)
+            rounds = max(f["rounds"] for f in fams)
             concession_pct = None
-            if open_amount > 0 and len(ordered) > 1:
+            if open_amount and open_amount > 0 and rounds > 1:
                 concession_pct = round((open_amount - final_amount) / open_amount * 100, 2)
-
+            lead = max(fams, key=lambda f: f["final"])
             rows.append(
                 {
-                    "supplier_id": str(supplier_id).strip(),
+                    "supplier_id": supplier_id,
                     "price": final_amount,  # lower is better; scored within the deal
                     "final_quote_amount": final_amount,
-                    "opening_quote_amount": open_amount,
-                    "quote_currency": latest.get("currency"),
-                    "quote_rounds": int(len(ordered)),
+                    "opening_quote_amount": open_amount if open_amount is not None else final_amount,
+                    "quote_currency": lead["currency"],
+                    "quote_rounds": rounds,
                     "concession_pct": concession_pct,
-                    "winning_quote_id": latest.get("quote_id"),
+                    "winning_quote_id": lead["quote_id"],
                 }
             )
 

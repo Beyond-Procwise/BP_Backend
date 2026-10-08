@@ -22,6 +22,7 @@ from typing import Any, Callable, Optional
 
 from src.services.agent_actions import bulk_record, PHASE_CONSOLIDATION
 from src.services.deal_summary import gather_deal_context
+from src.services.version_collapse import latest_per_family
 
 log = logging.getLogger(__name__)
 
@@ -69,11 +70,29 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
+def _chain_quotes(ctx: dict) -> list[dict]:
+    """The quotes that belong in the purchase chain being reconciled.
+
+    A deal's quotes are competing bids, each revised in rounds. Only the WINNING bid's current
+    version is part of the purchase (the PO / invoice supplier's), or the only bid when there
+    is one. Rivals and superseded versions differ from the PO by design, so reconciling them
+    raised a mismatch on every competitive deal."""
+    docs = ctx["documents"]
+    current = latest_per_family(docs.get("quotes", []))
+    awarded = {r.get("supplier_id") for k in ("purchase_orders", "invoices")
+               for r in docs.get(k, []) if r.get("supplier_id")}
+    if awarded:
+        return [q for q in current if q.get("supplier_id") in awarded]
+    return current if len(current) == 1 else []
+
+
 def _flatten_docs(ctx: dict) -> list[dict]:
     """One row per document with the fields reconciliation compares."""
     docs: list[dict] = []
+    chain_quotes = _chain_quotes(ctx)
     for kind, ctx_key, pk_col in _KINDS:
-        for r in ctx["documents"].get(ctx_key, []):
+        rows = chain_quotes if ctx_key == "quotes" else ctx["documents"].get(ctx_key, [])
+        for r in rows:
             docs.append({
                 "doc_kind": kind,
                 "doc_pk": r.get(pk_col),

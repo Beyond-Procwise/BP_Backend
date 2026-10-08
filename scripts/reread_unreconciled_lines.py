@@ -14,6 +14,10 @@ listed. _raw is never touched (permanent); _stg lines are rewritten and copied t
 
     python scripts/reread_unreconciled_lines.py            # dry run: what would change
     python scripts/reread_unreconciled_lines.py --apply
+    python scripts/reread_unreconciled_lines.py --ids "quote:MCG/2024/PS/0847 (V2)" --apply
+        re-reads the named documents even though they reconcile (e.g. after a reader fix
+        that recovers detail such as a fee row's quantity); the same rule applies -- the
+        re-read lines must add up to the document's total.
 """
 from __future__ import annotations
 
@@ -44,16 +48,18 @@ LINE_COLS = {"item_id", "item_description", "quantity", "unit_of_measure", "unit
              "quote_number", "delivery_date", "created_date", "last_modified_date"}
 
 
-def _unreconciled(cur, doc_type):
+def _unreconciled(cur, doc_type, ids=None):
     head, pk, tot, raw, stg, trgt, _n, _id = DOCS[doc_type]
     amt = completeness._LINE_AMOUNT_COL[doc_type]
+    which = (f"h.{pk} = any(%s)" if ids is not None
+             else f"abs(h.{tot} - s.sm) > {completeness._RECONCILE_ABS_TOLERANCE}")
     return _rows(cur, f"""
         select h.{pk} as pk, h.{tot} as total, s.sm as line_sum,
                (select pm.file_path from {raw} r join proc.process_monitor pm on pm.id = r.process_monitor_id
                  where r.{pk} = h.{pk} order by r.raw_id desc limit 1) as file_path
           from {head} h join (select {pk}, sum({amt}) sm from {trgt} group by 1) s using ({pk})
-         where h.{tot} is not null and abs(h.{tot} - s.sm) > {completeness._RECONCILE_ABS_TOLERANCE}
-         order by 1""")
+         where h.{tot} is not null and {which}
+         order by 1""", (list(ids),) if ids is not None else ())
 
 
 def _reread(doc_type, file_path):
@@ -92,14 +98,21 @@ def _rewrite(cur, doc_type, pk_val, lines):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--apply", action="store_true", help="commit (default: dry run)")
+    ap.add_argument("--ids", default="", help='comma-separated doc_type:pk to re-read even if they reconcile')
     args = ap.parse_args()
     logging.disable(logging.WARNING)
+    named: dict = {}
+    for item in filter(None, (x.strip() for x in args.ids.split(","))):
+        dt, _, pk = item.partition(":")
+        named.setdefault(dt, []).append(pk)
     fixed, left = [], []
     with get_conn() as conn:
         conn.autocommit = False
         cur = conn.cursor()
         for doc_type in DOCS:
-            for d in _unreconciled(cur, doc_type):
+            if named and doc_type not in named:
+                continue
+            for d in _unreconciled(cur, doc_type, named.get(doc_type) if named else None):
                 label = f"{doc_type} {d['pk']}"
                 try:
                     lines = _reread(doc_type, d["file_path"]) if d["file_path"] else []

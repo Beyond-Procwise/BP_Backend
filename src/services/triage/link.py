@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Optional
 
 from src.services.extraction.po_revision import latest_approved
+from src.services.version_collapse import base_reference, version_ordinal
 
 from .model import Doc, DocumentSet, Line, LineLink, Links, TermLink
 from .normalise import similarity
@@ -87,6 +88,26 @@ def term_for(line: Line, contracts: list[Doc], cfg) -> Optional[tuple[Doc, Line,
     return best
 
 
+def quote_for(ref: Optional[str], quotes: dict) -> Optional[Doc]:
+    """The quote a PO's reference names.
+
+    A bare number names the QUOTE, so it is the latest version ("APX-PS-5512" -> its V3, not
+    the V1 that happens to share the id). A reference that names a version names that version,
+    whatever words follow the number ("(V3)" finds "(V3 (BAFO))")."""
+    if not ref:
+        return None
+    if ref in quotes and version_ordinal(ref) > 1:
+        return quotes[ref]
+    base = base_reference(ref)
+    family = [q for qid, q in quotes.items() if base_reference(qid) == base]
+    if not family:
+        return quotes.get(ref)
+    if version_ordinal(ref) > 1 or "(" in ref[len(base):]:
+        same = [q for q in family if version_ordinal(q.doc_id) == version_ordinal(ref)]
+        return same[0] if len(same) == 1 else quotes.get(ref)
+    return max(family, key=lambda q: (version_ordinal(q.doc_id), q.doc_id))
+
+
 def link(ds: DocumentSet, cfg) -> Links:
     pos = {p.doc_id: p for p in ds.pos}
     quotes = {q.doc_id: q for q in ds.quotes}
@@ -102,7 +123,7 @@ def link(ds: DocumentSet, cfg) -> Links:
             out.bad_refs.add(inv.doc_id)
             continue
         out.line_links.extend(_rollup([_link_line(inv, l, po, cfg) for l in inv.lines], po, cfg))
-    out.po_quote = {p.doc_id: (quotes.get(p.quote_ref) if p.quote_ref else None) for p in ds.pos}
+    out.po_quote = {p.doc_id: quote_for(p.quote_ref, quotes) for p in ds.pos}
     for inv in ds.invoices:
         for l in inv.lines:
             found = term_for(l, ds.contracts, cfg)

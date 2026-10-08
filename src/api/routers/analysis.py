@@ -141,7 +141,7 @@ def _hydrate(row: dict) -> dict:
         "         WHERE dd.doc_type = d.doc_type AND dd.doc_pk = d.doc_pk "
         "           AND dd.deal_id IN (SELECT deal_id FROM proc.bp_analysis_deal "
         "                               WHERE analysis_id = d.analysis_id) "
-        "         LIMIT 1) AS supplier_name "
+        "         ORDER BY dd.supplier_name NULLS LAST, dd.deal_id LIMIT 1) AS supplier_name "
         "  FROM proc.bp_analysis_document d WHERE d.analysis_id = %s "
         " ORDER BY d.file_name", (aid,))
     # The UI reads deals[0]. A deal that holds documents comes before one that

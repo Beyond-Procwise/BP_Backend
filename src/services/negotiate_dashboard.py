@@ -15,6 +15,7 @@ import logging
 from typing import Any, Optional
 
 from src.services.db import get_conn
+from src.services.version_collapse import base_reference, latest_per_family
 
 log = logging.getLogger(__name__)
 
@@ -65,9 +66,37 @@ def _deal(cur, deal_id: str) -> Optional[dict]:
         "first_activity_date, last_activity_date, quote_count, po_count, "
         "invoice_count, quote_total, po_total, invoice_total, currency, "
         "price_variance_pct, cycle_days_quote_to_po, cycle_days_po_to_invoice, "
-        "has_quote_anchor, orphaned "
-        "from proc.bp_deal_overview where deal_id=%s", (deal_id,))
+        "has_quote_anchor, orphaned, "
+        # bid_count arrives with the 2026-10-08 overview migration; to_jsonb reads it
+        # whether or not that migration has run.
+        "to_jsonb(o)->>'bid_count' as bid_count "
+        "from proc.bp_deal_overview o where deal_id=%s", (deal_id,))
     return rows[0] if rows else None
+
+
+def _reference_bid(cur, deal_id: str, d: Optional[dict]) -> tuple[list[dict], list[dict]]:
+    """The bid the deal's value stands on, as (all its versions, its latest versions).
+
+    A deal's quotes are competing bids, each revised in rounds. Adding them up -- across
+    versions or across suppliers -- describes no real offer. The reference is the awarded
+    supplier's current bid (bp_deal_overview.supplier_id is the PO / invoice supplier, or the
+    only bidder) and, while the award is open, the lowest current bid: the same rule as
+    bp_deal_overview.quote_total."""
+    quotes = _rows(cur,
+        "select quote_id, supplier_id, total_amount, quote_date from proc.bp_quote_trgt "
+        "where deal_id=%s order by quote_id", (deal_id,))
+    if not quotes:
+        return [], []
+    latest = latest_per_family(quotes)
+    awarded = (d or {}).get("supplier_id")
+    ref = [q for q in latest if awarded and q.get("supplier_id") == awarded]
+    if not ref:
+        priced = [q for q in latest if _f(q.get("total_amount")) is not None]
+        ref = [min(priced, key=lambda q: (_f(q["total_amount"]), q["quote_id"]))] if priced else []
+    fams = {((q.get("supplier_id") or ""), base_reference(q["quote_id"])) for q in ref}
+    versions = [q for q in quotes
+                if ((q.get("supplier_id") or ""), base_reference(q["quote_id"])) in fams]
+    return versions, ref
 
 
 # ---------------------------------------------------------------------------
@@ -80,9 +109,13 @@ def deal_summary_text(cur, deal_id: str, d: Optional[dict] = None) -> str:
     ccy = d.get("currency") or "GBP"
     spend = d.get("invoice_total") or d.get("po_total") or d.get("quote_total")
     name = d.get("deal_name") or deal_id
+    bids = d.get("bid_count")
+    docs = int(d.get("quote_count") or 0)
+    quotes_txt = (f"{int(bids)} bid(s) ({docs} quote document(s) including earlier versions)"
+                  if bids is not None and int(bids) != docs else f"{docs} quote(s)")
     parts = [
         f"Deal '{name}' consolidates "
-        f"{int(d.get('quote_count') or 0)} quote(s), "
+        f"{quotes_txt}, "
         f"{int(d.get('po_count') or 0)} purchase order(s) and "
         f"{int(d.get('invoice_count') or 0)} invoice(s)"
     ]
@@ -113,7 +146,8 @@ def proposal_snapshot(cur, deal_id: str, d: Optional[dict] = None) -> list[dict]
     # payment terms / contract term from the PO (then invoice)
     pterm = _rows(cur,
         "select payment_terms from proc.bp_purchase_order_trgt "
-        "where deal_id=%s and payment_terms is not null limit 1", (deal_id,))
+        "where deal_id=%s and payment_terms is not null "
+        "order by order_date desc nulls last, po_id desc limit 1", (deal_id,))
     payment_terms = pterm[0]["payment_terms"] if pterm else ""
     term = _contract_term(cur, deal_id)
     # The quote is the savings baseline. With no quote (orphaned chain) there is
@@ -133,7 +167,8 @@ def _contract_term(cur, deal_id: str) -> str:
         rows = _rows(cur,
             "select c.contract_term, c.end_date from proc.bp_contracts c "
             "join proc.bp_purchase_order_trgt p on p.contract_id = c.contract_id "
-            "where p.deal_id=%s limit 1", (deal_id,))
+            "where p.deal_id=%s order by p.order_date desc nulls last, p.po_id desc limit 1",
+            (deal_id,))
         if rows and rows[0].get("contract_term"):
             return str(rows[0]["contract_term"])
     except Exception:  # contracts table/columns optional
@@ -185,7 +220,7 @@ def negotiation_kpis(cur, deal_id: str, d: Optional[dict] = None) -> list[dict]:
     total_cost = actual or quote or 0.0
     savings = (quote - actual) if (quote and actual) else 0.0
     price_change_pct = round((actual - quote) / quote * 100, 1) if (quote and actual and quote > 0) else 0.0
-    volume = _volume_total(cur, deal_id)
+    volume = _volume_total(cur, deal_id, d)
     closure = d.get("last_activity_date")
     closure_str = closure.strftime("%d %B %Y") if hasattr(closure, "strftime") else (str(closure) if closure else "")
     savings_val = "awaiting quote" if not quote else _money(savings, ccy)
@@ -200,16 +235,20 @@ def negotiation_kpis(cur, deal_id: str, d: Optional[dict] = None) -> list[dict]:
     ]
 
 
-def _volume_total(cur, deal_id: str) -> Optional[float]:
+def _volume_total(cur, deal_id: str, d: Optional[dict] = None) -> Optional[float]:
     rows = _rows(cur,
         "select coalesce(sum(quantity),0) v from proc.bp_po_line_items_trgt "
         "where deal_id=%s", (deal_id,))
     v = _f(rows[0]["v"]) if rows else None
     if not v:
-        rows = _rows(cur,
-            "select coalesce(sum(quantity),0) v from proc.bp_quote_line_items_trgt "
-            "where deal_id=%s", (deal_id,))
-        v = _f(rows[0]["v"]) if rows else None
+        # No PO yet: the proposed volume is the reference bid's current quantities -- not
+        # every version of every supplier's quote added together.
+        _versions, ref = _reference_bid(cur, deal_id, d or _deal(cur, deal_id))
+        if ref:
+            rows = _rows(cur,
+                "select coalesce(sum(quantity),0) v from proc.bp_quote_line_items_trgt "
+                "where quote_id = any(%s)", ([q["quote_id"] for q in ref],))
+            v = _f(rows[0]["v"]) if rows else None
     return v
 
 
@@ -329,9 +368,17 @@ def _supplier_insights(cur, d: dict):
 # 6. cost over time  (cumulative per doc type)
 # ---------------------------------------------------------------------------
 def cost_over_time(cur, deal_id: str) -> list[dict]:
-    events = []  # (date, type, amount)
+    events = []  # (date, type, amount, quote family or None)
+    # Quotes: the reference bid's versions only. Each version REPLACES its predecessor, so the
+    # Quote line is the offer standing at that date -- it used to add every version of every
+    # supplier's quote into one ever-rising total.
+    versions, _ref = _reference_bid(cur, deal_id, _deal(cur, deal_id))
+    for q in versions:
+        amt = _f(q.get("total_amount"))
+        if q.get("quote_date") is not None and amt is not None:
+            events.append((q["quote_date"], "Quote", amt,
+                           ((q.get("supplier_id") or ""), base_reference(q["quote_id"]))))
     for typ, table, datecol, amtcol in (
-        ("Quote", "bp_quote_trgt", "quote_date", "total_amount"),
         ("PO", "bp_purchase_order_trgt", "order_date", "total_amount"),
         ("Invoice", "bp_invoice_trgt", "invoice_date", "invoice_amount"),
     ):
@@ -339,14 +386,19 @@ def cost_over_time(cur, deal_id: str) -> list[dict]:
                             f"where deal_id=%s and {datecol} is not null order by {datecol}", (deal_id,)):
             amt = _f(r["amt"])
             if r["dt"] is not None and amt is not None:
-                events.append((r["dt"], typ, amt))
+                events.append((r["dt"], typ, amt, None))
     if not events:
         return []
-    events.sort(key=lambda e: e[0])
+    events.sort(key=lambda e: (e[0], e[1], str(e[3])))
     cum = {"PO": 0.0, "Invoice": 0.0, "Quote": 0.0}
+    standing: dict = {}
     out = []
-    for dt, typ, amt in events:
-        cum[typ] += amt
+    for dt, typ, amt, fam in events:
+        if typ == "Quote":
+            standing[fam] = amt
+            cum["Quote"] = sum(standing.values())
+        else:
+            cum[typ] += amt
         # Quote, PO and Invoice for a three-way-matched deal all represent the
         # SAME spend, so summing them triple-counts. "Overall" is the actual
         # cost consumed: prefer the most concrete stream (invoiced), falling
@@ -377,14 +429,15 @@ def volume_trend(cur, deal_id: str) -> list[dict]:
         # Quote-only deals have no POs yet — fall back to the proposed volume
         # from quotes so the chart reflects the deal instead of rendering blank.
         # Mirrors the Volume KPI fallback in _volume_total.
+        _v, ref = _reference_bid(cur, deal_id, _deal(cur, deal_id))
         rows = _rows(cur,
             "select to_char(date_trunc('month', q.quote_date),'Mon') mon, "
             "date_trunc('month', q.quote_date) m, "
             "coalesce(sum(li.quantity),0) vol, avg(li.unit_price) aup "
             "from proc.bp_quote_line_items_trgt li "
             "join proc.bp_quote_trgt q on q.quote_id=li.quote_id "
-            "where q.deal_id=%s and q.quote_date is not null "
-            "group by 1,2 order by 2", (deal_id,))
+            "where q.quote_id = any(%s) and q.quote_date is not null "
+            "group by 1,2 order by 2", ([x["quote_id"] for x in ref],)) if ref else []
     return [{"month": r["mon"], "Volume": round(_f(r["vol"]) or 0, 2),
              "AvgUnitPrice": round(_f(r["aup"]) or 0, 2)} for r in rows]
 
@@ -395,13 +448,18 @@ def volume_trend(cur, deal_id: str) -> list[dict]:
 def proposal_summary(cur, deal_id: str, d: Optional[dict] = None) -> list[dict]:
     d = d or _deal(cur, deal_id)
     ccy = (d or {}).get("currency") or "GBP"
+    # Baseline = the reference bid's CURRENT lines (the awarded supplier's quote, else the
+    # lowest), not an average over every version of every supplier's quote. A lump sum (no
+    # quantity, no unit price) is compared on its line total rather than dropped.
+    _v, ref = _reference_bid(cur, deal_id, d)
+    _unit = ("coalesce(unit_price, case when quantity is null then line_total end)")
     base = {r["item"]: _f(r["u"]) for r in _rows(cur,
-        "select coalesce(item_description, item_id) item, avg(unit_price) u "
-        "from proc.bp_quote_line_items_trgt where deal_id=%s and unit_price is not null "
-        "group by 1", (deal_id,))}
+        f"select coalesce(item_description, item_id) item, avg({_unit}) u "
+        f"from proc.bp_quote_line_items_trgt where quote_id = any(%s) and {_unit} is not null "
+        "group by 1", ([x["quote_id"] for x in ref],))} if ref else {}
     curr = {r["item"]: _f(r["u"]) for r in _rows(cur,
-        "select coalesce(item_description, item_id) item, avg(unit_price) u "
-        "from proc.bp_po_line_items_trgt where deal_id=%s and unit_price is not null "
+        f"select coalesce(item_description, item_id) item, avg({_unit}) u "
+        f"from proc.bp_po_line_items_trgt where deal_id=%s and {_unit} is not null "
         "group by 1", (deal_id,))}
     out = []
     for item in sorted(set(base) | set(curr)):
@@ -428,12 +486,14 @@ def demand_vs_volume(cur, deal_id: str) -> list[dict]:
         "where p.deal_id=%s and p.order_date is not null group by 1,2 order by 2", (deal_id,))
     if not rows:
         # Quote-only deals: fall back to proposed volume from quotes (see volume_trend).
+        _v, ref = _reference_bid(cur, deal_id, _deal(cur, deal_id))
         rows = _rows(cur,
             "select to_char(date_trunc('month', q.quote_date),'Mon') mon, "
             "date_trunc('month', q.quote_date) m, coalesce(sum(li.quantity),0) vol "
             "from proc.bp_quote_line_items_trgt li "
             "join proc.bp_quote_trgt q on q.quote_id=li.quote_id "
-            "where q.deal_id=%s and q.quote_date is not null group by 1,2 order by 2", (deal_id,))
+            "where q.quote_id = any(%s) and q.quote_date is not null group by 1,2 order by 2",
+            ([x["quote_id"] for x in ref],)) if ref else []
     return [{"month": r["mon"], "demand": None, "volume": round(_f(r["vol"]) or 0, 2)} for r in rows]
 
 

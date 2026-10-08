@@ -28,6 +28,7 @@ from typing import Any, Optional
 from src.services.db import get_conn
 from src.services.extraction.po_revision import pick_key, po_base, revision_of
 from src.services.agent_actions import record_action, PHASE_CONSOLIDATION
+from src.services.version_collapse import latest_per_family
 
 log = logging.getLogger(__name__)
 
@@ -997,6 +998,9 @@ def _quote_chains(conn) -> dict:
                    confidence_score, quote_date, country, region
               from proc.bp_quote_trgt where quote_id is not null
           ) u group by quote_id order by quote_id""")
+    # A chain starts at a bid's CURRENT version. Its earlier versions are not separate quotes
+    # and never carry the PO, so each used to be counted as an orphan quote.
+    quotes = latest_per_family(quotes)
 
     inv_cond = _PO_NORM_SQL.format(col="po_id")
     chains, linked, orphan = [], 0, 0

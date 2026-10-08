@@ -23,6 +23,7 @@ import logging
 from typing import Any, Optional
 
 from src.services.formulas import ensure_registered, evaluate
+from src.services.version_collapse import latest_quote_pred
 from services.benchmark.models import BenchmarkPoint, BenchmarkSettings, QuoteLine
 
 log = logging.getLogger(__name__)
@@ -56,9 +57,14 @@ def _norm_currency(value: Optional[str]) -> str:
 
 
 def load_quote_lines(cur, deal_id: str) -> list[dict[str, Any]]:
-    """Quote lines for one deal, with header currency/country/region."""
+    """Quote lines for one deal -- each bid's CURRENT version only -- with header
+    currency/country/region.
+
+    Superseded versions are history: benchmarking them as well tripled a three-round deal's
+    benchmarked lines and flagged prices nobody is still offering. Lump sums (no unit price)
+    are not benchmarked: a market benchmark is a unit price, and a lump sum has no unit."""
     cur.execute(
-        """
+        f"""
         SELECT q.quote_line_id, q.quote_id, q.item_description, q.quantity,
                q.unit_price, q.unit_of_measure,
                COALESCE(q.currency, h.currency) AS currency,
@@ -66,6 +72,7 @@ def load_quote_lines(cur, deal_id: str) -> list[dict[str, Any]]:
         FROM proc.bp_quote_line_items_trgt q
         LEFT JOIN proc.bp_quote_trgt h ON h.quote_id = q.quote_id
         WHERE q.deal_id = %s AND q.unit_price IS NOT NULL
+          AND {latest_quote_pred('h')}
         ORDER BY q.quote_line_id
         """,
         (deal_id,),
