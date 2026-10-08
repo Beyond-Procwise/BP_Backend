@@ -33,6 +33,7 @@ MIGRATIONS: List[str] = [
     "2026-10-08_email_agent_sent_text.sql",
     "2026-10-08_email_agent_steering_column.sql",
     "2026-10-08_email_inbound_flag.sql",
+    "2026-10-08_email_sender_auth.sql",
     "2026-10-08_email_agent_steering.sql",
     "2026-10-08_email_draft_sweep.sql",
     "2026-10-07_email_family_negotiation_counter.sql",

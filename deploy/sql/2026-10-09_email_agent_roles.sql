@@ -79,6 +79,14 @@ BEGIN
     END IF;
 END $$;
 
+-- Sender-authentication results: the writer records them. Never updates or deletes.
+DO $$
+BEGIN
+    IF to_regclass('email_agent.bp_inbound_auth') IS NOT NULL THEN
+        GRANT SELECT, INSERT ON email_agent.bp_inbound_auth TO email_agent_writer;
+    END IF;
+END $$;
+
 -- RAW TEXT: the one table the writer may also DELETE from (the retention job purges it). It is not in the list
 -- above on purpose: access to raw text is its own decision. The reader and PUBLIC get nothing. Skipped where
 -- 2026-10-08_email_agent_sent_text.sql has not been applied.

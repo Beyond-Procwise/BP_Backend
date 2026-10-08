@@ -158,7 +158,10 @@ def list_classifier_examples(conn: Any, status: Optional[str] = "candidate", lim
 
 
 _FLAG_LABELS = {"payment_detail_change": "Asks for new or changed payment details",
-                "bank_details_with_pressure": "Bank details with pressure language"}
+                "bank_details_with_pressure": "Bank details with pressure language",
+                "auth_failed": "The sender failed authentication",
+                "auth_missing": "The sender could not be authenticated",
+                "domain_mismatch": "The sender's domain is not the supplier's"}
 
 
 def list_inbound_flags(conn: Any, status: Optional[str] = "open", limit: Any = 50) -> List[Dict[str, Any]]:

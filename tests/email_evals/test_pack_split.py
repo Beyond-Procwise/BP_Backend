@@ -25,7 +25,7 @@ ASSURANCE = {"family_id": "negotiation_counter", "family_version": 1, "mode": "s
 def test_the_groups_partition_the_migrations_exactly():
     assert set(evaldb.PACK_A) | set(evaldb.PACK_B) | set(evaldb.ROLES) | set(evaldb.PRODUCT) == set(evaldb.MIGRATIONS)
     assert not (set(evaldb.PACK_A) & set(evaldb.PACK_B)) and not (set(evaldb.PACK_A) & set(evaldb.ROLES)) and not (set(evaldb.PACK_B) & set(evaldb.ROLES))
-    assert len(evaldb.PACK_A) == 12 and len(evaldb.PACK_B) == 3 and len(evaldb.ROLES) == 1 and len(evaldb.PRODUCT) == 1
+    assert len(evaldb.PACK_A) == 13 and len(evaldb.PACK_B) == 3 and len(evaldb.ROLES) == 1 and len(evaldb.PRODUCT) == 1
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def test_pack_a_alone_contains_no_pack_b_rows(pack_a_only):
             cur.execute("SELECT has_schema_privilege(%s, 'email_agent', 'USAGE') OR has_table_privilege(%s, 'email_agent.bp_draft_capture', 'SELECT')", (role, role))
             granted.append(cur.fetchone()[0])
     assert names == ["EmailDraftSweepRules", "EmailFamily_free_prompt", "EmailFamily_human_written", "EmailFamily_negotiation_counter",
-                     "EmailFamily_rfq_batch", "EmailLearningRules", "EmailTextRetention"] and prompts == 0
+                     "EmailFamily_rfq_batch", "EmailLearningRules", "EmailSenderAuthRules", "EmailTextRetention"] and prompts == 0
     assert not any(granted)
 
 
@@ -99,10 +99,10 @@ def test_pack_b_applies_on_top_of_a_and_rolls_back_leaving_a_intact(pack_a_only)
         for name in evaldb.PACK_B:
             cur.execute((evaldb.SQL / name).read_text())
         cur.execute("SELECT count(*) FROM proc.bp_policy WHERE created_by = 'email_assurance_migration'")
-        assert cur.fetchone()[0] == 9
+        assert cur.fetchone()[0] == 10
         for name in reversed(evaldb.PACK_B):
             cur.execute((evaldb.SQL / name.replace(".sql", "_rollback.sql")).read_text())
         cur.execute("SELECT count(*) FROM proc.bp_policy WHERE created_by = 'email_assurance_migration'")
-        assert cur.fetchone()[0] == 7
+        assert cur.fetchone()[0] == 8
         cur.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'email_agent' AND column_name = 'steering'")
         assert cur.fetchone()[0] == 1                                          # the column belongs to (a) and stays

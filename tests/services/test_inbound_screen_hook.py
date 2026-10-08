@@ -66,3 +66,38 @@ def test_an_import_problem_with_the_screen_is_not_fatal(monkeypatch):
         return real(name, *a, **k)
     monkeypatch.setattr(builtins, "__import__", refuse)
     repo._screen_inbound(a_row())                                              # must simply return
+
+
+# --- the sender check rides the same hook, independently ------------------------------------------------------------------------
+
+@pytest.fixture
+def both(monkeypatch):
+    inbound = importlib.import_module("services.draft_assurance.inbound")
+    sender = importlib.import_module("services.draft_assurance.sender_auth")
+    calls = []
+    monkeypatch.setattr(inbound, "screen_and_record", lambda row, *a, **k: calls.append(("screen", row)))
+    monkeypatch.setattr(sender, "check_and_record", lambda row, *a, **k: calls.append(("sender", row)))
+    return calls, inbound, sender
+
+
+def test_every_reply_is_given_to_the_payment_screen_and_the_sender_check(both):
+    calls, *_ = both
+    row = a_row()
+    repo._screen_inbound(row)
+    assert calls == [("screen", row), ("sender", row)]
+
+
+def test_a_fault_in_the_payment_screen_does_not_stop_the_sender_check(both, monkeypatch):
+    calls, inbound, sender = both
+    monkeypatch.setattr(inbound, "screen_and_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("screen exploded")))
+    repo._screen_inbound(a_row())
+    assert [c[0] for c in calls] == ["sender"]
+
+
+def test_a_fault_in_the_sender_check_does_not_stop_the_payment_screen_or_the_insert(both, monkeypatch):
+    calls, inbound, sender = both
+    monkeypatch.setattr(sender, "check_and_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("check exploded")))
+    monkeypatch.setattr(repo, "get_conn", lambda: (_ for _ in ()).throw(Reached()))
+    with pytest.raises(Reached):                      # the insert still ran
+        repo.insert_response(a_row())
+    assert [c[0] for c in calls] == ["screen"]

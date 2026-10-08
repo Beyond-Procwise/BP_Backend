@@ -115,16 +115,16 @@ def _default_factory() -> Iterator[Any]:
 
 
 def record_flag(conn: Any, *, workflow_id: Optional[str], unique_id: Optional[str], supplier_id: Optional[str],
-                message_id: Optional[str], result: Dict[str, Any]) -> Optional[int]:
+                message_id: Optional[str], result: Dict[str, Any], kind: str = "payment_detail_change") -> Optional[int]:
     """Store WHICH signals fired and the keywords, by pointer to the message. Returns the flag id, or None if already flagged."""
 
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO email_agent.bp_inbound_flag (kind, workflow_id, unique_id, supplier_id, response_message_id, kinds, terms)
-               VALUES ('payment_detail_change', %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+               VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                ON CONFLICT (kind, workflow_id, response_message_id) WHERE response_message_id IS NOT NULL DO NOTHING
                RETURNING flag_id""",
-            (workflow_id, unique_id, supplier_id, message_id, json.dumps(result["kinds"]), json.dumps(result["terms"])))
+            (kind, workflow_id, unique_id, supplier_id, message_id, json.dumps(result["kinds"]), json.dumps(result["terms"])))
         got = cur.fetchone()
     return int(got[0]) if got else None
 

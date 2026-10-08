@@ -166,6 +166,19 @@ def test_the_writer_records_and_decides_inbound_flags_but_never_deletes_them_and
     assert cur.fetchone()[0] is False
 
 
+def test_the_writer_records_sender_checks_but_never_changes_or_deletes_them_and_the_reader_sees_none(logins, eval_db):
+    ro, rw = logins
+    ok(rw, "INSERT INTO email_agent.bp_inbound_auth (spf, dkim, dmarc, verdict, reasons, held, trusted_headers, ignored_headers) "
+           "VALUES ('pass', 'pass', 'pass', 'authenticated', '[]', false, 1, 0)")
+    assert ok(rw, "SELECT count(*) FROM email_agent.bp_inbound_auth")[0][0] >= 1
+    denied(rw, "UPDATE email_agent.bp_inbound_auth SET held = true")
+    denied(rw, "DELETE FROM email_agent.bp_inbound_auth")
+    denied(ro, "SELECT count(*) FROM email_agent.bp_inbound_auth")
+    cur = eval_db.cursor()
+    cur.execute("SELECT has_table_privilege('public', 'email_agent.bp_inbound_auth', 'SELECT,INSERT,UPDATE,DELETE')")
+    assert cur.fetchone()[0] is False
+
+
 def test_the_reader_cannot_become_anything_more_powerful(logins):
     ro, _ = logins
     for role in ("postgres", "email_agent_writer"):

@@ -13,7 +13,9 @@ Create two **NOLOGIN group roles** on the RDS cluster `procwisemvpdb01`:
 | Role | May do | May not do |
 |---|---|---|
 | `email_agent_reader` | SELECT on `proc.supplier_response`, `proc.workflow_email_tracking`, 9 named columns of `proc.bp_supplier`, and **3 columns of `proc.draft_rfq_emails` (`unique_id`, `sent`, `sent_on`)** | write anything; read any other table; read `bank_*`, tax or registration columns of `bp_supplier`; DDL; GRANT |
-| `email_agent_writer` | SELECT, INSERT, UPDATE on the 8 `email_agent.*` tables; USAGE/SELECT on that schema's sequences | touch anything in `proc`; DELETE; TRUNCATE; DDL |
+| `email_agent_writer` | SELECT, INSERT, UPDATE on the 8 original `email_agent.*` tables; **SELECT, INSERT, DELETE on `bp_draft_sent_text`** (raw text; the retention purge, the only table it may delete from); SELECT, INSERT, UPDATE on `bp_inbound_flag`; SELECT, INSERT on `bp_inbound_auth`; USAGE/SELECT on that schema's sequences | touch anything in `proc`; DELETE anywhere except `bp_draft_sent_text`; TRUNCATE; DDL |
+
+*Corrected 2026-10-08: this row had not been updated for the raw-text table's DELETE grant or the two inbound tables. The authoritative list is in `deploy/sql/2026-10-09_email_agent_roles.sql` and the pack document's grant table.*
 
 The exact SQL is `deploy/sql/2026-10-09_email_agent_roles.sql`; the rollback is
 `deploy/sql/2026-10-09_email_agent_roles_rollback.sql`. Both were rehearsed on a throwaway Postgres built from
