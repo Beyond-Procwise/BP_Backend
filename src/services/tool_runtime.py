@@ -169,6 +169,10 @@ def _policy_refusal(
     handler is never called. The gate never raises; should it be unreachable at all, the
     call is refused (fail closed) exactly as the gate refuses when policies cannot be checked.
     """
+    # The kill switch is read here, before the gate is imported, so switching enforcement off
+    # works even when the gate itself cannot load. With it on, an import failure refuses.
+    if os.getenv("AGENT_POLICY_ENFORCEMENT", "on").strip().lower() == "off":
+        return None
     try:
         from services.agent_policy import gate
     except Exception:  # noqa: BLE001

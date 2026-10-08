@@ -240,16 +240,18 @@ def _record(cur, case: Dict[str, Any], *, verb: str, actor: str, reason: Optiona
 
 
 def _update_firing(cur, firing_id: Optional[int], *, result: str, level: int, actor: str,
-                   now: datetime, reason: Optional[str]) -> None:
-    if firing_id is None:
+                   now: datetime, reason: Optional[str], decision_id: Optional[int] = None) -> None:
+    """Settle the case's own firing row AND every row the gate linked to it (decision_id):
+    repeat calls made while the case was open, and the notify rows of the same call."""
+    if firing_id is None and decision_id is None:
         return
     cur.execute(
         """
         UPDATE proc.bp_policy_firing
            SET result = %s, decided_level = %s, decided_by = %s, decided_at = %s, reason = %s
-         WHERE firing_id = %s AND result = 'paused_for_approval'
+         WHERE (firing_id = %s OR decision_id = %s) AND result = 'paused_for_approval'
         """,
-        (result, level, actor, now, reason, firing_id),
+        (result, level, actor, now, reason, firing_id, decision_id),
     )
 
 
@@ -311,7 +313,8 @@ def act(conn, decision_id: int, *, principal, verb: str, reason: Optional[str], 
                                 level=level, level_name=level_name)
             _update_firing(cur, facts.get("firingId"),
                            result="approved" if verb == "approve" else "rejected",
-                           level=level, actor=actor, now=now, reason=reason)
+                           level=level, actor=actor, now=now, reason=reason,
+                           decision_id=decision_id)
 
     out = {"decisionId": decision_id, "actionId": action_id, "verb": verb,
            "result": "approved" if verb == "approve" else "rejected",
@@ -408,7 +411,7 @@ def _sweep_one(conn, decision_id: int, now: datetime) -> str:
             _record(cur, case, verb="reject", actor=TIMEOUT_ACTOR, reason=TIMEOUT_REASON, now=now,
                     level=level, level_name=level_name)
             _update_firing(cur, firing_id, result="timed_out", level=level, actor=TIMEOUT_ACTOR,
-                           now=now, reason=TIMEOUT_REASON)
+                           now=now, reason=TIMEOUT_REASON, decision_id=decision_id)
             first = levels[0]["name"] if levels else None
             _notify(cur, firing_id, [x for x in (first, facts.get("requestedBy")) if x],
                     f"{what} was rejected: nobody decided in time, and a timeout never approves.",

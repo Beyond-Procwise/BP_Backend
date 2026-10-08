@@ -9,7 +9,9 @@ and stay.
 import copy
 import json
 import os
+import sys
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -73,6 +75,12 @@ class Script:
         return SimpleNamespace(post=post, Purpose=SimpleNamespace(MODEL_INFERENCE="model"))
 
 
+@pytest.fixture(autouse=True)
+def enforcement_on(monkeypatch):
+    """Every test states the switch it depends on; the kill-switch tests override it."""
+    monkeypatch.setenv("AGENT_POLICY_ENFORCEMENT", "on")
+
+
 @pytest.fixture
 def ran():
     return []
@@ -88,16 +96,17 @@ def tools(ran):
                     parameters={"type": "object", "properties": {}}, handler=refund)]
 
 
-def _run(monkeypatch, tools, replies, *, stream=False, agent="overcharge_hunter", workflow_id=None):
+def _run(monkeypatch, tools, replies, *, stream=False, agent="overcharge_hunter", workflow_id=None,
+         user_id="req@example.test"):
     script = Script(replies)
     if stream:
         monkeypatch.setattr(TR, "egress", script.egress())
         res = TR.run_tools_stream("task", tools, "system", max_rounds=4, agent=agent,
-                                  workflow_id=workflow_id, user_id="req@example.test")
+                                  workflow_id=workflow_id, user_id=user_id)
     else:
         monkeypatch.setattr(TR, "_chat", script.chat)
         res = TR.run_tools("task", tools, "system", max_rounds=4, agent=agent,
-                           workflow_id=workflow_id, user_id="req@example.test")
+                           workflow_id=workflow_id, user_id=user_id)
     return res, script
 
 
@@ -109,7 +118,6 @@ def _tool_messages(script):
 # ------------------------------------------------------------------ no database
 @pytest.mark.parametrize("stream", [False, True])
 def test_no_live_policies_is_identical_to_today(monkeypatch, tools, ran, stream):
-    monkeypatch.delenv("AGENT_POLICY_ENFORCEMENT", raising=False)
     monkeypatch.setattr(G, "_load_policies", lambda: [])
     gated, s1 = _run(monkeypatch, tools, [_round(), FINAL], stream=stream)
 
@@ -152,6 +160,26 @@ def test_store_unavailable_refuses(monkeypatch, tools, ran, stream):
     assert call.ok is False and call.error is None and call.result == G.UNAVAILABLE
     tool_msgs = _tool_messages(script)
     assert tool_msgs == [{"role": "tool", "name": "refund.issue", "content": json.dumps(G.UNAVAILABLE)}]
+
+
+def _gate_unimportable(monkeypatch):
+    import services.agent_policy as pkg
+    monkeypatch.delattr(pkg, "gate", raising=False)
+    monkeypatch.setitem(sys.modules, "services.agent_policy.gate", None)   # import -> ImportError
+
+
+def test_gate_import_failure_refuses_when_enforcement_is_on(monkeypatch, tools, ran):
+    _gate_unimportable(monkeypatch)
+    res, script = _run(monkeypatch, tools, [_round(), FINAL])
+    assert ran == [] and res.calls[0].result["reasonCode"] == "policy_check_unavailable"
+    assert json.loads(_tool_messages(script)[0]["content"])["reasonCode"] == "policy_check_unavailable"
+
+
+def test_gate_import_failure_still_honours_the_kill_switch(monkeypatch, tools, ran):
+    monkeypatch.setenv("AGENT_POLICY_ENFORCEMENT", "Off")
+    _gate_unimportable(monkeypatch)
+    res, _ = _run(monkeypatch, tools, [_round(), FINAL])
+    assert ran == [("refund.issue", ARGS)] and res.calls[0].ok
 
 
 def test_check_raising_refuses(monkeypatch, tools, ran):
@@ -208,7 +236,11 @@ def conn():
 def world(conn, monkeypatch):
     monkeypatch.setenv("AGENT_POLICY_ENFORCEMENT", "on")
     tag = uuid.uuid4().hex[:8]
-    w = SimpleNamespace(tag=tag, wf=f"wf-gate-{tag}", decider=f"TST GT {tag}", notify=f"TST GN {tag}")
+    w = SimpleNamespace(tag=tag, wf=f"wf-gate-{tag}", decider=f"TST GT {tag}", notify=f"TST GN {tag}",
+                        email=f"gt-{tag}@example.test")
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO proc.bp_policy_decider_map (decider_name, groups, emails, last_modified_by) "
+                    "VALUES (%s, '{}', %s, 'test')", (w.decider, [w.email]))
     yield w
     with conn.cursor() as cur:
         cur.execute("SELECT firing_id FROM proc.bp_policy_firing WHERE workflow_id = %s", (w.wf,))
@@ -216,6 +248,7 @@ def world(conn, monkeypatch):
         cur.execute("DELETE FROM proc.bp_policy_notification WHERE firing_id = ANY(%s)", (fids,))
         cur.execute("DELETE FROM proc.bp_decision WHERE subject_type = %s AND workflow_id = %s",
                     (A.SUBJECT_TYPE, w.wf))
+        cur.execute("DELETE FROM proc.bp_policy_decider_map WHERE decider_name = %s", (w.decider,))
 
 
 def _doc(w, key, outcome):
@@ -230,7 +263,7 @@ def _doc(w, key, outcome):
 
 def _firings(conn, w):
     with conn.cursor() as cur:
-        cur.execute("SELECT firing_id, policy_key, outcome, result, agent, decision_id, matched_values, "
+        cur.execute("SELECT firing_id, policy_key, outcome, result, agent, decision_id, matched_values, decided_by, "
                     "duration_ms, requested_by FROM proc.bp_policy_firing WHERE workflow_id = %s "
                     "ORDER BY firing_id", (w.wf,))
         cols = [d[0] for d in cur.description]
@@ -296,6 +329,60 @@ def test_repeat_call_while_paused_reuses_the_case(conn, world, monkeypatch, tool
     assert _notes(conn, [r["firing_id"] for r in rows]) == [
         (world.decider, f"Issuing a refund or credit (policy {doc['id']}) needs your decision.",
          f"decision:{did}")]
+    # one decision settles the call: the case's own row AND the repeat's row
+    _approve(conn, world, did)
+    assert [(r["result"], r["decided_by"]) for r in _firings(conn, world)] == \
+           [("approved", f"sub-{world.tag}")] * 2
+
+
+def _approve(conn, w, did):
+    principal = SimpleNamespace(subject=f"sub-{w.tag}", email=w.email, claims={"cognito:groups": []})
+    return A.act(conn, did, principal=principal, verb="approve", reason=None,
+                 now=datetime.now(timezone.utc), replay=lambda _d: None)
+
+
+@live
+def test_another_requesters_identical_call_does_not_reuse_the_case(conn, world, monkeypatch, tools, ran):
+    doc = _doc(world, f"TST-{world.tag}A", "approve")
+    monkeypatch.setattr(G, "_load_policies", lambda: [doc])
+    a, _ = _run(monkeypatch, tools, [_round(), FINAL], workflow_id=world.wf, user_id="a@example.test")
+    b, _ = _run(monkeypatch, tools, [_round(), FINAL], workflow_id=world.wf, user_id="b@example.test")
+    cases = _cases(conn, world)
+    assert len(cases) == 2 and ran == []
+    assert a.calls[0].result["requestIds"] == [cases[0][0]]
+    assert b.calls[0].result["requestIds"] == [cases[1][0]]
+    assert [c[1]["requestedBy"] for c in cases] == ["a@example.test", "b@example.test"]
+
+
+@live
+def test_a_failed_write_leaves_nothing_behind(conn, world, monkeypatch, tools, ran):
+    d1, d2 = _doc(world, f"TST-{world.tag}A", "approve"), _doc(world, f"TST-{world.tag}C", "approve")
+    monkeypatch.setattr(G, "_load_policies", lambda: [d1, d2])
+    real, seen = A._insert_case, []
+
+    def second_fails(cur, **kw):
+        seen.append(kw["policy_doc"]["id"])
+        if len(seen) == 2:
+            raise RuntimeError("insert failed")
+        return real(cur, **kw)
+    monkeypatch.setattr(G.approvals, "_insert_case", second_fails)
+    res, _ = _run(monkeypatch, tools, [_round(), FINAL], workflow_id=world.wf)
+    assert seen == [d1["id"], d2["id"]]
+    assert ran == [] and res.calls[0].result == G.UNAVAILABLE
+    assert _cases(conn, world) == [], "no orphan open case for a refused call"
+    assert [r["policy_key"] for r in _firings(conn, world)] == ["*"], "only the refusal is logged"
+
+
+@live
+def test_notify_row_of_a_paused_call_is_settled_by_its_case(conn, world, monkeypatch, tools, ran):
+    apv, ntf = _doc(world, f"TST-{world.tag}A", "approve"), _doc(world, f"TST-{world.tag}N", "notify")
+    monkeypatch.setattr(G, "_load_policies", lambda: [apv, ntf])
+    _run(monkeypatch, tools, [_round(), FINAL], workflow_id=world.wf)
+    (did, _), = _cases(conn, world)
+    rows = {r["outcome"]: r for r in _firings(conn, world)}
+    assert (rows["notify"]["result"], rows["notify"]["decision_id"]) == ("paused_for_approval", did)
+    _approve(conn, world, did)
+    assert sorted(r["result"] for r in _firings(conn, world)) == ["approved", "approved"]
 
 
 @live
