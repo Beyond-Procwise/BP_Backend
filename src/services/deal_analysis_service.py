@@ -18,6 +18,7 @@ from typing import Any, Optional
 from src.services.db import get_conn
 from src.services.formulas import ensure_registered, evaluate
 from src.services.deal_summary import gather_deal_context
+from src.services.version_collapse import latest_per_family
 
 log = logging.getLogger(__name__)
 
@@ -101,13 +102,30 @@ def _items_from(docs: list[dict]) -> list[dict]:
     return items
 
 
+def _reference_quotes(quotes: list[dict], awarded_supplier) -> list[dict]:
+    """The bid the deal stands on: the awarded supplier's latest versions, else the lowest
+    current bid. A deal's quotes are competing bids revised in rounds; totalling, averaging or
+    listing all of them describes no real offer (same rule as bp_deal_overview.quote_total)."""
+    latest = latest_per_family(sorted(quotes, key=lambda q: str(q.get("quote_id") or "")))
+    ref = [q for q in latest if awarded_supplier and q.get("supplier_id") == awarded_supplier]
+    if ref:
+        return ref
+    priced = [q for q in latest if _num(q.get("total_amount")) is not None]
+    return [min(priced, key=lambda q: (_num(q.get("total_amount")), str(q.get("quote_id"))))] if priced else latest[:1]
+
+
 def _compute(ctx: dict, cur) -> dict:
     docs = ctx["documents"]
-    inv, po, quote = docs["invoices"], docs["purchase_orders"], docs["quotes"]
+    inv, po, all_quotes = docs["invoices"], docs["purchase_orders"], docs["quotes"]
+    awarded = _first_present(inv, "supplier_id") or _first_present(po, "supplier_id")
+    quote = _reference_quotes(all_quotes, awarded)
 
+    # The deal's supplier: invoiced / ordered from, else the only bidder. With competing bids
+    # and no award there is no single supplier -- not whichever quote happened to come first.
+    bidders = {q.get("supplier_id") or q.get("quote_id") for q in latest_per_family(all_quotes)}
     supplier = (_first_present(inv, "supplier_name")
                 or _first_present(po, "supplier_name")
-                or _first_present(quote, "supplier_name"))
+                or (_first_present(quote, "supplier_name") if len(bidders) == 1 else None))
 
     # deal value / currency: prefer invoice, then PO, then quote
     deal_value = _doc_total(inv)

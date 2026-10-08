@@ -73,7 +73,9 @@ def test_proposal_snapshot_computes_savings_and_shape():
 
 def test_cost_over_time_is_cumulative_and_sorted():
     cur = _FakeCur(script=[
-        ("quote_date dt", [{"dt": dt.date(2024, 1, 1), "amt": 1000}]),
+        ("from proc.bp_deal_overview", [_deal()]),
+        ("from proc.bp_quote_trgt where deal_id", [
+            {"quote_id": "Q1", "supplier_id": "SUP-A", "total_amount": 1000, "quote_date": dt.date(2024, 1, 1)}]),
         ("order_date dt", [{"dt": dt.date(2024, 2, 1), "amt": 900}]),
         ("invoice_date dt", [{"dt": dt.date(2024, 3, 1), "amt": 950}]),
     ])
@@ -96,6 +98,8 @@ def test_cost_over_time_is_cumulative_and_sorted():
 def test_proposal_summary_baseline_vs_current_diff():
     cur = _FakeCur(script=[
         ("from proc.bp_deal_overview", [_deal()]),
+        ("from proc.bp_quote_trgt where deal_id", [
+            {"quote_id": "Q1", "supplier_id": "SUP-A", "total_amount": 1000, "quote_date": None}]),
         ("from proc.bp_quote_line_items_trgt", [{"item": "Router A", "u": 55.0}]),
         ("from proc.bp_po_line_items_trgt", [{"item": "Router A", "u": 51.8}]),
     ])
@@ -159,3 +163,29 @@ def test_build_full_shape_for_known_deal():
     assert out["versionHistory"] == []          # safe fallback
     assert isinstance(out["negotiationStrategy"], list) and out["negotiationStrategy"]
     assert out["summary"].startswith("Deal 'Acme Deal'")
+
+
+def test_the_quote_line_is_the_standing_offer_not_every_version_added_up():
+    # SUP-A won (the PO is theirs): its V2 REPLACES its V1, and SUP-B's rival bid is not added
+    # in. The old stream summed all three to 3,150.
+    cur = _FakeCur(script=[
+        ("from proc.bp_deal_overview", [_deal(supplier_id="SUP-A")]),
+        ("from proc.bp_quote_trgt where deal_id", [
+            {"quote_id": "Q1", "supplier_id": "SUP-A", "total_amount": 1000, "quote_date": dt.date(2024, 1, 1)},
+            {"quote_id": "Q1 (V2)", "supplier_id": "SUP-A", "total_amount": 950, "quote_date": dt.date(2024, 1, 20)},
+            {"quote_id": "R9", "supplier_id": "SUP-B", "total_amount": 1200, "quote_date": dt.date(2024, 1, 5)}]),
+        ("order_date dt", [{"dt": dt.date(2024, 2, 1), "amt": 900}]),
+    ])
+    series = nd.cost_over_time(cur, "D1")
+    assert [p["Quote"] for p in series] == [1000.0, 950.0, 950.0]
+
+
+def test_the_reference_bid_is_the_lowest_while_the_award_is_open():
+    cur = _FakeCur(script=[
+        ("from proc.bp_quote_trgt where deal_id", [
+            {"quote_id": "A-1", "supplier_id": "SA", "total_amount": 100, "quote_date": None},
+            {"quote_id": "A-1 (V2)", "supplier_id": "SA", "total_amount": 120, "quote_date": None},
+            {"quote_id": "B-1", "supplier_id": "SB", "total_amount": 110, "quote_date": None}]),
+    ])
+    versions, ref = nd._reference_bid(cur, "D1", {"supplier_id": None})
+    assert [q["quote_id"] for q in ref] == ["B-1"]       # A's current bid is 120, not its old 100

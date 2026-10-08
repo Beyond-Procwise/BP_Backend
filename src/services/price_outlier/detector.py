@@ -15,6 +15,7 @@ from typing import Any, Optional, Sequence
 
 from services.benchmark_live import _norm_currency, _norm_item, _norm_uom
 from services.price_outlier.rule import OutlierSettings, Verdict
+from services.version_collapse import latest_quote_pred
 
 # The outlier rule is reached by name through the formula registry, never called
 # directly: that is what versions it, validates its inputs and records what it
@@ -32,8 +33,12 @@ Key = tuple[str, str, str]
 # currency is only ever recorded on the invoice header) -- has_line_currency
 # says which tables can ever have a line value to prefer over the header.
 _SOURCES: tuple[dict[str, str], ...] = (
+    # A quote's superseded versions are history: an outlier on a price no one is still
+    # offering is noise. Only each bid's latest version is checked.
     {"doc_type": "quote", "table": "proc.bp_quote_line_items_trgt",
-     "doc_pk": "quote_id", "line_no": "line_number", "has_line_currency": True},
+     "doc_pk": "quote_id", "line_no": "line_number", "has_line_currency": True,
+     "extra_where": "quote_id IN (SELECT h.quote_id FROM proc.bp_quote_trgt h WHERE "
+                    + latest_quote_pred("h") + ")"},
     {"doc_type": "purchase_order", "table": "proc.bp_po_line_items_trgt",
      "doc_pk": "po_id", "line_no": "line_number", "has_line_currency": True},
     {"doc_type": "invoice", "table": "proc.bp_invoice_line_items_trgt",
@@ -148,6 +153,7 @@ def _load_lines(cur, source: dict[str, str]) -> list[dict[str, Any]]:
           FROM {source['table']}
          WHERE unit_price IS NOT NULL AND item_description IS NOT NULL
            AND {source['doc_pk']} IS NOT NULL
+           AND {source.get('extra_where') or 'TRUE'}
         """
     )
     cols = [d[0] for d in cur.description]

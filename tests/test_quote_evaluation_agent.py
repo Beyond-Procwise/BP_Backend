@@ -905,3 +905,20 @@ def test_supplier_responses_are_read_from_the_table_replies_are_filed_in():
     assert "FROM proc.supplier_response " in sql + " "
     assert "supplier_responses" not in sql
     assert params == ("RFQ-1",)
+
+
+def test_a_supplier_is_represented_by_its_latest_version_not_its_cheapest():
+    # C's V3 went UP after it added scope. Sorting the supplier's quotes by cost and taking the
+    # first presented a withdrawn V1 as C's offer.
+    nick = DummyNick()
+    agent = QuoteEvaluationAgent(nick)
+    quotes = [
+        {"quote_id": "C-1", "supplier_id": "SC", "supplier_name": "C", "total_cost": 120000},
+        {"quote_id": "C-1 (V2)", "supplier_id": "SC", "supplier_name": "C", "total_cost": 115000},
+        {"quote_id": "C-1 (V3)", "supplier_id": "SC", "supplier_name": "C", "total_cost": 125000},
+        {"quote_id": "A-1 (V2)", "supplier_id": "SA", "supplier_name": "A", "total_cost": 90000},
+        {"quote_id": "A-1", "supplier_id": "SA", "supplier_name": "A", "total_cost": 100000},
+    ]
+    ranked = agent._order_quotes_by_rank(quotes, [{"supplier_id": "SC"}, {"supplier_id": "SA"}])
+    assert [q["quote_id"] for q in ranked] == ["C-1 (V3)", "A-1 (V2)"]
+    assert [q["quote_id"] for q in agent._order_quotes_by_rank(quotes, [])] == ["C-1 (V3)", "A-1 (V2)"]

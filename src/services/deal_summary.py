@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from src.services.db import get_conn
 from src.services.ollama_client import ollama_generate
+from src.services.version_collapse import base_reference, latest_per_family, version_ordinal
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +46,9 @@ def _gather(conn, deal_id: str) -> Optional[dict]:
     deal_name: Optional[str] = None
 
     for key, (table, lines_table, pk) in _DOC_SOURCES.items():
-        rows = _fetch_dicts(cur, f"SELECT * FROM {table} WHERE deal_id = %s", (deal_id,))
+        # Ordered, so the summary's facts (and the first deal_name seen) do not depend on
+        # whatever order the rows happen to come back in.
+        rows = _fetch_dicts(cur, f"SELECT * FROM {table} WHERE deal_id = %s ORDER BY {pk}", (deal_id,))
         for r in rows:
             if not deal_name and r.get("deal_name"):
                 deal_name = r["deal_name"]
@@ -171,14 +174,26 @@ def _summary_facts(ctx: dict) -> dict:
     if str(ctx.get("scope") or "").strip().lower() == "portfolio":
         return _portfolio_facts(ctx)
     docs = []
+    # Quotes are bids revised in rounds: each bid's latest version is its offer, earlier
+    # versions are history. Unmarked, the model read nine rows as nine quotes and added them
+    # up as the deal's "total value".
+    quotes = ctx.get("documents", {}).get("quotes", [])
+    current = {id(q) for q in latest_per_family(quotes)}
     for key, typ in _DOC_SINGULAR.items():
         for d in ctx.get("documents", {}).get(key, []):
-            docs.append(_doc_facts(typ, d))
+            fact = _doc_facts(typ, d)
+            if typ == "quote":
+                qid = str(d.get("quote_id") or "")
+                fact["bid"] = base_reference(qid)
+                fact["version"] = version_ordinal(qid)
+                fact["superseded_by_a_later_version"] = id(d) not in current
+            docs.append(fact)
     discrepancies = [_strip_fx(x) for x in (ctx.get("discrepancies") or [])][:20]
     return {
         "deal_id": ctx.get("deal_id"),
         "deal_name": ctx.get("deal_name"),
         "document_count": len(docs),
+        "bid_count": len(current),
         "documents": docs,
         "discrepancies": discrepancies,
     }
@@ -211,6 +226,9 @@ def _build_prompt(ctx: dict) -> str:
         "Respond in EXACTLY this format and keep it tight:\n"
         "<one or two plain-English sentences: supplier, buyer, the documents "
         "involved (quote/PO/invoice), and total value with currency>\n"
+        "Quotes marked superseded_by_a_later_version are earlier rounds of the same bid: never "
+        "add them to a total or count them as separate quotes; competing bids are alternatives, "
+        "not amounts to add together.\n"
         "Key Outcomes:\n"
         "• <Label>: <value>\n"
         "• <Label>: <value>\n"

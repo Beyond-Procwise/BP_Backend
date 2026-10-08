@@ -18,6 +18,7 @@ from qdrant_client import models
 
 from utils.gpu import configure_gpu
 from services.event_bus import get_event_bus, get_current_workflow
+from services.version_collapse import latest_per_family
 
 logger = logging.getLogger(__name__)
 
@@ -1832,10 +1833,19 @@ class DataFlowManager:
                 total_col = self._select_first_existing(quote_df, _QUOTE_TOTAL_COLUMNS)
                 for supplier_id, group in quote_df.groupby("__supplier_id"):
                     entry = _ensure_entry(supplier_id)
-                    total_value = self._sum_numeric(group[total_col]) if total_col and total_col in group.columns else 0.0
+                    # Count and value each quote ONCE, at its latest version: V1+V2+V3 of one
+                    # bid used to read as three proposals worth all three added together.
+                    current = group
+                    if quote_id_col in group.columns:
+                        rows = latest_per_family(
+                            group.sort_values(quote_id_col).to_dict("records"),
+                            id_key=quote_id_col, supplier_key="__supplier_id")
+                        current = pd.DataFrame(rows, columns=group.columns)
+                    total_value = self._sum_numeric(current[total_col]) if total_col and total_col in current.columns else 0.0
                     quote_ids = self._collect_ids(group[quote_id_col]) if quote_id_col in group.columns else []
                     entry["quotes"] = {
-                        "count": int(group.shape[0]),
+                        "count": int(current.shape[0]),
+                        "version_count": int(group.shape[0]),
                         "quote_ids": quote_ids,
                         "total_value_gbp": round(total_value, 2),
                     }

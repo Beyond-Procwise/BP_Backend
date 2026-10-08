@@ -8,6 +8,7 @@ import numpy as np
 from qdrant_client import models
 
 from agents.base_agent import BaseAgent, AgentContext, AgentOutput, AgentStatus
+from services.version_collapse import latest_per_family, latest_quote_pred
 from utils.db import read_sql_compat
 from utils.gpu import configure_gpu
 
@@ -403,9 +404,11 @@ class QuoteEvaluationAgent(BaseAgent):
                         )
                         params.append(lowered)
 
-                    where_sql = ""
+                    # Each quote's latest version only: earlier versions are history, and sending
+                    # them on made V1/V2 compete as separate bids from the same supplier.
+                    where_sql = f"WHERE {latest_quote_pred('q')}"
                     if where_clauses:
-                        where_sql = "WHERE " + " OR ".join(f"({clause})" for clause in where_clauses)
+                        where_sql += " AND (" + " OR ".join(f"({clause})" for clause in where_clauses) + ")"
 
                     params.append(50)
                     cursor.execute(
@@ -1134,6 +1137,8 @@ class QuoteEvaluationAgent(BaseAgent):
     ) -> List[Dict]:
         """Order and limit quotes based on supplier ranking."""
 
+        # A bid is its latest version; every version of it must not compete (or be picked).
+        quotes = latest_per_family(quotes)
         if not supplier_order:
             return quotes[:limit] if limit else quotes
 

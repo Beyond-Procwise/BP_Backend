@@ -212,7 +212,8 @@ def store_session_summary(conn, batch_deal_id: str, session_id: str,
                                   "bids": row[2], "pos": row[3], "invoices": row[4]})
     text = compose_session_summary(proposals=proposals, **facts)
     cur.execute("select deal_name from proc.process_monitor "
-                "where session_id = %s and coalesce(deal_name,'') <> '' limit 1",
+                "where session_id = %s and coalesce(deal_name,'') <> '' "
+                "order by id limit 1",
                 (session_id,))
     row = cur.fetchone()
     deal_name = row[0] if row else batch_deal_id

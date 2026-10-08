@@ -72,3 +72,21 @@ def test_missing_quote_leaves_changes_null(monkeypatch):
 def test_unknown_deal_returns_none(monkeypatch):
     monkeypatch.setattr(mod, "gather_deal_context", lambda deal_id, conn=None: None)
     assert mod.compute_deal_metrics("NOPE", conn=object()) is None
+
+
+def test_a_quotes_only_deal_stands_on_its_lowest_current_bid():
+    # Three suppliers, two rounds each. The deal's value used to be all six totals added
+    # (and its items every version's lines); its supplier whichever quote came first.
+    from src.services.deal_analysis_service import _compute
+    def q(qid, sup, amt, item):
+        return {"quote_id": qid, "supplier_id": sup, "supplier_name": sup, "total_amount": amt,
+                "currency": "GBP", "line_items": [{"item_description": item, "quantity": 1, "unit_price": amt}]}
+    ctx = {"deal_id": "D1", "deal_name": "x", "documents": {"invoices": [], "purchase_orders": [], "quotes": [
+        q("A-1", "SA", 100.0, "old A"), q("A-1 (V2)", "SA", 90.0, "new A"),
+        q("B-1", "SB", 95.0, "old B"), q("B-1 (V2)", "SB", 92.0, "new B"),
+        q("C-1", "SC", 80.0, "old C"), q("C-1 (V2)", "SC", 99.0, "new C"),
+    ]}}
+    out = _compute(ctx, None)
+    assert out["deal_value"] == 90.0                 # A's current bid; C's old 80 is withdrawn
+    assert out["supplier"] is None                   # three bidders, no award yet
+    assert [i["name"] for i in out["items"]] == ["new A"]

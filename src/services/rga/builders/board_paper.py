@@ -34,6 +34,7 @@ from src.services.analytics.models import Confidence
 from src.services.rga.builders.exec_procurement_summary import _fetch
 from src.services.rga.factpack import FactBuilder, register
 from src.services.rga.models import FormatHint
+from src.services.version_collapse import QUOTE_BASE_SQL, QUOTE_VERSION_SQL
 
 REPORT_TYPE_ID = "board_paper"
 SECTION_ORDER = ["overview", "recommendation", "background", "risks", "benefits", "approvals"]
@@ -58,18 +59,24 @@ SELECT deal_name, supplier_id, supplier_name, quote_count, po_count, invoice_cou
  WHERE o.deal_id = %s
 """
 
-# Each supplier's latest bid on the deal.
-_BIDS = """
-SELECT DISTINCT ON (q.supplier_id)
-       q.supplier_id,
-       COALESCE((SELECT MAX(s.supplier_name) FROM proc.bp_supplier s
-                  WHERE s.supplier_id = q.supplier_id),
-                (SELECT MAX(o.supplier_name) FROM proc.bp_deal_overview o
-                  WHERE o.supplier_id = q.supplier_id), q.supplier_id),
-       q.total_amount, q.currency
-  FROM proc.bp_quote_trgt q
- WHERE q.deal_id = %s AND q.total_amount IS NOT NULL AND q.supplier_id IS NOT NULL
- ORDER BY q.supplier_id, q.quote_date DESC NULLS LAST, q.quote_id DESC
+# Each bid on the deal at its latest VERSION -- one per supplier quote (a supplier's separate
+# lots are separate bids; a quote with no resolved supplier is still a bid, named by its own
+# reference). "Latest" used to mean latest by date, so a mis-dated V1 could stand in for V3,
+# and a V3 with no readable total fell back to V2's price; such a bid now has no standing price.
+_BIDS = f"""
+SELECT bid_supplier, bid_name, total_amount, currency FROM (
+  SELECT DISTINCT ON (COALESCE(q.supplier_id, ''), {QUOTE_BASE_SQL('q.quote_id')})
+         COALESCE(q.supplier_id, 'quote ' || {QUOTE_BASE_SQL('q.quote_id')}) AS bid_supplier,
+         COALESCE((SELECT MAX(s.supplier_name) FROM proc.bp_supplier s
+                    WHERE s.supplier_id = q.supplier_id),
+                  q.supplier_id, {QUOTE_BASE_SQL('q.quote_id')}) AS bid_name,
+         q.total_amount, q.currency
+    FROM proc.bp_quote_trgt q
+   WHERE q.deal_id = %s
+   ORDER BY COALESCE(q.supplier_id, ''), {QUOTE_BASE_SQL('q.quote_id')},
+            {QUOTE_VERSION_SQL('q.quote_id')} DESC, q.quote_id DESC
+) latest
+ WHERE total_amount IS NOT NULL
 """
 
 _CHECKS = """
@@ -170,7 +177,7 @@ def build(fb: FactBuilder) -> None:
             fb.unmeasured(label=label, derivation=f"board_paper.{unit}", reason=missing)
 
     bids = sorted(_fetch(_BIDS, (deal_id,)), key=lambda b: (Decimal(b[2]), b[0]))
-    _int(fb, "Suppliers who bid", len(bids), "board_paper.bidders", "suppliers")
+    _int(fb, "Suppliers who bid", len({b[0] for b in bids}), "board_paper.bidders", "suppliers")
     one_currency = bool(bids) and len({b[3] for b in bids}) == 1
     bid_ccy = bids[0][3] if one_currency else None
     if len(bids) > 1 and one_currency and bids[0][2] > 0:

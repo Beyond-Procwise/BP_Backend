@@ -181,7 +181,8 @@ SELECT pm.file_path, orig.deal_id, orig.deal_name, orig.start_ts
 
 _DEAL_NAME = """
 SELECT deal_name FROM proc.bp_deal_document_map
- WHERE deal_id = %s AND deal_name IS NOT NULL LIMIT 1
+ WHERE deal_id = %s AND deal_name IS NOT NULL
+ ORDER BY deal_name, document_id LIMIT 1
 """
 
 
