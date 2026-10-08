@@ -33,13 +33,17 @@ def test_no_confirmation_is_stored_as_none():
     assert attr(_form(), None, actor="a", now_iso=NOW)["checked"] is None
 
 
-def test_situation_changed_but_old_checked_resent_is_reattributed_to_the_saver():
-    # Intended: saving a confirmed form after a change re-attributes it to whoever saved it.
+def test_situation_changed_and_stale_checked_resent_is_cleared():
     prev = _form(checked={"by": "alice", "at": "2026-10-01T00:00:00Z"})
     new = copy.deepcopy(prev)
     new["situation"] = "changed"
-    out = attr(new, prev, actor="bob", now_iso=NOW)
-    assert out["checked"] == {"by": "bob", "at": NOW}
+    assert attr(new, prev, actor="bob", now_iso=NOW)["checked"] is None
+
+
+def test_clearing_edit_with_a_fresh_differing_checked_is_attributed_to_actor():
+    prev = _form(checked={"by": "alice", "at": "2026-10-01T00:00:00Z"})
+    new = _form(checked=dict(FORGED), situation="changed")
+    assert attr(new, prev, actor="bob", now_iso=NOW)["checked"] == {"by": "bob", "at": NOW}
 
 
 def test_forged_checked_differing_from_previous_is_fresh():

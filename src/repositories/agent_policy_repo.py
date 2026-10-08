@@ -48,17 +48,17 @@ def attribute_confirmation(new_form: Dict[str, Any], previous_form: Optional[Dic
     """Return a copy of new_form whose `checked` is what the server records, never what the browser sent.
 
     No confirmation -> None. The very same confirmation carried forward unchanged (and not cleared by an
-    edit to what it vouches for) -> the earlier one is kept. Anything else is a fresh confirmation by the
-    authenticated caller; saving a confirmed form after a change therefore re-attributes it to the saver.
+    edit to what it vouches for) -> the earlier one is kept. A stale confirmation resent after a clearing edit -> None (the edit cleared it). Anything else is a fresh
+    tick, attributed to the authenticated caller.
     """
     out = dict(new_form)
     sent = new_form.get("checked")
+    prev = (previous_form or {}).get("checked")
     if not sent:
         out["checked"] = None
-    elif (previous_form is not None and previous_form.get("checked")
-          and not readiness.confirmation_cleared(previous_form, new_form)
-          and sent == previous_form["checked"]):
-        out["checked"] = previous_form["checked"]
+    elif prev and sent == prev:
+        # the browser resent the earlier confirmation: keep it, unless the edit cleared it
+        out["checked"] = None if readiness.confirmation_cleared(previous_form, new_form) else prev
     else:
         out["checked"] = {"by": actor, "at": now_iso}
     return out
@@ -160,7 +160,9 @@ def save_version(conn, policy_key: str, form: Dict[str, Any], *, base_version: i
         cur.execute("SELECT form_state FROM proc.bp_agent_policy_version WHERE policy_key=%s AND version=%s",
                     (policy_key, base_version))
         prev = cur.fetchone()
-        prev_form = (json.loads(prev[0]) if isinstance(prev[0], str) else prev[0]) if prev else None
+        if not prev:
+            raise NotFound(policy_key)
+        prev_form = json.loads(prev[0]) if isinstance(prev[0], str) else prev[0]
         form = attribute_confirmation(form, prev_form, actor=actor, now_iso=_now_iso())
         version = base_version + 1
         if intent == "activate":
