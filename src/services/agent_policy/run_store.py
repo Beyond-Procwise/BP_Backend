@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 OWNER = f"proc-{uuid.uuid4().hex[:12]}"
 
 STALE_SECONDS = 120
+NOT_STARTED_ERROR = "The server restarted before this run started. Start it again."
 HEALED_ERROR = ("The server restarted while this run was working. "
                 "Start it again; the policies already listed were saved.")
 
@@ -47,17 +48,31 @@ def _run(row) -> Optional[Dict[str, Any]]:
 
 
 def heal(conn: Any, run_id: Optional[int] = None) -> int:
-    """Fail running runs whose heartbeat has lapsed -- one run, or all. Returns how many."""
+    """Fail stranded runs -- one run, or all. Returns how many were moved.
+
+    Running: the heartbeat lapsed. Queued: owned by another (dead) process or by
+    nobody, and older than the stale limit -- nothing can ever claim it.
+    """
     scoped = "run_id = %s AND " if run_id is not None else ""
-    params = ((HEALED_ERROR,) + ((run_id,) if run_id is not None else ()) + (STALE_SECONDS,))
+    extra = (run_id,) if run_id is not None else ()
+    moved = 0
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE proc.bp_policy_extraction_run "
             "   SET status = 'failed', error = %s, finished_at = now() "
             f" WHERE {scoped}status = 'running' "
             "   AND (heartbeat_at IS NULL OR heartbeat_at < now() - make_interval(secs => %s))",
-            params)
-        return cur.rowcount
+            (HEALED_ERROR, *extra, STALE_SECONDS))
+        moved += cur.rowcount
+        cur.execute(
+            "UPDATE proc.bp_policy_extraction_run "
+            "   SET status = 'failed', error = %s, finished_at = now() "
+            f" WHERE {scoped}status = 'queued' "
+            "   AND (owner IS NULL OR owner <> %s) "
+            "   AND created_at < now() - make_interval(secs => %s)",
+            (NOT_STARTED_ERROR, *extra, OWNER, STALE_SECONDS))
+        moved += cur.rowcount
+    return moved
 
 
 def create(conn: Any, *, kind: str, request: Dict[str, Any], actor: str) -> Dict[str, Any]:
@@ -119,21 +134,32 @@ def append_item(conn: Any, run_id: int, *, kind: str, payload: Dict[str, Any],
         conn.commit()
         return seq
     except BaseException:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001 - a broken connection must not mask the real error
+            pass
         raise
     finally:
-        conn.autocommit = previous
+        try:
+            conn.autocommit = previous
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def finish(conn: Any, run_id: int, status: str, *, counts: Dict[str, Any],
-           error: Optional[str] = None) -> None:
-    """Close a queued or running run as done or failed."""
+           error: Optional[str] = None) -> bool:
+    """Close a queued or running run as done or failed.
+
+    True if this call changed the row; False if the run was already terminal
+    (e.g. healed to failed while still working) -- the caller must not report success.
+    """
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE proc.bp_policy_extraction_run "
             "   SET status = %s, counts = %s::jsonb, error = %s, finished_at = now() "
             " WHERE run_id = %s AND status IN ('queued', 'running')",
             (status, json.dumps(counts or {}), error, run_id))
+        return cur.rowcount == 1
 
 
 def get(conn: Any, run_id: int, *, after_seq: int = 0) -> Optional[Dict[str, Any]]:

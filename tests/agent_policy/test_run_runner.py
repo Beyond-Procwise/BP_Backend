@@ -1,5 +1,6 @@
 """Runner with a fake store: failure becomes a one-line failed run; the heartbeat stops."""
 import contextlib
+import logging
 import threading
 import time
 
@@ -11,6 +12,7 @@ class FakeStore:
 
     def __init__(self, claimable=True):
         self.claimable, self.beats, self.finished, self.items = claimable, 0, None, []
+        self.finish_result = True
 
     def claim(self, conn, run_id, owner):
         return self.claimable
@@ -27,6 +29,7 @@ class FakeStore:
 
     def finish(self, conn, run_id, status, *, counts, error=None):
         self.finished = (status, counts, error)
+        return self.finish_result
 
 
 @contextlib.contextmanager
@@ -91,3 +94,30 @@ def test_unclaimable_run_is_left_alone_and_never_raises():
     called = []
     run_runner.run(5, lambda *a: called.append(1), store=store, conn_factory=_conn)
     assert not called and store.finished is None
+
+
+def test_finish_false_logs_a_warning(caplog):
+    store = FakeStore()
+    store.finish_result = False
+    with caplog.at_level(logging.WARNING):
+        run_runner.run(6, lambda *a: {"x": 1}, store=store, conn_factory=_conn)
+    assert any("no longer active" in r.message for r in caplog.records)
+
+
+def test_finish_true_logs_no_warning(caplog):
+    store = FakeStore()
+    with caplog.at_level(logging.WARNING):
+        run_runner.run(7, lambda *a: {}, store=store, conn_factory=_conn)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_submit_failure_marks_run_failed_and_does_not_raise():
+    store = FakeStore()
+
+    class Dead:
+        def submit(self, *a):
+            raise RuntimeError("executor is shut down")
+
+    run_runner.submit(8, lambda *a: {}, executor=Dead(), store=store, conn_factory=_conn)
+    status, _, error = store.finished
+    assert status == "failed" and "could not be queued" in error

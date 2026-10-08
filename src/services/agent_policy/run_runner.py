@@ -59,7 +59,10 @@ def run(run_id: int, work: Callable[..., Optional[Dict[str, Any]]], *, store: An
                     return store.append_item(conn, run_id, kind=kind, payload=payload, **fields)
 
                 counts = work(conn, current, emit)
-                store.finish(conn, run_id, "done", counts=counts or {})
+                if not store.finish(conn, run_id, "done", counts=counts or {}):
+                    logger.warning("agent_policy: extraction run %s finished but was no longer "
+                                   "active (healed or closed meanwhile); its result was not "
+                                   "recorded as done", run_id)
             except Exception as exc:  # noqa: BLE001 - a dead worker would strand the run
                 logger.exception("agent_policy: extraction run %s failed", run_id)
                 try:
@@ -74,9 +77,20 @@ def run(run_id: int, work: Callable[..., Optional[Dict[str, Any]]], *, store: An
             beater.join(timeout=5)
 
 
-def submit(run_id: int, work: Callable[..., Optional[Dict[str, Any]]]) -> None:
-    """Queue a filed run. Returns at once; never raises."""
+def submit(run_id: int, work: Callable[..., Optional[Dict[str, Any]]], *,
+           executor: Any = None, store: Any = _store,
+           conn_factory: Callable = _get_conn) -> None:
+    """Queue a filed run. Returns at once; never raises.
+
+    If it cannot be queued, the run is marked failed so it is not left queued forever.
+    """
     try:
-        _EXECUTOR.submit(run, run_id, work)
-    except Exception:  # noqa: BLE001
+        (executor or _EXECUTOR).submit(run, run_id, work)
+    except Exception as exc:  # noqa: BLE001
         logger.exception("agent_policy: could not queue extraction run %s", run_id)
+        try:
+            with conn_factory() as conn:
+                store.finish(conn, run_id, "failed", counts={},
+                             error=f"The run could not be queued: {_one_line(exc)}")
+        except Exception:  # noqa: BLE001
+            logger.exception("agent_policy: could not mark run %s failed", run_id)
