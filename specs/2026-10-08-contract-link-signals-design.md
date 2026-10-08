@@ -65,65 +65,82 @@ cost-centre signals; vocabulary changes; link type recorded on each proposal; te
 
 ## 4. Profiles
 
-`contract_links.propose_parent_links` already knows each child's role through the vocabulary
-(`_is_variation`). It will pick the profile by role:
+> **Revision 1 (2026-10-08, found while planning).** Measured against the real engine, adding eight
+> signals the obvious way *regresses* today's results: coverage `C` divides by the weight of every
+> signal in the profile whether or not the data exists, so an exact-reference SOW falls 96.9 -> 75.7
+> and a same-supplier SOW with no reference falls 75.6 -> 61.4, under the 65.0 floor, so it would
+> stop being proposed at all. Three design changes follow; they supersede the first draft.
+>
+> 1. **Applicability per pair.** An optional signal joins a pair's profile only when *both*
+>    documents carry the data it reads. This is the engine's own applicability idea (`appl`, `q`)
+>    applied per pair; the engine is untouched. Absent data costs nothing. Variant profiles are
+>    registered lazily under a derived name and the result reports the base profile name.
+> 2. **Corroborators add; they do not subtract.** Where a field legitimately differs between a
+>    parent and child (payment terms, signatories, cost centres) a mismatch is *neutral* (s = 0.5,
+>    status WEAK), never CONFLICT. Only currency, governing law, buyer and value (where the child
+>    exceeds the parent) can conflict, at tier 2/3 with no score cap.
+> 3. **`start_order` is dropped.** The prompt's "child effective before parent exists" means
+>    before the parent was *executed*; no execution-date column exists, and the existing
+>    `term_containment` deliberately grades an early start WEAK (signature lag). Ruling A is
+>    therefore moot until an execution date is extracted (wording-signals spec).
+>
+> Also: `expected_structure` is left out of the amendment and attachment profiles. It is always
+> MISSING for them by design, and a signal that cannot be observed only lowers coverage.
+> `payment_terms` is left out of the amendment profile: changing terms is what an amendment does.
+
+Profile selection by child role (read from the vocabulary, as `_is_variation` already does):
 
 | Child role | Profile | Child types |
 |---|---|---|
 | `role.variation` | `contract_amendment` (new) | variation, addendum, CCN |
 | `role.attachment` | `contract_attachment` (new) | schedule, SLA |
-| everything else with a default parent | `contract_hierarchy` (existing, extended) | SOW, call-off, order form |
+| anything else with a default parent | `contract_hierarchy` (existing, extended) | SOW, call-off, order form |
 
-### 4.1 contract_hierarchy (existing; amended)
+Optional signals (joined only when applicable, per revision 1):
 
-Existing five signals unchanged. Added:
+| Signal | Tier / weight / cap | Cluster | Reads | OK | Differs |
+|---|---|---|---|---|---|
+| `buyer` | 2 / 3 / 0.70 | `identity` | `buyer_org_id` | equal 1.0 | CONFLICT 0.0 |
+| `value_rollup` | 3 / 2 / 0.90 | `commercial` | `total_contract_value`, `currency` | child <= parent: neutral 0.5 WEAK | child > parent: CONFLICT; different currency: not applicable |
+| `currency` | 3 / 2 / 0.90 | `terms` | `currency` | equal 1.0 | CONFLICT |
+| `payment_terms` | 3 / 2 / 0.90 | `terms` | `payment_terms` | equal 1.0 | neutral 0.5 WEAK |
+| `governing_law` | 3 / 2 / 0.90 | `terms` | `governing_law`, `jurisdiction` | equal 1.0 | CONFLICT |
+| `signatory` | 3 / 2 / 0.90 | `people` | `contract_signatory_name`, `buyer_signatory_name` | any shared name 1.0 | neutral 0.5 WEAK |
+| `cost_centre` | 3 / 2 / 0.90 | `category` | `cost_centre_id`, `business_unit_id`, `spend_category` | any shared 1.0 | neutral 0.5 WEAK |
 
-| Signal | Tier / weight | Cluster | Reads | Rule |
-|---|---|---|---|---|
-| `buyer` | 2 / 3 | `identity` (with `supplier`) | `buyer_org_id` | equal after normalisation = OK; both present and different = CONFLICT; either absent = MISSING |
-| `start_order` | 1 / 5, cap 0.45 | `temporal` | `contract_start_date` | child starts on/after parent start = OK; before = CONFLICT (an impossible date: the prompt's "child effective before parent exists"); absent = MISSING |
-| `value_rollup` | 3 / 2 | `commercial` | `total_contract_value`, `currency` | same currency and child <= parent = OK; child > parent = CONFLICT; currency differs or either value absent = MISSING (never converted) |
-| `currency` | 3 / 2 | `terms` | `currency` | equal = OK; differ = CONFLICT |
-| `payment_terms` | 3 / 2 | `terms` | `payment_terms` | normalised equal = OK; differ = CONFLICT |
-| `governing_law` | 3 / 2 | `terms` | `governing_law`, `jurisdiction` | equal = OK; differ = CONFLICT |
-| `signatory` | 3 / 2 | `people` | `contract_signatory_name`, `buyer_signatory_name` | any named signatory shared across the pair = OK; both sides have names and none shared = WEAK (0.4, not CONFLICT: signatories legitimately change) |
-| `cost_centre` | 3 / 2 | `category` | `cost_centre_id`, `business_unit_id`, `spend_category` | any shared = OK; both present and none shared = CONFLICT |
+A value that fits under its parent's is *necessary, not sufficient* (a small value fits under any
+parent), hence neutral rather than positive. `value_rollup` and `currency` both read `currency`, so
+`remap_clusters` merges them automatically.
 
-`start_order` and `term_containment` both read `contract_start_date`; `remap_clusters` merges
-them, so a date fact is not counted twice. `currency` is read by both `value_rollup` and
-`currency`; they merge too, by the same mechanism.
+Profiles:
 
-### 4.2 contract_amendment (new)
-
-The amendment amends a document; it does not repeat its title. So: **no `title_overlap`**, and no
-`value_rollup` (an amendment legitimately raises value). Signals: `declared_reference` (1/5),
-`supplier` (1/5), `buyer` (2/3), `start_order` (1/5), `term_containment` (2/3), `currency`,
-`payment_terms`, `governing_law` (3/2, `terms`), `signatory` (3/2). `expected_structure` stays but
-reads MISSING for a variation (it amends any structure), as today.
-
-Candidate parents for this profile are unchanged: every contract-family structure that is not
-itself a variation.
-
-### 4.3 contract_attachment (new)
-
-Schedule and SLA attach to a parent agreement. Signals: `declared_reference` (1/5), `supplier`
-(1/5), `buyer` (2/3), `term_containment` (2/3), `title_overlap` (2/3, retained: an SLA for a
-named service shares that service's words), `currency`, `payment_terms`, `governing_law`
-(3/2, `terms`). Parent types: master agreement, service agreement, framework agreement, SOW,
-call-off, consulting agreement.
+- **contract_hierarchy** - existing five signals unchanged, plus `buyer`, `value_rollup`,
+  `currency`, `payment_terms`, `governing_law`, `signatory`, `cost_centre`. With no optional data
+  present a pair scores exactly as today (96.9 with a reference, 75.6 without).
+- **contract_amendment** - `declared_reference`, `supplier`, `term_containment`; optional `buyer`,
+  `currency`, `governing_law`, `signatory`. No title, no structure, no value, no payment terms.
+  Measured: a resolving reference + same supplier + contained term + a generic title scores 65.9
+  (review), 78.4 with a buyer match. With no reference it scores ~20-33: an amendment is identified
+  by what it amends, and supplier alone cannot say which contract that is. Intended.
+- **contract_attachment** - `declared_reference`, `supplier`, `term_containment`, `title_overlap`;
+  optional `buyer`, `currency`, `payment_terms`, `governing_law`. Parent types: any contract-family
+  structure whose role is `role.master` or `role.framework`. Chosen in code, **not** by setting
+  `default_parent_type`: that column holds one value, a schedule sits under several kinds of
+  agreement, and the column is also read by the upload gate and pinned by a seed-drift test.
 
 ## 5. Vocabulary migration
 
 `2026-10-08_contract_link_vocabulary.sql` + rollback, additive and idempotent, applied to
-`bp_testdb` by the implementer and to `bp_sqldb` by the controller after review.
+`bp_testdb` by the implementer and to `bp_sqldb` by the controller after review. `seed.py` is
+edited in lockstep (the seed-vs-table drift test compares them column for column, aliases as an
+ordered list).
 
-- `doctype.schedule`, `doctype.sla`: `default_parent_type` set so `is_child` is true.
-- `doctype.termination_notice`: **left out** of child scoring. A termination notice names the
-  agreement it ends, which is a wording signal (out of scope); proposing it a parent on supplier
-  and dates alone would be wrong.
-- New types **`doctype.dpa`, `doctype.side_letter`, `doctype.renewal`, `doctype.guaranty`** inserted
-  with `status = 'proposed'`. Under the vocabulary's existing rule a proposed type never resolves,
-  so they classify nothing until Nick confirms each.
+- **No change to `schedule`, `sla` or `termination_notice`** (see section 4: attachment parents
+  are chosen in code). Termination notice stays out of child scoring: it names the agreement it
+  ends, which is a wording signal (out of scope).
+- New types **`doctype.dpa`, `doctype.side_letter`, `doctype.renewal`, `doctype.guaranty`**, inserted
+  `status = 'proposed'` with no pipeline, like `doctype.policy_document`. A proposed type never
+  resolves or routes, so they classify nothing until Nick confirms each.
 
 ## 6. Link type on each proposal
 
@@ -144,17 +161,17 @@ The proposal notes gain a link type derived from the child's profile: `child_of`
 
 ## 8. Risks
 
-- **Weights are declared.** A wrong weight changes which band a real document lands in. Mitigation:
-  nothing auto-links; every result is a human-confirmed proposal; bands stay at the shared 92/80/65/45.
-- **`start_order` at tier 1** caps a score at 0.45 on a child that starts before its parent. Real
-  contracts are sometimes signed after their start date (back-dating). Mitigation: it only caps
-  to review/weak, never blocks; flagged for Nick as ruling A below.
-- **More signals with MISSING data.** Corpus fields such as `payment_terms` may be mostly empty;
-  MISSING signals lower coverage `C`. This is measured on `bp_testdb` before and after (section 7).
+- **Weights are declared.** A wrong weight changes which band a real document lands in. Nothing
+  auto-links; every result is a human-confirmed proposal; bands stay at the shared 92/80/65/45.
+- **Variant profile names** (`contract_hierarchy+buyer+currency...`) are registered at run time,
+  at most 2^7 per profile. The result carries the base `profile` name, and the base names are in
+  `UNCALIBRATED_PROFILES`.
+- **Corroborators can lift a no-reference pair into the warning band.** Several agreeing optional
+  signals could move a same-supplier SOW from 75.6 to the 80+ band. It is still a proposal a
+  person confirms; the matrix test records the observed ceiling.
 
-## 9. Rulings requested
+## 9. Rulings
 
-A. Should a child that starts before its parent be a tier-1 conflict (cap 0.45) or tier 2 (cap 0.70)?
-   Recommendation: tier 1, as the prompt treats an impossible date as grounds for review.
-B. Confirm termination notice stays out of child scoring until the wording signals exist.
-C. Confirm the four new document types go in as `proposed`.
+A. (moot, see revision 1.3) start-before-parent as a conflict: dropped until an execution date exists.
+B. Termination notice stays out of child scoring: **assumed yes**.
+C. The four new document types go in as `proposed`: **assumed yes**.
