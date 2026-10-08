@@ -32,6 +32,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from orchestration.orchestrator import Orchestrator
 from services.model_selector import RAGPipeline
+from services import health_signals
+from services.db import get_conn as _health_db_conn
 from services.model_training_endpoint import ModelTrainingEndpoint
 from services.email_watcher import run_email_watcher_for_workflow
 from agents.base_agent import AgentNick
@@ -807,6 +809,42 @@ def _critic_shadow_status():
         return {"error": "unavailable"}
 
 
+def _last_finding_written():
+    """When the newest detection finding was written, as ISO-8601; None when
+    there has never been one; "unavailable" when the database cannot answer.
+    Findings writes were silently rejected for 65 days once — this is how an
+    operator sees the silence without reading a table."""
+    try:
+        with _health_db_conn() as conn:
+            cur = conn.cursor()
+            try:
+                return health_signals.last_finding_written(cur)
+            finally:
+                try:
+                    cur.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as exc:  # noqa: BLE001
+        logger.error("health: last finding written unavailable: %s", exc)
+        return "unavailable"
+
+
+def _vector_store_status():
+    """How many points the document collection holds, or "unavailable" when
+    there is no client to ask. The collection sat empty for five weeks once;
+    a zero here is the signal that was missing then."""
+    collection = health_signals.collection_name(_settings)
+    client = getattr(getattr(app.state, "agent_nick", None), "qdrant_client", None)
+    if client is None:
+        return {"collection": collection, "points": "unavailable"}
+    try:
+        return {"collection": collection,
+                "points": health_signals.vector_store_points(client, collection)}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("health: vector store count unavailable: %s", exc)
+        return {"collection": collection, "points": "unavailable"}
+
+
 @app.get("/health", tags=["General"])
 def health():
     state = app.state
@@ -836,6 +874,11 @@ def health():
         # The Opportunity Critic's per-detector shadow enrolments, with expiries.
         # "unavailable" when its policy cannot be read -- never an empty list.
         "critic_shadow": _critic_shadow_status(),
+        # The two output signals whose silence went unnoticed for weeks: when the
+        # newest finding was written, and how many points the document vector
+        # store holds. A probe alerts on a stale timestamp or a zero.
+        "last_finding_written": _last_finding_written(),
+        "vector_store": _vector_store_status(),
         # Honest surface for features that lost a dependency they can never have. It stays
         # honest — the capability is still named, and it still says it is degraded — but the
         # *reason* no longer ships. It used to read "proc.agent table does not exist; …

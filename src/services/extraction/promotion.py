@@ -20,6 +20,7 @@ import psycopg2
 from config.settings import Settings
 from src.services.db import get_conn
 from src.services.extraction.persistence import normalise_source_file
+from src.services.linking_engine import _table_columns as _cached_table_columns
 
 log = logging.getLogger(__name__)
 
@@ -117,13 +118,15 @@ def _snapshot_parts(ps: Any) -> tuple[str, dict[str, Any]]:
 
 
 def _stg_columns(cur, stg_table: str) -> list[str]:
-    schema, table = stg_table.split(".")
-    cur.execute(
-        """SELECT column_name FROM information_schema.columns
-            WHERE table_schema=%s AND table_name=%s""",
-        (schema, table),
-    )
-    return [r[0] for r in cur.fetchall()]
+    """Column names of a _stg table, cached for the life of the connection.
+
+    promote() asks twice per document (header table, then line-item table),
+    so without the cache a run over N documents is 2N identical catalogue
+    queries against a schema that cannot change mid-run. The cache lives in
+    linking_engine and is keyed by connection object, so one database's
+    columns never answer for another's.
+    """
+    return _cached_table_columns(cur, stg_table)
 
 
 def _table_columns(cur, qualified_table: str) -> list[str]:
@@ -131,14 +134,9 @@ def _table_columns(cur, qualified_table: str) -> list[str]:
 
     Used as an identifier allowlist before interpolating column names
     into SQL (SQL-injection defence for HITL-supplied field_name values).
+    Same per-connection cache as _stg_columns; see there.
     """
-    schema, table = qualified_table.split(".")
-    cur.execute(
-        """SELECT column_name FROM information_schema.columns
-            WHERE table_schema=%s AND table_name=%s""",
-        (schema, table),
-    )
-    return [r[0] for r in cur.fetchall()]
+    return _cached_table_columns(cur, qualified_table)
 
 
 # ---------------------------------------------------------------------------
