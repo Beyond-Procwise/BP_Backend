@@ -446,6 +446,44 @@ class BackendScheduler:
         self._register_email_learning_job()
         self._register_email_text_retention_job()
         self._register_email_draft_sweep_job()
+        self._register_agent_policy_approvals_job()
+
+    AGENT_POLICY_APPROVALS_JOB_NAME = "agent-policy-approval-sweep"
+
+    def _register_agent_policy_approvals_job(self) -> None:
+        """Escalate or reject agent-policy approval cases nobody answered in time (every 60 s).
+
+        ON unless AGENT_POLICY_APPROVAL_SWEEP=off. A timeout escalates to the next level and, at
+        the last level, rejects; it never approves. Concurrent sweeps are safe (SKIP LOCKED).
+        """
+        import os
+        if os.environ.get("AGENT_POLICY_APPROVAL_SWEEP", "on").strip().lower() == "off":
+            logger.info("agent policy approval sweep not registered (AGENT_POLICY_APPROVAL_SWEEP=off)")
+            return
+        if self.AGENT_POLICY_APPROVALS_JOB_NAME in self._jobs:
+            return
+        self.register_job(
+            self.AGENT_POLICY_APPROVALS_JOB_NAME,
+            self._run_agent_policy_approvals_sweep,
+            interval=timedelta(seconds=60),
+            initial_delay=timedelta(seconds=60),
+        )
+
+    def _run_agent_policy_approvals_sweep(self) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            # `services.` (not `src.services.`): the same module object the routers use, so a
+            # replaced approvals.replay_hook is the one this job sees.
+            from services.agent_policy import approvals
+            from services.db import get_conn
+
+            with get_conn() as conn:
+                counts = approvals.sweep(conn, datetime.now(timezone.utc))
+            if counts.get("escalated") or counts.get("rejected") or counts.get("errors"):
+                logger.info("agent policy approval sweep: %s", counts)
+        except Exception:
+            logger.exception("agent policy approval sweep failed")
 
     EMAIL_LEARNING_JOB_NAME = "email-learning"
 
