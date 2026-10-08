@@ -217,8 +217,88 @@ def test_no_module_outside_ollama_client_sets_a_load_affecting_option():
         "owns them — each one costs a full reload of the model:\n  " + "\n  ".join(offenders))
 
 
-def test_default_request_body_is_unchanged_without_use_load_options(monkeypatch):
-    """Opt-in only: a caller that does not pass use_load_options sends exactly this."""
+# ---------------------------------------------------------------------------
+# THE DEFAULT PATH ASKS FOR THE SHARED RUNNER (user ruling 2026-10-08).
+#
+# Until then load_options() was opt-in, so every caller that did not pass it sent num_gpu
+# alone and Ollama fell back to the Modelfile's num_ctx 8192 -- a different runner from the
+# preload's 12288. Now the shared model always asks for load_options(); a DIFFERENT model
+# (the extraction specialist, a model under evaluation) keeps exactly its old body.
+# ---------------------------------------------------------------------------
+
+
+def test_default_model_sends_the_shared_runner_set_by_default(monkeypatch):
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", retries=1)
+    assert seen["payload"] == {
+        "model": oc.DEFAULT_MODEL,
+        "prompt": "hello",
+        "stream": False,
+        "keep_alive": oc.KEEP_ALIVE,
+        "options": {"temperature": 0, "num_predict": 8192, **oc.load_options()},
+    }
+
+
+def test_naming_the_default_model_explicitly_is_the_same(monkeypatch):
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", model=oc.DEFAULT_MODEL, retries=1)
+    for key, value in oc.load_options().items():
+        assert seen["payload"]["options"][key] == value
+
+
+def test_a_pinned_num_gpu_still_wins_on_the_default_path(monkeypatch):
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", retries=1, num_gpu=7)
+    opts = seen["payload"]["options"]
+    assert opts["num_gpu"] == 7 and opts["num_ctx"] == oc.load_options()["num_ctx"]
+
+
+def test_a_refused_card_on_the_default_path_drops_num_gpu_only(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.note_layout_rejection("full")
+    try:
+        oc.ollama_generate("hello", retries=1)
+        opts = seen["payload"]["options"]
+        assert "num_gpu" not in opts and opts["num_ctx"] == oc.CONTEXT_WINDOW
+    finally:
+        oc.clear_layout_rejection()
+
+
+def test_the_extraction_specialist_is_untouched(monkeypatch):
+    """AgentNick:extract's accuracy was measured on its own Modelfile options."""
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", model="BeyondProcwise/AgentNick:extract", retries=1)
+    assert seen["payload"]["options"] == {"temperature": 0, "num_predict": 8192, **oc.gpu_options()}
+
+
+def test_another_server_is_untouched(monkeypatch):
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", base_url="http://translator.example:11434", retries=1)
+    assert "num_ctx" not in seen["payload"]["options"]
+    assert seen["url"].startswith("http://translator.example:11434")
+
+
+def test_use_load_options_false_keeps_the_old_body(monkeypatch):
+    seen = {}
+    oc.clear_layout_rejection()
+    monkeypatch.setattr(oc.egress, "post", _capture(seen))
+    oc.ollama_generate("hello", retries=1, use_load_options=False)
+    assert seen["payload"]["options"] == {"temperature": 0, "num_predict": 8192, **oc.gpu_options()}
+
+
+def test_a_different_model_body_is_unchanged(monkeypatch):
+    """Not the shared model: a caller that does not pass use_load_options sends exactly this."""
     seen = {}
     oc.clear_layout_rejection()
     monkeypatch.setattr(oc.egress, "post", _capture(seen))

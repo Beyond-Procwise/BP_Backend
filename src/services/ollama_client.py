@@ -256,6 +256,22 @@ def _coerce_keep_alive(v: str | int | None) -> str | int:
 KEEP_ALIVE = _coerce_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", "-1"))
 
 
+def shares_the_runner(model: Optional[str], base_url: Optional[str] = None) -> bool:
+    """True when a request names the one shared runner the preload pins on this host.
+
+    User ruling 2026-10-08: the default request path asks for load_options(), so every
+    caller of the shared model wants the SAME runner. Before it, a call without
+    use_load_options sent num_gpu alone, Ollama fell back to the Modelfile's num_ctx (8192),
+    and that is a different runner from the preload's 12288 -- one evicted the other. A
+    different model (AgentNick:extract, a model under evaluation) is untouched: its own
+    Modelfile options are what its accuracy was measured on. So is another server (the
+    translator's own endpoint), which is not this host's runner.
+    """
+    if (model or DEFAULT_MODEL) != DEFAULT_MODEL:
+        return False
+    return base_url is None or base_url.rstrip("/") == OLLAMA_BASE_URL.rstrip("/")
+
+
 def _ollama_generate(
     prompt: str,
     *,
@@ -270,7 +286,7 @@ def _ollama_generate(
     think: Optional[bool] = None,
     format: Optional[Any] = None,
     base_url: Optional[str] = None,
-    use_load_options: bool = False,
+    use_load_options: Optional[bool] = None,
 ) -> Optional[str]:
     """Send a generation request to Ollama with queuing and retry.
 
@@ -291,12 +307,16 @@ def _ollama_generate(
     ``base_url`` overrides OLLAMA_BASE_URL for one call (the translation
     provider's own endpoint); the GPU semaphore is still shared.
 
-    ``use_load_options=True`` merges load_options() into the request options, so the call
+    ``use_load_options`` merges load_options() into the request options, so the call
     matches the shared runner (num_ctx/num_batch/num_thread/num_gpu) and does not trigger
-    a reload. Off by default: other callers' request bodies are unchanged. An explicit
-    ``num_gpu`` pin still wins over the shared one.
+    a reload. Left as None it is decided by shares_the_runner(): on for the shared model
+    on this host's server, off for any other model (the extraction specialist keeps its
+    own Modelfile options) or another server. True forces it, False keeps the old body
+    (num_gpu only). An explicit ``num_gpu`` pin still wins over the shared one.
     """
     model = model or DEFAULT_MODEL
+    if use_load_options is None:
+        use_load_options = shares_the_runner(model, base_url)
     options: Dict[str, Any] = {
         "temperature": temperature,
         "num_predict": num_predict,
@@ -645,12 +665,12 @@ def ollama_generate(
     prompt: str,
     *,
     background: bool = False,
-    use_load_options: bool = False,
+    use_load_options: Optional[bool] = None,
     **kwargs: Any,
 ) -> Optional[str]:
     global _foreground_count
-    if use_load_options:
-        kwargs["use_load_options"] = True
+    if use_load_options is not None:
+        kwargs["use_load_options"] = use_load_options
     if background:
         return _ollama_generate(prompt, **kwargs)
     with _foreground_lock:
