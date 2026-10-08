@@ -17,14 +17,14 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from api.auth import Principal
 from repositories import agent_policy_repo as repo
 from services import agent_actions, rbac
-from services.agent_policy import conditions, contract, readiness
+from services.agent_policy import conditions, contract, documents, readiness, run_runner, run_store, sections
 from services.agent_policy.compiler import compile_policy
 from services.agent_policy.registry import load_registry
 from services.agent_policy.settings import load_settings
@@ -164,6 +164,154 @@ def preview(body: PreviewBody, p: Principal = Depends(gateway_principal)):
     return out
 
 
+# ---------------------------------------------------------------- documents and extraction runs
+# Declared before "/{key}" so "documents" and "extraction-runs" are never read as policy ids.
+
+# Files and uploads stay plain dicts: documents.presign_uploads/register_uploads judge each one and
+# say what is wrong in words, which arrives as the 422 {problems} shape rather than a schema error.
+class UploadUrlsBody(BaseModel):
+    files: List[Dict[str, Any]]
+
+
+class RegisterBody(BaseModel):
+    uploads: List[Dict[str, Any]]
+
+
+class DocumentRef(BaseModel):
+    documentId: int
+    version: int
+
+
+class ExtractionRunBody(BaseModel):
+    documents: List[DocumentRef] = Field(min_length=1, max_length=20)
+
+
+class FixBody(BaseModel):
+    baseVersion: int
+    flipped: List[Dict[str, Any]] = Field(min_length=1)
+
+
+def _refused(message: str) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"problems": [
+        {"field": "files", "code": "upload_refused", "message": message}]})
+
+
+def _outside_uploads(key: str) -> bool:
+    return not str(key or "").startswith(documents.UPLOAD_PREFIX)
+
+
+def _missing_versions(conn, refs: List[DocumentRef]) -> List[str]:
+    cur = conn.cursor()
+    missing = []
+    for ref in refs:
+        cur.execute("SELECT 1 FROM proc.bp_policy_document_version WHERE document_id = %s AND version = %s",
+                    (ref.documentId, ref.version))
+        if cur.fetchone() is None:
+            missing.append(f"Document {ref.documentId} version {ref.version} does not exist.")
+    return missing
+
+
+def _work(conn, run: Dict[str, Any], emit) -> Dict[str, Any]:
+    """The runner's work: it opens the connection, claims the run, and hands both here."""
+    from services.agent_policy import extraction_run  # local: pulls in the model client
+
+    kind = (run or {}).get("kind")
+    if kind == "extract":
+        return extraction_run.run_extract(conn, run, emit)
+    if kind == "fix":
+        return extraction_run.run_fix(conn, run, emit)
+    raise ValueError(f"unknown run kind {kind!r}")
+
+
+def _start(kind: str, request_body: Dict[str, Any], actor: str) -> JSONResponse:
+    with _conn() as conn:
+        run = run_store.create(conn, kind=kind, request=request_body, actor=actor)
+    run_runner.submit(run["run_id"], _work)
+    return JSONResponse(status_code=202, content={"runId": run["run_id"]})
+
+
+@router.post("/documents/upload-urls")
+def upload_urls(body: UploadUrlsBody, p: Principal = Depends(gateway_principal)):
+    _require(p, "Buyer", "agent_policy.write", {"intent": "upload_urls", "files": len(body.files)})
+    try:
+        uploads = documents.presign_uploads(body.files, actor=p.subject)
+    except ValueError as exc:
+        return _refused(str(exc))
+    if any(_outside_uploads(u.get("key")) for u in uploads):
+        logger.error("agent-policy presign issued a key outside %s", documents.UPLOAD_PREFIX)
+        return _refused("The upload could not be prepared.")
+    return {"uploads": uploads}
+
+
+@router.post("/documents")
+def register_documents(body: RegisterBody, p: Principal = Depends(gateway_principal)):
+    _require(p, "Buyer", "agent_policy.write", {"intent": "register_documents",
+                                                "keys": [str(u.get("key") or "") for u in body.uploads]})
+    if not body.uploads:
+        return _refused("No uploads were sent.")
+    for u in body.uploads:
+        if _outside_uploads(u.get("key")):
+            return _refused(f"{u.get('name') or 'An upload'} is not an agent-policy upload.")
+    with _conn() as conn:
+        try:
+            return {"documents": documents.register_uploads(conn, body.uploads, actor=p.subject)}
+        except ValueError as exc:
+            return _refused(str(exc))
+
+
+@router.get("/documents")
+def list_documents(p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {})
+    with _conn() as conn:
+        return {"documents": documents.list_documents(conn)}
+
+
+@router.get("/documents/{document_id}/compare")
+def compare_document(document_id: int, from_: int = Query(alias="from"), to: int = Query(),
+                     p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {"document": document_id})
+    with _conn() as conn:
+        try:
+            old = documents.document_text(conn, document_id, from_)
+            new = documents.document_text(conn, document_id, to)
+        except documents.DocumentUnreadable as exc:
+            return JSONResponse(status_code=422, content={"problems": [
+                {"field": "document", "code": "unreadable", "message": exc.reason}]})
+        except ValueError:
+            raise HTTPException(status_code=404, detail="no such document version")
+    return {"sections": sections.diff_sections(old, new)}
+
+
+@router.post("/extraction-runs")
+def start_extraction(body: ExtractionRunBody, p: Principal = Depends(gateway_principal)):
+    refs = [{"documentId": d.documentId, "version": d.version} for d in body.documents]
+    _require(p, "Buyer", "agent_policy.write", {"intent": "extract", "documents": refs})
+    with _conn() as conn:
+        missing = _missing_versions(conn, body.documents)
+    if missing:
+        return JSONResponse(status_code=422, content={"problems": [
+            {"field": "documents", "code": "not_found", "message": m} for m in missing]})
+    return _start("extract", {"documents": refs}, p.subject)
+
+
+@router.get("/extraction-runs")
+def list_extraction_runs(p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {})
+    with _conn() as conn:
+        return {"runs": run_store.list_recent(conn)}
+
+
+@router.get("/extraction-runs/{run_id}")
+def get_extraction_run(run_id: int, afterSeq: int = Query(default=0, ge=0),
+                       p: Principal = Depends(gateway_principal)):
+    _require(p, "Viewer", "agent_policy.read", {"run": run_id})
+    with _conn() as conn:
+        run = run_store.get(conn, run_id, after_seq=afterSeq)
+    if run is None:
+        raise HTTPException(status_code=404, detail="no such extraction run")
+    return run
+
+
 @router.get("/{key}")
 def get_one(key: str, p: Principal = Depends(gateway_principal)):
     role = _require(p, "Viewer", "agent_policy.read", {"policy": key})
@@ -202,6 +350,23 @@ def save(key: str, body: VersionBody, p: Principal = Depends(gateway_principal))
             return JSONResponse(status_code=422, content={"problems": exc.problems})
         except repo.NotFound:
             raise HTTPException(status_code=404, detail="no such policy")
+
+
+@router.post("/{key}/agent-fix")
+def agent_fix(key: str, body: FixBody, p: Principal = Depends(gateway_principal)):
+    _require(p, "Buyer", "agent_policy.write", {"policy": key, "intent": "agent_fix",
+                                                "baseVersion": body.baseVersion, "flipped": len(body.flipped)})
+    if any(not isinstance(f.get("input"), dict) for f in body.flipped):
+        return JSONResponse(status_code=422, content={"problems": [
+            {"field": "flipped", "code": "invalid", "message": "Every flipped example needs its inputs."}]})
+    with _conn() as conn:
+        try:
+            got = repo.get_policy(conn, key)
+        except repo.NotFound:
+            raise HTTPException(status_code=404, detail="no such policy")
+    if not any(v.get("version") == body.baseVersion for v in got.get("versions") or []):
+        raise HTTPException(status_code=404, detail="no such policy version")
+    return _start("fix", {"policyKey": key, "baseVersion": body.baseVersion, "flipped": body.flipped}, p.subject)
 
 
 @router.post("/{key}/retire")

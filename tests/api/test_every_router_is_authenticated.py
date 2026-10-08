@@ -145,6 +145,24 @@ def test_there_are_endpoints_to_check():
     )
 
 
+def test_the_gateway_keyed_agent_policy_routes_are_among_those_checked():
+    """The stage-2 agent-policy routes are covered by _GATEWAY_KEYED_PREFIXES, so the
+    assertion below expects 401 from each -- provided they are collected at all."""
+    expected = {
+        ("POST", "/agent-policies/documents/upload-urls"),
+        ("POST", "/agent-policies/documents"),
+        ("GET", "/agent-policies/documents"),
+        ("GET", "/agent-policies/documents/{document_id}/compare"),
+        ("POST", "/agent-policies/extraction-runs"),
+        ("GET", "/agent-policies/extraction-runs"),
+        ("GET", "/agent-policies/extraction-runs/{run_id}"),
+        ("POST", "/agent-policies/{key}/agent-fix"),
+    }
+    missing = expected - set(_endpoints())
+    assert not missing, f"not collected, so never checked: {sorted(missing)}"
+    assert all(path.startswith(_GATEWAY_KEYED_PREFIXES) for _, path in expected)
+
+
 def test_every_endpoint_refuses_an_unauthenticated_caller(client):
     served = []
     for method, path in _endpoints():
