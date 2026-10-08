@@ -38,3 +38,23 @@ def collection_name(settings: Any) -> str:
     if not isinstance(base, str) or not base.strip():
         return DEFAULT_COLLECTION
     return re.sub(r"[^A-Za-z0-9_-]", "_", base.strip()) or DEFAULT_COLLECTION
+
+
+def last_triage_run(cur) -> Optional[dict]:
+    """When triage last finished, and how many deals that run failed; None when
+    no run has ever finished.
+
+    This is the liveness signal, not last_finding_written: triage dedupes by
+    fingerprint, so a finding it already holds is updated in place and never
+    written again, and an unchanged corpus produces no new rows for weeks while
+    triage is perfectly healthy. A rolled-back run did not happen."""
+    cur.execute(
+        "SELECT finished_at, failed_deals FROM proc.bp_triage_run"
+        " WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL"
+        " ORDER BY finished_at DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    finished_at, failed = row
+    return {"finished_at": finished_at.isoformat(), "failed_deals": len(failed or {})}

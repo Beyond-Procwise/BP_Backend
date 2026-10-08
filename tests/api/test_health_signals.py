@@ -101,3 +101,39 @@ def test_health_reports_the_last_finding_timestamp(monkeypatch):
     )
 
     assert body["last_finding_written"] == "2026-09-24T12:43:04+00:00"
+
+
+# --- last triage run ---------------------------------------------------------
+# "Last finding written" alone looks stale on a healthy system: triage dedupes by
+# fingerprint, so a finding it already holds is updated in place, never written
+# again, and an unchanged corpus produces no new rows for weeks. The liveness
+# signal is when triage last FINISHED and how many deals it failed.
+
+
+def test_last_triage_run_reports_finish_time_and_failed_deal_count():
+    ts = datetime(2026, 10, 8, 8, 47, 13, tzinfo=timezone.utc)
+    cur = _Cur(row=(ts, {"D-1": "boom", "D-2": "boom"}))
+
+    assert health_signals.last_triage_run(cur) == {
+        "finished_at": "2026-10-08T08:47:13+00:00",
+        "failed_deals": 2,
+    }
+    assert "bp_triage_run" in cur.sql
+    assert "finished_at IS NOT NULL" in cur.sql
+    assert "rolled_back_at IS NULL" in cur.sql
+
+
+def test_last_triage_run_is_none_when_triage_has_never_finished():
+    assert health_signals.last_triage_run(_Cur(row=None)) is None
+
+
+def test_health_reports_unavailable_triage_when_the_database_cannot_answer(monkeypatch):
+    from src.api import main
+
+    def _boom(cur):
+        raise RuntimeError("database away")
+
+    monkeypatch.setattr(main.health_signals, "last_triage_run", _boom)
+    body = _health_with(monkeypatch, agent_nick=None)
+
+    assert body["last_triage_run"] == "unavailable"

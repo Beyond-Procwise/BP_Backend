@@ -160,13 +160,15 @@ def test_health_includes_extraction_v3_block():
 
 @pytest.mark.integration
 def test_health_lists_known_doc_types_after_lifespan():
-    """After successful lifespan, all 4 doc-type schemas should be loaded."""
+    """After successful lifespan, every doc-type schema should be loaded.
+
+    goods_receipt joined the four originals in fac60bca (2026-10-08)."""
     from fastapi.testclient import TestClient
     from src.api.main import app
     with TestClient(app) as client:
         r = client.get("/health")
         body = r.json()
-        assert body["extraction_v3"]["schemas_loaded"] == 4
+        assert body["extraction_v3"]["schemas_loaded"] == 5
         assert set(body["extraction_v3"]["doc_types"]) == {
-            "invoice", "purchase_order", "quote", "contract",
+            "invoice", "purchase_order", "quote", "contract", "goods_receipt",
         }

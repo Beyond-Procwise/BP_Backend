@@ -809,24 +809,35 @@ def _critic_shadow_status():
         return {"error": "unavailable"}
 
 
-def _last_finding_written():
-    """When the newest detection finding was written, as ISO-8601; None when
-    there has never been one; "unavailable" when the database cannot answer.
-    Findings writes were silently rejected for 65 days once — this is how an
-    operator sees the silence without reading a table."""
+def _db_signal(read, name):
+    """Run one health_signals reader on a fresh connection; "unavailable" when
+    the database cannot answer, so a signal never takes /health down."""
     try:
         with _health_db_conn() as conn:
             cur = conn.cursor()
             try:
-                return health_signals.last_finding_written(cur)
+                return read(cur)
             finally:
                 try:
                     cur.close()
                 except Exception:  # noqa: BLE001
                     pass
     except Exception as exc:  # noqa: BLE001
-        logger.error("health: last finding written unavailable: %s", exc)
+        logger.error("health: %s unavailable: %s", name, exc)
         return "unavailable"
+
+
+def _last_finding_written():
+    """When the newest detection finding was written. Stale on its own is not
+    an outage (triage dedupes; an unchanged corpus writes nothing new) -- read
+    it beside last_triage_run."""
+    return _db_signal(health_signals.last_finding_written, "last finding written")
+
+
+def _last_triage_run():
+    """When triage last finished and how many deals it failed. Findings writes
+    were silently rejected for 65 days once; this is the signal that shows it."""
+    return _db_signal(health_signals.last_triage_run, "last triage run")
 
 
 def _vector_store_status():
@@ -874,10 +885,12 @@ def health():
         # The Opportunity Critic's per-detector shadow enrolments, with expiries.
         # "unavailable" when its policy cannot be read -- never an empty list.
         "critic_shadow": _critic_shadow_status(),
-        # The two output signals whose silence went unnoticed for weeks: when the
-        # newest finding was written, and how many points the document vector
-        # store holds. A probe alerts on a stale timestamp or a zero.
+        # Output signals whose silence went unnoticed for weeks. Alert on a stale
+        # last_triage_run or a non-zero failed_deals, and on zero vector points.
+        # A stale last_finding_written alone is normal: triage dedupes, so an
+        # unchanged corpus writes no new findings.
         "last_finding_written": _last_finding_written(),
+        "last_triage_run": _last_triage_run(),
         "vector_store": _vector_store_status(),
         # Honest surface for features that lost a dependency they can never have. It stays
         # honest — the capability is still named, and it still says it is degraded — but the
