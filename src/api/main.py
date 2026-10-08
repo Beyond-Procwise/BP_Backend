@@ -687,6 +687,15 @@ _AGENT_POLICY_SCREEN_EXEMPT = (
     ("GET", re.compile(r"^/agent-policies/extraction-runs$")),
     ("GET", re.compile(r"^/agent-policies/extraction-runs/[0-9]+$")),
     ("POST", re.compile(r"^/agent-policies/documents/upload-urls$")),
+    # Stage 3 reads (user ruling 2026-10-08, Task 7): approval cases quote the policy excerpt,
+    # the source file name and the action's own values (a deal id like "DL/2024/001"); the
+    # decider map names the customer's Cognito groups (PROCWISE_PROCUMENT_BUYER_ANALYST reads as
+    # an env var). Sensitive inputs are masked by the endpoint itself. Same rules as above.
+    ("GET", re.compile(r"^/agent-policies/approvals$")),
+    ("GET", re.compile(r"^/agent-policies/approvals/[0-9]{1,18}$")),
+    ("GET", re.compile(r"^/agent-policies/notifications$")),
+    ("GET", re.compile(r"^/agent-policies/deciders$")),
+    ("GET", re.compile(r"^/agent-policies/[A-Z]{3}-[0-9]{4,}/firings$")),
 )
 
 

@@ -38,3 +38,23 @@ def test_run_calls_sweep_and_never_raises(monkeypatch):
     assert len(calls) == 1 and calls[0].tzinfo is not None
     monkeypatch.setattr(approvals, "sweep", lambda conn, now: 1 / 0)
     _Stub()._run_agent_policy_approvals_sweep()
+
+
+def test_run_also_retries_lost_replays_and_never_raises(monkeypatch):
+    from services.agent_policy import approvals, replay_retry
+    import services.db as db
+
+    class _Ctx:
+        def __enter__(self): return object()
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(db, "get_conn", lambda: _Ctx())
+    monkeypatch.setattr(approvals, "sweep", lambda conn, now: {"escalated": 0})
+    calls = []
+    monkeypatch.setattr(replay_retry, "retry_lost_replays", lambda conn, now: calls.append(now) or {"retried": 1})
+    _Stub()._run_agent_policy_approvals_sweep()
+    assert len(calls) == 1 and calls[0].tzinfo is not None
+    # a failing sweep does not stop the retry, and a failing retry does not raise
+    monkeypatch.setattr(approvals, "sweep", lambda conn, now: 1 / 0)
+    monkeypatch.setattr(replay_retry, "retry_lost_replays", lambda conn, now: calls.append(now) or 1 / 0)
+    _Stub()._run_agent_policy_approvals_sweep()
+    assert len(calls) == 2

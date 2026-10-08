@@ -10,7 +10,7 @@ import copy
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -279,3 +279,133 @@ def test_nothing_in_these_answers_is_withheld_by_output_safety(client, conn, wor
     }
     bad = {k: v for k, v in answers.items() if _withheld(v)}
     assert not bad, json.dumps(bad, default=str)[:3000]
+
+
+# ------------------------------------------------------------------ fix round 1
+def test_other_peoples_cases_never_hide_the_callers(client, conn, world):
+    """>200 open cases the caller cannot decide, all due sooner, must not push theirs off the list."""
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO proc.bp_decision (subject_type, subject_id, decision, resolution, facts, status, "
+                    "created_by, levels, current_level, respond_by) "
+                    "SELECT %s, %s || ':bulk' || n, 'approve_or_reject', 'escalated', '{}', 'open', 'test', %s, 0, "
+                    "%s FROM generate_series(1, 230) n",
+                    (A.SUBJECT_TYPE, world.key, json.dumps([{"name": f"TST Nobody {world.tag}"}]),
+                     datetime(2026, 1, 1, tzinfo=timezone.utc)))
+    did, _, _ = _open(conn, world)
+    got = client.get("/agent-policies/approvals", headers=_hdr("u-l1", world.l1_email)).json()["approvals"]
+    assert did in [c["id"] for c in got]
+    admin = client.get("/agent-policies/approvals", headers=_hdr("u-a", "a@example.test", ["PROCWISE_ADMIN"])).json()
+    assert len(admin["approvals"]) == 200
+    due = [c["respondBy"] for c in admin["approvals"]]
+    assert due == sorted(due)                                   # open: soonest deadline first
+
+
+def test_closed_cases_newest_first(client, conn, world):
+    l1 = _hdr("u-l1", world.l1_email)
+    a, _, _ = _open(conn, world)
+    b, _, _ = _open(conn, world)
+    for did in (a, b):
+        assert client.post(f"/agent-policies/approvals/{did}/decide", json={"verb": "reject", "reason": "no"},
+                           headers=l1).status_code == 200
+    ids = [c["id"] for c in client.get("/agent-policies/approvals?status=closed", headers=l1).json()["approvals"]]
+    assert [i for i in ids if i in (a, b)] == [b, a]
+
+
+def test_decide_by_someone_who_cannot_read_is_404_and_audited(client, conn, world):
+    did, _, _ = _open(conn, world)
+    r = client.post(f"/agent-policies/approvals/{did}/decide", json={"verb": "approve"},
+                    headers=_hdr("u-x", "x@example.test"))
+    assert r.status_code == 404
+    assert world.audits[-1]["status"] == "refused" and world.audits[-1]["details"]["code"] == "not_found"
+
+
+def test_unexpected_error_in_act_is_a_plain_500_and_audited(client, conn, world, monkeypatch):
+    did, _, _ = _open(conn, world)
+    monkeypatch.setattr(R.approvals, "act", lambda *a, **k: 1 / 0)
+    from api.main import app
+    r = TestClient(app, raise_server_exceptions=False).post(
+        f"/agent-policies/approvals/{did}/decide", json={"verb": "approve"}, headers=_hdr("u-l1", world.l1_email))
+    assert r.status_code == 500 and "ZeroDivision" not in r.text
+    assert world.audits[-1]["status"] == "error"
+
+
+def test_a_failed_audit_after_commit_does_not_fail_the_saved_decision(client, conn, world, monkeypatch):
+    did, _, _ = _open(conn, world)
+
+    def _audit(**kw):
+        if kw.get("status") == "done":
+            raise RuntimeError("audit store down")
+        world.audits.append(kw)
+    monkeypatch.setattr(R.agent_actions, "record_action_or_fail", _audit)
+    r = client.post(f"/agent-policies/approvals/{did}/decide", json={"verb": "reject", "reason": "no"},
+                    headers=_hdr("u-l1", world.l1_email))
+    assert r.status_code == 200 and r.json()["result"] == "rejected"
+
+
+def test_eligible_approver_sees_firing_values_others_see_reason_masked(client, conn, world):
+    did, _, _ = _open(conn, world)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_decision SET facts = jsonb_set(facts, '{action,reason}', to_jsonb(%s::text)) "
+                    "WHERE decision_id = %s", (f"Refund to {IBAN} as asked", did))
+    one = client.get(f"/agent-policies/approvals/{did}", headers=_hdr("u-l1", world.l1_email)).json()
+    assert one["history"]["firings"][0]["matchedValues"]["args.iban"] == IBAN
+    assert one["agentReason"] == f"Refund to {IBAN} as asked"
+    other = client.get(f"/agent-policies/approvals/{did}", headers=_hdr("u-l2", "", [world.l2_group])).json()
+    assert other["history"]["firings"][0]["matchedValues"]["args.iban"] == MASK
+    assert other["agentReason"] == f"Refund to {MASK} as asked"
+
+
+def test_decider_put_audits_the_outcome(client, conn, world):
+    name = f"TST Audit {world.tag}"
+    world.made_names.append(name)
+    admin = _hdr("u-admin", "admin@example.test", ["PROCWISE_ADMIN"])
+    client.put(f"/agent-policies/deciders/{name}", json={"groups": []}, headers=admin)
+    assert world.audits[-1]["status"] == "refused"
+    client.put(f"/agent-policies/deciders/{name}", json={"groups": ["G1"]}, headers=admin)
+    assert world.audits[-1]["status"] == "saved" and world.audits[-1]["details"]["decider"] == name
+
+
+def test_lost_replays_are_retried_at_most_three_times(client, conn, world):
+    from services.agent_policy import replay_retry as RR
+    did, _, _ = _open(conn, world)
+    assert client.post(f"/agent-policies/approvals/{did}/decide", json={"verb": "approve"},
+                       headers=_hdr("u-l1", world.l1_email)).status_code == 200
+    now = datetime.now(timezone.utc)
+    calls = []
+    assert RR.retry_lost_replays(conn, now, run=calls.append, decision_ids=[did])["retried"] == 0  # too fresh
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_decision SET actioned_at = actioned_at - interval '3 minutes' "
+                    "WHERE subject_type = %s AND subject_id LIKE %s AND decision = 'approve'",
+                    (A.SUBJECT_TYPE, f"{world.key}:%"))
+    for _ in range(5):
+        RR.retry_lost_replays(conn, now, run=calls.append, decision_ids=[did])
+    assert calls == [did, did, did]
+    with conn.cursor() as cur:
+        cur.execute("SELECT facts->>'replayAttempts' FROM proc.bp_decision WHERE decision_id = %s", (did,))
+        assert cur.fetchone()[0] == "3"
+
+
+def test_a_replayed_case_is_not_retried(client, conn, world):
+    from services.agent_policy import replay_retry as RR
+    did, fid, _ = _open(conn, world)
+    client.post(f"/agent-policies/approvals/{did}/decide", json={"verb": "approve"},
+                headers=_hdr("u-l1", world.l1_email))
+    with conn.cursor() as cur:
+        cur.execute("UPDATE proc.bp_decision SET actioned_at = actioned_at - interval '3 minutes' "
+                    "WHERE subject_type = %s AND subject_id = %s AND decision = 'approve'",
+                    (A.SUBJECT_TYPE, f"{world.key}:{fid}"))
+    _replay_row(conn, did, f"{world.key}:{fid}", {"outcome": "ran", "resultSummary": "ok", "error": None})
+    calls = []
+    RR.retry_lost_replays(conn, datetime.now(timezone.utc), run=calls.append, decision_ids=[did])
+    assert calls == []
+
+
+def test_a_rejected_case_is_not_retried(client, conn, world):
+    from services.agent_policy import replay_retry as RR
+    did, _, _ = _open(conn, world)
+    client.post(f"/agent-policies/approvals/{did}/decide", json={"verb": "reject", "reason": "no"},
+                headers=_hdr("u-l1", world.l1_email))
+    calls = []
+    RR.retry_lost_replays(conn, datetime.now(timezone.utc) + timedelta(minutes=5), run=calls.append,
+                          decision_ids=[did])
+    assert calls == []

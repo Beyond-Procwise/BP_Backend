@@ -484,6 +484,19 @@ class BackendScheduler:
                 logger.info("agent policy approval sweep: %s", counts)
         except Exception:
             logger.exception("agent policy approval sweep failed")
+        # Approved actions whose background replay was lost (restart, no runtime): bounded retry.
+        try:
+            from datetime import datetime, timezone
+
+            from services.agent_policy import replay_retry
+            from services.db import get_conn
+
+            with get_conn() as conn:
+                retried = replay_retry.retry_lost_replays(conn, datetime.now(timezone.utc))
+            if retried.get("retried") or retried.get("errors"):
+                logger.info("agent policy replay retry: %s", retried)
+        except Exception:
+            logger.exception("agent policy replay retry failed")
 
     EMAIL_LEARNING_JOB_NAME = "email-learning"
 

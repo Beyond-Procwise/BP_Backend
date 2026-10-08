@@ -1,10 +1,10 @@
 """The stage-3 approval/notification/decider/firing endpoints through the WHOLE app (no database).
 
-These GET paths are NOT on the user-approved screen exemption list (Task 7 ruling: never widen
-it from here). Benign answers must pass the scrubber untouched; the realistic values the
-scrubber DOES withhold are recorded below as strict xfails, pending a user ruling -- when the
-ruling lands (an exemption, or a scrubber change), the xfail turns into a failure and this file
-must be updated with it.
+User ruling 2026-10-08 (Task 7 review): the 2xx bodies of exactly these GETs pass the output
+scrubber untouched, like the stage-1/2 screen reads -- approvals, approvals/{id}, notifications,
+deciders, {key}/firings. Realistic values the scrubber used to withhold (a dated excerpt, a file
+name, a slashed deal id, a real Cognito group) now arrive intact. Anything else -- another method,
+a trailing slash, a malformed id, any error answer, and POST decide -- is still scrubbed.
 """
 import json
 
@@ -113,22 +113,52 @@ def test_benign_answers_pass_the_scrubber_untouched(client, path):
     assert not _withheld(r.json()), r.text
 
 
-def test_the_new_paths_are_not_exempt():
-    """No exemption was added: the scrubber IS in the path for every one of them."""
+_EXEMPT_PATHS = ["/agent-policies/approvals", "/agent-policies/approvals/41", "/agent-policies/notifications",
+                 "/agent-policies/deciders", "/agent-policies/FIN-0012/firings"]
+
+
+def test_exactly_the_new_reads_are_exempt():
     from api import main as M
-    for path in ["/agent-policies/approvals", "/agent-policies/approvals/41", "/agent-policies/notifications",
-                 "/agent-policies/deciders", "/agent-policies/FIN-0012/firings"]:
-        assert not M._agent_policy_screen_exempt("GET", path, 200)
+    for path in _EXEMPT_PATHS:
+        assert M._agent_policy_screen_exempt("GET", path, 200), path
+        assert not M._agent_policy_screen_exempt("GET", path, 404), path        # errors still scrubbed
+        assert not M._agent_policy_screen_exempt("GET", path + "/", 200), path  # trailing slash
+        assert not M._agent_policy_screen_exempt("POST", path, 200), path       # another method
+    for path in ["/agent-policies/approvals/41/decide", "/agent-policies/notifications/5/read"]:
+        assert not M._agent_policy_screen_exempt("POST", path, 200), path       # writes stay scrubbed
+    for path in ["/agent-policies/approvals/abc", "/agent-policies/approvals/1234567890123456789",
+                 "/agent-policies/fin-0012/firings", "/agent-policies/FIN-0012/firings/x",
+                 "/agent-policies/deciders/Finance Manager", "/agent-policies/approvals/41/history"]:
+        assert not M._agent_policy_screen_exempt("GET", path, 200), path
 
 
-def test_the_scrubber_is_really_in_the_path(client, state):
-    """Prove the benign test can fail: a value the scrubber always withholds comes back withheld."""
-    state["case"] = _case(reference="see proc.bp_decision")
-    assert _withheld(client.get("/agent-policies/approvals", headers=HDR).json())
+def test_decide_answers_are_still_scrubbed(client, monkeypatch):
+    """POST decide is not exempt: a 2xx with an internal name in it is withheld, and so is a refusal."""
+    monkeypatch.setattr(R.approval_views, "readable", lambda conn, did, p, is_admin: True)
+    monkeypatch.setattr(R.approvals, "act", lambda conn, did, **kw: {
+        "decisionId": did, "result": "rejected", "verb": "reject", "level": 0, "levelName": "Finance Manager",
+        "actionId": 1, "reason": "see proc.bp_decision"})
+    r = client.post("/agent-policies/approvals/41/decide", json={"verb": "reject", "reason": "x"}, headers=HDR)
+    assert r.status_code == 200 and r.json()["reason"] != "see proc.bp_decision"
+
+    def _refuse(conn, did, **kw):
+        raise A.ApprovalRefused("not_eligible", "Only someone linked to proc.bp_policy_decider_map can decide.", 403)
+    monkeypatch.setattr(R.approvals, "act", _refuse)
+    r = client.post("/agent-policies/approvals/41/decide", json={"verb": "approve"}, headers=HDR)
+    assert r.status_code == 403 and "bp_policy_decider_map" not in r.text
 
 
-# ------------------------------------------------------------------ withheld today (user ruling pending)
-_WITHHELD = {
+def test_an_error_answer_on_an_exempt_path_is_still_scrubbed(client, monkeypatch):
+    def _boom(conn, did, p, is_admin):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="no row in proc.bp_decision")
+    monkeypatch.setattr(V, "get_case", _boom)
+    r = client.get("/agent-policies/approvals/41", headers=HDR)
+    assert r.status_code == 404 and "bp_decision" not in r.text
+
+
+# Values the scrubber withheld before the ruling: each must now arrive exactly as stored.
+_REALISTIC = {
     "excerpt with a date": ("case", {"excerpt": "From 01/04/2026, refunds above $500 need approval."}),
     "document file name": ("case", {"document": "IT_SEC_POLICY_V3.pdf"}),
     "input value with slashes": ("case", {"inputs": [{"field": "args.deal_id", "name": "Deal",
@@ -140,19 +170,31 @@ _WITHHELD = {
 _PATH = {"case": "/agent-policies/approvals", "firing": "/agent-policies/FIN-0012/firings",
          "decider": "/agent-policies/deciders"}
 _MAKE = {"case": _case, "firing": _firing, "decider": _decider}
+_KEY = {"case": "approvals", "firing": "firings", "decider": "deciders"}
 
 
-@pytest.mark.xfail(strict=True, reason="withheld by output safety; user ruling pending (Task 7 report)")
-@pytest.mark.parametrize("label", list(_WITHHELD))
+@pytest.mark.parametrize("label", list(_REALISTIC))
 def test_realistic_values_survive_the_scrubber(client, state, label):
-    kind, over = _WITHHELD[label]
+    kind, over = _REALISTIC[label]
     state[kind] = _MAKE[kind](**over)
     body = client.get(_PATH[kind], headers=HDR).json()
-    assert not _withheld(body), body
+    assert body[_KEY[kind]] == [state[kind]], body
+
+
+def test_realistic_values_survive_on_one_case_and_notifications(client, state):
+    state["case"] = _case(excerpt="From 01/04/2026, refunds above $500 need approval.", document="IT_SEC_POLICY_V3.pdf")
+    state["firing"] = _firing(matchedValues={"args.deal_id": "DL/2024/001"})
+    state["note"] = _note(recipient="PROCWISE_FINANCE_REVIEWER_APPROVER")
+    one = client.get("/agent-policies/approvals/41", headers=HDR).json()
+    assert one["excerpt"] == state["case"]["excerpt"] and one["document"] == "IT_SEC_POLICY_V3.pdf"
+    assert one["history"]["firings"] == [state["firing"]]
+    notes = client.get("/agent-policies/notifications?mine=1", headers=HDR).json()["notifications"]
+    assert notes == [state["note"]]
 
 
 # ------------------------------------------------------------------ status mapping (no database)
 def test_reject_without_reason_is_422_problems(client, monkeypatch):
+    monkeypatch.setattr(R.approval_views, "readable", lambda conn, did, p, is_admin: True)
     def _act(conn, did, **kw):
         raise A.ApprovalRefused("reason_required", "A rejection needs a reason.", 422)
     monkeypatch.setattr(R.approvals, "act", _act)
@@ -165,6 +207,7 @@ def test_reject_without_reason_is_422_problems(client, monkeypatch):
 @pytest.mark.parametrize("code,status", [("not_eligible", 403), ("self_approval", 403), ("not_open", 409),
                                          ("not_found", 404)])
 def test_refusals_keep_their_status(client, monkeypatch, code, status):
+    monkeypatch.setattr(R.approval_views, "readable", lambda conn, did, p, is_admin: True)
     def _act(conn, did, **kw):
         raise A.ApprovalRefused(code, "You cannot decide on an action your own request triggered.", status)
     monkeypatch.setattr(R.approvals, "act", _act)
@@ -227,3 +270,22 @@ def test_link_refs_are_ids_not_routes():
     assert V._link_ref("decision:41") == {"decisionId": 41}
     assert V._link_ref("agent-policy:FIN-0012") == {"policyKey": "FIN-0012"}
     assert V._link_ref("https://x/y") == {}
+
+
+def test_replay_later_resolves_agent_nick_on_the_request_thread(monkeypatch):
+    import threading
+    from services.agent_policy import replay
+    seen = {}
+    monkeypatch.setattr(replay, "_resolve_agent_nick",
+                        lambda nick: seen.setdefault("resolved_on", threading.current_thread().name) and "NICK")
+    monkeypatch.setattr(replay, "run", lambda did, agent_nick=None: seen.update(did=did, nick=agent_nick,
+                                                                                 ran_on=threading.current_thread().name))
+    R._replay_later(41)
+    R._replay_pool.submit(lambda: None).result(timeout=5)   # the pool runs in order: wait for ours
+    import time
+    for _ in range(50):
+        if "did" in seen:
+            break
+        time.sleep(0.05)
+    assert seen["did"] == 41 and seen["nick"] == "NICK"
+    assert seen["resolved_on"] == threading.current_thread().name and seen["ran_on"] != seen["resolved_on"]

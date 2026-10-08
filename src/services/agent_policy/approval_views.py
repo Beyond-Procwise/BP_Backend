@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from services.agent_policy import approvals, conditions, deciders
 from services.agent_policy.enforcement import MASK
+from services.agent_policy.replay import mask_text
 
 KEY_RE = re.compile(r"^[A-Z]{3}-[0-9]{4,}$")
 DECIDER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 &,'.-]{0,63}$")
@@ -155,13 +156,29 @@ def load_case(cur, decision_id: int) -> Optional[Dict[str, Any]]:
     return _case(rows[0]) if rows else None
 
 
-def load_cases(cur, status: str) -> List[Dict[str, Any]]:
+_ORDER = {"open": "ORDER BY respond_by ASC NULLS LAST, decision_id ASC",
+          "closed": "ORDER BY decision_id DESC", "all": "ORDER BY decision_id DESC"}
+_PAGE = 500
+
+
+def load_cases(cur, status: str, *, keep: Optional[Callable[[Dict[str, Any]], bool]] = None,
+               limit: int = CASE_LIMIT) -> List[Dict[str, Any]]:
+    """Up to `limit` cases that `keep` accepts, filtered by status IN SQL and by the caller's
+    visibility BEFORE the limit (paged), so other people's cases never crowd out the caller's.
+    Open: soonest deadline first. Closed / all: newest first."""
     where = {"open": "AND status = 'open'", "closed": "AND status <> 'open'", "all": ""}[status]
-    cur.execute(f"SELECT {_CASE_COLS} FROM proc.bp_decision WHERE subject_type = %s "
-                f"AND decision = 'approve_or_reject' {where} "
-                "ORDER BY respond_by NULLS LAST, decision_id DESC LIMIT %s",
-                (approvals.SUBJECT_TYPE, CASE_LIMIT))
-    return [_case(r) for r in _rows(cur)]
+    out: List[Dict[str, Any]] = []
+    offset = 0
+    while len(out) < limit:
+        cur.execute(f"SELECT {_CASE_COLS} FROM proc.bp_decision WHERE subject_type = %s "
+                    f"AND decision = 'approve_or_reject' {where} {_ORDER[status]} LIMIT %s OFFSET %s",
+                    (approvals.SUBJECT_TYPE, _PAGE, offset))
+        page = [_case(r) for r in _rows(cur)]
+        out.extend(c for c in page if keep is None or keep(c))
+        if len(page) < _PAGE:
+            break
+        offset += _PAGE
+    return out[:limit]
 
 
 def sensitive_for(cur, pairs: Iterable[Tuple[str, int]]) -> Set[str]:
@@ -197,8 +214,13 @@ def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],
             row["unit"] = named[f]["unit"]
         inputs.append(row)
     reason = action.get("reason")
-    if "agent.reason" in sensitive and not unmasked and reason:
-        reason = MASK
+    if reason and not unmasked:
+        if "agent.reason" in sensitive:
+            reason = MASK
+        elif isinstance(reason, str):
+            # the reason is free text: any sensitive argument value it quotes is masked in place
+            args = {f[len("args."):] for f in sensitive if f.startswith("args.")}
+            reason = mask_text(reason, dict(action.get("args") or {}), args)
     levels = case["levels"]
     level = case["current_level"]
     return {
@@ -230,11 +252,10 @@ def case_view(case: Dict[str, Any], *, unmasked: bool, sensitive: Set[str],
 def list_cases(conn, principal, *, is_admin: bool, status: str = "open") -> List[Dict[str, Any]]:
     mapping = deciders.load_map(conn)
     with conn.cursor() as cur:
-        cases = load_cases(cur, status)
         if status == "open":
-            shown = [c for c in cases if is_admin or can_decide(principal, c, mapping)]
+            shown = load_cases(cur, status, keep=lambda c: is_admin or can_decide(principal, c, mapping))
         else:
-            shown = [c for c in cases if may_read(principal, c, mapping, is_admin=is_admin)]
+            shown = load_cases(cur, status, keep=lambda c: may_read(principal, c, mapping, is_admin=is_admin))
         pairs = [p for p in (_pair(c) for c in shown) if p[1] is not None]
         sensitive = sensitive_for(cur, pairs)
         docs = _compiled(cur, pairs)
@@ -245,7 +266,15 @@ def list_cases(conn, principal, *, is_admin: bool, status: str = "open") -> List
     return out
 
 
-def _firing_view(row: Dict[str, Any], sensitive: Set[str]) -> Dict[str, Any]:
+def _firing_view(row: Dict[str, Any], sensitive: Set[str],
+                 reveal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """`reveal`: the case's context, for a caller who may decide it. The log stores sensitive
+    values already masked; the eligible approver sees them from the case, as in `inputs`."""
+    values = _mask_values(_j(row["matched_values"], {}) or {}, sensitive)
+    if reveal is not None:
+        for k in list(values):
+            if values[k] == MASK and (v := _lookup(reveal, k)) is not _ABSENT:
+                values[k] = v
     return {
         "id": int(row["firing_id"]),
         "policyKey": row["policy_key"],
@@ -257,7 +286,7 @@ def _firing_view(row: Dict[str, Any], sensitive: Set[str]) -> Dict[str, Any]:
         "requestedBy": row["requested_by"],
         "outcome": row["outcome"],
         "result": row["result"],
-        "matchedValues": _mask_values(_j(row["matched_values"], {}) or {}, sensitive),
+        "matchedValues": values,
         "missingInputs": list(row["missing_inputs"] or []),
         "decisionId": row["decision_id"],
         "decidedLevel": row["decided_level"],
@@ -273,6 +302,13 @@ def _firing_view(row: Dict[str, Any], sensitive: Set[str]) -> Dict[str, Any]:
 _FIRING_COLS = ("firing_id, policy_key, policy_version, checkpoint, action_name, agent, workflow_id, "
                 "requested_by, outcome, result, matched_values, missing_inputs, decision_id, decided_level, "
                 "decided_by, decided_at, reason, duration_ms, reversal_of, created_at")
+
+
+def readable(conn, decision_id: int, principal, *, is_admin: bool) -> bool:
+    """Whether the caller may read this case (the GET's rule); False when it does not exist."""
+    with conn.cursor() as cur:
+        case = load_case(cur, decision_id)
+    return case is not None and may_read(principal, case, deciders.load_map(conn), is_admin=is_admin)
 
 
 def get_case(conn, decision_id: int, principal, *, is_admin: bool) -> Optional[Dict[str, Any]]:
@@ -309,7 +345,9 @@ def get_case(conn, decision_id: int, principal, *, is_admin: bool) -> Optional[D
     ok = can_decide(principal, case, mapping)
     view = case_view(case, unmasked=ok, sensitive=sensitive, doc=docs.get(_pair(case)), decidable=ok)
     view["history"] = {"decisions": decisions, "notes": notes,
-                       "firings": [_firing_view(r, sensitive) for r in firing_rows], "replay": replay}
+                       "firings": [_firing_view(r, sensitive, reveal=_ctx(case["facts"]) if ok else None)
+                                   for r in firing_rows],
+                       "replay": replay}
     return view
 
 

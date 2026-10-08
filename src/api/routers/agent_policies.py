@@ -344,9 +344,14 @@ def _replay_later(decision_id: int) -> None:
     timeout, and the person's decision is already committed (act calls this after commit)."""
     from services.agent_policy import replay  # local: pulls in the orchestrator tools
 
+    # Resolved now, on the request thread, and handed to the worker. (The scheduler singleton is
+    # process-wide, so the worker could resolve it too; this keeps the worker free of lookups.)
+    # None -> replay.run claims nothing and the sweeper's retry runs it later.
+    nick = replay._resolve_agent_nick(None)
+
     def _go():
         try:
-            replay.run(decision_id)
+            replay.run(decision_id, agent_nick=nick)
         except Exception:  # noqa: BLE001
             logger.exception("replay after approval %s failed", decision_id)
 
@@ -374,24 +379,37 @@ def get_approval(decision_id: int, p: Principal = Depends(gateway_principal)):
 @router.post("/approvals/{decision_id}/decide")
 def decide(decision_id: int, body: DecideBody, p: Principal = Depends(gateway_principal)):
     # Viewer is the floor; eligibility (the decider map at the current level) decides inside act().
-    _require(p, "Viewer", "agent_policy.decide", {"decision": decision_id, "verb": body.verb})
+    role = _require(p, "Viewer", "agent_policy.decide", {"decision": decision_id, "verb": body.verb})
+
+    def _audit(status: str, summary: str, **details):
+        agent_actions.record_action_or_fail(
+            phase="decide", action_type="agent_policy.decide", agent="agent_policy_api", status=status,
+            summary=summary, details={"decision": decision_id, "verb": body.verb, "principal": p.subject, **details})
+
     with _conn() as conn:
+        # Someone who may not read the case is told it does not exist, as GET answers them.
+        if not approval_views.readable(conn, decision_id, p, is_admin=role == "Admin"):
+            _audit("refused", f"{p.subject} could not {body.verb} approval {decision_id}: not_found", code="not_found")
+            raise HTTPException(status_code=404, detail="No such approval request.")
         try:
             out = approvals.act(conn, decision_id, principal=p, verb=body.verb, reason=body.reason,
                                 now=datetime.now(timezone.utc), replay=_replay_later)
         except approvals.ApprovalRefused as exc:
-            agent_actions.record_action_or_fail(
-                phase="decide", action_type="agent_policy.decide", agent="agent_policy_api", status="refused",
-                summary=f"{p.subject} could not {body.verb} approval {decision_id}: {exc.code}",
-                details={"decision": decision_id, "verb": body.verb, "code": exc.code, "principal": p.subject})
+            _audit("refused", f"{p.subject} could not {body.verb} approval {decision_id}: {exc.code}", code=exc.code)
             if exc.status == 422:
                 return _decide_problem(exc)
             raise HTTPException(status_code=exc.status, detail=exc.message)
-    agent_actions.record_action_or_fail(
-        phase="decide", action_type="agent_policy.decide", agent="agent_policy_api", status="done",
-        summary=f"{p.subject} {out['result']} approval {decision_id}",
-        details={"decision": decision_id, "verb": out["verb"], "level": out["level"],
-                 "levelName": out["levelName"], "actionId": out["actionId"], "principal": p.subject})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("deciding approval %s failed", decision_id)
+            _audit("error", f"{p.subject} could not {body.verb} approval {decision_id}: {type(exc).__name__}",
+                   code="error")
+            raise HTTPException(status_code=500, detail="The decision could not be recorded. Please try again.")
+    # The decision is committed: a failed audit record must not turn it into an error answer.
+    try:
+        _audit("done", f"{p.subject} {out['result']} approval {decision_id}", level=out["level"],
+               levelName=out["levelName"], actionId=out["actionId"])
+    except Exception:  # noqa: BLE001
+        logger.exception("decision %s was saved but its audit record failed", decision_id)
     return out
 
 
@@ -426,10 +444,19 @@ def put_decider(name: str, body: DeciderBody, p: Principal = Depends(gateway_pri
                                                 "emails": len(body.emails)})
     problems, groups, emails = approval_views.decider_problems(name, body.groups, body.emails, body.notes)
     if problems:
+        agent_actions.record_action_or_fail(
+            phase="decider", action_type="agent_policy.admin", agent="agent_policy_api", status="refused",
+            summary=f"{p.subject} could not save decider {name}",
+            details={"decider": name, "principal": p.subject, "problems": [x["code"] for x in problems]})
         return JSONResponse(status_code=422, content={"problems": problems})
     notes = body.notes.strip() if isinstance(body.notes, str) and body.notes.strip() else None
     with _conn() as conn:
-        return approval_views.upsert_decider(conn, name, groups, emails, notes, actor=p.subject)
+        saved = approval_views.upsert_decider(conn, name, groups, emails, notes, actor=p.subject)
+    agent_actions.record_action_or_fail(
+        phase="decider", action_type="agent_policy.admin", agent="agent_policy_api", status="saved",
+        summary=f"{p.subject} saved decider {name}",
+        details={"decider": name, "principal": p.subject, "groups": groups, "emails": len(emails)})
+    return saved
 
 
 @router.get("/{key}/firings")
