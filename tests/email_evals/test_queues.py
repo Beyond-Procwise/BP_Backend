@@ -16,7 +16,7 @@ RULES = {"exemplar_review_months": 12}
 def clean(db):
     with db.cursor() as cur:
         cur.execute("TRUNCATE email_agent.bp_dq_item, email_agent.bp_eval_candidate, email_agent.bp_review_item, "
-                    "email_agent.bp_style_rule, email_agent.bp_classifier_example, email_agent.bp_exemplar_candidate RESTART IDENTITY CASCADE")
+                    "email_agent.bp_style_rule, email_agent.bp_classifier_example, email_agent.bp_exemplar_candidate, email_agent.bp_inbound_flag RESTART IDENTITY CASCADE")
     return db
 
 
@@ -85,7 +85,7 @@ def test_counts_cover_every_queue_and_only_what_is_waiting(clean):
     dq(clean); dq(clean, status="resolved"); review(clean); rule(clean); rule(clean, key="k2", status="approved")
     exemplar(clean); exemplar(clean, status="approved"); evalc(clean); cls(clean)
     assert queues.counts(clean, "nick") == {"data_quality": 1, "review_items": 1, "style_rules": 1, "exemplars": 1,
-                                            "eval_candidates": 1, "classifier_examples": 1}
+                                            "eval_candidates": 1, "classifier_examples": 1, "inbound_flags": 0}
 
 
 def test_a_data_quality_item_shows_the_postgres_value_the_reviewers_value_marked_unverified_and_a_row_id_not_a_table(clean):

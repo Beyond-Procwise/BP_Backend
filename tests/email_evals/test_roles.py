@@ -153,6 +153,19 @@ def test_the_reader_can_see_whether_a_draft_was_sent_and_nothing_else_about_it(l
         assert c.fetchone() == (False, False, True, False)
 
 
+def test_the_writer_records_and_decides_inbound_flags_but_never_deletes_them_and_the_reader_sees_none(logins, eval_db):
+    ro, rw = logins
+    fid = ok(rw, "INSERT INTO email_agent.bp_inbound_flag (kind, workflow_id, kinds, terms) VALUES ('payment_detail_change', 'w', '[]', '[]') RETURNING flag_id")[0][0]
+    ok(rw, "UPDATE email_agent.bp_inbound_flag SET status = 'cleared' WHERE flag_id = %s", (fid,))
+    assert ok(rw, "SELECT status FROM email_agent.bp_inbound_flag WHERE flag_id = %s", (fid,)) == [("cleared",)]
+    denied(rw, "DELETE FROM email_agent.bp_inbound_flag WHERE flag_id = %s", (fid,))          # a flag is never erased, only cleared
+    denied(rw, "TRUNCATE email_agent.bp_inbound_flag")
+    denied(ro, "SELECT count(*) FROM email_agent.bp_inbound_flag")
+    cur = eval_db.cursor()
+    cur.execute("SELECT has_table_privilege('public', 'email_agent.bp_inbound_flag', 'SELECT,INSERT,UPDATE,DELETE')")
+    assert cur.fetchone()[0] is False
+
+
 def test_the_reader_cannot_become_anything_more_powerful(logins):
     ro, _ = logins
     for role in ("postgres", "email_agent_writer"):

@@ -90,6 +90,10 @@ ACTIONS: Dict[str, str] = {
     "approval.email": "approve_email",
     "approval.record": "approve_email",
     "approval.revoke": "approve_email",
+    # Clearing a flagged inbound reply (a suspected request to change payment details) LIFTS the block on drafting and sending against
+    # it, so it needs the authority of approving an email, not of an ordinary write. Confirming it as fraud only keeps the block and
+    # is an ordinary `email.learning.decide`.
+    "inbound.flag.clear": "approve_email",
     # --- sharing (leaves the tenant) -------------------------------------
     "report.export": "share",
     "research.web": "share",

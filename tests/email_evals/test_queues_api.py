@@ -14,6 +14,8 @@ import api.routers.email_learning as mod
 from src.services import actions
 from tests.email_evals.test_learning import db, engine  # noqa: F401  (fixtures)
 from tests.email_evals.test_queues import clean, cls, dq, evalc, exemplar, review, rule  # noqa: F401
+from tests.email_evals.test_inbound_flags import BAD, factory, row as reply_row  # noqa: F401
+from src.services.draft_assurance import inbound
 
 NICK = "sub-nick"
 
@@ -58,6 +60,7 @@ def row(db, sql, *p):
 
 def test_the_new_actions_are_in_the_closed_vocabulary_with_the_right_classes():
     assert actions.action_class("email.draft.read") == "read"
+    assert actions.action_class("inbound.flag.clear") == "approve_email"
     assert actions.action_class("email.learning.read") == "read"
     assert actions.action_class("email.learning.decide") == "write"
     assert actions.action_class("exemplar.approve") == "configure"
@@ -200,3 +203,63 @@ def test_metrics_report_by_family_over_time(api):
     (r,) = [x for x in body["rows"] if x["family_id"] == "negotiation_counter"]
     assert r["drafts"] == 1 and r["sent"] == 1 and r["mean_edit_distance"] == 0.0
     assert api.get("/email-learning/metrics?days=99999").json()["days"] == 3650                 # clamped, not honoured
+
+
+# --- inbound flags: confirming is a write, CLEARING is approver-class ---------------------------------------------------------------
+
+def flag(api, mid="<m1>"):
+    return inbound.screen_and_record(reply_row(response_message_id=mid), factory(api.db))
+
+
+def test_the_flags_list_asks_the_read_gate_and_carries_no_email_text(api):
+    flag(api)
+    r = api.get("/email-learning/inbound-flags")
+    assert r.status_code == 200 and api.gate.asked[-1][:2] == ("email.learning.read", "read")
+    (item,) = r.json()["items"]
+    assert item["what"] == "Asks for new or changed payment details" and item["status"] == "open"
+    for bad in ("GB29NWBK", "31926819", "Our bank details", "bp_inbound_flag", "email_agent"):
+        assert bad not in r.text, bad
+    assert api.get("/email-learning/inbound-flags?status=resolved").status_code == 400
+    assert api.get("/email-learning/queues").json()["waiting"]["inbound_flags"] == 1
+
+
+def test_confirming_a_flag_is_an_ordinary_write_and_clearing_it_needs_approver_authority(api):
+    a, b = flag(api, "<a>"), flag(api, "<b>")
+    assert api.post(f"/email-learning/inbound-flags/{a}/decision", json={"action": "confirm"}).status_code == 200
+    assert api.gate.asked[-1][:2] == ("email.learning.decide", "write")
+    assert api.post(f"/email-learning/inbound-flags/{b}/decision", json={"action": "clear", "note": "rang the supplier"}).status_code == 200
+    assert api.gate.asked[-1][:2] == ("inbound.flag.clear", "approve_email")
+
+
+def test_a_caller_who_may_decide_but_not_approve_cannot_clear_a_flag(api):
+    f = flag(api)
+    api.gate.deny.add("inbound.flag.clear")
+    assert api.post(f"/email-learning/inbound-flags/{f}/decision", json={"action": "clear"}).status_code == 403
+    assert api.db.cursor() is not None
+    status = row(api.db, "SELECT status FROM email_agent.bp_inbound_flag WHERE flag_id = %s", f)[0]
+    assert status == "open"                                                       # still blocking
+    assert api.post(f"/email-learning/inbound-flags/{f}/decision", json={"action": "confirm"}).status_code == 200
+
+
+def test_the_person_who_cleared_it_is_the_authenticated_one_with_their_note(api):
+    f = flag(api)
+    r = api.post(f"/email-learning/inbound-flags/{f}/decision", json={"action": "clear", "note": "rang a known number", "by": "mallory"})
+    assert r.status_code == 200
+    by, note = row(api.db, "SELECT decided_by, note FROM email_agent.bp_inbound_flag WHERE flag_id = %s", f)
+    assert (by, note) == (NICK, "rang a known number")
+
+
+def test_a_flag_is_decided_once_and_a_nonsense_action_or_unknown_flag_is_refused(api):
+    f = flag(api)
+    assert api.post(f"/email-learning/inbound-flags/{f}/decision", json={"action": "approve"}).status_code in (403, 422)
+    assert api.post(f"/email-learning/inbound-flags/{f}/decision", json={"action": "confirm"}).status_code == 200
+    assert api.post(f"/email-learning/inbound-flags/{f}/decision", json={"action": "clear"}).status_code == 422          # not un-confirmed
+    assert api.post("/email-learning/inbound-flags/999999/decision", json={"action": "clear"}).status_code == 404
+
+
+def test_a_blank_person_cannot_clear_a_flag_and_nothing_is_asked(api):
+    f = flag(api)
+    api.app_.dependency_overrides[mod.require_user] = lambda: SimpleNamespace(subject=" ")
+    n = len(api.gate.asked)
+    assert api.post(f"/email-learning/inbound-flags/{f}/decision", json={"action": "clear"}).status_code == 401
+    assert len(api.gate.asked) == n

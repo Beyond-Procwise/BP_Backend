@@ -13,6 +13,8 @@
     GET  /email-learning/eval-candidates               corrections that could become eval cases (no draft text)
     POST /email-learning/eval-candidates/{id}/decision export | reject
     GET  /email-learning/classifier-examples           answers people gave to "which kind of email is this?"
+    GET  /email-learning/inbound-flags                 replies a person must look at (suspected payment-detail change)
+    POST /email-learning/inbound-flags/{id}/decision   confirm (keeps the block) | clear (lifts it; approver authority)
     POST /email-learning/classifier-examples/{id}/decision export | reject
     GET  /email-learning/metrics                       edit distance and fact-conflict rate by family over time
 
@@ -32,12 +34,13 @@ from pydantic import BaseModel
 
 from api.auth import require_user
 from src.services import guardrail, rbac
-from src.services.draft_assurance import connections, learning, metrics, queues
+from src.services.draft_assurance import connections, inbound, learning, metrics, queues
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/email-learning", tags=["Email learning"])
 
 READ, DECIDE, APPROVE = ("email.learning.read", "read"), ("email.learning.decide", "write"), ("exemplar.approve", "configure")
+CLEAR_FLAG = ("inbound.flag.clear", "approve_email")
 
 
 class Decision(BaseModel):
@@ -194,6 +197,20 @@ def decide_classifier_example(item_id: int, body: Decision, principal=Depends(re
     who = _gate(principal, DECIDE, {"queue": "classifier_examples", "id": item_id, "action": body.action})
     with _store(agent_nick) as conn:
         return _settle(learning.decide_candidate(conn, "classifier", item_id, who, body.action))
+
+
+@router.get("/inbound-flags")
+def list_inbound_flags(status: Optional[str] = "open", limit: int = 50, principal=Depends(require_user), agent_nick=Depends(get_agent_nick)):
+    return _listing(principal, agent_nick, queues.list_inbound_flags, status, limit, "items")
+
+
+@router.post("/inbound-flags/{flag_id}/decision")
+def decide_inbound_flag(flag_id: int, body: Decision, principal=Depends(require_user), agent_nick=Depends(get_agent_nick)):
+    # Keeping the block is an ordinary write. LIFTING it needs approver authority: the gate follows the action asked for.
+    gate = CLEAR_FLAG if body.action == "clear" else DECIDE
+    who = _gate(principal, gate, {"queue": "inbound_flags", "id": flag_id, "action": body.action})
+    with _store(agent_nick) as conn:
+        return _settle(inbound.decide_flag(conn, flag_id, who, body.action, body.note))
 
 
 @router.post("/exemplars/{exemplar_id}/decision")
