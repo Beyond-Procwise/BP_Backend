@@ -1,0 +1,1 @@
+DROP SCHEMA IF EXISTS email_agent CASCADE;

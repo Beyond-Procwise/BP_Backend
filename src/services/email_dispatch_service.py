@@ -509,6 +509,18 @@ class EmailDispatchService:
             if sent:
                 dispatch_payload["sent_on"] = datetime.utcnow().isoformat()
                 dispatch_payload["message_id"] = message_id
+                # What was actually sent, measured against what the model drafted. Only a
+                # score and the changed figures are kept; record_sent never raises.
+                try:
+                    from src.services.draft_assurance import capture
+
+                    capture.record_sent(
+                        conn, unique_id, body,
+                        reviewed_by=(getattr(gate, "evidence", None) or {}).get("reviewed_by"),
+                        sent_by=getattr(principal, "subject", None),
+                    )
+                except Exception:  # pragma: no cover - bookkeeping only
+                    self.logger.exception("send outcome capture failed for %s", unique_id)
                 updated_thread_headers = self._augment_thread_headers(
                     thread_headers,
                     message_id,

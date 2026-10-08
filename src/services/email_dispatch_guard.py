@@ -322,6 +322,19 @@ def check_recipient_and_sensitivity(
         )
 
 
+def _facts_recheck(conn: Any, draft: Dict[str, Any], policy_engine: Optional[Any]) -> Dict[str, Any]:
+    """``draft_assurance.recheck_for_send``, which never raises."""
+
+    try:
+        from src.services.draft_assurance import recheck_for_send
+
+        engine = policy_engine if policy_engine is not None else rbac.policy_engine()
+        return recheck_for_send(conn, draft, engine)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("facts re-check could not run: %s", exc)
+        return {"checked": False, "changed": [], "reason": f"{type(exc).__name__}"}
+
+
 def check_dispatch(
     *,
     conn: Any,
@@ -467,6 +480,67 @@ def check_dispatch(
                     },
                 )
 
+        # --- 1c. The facts the draft rests on have not moved ---------------
+        # An approval covers the text. It says nothing about whether the offer,
+        # currency or contact that text was written from still read the same in
+        # Postgres. Shadow mode reports a change in the decision's evidence and
+        # lets the send through; enforce mode refuses until it has been seen.
+        facts_recheck = _facts_recheck(conn, draft, policy_engine)
+        if facts_recheck.get("mode") == "enforce" and (
+            facts_recheck.get("changed")
+            or (not facts_recheck.get("checked") and (draft.get("assurance") or {}).get("facts"))
+        ):
+            changed = facts_recheck.get("changed") or []
+            return guardrail.Decision(
+                allowed=False,
+                reason=(
+                    "a fact this draft rests on changed since it was written: "
+                    + ", ".join(str(c.get("fact")) for c in changed)
+                    if changed else
+                    "the facts this draft rests on could not be re-checked; denying"
+                ),
+                policy_name="EmailFamilyPolicy",
+                evidence={"facts_recheck": facts_recheck},
+            )
+
+        # --- 1d. A person reviewed it, and the draft is ready to be sent ---------
+        # Drafts that carry an assurance record were started by an agent or by someone
+        # else; authority and style key off the HUMAN who reviewed and sends it, never
+        # the initiator. No resolvable reviewer means it cannot go -- not a shadow rule.
+        assurance = draft.get("assurance") if isinstance(draft.get("assurance"), dict) else None
+        reviewed_by = approval.get("actioned_by")
+        if assurance is not None:
+            from src.services.draft_assurance import accountability, capture
+
+            problem = accountability.reviewer_problem(
+                reviewed_by, assurance.get("accountability") and {
+                    "id": assurance["accountability"].get("initiated_by"),
+                    "kind": assurance["accountability"].get("kind")},
+                autonomous=bool(approval.get("autonomous")),
+            )
+            if problem:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=f"this draft cannot be sent: {problem}",
+                    policy_name="EmailFamilyPolicy",
+                    evidence={"accountability": {
+                        "initiated_by": (assurance.get("accountability") or {}).get("initiated_by"),
+                        "reviewed_by": reviewed_by}},
+                )
+            ready = capture.readiness(conn, draft.get("unique_id"))
+            if (facts_recheck.get("mode") == "enforce" or assurance.get("mode") == "enforce") \
+                    and ready.get("ready") is not True:
+                return guardrail.Decision(
+                    allowed=False,
+                    reason=("this draft is not ready to send: "
+                            + ("its assumptions or clarification are unresolved"
+                               if ready.get("ready") is False else str(ready.get("reason")))),
+                    policy_name="EmailFamilyPolicy",
+                    evidence={"readiness": ready},
+                )
+        else:
+            ready = {"ready": None, "reason": "draft carries no assurance record"}
+
         # The draft has no deal_id; the approval does. Check 1 has already
         # fetched it by the time the classifier needs it.
         deal_id = approval.get("deal_id")
@@ -551,6 +625,9 @@ def check_dispatch(
                 "approved_by": approval.get("actioned_by"),
                 "content_class": content_class,
                 "recipients": recipient_list,
+                "facts_recheck": facts_recheck,
+                "readiness": ready,
+                "reviewed_by": reviewed_by,
             },
         )
 

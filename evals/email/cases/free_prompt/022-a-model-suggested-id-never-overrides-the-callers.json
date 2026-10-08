@@ -1,0 +1,62 @@
+{
+ "id": "022-a-model-suggested-id-never-overrides-the-callers",
+ "family": "free_prompt",
+ "description": "The classifier reads S-2 out of the request; the caller said S-1, and S-1 is what is used.",
+ "run": {
+  "path": "prompt",
+  "request": "Ask supplier S-2 about the price",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "recipients": [
+    "alex@acme.test"
+   ]
+  }
+ },
+ "model": {
+  "compose": "Subject: Price confirmation\nDear Alex Morgan,\n\nCould you please confirm the price on PO-77123 within the week?\n\nKind regards,\nProcurement Team",
+  "classify": {
+   "family_id": "free_prompt",
+   "confidence": 0.9,
+   "candidates": [
+    {
+     "family_id": "free_prompt",
+     "confidence": 0.9
+    },
+    {
+     "family_id": "negotiation_counter",
+     "confidence": 0.1
+    }
+   ],
+   "lookup_keys": {
+    "supplier_id": "S-2"
+   },
+   "user_instruction": "Ask supplier S-2 about the price"
+  },
+  "plan": {
+   "goal": "Ask about the price",
+   "key_points": [
+    "Ask about the price"
+   ],
+   "explicit_ask": "Confirm the price",
+   "deadline": null,
+   "tone_rationale": "Courteous",
+   "risks_to_avoid": [],
+   "reasoned": {},
+   "assumptions": []
+  },
+  "judge": {
+   "scores": {
+    "completeness": 4,
+    "clarity_of_ask": 5,
+    "tone_fit": 4,
+    "concision": 4
+   },
+   "rationale": "fine"
+  }
+ },
+ "expect": {
+  "rec.classification.lookup_keys.supplier_id": "S-2",
+  "rec.facts.supplier_contact_name.row_id": "S-1"
+ }
+}

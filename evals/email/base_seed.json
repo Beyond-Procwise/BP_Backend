@@ -1,0 +1,58 @@
+{
+ "seed": {
+  "bp_supplier": [
+   {
+    "supplier_id": "S-1",
+    "supplier_name": "Acme Ltd",
+    "contact_name_1": "Alex Morgan",
+    "contact_role_1": "Director of Sales",
+    "contact_email_1": "alex@acme.test",
+    "is_preferred_supplier": true,
+    "country": "Germany",
+    "clearance_level": "internal"
+   }
+  ],
+  "supplier_response": [
+   {
+    "workflow_id": "wf-1",
+    "unique_id": "PROC-WF-0001-R1",
+    "supplier_id": "S-1",
+    "supplier_email": "alex@acme.test",
+    "rfq_id": "RFQ-20260901-AAAA",
+    "round_number": 1,
+    "price": 50.0,
+    "currency": "GBP",
+    "lead_time": 21
+   },
+   {
+    "workflow_id": "wf-1",
+    "unique_id": "PROC-WF-0001-R2",
+    "supplier_id": "S-1",
+    "supplier_email": "alex@acme.test",
+    "rfq_id": "RFQ-20260901-AAAA",
+    "round_number": 2,
+    "price": 47.5,
+    "currency": "GBP",
+    "lead_time": 14
+   }
+  ],
+  "workflow_email_tracking": [
+   {
+    "workflow_id": "wf-1",
+    "unique_id": "PROC-WF-0001-D1",
+    "dispatch_key": "k1",
+    "supplier_id": "S-1",
+    "supplier_email": "alex@acme.test",
+    "dispatched_at": "2026-09-01T10:00:00+00:00"
+   },
+   {
+    "workflow_id": "wf-1",
+    "unique_id": "PROC-WF-0001-D2",
+    "dispatch_key": "k2",
+    "supplier_id": "S-1",
+    "supplier_email": "alex@acme.test",
+    "dispatched_at": "2026-09-01T10:00:00+00:00"
+   }
+  ]
+ }
+}

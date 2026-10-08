@@ -74,6 +74,7 @@ from api.routers import contract_renewals as contract_renewals_router
 from api.routers import value_ledger as value_ledger_router
 from api.routers import analysis as analysis_router
 from api.routers import approvals as approvals_router
+from api.routers import draft_assurance as draft_assurance_router
 from api.routers import catalog as catalog_router
 from api.routers import sales as sales_router
 from api.routers import reports as reports_router
@@ -598,6 +599,7 @@ _AUTHENTICATED_ROUTERS = [
     value_ledger_router.router,
     analysis_router.router,
     approvals_router.router,
+    draft_assurance_router.router,
     catalog_router.router,
     sales_router.router,
     reports_router.router,

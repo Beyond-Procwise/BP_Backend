@@ -1,0 +1,49 @@
+{
+ "id": "002-malformed-classifier-output",
+ "family": "free_prompt",
+ "description": "Prose instead of JSON: fall back to the conservative family and say why.",
+ "run": {
+  "path": "prompt",
+  "request": "Please ask Acme to confirm the price on PO-77123 and reply within the week",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "recipients": [
+    "alex@acme.test"
+   ]
+  }
+ },
+ "model": {
+  "compose": "Subject: Price confirmation\nDear Alex Morgan,\n\nCould you please confirm the price on PO-77123 within the week?\n\nKind regards,\nProcurement Team",
+  "classify": "Sure, this looks like a pricing email!",
+  "plan": {
+   "goal": "Get the price on PO-77123 confirmed",
+   "key_points": [
+    "Confirm the price"
+   ],
+   "explicit_ask": "Confirm the price",
+   "deadline": "within the week",
+   "tone_rationale": "Courteous",
+   "risks_to_avoid": [],
+   "reasoned": {},
+   "assumptions": []
+  },
+  "judge": {
+   "scores": {
+    "completeness": 4,
+    "clarity_of_ask": 5,
+    "tone_fit": 4,
+    "concision": 4
+   },
+   "rationale": "fine"
+  }
+ },
+ "expect": {
+  "rec.family_source": "fallback",
+  "rec.family_id": "free_prompt",
+  "rec.stage_status.classify.status": "invalid",
+  "rec.classification": {
+   "null": true
+  }
+ }
+}

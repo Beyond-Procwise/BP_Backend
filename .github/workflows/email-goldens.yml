@@ -1,0 +1,97 @@
+name: Email golden evals
+
+# Per-family golden cases for the email drafting assurance layer, run against a SEEDED, THROWAWAY Postgres
+# built from the real table definitions and the real migration files. A family whose pass rate drops below
+# its baseline, or whose cases are deleted to get a green, fails this job. Make this job a REQUIRED check on
+# main and Development (a branch-protection setting; it cannot be enforced from inside the repo).
+#
+# What it proves: the plumbing and the validators, against realistic rows, with a scripted fake model that
+# returns good AND bad output. What it does not prove: model quality (classifier accuracy, planner quality,
+# judge calibration). Those are tracked in specs/2026-10-08-email-assurance-pending-live-verification.md.
+
+on:
+  push:
+    branches: [main, Development]
+  pull_request:
+
+jobs:
+  goldens:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: eval
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      EMAIL_EVAL_DSN: postgresql://postgres:eval@127.0.0.1:5432/postgres
+      # config/settings.py refuses to load without these. Nothing connects to them: placeholders so the
+      # import succeeds, not credentials.
+      DB_HOST: ci-placeholder
+      DB_PORT: "5432"
+      DB_NAME: ci-placeholder
+      DB_USER: ci-placeholder
+      DB_PASSWORD: ci-placeholder
+      S3_BUCKET_NAME: ci-placeholder
+      S3_PREFIXES: '["ci"]'
+      QDRANT_URL: http://127.0.0.1:9
+      QDRANT_API_KEY: ci-placeholder
+      SES_DEFAULT_SENDER: ci-placeholder
+      CUDA_VISIBLE_DEVICES: ""
+      OLLAMA_HOST: http://127.0.0.1:9
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        # paddlepaddle-gpu is published only on Paddle's own CUDA index; see formula-goldens.yml.
+        run: |
+          python -m pip install --upgrade pip
+          grep -v -E '^paddlepaddle-gpu([=<>!~ ]|$)' requirements.txt > /tmp/requirements-ci.txt
+          pip install -r /tmp/requirements-ci.txt pytest
+
+      - name: Golden evals (blocks on any regression)
+        run: python -m evals.email.runner --report /tmp/email-eval-report.json
+
+      - name: Per-family scores
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          p = "/tmp/email-eval-report.json"
+          if not os.path.exists(p):
+              print("No report was written."); raise SystemExit
+          r = json.load(open(p))
+          print("### Email golden evals\n\n| family | cases | passed | pass rate |\n|---|---:|---:|---:|")
+          for fam, f in sorted(r["families"].items()):
+              print(f"| {fam} | {f['cases']} | {f['passed']} | {f['pass_rate']:.0%} |")
+          bad = [x for x in r["results"] if not x["passed"]]
+          if bad:
+              print("\n**Failing cases**\n")
+              for x in bad:
+                  print(f"- `{x['family']}/{x['id']}`: " + "; ".join(c.get("detail", c["check"]) for c in x["checks"] if not c["ok"])[:300])
+          PY
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: email-eval-report
+          path: /tmp/email-eval-report.json
+
+      - name: Assurance unit and integration tests
+        run: >
+          pytest tests/email_evals tests/services/test_draft_stages.py tests/services/test_draft_run.py
+          tests/services/test_draft_events.py tests/services/test_draft_agent_stages.py
+          tests/services/test_draft_assurance.py tests/services/test_draft_capture.py
+          tests/services/test_dispatch_facts_recheck.py tests/test_email_dispatch_service.py -q

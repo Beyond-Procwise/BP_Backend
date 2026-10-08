@@ -792,3 +792,58 @@ def test_send_draft_wiring_denies_and_audits_when_the_guard_refuses(monkeypatch)
 
     # And the draft was never marked as sent.
     assert store.rows[list(store.rows)[0]]["sent"] is False
+
+
+# --- the send hands what was sent to the capture layer ------------------------------
+def _send_with_capture(monkeypatch, record_sent):
+    _BackendSchedulerProxy.reset()
+    _tracking_dispatches.clear()
+    _stub_guard_allows(monkeypatch)
+    monkeypatch.setattr(_eds_module, "record_workflow_dispatch", _fake_record_workflow_dispatch)
+    monkeypatch.setattr(workflow_email_tracking_repo, "load_workflow_rows", _fake_load_workflow_rows)
+    from src.services.draft_assurance import capture
+
+    monkeypatch.setattr(capture, "record_sent", record_sent)
+    wf, uid = "7e5ab1d4-1234-4f2a-9d5b-1234567890ab", "PROC-WF-CAP-12345"
+    payload = {"rfq_id": "RFQ-CAP", "subject": DEFAULT_RFQ_SUBJECT, "body": "<p>Hello there</p>",
+               "receiver": "buyer@example.com", "recipients": ["buyer@example.com"],
+               "sender": "sender@example.com", "thread_index": 1, "contact_level": 1,
+               "sent_status": False, "action_id": "a-1", "workflow_id": wf, "unique_id": uid}
+    store = InMemoryDraftStore()
+    store.add({"rfq_id": "RFQ-CAP", "supplier_id": "S1", "supplier_name": "Acme",
+               "subject": payload["subject"], "body": payload["body"], "sent": False,
+               "recipient_email": None, "contact_level": 0, "thread_index": 1,
+               "sender": "sender@example.com", "payload": json.dumps(payload), "sent_on": None,
+               "workflow_id": wf, "unique_id": uid})
+    actions = InMemoryActionStore()
+    actions.update("a-1", json.dumps({"drafts": [payload], "rfq_id": "RFQ-CAP", "unique_id": uid}))
+    service = EmailDispatchService(DummyNick(store, actions))
+    sent = {}
+
+    def fake_send(subject, body, recipients, sender, attachments=None, **kw):
+        sent["body"] = body
+        return EmailSendResult(True, "<m-1>")
+
+    monkeypatch.setattr(service.email_service, "send_email", fake_send)
+    monkeypatch.setattr(service, "_record_thread_mapping", lambda *a, **k: None)
+    monkeypatch.setattr(email_dispatch_repo, "record_dispatch", lambda **_: None)
+    result = service.send_draft("RFQ-CAP", workflow_dispatch_context={
+        "workflow_id": wf, "unique_id": uid, "dispatch_key": "k"}, principal=_FakePrincipal())
+    return result, sent, uid
+
+
+def test_a_successful_send_hands_the_exact_sent_body_to_capture(monkeypatch):
+    seen = {}
+    result, sent, uid = _send_with_capture(monkeypatch, lambda conn, unique_id, body, **kw: seen.update(
+        unique_id=unique_id, body=body, **kw))
+    assert result["sent"] is True
+    assert seen["unique_id"] == uid
+    assert seen["body"] == sent["body"]
+
+
+def test_a_capture_failure_never_blocks_or_fails_the_send(monkeypatch):
+    def boom(conn, unique_id, body, **kw):
+        raise RuntimeError("email_agent is down")
+
+    result, _, _ = _send_with_capture(monkeypatch, boom)
+    assert result["sent"] is True

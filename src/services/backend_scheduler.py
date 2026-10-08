@@ -429,6 +429,48 @@ class BackendScheduler:
         self._register_playbook_sweep_job()
         self._register_contract_link_job()
         self._register_contract_expiry_job()
+        self._register_email_learning_job()
+
+    EMAIL_LEARNING_JOB_NAME = "email-learning"
+
+    def _register_email_learning_job(self) -> None:
+        """Learn from what reviewers did to email drafts (Stage 6).
+
+        OFF unless EMAIL_LEARNING_ENABLED=1: it writes to the email_agent schema, which exists only where the
+        capture migrations were applied. It fills queues and candidate lists and changes nothing a person has
+        not approved. Interval EMAIL_LEARNING_INTERVAL_MINUTES (default 60); it is idempotent, so a missed
+        or doubled run does no harm.
+        """
+        import os
+        if os.environ.get("EMAIL_LEARNING_ENABLED", "0").strip() not in ("1", "true", "True"):
+            logger.info("email learning job not registered (EMAIL_LEARNING_ENABLED)")
+            return
+        if self.EMAIL_LEARNING_JOB_NAME in self._jobs:
+            return
+        try:
+            minutes = int(os.environ.get("EMAIL_LEARNING_INTERVAL_MINUTES", "60"))
+        except ValueError:
+            minutes = 60
+        self.register_job(
+            self.EMAIL_LEARNING_JOB_NAME,
+            self._run_email_learning,
+            interval=timedelta(minutes=max(1, minutes)),
+            initial_delay=timedelta(minutes=10),
+        )
+
+    def _run_email_learning(self) -> None:
+        try:
+            from src.services import rbac
+            from src.services.draft_assurance import connections
+            from src.services.draft_assurance.learning import run_learning
+
+            with connections.writer(self.agent_nick) as conn:
+                report = run_learning(conn, rbac.policy_engine())
+            logger.info("email learning: %s", report)
+        except Exception:
+            # A missing threshold, an unreadable policy store or an absent schema stops THIS run and says
+            # why; the job is a sweep, and the next interval tries again.
+            logger.exception("email learning run failed")
 
     TRIAGE_JOB_NAME = "discrepancy-triage"
 

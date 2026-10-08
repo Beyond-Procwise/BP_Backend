@@ -1,0 +1,63 @@
+{
+ "id": "018-unmapped-tone-word-is-shown",
+ "family": "free_prompt",
+ "description": "'brusque' maps to no tone setting: shown to the reviewer, while 'warm' still applies.",
+ "run": {
+  "path": "prompt",
+  "request": "Ask Acme to confirm the price, be warm but brusque",
+  "payload": {
+   "supplier_id": "S-1",
+   "workflow_id": "wf-1",
+   "recipients": [
+    "alex@acme.test"
+   ]
+  }
+ },
+ "model": {
+  "compose": "Subject: Price confirmation\nDear Alex Morgan,\n\nCould you please confirm the price on PO-77123 within the week?\n\nKind regards,\nProcurement Team",
+  "classify": {
+   "family_id": "free_prompt",
+   "confidence": 0.9,
+   "candidates": [
+    {
+     "family_id": "free_prompt",
+     "confidence": 0.9
+    },
+    {
+     "family_id": "negotiation_counter",
+     "confidence": 0.1
+    }
+   ],
+   "lookup_keys": {},
+   "user_instruction": "be warm but brusque"
+  },
+  "plan": {
+   "goal": "Confirm the price",
+   "key_points": [
+    "Confirm the price"
+   ],
+   "explicit_ask": "Confirm the price",
+   "deadline": null,
+   "tone_rationale": "Courteous",
+   "risks_to_avoid": [],
+   "reasoned": {},
+   "assumptions": []
+  },
+  "judge": {
+   "scores": {
+    "completeness": 4,
+    "clarity_of_ask": 5,
+    "tone_fit": 4,
+    "concision": 4
+   },
+   "rationale": "fine"
+  }
+ },
+ "expect": {
+  "rec.assumption_items[*].id": {
+   "has": "tone:instruction"
+  },
+  "rec.tone.variables.warmth": "warm",
+  "rec.ready": false
+ }
+}
