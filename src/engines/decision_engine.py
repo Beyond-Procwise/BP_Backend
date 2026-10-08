@@ -1480,6 +1480,16 @@ class DecisionEngine:
                 "recommendation": recommendation.to_dict(),
             }
 
+        # Which KIND of link the person confirmed. parent_contract_id holds every
+        # kind (triage reads it as a family pointer), so the kind is kept here, in
+        # the audit row. A failed lookup never undoes or blocks a link already made.
+        try:
+            link_type = contract_links.link_type_of(str(child))
+        except Exception:
+            logger.exception("link type lookup failed for %s", child)
+            link_type = None
+        recommendation.facts["link_type"] = link_type
+
         decision_id = self._record_human_action(
             recommendation,
             human_action=action,
@@ -1493,6 +1503,7 @@ class DecisionEngine:
             "new_status": "resolved",
             "resolved_value": str(parent),
             "parent_contract_id": str(parent),
+            "link_type": link_type,
             "contract_id": str(child),
             "overridden": bool(conflicts),
             "override_reason": override_reason if conflicts else None,

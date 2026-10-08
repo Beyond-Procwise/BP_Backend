@@ -65,6 +65,7 @@ class FakeCursor:
         self.description = None
         self.updates: list[tuple] = []
         self.update_sql: list[str] = []
+        self.decision_inserts: list[tuple] = []
         self._last_result = None
 
     def __enter__(self):
@@ -84,6 +85,7 @@ class FakeCursor:
             self.update_sql.append(norm)
             self._last_result = None
         elif norm.startswith("INSERT INTO proc.bp_decision"):
+            self.decision_inserts.append(params)
             self._last_result = (555,)
         else:  # pragma: no cover - an unexpected query would show up here
             self._last_result = None
@@ -300,6 +302,14 @@ def _proposal_engine():
     return DecisionEngine(nick), cur
 
 
+@pytest.fixture
+def no_link_type_lookup(monkeypatch):
+    """link_type_of reads the database; no unit test in this section may reach one."""
+    import src.services.contract_links as CL
+    monkeypatch.setattr(CL, "link_type_of", lambda cid: "child_of")
+
+
+@pytest.mark.usefixtures("no_link_type_lookup")
 @pytest.mark.parametrize("action", ["approve", "confirm", "apply_value"])
 def test_accepting_a_parent_proposal_links_the_parent(monkeypatch, action):
     calls = []
@@ -324,6 +334,7 @@ def test_accepting_a_parent_proposal_links_the_parent(monkeypatch, action):
         "generic UPDATE would close it twice and could close it without linking")
 
 
+@pytest.mark.usefixtures("no_link_type_lookup")
 def test_a_refused_link_is_not_reported_as_applied(monkeypatch):
     import src.services.contract_links as CL
     monkeypatch.setattr(CL, "confirm", lambda *a, **k: False)
@@ -333,6 +344,7 @@ def test_a_refused_link_is_not_reported_as_applied(monkeypatch):
     assert "error" in result
 
 
+@pytest.mark.usefixtures("no_link_type_lookup")
 def test_dismissing_a_parent_proposal_still_takes_the_ordinary_path(monkeypatch):
     """Setting a proposal aside links nothing, so it is an ordinary dismissal —
     and it must stay one, because contract_links reads a dismissed row as still
@@ -343,3 +355,28 @@ def test_dismissing_a_parent_proposal_still_takes_the_ordinary_path(monkeypatch)
     result = eng.execute(9001, "dismiss", user_id="buyer-7", override_reason="under test")
     assert result["applied"] is True, result
     assert cur.updates and cur.updates[0][0] == "ignored", cur.updates
+
+
+def test_a_confirmed_parent_records_its_link_type(monkeypatch):
+    import json
+    import src.services.contract_links as CL
+    monkeypatch.setattr(CL, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(CL, "link_type_of", lambda cid: "child_of")
+    eng, cur = _proposal_engine()
+    result = eng.execute(9001, "approve", user_id="buyer-7", override_reason="under test")
+    assert result["applied"] is True and result["link_type"] == "child_of", result
+    facts = [json.loads(p[9]) for p in cur.decision_inserts]
+    assert facts and facts[0].get("link_type") == "child_of", facts
+
+
+def test_an_unknown_link_type_never_blocks_the_link(monkeypatch):
+    import src.services.contract_links as CL
+    monkeypatch.setattr(CL, "confirm", lambda *a, **k: True)
+
+    def boom(cid):
+        raise RuntimeError("lookup failed")
+
+    monkeypatch.setattr(CL, "link_type_of", boom)
+    eng, _cur = _proposal_engine()
+    result = eng.execute(9001, "approve", user_id="buyer-7", override_reason="under test")
+    assert result["applied"] is True and result["link_type"] is None, result

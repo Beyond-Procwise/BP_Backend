@@ -1067,3 +1067,19 @@ def test_a_proposal_for_an_addendum_says_amend_and_reports_its_link_type():
             cur = conn.cursor()
             cur.execute("DELETE FROM proc.bp_extraction_discrepancy WHERE doc_pk_candidate = ANY(%s)", ([add, sow],))
             cur.execute("DELETE FROM proc.bp_contracts WHERE contract_id = ANY(%s)", ([add, sow],))
+
+
+def test_link_type_of_reads_the_stored_kind_of_a_contract():
+    from src.services.db import get_conn
+    add = f"ADD-{uuid.uuid4().hex[:6].upper()}"
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO proc.bp_contracts (contract_id, contract_title, supplier_id,
+                contract_start_date, contract_end_date, resolved_doc_type, resolved_role, type_agreement)
+            VALUES (%s,'Addendum No. 1','S-LT','2026-03-01','2026-09-30','doctype.addendum','role.variation','refined')""",
+                    (add,))
+    try:
+        assert CL.link_type_of(add) == "amends"
+        assert CL.link_type_of("NO-SUCH-ID") is None
+    finally:
+        _delete_contracts(add)
