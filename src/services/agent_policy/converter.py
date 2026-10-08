@@ -134,8 +134,14 @@ def to_form(p: ProposedPolicy, *, document_title: str, document_version: Optiona
 
     rule_tools = [v for r in p.rules if r.field == "tool.name"
                   for v in (r.value_list or ([r.value_text] if r.value_text else []))]
+    # The model pads unknown_names with its own schema keys and with names the registry does
+    # know (live run 2026-10-08, SEC-0001). Those are not gaps; code-found unknowns stay.
+    schema_keys = set(ProposedPolicy.model_fields)
+    reported = [n for n in p.unknown_names
+                if n not in schema_keys and registry.input_row(cp, n) is None
+                and not registry.knows_action(cp, n)]
     unknown = _unique(
-        list(p.unknown_names)
+        reported
         + [r.field for r in p.rules if registry.input_row(cp, r.field) is None]
         + [i.field for i in p.inputs if i.source == "action" and registry.input_row(cp, i.field) is None]
         + [t for t in list(p.action_tools) + rule_tools if not registry.knows_action(cp, t)])
@@ -165,6 +171,10 @@ def to_form(p: ProposedPolicy, *, document_title: str, document_version: Optiona
             # would otherwise be judged on a missing field instead of on its own values.
             values = {"tool.name": p.action_tools[0], **values}
         examples.append({"input": values, "agentExpected": ex.expected, "flipped": False})
+
+    if p.outcome == "approve" and not p.deciders and p.owner:
+        # Never guess a role in code: only point the reviewer at the likely slip.
+        notes.append("The document's approver may have been put in Owner; check Who decides.")
 
     area, sub = _area(p, taxonomy, notes)
     window = None

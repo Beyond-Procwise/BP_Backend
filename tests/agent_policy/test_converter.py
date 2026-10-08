@@ -256,3 +256,31 @@ def test_example_field_not_in_the_registry_is_unknown():
     p = _proposal(examples=[{"values": [{"field": "args.amount", "value_number": 501},
                                         {"field": "customer.tier", "value_text": "gold"}], "expected": "approve"}])
     assert "customer.tier" in _form(p)["hidden"]["unknownNames"]
+
+
+# ---- Task 9b: junk in unknownNames, approver put in owner ----
+
+def test_model_reported_junk_unknown_names_are_dropped():
+    junk = ["action_tools", "inputs", "refund.issue", "args.amount", "customer credit rating"]
+    form = _form(_proposal(unknown_names=junk))
+    # schema keys and names the registry knows at this checkpoint go; a real gap stays
+    assert form["hidden"]["unknownNames"] == ["customer credit rating"]
+
+
+def test_code_found_unknowns_are_not_filtered():
+    p = _proposal(action_tools=["no.such.tool"])
+    assert "no.such.tool" in _form(p)["hidden"]["unknownNames"]
+
+
+def test_approve_with_owner_but_no_deciders_gets_a_note_and_nothing_moves():
+    form = _form(_proposal(deciders=[], owner="Finance Manager"))
+    note = "The document's approver may have been put in Owner; check Who decides."
+    assert note in form["hidden"]["agentNotes"]
+    assert form["deciders"] == [] and form["owner"] == "Finance Manager"
+
+
+def test_no_owner_note_when_deciders_exist_or_not_approve():
+    note = "The document's approver may have been put in Owner; check Who decides."
+    assert note not in _form()["hidden"]["agentNotes"]
+    assert note not in _form(_proposal(outcome="block", deciders=[]))["hidden"]["agentNotes"]
+    assert note not in _form(_proposal(deciders=[], owner=None))["hidden"]["agentNotes"]
