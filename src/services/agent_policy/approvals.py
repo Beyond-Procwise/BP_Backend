@@ -130,6 +130,22 @@ def open_case(conn, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[
     `action` = {tool, args, agent, workflowId, userId, reason}; args are stored in full.
     `extra_facts` (e.g. firingGroup, ctx) is merged into facts for the gate/replay.
     """
+    if mapping is None:
+        mapping = deciders.load_map(conn)
+    with _tx(conn):
+        with conn.cursor() as cur:
+            return _insert_case(cur, policy_doc=policy_doc, firing_id=firing_id, action=action,
+                                requested_by=requested_by, now=now, extra_facts=extra_facts,
+                                default_response_time=default_response_time, mapping=mapping)
+
+
+def _insert_case(cur, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[str, Any],
+                 requested_by: Optional[str], now: datetime, mapping: deciders.Mapping,
+                 extra_facts: Optional[Dict[str, Any]] = None,
+                 default_response_time: str = durations.COMPANY_DEFAULT) -> int:
+    """open_case's writes on the caller's cursor, inside the CALLER's transaction (no commit).
+
+    For callers that must open cases atomically with their own writes (replay.py)."""
     key = str(policy_doc.get("id") or "")
     intervention = (policy_doc.get("enforcement") or {}).get("intervention") or {}
     sla = intervention.get("sla") or {}
@@ -154,8 +170,6 @@ def open_case(conn, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[
     }
     if extra_facts:
         facts.update({k: v for k, v in extra_facts.items() if k not in facts})
-    if mapping is None:
-        mapping = deciders.load_map(conn)
     missing = deciders.unmapped(names, mapping) if names else []
     if not names:
         missing = ["(no approver named)"]
@@ -164,30 +178,28 @@ def open_case(conn, *, policy_doc: Dict[str, Any], firing_id: int, action: Dict[
     created_by = requested_by or f"agent:{action.get('agent') or 'unknown'}"
     respond_by = now + _delta(within)
 
-    with _tx(conn):
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO proc.bp_decision (
-                    subject_type, subject_id, decision, resolution, rationale, status,
-                    policy_id, policy_name, facts, evidence, workflow_id, agent, created_by,
-                    options, respond_by, on_timeout, decision_scope, levels, current_level
-                ) VALUES (%s,%s,'approve_or_reject','escalated',%s,'open',
-                          NULL,%s,%s,'[]',%s,%s,%s,%s,%s,%s,%s,%s,0)
-                RETURNING decision_id
-                """,
-                (SUBJECT_TYPE, f"{key}:{firing_id}",
-                 ((policy_doc.get("outputs") or {}).get("toAgent") or {}).get("reason"),
-                 key, json.dumps(facts, default=str), action.get("workflowId"), action.get("agent"),
-                 created_by, json.dumps(list(VERBS)), respond_by, on_timeout, "action",
-                 json.dumps(levels)),
-            )
-            decision_id = int(cur.fetchone()[0])
-            cur.execute(
-                "UPDATE proc.bp_policy_firing SET decision_id = %s "
-                "WHERE firing_id = %s AND result = 'paused_for_approval'",
-                (decision_id, firing_id),
-            )
+    cur.execute(
+        """
+        INSERT INTO proc.bp_decision (
+            subject_type, subject_id, decision, resolution, rationale, status,
+            policy_id, policy_name, facts, evidence, workflow_id, agent, created_by,
+            options, respond_by, on_timeout, decision_scope, levels, current_level
+        ) VALUES (%s,%s,'approve_or_reject','escalated',%s,'open',
+                  NULL,%s,%s,'[]',%s,%s,%s,%s,%s,%s,%s,%s,0)
+        RETURNING decision_id
+        """,
+        (SUBJECT_TYPE, f"{key}:{firing_id}",
+         ((policy_doc.get("outputs") or {}).get("toAgent") or {}).get("reason"),
+         key, json.dumps(facts, default=str), action.get("workflowId"), action.get("agent"),
+         created_by, json.dumps(list(VERBS)), respond_by, on_timeout, "action",
+         json.dumps(levels)),
+    )
+    decision_id = int(cur.fetchone()[0])
+    cur.execute(
+        "UPDATE proc.bp_policy_firing SET decision_id = %s "
+        "WHERE firing_id = %s AND result = 'paused_for_approval'",
+        (decision_id, firing_id),
+    )
     return decision_id
 
 
