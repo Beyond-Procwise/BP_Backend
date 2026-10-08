@@ -927,6 +927,17 @@ _ID_PREFIX_RE = re.compile(r"^(?:INV|PO|QUT|QTE|RFQ)[\-_]?", re.IGNORECASE)
 # previous handling — the model returned the bare number for those documents.
 _QUOTE_REV_RE = re.compile(r"\s*(?:\(\s*v\s*(\d+)|\bre?v\.?\s*(\d+)\b)", re.IGNORECASE)
 
+# A version stated in its OWN field of the header: "Version: 2", "Revision 3", "Issue 2",
+# "Quote version: V4", or a "| Version | 2 |" table row. The label must open a line or a table
+# cell, so "Software version 2" in a description is not read, and a decimal ("Version 2.1") is a
+# product version, not a round.
+_QUOTE_REV_FIELD_RE = re.compile(
+    r"(?:^|\n|\|)[ \t*]*(?:quote\s+|quotation\s+|offer\s+)?"
+    r"(?:version|revision|rev\.?|issue)\s*(?:no\.?|number|#)?[ \t*]*[:\-|]?[ \t*]*v?(\d{1,2})(?![\d.])",
+    re.IGNORECASE)
+#: How much of the document counts as its header, where a quote states its own version.
+_QUOTE_HEADER_CHARS = 2500
+
 
 def canonical_quote_revision(quote_id, full_text):
     """Return ``quote_id`` carrying the revision the document states.
@@ -955,9 +966,16 @@ def canonical_quote_revision(quote_id, full_text):
         return quote_id
     tail = str(full_text)[idx + len(base):]
     m = _QUOTE_REV_RE.match(tail)
-    if not m:
-        return quote_id
-    version = int(m.group(1) or m.group(2))
+    if m:
+        version = int(m.group(1) or m.group(2))
+    else:
+        # No marker beside the number: a version stated in its own header field counts, but
+        # only when the header states exactly ONE -- a revision-history table, or two
+        # different figures, is not evidence of which round this document is.
+        found = {int(x) for x in _QUOTE_REV_FIELD_RE.findall(str(full_text)[:_QUOTE_HEADER_CHARS])}
+        if len(found) != 1:
+            return quote_id
+        version = found.pop()
     # Version 1 is the unsuffixed form; anything else carries its number.
     return base if version <= 1 else f"{base} (V{version})"
 

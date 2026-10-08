@@ -87,3 +87,34 @@ def test_the_result_matches_what_the_gateway_parses():
     version = re.search(r"\(V(\d+)", canon)
     assert base == "ORB-Q-6612"
     assert version and int(version.group(1)) == 3
+
+
+# --- A version stated in its own field, not beside the number (2026-10-09) -----------------
+# Only a marker right after the quote number was read, so a quote whose header says
+# "Quote ref: Q-77 ... Version: 2" was stored as V1 -- and a V1 and V2 of it collided on one
+# primary key, the later overwriting the earlier.
+
+@pytest.mark.parametrize("text,expected", [
+    ("Quote ref: Q-77\nVersion: 2\nDate: 01/04/2024", "Q-77 (V2)"),
+    ("Quote ref: Q-77\nRevision 3\n", "Q-77 (V3)"),
+    ("| Quote ref | Q-77 |\n| Version | 2 |\n", "Q-77 (V2)"),
+    ("Quote ref: Q-77\nQuote version: V4\n", "Q-77 (V4)"),
+    ("Quote ref: Q-77\nIssue 2\n", "Q-77 (V2)"),
+    ("Quote ref: Q-77\nVersion: 1\n", "Q-77"),
+])
+def test_a_labelled_version_field_is_read(text, expected):
+    assert canonical_quote_revision("Q-77", text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "Quote ref: Q-77\nSoftware version 2.1 supported\n",          # a product version, not ours
+    "Quote ref: Q-77\nVersion 2.1\n",                               # a decimal is not a round
+    "Quote ref: Q-77\n| Version | Date |\n| 1 | Jan |\n| 2 | Feb |\n| 3 | Mar |\n",   # history table
+    "Quote ref: Q-77\nVersion: 2\nVersion: 3\n",                    # ambiguous
+])
+def test_no_version_is_invented_from_an_unrelated_or_ambiguous_mention(text):
+    assert canonical_quote_revision("Q-77", text) == "Q-77"
+
+
+def test_an_adjacent_marker_still_wins_over_a_field():
+    assert canonical_quote_revision("Q-77", "Quote ref: Q-77 (V3)\nVersion: 2\n") == "Q-77 (V3)"
