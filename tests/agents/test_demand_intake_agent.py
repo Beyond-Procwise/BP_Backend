@@ -143,9 +143,9 @@ def test_a_digit_inside_a_longer_number_is_not_a_match():
 
 def test_a_list_is_only_as_sure_as_its_least_sure_element():
     assert _conf(['weekly outages eliminated', 'a 99% uptime'],
-                 'weekly outages eliminated is the aim', path='criteria') == 'low'
+                 'weekly outages eliminated is the success measure', path='criteria') == 'low'
     assert _conf(['weekly outages eliminated'],
-                 'weekly outages eliminated is the aim', path='criteria') == 'high'
+                 'weekly outages eliminated is the success measure', path='criteria') == 'high'
 
 
 def test_a_value_the_request_cannot_have_said_is_low():
@@ -160,9 +160,10 @@ def test_an_empty_value_is_not_a_value():
 
 
 def test_a_list_value_survives_because_criteria_is_a_list():
+    ctx = dict(_CONTEXT, text=_CONTEXT['text'] + ' It must meet a 99.95% SLA and be 15% cheaper.')
     with _replies({'fields': {'criteria': {'value': ['99.95% SLA', '15% cheaper'],
                                            'confidence': 'medium'}}}):
-        out = _agent().extract(_CONTEXT)
+        out = _agent().extract(ctx)
     assert out['fields']['criteria']['value'] == ['99.95% SLA', '15% cheaper']
 
 
@@ -272,8 +273,9 @@ def test_the_leaked_examples_are_dropped_out_of_a_list_and_the_rest_is_kept():
     reply = {'fields': {'criteria': {
         'value': ['99.95% SLA', 'fewer than one outage a week', '≥15% unit-rate reduction'],
         'confidence': 'high'}}}
+    ctx = dict(_CONTEXT, text=_CONTEXT['text'] + ' There must be fewer than one outage a week.')
     with _replies(reply):
-        out = _agent(template=_LEAKY).extract(_CONTEXT)
+        out = _agent(template=_LEAKY).extract(ctx)
     assert out['fields']['criteria']['value'] == ['fewer than one outage a week']
 
 
@@ -678,3 +680,38 @@ def test_each_of_the_last_three_is_asked_for_on_its_own_terms():
         with _replies({'fields': {path: {'value': 'an answer', 'confidence': 'high'}}}):
             out = _agent().extract(ctx)
         assert path in out['fields'], f'{path} was asked for and the answer was dropped'
+
+
+# ---------------------------------------------------------------------------
+# A RESTATED NEED IS NOT AN ACCEPTANCE CRITERION (2026-10-08).
+#
+# Live, on the SD-WAN request: criteria = "SD-WAN connectivity for 42 UK branch sites, live by
+# 31 March 2027", confidence high. Those are the requester's words, so the measured confidence
+# is honest -- but it is the REQUEST, not a test anyone said the supplier must pass. The request
+# states no SLA, uptime, target or threshold.
+# ---------------------------------------------------------------------------
+def _criteria_reply(value):
+    return {'fields': {'criteria': {'value': value, 'confidence': 'high'}}}
+
+
+def test_a_restated_need_is_not_a_criterion():
+    ctx = dict(_CONTEXT, text=_SDWAN)
+    with _replies(_criteria_reply(['SD-WAN connectivity for 42 UK branch sites, '
+                                   'live by 31 March 2027'])):
+        out = _agent().extract(ctx)
+    assert 'criteria' not in out['fields']
+
+
+def test_a_criterion_the_requester_states_is_kept():
+    ctx = dict(_CONTEXT, text='The supplier must guarantee 99.95% uptime and no more than one '
+                              'outage a week.')
+    with _replies(_criteria_reply(['99.95% uptime'])):
+        out = _agent().extract(ctx)
+    assert out['fields']['criteria']['value'] == ['99.95% uptime']
+
+
+def test_the_question_just_asked_makes_the_answer_a_criterion():
+    ctx = dict(_CONTEXT, asked_field='criteria', text='Under 20 ms latency.')
+    with _replies(_criteria_reply(['Under 20 ms latency'])):
+        out = _agent().extract(ctx)
+    assert 'criteria' in out['fields']

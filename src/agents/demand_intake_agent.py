@@ -146,6 +146,14 @@ _CLAIM_CUES: Dict[str, tuple] = {
                                  "call-off", "call off"),
     # "po" is two letters and lives inside plenty of words, so the word boundaries in
     # _CLAIM_PATTERNS are doing real work here.
+    # A restated NEED is not a criterion: live 2026-10-08 the model returned the request's own first
+    # sentence as `criteria`. These are the words of a threshold or a test; "live by 31 March" and
+    # "42 sites" are scope, so neither "by" nor a bare number is a cue.
+    "criteria": ("sla", "slas", "uptime", "availability", "latency", "throughput",
+                 "service level", "service levels", "acceptance", "criteria", "criterion",
+                 "must", "must not", "at least", "at most", "no more than", "no less than",
+                 "no fewer than", "minimum", "maximum", "within", "under", "less than",
+                 "more than", "guarantee", "guaranteed", "success", "kpi", "kpis", "threshold"),
     "intake.po_required": ("po", "pos number", "p.o.", "purchase order", "purchase orders",
                            "p-card", "pcard", "procurement card", "invoice without"),
 }
