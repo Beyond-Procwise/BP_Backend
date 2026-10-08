@@ -8,6 +8,7 @@ import json
 from src.services.deal_assignment_service import (
     mint_document_id, _persist_deal, _upsert_document_map)
 from src.services.agent_actions import record_action, PHASE_CONSOLIDATION
+from src.services.version_collapse import base_reference, version_ordinal
 
 
 def _rows(cur, sql, params=()):
@@ -147,6 +148,9 @@ def confirm_proposal(cur, proposal_id: int, confirmed_by: str, expected_member_p
                       document_id=doc_id, deal_date=None)
         _upsert_document_map(cur, deal_id, proposed_name, dt, dpk, doc_id, None)
 
+    rounds = attach_earlier_rounds(cur, proposal_id, members, deal_id=deal_id,
+                                   deal_name=proposed_name, batch_deal_id=batch_deal_id)
+
     # Draft header — promotion to tracked remains the separate existing gate.
     cur.execute("insert into proc.bp_deal (deal_id, is_tracked) values (%s, false) "
                 "on conflict (deal_id) do nothing", (deal_id,))
@@ -160,7 +164,53 @@ def confirm_proposal(cur, proposal_id: int, confirmed_by: str, expected_member_p
         doc_type="deal", doc_pk=deal_id, agent=confirmed_by, status="ok",
         summary=f"confirmed proposal {proposal_id} -> {deal_id} ({len(members)} docs)",
         details={"proposal_id": proposal_id, "batch_deal_id": batch_deal_id,
-                 "members": [(m["doc_type"], str(m["doc_pk"])) for m in members]},
+                 "members": [(m["doc_type"], str(m["doc_pk"])) for m in members],
+                 "earlier_rounds": rounds},
         conn=cur.connection)
     return {"status": "confirmed", "proposal_id": proposal_id, "deal_id": deal_id,
-            "members": len(members)}
+            "members": len(members), "earlier_rounds": len(rounds)}
+
+
+def attach_earlier_rounds(cur, proposal_id, members, *, deal_id, deal_name,
+                          batch_deal_id) -> list[str]:
+    """Link each bid's earlier quote rounds to ``deal_id`` and record them as members.
+
+    A bid is its latest round. Proposals made before clustering listed earlier rounds,
+    or trimmed by a reviewer, name only that round, so confirming them stranded V1/V2
+    off the deal: one version per supplier, nothing to compare. Confirm is the one
+    place every proposal passes through, so the rounds are gathered here.
+
+    A round is taken only when it is on no deal or still on this upload's batch label;
+    a round another real deal holds is never moved. Only LOWER versions of a bid are
+    earlier rounds. Returns the quote ids linked."""
+    bids = [m for m in members if m["doc_type"] == "quote"
+            and m.get("role") in ("anchor_quote", "competing_quote")]
+    listed = {str(m["doc_pk"]) for m in members if m["doc_type"] == "quote"}
+    if not bids:
+        return []
+    patterns = [base_reference(str(b["doc_pk"])).replace("\\", "\\\\")
+                .replace("%", "\\%").replace("_", "\\_") + "%" for b in bids]
+    found = _rows(cur, "select quote_id, deal_id from proc.bp_quote_trgt "
+                       "where quote_id like any(%s)", (patterns,))
+    free = {None, "", batch_deal_id}
+    linked: list[str] = []
+    for b in bids:
+        pk = str(b["doc_pk"])
+        base, version = base_reference(pk), version_ordinal(pk)
+        for q in sorted(found, key=lambda r: str(r["quote_id"])):
+            qid = str(q["quote_id"])
+            if (qid in listed or qid in linked or base_reference(qid) != base
+                    or version_ordinal(qid) >= version or q.get("deal_id") not in free):
+                continue
+            _persist_deal(cur, "quote", qid, deal_id=deal_id, deal_name=deal_name,
+                          document_id=mint_document_id(deal_id, "quote", qid), deal_date=None)
+            _upsert_document_map(cur, deal_id, deal_name, "quote", qid,
+                                 mint_document_id(deal_id, "quote", qid), None)
+            cur.execute(
+                "insert into proc.bp_deal_proposal_member "
+                "(proposal_id, doc_type, doc_pk, base_reference, role) "
+                "values (%s,'quote',%s,%s,'earlier_round') "
+                "on conflict (proposal_id, doc_type, doc_pk) do nothing",
+                (proposal_id, qid, base))
+            linked.append(qid)
+    return linked

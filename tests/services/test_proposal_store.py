@@ -212,6 +212,8 @@ class _ConfirmCur(_Cur):
         if "from proc.bp_deal_proposal_member" in s and "select" in s:
             self.description=[("doc_type",),("doc_pk",),("base_reference",),("role",)]
             self._rows=self._members
+        elif "from proc.bp_quote_trgt" in s and "select" in s:
+            self.description=[("quote_id",),("deal_id",)]; self._rows=[]   # no earlier rounds
         elif "from proc.bp_deal_proposal" in s and "select" in s:
             self.description=[("proposal_id",),("proposed_name",),("status",)]
             self._rows=[(101,"Freight — 3 bidders","proposed")]
@@ -284,3 +286,64 @@ def test_confirm_refuses_already_confirmed_proposal_writes_nothing():
     assert out == {"status": "not_proposed", "current_status": "confirmed", "proposal_id": 101}
     assert all(not sql.lower().startswith(("insert", "update")) for sql, _ in cur.exec)
     assert cur.connection.execs == []
+
+
+# --- confirm links each bid's earlier rounds -----------------------------------------
+
+class _RoundsCur(_ConfirmCur):
+    """A proposal generated before earlier rounds were members: only the latest round of
+    each bid is listed, and the batch's _trgt holds the rest."""
+    def __init__(self, members, quotes):
+        super().__init__(members); self._quotes = quotes
+    def execute(self, sql, params=()):
+        s = sql.lower()
+        if "from proc.bp_quote_trgt" in s and "select" in s:
+            self.exec.append((" ".join(sql.split()), params))
+            self.description = [("quote_id",), ("deal_id",)]
+            self._rows = self._quotes
+            return
+        if "information_schema.columns" in s:
+            self.exec.append((" ".join(sql.split()), params))
+            self.description = [("column_name",)]
+            self._rows = [("quote_id",), ("deal_id",), ("deal_name",), ("document_id",), ("deal_date",)]
+            return
+        if "from proc.bp_deal_proposal" in s and "select" in s and "member" not in s:
+            self.exec.append((" ".join(sql.split()), params))
+            self.description = [("proposal_id",), ("batch_deal_id",), ("proposed_name",), ("status",)]
+            self._rows = [(101, "BATCH-1", "Freight — 2 bidders", "proposed")]
+            return
+        super().execute(sql, params)
+
+
+def _linked(cur):
+    return {p[-1] for sql, p in cur.exec if sql.lower().startswith("update proc.bp_quote_trgt")}
+
+
+def test_confirm_links_earlier_rounds_a_proposal_did_not_list():
+    members = [("quote", "MFS-Q-3391 (V3 (BAFO))", "MFS-Q-3391", "anchor_quote"),
+               ("quote", "CL-2024-0771 (V3 (BAFO))", "CL-2024-0771", "competing_quote")]
+    quotes = [("MFS-Q-3391 (V3 (BAFO))", None),
+              ("MFS-Q-3391", None),                      # on no deal       -> linked
+              ("MFS-Q-3391 (V2)", "BATCH-1"),            # on the upload    -> linked
+              ("MFS-Q-33910", None),                     # another quote    -> left
+              ("CL-2024-0771 (V3 (BAFO))", None),
+              ("CL-2024-0771 (V2)", ""),                 # blank deal       -> linked
+              ("CL-2024-0771", "DEALV3-9")]              # a real deal's    -> left
+    cur = _RoundsCur(members, quotes)
+    out = ps.confirm_proposal(cur, 101, "nick")
+    assert out["status"] == "confirmed"
+    assert _linked(cur) == {"MFS-Q-3391 (V3 (BAFO))", "CL-2024-0771 (V3 (BAFO))",
+                            "MFS-Q-3391", "MFS-Q-3391 (V2)", "CL-2024-0771 (V2)"}
+    recorded = {p[1] for sql, p in cur.exec
+                if sql.lower().startswith("insert into proc.bp_deal_proposal_member")}
+    assert recorded == {"MFS-Q-3391", "MFS-Q-3391 (V2)", "CL-2024-0771 (V2)"}
+    assert out["earlier_rounds"] == 3
+
+
+def test_confirm_never_takes_a_later_round_as_an_earlier_one():
+    # A reviewer kept V2 as the bid; V3 exists unassigned. V3 is not V2's earlier round.
+    members = [("quote", "MFS-Q-3391 (V2)", "MFS-Q-3391", "anchor_quote")]
+    quotes = [("MFS-Q-3391", None), ("MFS-Q-3391 (V2)", None), ("MFS-Q-3391 (V3)", None)]
+    cur = _RoundsCur(members, quotes)
+    ps.confirm_proposal(cur, 101, "nick")
+    assert _linked(cur) == {"MFS-Q-3391 (V2)", "MFS-Q-3391"}
