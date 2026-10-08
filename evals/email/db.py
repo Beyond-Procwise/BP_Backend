@@ -97,6 +97,11 @@ def load(conn, skip=(), generate=None) -> None:
     conn.autocommit = True
     with conn.cursor() as cur:
         if generate if generate is not None else not existing_schema():
+            # Start clean. In CI the golden runner and the pytest session share ONE server, so the second
+            # load found the first's tables ("relation bp_policy already exists"). Only ever a throwaway
+            # database reaches this branch: the existing-schema rehearsal path above never drops anything.
+            cur.execute("DROP SCHEMA IF EXISTS proc, email_agent CASCADE")
+            cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
             cur.execute((HERE / "schema.sql").read_text())
             cur.execute((HERE / "seed_policies.sql").read_text())
         for name in MIGRATIONS:
