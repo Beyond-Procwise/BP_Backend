@@ -6,6 +6,7 @@ the gate turns that into a refusal (fail closed). Saves and retires call invalid
 """
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import time
@@ -53,7 +54,7 @@ def load(conn: Any = None, *, ttl: float = 30) -> List[Dict[str, Any]]:
     global _cache
     with _lock:
         if _cache is not None and time.monotonic() - _cache[0] < ttl:
-            return list(_cache[1])
+            return copy.deepcopy(_cache[1])
         started = _generation
     try:
         if conn is None:
@@ -67,5 +68,5 @@ def load(conn: Any = None, *, ttl: float = 30) -> List[Dict[str, Any]]:
         raise PolicyStoreUnavailable(f"live agent policies could not be loaded: {type(exc).__name__}") from exc
     with _lock:
         if _generation == started:
-            _cache = (time.monotonic(), docs)
-    return list(docs)
+            _cache = (time.monotonic(), copy.deepcopy(docs))
+    return docs   # callers get their own copy; mutating it never changes the next load

@@ -167,3 +167,58 @@ def test_load_failure_raises_policy_store_unavailable(monkeypatch):
     monkeypatch.setattr(live_policies, "load_registry", lambda conn=None: REGISTRY)
     with pytest.raises(live_policies.PolicyStoreUnavailable):
         live_policies.load(conn=object())
+
+
+# ---- fix round 1 -----------------------------------------------------------------------------
+
+def test_a_field_sensitive_in_one_policy_is_masked_in_every_hit():
+    def sensitive(form):
+        form["hidden"]["inputs"][0]["sensitive"] = True
+    v = enforcement.check(_ctx(), [_doc("FIN-0001", "approve", sensitive), _doc("FIN-0002", "notify")])
+    assert v.notifies[0]["id"] == "FIN-0002"
+    assert v.notifies[0]["matched_values"]["args.amount"] == "•••"
+    assert all(h["matched_values"]["args.amount"] == "•••" for h in v.evaluated)
+
+
+def _with_sla(doc, within):
+    doc["enforcement"]["intervention"]["sla"]["respondWithin"] = within
+    return doc
+
+
+def test_paused_wait_falls_back_to_the_company_default():
+    doc = _with_sla(_doc("FIN-0001"), None)
+    v = enforcement.check(_ctx(), [doc], default_response_time="PT6H")
+    assert v.to_agent["respondWithin"] == "PT6H"
+
+
+def test_paused_wait_is_the_longest_including_weeks_and_fractions():
+    v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "P6D"), _with_sla(_doc("FIN-0002"), "P1W")])
+    assert v.to_agent["respondWithin"] == "P1W"
+    v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "PT1.5H"), _with_sla(_doc("FIN-0002"), "PT80M")])
+    assert v.to_agent["respondWithin"] == "PT1.5H"
+
+
+def test_an_unreadable_wait_is_never_shorter_than_a_real_one():
+    v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "P9D"), _with_sla(_doc("FIN-0002"), "soon")])
+    assert v.to_agent["respondWithin"] == "soon"
+    assert enforcement._seconds("soon") > enforcement._seconds("P52W")
+
+
+def test_absent_on_missing_data_fails_closed():
+    ctx = _ctx()
+    ctx["args"] = {}
+    doc = _doc("FIN-0005", "block")
+    del doc["trigger"]["onMissingData"]
+    v = enforcement.check(ctx, [doc])
+    assert v.result == "blocked" and v.blocks[0]["missing"] == ["args.amount"]
+
+
+def test_mutating_a_loaded_doc_does_not_change_the_next_load(monkeypatch):
+    monkeypatch.setattr(live_policies.repo, "live_documents", lambda conn: [_doc("FIN-0001")])
+    monkeypatch.setattr(live_policies, "load_registry", lambda conn=None: REGISTRY)
+    first = live_policies.load(conn=object())
+    first[0]["enforcement"]["outcome"] = "block"
+    first.append({"id": "junk"})
+    again = live_policies.load(conn=object())
+    assert [d["id"] for d in again] == ["FIN-0001"]
+    assert again[0]["enforcement"]["outcome"] == "approve"

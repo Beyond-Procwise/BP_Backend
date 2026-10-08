@@ -522,12 +522,24 @@ def test_agent_fix_takes_at_most_20_flipped_examples(client, monkeypatch):
 
 
 def test_save_and_retire_invalidate_the_enforcement_cache(client, monkeypatch):
+    state = {"open": False}
+
+    class _Tracked:
+        def __enter__(self):
+            state["open"] = True
+            return object()
+
+        def __exit__(self, *a):
+            state["open"] = False
+            return False
+
+    monkeypatch.setattr(R, "_conn", _Tracked)
     calls = []
-    monkeypatch.setattr(R.live_policies, "invalidate", lambda: calls.append(1))
+    monkeypatch.setattr(R.live_policies, "invalidate", lambda: calls.append(state["open"]))
     monkeypatch.setattr(R.repo, "save_version", lambda *a, **k: {"policyKey": "GEN-0001", "version": 2})
     monkeypatch.setattr(R.repo, "retire", lambda *a, **k: {"policyKey": "GEN-0001", "version": 3})
     body = {"form": {"name": "x"}, "baseVersion": 1, "intent": "draft", "changeNote": ""}
     assert client.post("/agent-policies/GEN-0001/versions", json=body, headers=GOOD).status_code == 200
     assert client.post("/agent-policies/GEN-0001/retire", json={"baseVersion": 2, "changeNote": ""},
                        headers=GOOD).status_code == 200
-    assert len(calls) == 2
+    assert calls == [False, False]   # both ran after the connection closed
