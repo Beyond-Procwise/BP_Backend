@@ -126,3 +126,71 @@ def test_reject_log_failure_never_breaks_resolution():
             raise RuntimeError("table missing")
 
     assert SR.resolve_or_create_supplier("days Tax", _Conn()) is None
+
+
+# --- Banking words inside real company names (2026-10-08) ------------------------------------
+# The noise list was matched as a SUBSTRING, so "Swift Distribution Partners Ltd" -- the winning
+# bidder on the freight tender -- was rejected as "noise_token" (swift, as in SWIFT/BIC) and its
+# quotes were stored with no supplier. A banking word marks a bank-details fragment only when it
+# is used as one: labelled, followed by a code, or as an instruction.
+
+NAMES_WITH_BANKING_WORDS = [
+    "Swift Distribution Partners Ltd",
+    "Swift Logistics",
+    "Wellcome Trust",
+    "National Trust Enterprises",
+    "Branch Logistics Ltd",
+    "Payment Solutions Ltd",
+    "Invoice Cloud",
+    "Premiter Ltd",            # contains "remit"
+    "Tiban Engineering",       # contains "iban"
+    "Barclays Bank PLC",
+    "Savings Direct",
+]
+
+BANK_FRAGMENTS = [
+    "SWIFT: BARCGB22",
+    "SWIFT/BIC BARCGB22",
+    "Swift code BARCGB22",
+    "IBAN GB29 NWBK 6016 1331 9268 19",
+    "Sort code 20-00-00",
+    "Bank: Barclays",
+    "BSB 062-000",
+    "Routing number 021000021",
+    "Remit to",
+    "Bill To",
+    "Payable to",
+    "Bank",
+    "Banking",
+]
+
+
+@pytest.mark.parametrize("name", NAMES_WITH_BANKING_WORDS)
+def test_a_banking_word_inside_a_company_name_is_not_noise(name):
+    reason = SR._garbage_reason(name)
+    assert reason is None, f"{name!r} wrongly rejected as {reason!r}"
+
+
+@pytest.mark.parametrize("name", BANK_FRAGMENTS)
+def test_bank_detail_fragments_are_still_rejected(name):
+    assert SR._garbage_reason(name) is not None, f"{name!r} should be rejected"
+
+
+# The document-reference rule accepted letters as the reference ("INV" + "OICE"), so any name
+# starting INV/PO/REC/ORD/REF/DOC/SER/QUO/BILL was rejected. A reference carries digits.
+NAMES_STARTING_LIKE_A_REFERENCE = [
+    "Polymer Products Ltd", "Service Masters", "Docusign", "Inventory Partners",
+    "Quotient Ltd", "Recorded Books", "Ordnance Supplies", "Reference Point Ltd", "Billington Foods",
+]
+DOCUMENT_REFERENCES = ["INV-B-23476 PO", "PO-12345", "QUOT2024-17", "REF 99812", "ORD#88123", "INV00045"]
+
+
+@pytest.mark.parametrize("name", NAMES_STARTING_LIKE_A_REFERENCE)
+def test_a_name_that_starts_like_a_reference_is_not_one(name):
+    reason = SR._garbage_reason(name)
+    assert reason is None, f"{name!r} wrongly rejected as {reason!r}"
+
+
+@pytest.mark.parametrize("name", DOCUMENT_REFERENCES)
+def test_document_references_are_still_rejected(name):
+    assert SR._garbage_reason(name) is not None, f"{name!r} should be rejected"
