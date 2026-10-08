@@ -1490,6 +1490,17 @@ def prepare_email_draft(
             draft["metadata"]["thread_headers"] = thread_headers
 
     drafting_agent = EmailDraftingAgent(agent_nick)
+    # Shadow assurance of the person's own text: what they wrote is stored exactly as before; the record
+    # beside it says which figures Postgres confirms and which it does not. It can never stop the draft.
+    draft["metadata"]["intent"] = "REPLY_PANEL" if source_draft else "REPORT_PANEL"
+    try:
+        draft["assurance"] = drafting_agent.assure_human_written(
+            text=payload.body, recipients=recipients,
+            supplier_id=(source_draft or {}).get("supplier_id"),
+            workflow_id=draft.get("workflow_id"), requested_by=requested_by,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("could not assure the prepared email for deal_id=%s", payload.deal_id)
     try:
         drafting_agent._store_draft(draft)
     except ValueError as exc:

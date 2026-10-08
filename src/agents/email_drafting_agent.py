@@ -2517,19 +2517,46 @@ class EmailDraftingAgent(BaseAgent):
             logger.exception("RFQ assurance could not begin for supplier %s", supplier_id)
             return None, f"{type(exc).__name__}: {exc}"
 
+    @staticmethod
+    def _unassured_record(family_id: str, reason: str) -> Dict[str, Any]:
+        """What a draft carries when assurance could not run: visible, so silence never reads as 'checked'."""
+
+        return {"family_id": family_id, "status": "unassured", "reason": reason, "violations": [], "ready": False}
+
+    HUMAN_FAMILY_SLUG = "email_family_human_written"
+
+    def assure_human_written(
+        self, *, text: str, recipients, supplier_id: Optional[str], workflow_id: Optional[str],
+        requested_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Assure an email a PERSON typed (reply panel, report panel, manual passthrough). Shadow; never raises.
+
+        The person is the author: their figures are carried and listed as unverified unless they equal what
+        Postgres holds. Nothing is repaired or judged, and ``text`` is never altered.
+        """
+
+        try:
+            plain = self._html_to_plain_text(text or "")
+            payload = {"supplier_id": supplier_id, "workflow_id": workflow_id, "body": plain}
+            run = self._assurance_prepare(
+                payload, workflow_id=workflow_id, slug=self.HUMAN_FAMILY_SLUG, user_id=requested_by,
+            )
+            return self._assurance_finalize(run, plain, recipients or [], supplier_id, repaired=False)
+        except Exception as exc:  # noqa: BLE001 - assurance must never stop a person's email being prepared
+            logger.exception("assurance of a human-written email failed")
+            return self._unassured_record("human_written", f"{type(exc).__name__}: {exc}")
+
     def _rfq_assurance_finish(self, began, checked_text: str, recipients, supplier_id: Any) -> Dict[str, Any]:
         """The assurance record for one RFQ draft. Shadow: records, never repairs, never edits the body."""
 
         run, error = began
         if run is None:
-            return {"family_id": "rfq_batch", "status": "unassured", "reason": error or "not run",
-                    "violations": [], "ready": False}
+            return self._unassured_record("rfq_batch", error or "not run")
         try:
             return self._assurance_finalize(run, checked_text, recipients, supplier_id, repaired=False)
         except Exception as exc:  # noqa: BLE001
             logger.exception("RFQ assurance could not finish for supplier %s", supplier_id)
-            return {"family_id": "rfq_batch", "status": "unassured",
-                    "reason": f"{type(exc).__name__}: {exc}", "violations": [], "ready": False}
+            return self._unassured_record("rfq_batch", f"{type(exc).__name__}: {exc}")
 
     def _assure_composed(self, run, body: str):
         """One repair pass over ``body`` if it fails a check. Returns ``(body, repaired)``."""
@@ -4398,6 +4425,13 @@ class EmailDraftingAgent(BaseAgent):
             manual_draft.setdefault("thread_index", 1)
             manual_draft = self._apply_workflow_context(
                 manual_draft, context, source_payload=data
+            )
+            # Shadow assurance of a person's own text: recorded, never altered. There is no supplier on
+            # this path, so every recipient is (correctly) reported as not on the supplier master.
+            manual_draft.setdefault("metadata", {})["intent"] = "MANUAL_PASSTHROUGH"
+            manual_draft["assurance"] = self.assure_human_written(
+                text=manual_body_clean, recipients=manual_recipients, supplier_id=None,
+                workflow_id=workflow_id, requested_by=data.get("requested_by"),
             )
             drafts.append(manual_draft)
             self._store_draft(manual_draft)

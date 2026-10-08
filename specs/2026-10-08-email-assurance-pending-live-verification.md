@@ -104,3 +104,18 @@ leaves that draft `unassured` without losing the batch. What it does NOT do, and
 | R3 | Quantities/items for an RFQ may exist in Postgres (requisition or PO lines); the family reads only the supplier contact. Adding a fact source is config, but the right table needs your ruling. |
 | R4 | No repair pass and no judge for RFQs (shadow, templated). Model-composed RFQ bodies (`_render_dynamic_body`) are checked but not repaired. |
 | R5 | One assurance read per supplier, in the batch's worker threads: N suppliers = N small reads. Not load-tested. |
+
+## Human-written emails: reply panel, report panel, manual passthrough (2026-10-08, shadow)
+
+Family `human_written` (`deploy/sql/2026-10-08_email_family_human_written.sql`, NOT applied anywhere). Intents recorded for
+capture: `REPLY_PANEL`, `REPORT_PANEL` (`POST /workflows/email/prepare`) and `MANUAL_PASSTHROUGH` (the drafting agent's manual
+body). No model writes these, so nothing is repaired or judged, and the person's text is stored exactly as before.
+
+| # | Limit |
+|---|---|
+| H1 | The person is the author, so EVERY figure they typed is carried and therefore allowed: this family cannot fail a typed figure. It lists the ones Postgres does not hold under `unverified_figures` and cites the supplier's latest offer and currency next to them. Whether a typed price contradicts the offer is for the reviewer; no rule decides it. |
+| H2 | It CAN fail: bank details, a liability admission, a waiver, an award commitment, a leaked internal limit, and a recipient not on the supplier master. |
+| H3 | The manual passthrough has no supplier, so every recipient is reported `recipient_not_on_master` and no fact resolves. Correct, and noisy: such drafts will always show `needs_review`. Needs a ruling on whether the passthrough should resolve a supplier from the recipient address. |
+| H4 | The manual passthrough's author is `data.requested_by` only; if the caller does not send it the draft is attributed to the agent, not a person. |
+| H5 | Report-panel emails with no deal thread have no workflow or supplier, so only the text checks run. |
+| H6 | Test-suite note: a test file that imports `src.api.routers.workflows` at module level breaks `tests/test_email_dispatch_service.py` (three tests) in the same session; `tests/api/test_email_prepare_endpoint.py` already does, independent of this work. The new tests import the router lazily. |
