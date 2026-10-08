@@ -1,0 +1,8 @@
+[Unit]
+Description=ProcWise health-signal alerts (one-shot, run by procwise-health-alerts.timer)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/muthu/PycharmProjects/BP_Backend
+EnvironmentFile=/home/muthu/PycharmProjects/BP_Backend/.env
+ExecStart=/home/muthu/PycharmProjects/BP_Backend/.venv/bin/python /home/muthu/PycharmProjects/BP_Backend/scripts/health_alerts.py
