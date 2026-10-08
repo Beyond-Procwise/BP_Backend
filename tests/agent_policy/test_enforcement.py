@@ -198,10 +198,12 @@ def test_paused_wait_is_the_longest_including_weeks_and_fractions():
     assert v.to_agent["respondWithin"] == "PT1.5H"
 
 
-def test_an_unreadable_wait_is_never_shorter_than_a_real_one():
+def test_an_unreadable_wait_is_the_company_default_as_the_timer_applies_it():
+    v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "PT1H"), _with_sla(_doc("FIN-0002"), "soon")],
+                          default_response_time="PT6H")
+    assert v.to_agent["respondWithin"] == "PT6H"
     v = enforcement.check(_ctx(), [_with_sla(_doc("FIN-0001"), "P9D"), _with_sla(_doc("FIN-0002"), "soon")])
-    assert v.to_agent["respondWithin"] == "soon"
-    assert enforcement._seconds("soon") > enforcement._seconds("P52W")
+    assert v.to_agent["respondWithin"] == "P9D"
 
 
 def test_absent_on_missing_data_fails_closed():

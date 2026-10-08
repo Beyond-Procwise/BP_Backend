@@ -9,12 +9,11 @@ listed. A condition that cannot be read fails CLOSED, as a block.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from services import policy_condition as pc
-from services.agent_policy import conditions
+from services.agent_policy import conditions, durations
 
 MASK = "•••"
 _ABSENT = object()
@@ -49,20 +48,6 @@ def _lookup(context: Dict[str, Any], path: str) -> Any:
             return _ABSENT
         cur = cur[part]
     return _ABSENT if cur is None else cur
-
-
-_NUM = r"(\d+(?:[.,]\d+)?)"
-_DURATION = re.compile(rf"^P(?!$)(?:{_NUM}W)?(?:{_NUM}D)?(?:T(?=\d)(?:{_NUM}H)?(?:{_NUM}M)?(?:{_NUM}S)?)?$")
-
-
-def _seconds(iso: Optional[str]) -> float:
-    """Length of an ISO 8601 duration. Unreadable counts as the LONGEST, so the agent is
-    never told a shorter wait than a real one."""
-    m = _DURATION.match(iso or "")
-    if not m:
-        return float("inf")
-    w, d, h, mi, s = (float((x or "0").replace(",", ".")) for x in m.groups())
-    return (((w * 7 + d) * 24 + h) * 60 + mi) * 60 + s
 
 
 def _respond_within(policy: Dict[str, Any]) -> Optional[str]:
@@ -143,8 +128,10 @@ def check(ctx: Dict[str, Any], policies: List[Dict[str, Any]], *,
                       "policies": [h["id"] for h in v.blocks]}
     elif v.approvals:
         first = v.approvals[0]
-        # every approval must arrive, so the agent is told the longest wait
-        within = max((_respond_within(h["policy"]) or default_response_time for h in v.approvals), key=_seconds)
+        # every approval must arrive, so the agent is told the longest wait -- each one resolved
+        # exactly as the approval timer resolves it (unreadable -> the company default)
+        within = max((durations.resolve(_respond_within(h["policy"]), default_response_time)
+                      for h in v.approvals), key=durations.parse)
         v.result = "paused_for_approval"
         v.to_agent = {"result": "paused_for_approval", "requestIds": [], "respondWithin": within,
                       "whilePaused": ((first["policy"].get("outputs") or {}).get("toAgent") or {}).get("whilePaused")
